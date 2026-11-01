@@ -14,13 +14,29 @@ control. Part 2 has no in-table control, because recluster renumbers every group
 second relation is the control: it catches a clear that escapes its relation, not an
 over-broad range.
 
-ON A PRIVATE DATABASE, so another worker's snapshot cannot hold back VACUUM's
-all-visible marking, built once by a module fixture in the shell's order; each test
-asserts one reading. Every "cleared" reading is the transition `before->after` and
-wants `t->f`: a VACUUM that set no bit leaves every block `f`, and an after-only
-reading passed as cleared. The shell's geometry premises, which exit rather than
-record, refuse the fixture here, so every test errors rather than passes.
+ON A PRIVATE DATABASE, so another test's session in its own database cannot hold back
+VACUUM's all-visible marking (but see #1875 below). Built once by a module fixture in
+the shell's order; each test asserts one reading. Every "cleared" reading is the
+transition `before->after` and wants `t->f`: a VACUUM that set no bit leaves every
+block `f`, and an after-only reading passed as cleared. The shell's geometry premises,
+which exit rather than record, refuse the fixture here, so every test errors rather
+than passes.
+
+A PRIVATE DATABASE IS NOT ENOUGH, AND EACH VACUUM IS RETRIED (#1875). A group is marked
+all-visible only once its catalog row's xmin precedes this database's removable
+horizon. Any session CONNECTED TO THIS DATABASE with an older snapshot holds that back.
+The likely one is an autovacuum worker, which visits a new database soon after CREATE
+EXTENSION fills the catalogs and holds a snapshot while it ANALYZEs them. A snapshot in
+another database does not count by itself, but every snapshot taken here then starts
+below its xid, which is what makes the worker a holder. Measured on PG18, before this
+change: an xid held open in `postgres` left this module at 17 passed; the same xid plus
+a snapshot opened here while rc was being filled gave 7 failed, the seven #1875 reports
+from CI. So each VACUUM repeats, up to VAC_TRIES times, until every block an arm later
+reads is set, and a budget that runs out is a named premise failure that names the
+holders. The premises still read the bits themselves.
 """
+import time
+
 import psycopg
 import pytest
 
@@ -28,6 +44,8 @@ from pgc_vacuity import query_error
 
 DB = "pgc_vm_clear_on_renumber"
 SPAN = 291  # row numbers per synthetic block: MaxHeapTuplesPerPage at BLCKSZ 8192
+VAC_TRIES = 100  # VACUUMs before a held-back horizon is a premise failure (#1875)
+VAC_PAUSE = 0.2  # seconds between them
 
 
 def _failed(exc):
@@ -56,6 +74,26 @@ def _run(dsn, *sqls):
                 conn.execute(sql)
     except psycopg.Error as exc:
         print(f"-- step failed: {str(exc).splitlines()[0] if str(exc) else exc!r}")
+
+
+def _vacuum_until_visible(dsn, rel, *blocks):
+    """-> "yes" once a VACUUM of rel has left every named block all-visible, or
+    "no (...)" with the attempts, the readings and every session in this database
+    holding an xmin, after VAC_TRIES VACUUMs (#1875; see the module docstring)."""
+    miss = list(blocks)
+    for n in range(1, VAC_TRIES + 1):
+        if n > 1:
+            time.sleep(VAC_PAUSE)
+        _run(dsn, f"VACUUM {rel}")
+        miss = [b for b in blocks
+                if _value(dsn, f"SELECT pgcolumnar.vm_is_visible('{rel}', {b})") != "t"]
+        if not miss:
+            return "yes"
+    holders = _value(dsn, "SELECT coalesce(string_agg(backend_type || ' pid ' || pid || ' xmin ' || "
+                          "backend_xmin, ', '), 'none') FROM pg_stat_activity WHERE datname = "
+                          "current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL")
+    return (f"no (after {VAC_TRIES} VACUUMs of {rel}, blocks {miss} of {list(blocks)} still not "
+            f"all-visible; xmin holders in this database: {holders})")
 
 
 def _premise(ok, why):
@@ -91,7 +129,7 @@ def vm(pgc_cluster):
         _run(dsn, "CREATE TABLE cw (id int, v int) USING pgcolumnar",
              "SELECT pgcolumnar.set_options('cw', stripe_row_limit => 2048, chunk_group_row_limit => 1024)",
              "INSERT INTO cw SELECT g, g FROM generate_series(1, 20480) g",
-             "CREATE INDEX cw_id ON cw (id)", "VACUUM cw")
+             "CREATE INDEX cw_id ON cw (id)")
         g3_first = _int(_value(dsn, geo.format(c="first_row_number", t="cw", g=3)), "group 3's first row")
         g3_count = _int(_value(dsn, geo.format(c="row_count", t="cw", g=3)), "group 3's row count")
         g5_first = _int(_value(dsn, geo.format(c="first_row_number", t="cw", g=5)), "group 5's first row")
@@ -101,6 +139,7 @@ def vm(pgc_cluster):
         ctrl = _blk(g5_first + 100)                   # group 5, untouched throughout
         _premise(target > _blk(front_end), f"target block {target} is inside the deleted range")
 
+        r["cw vacuumed"] = _vacuum_until_visible(dsn, "cw", front, target, ctrl)
         front_v0 = vis("cw", front)
         r["late set"] = vis("cw", target)
         r["ctrl set"] = vis("cw", ctrl)
@@ -119,8 +158,7 @@ def vm(pgc_cluster):
             _run(dsn, f"CREATE TABLE {t} (id int, x int, y int) USING pgcolumnar",
                  f"SELECT pgcolumnar.set_options('{t}', stripe_row_limit => 2048, chunk_group_row_limit => 1024)",
                  f"INSERT INTO {t} SELECT g, ((g::bigint*7919)%200)::int, ((g::bigint*104729)%200)::int "
-                 "FROM generate_series(1, 20480) g",
-                 f"VACUUM {t}")
+                 "FROM generate_series(1, 20480) g")
         span = ("SELECT {f} FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('rc')")
         rc_first = _int(_value(dsn, span.format(f="min(first_row_number)")), "rc's first row")
         rc_last = _int(_value(dsn, span.format(f="max(first_row_number + row_count - 1)")), "rc's last row")
@@ -129,6 +167,8 @@ def vm(pgc_cluster):
         early, late = _blk(rc_first) + 3, _blk(rc_last) - 3
         _premise(early < late and early * SPAN >= rc_first and (late + 1) * SPAN - 1 <= rc_last,
                  f"blocks {early}/{late} are not wholly inside rows {rc_first}..{rc_last}")
+        r["rc vacuumed"] = _vacuum_until_visible(dsn, "rc", early, late)
+        r["rcctl vacuumed"] = _vacuum_until_visible(dsn, "rcctl", early, late)
         early_v0, late_v0 = vis("rc", early), vis("rc", late)
         r["rc early set"], r["rc late set"] = early_v0, late_v0
         r["rcctl set"] = vis("rcctl", early)
@@ -146,6 +186,11 @@ def vm(pgc_cluster):
 
 
 # ---- Part 1: rewrite_one_group ----------------------------------------------
+
+def test_a_vacuum_of_cw_set_its_arms_blocks_all_visible_within_the_retry_budget(vm, expect):
+    expect.text(vm["cw vacuumed"], "yes",
+                "premise: a VACUUM of cw set its arms' blocks all-visible within the retry budget")
+
 
 def test_vacuum_set_all_visible_on_group_3s_late_block(vm, expect):
     expect.text(vm["late set"], "t", "premise: VACUUM set all-visible on group 3's late block")
@@ -184,6 +229,16 @@ def test_a_group_the_rewrite_did_not_touch_keeps_its_all_visible_bit(vm, expect)
 
 
 # ---- Part 2: recluster_online -----------------------------------------------
+
+def test_a_vacuum_of_rc_set_its_arms_blocks_all_visible_within_the_retry_budget(vm, expect):
+    expect.text(vm["rc vacuumed"], "yes",
+                "premise: a VACUUM of rc set its arms' blocks all-visible within the retry budget")
+
+
+def test_a_vacuum_of_rcctl_set_its_arms_blocks_all_visible_within_the_retry_budget(vm, expect):
+    expect.text(vm["rcctl vacuumed"], "yes",
+                "premise: a VACUUM of rcctl set its arms' blocks all-visible within the retry budget")
+
 
 def test_vacuum_set_all_visible_early_in_rc(vm, expect):
     expect.text(vm["rc early set"], "t", "premise: VACUUM set all-visible early in rc")

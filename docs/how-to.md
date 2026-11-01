@@ -692,6 +692,17 @@ SELECT pgcolumnar.tier_partition('metrics_2026_01', 'cold',
                                  's3://archive/metrics/2026_01.parquet');
 ```
 
+The function writes the file with the settings of the server that you name:
+its endpoint and region, and your user mapping on it. These are the settings
+the foreign partition reads with. If the object store rejects your mapping, the
+move fails and the rows stay where they were. Before it commits, the function
+also reads the rows back through the foreign partition, as you. If that read
+fails, the move rolls back.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser.
+Every role that queries the parent after the move needs `pg_read_server_files`
+and a mapping on the server that can read the file.
+
 The function returns the number of rows that it moved. It runs as one
 transaction: if it fails at any step, the rows stay in the columnar partition,
 exactly once.
@@ -841,11 +852,13 @@ pgcolumnar.objstore_allowed_endpoints = 's3.amazonaws.com, minio.internal'
 ```
 
 The environment supplies `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. A host that resolves to
-a link-local or instance-metadata address is refused even when it is listed.
+`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. The module refuses a
+host that resolves to a link-local range or a known instance-metadata address,
+even when it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 
 **Tuning.** Raise `pgcolumnar.objstore_part_size` to use larger multipart parts
-over a high-latency network. Choose `pgcolumnar.objstore_s3_addressing` to match
+over a high-latency network. Its maximum is 512 MiB. Choose `pgcolumnar.objstore_s3_addressing` to match
 your provider's path or virtual-host style. Keep the allow-list as small as your
 buckets require.
 
@@ -866,7 +879,11 @@ SELECT * FROM pgcolumnar.iceberg_data_files('.../00042.metadata.json');
 The reader resolves each output column to a schema field id, so a file written
 before a column rename still reads. It applies position deletes, equality
 deletes, and format-version 3 deletion vectors. The metadata path may be a local
-path or an `s3://`, `http://`, or `https://` URL.
+path or an `s3://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+`s3n://` as `s3://`. The metadata file may be gzip-compressed, as a writer makes it
+when `write.metadata.compression-codec` is `gzip`. Manifests must use the Avro
+codec `null` or `deflate`; [Limitations](limitations.md#reading-apache-iceberg)
+lists the rest.
 
 **Tuning.** Select only the columns you need. Read from object storage under the
 same allow-list as every other remote access.

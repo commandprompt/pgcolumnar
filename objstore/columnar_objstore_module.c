@@ -24,6 +24,11 @@
  *   wrong bytes quietly" is the failure mode this tree keeps deciding not to
  *   ship.
  *
+ * - One read sees one version of the object (#1805). Open keeps the HEAD's
+ *   strong ETag and every ranged GET sends it as If-Match, so a key that is
+ *   overwritten mid-read answers 412 and the read fails, instead of mixing a
+ *   footer from one object with chunks from another.
+ *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
  *   no handle survives its statement, so a live handle during an abort belongs
@@ -81,6 +86,27 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
 /* One wait slice; consecutive silent slices add up to the inactivity limit. */
 #define OS_WAIT_SLICE_MS	5000
 #define OS_MAX_QUIET_SLICES	12	/* 60 s of silence is a dead peer */
+/*
+ * Bytes kept of a response ETag, terminator included, so the longest ETag kept
+ * is OS_ETAG_BUF - 1 characters. The parsed ETag and the read pin share this one
+ * size: a pin smaller than the parse buffer would cut a kept ETag short, and a
+ * cut ETag matches nothing, so every pinned GET would fail (#1805 review).
+ */
+#define OS_ETAG_BUF			80
+
+/*
+ * Where a handle's signing key came from (#1796). Only the 403 hint reads it:
+ * a refused key is fixed where it was configured, and before this every 403
+ * named the server environment, including a key from a user mapping or one a
+ * REST catalog vended. OS_CRED_ENV is 0, so a handle that never resolves s3://
+ * credentials keeps the hint it always had.
+ */
+typedef enum OsCredSource
+{
+	OS_CRED_ENV = 0,			/* AWS_* of the server process */
+	OS_CRED_MAPPING,			/* the user mapping for the foreign server */
+	OS_CRED_VENDED				/* a REST catalog's loadTable reply */
+} OsCredSource;
 
 struct PgColumnarObjHandle
 {
@@ -95,6 +121,13 @@ struct PgColumnarObjHandle
 	int			fd;				/* -1 when disconnected */
 	bool		fd_reserved;	/* ReserveExternalFD accounting */
 	int64		len;			/* object length from open's HEAD */
+
+	/*
+	 * The strong ETag open's HEAD returned, sent as If-Match on every ranged
+	 * GET so one read sees one version of the object (#1805). "" when the
+	 * server sent none, or only a weak one: then reads are not pinned.
+	 */
+	char		pin_etag[OS_ETAG_BUF];
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -108,6 +141,7 @@ struct PgColumnarObjHandle
 	char	   *secret;
 	char	   *token;			/* session token, or NULL */
 	char	   *region;
+	OsCredSource credsrc;		/* where akid came from, for the 403 hint */
 	char		sigDate[9];		/* YYYYMMDD the cached key was derived for */
 	uint8		sigKey[PG_SHA256_DIGEST_LENGTH];
 
@@ -156,7 +190,7 @@ typedef struct OsResponse
 	int64		content_length; /* -1 when absent */
 	bool		chunked;
 	bool		conn_close;
-	char		etag[80];		/* PUT part response ETag, "" when absent (#394) */
+	char		etag[OS_ETAG_BUF];	/* response ETag, "" when absent or too long */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
@@ -372,42 +406,121 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 	}
 
 	if (!ok)
+	{
+		/*
+		 * The hint names the entry the message names, host:port, appended to
+		 * the current list (#1796). It suggested the bare host as the whole
+		 * list: an entry with no port matches every port on the host, and
+		 * ALTER SYSTEM SET replaces the list, so the advice as written opened
+		 * every port and dropped every other entry. The list goes inside a SQL
+		 * literal, so any quote in it is doubled.
+		 */
+		StringInfoData want;
+		const char *c;
+
+		initStringInfo(&want);
+		for (c = (list != NULL) ? list : ""; *c != '\0'; c++)
+		{
+			if (*c == '\'')
+				appendStringInfoChar(&want, '\'');
+			appendStringInfoChar(&want, *c);
+		}
+		if (want.len > 0)
+			appendStringInfoChar(&want, ',');
+		appendStringInfo(&want, "%s:%d", checkhost, h->port);
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("columnar: endpoint \"%s:%d\" is not in "
 						"pgcolumnar.objstore_allowed_endpoints",
 						checkhost, h->port),
-				 errhint("A superuser can permit it: ALTER SYSTEM SET "
+				 errhint("A superuser can add it: ALTER SYSTEM SET "
 						 "pgcolumnar.objstore_allowed_endpoints = '%s'; "
-						 "SELECT pg_reload_conf();", checkhost)));
+						 "SELECT pg_reload_conf();", want.data)));
+	}
 }
 
 /*
- * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
+ * An IPv4 address, in host byte order, that is a metadata address: 169.254/16,
+ * or 100.100.100.200, Alibaba Cloud's instance-metadata address (#1848). Only
+ * that one address: the rest of 100.64.0.0/10 is carrier-grade NAT.
+ */
+static bool
+os_v4_is_metadata(uint32 a)
+{
+	return (a & 0xFFFF0000U) == 0xA9FE0000U ||	/* 169.254/16 */
+		a == 0x646464C8U;		/* 100.100.100.200 */
+}
+
+/* The four bytes at b[i], b[j], b[k], b[l] as an IPv4 address in host order */
+static uint32
+os_v4_at(const uint8_t *b, int i, int j, int k, int l)
+{
+	return ((uint32) b[i] << 24) | ((uint32) b[j] << 16) |
+		((uint32) b[k] << 8) | (uint32) b[l];
+}
+
+/*
+ * Metadata-address refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. The same
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
+ * Compute Engine's at fd20:ce::254, and
+ * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
+ * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Alibaba Cloud's metadata address
+ * 100.100.100.200 is refused too, as IPv4 and inside each of those IPv6
+ * forms (#1848). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
  */
 static bool
-os_addr_is_linklocal(const struct addrinfo *ai)
+os_addr_is_metadata(const struct addrinfo *ai)
 {
 	if (ai->ai_family == AF_INET)
-	{
-		uint32		a = ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr);
-
-		return (a & 0xFFFF0000U) == 0xA9FE0000U;	/* 169.254/16 */
-	}
+		return os_v4_is_metadata(ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr));
 	if (ai->ai_family == AF_INET6)
 	{
 		const struct in6_addr *a6 =
 			&((const struct sockaddr_in6 *) ai->ai_addr)->sin6_addr;
 
+		const uint8_t *b = a6->s6_addr;
+		static const uint8_t zero10[10] = {0};
+		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
+		bool		v4low = os_v4_is_metadata(os_v4_at(b, 12, 13, 14, 15));
+
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
-		if (IN6_IS_ADDR_V4MAPPED(a6))
-			return a6->s6_addr[12] == 169 && a6->s6_addr[13] == 254;
+		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
+		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
+		if (memcmp(b, gceimds6, 16) == 0)
+			return true;
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying a metadata v4 */
+		if (memcmp(b, zero10, 10) == 0 &&
+			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
+			return v4low;
+		/* 64:ff9b::/96, the NAT64 well-known prefix */
+		if (memcmp(b, nat64wkp, 12) == 0)
+			return v4low;
+		/*
+		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
+		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
+		 * /48 (bytes 6,7,9,10), /56 (7,9,10,11), /64 (9-12) or /96 (12-15). The guard
+		 * cannot tell which, so it checks all four and fails closed. That
+		 * also refuses some ordinary addresses whose bytes land on another
+		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
+		 * docs say so.
+		 */
+		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
+			b[4] == 0x00 && b[5] == 0x01)
+			return os_v4_is_metadata(os_v4_at(b, 6, 7, 9, 10)) ||	/* /48 */
+				os_v4_is_metadata(os_v4_at(b, 7, 9, 10, 11)) ||	/* /56 */
+				os_v4_is_metadata(os_v4_at(b, 9, 10, 11, 12)) ||	/* /64 */
+				v4low;			/* /96 */
 	}
 	return false;
 }
@@ -477,16 +590,22 @@ os_connect(PgColumnarObjHandle *h)
 						h->host, gai_strerror(rc))));
 
 	for (ai = addrs; ai != NULL; ai = ai->ai_next)
-		if (os_addr_is_linklocal(ai))
+		if (os_addr_is_metadata(ai))
 		{
 			freeaddrinfo(addrs);
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("columnar: \"%s\" resolves into a link-local range, "
-							"which object storage never legitimately uses",
+					 errmsg("columnar: \"%s\" resolves into a link-local range "
+							"or an instance-metadata address, which object "
+							"storage never legitimately uses",
 							h->host),
-					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
-							   "are refused unconditionally: they are the cloud "
+					 errdetail("Link-local and instance-metadata addresses "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
+							   "fd20:ce::254, Alibaba Cloud's 100.100.100.200, and "
+							   "169.254.0.0/16 or 100.100.100.200 inside an "
+							   "IPv4-mapped, IPv4-compatible or NAT64 IPv6 "
+							   "address) are refused "
+							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
 
@@ -889,6 +1008,9 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 					   i < (int) sizeof(resp->etag) - 1)
 					resp->etag[i++] = *p++;
 				resp->etag[i] = '\0';
+				/* A cut-down ETag would match nothing: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->etag[0] = '\0';
 			}
 			line = eol + 1;
 		}
@@ -1233,6 +1355,9 @@ os_request(PgColumnarObjHandle *h, const char *method,
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
 						 (long long) off, (long long) (off + n - 1));
+	/* Pin the read to the version open saw (#1805); S3 answers 412 if not. */
+	if (isGet && h->pin_etag[0] != '\0')
+		appendStringInfo(&req, "If-Match: %s\r\n", h->pin_etag);
 	if (h->sign)
 	{
 		char		rangeVal[64];
@@ -1323,10 +1448,18 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 				 errhint("Requests to http:// and https:// URLs are never "
 						 "signed. Use an s3:// or gs:// URL for a store that "
 						 "needs credentials.")));
+
+	/* the hint names where the refused key was configured (#1796) */
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
 					h->url, code[0] ? ": " : "", code),
+			 h->credsrc == OS_CRED_MAPPING ?
+			 errhint("Check access_key_id and secret_access_key in the user "
+					 "mapping the current role uses for this server.") :
+			 h->credsrc == OS_CRED_VENDED ?
+			 errhint("The storage credentials the catalog vended for this "
+					 "table were refused.") :
 			 errhint("Check the AWS_* credential environment of the server "
 					 "process.")));
 }
@@ -1374,6 +1507,11 @@ os_require_env(const char *name, const char *url)
  * (superuser, credentials_required=false, or a function-path caller), else a
  * 28000 refusal. Path-style request target with the key percent-encoded
  * exactly as it is signed.
+ *
+ * Its messages name h->url, not `url`. The two are the same except for a
+ * bucket-level request, which resolves from a dummy key, "s3://bucket/_", and
+ * names the URL the caller gave in h->url (os_write_handle_as). A refusal here
+ * used to name that dummy key (#1869).
  */
 static void
 os_resolve_s3(PgColumnarObjHandle *h, const char *url,
@@ -1398,7 +1536,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (slash == NULL || slash == bucket || slash[1] == '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: \"%s\" is not %s://bucket/key", url,
+				 errmsg("columnar: \"%s\" is not %s://bucket/key", h->url,
 						isGs ? "gs" : "s3")));
 
 	/*
@@ -1433,7 +1571,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (memchr(bucket, '@', slash - bucket) != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: userinfo in \"%s\" is not supported", url)));
+				 errmsg("columnar: userinfo in \"%s\" is not supported", h->url)));
 
 	if (cfg != NULL && cfg->endpoint != NULL)
 		ep = cfg->endpoint;
@@ -1447,7 +1585,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 			if (isGs)
 				ep = "https://storage.googleapis.com";
 			else
-				ep = os_require_env("AWS_ENDPOINT_URL", url);
+				ep = os_require_env("AWS_ENDPOINT_URL", h->url);
 		}
 	}
 	/*
@@ -1537,7 +1675,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 						 errmsg("columnar: reading \"%s\" requires a region option "
 								"on the server, or AWS_REGION in the server "
-								"environment", url)));
+								"environment", h->url)));
 		}
 	}
 
@@ -1545,6 +1683,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (cfg != NULL && cfg->akid != NULL)
 	{
 		/* the mapping's credential triple; the validator required the pair */
+		h->credsrc = cfg->vended ? OS_CRED_VENDED : OS_CRED_MAPPING;
 		h->akid = pstrdup(cfg->akid);
 		h->secret = pstrdup(cfg->secret);
 		h->token = (cfg->token != NULL && cfg->token[0] != '\0')
@@ -1552,8 +1691,9 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	}
 	else if (ambientOk)
 	{
-		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", url));
-		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", url));
+		h->credsrc = OS_CRED_ENV;
+		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", h->url));
+		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", h->url));
 		token = getenv("AWS_SESSION_TOKEN");
 		h->token = (token != NULL && token[0] != '\0') ? pstrdup(token) : NULL;
 	}
@@ -1562,7 +1702,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 		MemoryContextSwitchTo(oldcxt);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-				 errmsg("columnar: no credentials for \"%s\"", url),
+				 errmsg("columnar: no credentials for \"%s\"", h->url),
 				 errdetail("No user mapping for this server carries "
 						   "access_key_id and secret_access_key for the "
 						   "current role."),
@@ -1719,6 +1859,13 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 
 	h->len = resp.content_length;
 	*len = h->len;
+
+	/*
+	 * If-Match compares strongly (RFC 9110 13.1.1), so a weak ETag would make
+	 * every ranged GET fail. Such a server's reads stay unpinned.
+	 */
+	if (strncmp(resp.etag, "W/", 2) != 0)
+		strlcpy(h->pin_etag, resp.etag, sizeof(h->pin_etag));
 	return h;
 }
 
@@ -1751,6 +1898,18 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_FILE),
 				 errmsg("columnar: \"%s\" does not exist (HTTP 404)", h->url)));
+	if (resp.status == 412 && h->pin_etag[0] != '\0')
+	{
+		/* The body is the server's, not ours; drop the connection with it. */
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object no longer has ETag %s, which it had when "
+						   "the read began, so the server refused the rest of "
+						   "the read (HTTP 412).", h->pin_etag),
+				 errhint("Run the statement again to read the new version.")));
+	}
 	if (resp.status != 206)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1802,6 +1961,9 @@ struct PgColumnarObjSink
 	int64		total;			/* bytes handed to sink_write */
 };
 
+static PgColumnarObjHandle *os_write_handle_as(const char *url, const char *name,
+											   const PgColumnarObjStoreConfig *cfg);
+
 /*
  * Resolve a write target into a connection handle exactly as the read path
  * does (endpoint, credentials, path-style key, allow-list and link-local
@@ -1810,6 +1972,20 @@ struct PgColumnarObjSink
  */
 static PgColumnarObjHandle *
 os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	return os_write_handle_as(url, url, cfg);
+}
+
+/*
+ * os_write_handle, resolved from `url` and named `name` in every message. A
+ * bucket-level request (a LIST, the endpoint check) resolves from a dummy key
+ * in the bucket and names the URL the caller gave, so no error, from the
+ * resolve or from any later request, names "s3://bucket/_" (#1781, #1869).
+ * h->url is read only by messages: signing, host and path come from `url`.
+ */
+static PgColumnarObjHandle *
+os_write_handle_as(const char *url, const char *name,
+				   const PgColumnarObjStoreConfig *cfg)
 {
 	PgColumnarObjHandle *h;
 	bool		isS3 = (pg_strncasecmp(url, "s3://", 5) == 0 ||
@@ -1825,7 +2001,7 @@ os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 	h = (PgColumnarObjHandle *) palloc0(sizeof(PgColumnarObjHandle));
 	h->fd = -1;
-	h->url = pstrdup(url);
+	h->url = pstrdup(name);
 	h->rb = (uint8 *) palloc(OS_RBUF);
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
@@ -1961,6 +2137,32 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
 }
 
 /*
+ * Did the server answer a request we failed to finish sending (#1796 D)? A
+ * store may refuse a PUT from its headers alone, answer 403 or 404, and close
+ * with the body unread. A body larger than the socket buffers then fails to
+ * send (EPIPE or ECONNRESET) although the answer has arrived, and treating the
+ * failed send as no response lost the status. The answer is already in the
+ * receive queue when the send fails, so this only peeks, never waits: an empty
+ * queue keeps the stale keep-alive handling as it was. The store closes the
+ * connection it answered early, so a later request on this handle fails its
+ * send and takes the one reconnect a stale keep-alive takes.
+ *
+ * Plain sockets only. On TLS a failed SSL_write leaves the session unusable
+ * for SSL_read, so a TLS store's early answer is still reported as no response.
+ */
+static bool
+os_answered_early(PgColumnarObjHandle *h)
+{
+	char		c;
+
+	if (h->rb_len > h->rb_off)
+		return true;
+	if (h->tls || h->fd < 0)
+		return false;
+	return recv(h->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) > 0;
+}
+
+/*
  * One write request (PUT/POST/DELETE), signed when the handle is an S3 one,
  * with an optional body and a single reconnect on a stale keep-alive.
  * `rawQuery` is the query as it goes on the wire AND the canonical query the
@@ -1987,6 +2189,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	{
 		StringInfoData req;
 		bool		fresh;
+		bool		sent;
+		bool		early;
 
 		if (h->fd < 0)
 			os_connect(h);
@@ -2008,8 +2212,10 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 			os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		if (os_send_all(h, req.data, req.len) &&
-			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen)))
+		sent = os_send_all(h, req.data, req.len) &&
+			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen));
+		early = !sent && os_answered_early(h);
+		if (sent || early)
 		{
 			/*
 			 * The store has the whole request and may apply it. From here a
@@ -2017,7 +2223,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 			 * (#1813). The wait stays bounded by the quiet-slice timeout and
 			 * any deadline, which os_wait checks with interrupts held.
 			 */
-			if (h->holdForAnswer && !held)
+			if (sent && h->holdForAnswer && !held)
 			{
 				HOLD_INTERRUPTS();
 				held = true;
@@ -2218,33 +2424,36 @@ objstore_sink_create(const char *url, const PgColumnarObjStoreConfig *cfg)
 	return s;
 }
 
+/*
+ * Stage the chunk a part at a time (#1812). The whole chunk used to be
+ * appended first, so the buffer held up to one part plus one chunk, and a
+ * writer's chunk is a whole Parquet page or Arrow batch: 500 MB staged plus a
+ * 600 MB page passed the 1 GiB allocation cap. Now the buffer is filled to the
+ * part size, uploaded, and filled again, so it never holds more than one part.
+ */
 static void
 objstore_sink_write(PgColumnarObjSink *s, const void *buf, size_t n)
 {
-	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	const char *p = (const char *) buf;
 
-	appendBinaryStringInfo(&s->buf, (const char *) buf, (int) n);
-	MemoryContextSwitchTo(oldcxt);
 	s->total += (int64) n;
-
-	while (s->buf.len >= s->partSize)
+	while (n > 0)
 	{
-		StringInfoData rest;
-		int			carry = s->buf.len - s->partSize;
+		size_t		room = (size_t) (s->partSize - s->buf.len);
+		size_t		take = Min(n, room);
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* peel exactly one part; keep the remainder for the next flush */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		initStringInfo(&rest);
-		if (carry > 0)
-			appendBinaryStringInfo(&rest, s->buf.data + s->partSize, carry);
-		s->buf.len = s->partSize;
-		s->buf.data[s->partSize] = '\0';
-		if (s->uploadId == NULL)
-			os_begin_multipart(s);
-		os_flush_part(s);
-		pfree(s->buf.data);
-		s->buf = rest;
+		appendBinaryStringInfo(&s->buf, p, (int) take);
 		MemoryContextSwitchTo(oldcxt);
+		p += take;
+		n -= take;
+
+		if (s->buf.len >= s->partSize)
+		{
+			if (s->uploadId == NULL)
+				os_begin_multipart(s);
+			os_flush_part(s);	/* uploads the part and empties the buffer */
+		}
 	}
 }
 
@@ -2855,25 +3064,17 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	bucket = pnstrdup(bstart, slash - bstart);
 	prefix = pstrdup(slash + 1);	/* may be "" (list the whole bucket) */
 
-	/* resolve host/region/credentials from a dummy key, then point the request
-	 * target at the bucket root and carry the prefix in the signed query */
+	/*
+	 * Resolve host/region/credentials from a dummy key, then point the request
+	 * target at the bucket root and carry the prefix in the signed query. The
+	 * handle is named for the prefix being listed, so a refusal, of the
+	 * listing or of the resolve, names it and not "s3://bucket/_" (#1781,
+	 * #1869).
+	 */
 	dummyUrl = psprintf("s3://%s/_", bucket);
-	h = os_write_handle(dummyUrl, cfg);
+	h = os_write_handle_as(dummyUrl, url, cfg);
 	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
-
-	/*
-	 * h->url only names the target in error messages. Name the prefix being
-	 * listed, not the dummy key: a refused listing used to report
-	 * "s3://bucket/_" (#1781). Signing and the host were resolved above.
-	 */
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-
-		pfree(h->url);
-		h->url = pstrdup(url);
-		MemoryContextSwitchTo(oldcxt);
-	}
 
 	PG_TRY();
 	{
@@ -3075,8 +3276,11 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	bucket = pnstrdup(bstart, slash - bstart);
 	encPrefix = os_uriencode_query(slash + 1);
 
-	/* as objstore_list_objects: resolve from a dummy key, request the bucket */
-	h = os_write_handle(psprintf("s3://%s/_", bucket), cfg);
+	/*
+	 * As objstore_list_objects: resolve from a dummy key, request the bucket,
+	 * and name the prefix being listed in every message (#1869).
+	 */
+	h = os_write_handle_as(psprintf("s3://%s/_", bucket), url, cfg);
 	os_set_deadline(h, timeout_ms);
 	os_target_bucket_root(h, bucket);
 
@@ -3353,7 +3557,7 @@ objstore_check_endpoint(const char *url, const PgColumnarObjStoreConfig *cfg)
 					 errmsg("columnar: \"%s\" names no bucket", url)));
 		target = psprintf("%.5s%.*s/_", url, blen, bstart);
 	}
-	h = os_write_handle(target, cfg);
+	h = os_write_handle_as(target, url, cfg);	/* messages name `url` (#1869) */
 	os_check_endpoint_allowed(h);
 	os_free_handle(h);
 	if (target != url)

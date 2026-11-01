@@ -280,6 +280,75 @@ check "control: the legacy table binds amount correctly (10..50)" \
 	      FROM pgcolumnar.iceberg_scan('$LS') AS t(id bigint, region text, amount int)")" \
 	"10,20,30,40,50"
 
+
+# =========================================================================
+# #1824  malformed numbers in metadata.json were read, not refused. A field id
+#     above INT32 truncated to another field's id (4294967297 -> 1), a fraction
+#     rounded (1.4 -> 1), so "amount" returned the "id" column. format-version 99
+#     read as v2, and a string current-snapshot-id read as an empty table. The
+#     variants are edited copies of the db/events fixture (id 1, region 2,
+#     amount 3), written next to the original so they read its data files.
+# =========================================================================
+LAX="$PGC_WORKDIR/lax"
+rm -rf "$LAX"; mkdir -p "$LAX"
+cp -r "$FX/warehouse/db" "$LAX/"; chmod -R u+rwX "$LAX"
+LAXMD="$LAX/db/events/metadata"
+LAXSRC="$LAXMD/00001-6808fe8c-acd3-4fbf-9fbe-1ac447a16b3c.metadata.json"
+python3 - "$LAXSRC" <<'PYEOF'
+import json, os, sys
+src = sys.argv[1]; d = os.path.dirname(src)
+def variant(name, edit):
+    m = json.load(open(src)); edit(m)
+    json.dump(m, open(os.path.join(d, name + ".metadata.json"), "w"))
+def amount_id(v):
+    def edit(m):
+        for s in m["schemas"]:
+            for f in s["fields"]:
+                if f["name"] == "amount": f["id"] = v
+    return edit
+variant("bigid", amount_id(4294967297))   # 2^32 + 1 truncates to 1, the id field
+variant("fracid", amount_id(1.4))          # rounds to 1
+variant("fv99", lambda m: m.__setitem__("format-version", 99))
+variant("csidx", lambda m: m.__setitem__("current-snapshot-id", "x"))
+variant("csidneg", lambda m: m.__setitem__("current-snapshot-id", -1))
+variant("fv4", lambda m: m.__setitem__("format-version", 4))   # the bounds of 1..3
+variant("fv0", lambda m: m.__setitem__("format-version", 0))
+variant("csidnull", lambda m: m.__setitem__("current-snapshot-id", None))
+PYEOF
+FIDRANGE='schema field "amount" has a field id out of range: 4294967297'
+NONINT='holds the non-integer number 1.4 where an integer is required'
+check "control: the unedited events metadata reads amount 10..50" \
+	"$(q "SELECT string_agg(amount::text, ',' ORDER BY id) FROM pgcolumnar.iceberg_scan('$LAXSRC') AS t(id bigint, amount int)")" \
+	"10,20,30,40,50"
+B="$(crashes)"
+check "a field id above INT32 is refused (XX001), not aliased to another field" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a field id above INT32 is named even when its alias is also queried" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/bigid.metadata.json') AS t(id bigint, amount bigint)" \
+		"$FIDRANGE" "field id out of range")" "XX001 (field id out of range)"
+check "a fractional field id is refused (XX001), not rounded" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$LAXMD/fracid.metadata.json') AS t(amount bigint)" \
+		"$NONINT" "non-integer number")" "XX001 (non-integer number)"
+check "format-version 99 is refused (0A000), not read as v2" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv99.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 99' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 4 is refused (0A000), one above the newest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv4.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 4' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "format-version 0 is refused (0A000), one below the oldest known" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/fv0.metadata.json') AS t(id bigint)" \
+		'has an unsupported format-version 0' "unsupported format-version")" "0A000 (unsupported format-version)"
+check "a string current-snapshot-id is refused (XX001), not read as an empty table" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidx.metadata.json') AS t(id bigint)" \
+		'has a current-snapshot-id that is not an integer' "non-integer current-snapshot-id")" \
+	"XX001 (non-integer current-snapshot-id)"
+check "backend still up after the malformed-number refusals" "$(survived "$B")" "1"
+check "control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidneg.metadata.json') AS t(id bigint)")" "0"
+check "control: a null current-snapshot-id still reads as a table with no snapshot (0 rows)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_scan('$LAXMD/csidnull.metadata.json') AS t(id bigint)")" "0"
+
 # =========================================================================
 # #1823  manifest enum fields outside the spec. data_file.content may be only
 #     0 (data), 1 (position deletes) or 2 (equality deletes); any other value was
@@ -345,6 +414,18 @@ check "manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not 
 	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of mfcontent4g)') $EN" \
 		'manifest ".*/dm\.avro" has invalid content 4294967296$' "invalid manifest content 4294967296")" \
 	"XX001 (invalid manifest content 4294967296)"
+# #1878: manifest_file.partition_spec_id had the same plain cast, so 2^32 read as
+# spec 0 and the manifest was pruned with spec 0's quals. Its path is decoded
+# first, so the refusal names the manifest as well as the value.
+SPEC4G='manifest ".*/dm\.avro" has invalid partition_spec_id 4294967296$'
+check "manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0" \
+	"$(refusal "SELECT count(*) FROM pgcolumnar.iceberg_scan('$(md_of specid4g)') $EN" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
+check "read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0" \
+	"$(refusal "SELECT * FROM pgcolumnar.read_manifest_list('$DEST/specid4g/db/t/metadata/ml.avro')" \
+		"$SPEC4G" "invalid partition_spec_id 4294967296")" \
+	"XX001 (invalid partition_spec_id 4294967296)"
 check "backend still up after the enum refusals" "$(survived "$B")" "1"
 
 # =========================================================================

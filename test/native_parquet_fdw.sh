@@ -29,7 +29,7 @@ refusal_of() {	# stdin: psql output -> the refusal reading
 	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
 	if [ -z "$line" ]; then
 		grep -qE 'server closed the connection|connection to server' <<<"$out" \
-			&& echo "no refusal: the connection was lost" || echo "no error"
+			&& echo "no refusal: the connection was lost" || echo "no error ($(head -1 <<<"$out"))"
 		return
 	fi
 	state="${line%%|*}"; msg="${line#*|}"
@@ -182,6 +182,31 @@ psql_run "CREATE FOREIGN TABLE fwrongtype (c_i2 int2, c_i4 text, c_i8 int8, c_f4
 	c_ts timestamp) SERVER pqsrv OPTIONS (path '$SCALAR');"
 check "scan with incompatible declared type errors (42804)" \
 	"$(refusal "SELECT * FROM fwrongtype" 'physical type is not compatible with target column "c_i4"' 'type mismatch')" "42804 (type mismatch)"
+
+# ---- a declared typmod applies to every value (#1790) -------------------------
+# A foreign table's column types carry their typmods, and the scan returns each
+# value as that type: numeric(p,s) rounds to scale s or refuses an overflow (22003),
+# and varchar(n) refuses a longer value (22001) unless the excess is spaces.
+wait_up
+psql_run "CREATE TABLE ftm_src (d numeric(10,3), s text) USING pgcolumnar;"
+psql_run "INSERT INTO ftm_src VALUES (12345.678, 'hello');"
+psql_run "CREATE TABLE ftm_fitsrc (d numeric(10,3), s text) USING pgcolumnar;"
+psql_run "INSERT INTO ftm_fitsrc VALUES (1.005, 'ab'), (2.5, 'abc  ');"
+FTM="$PGC_WORKDIR/ftm.parquet"
+FTM_FIT="$PGC_WORKDIR/ftm_fit.parquet"
+q "SELECT pgcolumnar.export_parquet('ftm_src', '$FTM');" >/dev/null
+q "SELECT pgcolumnar.export_parquet('ftm_fitsrc', '$FTM_FIT');" >/dev/null
+psql_run "CREATE FOREIGN TABLE ftm_num (d numeric(5,2), s text) SERVER pqsrv OPTIONS (path '$FTM');"
+psql_run "CREATE FOREIGN TABLE ftm_fit (d numeric(5,2), s text) SERVER pqsrv OPTIONS (path '$FTM_FIT');"
+psql_run "CREATE FOREIGN TABLE ftm_str (d numeric(10,3), s varchar(3)) SERVER pqsrv OPTIONS (path '$FTM');"
+check "typmod: a numeric(5,2) foreign column refuses 12345.678 (22003)" \
+	"$(refusal "SELECT * FROM ftm_num" 'numeric field overflow' 'overflow')" "22003 (overflow)"
+check "typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2" \
+	"$(q "SELECT string_agg(d::text, ',' ORDER BY d) FROM ftm_fit")" \
+	"1.01,2.50"
+check "typmod: a varchar(3) foreign column refuses 'hello' (22001)" \
+	"$(refusal "SELECT * FROM ftm_str" 'value too long for type character varying\(3\)' 'too long')" \
+	"22001 (too long)"
 
 check "backend still up after the refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
