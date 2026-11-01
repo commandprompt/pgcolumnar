@@ -402,9 +402,10 @@ hosts the module may reach, as `host` or `host:port`, comma-separated. It is emp
 by default, so no remote host is reachable until an administrator lists it. It is a
 superuser-only setting, so a role cannot widen its own reach. The module refuses
 the link-local ranges and the known instance-metadata addresses even when they are
-listed. This covers `169.254.169.254`, AWS's IPv6 `fd00:ec2::254` and Google's
-IPv6 `fd20:ce::254`. An address outside these ranges is not refused, so keep the
-list narrow. For every refused range, see
+listed. This covers `169.254.169.254`, Alibaba Cloud's `100.100.100.200`, AWS's
+IPv6 `fd00:ec2::254` and Google's IPv6 `fd20:ce::254`. Some paths to a metadata
+address are not refused, such as an address behind a NAT64 prefix your network
+chose, so keep the list narrow. For every refused range, see
 [Run object storage safely](best-practices.md#run-object-storage-safely).
 
 ```ini

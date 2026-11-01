@@ -1151,6 +1151,13 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   written with smaller ones.
 - The column definition list, or a foreign table's column list, must cover every
   leaf column in the file. A shorter list is an error rather than a projection.
+- An object-storage URL cannot name its host as an IPv6 literal, such as
+  `http://[::1]:9000/key`. The reader refuses it with SQLSTATE 0A000. Name the
+  endpoint by a host name or an IPv4 address.
+- An `s3://` key that contains `*`, `?` or `[` costs a listing of its prefix
+  before the read, even when it names one object. The reader looks for an object
+  with exactly that key first, and matches the key as a pattern only when none
+  exists.
 - A remote read is pinned to one version of the object by the ETag of its first
   HEAD. The reader cannot pin the read when the server sends no ETag, only a weak
   one (`W/"..."`), or one longer than 79 characters. That count includes the
@@ -1256,6 +1263,11 @@ table at its current snapshot. It has these limits:
   3, and a `current-snapshot-id` that is present but not an integer (#1824).
   It also rejects a manifest `content` or `status` value outside the Iceberg
   spec. A file of unknown kind is never skipped as a delete.
+- Two metadata ids must fit a 32-bit integer, and only the surface that reads
+  an id checks it. The `pgcolumnar_iceberg` foreign-data wrapper refuses a scan
+  when `default-spec-id` is out of range. `iceberg_current_snapshot` refuses a
+  current snapshot whose `schema-id` is out of range. `iceberg_scan` and
+  `iceberg_data_files` read neither id, so they still read such a table.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet. The reader accepts the file format in
   any case, so `parquet` and `PARQUET` both read.
@@ -1290,3 +1302,26 @@ table at its current snapshot. It has these limits:
   compared under a nondeterministic collation. Two equal values there need not
   share bytes, so they need not share a bucket. The wrapper reads every file, and
   the query returns the same rows.
+
+## Object storage address refusal
+
+The object-storage module refuses a host that resolves to a link-local or known
+instance-metadata address, even when the host is in
+`pgcolumnar.objstore_allowed_endpoints`. The refusal has SQLSTATE 42501. For the
+full list of refused addresses, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
+refusal has these limits:
+
+- The module refuses only `100.100.100.200` in `100.64.0.0/10`. The rest of that
+  range is shared address space for carrier-grade NAT, which can serve object
+  storage legitimately.
+- The module recognises the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`.
+  It cannot recognise a NAT64 prefix that your network chose (a network-specific
+  prefix, RFC 6052). An address under such a prefix can reach `169.254.169.254`
+  or `100.100.100.200` through the NAT64 gateway, and the module does not refuse
+  it. On a network with NAT64, do not list a host that can resolve under its
+  prefix.
+- Under `64:ff9b:1::/48` the module checks every place the IPv4 address can sit,
+  so it also refuses some ordinary addresses behind that prefix.
+- Any other address that reaches instance metadata is not refused. Keep the list
+  to the hosts you need.

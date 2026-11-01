@@ -3,7 +3,7 @@
 # pgColumnar #393 M1: the HTTP ranged byte source, with the request count
 # ASSERTED rather than reported (the M1 test spec agreed on the issue).
 #
-# Four arms, per design/ISSUE_393_M1_HTTP_SOURCE.md:
+# Five arms, A to D per design/ISSUE_393_M1_HTTP_SOURCE.md:
 #   A  differential oracle: a foreign table over http://127.0.0.1 returns the
 #      same rows as the byte-identical local file. Premise for everything else.
 #   B  request count, both arms in one run: buffered requests == K where K is
@@ -28,6 +28,8 @@
 #   D  cancel: statement_timeout fires within bound while the server stalls
 #      mid-body. Removal proof: with the module's WaitLatchOrSocket wait arm
 #      deleted, this check hangs or reds.
+#   E  only an s3:// key is a pattern (#1785): a query string on an http URL
+#      reaches the server, and a bracketed IPv6 host is refused by name.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -455,6 +457,24 @@ D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled transfer cancelled with query_canceled" "$D_STATE" "57014"
 check_num "D: cancel latency bounded (<=10s)" \
 	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+
+# ---- arm E: only an s3:// key is a pattern (#1785) -------------------------
+# Listing exists only for s3://, so a `?` in an http(s) URL is a query string,
+# never a glob, and a bracketed host is refused as an IPv6 literal before any
+# path resolution. Both used to fail as "listing a prefix is only supported for
+# s3:// URLs".
+: > "$HTTP_LOG"
+E_ROWS="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/fixture.parquet?raw=true') AS t($COLDEFS)" 2>&1)"
+E_ROWS="$(awk '/^ERROR:/ { print; f = 1; exit } { last = $0 } END { if (!f) print last }' <<<"$E_ROWS")"
+check "E: an http URL with a query string (?raw=true) reads the object, not a listing" \
+	"$E_ROWS" "$((G * ROWS_PER_GROUP))"
+E_HEADQ="$(awk '$1 == "HEAD" && $2 == "/fixture.parquet" && $3 == "raw=true"' "$HTTP_LOG" | wc -l | tr -d ' ')"
+check "E: and its HEAD carried the query string to the server" \
+	"$([ "${E_HEADQ:-0}" -ge 1 ] 2>/dev/null && echo carried || echo "not carried ($E_HEADQ HEADs of /fixture.parquet?raw=true in $(reqs) requests)")" "carried"
+check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
+		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:

@@ -17,6 +17,8 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
    object overwritten between two ranged GETs is refused, and a weak ETag is never
    sent as If-Match (#1805).
 D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
+E  only an s3:// key is a pattern (#1785): a query string on an http URL reaches the
+   server, and a bracketed IPv6 host is refused by name.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
 
@@ -403,6 +405,16 @@ def ohr(pgc_cluster):
             r["D state"] = exc.sqlstate or query_error(_message(exc))
         r["D elapsed"] = time.monotonic() - t0
 
+        # E (#1785): only an s3:// key is a pattern
+        pathlib.Path(hlog).write_text("")
+        r["E query"] = _value(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                   f"'{base}/fixture.parquet?raw=true') AS t({COLDEFS})")
+        r["E headq"] = _count(hlog, lambda f: f[:3] == ["HEAD", "/fixture.parquet", "raw=true"])
+        r["E reqs"] = _count(hlog)
+        r["E ipv6"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                    f"'http://[::1]:{port}/fixture.parquet') AS t({COLDEFS})",
+                               "IPv6 literal hosts are not supported")
+
         r["up"] = _await_server(dsn)
         r["crashes1"] = _crashes(plog)
         yield r
@@ -728,6 +740,29 @@ def test_the_http_read_cancel_latency_is_bounded(ohr, expect):
         return
     s = ohr["D elapsed"]
     expect.text("within 10s" if s <= 10 else f"{s:.1f}s", "within 10s", "D: cancel latency bounded (<=10s)")
+
+
+def test_an_http_url_with_a_query_string_reads_the_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["E query"], str(G * ROWS_PER_GROUP),
+                "E: an http URL with a query string (?raw=true) reads the object, not a listing")
+
+
+def test_the_query_string_reached_the_server(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = ohr["E headq"]
+    got = "carried" if isinstance(n, int) and n >= 1 else \
+        f"not carried ({n} HEADs of /fixture.parquet?raw=true in {ohr['E reqs']} requests)"
+    expect.text(got, "carried", "E: and its HEAD carried the query string to the server")
+
+
+def test_an_ipv6_literal_http_host_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["E ipv6"], "0A000: IPv6 literal hosts are not supported",
+                "E: an IPv6 literal http host is refused as IPv6, not as a listing")
 
 
 def test_the_server_survives(ohr, expect):
