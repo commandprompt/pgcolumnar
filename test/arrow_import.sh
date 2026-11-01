@@ -946,4 +946,58 @@ check "import_arrow on a FIFO is refused, not a hang (XX001)" \
 	"XX001"; fifo_release "$IAFIFO"
 check "backend still up after the import_arrow FIFO refusal" "$(q 'SELECT 1')" "1"
 
+
+# --- #1886: a remote URL is refused up front, not opened as a local file -------
+# import_arrow reads local files only. Before #1886 an s3:// or http:// URL went
+# to open(2) and failed with ENOENT ("could not open file "s3://..."), which says
+# the object does not exist -- even right after export_arrow wrote it there. It
+# now refuses every scheme PgColumnarPathIsRemote recognises with 0A000, naming
+# itself and the URL, with a hint that it reads local files only, before it looks
+# at the target. The control holds the other side: a LOCAL path that carries
+# "s3://" past its first byte is still read.
+echo "-- remote URL refusal"
+remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
+	local out msg hint
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*)
+			msg="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")"
+			hint="$(sed -n '/^HINT:/{s/^HINT: *//p;q;}' <<<"$out")"
+			printf '%s | %s\n' "$msg" "${hint:-no hint}";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
+want_refusal() {	# URL -> the refusal #1886 promises
+	printf '0A000 columnar: import_arrow does not read "%s" | import_arrow reads local files only. Use a local filesystem path.\n' "$1"
+}
+REMOTE_S3="s3://pgc-test/f1886/m.arrow"
+REMOTE_HTTP="http://127.0.0.1:9/f1886/m.arrow"
+REMOTE_OTHER="https://127.0.0.1:9/f1886/m.arrow gs://pgc-test/f1886/m.arrow az://pgc-test/f1886/m.arrow S3://pgc-test/f1886/m.arrow"
+psql_run "CREATE TABLE ia_rem (a int) USING pgcolumnar;"
+psql_run "CREATE TABLE ia_rem_heap (a int) USING heap;"
+other_refusals="" other_wants=""
+for u in $REMOTE_OTHER; do
+	other_refusals="$other_refusals${other_refusals:+ ; }$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$u')")"
+	other_wants="$other_wants${other_wants:+ ; }$(want_refusal "$u")"
+done
+check "import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$REMOTE_S3')")" "$(want_refusal "$REMOTE_S3")"
+check "import_arrow refuses an http:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$REMOTE_HTTP')")" "$(want_refusal "$REMOTE_HTTP")"
+check "import_arrow refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)" \
+	"$other_refusals" "$other_wants"
+check "import_arrow refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem_heap', '$REMOTE_S3')")" "$(want_refusal "$REMOTE_S3")"
+
+# "$PGC_WORKDIR/s3:" is a directory, so "$PGC_WORKDIR/s3://ctl.arrows" is a local
+# file whose path holds "s3://" past its start.
+mkdir -p "$PGC_WORKDIR/s3:"; chmod 777 "$PGC_WORKDIR/s3:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$PGC_WORKDIR/s3:"; fi
+psql_run "CREATE TABLE ia_ctl_src (a int) USING pgcolumnar;"
+psql_run "INSERT INTO ia_ctl_src SELECT g FROM generate_series(1, 300) g;"
+psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3://ctl.arrows');" >/dev/null
+check "control: import_arrow still reads a local path that holds s3:// past its start (#1886)" \
+	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3://ctl.arrows')")" 300
+
 pgc_summary

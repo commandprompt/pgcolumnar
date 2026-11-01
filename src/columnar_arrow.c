@@ -2331,6 +2331,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	relid = PG_GETARG_OID(0);
 	path = text_to_cstring(PG_GETARG_TEXT_PP(1));
 
+	/* a local file only (#1886): refuse a URL before the target is touched */
+	PgColumnarRefuseRemotePath("import_arrow", path);
+
 	/*
 	 * INSERT on the target, before the file is opened (#559). The server-file
 	 * role above governs reading a file; it says nothing about writing this

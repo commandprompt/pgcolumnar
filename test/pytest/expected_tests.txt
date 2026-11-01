@@ -1599,4 +1599,7 @@ guard_tests 854
 # cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
 # premise, no version with the pin off, the null and over-long version ids, the 403 fallback), by
 # collection: 5776 tests collected, less guard_tests 854.
-cluster_tests 5110
+# cluster_tests 5110 -> 5120 for #1886: one test in test_arrow_import.py (a remote URL refused up front) and
+# nine in test_parallel_copy.py (file_split_offsets and parallel_copy refuse s3://, http:// and the other
+# remote schemes, the heap target, and the two local controls), by collection: 5120 tests collected.
+cluster_tests 5120

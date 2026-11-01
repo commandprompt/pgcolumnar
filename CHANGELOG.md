@@ -525,6 +525,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `import_arrow`, `file_split_offsets` and `parallel_copy` now refuse an
+  object-storage URL with SQLSTATE 0A000 (#1886). They read local files only,
+  and before this an `s3://` or `http://` URL failed with
+  `could not open file "s3://...": No such file or directory`, which says the
+  object does not exist. Every scheme the readers treat as remote is refused:
+  `s3://`, `gs://`, `az://`, `http://` and `https://`, in any case. The message
+  names the function and the URL, for example
+  `columnar: import_arrow does not read "s3://bucket/m.arrow"`, and the hint says
+  the function reads local files only. The check comes before the target table
+  is looked at. docs/sql-reference.md. `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test_arrow_import.py` and `test_parallel_copy.py`.
 - The docs no longer contradict the code on object storage, credentials and
   row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
   `parallel_copy` read local files only; the docs had said every Arrow and
