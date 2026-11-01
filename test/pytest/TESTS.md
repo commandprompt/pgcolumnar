@@ -399,6 +399,7 @@ behaviour, the source of that number is named.
 - [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
 - [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
+- [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 
 ## 1. How to read a test in here
 
@@ -11177,6 +11178,19 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
 | `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
 | `test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint` | empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_only_level_iceberg_rest_namespace_levels_asks_for_its_children` | empty only level: iceberg_rest_namespace_levels lists ARRAY[''] and asks for its children with an empty parent |
+| `test_empty_only_level_iceberg_rest_tables_of_the_array_form_is_refused` | empty only level: iceberg_rest_tables of ARRAY[''] is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_table_location_of_the_text_form_is_refused` | empty only level: iceberg_rest_table_location of '' is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_scan_of_the_text_form_is_refused` | empty only level: iceberg_rest_scan of '' is refused naming level 1 |
+| `test_empty_only_level_the_documented_filter_keeps_the_lateral_example_running` | empty only level: the documented filter keeps the LATERAL example running |
+| `test_empty_only_level_iceberg_rest_namespace_levels_lists_the_child` | empty only level: iceberg_rest_namespace_levels lists the child of ARRAY[''] when the catalog reads an empty parent as ARRAY[''] |
+| `test_empty_only_level_iceberg_rest_namespaces_lists_the_child` | empty only level: iceberg_rest_namespaces lists '' and its child '.x' |
+| `test_empty_only_level_the_documented_filter_reaches_the_child` | empty only level: the documented filter lets the LATERAL example reach the child of ARRAY[''] |
+| `test_empty_only_level_location_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached |
+| `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
@@ -13975,3 +13989,22 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_a_200_with_no_framing_before_the_body_is_not_taken_as_written` | a single PUT answered 200 with no framing before its body is not taken as written |
 | `test_a_refusal_after_the_expect_wait_keeps_the_403_over_http` | mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive |
 | `test_the_server_survived_the_refusals` | the server survived the refusals |
+
+## 354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine
+
+The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name but one. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. The same holds when the harness's process took the lock itself as `flock -F`, where it holds the only descriptor. The session must record the library digest it starts with, and a copy of the library changed after that must be reported with both digests. An inner session through the real conftest, whose test changes the library the session recorded, must end failed and name the change. One shell check has no twin: a suite that sets `set -e` before it loads lib.sh must still load it under `flock`. Only lib.sh can show that, and a twin would have to source it, so it is declared shell-only in `test_compare_to_bash.py`. The library change is made on a copy; the shared library is never touched.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_control_a_plain_child_under_flock_holds_the_lock` | control: a child of a plain shell under flock holds the lock |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | premise: the postmaster outlives the flock command that started it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |
+| `test_a_lock_the_harness_took_itself_stays_held` | a lock the harness's own process took stays held |
+| `test_a_lock_taken_by_flock_no_fork_stays_held` | a lock taken as flock -F on the harness's own process stays held |
+| `test_the_session_records_the_library_it_runs` | setup records the digest of the library it verified |
+| `test_a_replaced_library_is_reported` | an unchanged library is not reported |
+| `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |
+| `test_a_run_whose_library_changed_fails` | a run whose library changed mid-run ends failed |

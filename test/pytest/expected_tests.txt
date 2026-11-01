@@ -1690,8 +1690,30 @@ guard_tests 860
 # and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
 # composite type built from a seed's field list is created, the pristine struct seed reads under its own
 # column list), by collection: 6072 tests collected, less guard_tests 858.
-# cluster_tests 5261 -> 5267 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
+# cluster_tests 5261 -> 5267 for #1922's six tests in test_iceberg_rest_scan.py (a namespace whose only
+# level is empty: listed and not walked, refused by iceberg_rest_tables, iceberg_rest_table_location and
+# iceberg_rest_scan, the documented LATERAL filter, no request with an empty path segment), by collection:
+# test_iceberg_rest_scan.py collects 83 tests, 77 on main.
+# cluster_tests 5267 -> 5272 for #1922's five review tests in test_iceberg_rest_scan.py (the walk
+# asks for the children of ARRAY[''] with an empty parent and lists ARRAY['','x'] in both forms, the
+# LATERAL filter reaches that child, '' and ARRAY[''] are refused with the catalog down; one test is
+# renamed, from "asks for no children"), by collection: test_iceberg_rest_scan.py collects 88 tests.
+# cluster_tests 5272 -> 5274 for #1922's two second-review tests in test_iceberg_rest_scan.py (the
+# OAuth server form of iceberg_rest_table_location and iceberg_rest_scan refuses '' before the token
+# request, with the catalog down), by collection: test_iceberg_rest_scan.py collects 90 tests.
+# cluster_tests 5274 -> 5280 for #1915's six tests in test_harness_isolation.py, the twin of the new
+# harness_isolation.sh (a cluster started under a held lock does not hold it, with its control and
+# premise; a lock the harness took itself stays held; the session records its library digest; a
+# replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
+# for the cluster half, guard_tests 858 unchanged.
+# cluster_tests 5280 -> 5281 for #1915's review fix in test_harness_isolation.py (a set -e suite
+# under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
+# 858 unchanged.
+# cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
+# test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
+# own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
+# cluster_tests 5281 -> 5287 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
 # lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
-# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6127
+# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6147
 # tests collected, less guard_tests 860.
-cluster_tests 5267
+cluster_tests 5287

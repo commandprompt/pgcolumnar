@@ -387,18 +387,45 @@ rest_level_for_message(const char *level)
 }
 
 /*
- * Append a namespace, given as a List of level strings, to a resource path. The
- * levels are joined with the catalog's separator (already encoded). Each level
- * is percent-encoded, so a level bearing '/', '.', or a control byte cannot
- * alter the request path. A level that holds the separator is refused: the
- * catalog would read it as a different namespace (#1865).
+ * Refuse the namespace [""]: one level, and it is empty. Its request path would
+ * hold an empty segment, as in /v1/namespaces//tables. The Apache Iceberg REST
+ * catalog answers that path with HTTP 400, a proxy may collapse "//" to "/",
+ * and the REST spec has no other way to write it (#1922). The check needs no
+ * catalog config, so callers run it before any request. An empty ?parent= is
+ * a query value, not a path segment, so the namespace walk still sends it.
  */
 static void
-rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
+rest_refuse_only_empty_level(List *levels)
+{
+	if (list_length(levels) == 1 &&
+		((const char *) linitial(levels))[0] == '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace has one level, and it is empty"),
+				 errdetail("Its request path would hold an empty segment (\"//\"). "
+						   "The Apache Iceberg REST catalog refuses such a path, and a proxy may collapse it."),
+				 errhint("Level 1 of 1 of the namespace is empty. "
+						 "In the text form, '' makes an empty level.")));
+}
+
+/*
+ * Append a namespace, given as a List of level strings, to a resource path or
+ * to a ?parent= query value. The levels are joined with the catalog's
+ * separator (already encoded). Each level is percent-encoded, so a level
+ * bearing '/', '.', or a control byte cannot alter the request path. A level
+ * that holds the separator is refused: the catalog would read it as a
+ * different namespace (#1865). With `in_path`, the namespace [""] is refused
+ * too: it would make an empty path segment (#1922).
+ */
+static void
+rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc,
+				   bool in_path)
 {
 	ListCell   *lc;
 	const char *bad = rest_unnameable_level(levels, cc);
 
+	if (in_path)
+		rest_refuse_only_empty_level(levels);
 	if (bad != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -964,11 +991,12 @@ rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 	Jsonb	   *lt;
 	StringInfoData rp;
 
+	rest_refuse_only_empty_level(levels);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_levels(&rp, levels, &cc);
+	rest_append_levels(&rp, levels, &cc, true);
 	appendStringInfoString(&rp, "/tables/");
 	rest_pct_encode(&rp, table);
 
@@ -1134,6 +1162,8 @@ rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
 	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
 	PG_RETURN_TEXT_P(cstring_to_text(loc));
@@ -1197,6 +1227,8 @@ rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
 	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
 	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
@@ -1426,7 +1458,8 @@ rest_levels_key(List *levels)
  * Each namespace is emitted as its dot-joined levels (text), or with
  * `as_array` as a text[] of its levels, which keeps a level that holds a dot
  * apart from two levels (#1865). A level that holds the catalog's separator
- * is emitted but not walked into: no request can name it.
+ * is emitted but not walked into: no request can name it. The namespace [""]
+ * is walked into with an empty ?parent= (#1922).
  */
 static void
 rest_walk_namespaces(const char *catalog_uri, const char *token,
@@ -1452,7 +1485,7 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 	if (parent != NIL)
 	{
 		appendStringInfoString(&rp, "?parent=");
-		rest_append_levels(&rp, parent, cc);
+		rest_append_levels(&rp, parent, cc, false);
 	}
 	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token,
 							  NULL);
@@ -1511,11 +1544,11 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 			}
 			else
 			{
-				/* dot-join the levels */
+				/* dot-join the levels; an empty first level keeps its dot (#1922) */
 				initStringInfo(&name);
 				foreach(l2, levels)
 				{
-					if (name.len > 0)
+					if (foreach_current_index(l2) > 0)
 						appendStringInfoChar(&name, '.');
 					appendStringInfoString(&name, (const char *) lfirst(l2));
 				}
@@ -1580,8 +1613,9 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
  * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
  * same namespaces, each as a text[] of its levels (#1865). A row passes back
  * unchanged as the namespace argument of the other REST functions, except a
- * row with a level that holds the catalog's separator: they refuse it (22023).
- * A row with an empty level passes back too (#1891).
+ * row with a level that holds the catalog's separator, or the row {""}: they
+ * refuse it (22023, #1922). Another row with an empty level passes back too
+ * (#1891).
  */
 Datum
 pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)
@@ -1614,12 +1648,13 @@ rest_tables(FunctionCallInfo fcinfo, bool ns_is_array)
 	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	ts = rest_text_srf_setup(rsinfo, &td);
 
+	rest_refuse_only_empty_level(levels);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_levels(&rp, levels, &cc);
+	rest_append_levels(&rp, levels, &cc, true);
 	appendStringInfoString(&rp, "/tables");
 	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token,
 						  rest_empty_level_hint(levels));

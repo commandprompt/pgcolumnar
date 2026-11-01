@@ -182,3 +182,38 @@ pgc_pick_free_port() {
 	done
 	return 1
 }
+
+# ---- a lock taken by the caller does not reach this run's servers (#1915) ----
+#
+# Loaded by every suite that starts a cluster, so this is the one place that
+# covers them all. A run started as `flock <lock> bash test/x.sh` inherits the
+# lock's descriptor, and so does every process it starts, a postmaster
+# included. A postmaster that outlived the command then held the lock: the
+# reviewer of #1906 found five runs of one major waiting 25 minutes on a
+# cluster nobody had stopped.
+#
+# Closing our copy does not release the lock. flock(1) keeps its own copy
+# open until the command ends, so runs stay serialised; our children just do
+# not get one. This is what `flock -o` does, applied whether or not the caller
+# remembered it.
+#
+# Only a lock that a LIVE OTHER process took is closed: then that process
+# still holds its own copy. fdinfo's lock line names the pid that took the
+# lock. `exec 8>f; flock 8` takes it through a flock(1) child that has already
+# exited, so there our copy may be the only one, and closing it would release
+# the lock. Measured: closing on "not our pid" alone released exactly that.
+# $BASHPID, not $$: in a subshell $$ names the parent.
+pgc_drop_inherited_locks() {
+	local f n taker
+	for f in /proc/"$BASHPID"/fdinfo/[0-9]*; do
+		n="${f##*/}"
+		[ "$n" -gt 2 ] 2>/dev/null || continue
+		# The list includes the descriptor the glob itself read the directory
+		# through, which is closed by now, so a read can fail. Under set -e and
+		# pipefail that failure ended the caller's shell (review of #1928).
+		taker="$(sed -nE 's/^lock:.*FLOCK +[A-Z]+ +[A-Z]+ +([0-9]+) .*/\1/p' "$f" 2>/dev/null | head -1)" || taker=""
+		[ -n "$taker" ] && [ "$taker" != "$BASHPID" ] && [ -d "/proc/$taker" ] || continue
+		eval "exec $n>&-"
+	done
+}
+pgc_drop_inherited_locks
