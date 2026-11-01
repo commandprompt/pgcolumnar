@@ -1497,4 +1497,17 @@ guard_tests 854
 # 79-character ETag read of an unchanged object (http == local), by collection: `4652 tests collected`.
 # cluster_tests 4890 at the merge of origin/fix/1795-tier-partition-credentials (648f15f3) into
 # fix/1805-pin-object-version: that branch's 4883 plus this branch's 7, by collection: `4890 tests collected`.
-cluster_tests 4890
+# cluster_tests 4890 -> 4895 for #1820's four tests in test_iceberg_rest_vended.py (a vended credential
+# per file) and one in test_iceberg_rest_scan.py (the catalog's 404 message), by collection.
+# cluster_tests 4616 at the merge of origin/main (6968a6f4) into fix/1820-vended-credential-prefix,
+# by collection: `4616 tests collected`.
+# cluster_tests 4895 -> 4899 for #1820's review: four tests in test_iceberg_rest_scan.py (the catalog's
+# message in the detail of the namespace 404, a 403 and a 500, and a too-deep error body), by collection.
+# cluster_tests 4654 at the merge of origin/main (3fae8317) into fix/1820-vended-credential-prefix,
+# by collection: `4654 tests collected`.
+# cluster_tests 4899 -> 4903 for #1820's third review: three tests in test_iceberg_rest_vended.py (the
+# longest prefix listed first, an entry with a key id and no secret, and the backend surviving it) and one
+# in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
+# cluster_tests 4903 -> 4904 for #1820's fourth review: one test in test_iceberg_rest_vended.py (an entry
+# with a secret and no key id is ignored), by collection: `4659 tests collected`.
+cluster_tests 4904

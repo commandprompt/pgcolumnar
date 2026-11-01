@@ -450,7 +450,9 @@ The Iceberg REST catalog client. It calls `/v1/config` and `loadTable` over the
 object-store transport, resolves a table to its metadata location, and lists
 namespaces and tables. It obtains the bearer token from the environment, or from a
 foreign server and user mapping, and can mint one by an OAuth2 client-credentials
-exchange. It reads vended storage credentials from a `loadTable` reply.
+exchange. It reads vended storage credentials from a `loadTable` reply and hands
+all of them to the reader. `PgColumnarObjStoreConfigFor` in `columnar_objstore.c`
+then picks the credential for each object just before it is opened.
 
 ### columnar_iceberg_fdw.c
 The `pgcolumnar_iceberg` foreign-data wrapper. It gives the Iceberg read path the

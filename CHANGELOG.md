@@ -264,6 +264,16 @@ true until the next version shipped.
 
 ### Changed
 
+- The Iceberg REST functions report a missing namespace as SQLSTATE `3F000`, not
+  `42P01` (#1820). They do this when the catalog's 404 reply has the type
+  `NoSuchNamespaceException`. The message now says "no such namespace". A client
+  that caught `42P01` for a missing namespace must now catch `3F000`. A missing
+  table is still `42P01`. Every error reply from the catalog, not only a 404,
+  now puts the catalog's own message in the error detail, as
+  `The catalog said: <message>`. `docs/sql-reference.md` lists the SQLSTATE for
+  each catalog reply. An error reply nested too deep to parse now raises the
+  parser's own error, SQLSTATE `54001`, instead of being dropped.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
 - The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
   two numbers (#1431). Every PR that changed the ledger used to append its
   derivation above the census line, so any two such PRs conflicted there. The
@@ -482,6 +492,16 @@ true until the next version shipped.
   chose, so a metadata address behind such a prefix is still not refused.
   [Limitations](docs/limitations.md#object-storage-address-refusal) says so.
   `test/objstore_allowlist.sh` and `test_objstore_allowlist.py`.
+- `iceberg_rest_scan` now chooses a vended storage credential for each file it
+  reads (#1820). Before, it matched each `storage-credentials` prefix against the
+  metadata location only, and that one credential signed every file. So a
+  catalog that vended separate keys for `metadata/` and `data/` had its data
+  files read with the metadata key. A catalog that vended a key for `data/` only
+  had the whole table read with the server's own `AWS_*` credentials. Now each
+  file uses the entry with the longest prefix of its location, then the flat
+  `config`. When neither covers a file, the read fails with SQLSTATE 28000 and
+  names the file. `test/iceberg_rest_vended.sh` and `test_iceberg_rest_vended.py`.
+  Reported by @OffgridwithJD.
 - A remote `read_parquet` or `pgcolumnar_parquet` foreign table no longer mixes
   two versions of an object (#1805). The reader sends one HEAD and then one ranged
   GET per footer or column chunk. When another client overwrote the key during
