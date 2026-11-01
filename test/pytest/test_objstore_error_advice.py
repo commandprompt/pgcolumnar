@@ -7,7 +7,9 @@ catalog vended; it must name the source of the refused key. C: the allow-list hi
 suggested the host without its port, as the whole list; it must suggest the host:port
 the message names, appended to the current list, with any quote in it doubled. D: a
 single-PUT export bigger than the socket buffers, which the store refused before
-reading the body, lost the HTTP status; the 403 and its hint must survive.
+reading the body, lost the HTTP status; the 403 and its hint must survive. That holds
+for an http:// endpoint, which the fixture serves; an https:// store still reports
+"failed before a response" (#1902).
 
 One SigV4 fixture with a refused bucket (--tamper-bucket refuses every request there
 403 before any body is read, and closes with the body unread), three REST catalogs over
