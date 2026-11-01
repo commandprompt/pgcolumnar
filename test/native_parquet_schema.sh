@@ -301,7 +301,12 @@ $1;
 SQLEOF
 )"
 		state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)/\1 \2/p' <<<"$out" | head -1)"
-		if [ -n "$state" ]; then echo "$state"; else echo "read: $(tr '\n' ';' <<<"$out")"; fi
+		# one statement per line: the #994 skip-loop sweep reads if/fi by line
+		if [ -n "$state" ]; then
+			echo "$state"
+		else
+			echo "read: $(tr '\n' ';' <<<"$out")"
+		fi
 	}
 	check_text "read_parquet refuses a list of lists declared as a one-dimensional array (#1917)" \
 		"$(nested_refusal "SELECT string_agg(t::text, ';') FROM pgcolumnar.read_parquet('$PGC_WORKDIR/lol.parquet') AS t(l bigint[], n int)")" \
