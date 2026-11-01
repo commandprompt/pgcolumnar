@@ -398,6 +398,7 @@ behaviour, the source of that number is named.
 - [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
 - [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
 - [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
+- [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 
 ## 1. How to read a test in here
 
@@ -13633,3 +13634,31 @@ The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the she
 | `test_an_unanswerable_aggregate_beside_it_declines` | an aggregate the metadata cannot answer beside it declines the fold |
 | `test_a_collate_override_declines_the_fold` | a COLLATE override declines the fold |
 | `test_the_collate_answer_is_the_plain_one` | and the override answers what the plain aggregate answers |
+
+## 353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status
+
+The twin of `test/objstore_error_advice.sh` (#1796), every check by the shell's name. Three object-store messages that pointed the reader at the wrong thing. A 403 hint must name where the refused key was configured: the server environment, the user mapping, or the credentials a REST catalog vended. An allow-list refusal's hint must suggest the `host:port` the message names, appended to the current list with any quote doubled, and the list it suggests must permit the endpoint. A single-PUT export to an `http://` endpoint, larger than the socket buffers, which the store refuses before reading the body, must report the 403 and its hint, not `failed before a response`. An `https://` store still reports `failed before a response` (#1902). One SigV4 fixture with a refused bucket (`--tamper-bucket`, which refuses before reading a body and closes with it unread), three REST catalogs over the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a storage-credentials entry (#1861), one vends nothing), and a postmaster whose environment holds the right key, so the environment would have read what the mapping and vended keys were refused. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario on the private cluster, and makes one check under the shell's name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_advice_suite_can_run_here` | premise: the SigV4 S3 fixture and both REST catalogs are up |
+| `test_the_environment_key_writes_and_reads` | premise: the server environment's key writes and reads s3://pgc-bucket/small.parquet |
+| `test_an_environment_key_refusal_hints_at_the_environment` | environment key refused: the 403 hint names the server environment |
+| `test_the_foreign_table_reads_with_the_right_mapping_secret` | premise: the foreign table reads with the right secret in the user mapping |
+| `test_a_user_mapping_key_refusal_hints_at_the_mapping` | user mapping key refused: the 403 hint names the user mapping |
+| `test_a_user_mapping_key_refused_on_a_glob_listing_hints_at_the_mapping` | user mapping key refused on a glob's listing: the 403 hint names the user mapping |
+| `test_the_iceberg_table_reads_through_a_catalog_vending_nothing` | premise: the iceberg table reads through a catalog that vends nothing (server environment) |
+| `test_a_vended_key_refusal_hints_at_the_vended_credentials` | vended key refused: the 403 hint names the catalog's vended credentials |
+| `test_a_vended_entry_key_refusal_hints_at_the_vended_credentials` | vended key refused through a storage-credentials entry: the 403 hint names the catalog's vended credentials |
+| `test_an_allow_list_refusal_with_an_empty_list_suggests_host_and_port` | allow-list refusal, empty list: the hint suggests host:port |
+| `test_an_allow_list_refusal_keeps_the_list_and_appends_host_and_port` | allow-list refusal: the hint keeps the current entries and appends host:port |
+| `test_an_allow_list_refusal_doubles_a_quote_in_the_list` | allow-list refusal: a quote in the current list is doubled in the hint |
+| `test_the_list_the_hint_suggests_permits_the_endpoint` | allow-list refusal: the list the hint suggests permits the endpoint |
+| `test_the_mid_size_export_is_one_put` | premise: the mid-size export is one PUT of more than 4 MiB |
+| `test_a_small_export_to_the_refused_bucket_reports_the_403` | a small export to the refused bucket reports the 403 and its hint |
+| `test_a_mid_size_export_refused_early_keeps_the_403` | mid-size export refused before its body was read: the 403 and its hint survive |
+| `test_the_server_survived_the_refusals` | the server survived the refusals |
