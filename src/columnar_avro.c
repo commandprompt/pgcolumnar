@@ -21,8 +21,10 @@
 #include <zlib.h>
 
 #include "catalog/pg_authid_d.h"
+#include "common/shortest_dec.h"
 #include "fmgr.h"
 #include "funcapi.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "utils/acl.h"
@@ -144,6 +146,8 @@ struct AvSchema
 	AvSchema  **branch;			/* UNION */
 	AvSchema   *items;			/* ARRAY items / MAP values */
 	int			fixedsize;		/* FIXED */
+	bool		is_decimal;		/* FIXED or BYTES with logicalType "decimal" */
+	int			scale;			/* its scale (digits after the point) */
 };
 
 static AvSchema *av_schema_build(JsonbValue *tv);
@@ -202,6 +206,38 @@ av_schema_err(void)
 			 errmsg("columnar: unsupported or malformed Avro schema in manifest")));
 }
 
+/* note a {"logicalType":"decimal","scale":N} annotation on a fixed or bytes
+ * schema `s` built from the object `tv`. Only the partition display uses it
+ * (#1816); a malformed annotation leaves the value shown as hex. */
+static void
+av_schema_decimal(JsonbValue *tv, AvSchema *s)
+{
+	JsonbValue *lt = av_jb_field(tv, "logicalType");
+	JsonbValue *sc;
+
+	if (lt == NULL || lt->type != jbvString || lt->val.string.len != 7 ||
+		strncmp(lt->val.string.val, "decimal", 7) != 0)
+		return;
+	sc = av_jb_field(tv, "scale");
+	if (sc == NULL)
+		s->scale = 0;			/* the Avro spec's default */
+	else if (sc->type == jbvNumeric)
+	{
+		char	   *txt = DatumGetCString(DirectFunctionCall1(numeric_out,
+															   NumericGetDatum(sc->val.numeric)));
+		char	   *end;
+		long		v = strtol(txt, &end, 10);
+
+		/* an integer in 0..1000 (Iceberg's decimals have scale <= 38) */
+		if (end == txt || *end != '\0' || v < 0 || v > 1000)
+			return;
+		s->scale = (int) v;
+	}
+	else
+		return;
+	s->is_decimal = true;
+}
+
 /* build the schema tree from a JSON "type" value (string | array | object) */
 static AvSchema *
 av_schema_build(JsonbValue *tv)
@@ -249,7 +285,13 @@ av_schema_build(JsonbValue *tv)
 			av_schema_err();
 		k = av_prim_kind(t->val.string.val, t->val.string.len);
 		if (k >= 0)
-			return av_prim((AvKind) k);		/* {"type":"string", ...} */
+		{
+			AvSchema   *s = av_prim((AvKind) k);	/* {"type":"string", ...} */
+
+			if (k == AV_BYTES)
+				av_schema_decimal(tv, s);
+			return s;
+		}
 
 		if (t->val.string.len == 6 && strncmp(t->val.string.val, "record", 6) == 0)
 		{
@@ -314,6 +356,7 @@ av_schema_build(JsonbValue *tv)
 															 NumericGetDatum(sz->val.numeric)));
 			if (s->fixedsize < 0)
 				av_schema_err();
+			av_schema_decimal(tv, s);
 			return s;
 		}
 	}
@@ -480,10 +523,155 @@ av_unwrap_union(AvReader *r, AvSchema *s, bool *is_null)
 }
 
 /*
+ * Partition display (#1816, #1791). The text must be valid in the database
+ * encoding and must say what the manifest holds, so a reader can split it back
+ * into fields and values:
+ *   - fields are joined by ',', and each is name=value;
+ *   - a NULL value is the field name alone, with no '=';
+ *   - in a name or a string value, '%', ',', '=', control bytes and DEL are
+ *     percent-encoded (%2C), as are bytes >= 0x80 unless the value is valid
+ *     UTF-8 and the database encoding is UTF8 or SQL_ASCII;
+ *   - binary (bytes, and fixed without a logical type) is \x and lowercase hex;
+ *   - a decimal is its exact value, with `scale` digits after the point;
+ *   - float and double are the shortest text that reads back as the same value.
+ */
+
+/* append `p[0..n)` as text, percent-encoding the bytes the format reserves */
+static void
+av_append_escaped(StringInfo out, const uint8 *p, int64 n)
+{
+	int			enc = GetDatabaseEncoding();
+	bool		keep_high;
+	int64		i;
+
+	keep_high = (enc == PG_UTF8 || enc == PG_SQL_ASCII) &&
+		n <= PG_INT32_MAX &&
+		pg_verify_mbstr(PG_UTF8, (const char *) p, (int) n, true);
+	for (i = 0; i < n; i++)
+	{
+		uint8		b = p[i];
+
+		if (b == '%' || b == ',' || b == '=' || b < 0x20 || b == 0x7f ||
+			(b >= 0x80 && !keep_high))
+			appendStringInfo(out, "%%%02X", b);
+		else
+			appendStringInfoChar(out, (char) b);
+	}
+}
+
+/* append `p[0..n)` as \x and lowercase hex, as bytea prints it */
+static void
+av_append_hex(StringInfo out, const uint8 *p, int64 n)
+{
+	static const char hex[] = "0123456789abcdef";
+	int64		i;
+
+	appendStringInfoString(out, "\\x");
+	for (i = 0; i < n; i++)
+	{
+		appendStringInfoChar(out, hex[p[i] >> 4]);
+		appendStringInfoChar(out, hex[p[i] & 0xf]);
+	}
+}
+
+/* An Iceberg decimal has precision <= 38, so 16 bytes; a longer unscaled value
+ * is not one Iceberg writes, and is shown as hex rather than divided out. */
+#define AV_MAX_DECIMAL_BYTES 64
+
+/*
+ * append the decimal whose unscaled value is the big-endian two's complement
+ * integer `p[0..n)`, with `scale` digits after the point (Iceberg's single-value
+ * serialization of decimal, and Avro's decimal logical type).
+ */
+static void
+av_append_decimal(StringInfo out, const uint8 *p, int64 n, int scale)
+{
+	uint8		mag[AV_MAX_DECIMAL_BYTES];
+	char		digits[AV_MAX_DECIMAL_BYTES * 3 + 1];
+	int			nd = 0;
+	int			start = 0;
+	bool		neg;
+	int64		i;
+
+	if (n > AV_MAX_DECIMAL_BYTES)
+	{
+		av_append_hex(out, p, n);
+		return;
+	}
+	neg = n > 0 && (p[0] & 0x80) != 0;
+	memcpy(mag, p, n);
+	if (neg)
+	{
+		/* magnitude = two's complement negation: invert, then add one */
+		int			carry = 1;
+
+		for (i = n - 1; i >= 0; i--)
+		{
+			int			v = (uint8) ~mag[i] + carry;
+
+			mag[i] = (uint8) v;
+			carry = v >> 8;
+		}
+	}
+	/* decimal digits, least significant first, by long division by 10 */
+	while (start < n && mag[start] == 0)
+		start++;
+	while (start < n)
+	{
+		uint32		rem = 0;
+
+		for (i = start; i < n; i++)
+		{
+			uint32		cur = (rem << 8) | mag[i];
+
+			mag[i] = (uint8) (cur / 10);
+			rem = cur % 10;
+		}
+		digits[nd++] = (char) ('0' + rem);
+		while (start < n && mag[start] == 0)
+			start++;
+	}
+	if (nd == 0)
+		digits[nd++] = '0';
+
+	if (neg)
+		appendStringInfoChar(out, '-');
+	if (nd <= scale)
+	{
+		appendStringInfoString(out, "0.");
+		for (i = 0; i < scale - nd; i++)
+			appendStringInfoChar(out, '0');
+		for (i = nd - 1; i >= 0; i--)
+			appendStringInfoChar(out, digits[i]);
+	}
+	else
+	{
+		for (i = nd - 1; i >= 0; i--)
+		{
+			appendStringInfoChar(out, digits[i]);
+			if (i == scale && scale > 0)
+				appendStringInfoChar(out, '.');
+		}
+	}
+}
+
+/* a little-endian IEEE 754 value of 4 or 8 bytes, as Avro stores float/double */
+static uint64
+av_le_bits(const uint8 *p, int n)
+{
+	uint64		v = 0;
+	int			i;
+
+	for (i = n - 1; i >= 0; i--)
+		v = (v << 8) | p[i];
+	return v;
+}
+
+/*
  * Decode a partition struct (a record of scalar-ish fields) in ONE pass into
- * both the display string (name=value,...) the lister surfaces AND a typed cell
- * per field for exact-equality comparison (partition-scoped equality deletes).
- * The cells are stored on the entry; the display string is returned.
+ * both the display string (the format above) the lister surfaces AND a typed
+ * cell per field for exact-equality comparison (partition-scoped equality
+ * deletes). The cells are stored on the entry; the display string is returned.
  */
 static char *
 av_decode_partition(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
@@ -505,26 +693,28 @@ av_decode_partition(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 		PgColumnarAvroPartCell *c = &e->part_cells[i];
 		bool		isnull;
 		AvSchema   *t = av_unwrap_union(r, s->fields[i].type, &isnull);
-		char	   *disp;
+		const char *name = s->fields[i].name;
 
 		if (i > 0)
 			appendStringInfoChar(&out, ',');
 		if (r->error)
 			break;
+		av_append_escaped(&out, (const uint8 *) name, strlen(name));
 		if (isnull)
 		{
+			/* the name alone: '' is "name=", so the two stay apart (#1791) */
 			c->isnull = true;
 			c->comparable = true;	/* null compares equal only to null */
-			appendStringInfo(&out, "%s=", s->fields[i].name);
 			continue;
 		}
+		appendStringInfoChar(&out, '=');
 		switch (t->kind)
 		{
 			case AV_INT:
 			case AV_LONG:
 				c->ival = av_long(r);
 				c->comparable = true;
-				disp = psprintf(INT64_FORMAT, c->ival);
+				appendStringInfo(&out, INT64_FORMAT, c->ival);
 				break;
 			case AV_BOOL:
 				{
@@ -532,7 +722,7 @@ av_decode_partition(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 
 					c->ival = (p && *p) ? 1 : 0;
 					c->comparable = true;
-					disp = pstrdup(c->ival ? "true" : "false");
+					appendStringInfoString(&out, c->ival ? "true" : "false");
 					break;
 				}
 			case AV_STRING:
@@ -542,26 +732,74 @@ av_decode_partition(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 					const uint8 *p = av_bytes(r, &n);
 
 					if (r->error || p == NULL)
-					{
-						disp = pstrdup("");
 						break;
-					}
 					c->is_bytes = true;
 					c->comparable = true;
-					c->bytes = (char *) palloc(n);
+					c->bytes = (char *) palloc(Max(n, 1));
 					memcpy(c->bytes, p, n);
 					c->blen = (int) n;
-					disp = pnstrdup((const char *) p, n);
+					if (t->kind == AV_STRING)
+						av_append_escaped(&out, p, n);
+					else if (t->is_decimal)
+						av_append_decimal(&out, p, n, t->scale);
+					else
+						av_append_hex(&out, p, n);
+					break;
+				}
+			case AV_FIXED:
+				{
+					/* not compared for exact equality (a decimal's bytes are
+					 * not canonical across widths); shown as its value */
+					const uint8 *p = av_take(r, t->fixedsize);
+
+					c->comparable = false;
+					if (p == NULL)
+						break;
+					if (t->is_decimal)
+						av_append_decimal(&out, p, t->fixedsize, t->scale);
+					else
+						av_append_hex(&out, p, t->fixedsize);
+					break;
+				}
+			case AV_FLOAT:
+			case AV_DOUBLE:
+				{
+					/* float/double: cannot compare for exact equality, but the
+					 * value is shown exactly, as the shortest round-trip text */
+					int			w = t->kind == AV_FLOAT ? 4 : 8;
+					const uint8 *p = av_take(r, w);
+					char		buf[32];
+					uint64		bits;
+
+					c->comparable = false;
+					if (p == NULL)
+						break;
+					bits = av_le_bits(p, w);
+					if (w == 4)
+					{
+						uint32		b32 = (uint32) bits;
+						float		f;
+
+						memcpy(&f, &b32, sizeof(f));
+						float_to_shortest_decimal_buf(f, buf);
+					}
+					else
+					{
+						double		d;
+
+						memcpy(&d, &bits, sizeof(d));
+						double_to_shortest_decimal_buf(d, buf);
+					}
+					appendStringInfoString(&out, buf);
 					break;
 				}
 			default:
-				/* float/double/fixed/other: cannot compare for exact equality */
+				/* enum or a nested type: not an Iceberg partition value */
 				av_skip(r, t);
 				c->comparable = false;
-				disp = pstrdup("?");
+				appendStringInfoChar(&out, '?');
 				break;
 		}
-		appendStringInfo(&out, "%s=%s", s->fields[i].name, disp ? disp : "");
 	}
 	return out.data;
 }
@@ -608,14 +846,19 @@ av_read_long(AvReader *r, AvSchema *s, bool *have)
  * value that then passed the reader's range check (#1823). A value outside
  * int32 is refused here as corrupt metadata (XX001), naming the value and,
  * when it is already decoded, the path. `what` is "manifest entry" or
- * "manifest", as in the reader's own range-check messages.
+ * "manifest", as in the reader's own range-check messages. `havep`, when not
+ * NULL, says whether the field was present (partition_spec_id keeps that; a
+ * manifest list's partition_spec_id at 4294967296 read as spec 0, #1878).
  */
 static int32
 av_read_int32_field(AvReader *r, AvSchema *s, const char *what,
-					const char *path, const char *field)
+					const char *path, const char *field, bool *havep)
 {
 	bool		have;
 	int64		v = av_read_long(r, s, &have);
+
+	if (havep != NULL)
+		*havep = have;
 
 	if (v < PG_INT32_MIN || v > PG_INT32_MAX)
 	{
@@ -876,7 +1119,7 @@ av_decode_data_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 			e->file_format = av_read_string(r, ft);
 		else if (strcmp(nm, "content") == 0)
 			e->content = av_read_int32_field(r, ft, "manifest entry",
-											 e->file_path, "content");
+											 e->file_path, "content", NULL);
 		else if (strcmp(nm, "record_count") == 0)
 			e->record_count = av_read_long(r, ft, &have);
 		else if (strcmp(nm, "file_size_in_bytes") == 0)
@@ -925,7 +1168,7 @@ av_decode_entry(AvReader *r, AvSchema *s, PgColumnarAvroManifestEntry *e)
 
 		if (strcmp(nm, "status") == 0)
 			e->status = av_read_int32_field(r, ft, "manifest entry",
-											e->file_path, "status");
+											e->file_path, "status", NULL);
 		/* the data sequence number; "sequence_number" in v2 manifests as
 		 * pyiceberg writes them, "data_sequence_number" in the newer spec name.
 		 * Nullable: null means inherit the manifest's sequence number. */
@@ -972,12 +1215,15 @@ av_decode_manifest_file(AvReader *r, AvSchema *s, PgColumnarAvroManifestFile *e)
 			e->manifest_length = av_read_long(r, ft, &have);
 		else if (strcmp(nm, "partition_spec_id") == 0)
 		{
-			e->partition_spec_id = (int32) av_read_long(r, ft, &have);
+			e->partition_spec_id = av_read_int32_field(r, ft, "manifest",
+													   e->manifest_path,
+													   "partition_spec_id",
+													   &have);
 			e->has_partition_spec_id = have;
 		}
 		else if (strcmp(nm, "content") == 0)
 			e->content = av_read_int32_field(r, ft, "manifest",
-											 e->manifest_path, "content");
+											 e->manifest_path, "content", NULL);
 		else if (strcmp(nm, "sequence_number") == 0)
 		{
 			e->sequence_number = av_read_long(r, ft, &have);

@@ -120,6 +120,34 @@ check "link-local: the refusal names the range, not the list" \
 		| grep -c "link-local")" "1"
 check_num "link-local: the listed ordinary host still works beside it" "$(q "$Q")" "1000"
 
+# ---- Alibaba Cloud instance metadata, outside 169.254/16 (#1848) -------------
+# Alibaba Cloud serves instance metadata at 100.100.100.200, in 100.64.0.0/10
+# (shared address space). The guard refuses that one address, not the /10, which
+# carrier-grade NAT uses legitimately. The URL carries the IPv4 literal, so no
+# resolver is involved. statement_timeout 3s bounds the read: without the guard a
+# connect() to the address is tried, and 08006 or 57014 then shows that it was.
+ALI_Q="SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.200:1/x.parquet') AS (a int8)"
+set_list "100.100.100.200, 100.100.100.201, 127.0.0.1"
+check "Alibaba metadata 100.100.100.200: refused 42501 despite being listed" \
+	"$(sqlstate_of "SET statement_timeout = '3s'; $ALI_Q")" "42501"
+ALI_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "SET statement_timeout = '3s'" -c "$ALI_Q" 2>&1)"
+# Only the DETAIL line counts: the ERROR line names the host too, and so does the
+# 08006 message of a connect that was tried. The address when the DETAIL names it,
+# else the DETAIL line, else the whole first ERROR line, as the measurement.
+ALI_DETAIL="$(printf '%s\n' "$ALI_OUT" | grep -m1 '^DETAIL:')"
+check "Alibaba metadata: the refusal detail names 100.100.100.200" \
+	"$(printf '%s\n' "$ALI_DETAIL" | grep -o '100\.100\.100\.200' | head -1 | grep . \
+		|| { [ -n "$ALI_DETAIL" ] && printf '%s\n' "$ALI_DETAIL"; } \
+		|| printf 'no DETAIL; %s\n' "$(printf '%s\n' "$ALI_OUT" | grep -m1 'ERROR' || echo "no error")")" "100.100.100.200"
+# Control: the next address in 100.64.0.0/10 is not refused, so the guard did not
+# take the whole range. A connect is tried (08006 unreachable, or 57014 at the 3s
+# timeout). Any other SQLSTATE, or none, prints as the measurement.
+ALI_NEXT="$(sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://100.100.100.201:1/x.parquet') AS (a int8)")"
+case "$ALI_NEXT" in 08006|57014) ALI_NEXT="connect tried" ;; "") ALI_NEXT="no error" ;; esac
+check "100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried" "$ALI_NEXT" "connect tried"
+check_num "Alibaba metadata: the listed ordinary host still works beside it" "$(q "$Q")" "1000"
+
 # ---- metadata addresses beyond 169.254/16 and fe80::/10 (#1808) -------------
 # AWS serves IPv6 instance metadata at fd00:ec2::254, and a NAT64 path reaches
 # 169.254.169.254 as 64:ff9b::a9fe:a9fe. A URL cannot carry an IPv6 literal, so a
@@ -162,6 +190,14 @@ static const char *const map[][2] = {
 	{"l48only", "64:ff9b:1:a9fe:0:100::"},
 	{"gce253", "fd20:ce::253"},
 	{"n64sec", "64:ff9b::aafe:a9fe"},
+	{"alimapped", "::ffff:100.100.100.200"},
+	{"alicompat", "::100.100.100.200"},
+	{"alinat64", "64:ff9b::6464:64c8"},
+	{"alilocal", "64:ff9b:1::6464:64c8"},
+	{"alilocal48", "64:ff9b:1:6464:64:c800::"},
+	{"ali56", "64:ff9b:1:64:64:64c8::"},
+	{"ali64", "64:ff9b:1:0:64:6464:c800::"},
+	{"alinext", "64:ff9b::6464:64c9"},
 };
 
 int
@@ -229,7 +265,7 @@ check "premise: the server restarts with the resolver shim" \
 shim_read() {  # shim_read <name> -> the SQLSTATE of a read from that name, port 1
 	sqlstate_of "SET statement_timeout = '3s'; SELECT count(*) FROM pgcolumnar.read_parquet('http://$1.pgc-shim.invalid:1/x.parquet') AS (a int8)"
 }
-set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid"
+set_list "ok.pgc-shim.invalid, imds6.pgc-shim.invalid, nat64.pgc-shim.invalid, nat64local.pgc-shim.invalid, mapped.pgc-shim.invalid, compat.pgc-shim.invalid, gcp6.pgc-shim.invalid, local48.pgc-shim.invalid, local56.pgc-shim.invalid, local64.pgc-shim.invalid, over48.pgc-shim.invalid, ctl96.pgc-shim.invalid, loop6.pgc-shim.invalid, ula.pgc-shim.invalid, n64ok.pgc-shim.invalid, n64wide.pgc-shim.invalid, local2.pgc-shim.invalid, compat9.pgc-shim.invalid, l48only.pgc-shim.invalid, gce253.pgc-shim.invalid, n64sec.pgc-shim.invalid, alimapped.pgc-shim.invalid, alicompat.pgc-shim.invalid, alinat64.pgc-shim.invalid, alilocal.pgc-shim.invalid, alilocal48.pgc-shim.invalid, ali56.pgc-shim.invalid, ali64.pgc-shim.invalid, alinext.pgc-shim.invalid"
 check_num "premise: a shim name that maps to 127.0.0.1 reads the fixture" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('http://ok.pgc-shim.invalid:$HTTP_PORT/fixture.parquet') AS (a int8)")" "1000"
 check "IPv6 IMDS fd00:ec2::254: refused 42501 despite being listed" "$(shim_read imds6)" "42501"
@@ -277,6 +313,19 @@ check "64:ff9b:2::a9fe:a9fe (outside 64:ff9b:1::/48): not refused, a connect is 
 check "::1:0:a9fe:a9fe (outside ::/96): not refused, a connect is tried" "$(connect_tried compat9)" "connect tried"
 check "fd20:ce::253 (next to fd20:ce::254): not refused, a connect is tried" "$(connect_tried gce253)" "connect tried"
 check "NAT64 64:ff9b::aafe:a9fe (170.254.169.254): not refused, a connect is tried" "$(connect_tried n64sec)" "connect tried"
+# 100.100.100.200 inside the same IPv6 forms (#1848). On an IPv6-only network with
+# DNS64, a name whose A record is 100.100.100.200 resolves only to
+# 64:ff9b::6464:64c8, so each form needs its own refusal. The /48 local-use layout
+# puts the address at bytes 6, 7, 9 and 10, /56 at 7, 9, 10 and 11, and /64 at 9 to
+# 12. 100.100.100.201 under the well-known prefix is the control: a connect is tried.
+check "IPv4-mapped ::ffff:100.100.100.200: refused 42501 despite being listed" "$(shim_read alimapped)" "42501"
+check "IPv4-compatible ::100.100.100.200: refused 42501 despite being listed" "$(shim_read alicompat)" "42501"
+check "NAT64 64:ff9b::6464:64c8 (100.100.100.200): refused 42501 despite being listed" "$(shim_read alinat64)" "42501"
+check "NAT64 local-use 64:ff9b:1::6464:64c8 (100.100.100.200): refused 42501 despite being listed" "$(shim_read alilocal)" "42501"
+check "NAT64 local-use /48 64:ff9b:1:6464:64:c800:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read alilocal48)" "42501"
+check "NAT64 local-use /56 64:ff9b:1:64:64:64c8:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read ali56)" "42501"
+check "NAT64 local-use /64 64:ff9b:1:0:64:6464:c800:: (100.100.100.200): refused 42501 despite being listed" "$(shim_read ali64)" "42501"
+check "NAT64 64:ff9b::6464:64c9 (100.100.100.201): not refused, a connect is tried" "$(connect_tried alinext)" "connect tried"
 IMDS6_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
 	-c "SET statement_timeout = '3s'" \
 	-c "SELECT count(*) FROM pgcolumnar.read_parquet('http://imds6.pgc-shim.invalid:1/x.parquet') AS (a int8)" 2>&1)"

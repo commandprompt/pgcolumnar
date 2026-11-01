@@ -241,6 +241,7 @@ SUITES=(
 	objstore_allowlist
 	objstore_credentials
 	objstore_crlf
+	objstore_error_advice
 	objstore_export_double_cancel
 	objstore_export_open_uploads
 	objstore_http_read
