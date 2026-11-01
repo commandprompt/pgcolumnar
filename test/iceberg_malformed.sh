@@ -357,16 +357,19 @@ check "backend still up after the enum refusals" "$(survived "$B")" "1"
 # =========================================================================
 IDS="$DEST/enum_ctl/db/t/metadata"
 ids_md() {	# ids_md TAG KEY VALUE -> path of enum_ctl's metadata with KEY set to VALUE
+	# (VALUE "absent" deletes KEY)
 	python3 - "$IDS/t.metadata.json" "$IDS/ids_$1.metadata.json" "$2" "$3" <<'PY'
 import json, sys
-src, dst, key, val = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+src, dst, key, val = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 m = json.load(open(src))
 m["partition-specs"] = [{"spec-id": 0, "fields": []}]
 m["default-spec-id"] = 0
-if key == "schema-id":
-    m["snapshots"][0]["schema-id"] = val
+if val == "absent":
+    del m[key]
+elif key == "schema-id":
+    m["snapshots"][0]["schema-id"] = int(val)
 else:
-    m[key] = val
+    m[key] = int(val)
 json.dump(m, open(dst, "w"))
 PY
 	echo "$IDS/ids_$1.metadata.json"
@@ -374,11 +377,14 @@ PY
 SID_MAX="$(ids_md sidmax schema-id 2147483647)"
 SID_4G="$(ids_md sid4g schema-id 4294967296)"
 SID_NEG="$(ids_md sidneg schema-id -2147483649)"
+SID_MIN="$(ids_md sidmin schema-id -2147483648)"
 DS_0="$(ids_md ds0 default-spec-id 0)"
 DS_4G="$(ids_md ds4g default-spec-id 4294967296)"
 DS_NEG="$(ids_md dsneg default-spec-id -2147483649)"
+DS_MAX="$(ids_md dsmax default-spec-id 2147483647)"
+DS_NONE="$(ids_md dsnone default-spec-id absent)"
 q "CREATE SERVER ice_ids FOREIGN DATA WRAPPER pgcolumnar_iceberg" >/dev/null
-for t in ds0 ds4g dsneg; do
+for t in ds0 ds4g dsneg dsmax dsnone; do
 	q "CREATE FOREIGN TABLE ids_$t (id bigint, region text, amount int)
 	   SERVER ice_ids OPTIONS (metadata_path '$IDS/ids_$t.metadata.json')" >/dev/null
 done
@@ -404,6 +410,15 @@ check "a default-spec-id of -2147483649 is refused by the Iceberg foreign table 
 	"$(refusal "SELECT count(*) FROM ids_dsneg" \
 		'".*" has a default-spec-id out of range: -2147483649$' "default-spec-id -2147483649")" \
 	"XX001 (default-spec-id -2147483649)"
+# The controls at the other edges: INT32_MIN and INT32_MAX are valid ids, and a
+# table with no default-spec-id (a v1 table from an older writer) reads as spec 0.
+check "control: a snapshot schema-id of -2147483648 reads as -2147483648" \
+	"$(q "SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('$SID_MIN')")" \
+	"-2147483648"
+check "control: a foreign table with default-spec-id 2147483647 scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_dsmax")" "10"
+check "control: a foreign table with no default-spec-id scans ten rows" \
+	"$(q "SELECT count(*) FROM ids_dsnone")" "10"
 check "backend still up after the int32 id refusals" "$(survived "$B")" "1"
 
 pgc_summary

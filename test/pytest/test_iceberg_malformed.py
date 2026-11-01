@@ -260,7 +260,9 @@ def imf(pgc_cluster, server_dir):
             m = json.loads((ids / "t.metadata.json").read_text())
             m["partition-specs"] = [{"spec-id": 0, "fields": []}]
             m["default-spec-id"] = 0
-            if key == "schema-id":
+            if val is None:
+                del m[key]
+            elif key == "schema-id":
                 m["snapshots"][0]["schema-id"] = val
             else:
                 m[key] = val
@@ -272,7 +274,8 @@ def imf(pgc_cluster, server_dir):
         snap = lambda f: f"SELECT schema_id FROM pgcolumnar.iceberg_current_snapshot('{f}')"  # noqa: E731
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE SERVER ice_ids FOREIGN DATA WRAPPER pgcolumnar_iceberg")
-            for tag, val in (("ds0", 0), ("ds4g", 4294967296), ("dsneg", -2147483649)):
+            for tag, val in (("ds0", 0), ("ds4g", 4294967296), ("dsneg", -2147483649),
+                             ("dsmax", 2147483647), ("dsnone", None)):
                 f = ids_md(tag, "default-spec-id", val)
                 c.execute(f"CREATE FOREIGN TABLE ids_{tag} (id bigint, region text, amount int) "
                           f"SERVER ice_ids OPTIONS (metadata_path '{f}')")
@@ -283,6 +286,9 @@ def imf(pgc_cluster, server_dir):
         r["ds 0"] = _value(dsn, "SELECT count(*) FROM ids_ds0")
         r["ds 4g"] = _refusal(dsn, "SELECT count(*) FROM ids_ds4g", DS4G)
         r["ds neg"] = _refusal(dsn, "SELECT count(*) FROM ids_dsneg", DSNEG)
+        r["sid min"] = _value(dsn, snap(ids_md("sidmin", "schema-id", -2147483648)))
+        r["ds max"] = _value(dsn, "SELECT count(*) FROM ids_dsmax")
+        r["ds none"] = _value(dsn, "SELECT count(*) FROM ids_dsnone")
         r["ids up"] = alive(b)
         yield r
     finally:
@@ -646,6 +652,24 @@ def test_a_default_spec_id_below_int32_is_refused_not_truncated(imf, expect):
         return
     expect.text(imf["ds neg"], "XX001 (default-spec-id -2147483649)",
                 "a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647")
+
+
+def test_a_snapshot_schema_id_of_int32_min_reads(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["sid min"], "-2147483648", "control: a snapshot schema-id of -2147483648 reads as -2147483648")
+
+
+def test_a_foreign_table_with_default_spec_id_int32_max_scans(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds max"], "10", "control: a foreign table with default-spec-id 2147483647 scans ten rows")
+
+
+def test_a_foreign_table_with_no_default_spec_id_scans(imf, expect):
+    if _declined(imf, expect):
+        return
+    expect.text(imf["ds none"], "10", "control: a foreign table with no default-spec-id scans ten rows")
 
 
 def test_the_backend_survives_the_int32_id_refusals(imf, expect):

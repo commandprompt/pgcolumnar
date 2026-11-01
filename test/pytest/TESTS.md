@@ -10579,7 +10579,7 @@ The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the sh
 
 ## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
 
-The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823). A snapshot `schema-id` and a `default-spec-id` outside the 32-bit range are refused naming the value, not cut to 32 bits (#1853). Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823). A snapshot `schema-id` and a `default-spec-id` outside the 32-bit range are refused naming the value, not cut to 32 bits (#1853). The edges still read: a schema-id of -2147483648, a default-spec-id of 2147483647, and a table with no `default-spec-id`, which means spec 0. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
 
 ### Every test
 
@@ -10640,6 +10640,9 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 | `test_a_foreign_table_with_default_spec_id_0_scans` | control: a foreign table with default-spec-id 0 scans ten rows |
 | `test_a_default_spec_id_of_2_32_is_refused_not_truncated` | a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0 |
 | `test_a_default_spec_id_below_int32_is_refused_not_truncated` | a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647 |
+| `test_a_snapshot_schema_id_of_int32_min_reads` | control: a snapshot schema-id of -2147483648 reads as -2147483648 |
+| `test_a_foreign_table_with_default_spec_id_int32_max_scans` | control: a foreign table with default-spec-id 2147483647 scans ten rows |
+| `test_a_foreign_table_with_no_default_spec_id_scans` | control: a foreign table with no default-spec-id scans ten rows |
 | `test_the_backend_survives_the_int32_id_refusals` | backend still up after the int32 id refusals |
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
