@@ -133,6 +133,41 @@ check "a server of another wrapper is refused" \
 	"42809|nofile"
 check "an existing path is refused, so no file a table reads is overwritten" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/m_jan.parquet');")" "58P02"
+# The readers read s3a:// and s3n:// as s3://, and match the scheme in any case
+# (#1930), so these spellings name the object a tier to s3:// would overwrite
+# (#1936). The refusal comes before the export, so no store is contacted.
+psql_run "CREATE FOREIGN TABLE dup_s3a (x int) SERVER tier_pq OPTIONS (path 's3a://tierb/m_feb_a.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_upper (x int) SERVER tier_pq OPTIONS (path 'S3://tierb/m_feb_u.parquet');"
+check "a path a foreign table reads as s3a:// is refused like the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/m_feb_a.parquet');")" "58P02"
+check "a path a foreign table reads as S3:// is refused like the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/m_feb_u.parquet');")" "58P02"
+# Each branch of the rule has a check of its own (#1937 review): s3n:// on the
+# table side, an upper-case scheme on the target side, and the scheme case of
+# gs://, az://, http:// and https://.
+psql_run "CREATE FOREIGN TABLE dup_s3n (x int) SERVER tier_pq OPTIONS (path 's3n://tierb/m_feb_n.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_lower (x int) SERVER tier_pq OPTIONS (path 's3://tierb/m_feb_l.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_gs (x int) SERVER tier_pq OPTIONS (path 'GS://tierb/m_feb_g.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_az (x int) SERVER tier_pq OPTIONS (path 'Az://tierb/m_feb_z.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_http (x int) SERVER tier_pq OPTIONS (path 'HTTP://h.example/m_feb_h.parquet');"
+psql_run "CREATE FOREIGN TABLE dup_https (x int) SERVER tier_pq OPTIONS (path 'HTTPS://h.example/m_feb_t.parquet');"
+check "a path a foreign table reads as s3n:// is refused like the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/m_feb_n.parquet');")" "58P02"
+check "an S3:// path is refused when a foreign table reads the identical s3:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'S3://tierb/m_feb_l.parquet');")" "58P02"
+check "a path a foreign table reads as GS:// is refused like the identical gs:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'gs://tierb/m_feb_g.parquet');")" "58P02"
+check "a path a foreign table reads as Az:// is refused like the identical az:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'az://tierb/m_feb_z.parquet');")" "58P02"
+check "a path a foreign table reads as HTTP:// is refused like the identical http:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'http://h.example/m_feb_h.parquet');")" "58P02"
+check "a path a foreign table reads as HTTPS:// is refused like the identical https:// spelling" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'https://h.example/m_feb_t.parquet');")" "58P02"
+# tier_partition is not STRICT. With foreign tables on a path= option present, a
+# NULL path must still reach the null refusal, not the same-object refusal.
+check "a NULL path is refused as null, not as a file a foreign table reads" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', NULL);")" "22004"
+psql_run "DROP FOREIGN TABLE dup_s3a, dup_upper, dup_s3n, dup_lower, dup_gs, dup_az, dup_http, dup_https;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"

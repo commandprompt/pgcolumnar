@@ -484,7 +484,7 @@ def test_xdist_inner_three(expect): expect.num(1, 1, "three")
 """
 
 
-def _xdist_unrunnable_run(pytester, monkeypatch, body, rows):
+def _xdist_unrunnable_run(pytester, monkeypatch, body, rows, *extra):
     import pathlib
     here = pathlib.Path(__file__).resolve().parent
     monkeypatch.setenv("PYTHONPATH", f"{pytester.path}:{here}")
@@ -495,7 +495,7 @@ def _xdist_unrunnable_run(pytester, monkeypatch, body, rows):
     result = pytester.runpytest_subprocess(
         "-p", "pgc_vacuity", "-p", "no:cacheprovider", "-n", "2",
         "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
-        "--pgc-expected-unrunnable", str(listing))
+        "--pgc-expected-unrunnable", str(listing), *extra)
     out = result.stdout.str() + result.stderr.str()
     return result, out
 
@@ -542,6 +542,54 @@ def test_a_stale_row_under_xdist_is_still_refused(pytester, monkeypatch, expect)
     expect.num(out.count("so the list is stale"), 1,
                "under -n 2 the stale row is reported exactly once")
     expect.num(int(result.ret), 67, "and the -n 2 run with a stale row exits 67")
+
+
+def test_a_listed_test_that_fails_is_not_a_stale_row(pytester, expect):
+    """#1914. A listed test that FAILED did not run to a pass, so the list is right.
+
+    The stale-row message tells the reader to delete the row. Before the fix the
+    check read "did not decline" as "ran", so a failing listed test got that
+    message beside its own failure. The failure already makes the run exit 1.
+    """
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_fails(expect):
+            expect.num(1, 2, "it fails")
+        """
+    )
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(
+        "17 test_a_listed_test_that_fails_is_not_a_stale_row.py::test_fails\n")
+    result = pytester.runpytest(
+        "-p", "pgc_vacuity",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", str(listing))
+    out = result.stdout.str() + result.stderr.str()
+    expect.num(out.count("so the list is stale"), 0,
+               "a listed test that failed is not reported as a stale row")
+    expect.num(int(result.ret), 1, "and the run exits 1 for the failure")
+
+
+def test_a_listed_test_lost_to_a_crashed_worker_is_not_a_stale_row(pytester, monkeypatch, expect):
+    """#1914. A listed test lost to a crashed xdist worker is not a stale row.
+
+    The review of PR #1905 measured this: with the listed test's body replaced by
+    `os._exit(3)` and `-n 2 --max-worker-restart=0`, the run exited 1, said
+    `worker gw0 crashed` and that tests never reported an outcome, and ALSO
+    called the list stale for that test. The loss is the finding; the row is
+    correct.
+    """
+    body = "import os\n" + _XDIST_UNRUNNABLE_BODY.replace(
+        'expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")',
+        'os._exit(3)')
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, body, "17 test_xd.py::test_xdist_inner_decliner\n",
+        "--max-worker-restart=0")
+    expect.at_least(out.count("crashed while running"), 1, "the premise: a worker crashed")
+    expect.num(out.count("so the list is stale"), 0,
+               "a listed test lost to a crashed worker is not reported as a stale row")
+    expect.num(int(result.ret), 1, "and the run exits 1 for the lost test")
 
 
 def test_an_unlisted_decliner_under_xdist_is_still_refused(pytester, monkeypatch, expect):

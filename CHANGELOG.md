@@ -546,6 +546,49 @@ true until the next version shipped.
   read as compressed, as in pyarrow.
   docs/limitations.md. `test/native_parquet_hardening.sh` and
   `test_native_parquet_hardening.py`.
+- `tier_partition` now refuses a path that a foreign table reads under another
+  spelling of the same object (#1936). Before this it compared the `path`
+  option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
+  move to `s3://b/k`, and the move overwrote the object that table reads. The
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
+- Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
+  server that it starts no longer holds the lock, and a run fails when the
+  installed library changes during it (#1915). Before, the suite passed the
+  lock's descriptor to its postmaster. A cluster that outlived the command
+  blocked every other run of that major; one such cluster blocked the PG18
+  queue for about 25 minutes. `test/portlib.sh` now closes a descriptor whose
+  lock another live process took. That process still holds the lock. A lock
+  the suite took itself stays held. The fix does not cover a lock taken with
+  `flock -F` or on a descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`:
+  there the suite holds the only copy, so closing it would release the lock. docs/testing.md
+  says what to do instead. A suite that sets `set -e` before it loads lib.sh
+  still runs under flock. On a shared machine, another session can also
+  install into the same prefix during a run. `pgc_summary` now fails the run
+  when the library's digest changed after `pgc_setup`, and names both
+  digests. The pytest session's teardown does the same. docs/testing.md.
+  `test/harness_isolation.sh` and `test_harness_isolation.py`.
+  Reported by @OffgridwithJD.
+
+- The Iceberg REST functions now refuse a namespace whose only level is empty,
+  `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
+  empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
+  catalog answers that path with HTTP 400, and a proxy may collapse `//` to
+  `/` and reach another resource. The REST spec has no other way to write it.
+  The refusal comes before any request, including a server's OAuth token
+  request, so it does not depend on whether the catalog is up. The hint names level 1 as empty. `iceberg_rest_namespace_levels`
+  still lists `{""}` and still asks for its children with an empty `?parent=`,
+  which is a query value, not a path segment. The Apache Iceberg REST catalog
+  reads it as `{""}`. `iceberg_rest_namespaces` now writes the levels `""`, `x`
+  as `.x`; before, it wrote `x`, the name of another namespace. A namespace with
+  an empty level among other levels, such as `{db,""}`, still works (#1891).
+  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`.
+
 - The Parquet reader now refuses a Snappy page whose decompressed size differs
   from the size in its page header (#1910). It raises SQLSTATE XX001, as it
   already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the
@@ -569,6 +612,64 @@ true until the next version shipped.
   with the seed's answer. The pytest twin does the same. If a composite type
   cannot be created, a named check now fails and shows the error. Before, the
   error was discarded and the seed dropped out of the fuzz without a word.
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+  now refuse a list of lists read into an array column (#1917). Before, they
+  flattened it without an error: the cell `[[1], [2, 3]]` read as `{1,2,3}`. A
+  list of maps flattened the same way. A Parquet leaf under two or more
+  repeated levels now fails with SQLSTATE 42804, and the message gives its
+  depth. PostgreSQL does not tell `int[]` from `int[][]` in a declared type,
+  and the reader builds only one-dimensional arrays, so no column list reads
+  such a leaf. These three entry points therefore cannot read such a file at
+  all, even for a query that does not use that column: they bind every column
+  by position, and a scalar declaration fails as unexpectedly repeated. Before,
+  such a query returned the other columns correctly. docs/limitations.md and
+  docs/sql-reference.md. `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py`.
+
+- The pytest layer no longer calls `expected_unrunnable.txt` stale for a listed
+  test that failed or was lost to a crashed xdist worker (#1914). The check read
+  "did not decline" as "ran", and its message told the reader to delete a
+  correct row. Now only a listed test that passed makes its row stale. The run
+  still exits 1 for the failure or the lost test. `test_layer.py`.
+
+- Two provenance comments in `test/pytest/expected_tests.txt` now give counts
+  that add up (#1919). A merge renumbered their `cluster_tests` values but kept
+  the counts collected on the branch. The comments now say where each count
+  was taken. No count changes.
+
+- The five functions that read local files only now also refuse an `s3a://` or
+  `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
+  `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+  `read_manifest_list`. These are the Hadoop names for S3, which the Iceberg
+  reader accepts (#1825). Before this they failed with
+  `58P01 could not open file "s3a://..." for reading`, which says the object
+  does not exist. The match ignores case, and the message and hint are #1886's.
+  Only this refusal changes here. The Parquet readers read such a path as
+  `s3://` since #1930. docs/sql-reference.md. `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test/avro_manifest.sh` and their pytest twins.
+- The Parquet readers read an `s3a://` or `s3n://` URL as `s3://`, in any case,
+  as the Iceberg reader does (#1930). These are `read_parquet`,
+  `parquet_schema`, `import_parquet` and the `pgcolumnar_parquet` wrapper.
+  Before this they took such a URL for a local path and failed with
+  `58P01 could not open file "s3a://..." for reading`. The reader rewrites the
+  URL before it routes, lists, globs or signs it, so a prefix, a glob and a Hive
+  root all work, and an error names the `s3://` URL that was requested. Only the
+  start of the path counts, so `xs3a://` and `s3ax://` stay local paths. The
+  exports write `s3://` only: `export_parquet`, `export_arrow` and
+  `parallel_export_parquet` refuse an alias with SQLSTATE 0A000 and a hint that
+  names the `s3://` URL, where they failed with 58P01 before.
+  docs/sql-reference.md. `test/objstore_listing.sh` and its pytest twin.
+- `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
+  with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
+  local files only, and before this an `s3://` or `http://` URL failed with
+  `58P01 could not open file "s3://..." for reading`, which says the object does
+  not exist. Every scheme the readers treat as remote is refused: `s3://`,
+  `gs://`, `az://`, `http://` and `https://`, in any case, with #1886's message
+  and hint, for example
+  `columnar: read_avro_manifest does not read "s3://bucket/m.avro"`. Both check
+  `pg_read_server_files` first, so a caller without it gets 42501 for a URL as
+  for a local path. docs/sql-reference.md. `test/avro_manifest.sh` and its
+  pytest twin.
 - Two reads of one remote object in one statement now read the same version
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a
