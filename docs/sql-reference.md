@@ -1006,7 +1006,9 @@ compatibility as the import functions.
 The list must contain each leaf column in the file. A list with fewer columns is
 an error and not a projection. The read stops and gives a message. The message
 contains the number of leaf columns in the file and the number that the target
-expands to. The same rule applies to a foreign
+expands to. Its DETAIL names the file, so a read of a directory, a prefix or a
+glob says which of its files does not match. Every other error about a file that
+does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
@@ -1710,6 +1712,14 @@ upload. It becomes visible at its final name only when the upload completes, so 
 reader never sees a partial object. An export that fails before its last request
 removes what it wrote, including an incomplete multipart upload. The last request
 is different, as the next paragraphs explain.
+
+A request whose body is over 1 MiB, a single request or a part, sends its headers
+first with `Expect: 100-continue`. It waits up to one second for the store to
+answer them before it sends the body. A store can refuse the request from its
+headers alone, with a 403 for example. The export then reports that status and its
+hint, over `https://` as well as `http://`. A store that ignores `Expect` costs
+that second on each such request. A store that answers `417` gets the request
+again without `Expect`.
 
 This cleanup holds when you cancel or terminate the export while it waits for the
 store to start the upload. The export then has no id for that upload. It lists

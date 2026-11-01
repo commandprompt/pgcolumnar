@@ -1121,7 +1121,8 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   executor and prunes nothing. Stable and immutable functions still prune.
 - `parquet_schema` describes the first file of a directory or glob, assuming the
   set is uniform. The read paths still bind every file against the declared
-  columns, so a mismatched file raises rather than returning wrong rows.
+  columns, so a mismatched file raises rather than returning wrong rows. The
+  error's DETAIL names the file.
 - A `TIMESTAMP` column with nanosecond precision is advised as `bigint`, which is
   exact; declaring it `timestamp` reads it with the sub-microsecond digits
   truncated.

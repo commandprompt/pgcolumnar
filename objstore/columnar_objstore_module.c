@@ -93,6 +93,16 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
  * cut ETag matches nothing, so every pinned GET would fail (#1805 review).
  */
 #define OS_ETAG_BUF			80
+/*
+ * A write whose body is larger than this sends its headers alone first, with
+ * Expect: 100-continue, and waits up to OS_EXPECT_WAIT_MS for the store to
+ * answer them (#1902). A store that refuses from the headers (403, 404) then
+ * says so before any body byte is sent, which works over TLS too, where a
+ * failed send leaves an early answer unreadable. A store that ignores Expect
+ * costs that wait once per request; the same threshold and wait as curl's.
+ */
+#define OS_EXPECT_MIN_BODY	(1024 * 1024)
+#define OS_EXPECT_WAIT_MS	1000
 
 /*
  * Where a handle's signing key came from (#1796). Only the 403 hint reads it:
@@ -2126,7 +2136,10 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
  * send and takes the one reconnect a stale keep-alive takes.
  *
  * Plain sockets only. On TLS a failed SSL_write leaves the session unusable
- * for SSL_read, so a TLS store's early answer is still reported as no response.
+ * for SSL_read. A body large enough to fail its send is above
+ * OS_EXPECT_MIN_BODY, so a TLS store gets the chance to answer the headers
+ * before the body goes out (Expect: 100-continue, #1902), and only a store
+ * that ignores Expect and refuses after the wait still reads as no response.
  */
 static bool
 os_answered_early(PgColumnarObjHandle *h)
@@ -2138,6 +2151,93 @@ os_answered_early(PgColumnarObjHandle *h)
 	if (h->tls || h->fd < 0)
 		return false;
 	return recv(h->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) > 0;
+}
+
+/*
+ * Wait up to `ms` for the store to start answering the headers of a request
+ * sent with Expect: 100-continue (#1902), without sending its body. True when
+ * response bytes are staged in h->rb for os_read_head; false when nothing came
+ * in time, or the connection ended first, which ends the wait at once. Over
+ * TLS the socket can turn readable with a record that holds no application
+ * data (a TLS 1.3 session ticket), so readiness alone is not an answer: only
+ * bytes that SSL_read returns are. Interrupts are serviced, since nothing has
+ * been committed yet.
+ */
+static bool
+os_await_answer(PgColumnarObjHandle *h, int ms)
+{
+	TimestampTz until = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), ms);
+
+	if (h->rb_off == h->rb_len)
+		h->rb_off = h->rb_len = 0;
+	for (;;)
+	{
+		long		left;
+		int			rc;
+
+		if (h->rb_len > h->rb_off)
+			return true;
+#ifdef HAVE_OBJSTORE_OPENSSL
+		if (h->tls)
+		{
+			int			got;
+			int			serr;
+
+			ERR_clear_error();
+			got = SSL_read(h->ssl, h->rb + h->rb_len, OS_RBUF - h->rb_len);
+			if (got > 0)
+			{
+				h->rb_len += got;
+				return true;
+			}
+			serr = SSL_get_error(h->ssl, got);
+			if (serr != SSL_ERROR_WANT_READ && serr != SSL_ERROR_WANT_WRITE &&
+				!(serr == SSL_ERROR_SYSCALL && errno == EINTR))
+				return false;
+		}
+		else
+#endif
+		{
+			ssize_t		got = recv(h->fd, h->rb + h->rb_len,
+								   OS_RBUF - h->rb_len, MSG_DONTWAIT);
+
+			if (got > 0)
+			{
+				h->rb_len += (int) got;
+				return true;
+			}
+			if (got == 0 ||
+				(errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+				return false;
+		}
+
+		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), until);
+		if (left <= 0)
+			return false;
+		rc = WaitLatchOrSocket(MyLatch,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH |
+							   WL_SOCKET_READABLE,
+							   h->fd, left, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/*
+ * Read the final response head, passing over interim (1xx) ones: a store that
+ * answered 100 Continue after the Expect wait ran out sends it ahead of the
+ * final answer to the body.
+ */
+static bool
+os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
+{
+	do
+	{
+		if (!os_read_head(h, resp))
+			return false;
+	} while (resp->status >= 100 && resp->status < 200);
+	return true;
 }
 
 /*
@@ -2159,6 +2259,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	char		payloadHex[PG_SHA256_DIGEST_LENGTH * 2 + 1];
 	int			attempt;
 	bool		held = false;
+	bool		expect = (bodylen > OS_EXPECT_MIN_BODY);
 
 	os_sha256(body, (size_t) bodylen, phash);
 	os_hex(phash, sizeof(phash), payloadHex);
@@ -2169,6 +2270,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		bool		fresh;
 		bool		sent;
 		bool		early;
+		bool		answered = false;
 
 		if (h->fd < 0)
 			os_connect(h);
@@ -2188,11 +2290,47 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		 */
 		if (h->sign)
 			os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
+		if (expect)
+			appendStringInfoString(&req, "Expect: 100-continue\r\n");
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		sent = os_send_all(h, req.data, req.len) &&
-			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen));
+		sent = os_send_all(h, req.data, req.len);
+
+		/*
+		 * With Expect, the store may answer the headers before the body is
+		 * sent (#1902). 100 Continue, or no answer within the wait (a store
+		 * that ignores Expect), sends the body; so does a connection that
+		 * ended, whose body send then fails and takes the stale keep-alive
+		 * path as before. A final answer is the answer to this request, and
+		 * the body is never sent. The writes this large (a single PUT, a
+		 * part) fail on any answer but 200, which drops the connection the
+		 * store may still expect the body on. 417 refuses the expectation
+		 * itself, so the request goes again without it.
+		 */
+		if (sent && expect &&
+			os_await_answer(h, OS_EXPECT_WAIT_MS))
+		{
+			/* bytes are staged, so this reads a head or raises */
+			(void) os_read_head(h, resp);
+			if (resp->status == 417)
+			{
+				pfree(req.data);
+				os_disconnect(h);
+				expect = false;
+				attempt--;		/* a fresh request, not a stale retry */
+				continue;
+			}
+			else if (resp->status >= 200)
+				answered = true;
+		}
+		if (sent && !answered && bodylen > 0)
+			sent = os_send_all(h, (const char *) body, bodylen);
 		early = !sent && os_answered_early(h);
+		if (answered)
+		{
+			pfree(req.data);
+			break;
+		}
 		if (sent || early)
 		{
 			/*
@@ -2206,7 +2344,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 				HOLD_INTERRUPTS();
 				held = true;
 			}
-			if (os_read_head(h, resp))
+			if (os_read_final_head(h, resp))
 			{
 				pfree(req.data);
 				break;

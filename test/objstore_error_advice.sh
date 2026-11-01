@@ -16,13 +16,19 @@
 #      part) that the store refused before reading the body lost the HTTP
 #      status: the body send failed, and the code never read the answer that had
 #      already arrived. The 403 and its hint now survive on an http:// endpoint,
-#      which is what this fixture serves. An https:// store still reports
-#      "failed before a response" (tracked in #1902).
+#      which is what this fixture serves.
+#   D over TLS (#1902): the same refusal from an https:// store still lost its
+#      status, because a failed send leaves a TLS session unreadable, so the
+#      early answer cannot be read after it. A write whose body is over 1 MiB
+#      now sends its headers with Expect: 100-continue and waits up to a second
+#      for the store to answer them; a refusal then arrives before the body is
+#      sent. 100 Continue, or no answer in time, sends the body; 417 sends the
+#      request again without Expect.
 #
 # Facet A (s3://<bucket>/_ in prefix and glob errors) is #1869's fix and its
 # arms are in test/objstore_export_open_uploads.sh.
 #
-# One SigV4 fixture with a refused bucket (--tamper-bucket: every request there
+# One SigV4 fixture with a refused bucket, the same fixture again over https, (--tamper-bucket: every request there
 # is verified against another secret, refused 403 before any body is read), three
 # REST catalogs over the committed iceberg warehouse (one vends a wrong secret in
 # its flat config, one in a storage-credentials entry, one vends nothing), and a postmaster whose environment holds the fixture's
@@ -43,6 +49,8 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 MODDIR="$("$PGC_PG_CONFIG" --pkglibdir)"
 [ -f "$MODDIR/pgcolumnar_objstore.so" ] \
 	|| pgc_skip objstore "the object-store module is not installed"
+command -v openssl >/dev/null \
+	|| pgc_skip openssl "the openssl CLI is required to make the https fixture's certificate"
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 [ -f "$FX/warehouse_del/db/t/metadata/apply.metadata.json" ] \
 	|| pgc_skip fixture "iceberg fixtures are missing"
@@ -121,9 +129,26 @@ CAT_NONE="http://127.0.0.1:$LAST_PORT"
 check "premise: the SigV4 S3 fixture and both REST catalogs are up" \
 	"$(cat "$PGC_WORKDIR/s3.out" "$PGC_WORKDIR"/rest_*.out 2>/dev/null | grep -c READY)" "3"
 
+# The same fixture over https (#1902), with a certificate for 127.0.0.1 that the
+# postmaster trusts through SSL_CERT_FILE.
+PKI="$PGC_WORKDIR/pki"
+mkdir -p "$PKI"
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$PKI/srv.key" -subj "/CN=127.0.0.1" \
+	-addext "subjectAltName=IP:127.0.0.1" -days 2 -out "$PKI/srv.pem" 2>/dev/null
+TLS_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PGC_WORKDIR" --port "$TLS_PORT" --log "$PGC_WORKDIR/tls.log" \
+	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
+	--tamper-bucket "$DENIED" --tls-cert "$PKI/srv.pem" --tls-key "$PKI/srv.key" \
+	> "$PGC_WORKDIR/tls.out" 2>&1 &
+PIDS="$PIDS $!"
+ready "$PGC_WORKDIR/tls.out"
+check "premise: the https SigV4 fixture is up" \
+	"$(grep -c READY "$PGC_WORKDIR/tls.out" 2>/dev/null)" "1"
+
 # The postmaster's environment holds the fixture's RIGHT key.
 pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
-pgc_pg "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ENDPOINT_URL AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; AWS_ENDPOINT_URL='$S3EP' AWS_ACCESS_KEY_ID='$AKID' AWS_SECRET_ACCESS_KEY='$SECRET' AWS_REGION='$REGION' PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK' pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+pgc_pg "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ENDPOINT_URL AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; AWS_ENDPOINT_URL='$S3EP' AWS_ACCESS_KEY_ID='$AKID' AWS_SECRET_ACCESS_KEY='$SECRET' AWS_REGION='$REGION' PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK' SSL_CERT_FILE='$PKI/srv.pem' pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
 crashes0="$(logcount 'terminated by signal')"
 
@@ -197,7 +222,10 @@ check "allow-list refusal: the list the hint suggests permits the endpoint" \
 q "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$BUCKET/mid.parquet')" >/dev/null
 MID_PUTS="$(grep -c "^PUT /$BUCKET/mid.parquet " "$S3_LOG")"
 MID_POSTS="$(grep -c "^POST /$BUCKET/mid.parquet " "$S3_LOG")"
-MID_BYTES="$(stat -c %s "$PGC_WORKDIR/$BUCKET/mid.parquet" 2>/dev/null || echo 0)"
+# The size comes from the same export to a local file, so the premise does not
+# depend on the remote write it sizes (a write that never sends its body, #1902).
+q "SELECT pgcolumnar.export_parquet('ea_mid', '$PGC_WORKDIR/mid_local.parquet')" >/dev/null
+MID_BYTES="$(stat -c %s "$PGC_WORKDIR/mid_local.parquet" 2>/dev/null || echo 0)"
 check "premise: the mid-size export is one PUT of more than 4 MiB" \
 	"$( [ "$MID_PUTS" = 1 ] && [ "$MID_POSTS" = 0 ] && [ "$MID_BYTES" -gt 4194304 ] && echo yes \
 		|| echo "no ($MID_PUTS PUT, $MID_POSTS POST, $MID_BYTES bytes)")" "yes"
@@ -207,6 +235,60 @@ check "a small export to the refused bucket reports the 403 and its hint" \
 check "mid-size export refused before its body was read: the 403 and its hint survive" \
 	"$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$DENIED/m.parquet')")" \
 	"28000: columnar: access to \"s3://$DENIED/m.parquet\" was denied (HTTP 403: SignatureDoesNotMatch) | HINT: Check the AWS_* credential environment of the server process."
+
+# ---- D over TLS (#1902): the store answers the headers before the body is sent --
+# The writes go through a server whose endpoint is the https fixture, with the
+# right key in its user mapping; the read-back goes through the http fixture,
+# which serves the same directory. Each hook file plays one kind of store.
+psql_run "CREATE SERVER ea_tls FOREIGN DATA WRAPPER pgcolumnar_parquet
+            OPTIONS (endpoint 'https://127.0.0.1:$TLS_PORT', region '$REGION');
+          CREATE USER MAPPING FOR postgres SERVER ea_tls
+            OPTIONS (access_key_id '$AKID', secret_access_key '$SECRET');" >/dev/null
+EXPECT_LOG="$PGC_WORKDIR/__expect_log__"
+: > "$EXPECT_LOG"
+# tls_export REL KEY COLS -> "N exported, M read back", or the export's error
+tls_export() {
+	local r
+	r="$(refusal "SELECT pgcolumnar.export_parquet('$1', 's3://$BUCKET/$2', 'ea_tls')")"
+	case "$r" in "no error ("*")") ;; *) echo "$r"; return ;; esac
+	r="${r#no error (}"
+	echo "${r%)} exported, $(q "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/$2') AS t($3)") read back"
+}
+MID_COLS="id int8, t text"
+check "a mid-size export over https whose store answers 100 Continue writes the object" \
+	"$(tls_export ea_mid tls_mid.parquet "$MID_COLS")" "300000 exported, 300000 read back"
+check "the mid-size PUT over https carried Expect: 100-continue" \
+	"$(grep -c "^PUT /$BUCKET/tls_mid.parquet 100-continue\$" "$EXPECT_LOG")" "1"
+SMALL_TLS="$(tls_export ea_small tls_small.parquet "id int8")"
+SMALL_EXPECT="$(grep -c " /$BUCKET/tls_small.parquet " "$EXPECT_LOG")"
+check "a small export over https sends no Expect header" \
+	"$( [ "$SMALL_TLS" = "1000 exported, 1000 read back" ] && [ "$SMALL_EXPECT" = 0 ] && echo yes \
+		|| echo "no ($SMALL_TLS; $SMALL_EXPECT requests with Expect)")" "yes"
+check "mid-size export over https refused before its body was sent: the 403 and its hint survive" \
+	"$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$DENIED/tm.parquet', 'ea_tls')")" \
+	"28000: columnar: access to \"s3://$DENIED/tm.parquet\" was denied (HTTP 403: SignatureDoesNotMatch) | HINT: Check access_key_id and secret_access_key in the user mapping the current role uses for this server."
+
+: > "$PGC_WORKDIR/__expect_ignore__"
+check "a mid-size export over https to a store that ignores Expect is sent after the wait" \
+	"$(tls_export ea_mid tls_ignored.parquet "$MID_COLS")" "300000 exported, 300000 read back"
+rm -f "$PGC_WORKDIR/__expect_ignore__"
+echo 2 > "$PGC_WORKDIR/__expect_delay__"
+check "a 100 Continue that comes after the wait is passed over for the final answer" \
+	"$(tls_export ea_mid tls_late.parquet "$MID_COLS")" "300000 exported, 300000 read back"
+rm -f "$PGC_WORKDIR/__expect_delay__"
+: > "$PGC_WORKDIR/__expect_417__"
+check "a store that answers 417 to Expect gets the export again without it" \
+	"$(tls_export ea_mid tls_417.parquet "$MID_COLS")" "300000 exported, 300000 read back"
+rm -f "$PGC_WORKDIR/__expect_417__"
+
+# A store that answers neither 100 nor the refusal within the wait: the body is
+# being sent when the refusal comes, which is #1895's case again, and over
+# http the early answer is still read after the failed send.
+echo 2 > "$PGC_WORKDIR/__deny_delay__"
+check "mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive" \
+	"$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$DENIED/late.parquet')")" \
+	"28000: columnar: access to \"s3://$DENIED/late.parquet\" was denied (HTTP 403: SignatureDoesNotMatch) | HINT: Check the AWS_* credential environment of the server process."
+rm -f "$PGC_WORKDIR/__deny_delay__"
 
 check "the server survived the refusals" "$(survived "$crashes0")" "1"
 
