@@ -503,6 +503,8 @@ avro_manifest	avro_manifest	an explicit entry sequence_number is decoded (42)	15
 avro_manifest	avro_manifest	an unprivileged role is refused (42501)	15;16;17;18;19	2026-10-20	columnar_avro.c: the pg_read_server_files gate is skipped
 avro_manifest	avro_manifest	backend still up after the bad file	15;16;17;18;19	never	-
 avro_manifest	avro_manifest	backend still up after the zip-bomb	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1913)
+avro_manifest	avro_manifest	control: read_manifest_list still reads a local path that holds s3:// past its start (#1913)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1913)
 avro_manifest	avro_manifest	decoded entries == oracle (record_count|file_size|region)	15;16;17;18;19	never	-
 avro_manifest	avro_manifest	decoded entry count == oracle	15;16;17;18;19	never	-
 avro_manifest	avro_manifest	every entry's file_path ends in .parquet	15;16;17;18;19	never	-
@@ -511,6 +513,14 @@ avro_manifest	avro_manifest	manifest-list entry == oracle (all scalar fields)	15
 avro_manifest	avro_manifest	manifest-list entry count == oracle (1)	15;16;17;18;19	never	-
 avro_manifest	avro_manifest	manifest-list manifest_path basename == oracle	15;16;17;18;19	never	-
 avro_manifest	avro_manifest	partition renders the schema's field name	15;16;17;18;19	never	-
+avro_manifest	avro_manifest	read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_avro_manifest refuses a remote URL before its pg_read_server_files gate (#1913)
+avro_manifest	avro_manifest	read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_avro_manifest without the PgColumnarRefuseRemotePath call (#1913)
+avro_manifest	avro_manifest	read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_avro_manifest without the PgColumnarRefuseRemotePath call (#1913)
+avro_manifest	avro_manifest	read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_avro_manifest without the PgColumnarRefuseRemotePath call (#1913)
+avro_manifest	avro_manifest	read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_manifest_list refuses a remote URL before its pg_read_server_files gate (#1913)
+avro_manifest	avro_manifest	read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_manifest_list without the PgColumnarRefuseRemotePath call (#1913)
+avro_manifest	avro_manifest	read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_manifest_list without the PgColumnarRefuseRemotePath call (#1913)
+avro_manifest	avro_manifest	read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)	15;16;17;18;19	2026-11-01	columnar_avro.c: read_manifest_list without the PgColumnarRefuseRemotePath call (#1913)
 avro_manifest	avro_manifest	the committed entries have a NULL (inherited) sequence_number	15;16;17;18;19	never	-
 base_scan_io	base_scan_io	a base scan is not priced from sibling projection pages	15;16;17;18;19	2026-09-21	projPages = 0 (keep whole-file pages)
 base_scan_io	base_scan_io	premise: a covering projection exists	15;16;17;18;19	never	-

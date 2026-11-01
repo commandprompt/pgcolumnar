@@ -9361,7 +9361,7 @@ The pytest twin of `test/projection_rewrite.sh` (ported for #1341), every check 
 | `test_the_projection_repair_guards_hold` | one test per row of `GUARDS` (14 rows), each by the shell's name |
 ## 217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must
 
-The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap.
+The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap. Both readers refuse an object-storage URL with 0A000, naming themselves and the URL, after the `pg_read_server_files` gate, and still read a local path that holds `s3://` past its start (#1913).
 
 ### Every test
 
@@ -9385,6 +9385,16 @@ A module fixture on a private database runs the shell's sequence; each test asse
 | `test_file_format_decodes_to_the_iceberg_enum_name` | file_format decodes to the Iceberg enum name |
 | `test_a_deflate_zip_bomb_is_refused_by_the_cap` | a deflate zip-bomb is refused by the cumulative cap (54000) |
 | `test_the_backend_is_still_up_after_the_zip_bomb` | backend still up after the zip-bomb -- and no backend died since |
+| `test_read_avro_manifest_refuses_an_s3_url` | read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913) -- by SQLSTATE, message and the local-files-only hint |
+| `test_read_avro_manifest_refuses_an_http_url` | read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_avro_manifest_refuses_the_other_remote_schemes` | read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913) -- in one check |
+| `test_read_manifest_list_refuses_an_s3_url` | read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_manifest_list_refuses_an_http_url` | read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_manifest_list_refuses_the_other_remote_schemes` | read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913) |
+| `test_read_avro_manifest_checks_the_gate_before_refusing_a_url` | read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913) -- the role without it gets the gate's 42501 for an `s3://` URL, not 0A000 |
+| `test_read_manifest_list_checks_the_gate_before_refusing_a_url` | read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913) |
+| `test_read_avro_manifest_still_reads_a_local_path_holding_a_scheme` | control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913) -- the oracle's entry count |
+| `test_read_manifest_list_still_reads_a_local_path_holding_a_scheme` | control: read_manifest_list still reads a local path that holds s3:// past its start (#1913) -- its one entry |
 | `test_the_manifest_fixtures_are_present` | the committed fixture is present; without it the test declines under the shell's skip name, iceberg manifest fixtures are missing |
 | `test_python_can_read_the_oracle` | the oracle lists manifest entries; without json the test declines under the shell's skip name, python3 is needed to read the oracle |
 ## 218. test_column_projection.py: column projection reads only the columns a query references

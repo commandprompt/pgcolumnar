@@ -225,4 +225,80 @@ check "a deflate zip-bomb is refused by the cumulative cap (54000)" \
 	"$(sqlstate_of "SET statement_timeout='60s'; SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/bomb.avro')")" "54000"
 check "backend still up after the zip-bomb" "$(survived "$CRASHES_BEFORE")" "1"
 
+# ---- #1913: a remote URL is refused up front, not opened as a local file -----
+# read_avro_manifest and read_manifest_list read local files only. Before #1913
+# an s3:// or http:// URL went to open(2) and failed with 58P01 ("could not open
+# file "s3://..." for reading"), which says the object does not exist. They now
+# refuse every scheme PgColumnarPathIsRemote recognises with 0A000, naming the
+# function and the URL, with a hint that it reads local files only -- the
+# refusal #1886 gave import_arrow. Each refusal is read whole: SQLSTATE, message
+# and hint. The refusal comes after the pg_read_server_files gate, so a role
+# without it gets 42501 for a URL as for a local path. The controls hold the
+# other side: a LOCAL path that carries "s3://" past its first byte is still read.
+echo "-- remote URL refusal"
+remote_refusal() {	# role SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
+	local out msg hint
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$2" 2>&1)"
+	case "$out" in
+		*ERROR:*)
+			msg="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")"
+			hint="$(sed -n '/^HINT:/{s/^HINT: *//p;q;}' <<<"$out")"
+			printf '%s | %s\n' "$msg" "${hint:-no hint}";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
+want_refusal() {	# function URL -> the refusal #1913 promises
+	printf '0A000 columnar: %s does not read "%s" | %s reads local files only. Use a local filesystem path.\n' "$1" "$2" "$1"
+}
+REMOTE_S3="s3://pgc-test/f1913/m.avro"
+REMOTE_HTTP="http://127.0.0.1:9/f1913/m.avro"
+REMOTE_OTHER="https://127.0.0.1:9/f1913/m.avro gs://pgc-test/f1913/m.avro az://pgc-test/f1913/m.avro S3://pgc-test/f1913/m.avro"
+GATE_REFUSAL="42501 must be superuser or a member of the pg_read_server_files role to read a server file | no hint"
+for fn in read_avro_manifest read_manifest_list; do
+	other_refusals="" other_wants=""
+	for u in $REMOTE_OTHER; do
+		other_refusals="$other_refusals${other_refusals:+ ; }$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.$fn('$u')")"
+		other_wants="$other_wants${other_wants:+ ; }$(want_refusal "$fn" "$u")"
+	done
+	printf -v "OTHER_GOT_$fn" '%s' "$other_refusals"
+	printf -v "OTHER_WANT_$fn" '%s' "$other_wants"
+done
+check "read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_S3')")" \
+	"$(want_refusal read_avro_manifest "$REMOTE_S3")"
+check "read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_HTTP')")" \
+	"$(want_refusal read_avro_manifest "$REMOTE_HTTP")"
+check "read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)" \
+	"$OTHER_GOT_read_avro_manifest" "$OTHER_WANT_read_avro_manifest"
+check "read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_S3')")" \
+	"$(want_refusal read_manifest_list "$REMOTE_S3")"
+check "read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_HTTP')")" \
+	"$(want_refusal read_manifest_list "$REMOTE_HTTP")"
+check "read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)" \
+	"$OTHER_GOT_read_manifest_list" "$OTHER_WANT_read_manifest_list"
+
+# The gate first: avro_unpriv (above) holds USAGE on the schema and no
+# pg_read_server_files, so with the refusal moved ahead of the gate it read 0A000.
+check "read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913)" \
+	"$(remote_refusal avro_unpriv "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_S3')")" \
+	"$GATE_REFUSAL"
+check "read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913)" \
+	"$(remote_refusal avro_unpriv "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_S3')")" \
+	"$GATE_REFUSAL"
+
+# "$PGC_WORKDIR/s3:" is a directory, so "$PGC_WORKDIR/s3://m0.avro" is a local
+# file whose path holds "s3://" past its start.
+mkdir -p "$PGC_WORKDIR/s3:"; chmod 777 "$PGC_WORKDIR/s3:"
+cp "$M0" "$PGC_WORKDIR/s3://m0.avro"; cp "$ML" "$PGC_WORKDIR/s3://ml.avro"
+chmod 644 "$PGC_WORKDIR/s3://m0.avro" "$PGC_WORKDIR/s3://ml.avro"
+if [ "$(id -u)" = "0" ]; then chown -R postgres "$PGC_WORKDIR/s3:"; fi
+check "control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/s3://m0.avro')")" "$EXP_N"
+check "control: read_manifest_list still reads a local path that holds s3:// past its start (#1913)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$PGC_WORKDIR/s3://ml.avro')")" "1"
+
 pgc_summary
