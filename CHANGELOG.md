@@ -471,6 +471,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- The object-storage module now refuses the IPv6 instance-metadata addresses of
+  AWS and Google Compute Engine, and `169.254.169.254` behind the standard NAT64
+  prefixes, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1808). Before, it refused only
+  `169.254.0.0/16`, `fe80::/10` and `::ffff:169.254.0.0/112`. A listed name that
+  resolved to `fd00:ec2::254` (AWS), `fd20:ce::254` (Google), or to
+  `169.254.169.254` behind a NAT64 prefix, got a connection attempt instead of
+  SQLSTATE 42501. The guard now also refuses `fd00:ec2::/32`, `fd20:ce::254`,
+  and `169.254.0.0/16` inside an IPv4-compatible (`::/96`) or NAT64
+  (`64:ff9b::/96`, `64:ff9b:1::/48`) address. Under the local-use prefix
+  `64:ff9b:1::/48` the module cannot tell the prefix length, so it checks every
+  RFC 6052 position. This also refuses some ordinary addresses, such as
+  `10.169.254.5` behind a /48 prefix; `docs/best-practices.md` explains. Other
+  metadata addresses, such as Alibaba Cloud's `100.100.100.200`, are still not
+  refused. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
+  test names to each address through a `getaddrinfo()` shim.
 - `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
   one column in a group (#1811). They cut Parquet row groups every 65536 rows and
   Arrow record batches every 16384 rows only. Each group buffers in allocations

@@ -180,9 +180,30 @@ nothing. It is a superuser-only setting, so a role cannot widen its own reach. K
 it as narrow as the deployment allows.
 
 - **Link-local and instance-metadata addresses are refused unconditionally, even
-  when listed.** The ranges `169.254.0.0/16` and `fe80::/10` are the
-  cloud-credential-theft surface. They have no legitimate object-storage use. You
-  cannot rely on the allow-list alone to block them, and you do not need to.
+  when listed.** These addresses are the cloud-credential-theft surface. They have
+  no legitimate object-storage use. The module refuses a host that resolves to any
+  of them:
+  - `169.254.0.0/16` and `fe80::/10`, the link-local ranges;
+  - `fd00:ec2::/32`, which holds AWS's IPv6 metadata address `fd00:ec2::254`;
+  - `fd20:ce::254`, Google Compute Engine's IPv6 metadata address;
+  - `169.254.0.0/16` carried inside an IPv6 address: IPv4-mapped (`::ffff:0:0/96`),
+    IPv4-compatible (`::/96`), or behind a NAT64 prefix (`64:ff9b::/96`,
+    `64:ff9b:1::/48`).
+
+  You cannot rely on the allow-list alone to block them, and you do not need to.
+
+  The module refuses only these ranges. It does not refuse a metadata address
+  outside them, such as Alibaba Cloud's `100.100.100.200`, or `169.254.169.254`
+  behind a NAT64 prefix your network chose itself. Do not list a host that can
+  resolve to one.
+
+  The local-use prefix `64:ff9b:1::/48` can be cut at /48, /56, /64 or /96, and
+  each cut puts the IPv4 address at a different place. The module cannot tell
+  which cut your network uses, so it checks all four places. As a result, it also
+  refuses some ordinary IPv4 addresses behind that prefix. For example, behind a
+  /48 cut, `10.169.254.5` puts 169 and 254 where the /56 cut puts them, so the
+  module refuses it with SQLSTATE 42501. The well-known prefix `64:ff9b::/96` has
+  only one layout and no such over-refusal.
 - **Prefer per-role credentials over ambient environment keys.** The object-storage
   foreign-data wrapper takes `access_key_id`, `secret_access_key`, `session_token`,
   and `credentials_required` from a foreign server and user mapping. Each role then

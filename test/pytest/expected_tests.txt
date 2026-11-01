@@ -1444,4 +1444,6 @@ guard_tests 854
 # cluster_tests 4817 -> 4826 for #1843's third review: four tests in test_arrow_export.py and five in
 # test_parquet_export.py (composite, text[], int[], a row over the cap, and Parquet int2), by collection:
 # `5444 tests collected`, guard 854 + cluster 4590.
-cluster_tests 4826
+# cluster_tests 4826 -> 4827 for #1808's test_metadata_addresses_behind_ipv6_forms in
+# test_objstore_allowlist.py, by collection over the cluster files: `4561 tests collected`.
+cluster_tests 4827
