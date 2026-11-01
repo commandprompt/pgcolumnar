@@ -525,6 +525,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `parquet_schema` now reports a nested column under its top-level name (#1893).
+  It used to report the column's leaves instead: a list as `element`, a struct as
+  its field names. Those names do not match the file's columns. A list of a
+  scalar now reports an array type such as `bigint[]`. A struct of scalar fields
+  reports its field list, such as `composite (a bigint, b text)`. Other nesting,
+  such as a map or a list of structs, `read_parquet` reads leaf by leaf, so it
+  still gets one row per leaf. Each leaf row is now named by its path, such as
+  `m.key_value.key`, and reports an array type where the leaf repeats. A leaf
+  under two repeated levels reports `data_type` NULL, because `read_parquet`
+  flattens it (#1917). So the rows are always the column list `read_parquet`
+  needs. A list or struct row is nullable only when the column itself is
+  OPTIONAL: a REQUIRED list of REQUIRED elements used to report nullable. Its
+  `field_id` is the column's own id, so the ids of a struct's fields no longer
+  appear. docs/sql-reference.md.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`, with the
+  files from `test/craft_parquet_nested.py`.
+  `test/native_parquet_fieldid.sh` and its twin now read the leaf ids of their
+  nested file with pyarrow, and check the nested columns' own ids.
+
 - The REST functions now say when a namespace level is empty (#1891). The
   text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
   name a namespace with an empty level. The catalog accepts such a namespace,

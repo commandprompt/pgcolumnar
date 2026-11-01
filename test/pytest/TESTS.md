@@ -8123,7 +8123,7 @@ The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every che
 
 ## 161. test_native_parquet_schema.py: parquet_schema round trip
 
-The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's leaf columns with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name.
+The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's columns, one row per column `read_parquet` declares, with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name. The nested tests (#1893) check that a list and a struct report under their top-level names, not as their leaves. The files from `test/craft_parquet_nested.py` (a map, lists of structs, structs of structs and of lists, a list of lists, a legacy two-level list made by a footer rewrite, REQUIRED nested columns) check that other nesting lists one row per leaf by its path, that the reported rows read as a column list, that a REQUIRED list or struct is not nullable, that a leaf row is nullable only when an OPTIONAL element sits above its first repeated level, and that a struct field name that needs quotes comes quoted, so `CREATE TYPE` takes the composite text.
 
 ### Every test
 
@@ -8136,6 +8136,20 @@ The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every che
 | `test_an_exported_timestamptz_is_utc_adjusted` | an exported timestamptz column is UTC-adjusted (pyarrow reads UTC) |
 | `test_pyarrow_reads_an_exported_timestamp_as_its_wall_time` | pyarrow reads an exported timestamp back as its wall time |
 | `test_pyarrow_reads_an_exported_timestamptz_as_its_instant` | pyarrow reads an exported timestamptz back as its instant |
+| `test_nested_columns_report_by_top_level_name` | a nested file lists its top-level column names (#1893): a list reports `bigint[]`, a struct reports `composite (a bigint, b text)`, and read_parquet reads the file with those names and types |
+| `test_a_map_column_lists_one_row_per_leaf` | parquet_schema lists a map column one row per leaf, each an array (#1893) |
+| `test_a_list_of_a_two_field_struct_lists_one_row_per_leaf` | parquet_schema lists a list of a two-field struct one row per leaf (#1893) |
+| `test_a_list_of_a_one_field_struct_lists_by_its_leaf_path` | parquet_schema lists a list of a one-field struct by its leaf path (#1893) |
+| `test_a_struct_holding_a_list_lists_by_its_leaf_path` | parquet_schema lists a struct holding a list by its leaf path (#1893) |
+| `test_a_struct_of_a_struct_lists_one_scalar_row_per_leaf` | parquet_schema lists a struct of a struct one scalar row per leaf (#1893) |
+| `test_a_struct_holding_a_map_lists_one_row_per_leaf` | parquet_schema lists a struct holding a map one row per leaf (#1893) |
+| `test_a_list_of_maps_reports_null_for_its_leaves` | parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893) |
+| `test_a_list_of_lists_reports_null_for_its_leaf` | parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893) |
+| `test_a_legacy_two_level_list_reports_by_its_name_as_an_array` | parquet_schema reports a legacy two-level list by its name as an array (#1893) |
+| `test_read_parquet_reads_each_nested_file_with_the_reported_column_list` | read_parquet reads each nested file with the column list parquet_schema reports (#1893) |
+| `test_a_required_list_or_struct_is_not_nullable` | parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893) |
+| `test_a_leaf_row_is_nullable_only_above_its_first_repeated_level` | parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893) |
+| `test_a_struct_field_name_that_needs_quotes_comes_quoted` | parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893) |
 
 ## 162. test_native_vecskip.py: per-vector skipping by the zone maps
 
@@ -12397,8 +12411,9 @@ Every test makes one check under the shell's name, on a private database. The wr
 | `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
 | `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
 | `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
-| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4 |
+| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4, as pyarrow reads them back |
 | `test_the_nested_files_groups_carry_the_nested_ids` | premise: the nested file's groups carry ids st=2 li=3 mp=4 |
+| `test_parquet_schema_reports_a_lists_and_a_structs_own_field_id_and_a_maps_leaf_ids` | parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893) |
 | `test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise` | premise: a scalar beside nested columns still reads by field id |
 | `test_a_struct_field_id_read_as_text_is_refused_as_nested` | a struct field id read as text is refused as nested (0A000) |
 | `test_a_list_field_id_read_as_int4_is_refused_as_nested` | a list field id read as int4 is refused as nested (0A000) |

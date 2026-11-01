@@ -1033,7 +1033,8 @@ does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
-`parquet_schema` to generate the full list.
+`parquet_schema` to generate the full list: declare one column for each row it
+reports. A composite column covers all the leaves of its struct.
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded
@@ -1068,7 +1069,9 @@ column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
 array or composite output column. An id that belongs to a struct, list or map is
 refused as nested, whatever the output column's type (#1788). None is a silent
-wrong column. Read the ids a file carries with `parquet_schema`.
+wrong column. Read the ids a file carries with `parquet_schema`. It does not
+list the ids of a struct's fields; the `parquet_schema` section below says how
+to find them.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -1079,8 +1082,8 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 
 ### pgcolumnar.parquet_schema(path text) returns table(column_name text, data_type text, nullable bool, field_id int)
 
-Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
-without reading the data. Useful for writing the column definition list for
+Reports the top-level columns of a Parquet file and the PostgreSQL type each maps
+to, without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
 file. The type it reports holds every value the column can store. So an unsigned
 `UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
@@ -1101,6 +1104,41 @@ also reads into `timestamp`, which gets the wall time in the session time zone.
 A value whose nanoseconds fall outside the day, or whose Julian day is outside the
 timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
 day and the nanoseconds the file stores.
+
+The rows are the column definition list that `read_parquet` needs: declare one
+column per row, with the reported type. A nested column that `read_parquet` reads
+as one column gets one row under its own name:
+
+- A list of a scalar reports that type's array type, for example `bigint[]`.
+- A struct of scalar fields reports its field list, for example
+  `composite (a bigint, b text)`. Create a composite type with those fields,
+  `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+  A field name that needs quotes comes quoted, so the list works as written.
+
+`read_parquet` reads any other nesting leaf by leaf, so `parquet_schema` reports
+one row for each leaf. A map, a list of structs, a struct of a struct and a struct
+that holds a list are examples. Each row is named by the leaf's path in the file,
+joined with dots, for example `m.key_value.key`. Its type is an array type when
+the leaf repeats. So a map with string keys and bigint values reports
+`m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
+must be quoted in a column definition list, or you can use any other name: the
+reader matches columns by position.
+Two rows can share a name, for example when the file also has a top-level column
+named `s.t.list.element`. Give one of them another name in your list.
+
+`data_type` is NULL for a leaf that no column type reads correctly. A leaf under
+two repeated levels, such as the elements of a list of lists, is one example.
+`read_parquet` reads such a leaf declared as an array by flattening it (#1917).
+
+`nullable` for a nested column says whether the column itself can be NULL. A
+NULL list element or struct field does not make it true. On a leaf row it is true
+when an OPTIONAL element sits on the leaf's path above its first repeated element.
+
+`field_id` for a list or struct row is the column's own id. A leaf row carries
+the leaf's own id. The ids of a struct's fields do not appear when the struct has
+its own row. `read_parquet(path, ids)` still reads a struct field by its id, as a
+scalar column. Read those ids with another Parquet tool, for example pyarrow's
+`ParquetFile(path).schema`.
 
 When a reader refuses a declared column type, the message names the function or
 foreign-data wrapper you used, for example
