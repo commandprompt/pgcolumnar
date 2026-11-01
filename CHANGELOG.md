@@ -489,10 +489,12 @@ true until the next version shipped.
   The allow-list refusal's hint suggests the `host:port` the message names,
   added to the current list. It used to suggest the bare host as the whole list,
   which opened every port on that host and dropped every other entry.
-  A single-PUT export that the store refuses before reading the body now reports
-  the 403 or other status. When the body was larger than the socket buffers, it
-  used to report `failed before a response`. The object-store module ABI is now
-  8, so the module and the extension must come from the same build.
+  A single-PUT export to an `http://` endpoint that the store refuses before
+  reading the body now reports the 403 or other status. When the body was larger
+  than the socket buffers, it used to report `failed before a response`. An
+  `https://` store still reports `failed before a response` there (#1902).
+  The object-store module ABI is now 8, so the module and the extension must
+  come from the same build.
   `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
 - An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
   (#1869). Three bucket-level requests are resolved from that dummy key: the
