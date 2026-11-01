@@ -48,7 +48,6 @@
 #define PCOPY_FINGERPRINT_BUFSZ	(256 * 1024)
 
 #include "columnar.h"
-#include "columnar_objstore.h"
 
 #include "columnar_write_state.h"
 #include "access/relation.h"
@@ -310,9 +309,6 @@ pgcolumnar_file_split_offsets(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser or a member of the pg_read_server_files role to split a server file"),
 				 errhint("Anyone can COPY from a file if they are a member of the "
 						 "pg_read_server_files role.")));
-
-	/* a URL is not a local file: say so, not ENOENT (#1886) */
-	PgColumnarRefuseRemotePath("file_split_offsets", path);
 
 	fd = pcopy_open_regular_file(path, &size);
 	offs = pcopy_line_offsets(fd, size, workers, path);
@@ -1578,13 +1574,6 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		PgColumnarRequireNoRowSecurity(relid);
 
 		}
-
-		/*
-		 * A URL is not a local file: say so, not ENOENT (#1886). After the
-		 * INSERT and RLS checks, as in import_arrow, and before both the
-		 * partitioned and the single-table branch, so both are covered.
-		 */
-		PgColumnarRefuseRemotePath("parallel_copy", path);
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{

@@ -539,33 +539,4 @@ check "parallel_copy on a FIFO via the partitioned coordinator is refused, not a
 exec 9<>"$PCFIFO2" 2>/dev/null; exec 9>&- 2>/dev/null
 check "backend still up after the partitioned-coordinator FIFO refusal" "$(survived "$CRASHES_BEFORE")" "1"
 
-# --- #1886: file_split_offsets and parallel_copy read local files only -----------
-# Both opened an s3:// or http:// URL as a local path, and the error said the file
-# did not exist (58P01). Each must refuse the URL as unsupported (0A000) and say
-# why, before any network I/O. pc_outcome shows the SQLSTATE and message the server
-# gave, or the value when the statement succeeded.
-pc_outcome() {
-	local out
-	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
-		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
-	case "$out" in
-		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
-		*) printf '%s\n' "$out";;
-	esac
-}
-PC_S3="s3://pgc-bucket/data.txt"
-PC_HTTP="http://127.0.0.1:9/pgc-bucket/data.txt"
-check "file_split_offsets refuses an s3:// URL with 0A000 (#1886)" \
-	"$(pc_outcome "SELECT pgcolumnar.file_split_offsets('$PC_S3', 2)")" \
-	"0A000 columnar: file_split_offsets does not read \"$PC_S3\"; it reads local files only"
-check "file_split_offsets refuses an http:// URL with 0A000 (#1886)" \
-	"$(pc_outcome "SELECT pgcolumnar.file_split_offsets('$PC_HTTP', 2)")" \
-	"0A000 columnar: file_split_offsets does not read \"$PC_HTTP\"; it reads local files only"
-check "parallel_copy refuses an s3:// URL with 0A000 (#1886)" \
-	"$(pc_outcome "SELECT pgcolumnar.parallel_copy('t_fifo'::regclass, '$PC_S3', 2)")" \
-	"0A000 columnar: parallel_copy does not read \"$PC_S3\"; it reads local files only"
-check "parallel_copy refuses an http:// URL with 0A000 (#1886)" \
-	"$(pc_outcome "SELECT pgcolumnar.parallel_copy('t_fifo'::regclass, '$PC_HTTP', 2)")" \
-	"0A000 columnar: parallel_copy does not read \"$PC_HTTP\"; it reads local files only"
-
 pgc_summary

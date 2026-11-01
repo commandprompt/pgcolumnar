@@ -250,14 +250,6 @@ extern const PgColumnarObjStoreApi *PgColumnarObjStoreGet(void);
 extern bool PgColumnarPathIsRemote(const char *path);
 
 /*
- * Refuse a remote URL in a function that reads local files only (#1886):
- * SQLSTATE 0A000, naming the function and the URL. Returns when `path` is
- * not remote. Call it before the open, which would otherwise report a URL as
- * a missing local file.
- */
-extern void PgColumnarRefuseRemotePath(const char *funcname, const char *path);
-
-/*
  * The config to use for the object at `url`: `cfg` itself unless it carries
  * per-object credentials (cfg->byprefix), else the longest-prefix match, else
  * the fallback, else a 28000 refusal that names `url`.

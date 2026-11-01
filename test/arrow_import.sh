@@ -946,21 +946,4 @@ check "import_arrow on a FIFO is refused, not a hang (XX001)" \
 	"XX001"; fifo_release "$IAFIFO"
 check "backend still up after the import_arrow FIFO refusal" "$(q 'SELECT 1')" "1"
 
-# --- #1886: import_arrow reads local files only ---------------------------------
-# It opened an s3:// or http:// URL as a local path, and the error said the file did
-# not exist (58P01), even when export_arrow had just written that object. It must
-# refuse the URL as unsupported (0A000) and say why. Both URLs are refused before
-# any network I/O, so no object-store server is needed. The check shows the
-# SQLSTATE and message the server gave.
-echo "-- remote URL refusal"
-psql_run "CREATE TABLE ia_remote (a bigint, b float8, c text) USING pgcolumnar;"
-IA_S3="s3://pgc-bucket/m.arrow"
-IA_HTTP="http://127.0.0.1:9/pgc-bucket/m.arrow"
-check "import_arrow refuses an s3:// URL with 0A000 (#1886)" \
-	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ia_remote', '$IA_S3')")" \
-	"0A000 columnar: import_arrow does not read \"$IA_S3\"; it reads local files only"
-check "import_arrow refuses an http:// URL with 0A000 (#1886)" \
-	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ia_remote', '$IA_HTTP')")" \
-	"0A000 columnar: import_arrow does not read \"$IA_HTTP\"; it reads local files only"
-
 pgc_summary

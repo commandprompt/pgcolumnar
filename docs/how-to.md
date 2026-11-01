@@ -837,8 +837,7 @@ a Parquet encode step. Use Parquet for durable, compressed files.
 
 The Parquet functions, `export_arrow` and the Iceberg reader accept an `s3://`,
 `http://`, or `https://` URL where they accept a local path. `import_arrow`,
-`file_split_offsets` and `parallel_copy` read local files only, and refuse a URL
-with SQLSTATE `0A000`. Credentials come
+`file_split_offsets` and `parallel_copy` read local files only. Credentials come
 from the server process environment.
 
 ```sql

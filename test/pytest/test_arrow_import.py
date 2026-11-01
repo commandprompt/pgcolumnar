@@ -542,19 +542,3 @@ def test_a_fifo_is_refused_not_a_hang(pgc_conn, pgc_cluster, server_dir, expect)
         got["state"] = "HANG"
     expect.text(got.get("state", "no result"), "XX001", "import_arrow on a FIFO is refused, not a hang (XX001)")
     expect.num(_one(conn, "SELECT 1"), 1, "backend still up after the import_arrow FIFO refusal")
-
-
-def test_a_remote_url_is_refused(pgc_conn, expect):
-    """#1886: import_arrow opened an s3:// or http:// URL as a local path, and the
-    error said the file did not exist (58P01). It must refuse the URL as unsupported
-    (0A000) and say why, before any network I/O. The check shows the SQLSTATE and
-    message the server gave."""
-    conn = pgc_conn
-    _run(conn, "CREATE TABLE ia_remote (a bigint, b float8, c text) USING pgcolumnar")
-    s3, http = "s3://pgc-bucket/m.arrow", "http://127.0.0.1:9/pgc-bucket/m.arrow"
-    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_remote', '{s3}')"),
-                f'0A000 columnar: import_arrow does not read "{s3}"; it reads local files only',
-                "import_arrow refuses an s3:// URL with 0A000 (#1886)")
-    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('ia_remote', '{http}')"),
-                f'0A000 columnar: import_arrow does not read "{http}"; it reads local files only',
-                "import_arrow refuses an http:// URL with 0A000 (#1886)")

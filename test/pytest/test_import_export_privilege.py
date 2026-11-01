@@ -144,24 +144,6 @@ def test_a_table_the_caller_holds_no_grant_on_is_refused(pgc_conn, pgc_cluster, 
     expect.text("written" if os.path.exists(p["pex_out"]) else "none", "none", "nor by the parallel export")
 
 
-def test_a_remote_url_is_refused_only_after_the_insert_check(pgc_cluster, iep, expect):
-    """#1886: import_arrow and parallel_copy refuse a URL with 0A000, but only after
-    the table ACL. A caller with no INSERT gets 42501 for a URL, as for a local
-    path, so both loaders report the same error first."""
-    schema, _ = iep
-
-    def outcome(sql):
-        value, err = _as(pgc_cluster, ATTACKER, sql, schema)
-        return str(value) if err is None else f"{err.sqlstate} {err.diag.message_primary}"
-
-    expect.text(outcome("SELECT pgcolumnar.import_arrow('victim'::regclass, 's3://pgc-bucket/m.arrow')"),
-                "42501 permission denied for table victim",
-                "import_arrow checks INSERT before it refuses a remote URL (#1886)")
-    expect.text(outcome("SELECT pgcolumnar.parallel_copy('victim'::regclass, 's3://pgc-bucket/data.txt', 2)"),
-                "42501 permission denied for table victim",
-                "parallel_copy checks INSERT before it refuses a remote URL (#1886)")
-
-
 def test_the_owner_is_not_refused(pgc_cluster, iep, expect):
     """The same calls on the attacker's own table: the fix refuses the table, not the role."""
     schema, p = iep

@@ -384,8 +384,6 @@ arrow_import	arrow_import	import into an indexed table: both scans agree	15;16;1
 arrow_import	arrow_import	import into an indexed table: the rows are there	15;16;17;18;19	never	-
 arrow_import	arrow_import	import rows	15;16;17;18;19	never	-
 arrow_import	arrow_import	import_arrow on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	never	-
-arrow_import	arrow_import	import_arrow refuses an http:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: import_arrow opens the URL as a local path (#1886)
-arrow_import	arrow_import	import_arrow refuses an s3:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: import_arrow opens the URL as a local path (#1886)
 arrow_import	arrow_import	importing the same keys twice raises unique_violation	15;16;17;18;19	never	-
 arrow_import	arrow_import	non-finite imported as null	15;16;17;18;19	never	-
 arrow_import	arrow_import	partial index covers its rows after import	15;16;17;18;19	never	-
@@ -3623,12 +3621,10 @@ import_exclusion	import_exclusion	the constraint is an exclusion constraint, not
 import_export_privilege	import_export_privilege	export_arrow refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	export_parquet refuses SELECT of a table the caller cannot read	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	get_storage_id refuses a caller who cannot SELECT the relation	15;16;17;18;19	never	-
-import_export_privilege	import_export_privilege	import_arrow checks INSERT before it refuses a remote URL (#1886)	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	import_arrow refuses INSERT into a table the caller cannot write	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	import_parquet refuses INSERT into a table the caller cannot write	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	no victim file was written by the export attempts	15;16;17;18;19	never	-
 import_export_privilege	import_export_privilege	nor by the parallel export	15;16;17;18;19	2026-10-14	parallel_export_parquet without its SELECT check on the target
-import_export_privilege	import_export_privilege	parallel_copy checks INSERT before it refuses a remote URL (#1886)	15;16;17;18;19	2026-11-01	parallel_copy remote-URL refusal moved back before the INSERT check (#1886)
 import_export_privilege	import_export_privilege	parallel_copy refuses INSERT into a table the caller cannot write	15;16;17;18;19	2026-10-14	parallel_copy without its INSERT check on the target
 import_export_privilege	import_export_privilege	parallel_export_parquet refuses SELECT of a table the caller cannot read	15;16;17;18;19	2026-10-14	parallel_export_parquet without its SELECT check on the target
 import_export_privilege	import_export_privilege	premise: the attacker can execute the functions (so a refusal is the table ACL)	15;16;17;18;19	never	-
@@ -6314,8 +6310,6 @@ parallel_copy	parallel_copy	atomic: server still up after a failed load	15;16;17
 parallel_copy	parallel_copy	backend still up after the parallel_copy FIFO refusal	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
 parallel_copy	parallel_copy	backend still up after the partitioned-coordinator FIFO refusal	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
 parallel_copy	parallel_copy	bulk_parallel_writer GUC defaults off (core write path unchanged)	15;16;17;18;19	2026-10-22	columnar_tableam.c: pgcolumnar.bulk_parallel_writer boots on
-parallel_copy	parallel_copy	file_split_offsets refuses an http:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: file_split_offsets and parallel_copy open the URL as a local path (#1886)
-parallel_copy	parallel_copy	file_split_offsets refuses an s3:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: file_split_offsets and parallel_copy open the URL as a local path (#1886)
 parallel_copy	parallel_copy	file_split_offsets: a directory is rejected (not an 8-exabyte file)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the single-file opener's S_ISREG refusal removed
 parallel_copy	parallel_copy	guard rejects before loading anything	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	key not in column 1 (generated col before it): rows = 3000	15;16;17;18;19	never	-
@@ -6332,8 +6326,6 @@ parallel_copy	parallel_copy	no trailing newline / 4 workers: per-range loads rec
 parallel_copy	parallel_copy	non-columnar target is rejected	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	parallel_copy on a FIFO is refused, not a hang (42809)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the single-file opener drops O_NONBLOCK, so a FIFO blocks open(2) (#686);columnar_parallel_copy.c: the single-file opener's S_ISREG refusal removed
 parallel_copy	parallel_copy	parallel_copy on a FIFO via the partitioned coordinator is refused, not a hang (42809)	15;16;17;18;19	never	-
-parallel_copy	parallel_copy	parallel_copy refuses an http:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: file_split_offsets and parallel_copy open the URL as a local path (#1886)
-parallel_copy	parallel_copy	parallel_copy refuses an s3:// URL with 0A000 (#1886)	15;16;17;18;19	2026-11-01	remote-URL refusal absent: file_split_offsets and parallel_copy open the URL as a local path (#1886)
 parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): no prepared-transaction leak	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	parallel_copy(partitioned, 1 workers): rows returned = 5000	15;16;17;18;19	never	-

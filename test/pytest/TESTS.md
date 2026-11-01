@@ -7311,7 +7311,6 @@ The pytest twin of `test/import_export_privilege.sh` (#559, #566), with the para
 | --- | --- |
 | `test_the_premises_isolate_the_table_acl` | the attacker logs in, holds both server-file roles, schema USAGE and EXECUTE, and nothing on `victim`; `victim` has its rows; the attacker's own source files exist |
 | `test_a_table_the_caller_holds_no_grant_on_is_refused` | the seven deny arms, serial and parallel, in the shell's order; then `victim` keeps exactly its rows and no file of it was written |
-| `test_a_remote_url_is_refused_only_after_the_insert_check` | (#1886) `import_arrow checks INSERT before it refuses a remote URL (#1886)` and `parallel_copy checks INSERT before it refuses a remote URL (#1886)`: a caller without INSERT on `victim` gets `42501 permission denied for table victim` for an `s3://` URL, read as SQLSTATE and message |
 | `test_the_owner_is_not_refused` | the owner's own exports, storage id and import are not refused |
 | `test_the_owner_runs_the_parallel_twins` | the owner's `parallel_copy` loads its 50 rows, and its `parallel_export_parquet` writes some |
 
@@ -7356,7 +7355,6 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, an empty target after a refusal, and nested units |
 | `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
 | `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
-| `test_a_remote_url_is_refused` | (#1886) `import_arrow refuses an s3:// URL with 0A000 (#1886)` and `import_arrow refuses an http:// URL with 0A000 (#1886)`: each reads the SQLSTATE and message, which must name the function and say it reads local files only |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -11897,7 +11895,6 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
 | `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
 | `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
-| `test_parallel_copy_a_remote_url_is_refused` | parametrized over four (#1886): `file_split_offsets refuses an s3:// URL with 0A000 (#1886)`, `file_split_offsets refuses an http:// URL with 0A000 (#1886)`, `parallel_copy refuses an s3:// URL with 0A000 (#1886)` and `parallel_copy refuses an http:// URL with 0A000 (#1886)`, each by SQLSTATE and message |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 
