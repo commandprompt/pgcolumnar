@@ -534,6 +534,24 @@ true until the next version shipped.
 
 ### Fixed
 
+- Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
+  server that it starts no longer holds the lock, and a run fails when the
+  installed library changes during it (#1915). Before, the suite passed the
+  lock's descriptor to its postmaster. A cluster that outlived the command
+  blocked every other run of that major; one such cluster blocked the PG18
+  queue for about 25 minutes. `test/portlib.sh` now closes a descriptor whose
+  lock another live process took. That process still holds the lock. A lock
+  the suite took itself stays held. The fix does not cover a lock taken with
+  `flock -F` or on a descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`:
+  there the suite holds the only copy, so closing it would release the lock. docs/testing.md
+  says what to do instead. A suite that sets `set -e` before it loads lib.sh
+  still runs under flock. On a shared machine, another session can also
+  install into the same prefix during a run. `pgc_summary` now fails the run
+  when the library's digest changed after `pgc_setup`, and names both
+  digests. The pytest session's teardown does the same. docs/testing.md.
+  `test/harness_isolation.sh` and `test_harness_isolation.py`.
+  Reported by @OffgridwithJD.
+
 - The Iceberg REST functions now refuse a namespace whose only level is empty,
   `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
   empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST

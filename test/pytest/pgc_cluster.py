@@ -576,6 +576,36 @@ def installed_library(pg_config):
         return "absent"
 
 
+def library_change_report(so_path, recorded):
+    """-> None when the library at `so_path` still has digest `recorded`, else why.
+
+    On a shared box another session can install into this prefix while a run is
+    under way (#1915): measured on PG18, /usr/local/pgsql/lib/pgcolumnar.so was
+    replaced at 14:45:10 between one session's install and its test. The session
+    records the digest it started with and asks this at the end. An empty
+    `recorded` means nothing was recorded, so there is nothing to compare.
+    """
+    if not recorded:
+        return None
+    try:
+        now = _md5_of(so_path)
+    except Exception:
+        now = "absent"
+    if now == recorded:
+        return None
+    return (f"the installed library changed during this run: {recorded} at the "
+            f"session start, {now} now ({so_path}). Another session installed into "
+            f"this prefix, so the tests may have measured its code. Build, install "
+            f"and test in one lock hold.")
+
+
+def require_library_unchanged(so_path, recorded):
+    """Raise when the library changed since `recorded`; the session then fails."""
+    report = library_change_report(so_path, recorded)
+    if report:
+        raise RuntimeError(report)
+
+
 def build_once(srcdir, pg_config, major, lock_path=None, runner=None):
     """build_and_install, but at most once across xdist workers.
 

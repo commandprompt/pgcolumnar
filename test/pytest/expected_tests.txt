@@ -1701,4 +1701,15 @@ guard_tests 860
 # cluster_tests 5272 -> 5274 for #1922's two second-review tests in test_iceberg_rest_scan.py (the
 # OAuth server form of iceberg_rest_table_location and iceberg_rest_scan refuses '' before the token
 # request, with the catalog down), by collection: test_iceberg_rest_scan.py collects 90 tests.
-cluster_tests 5274
+# cluster_tests 5274 -> 5280 for #1915's six tests in test_harness_isolation.py, the twin of the new
+# harness_isolation.sh (a cluster started under a held lock does not hold it, with its control and
+# premise; a lock the harness took itself stays held; the session records its library digest; a
+# replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
+# for the cluster half, guard_tests 858 unchanged.
+# cluster_tests 5280 -> 5281 for #1915's review fix in test_harness_isolation.py (a set -e suite
+# under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
+# 858 unchanged.
+# cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
+# test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
+# own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
+cluster_tests 5281

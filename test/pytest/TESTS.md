@@ -399,6 +399,7 @@ behaviour, the source of that number is named.
 - [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
 - [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
+- [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 
 ## 1. How to read a test in here
 
@@ -13982,3 +13983,22 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_a_200_with_no_framing_before_the_body_is_not_taken_as_written` | a single PUT answered 200 with no framing before its body is not taken as written |
 | `test_a_refusal_after_the_expect_wait_keeps_the_403_over_http` | mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive |
 | `test_the_server_survived_the_refusals` | the server survived the refusals |
+
+## 354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine
+
+The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name but one. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. The same holds when the harness's process took the lock itself as `flock -F`, where it holds the only descriptor. The session must record the library digest it starts with, and a copy of the library changed after that must be reported with both digests. An inner session through the real conftest, whose test changes the library the session recorded, must end failed and name the change. One shell check has no twin: a suite that sets `set -e` before it loads lib.sh must still load it under `flock`. Only lib.sh can show that, and a twin would have to source it, so it is declared shell-only in `test_compare_to_bash.py`. The library change is made on a copy; the shared library is never touched.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_control_a_plain_child_under_flock_holds_the_lock` | control: a child of a plain shell under flock holds the lock |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | premise: the postmaster outlives the flock command that started it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |
+| `test_a_lock_the_harness_took_itself_stays_held` | a lock the harness's own process took stays held |
+| `test_a_lock_taken_by_flock_no_fork_stays_held` | a lock taken as flock -F on the harness's own process stays held |
+| `test_the_session_records_the_library_it_runs` | setup records the digest of the library it verified |
+| `test_a_replaced_library_is_reported` | an unchanged library is not reported |
+| `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |
+| `test_a_run_whose_library_changed_fails` | a run whose library changed mid-run ends failed |
