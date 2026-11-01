@@ -350,7 +350,11 @@ def test_object_store_credentials(pgc_cluster, expect):
             "CREATE FOREIGN TABLE fice (id bigint, region text, amount int) SERVER isrv"
             f" OPTIONS (metadata_path 's3://{BUCKET}/db/t/metadata/noapply.metadata.json')",
             "GRANT USAGE ON FOREIGN SERVER isrv TO cred_carol", "GRANT SELECT ON fice TO cred_carol")
-        expect.text(outcome(f"CREATE USER MAPPING FOR cred_carol SERVER isrv OPTIONS (access_key_id '{AKID}')"),
+        # The mapping is tried for a throwaway role, not carol: if the refusal were gone,
+        # the mapping would be created, and carol's no-mapping premise below must not
+        # depend on this check passing.
+        run("CREATE ROLE cred_umprobe NOLOGIN")
+        expect.text(outcome(f"CREATE USER MAPPING FOR cred_umprobe SERVER isrv OPTIONS (access_key_id '{AKID}')"),
                     'HV00D invalid option "access_key_id" for pgcolumnar_iceberg',
                     "a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)")
         expect.text(outcome("SELECT count(*) FROM pg_user_mappings WHERE usename = 'cred_carol'"), "0",

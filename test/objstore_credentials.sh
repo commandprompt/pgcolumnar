@@ -272,8 +272,12 @@ psql_run "CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_iceberg;
           CREATE FOREIGN TABLE fice (id bigint, region text, amount int) SERVER isrv
             OPTIONS (metadata_path 's3://$BUCKET/db/t/metadata/noapply.metadata.json');
           GRANT USAGE ON FOREIGN SERVER isrv TO cred_carol; GRANT SELECT ON fice TO cred_carol;"
+# The mapping is tried for a throwaway role, not carol: if the refusal were gone,
+# the mapping would be created, and carol's no-mapping premise below must not
+# depend on this check passing.
+psql_run "CREATE ROLE cred_umprobe NOLOGIN;"
 check "a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)" \
-	"$(outcome_as postgres "CREATE USER MAPPING FOR cred_carol SERVER isrv OPTIONS (access_key_id '$AKID')")" \
+	"$(outcome_as postgres "CREATE USER MAPPING FOR cred_umprobe SERVER isrv OPTIONS (access_key_id '$AKID')")" \
 	'HV00D invalid option "access_key_id" for pgcolumnar_iceberg'
 check "premise: carol has no user mapping on either server (#1887)" \
 	"$(q "SELECT count(*) FROM pg_user_mappings WHERE usename = 'cred_carol'")" "0"
