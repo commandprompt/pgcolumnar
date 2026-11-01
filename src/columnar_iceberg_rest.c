@@ -28,6 +28,7 @@
 #include "catalog/pg_type_d.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/defrem.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
@@ -35,6 +36,7 @@
 #include "miscadmin.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/syscache.h"
 #include "utils/tuplestore.h"
@@ -283,14 +285,45 @@ rest_pct_encode(StringInfo out, const char *s)
 }
 
 /*
- * Append a namespace to a resource path. The REST wire form joins multi-level
- * namespace parts with the unit separator 0x1F ("%1F" encoded); a caller passes
- * the levels dot-separated. Each level is percent-encoded, so a level bearing
- * '/', '.', or a control byte cannot alter the request path.
+ * What GET /v1/config tells a client about the catalog's paths (#1793).
+ *   base  "/v1/", or "/v1/<prefix>/" when the catalog has a prefix. Every
+ *         resource path but /v1/config starts with it.
+ *   sep   the namespace separator, percent-encoded byte by byte ("%1F" by
+ *         default, "%2E" on the Apache Iceberg 1.12 REST catalog).
+ */
+typedef struct RestCatalogConfig
+{
+	char	   *base;
+	char	   *sep;
+} RestCatalogConfig;
+
+/* The REST spec's default namespace separator, the unit separator 0x1F. */
+#define REST_DEFAULT_SEPARATOR	"%1F"
+
+/*
+ * Append a namespace, given as a List of level strings, to a resource path. The
+ * levels are joined with the catalog's separator `sep` (already encoded). Each
+ * level is percent-encoded, so a level bearing '/', '.', or a control byte
+ * cannot alter the request path.
  */
 static void
-rest_append_namespace(StringInfo out, const char *ns)
+rest_append_levels(StringInfo out, List *levels, const char *sep)
 {
+	ListCell   *lc;
+
+	foreach(lc, levels)
+	{
+		if (lc != list_head(levels))
+			appendStringInfoString(out, sep);
+		rest_pct_encode(out, (const char *) lfirst(lc));
+	}
+}
+
+/* Split a dot-separated namespace, as a caller gives it, into its levels. */
+static List *
+rest_split_namespace(const char *ns)
+{
+	List	   *levels = NIL;
 	const char *start = ns;
 	const char *p;
 
@@ -298,15 +331,113 @@ rest_append_namespace(StringInfo out, const char *ns)
 	{
 		if (*p == '.' || *p == '\0')
 		{
-			char	   *level = pnstrdup(start, p - start);
-
-			rest_pct_encode(out, level);
-			pfree(level);
+			levels = lappend(levels, pnstrdup(start, p - start));
 			if (*p == '\0')
 				break;
-			appendStringInfoString(out, "%1F");
 			start = p + 1;
 		}
+	}
+	return levels;
+}
+
+/* Append a dot-separated namespace to a resource path, joined with `sep`. */
+static void
+rest_append_namespace(StringInfo out, const char *ns, const char *sep)
+{
+	rest_append_levels(out, rest_split_namespace(ns), sep);
+}
+
+static int
+rest_hexval(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+/*
+ * Turn the namespace-separator a catalog advertises into the form the client
+ * puts in a path. The catalog sends it percent-encoded ("%1F", "%2E"), but a
+ * plain character is allowed too. Decode it, then encode every byte as %XX, so
+ * a hostile value can never put a '/', '?' or '#' into the request.
+ */
+static char *
+rest_encode_separator(const char *advertised)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	StringInfoData out;
+	const char *p;
+
+	initStringInfo(&out);
+	for (p = advertised; *p != '\0'; p++)
+	{
+		int			c = (unsigned char) *p;
+
+		if (*p == '%')
+		{
+			int			hi = rest_hexval(p[1]);
+			int			lo = (hi < 0) ? -1 : rest_hexval(p[2]);
+
+			if (hi < 0 || lo < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: the REST catalog advertised an invalid namespace-separator \"%s\"",
+								advertised)));
+			c = hi * 16 + lo;
+			p += 2;
+		}
+		if (c == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog advertised an invalid namespace-separator \"%s\"",
+							advertised)));
+		appendStringInfoChar(&out, '%');
+		appendStringInfoChar(&out, hex[c >> 4]);
+		appendStringInfoChar(&out, hex[c & 0x0f]);
+	}
+	if (out.len == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: the REST catalog advertised an empty namespace-separator")));
+	return out.data;
+}
+
+/*
+ * Append a catalog prefix as path segments. A prefix may hold '/', such as
+ * "catalogs/main": split it there and encode each piece on its own, as
+ * pyiceberg and the Java client send it. A leading or trailing '/' is dropped.
+ * An empty, "." or ".." piece is refused: the prefix comes from the catalog.
+ */
+static void
+rest_append_prefix(StringInfo out, const char *prefix)
+{
+	const char *p = prefix;
+	const char *end;
+
+	while (*p == '/')
+		p++;
+	end = p + strlen(p);
+	while (end > p && end[-1] == '/')
+		end--;
+	while (p < end)
+	{
+		const char *slash = memchr(p, '/', end - p);
+		const char *stop = (slash != NULL) ? slash : end;
+		char	   *piece = pnstrdup(p, stop - p);
+
+		if (piece[0] == '\0' || strcmp(piece, ".") == 0 || strcmp(piece, "..") == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog advertised an invalid prefix \"%s\"",
+							prefix)));
+		rest_pct_encode(out, piece);
+		appendStringInfoChar(out, '/');
+		pfree(piece);
+		p = (slash != NULL) ? slash + 1 : end;
 	}
 }
 
@@ -574,18 +705,46 @@ rest_oauth_token(const char *catalog_uri, const char *token_uri,
 }
 
 /*
- * Call GET /v1/config (to learn any path prefix) then loadTable, and return the
- * whole loadTable JSON document. *out_location is set to its metadata-location.
+ * A config property: "overrides" first, then a top-level key, then "defaults"
+ * (the REST spec: overrides win over the client, defaults lose to it). NULL
+ * when no level sets it as a string.
  */
-static Jsonb *
-rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
-					const char *token, const char *warehouse, char **out_location)
+static char *
+rest_config_value(JsonbContainer *root, const char *key)
+{
+	char	   *v = NULL;
+	JsonbValue	vbuf;
+	JsonbValue *ov;
+
+	ov = getKeyJsonValueFromContainer(root, "overrides", 9, &vbuf);
+	if (ov != NULL && ov->type == jbvBinary)
+		v = rest_json_string_opt(ov->val.binary.data, key);
+	if (v == NULL)
+		v = rest_json_string_opt(root, key);
+	if (v == NULL)
+	{
+		JsonbValue *dv = getKeyJsonValueFromContainer(root, "defaults", 8, &vbuf);
+
+		if (dv != NULL && dv->type == jbvBinary)
+			v = rest_json_string_opt(dv->val.binary.data, key);
+	}
+	return v;
+}
+
+/*
+ * GET /v1/config and fill *cc with the path base and the namespace separator.
+ * Every resource call goes through this, so the list functions see the same
+ * prefix and separator as loadTable (#1793).
+ */
+static void
+rest_catalog_config(const char *catalog_uri, const char *token,
+					const char *warehouse, RestCatalogConfig *cc)
 {
 	Jsonb	   *cfg;
 	char	   *prefix;
-	Jsonb	   *lt;
-	StringInfoData rp;
+	char	   *sep;
 	StringInfoData cfgpath;
+	StringInfoData base;
 
 	if (pg_strncasecmp(catalog_uri, "http://", 7) != 0 &&
 		pg_strncasecmp(catalog_uri, "https://", 8) != 0)
@@ -593,8 +752,7 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: a REST catalog URI must be http:// or https://")));
 
-	/* config: {overrides, defaults}; a prefix, if any, is spliced after /v1/.
-	 * A warehouse option selects a warehouse on a multi-warehouse catalog and is
+	/* A warehouse option selects a warehouse on a multi-warehouse catalog and is
 	 * sent as the ?warehouse= query parameter (Iceberg REST spec). */
 	initStringInfo(&cfgpath);
 	appendStringInfoString(&cfgpath, "/v1/config");
@@ -615,26 +773,35 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("iceberg: the REST catalog config response is not a JSON object")));
-	prefix = rest_json_string_opt(&cfg->root, "prefix");
-	if (prefix == NULL)
-	{
-		JsonbValue	vbuf;
-		JsonbValue *ov = getKeyJsonValueFromContainer(&cfg->root, "overrides", 9,
-													  &vbuf);
+	prefix = rest_config_value(&cfg->root, "prefix");
+	initStringInfo(&base);
+	appendStringInfoString(&base, "/v1/");
+	if (prefix != NULL)
+		rest_append_prefix(&base, prefix);
+	cc->base = base.data;
 
-		if (ov != NULL && ov->type == jbvBinary)
-			prefix = rest_json_string_opt(ov->val.binary.data, "prefix");
-	}
+	sep = rest_config_value(&cfg->root, "namespace-separator");
+	cc->sep = rest_encode_separator(sep != NULL ? sep : REST_DEFAULT_SEPARATOR);
+}
 
+/*
+ * Call GET /v1/config (to learn the prefix and separator) then loadTable, and
+ * return the whole loadTable JSON document. *out_location is set to its
+ * metadata-location.
+ */
+static Jsonb *
+rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
+					const char *token, const char *warehouse, char **out_location)
+{
+	RestCatalogConfig cc;
+	Jsonb	   *lt;
+	StringInfoData rp;
+
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
-	appendStringInfoString(&rp, "/v1/");
-	if (prefix != NULL && prefix[0] != '\0')
-	{
-		rest_pct_encode(&rp, prefix);
-		appendStringInfoChar(&rp, '/');
-	}
+	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_namespace(&rp, ns);
+	rest_append_namespace(&rp, ns, cc.sep);
 	appendStringInfoString(&rp, "/tables/");
 	rest_pct_encode(&rp, table);
 
@@ -851,11 +1018,293 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
+/*
+ * Bounds on a list walk, so a broken or hostile catalog cannot keep a backend
+ * busy for ever. A real catalog stays far below both.
+ */
+#define REST_MAX_PAGES				100000
+#define REST_MAX_NAMESPACE_DEPTH	64
+
+/*
+ * A set of strings, for "seen before?" questions about values a catalog sends.
+ * Keyed by a 64-bit hash; each entry keeps every string with that hash, so a
+ * collision never makes two different strings look equal.
+ */
+typedef struct RestStrSetEntry
+{
+	uint64		hash;			/* the key; must be first */
+	List	   *strs;
+} RestStrSetEntry;
+
+/*
+ * Is `s` in *set? With `add`, also put it there. *set starts NULL and is made
+ * on the first add, in the current memory context.
+ */
+static bool
+rest_strset_lookup(HTAB **set, const char *s, bool add)
+{
+	uint64		h = hash_bytes_extended((const unsigned char *) s, (int) strlen(s), 0);
+	RestStrSetEntry *e;
+	bool		found;
+	ListCell   *lc;
+
+	if (*set == NULL)
+	{
+		HASHCTL		ctl;
+
+		if (!add)
+			return false;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.keysize = sizeof(uint64);
+		ctl.entrysize = sizeof(RestStrSetEntry);
+		ctl.hcxt = CurrentMemoryContext;
+		*set = hash_create("pgcolumnar REST string set", 64, &ctl,
+						   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = (RestStrSetEntry *) hash_search(*set, &h, add ? HASH_ENTER : HASH_FIND, &found);
+	if (!found)
+	{
+		if (e != NULL)
+			e->strs = list_make1(pstrdup(s));
+		return false;
+	}
+	foreach(lc, e->strs)
+	{
+		if (strcmp((const char *) lfirst(lc), s) == 0)
+			return true;
+	}
+	if (add)
+		e->strs = lappend(e->strs, pstrdup(s));
+	return false;
+}
+
+/*
+ * GET a list resource and return the elements of its `key` array, following
+ * next-page-token across pages (the REST spec's pageToken query parameter).
+ * `path` may already hold a query string. Each element is a JsonbValue that
+ * points into its page's document. `what` labels errors and the object check.
+ */
+static List *
+rest_get_list(const char *catalog_uri, const char *path, const char *key,
+			  const char *what, const char *token)
+{
+	List	   *items = NIL;
+	char	   *pagetoken = NULL;
+	int			pages = 0;
+	HTAB	   *seen = NULL;	/* every token sent so far */
+
+	for (;;)
+	{
+		StringInfoData rp;
+		Jsonb	   *doc;
+		JsonbValue	vbuf;
+		JsonbValue *arr;
+		char	   *next;
+
+		CHECK_FOR_INTERRUPTS();
+		if (++pages > REST_MAX_PAGES)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("iceberg: the REST catalog %s has more than %d pages",
+							what, REST_MAX_PAGES)));
+		initStringInfo(&rp);
+		appendStringInfoString(&rp, path);
+		if (pagetoken != NULL)
+		{
+			appendStringInfoString(&rp, strchr(path, '?') ? "&pageToken=" : "?pageToken=");
+			rest_pct_encode(&rp, pagetoken);
+		}
+		doc = rest_get_json(catalog_uri, rp.data, what, token);
+		if (!JsonContainerIsObject(&doc->root))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog %s response is not a JSON object",
+							what)));
+		arr = getKeyJsonValueFromContainer(&doc->root, key, (int) strlen(key), &vbuf);
+		if (arr != NULL && arr->type == jbvBinary &&
+			JsonContainerIsArray(arr->val.binary.data))
+		{
+			uint32		n = JsonContainerSize(arr->val.binary.data);
+			uint32		i;
+
+			for (i = 0; i < n; i++)
+			{
+				JsonbValue *e = getIthJsonbValueFromContainer(arr->val.binary.data, i);
+
+				if (e != NULL)
+					items = lappend(items, e);
+			}
+		}
+
+		/* a null, absent or empty token ends the list */
+		next = rest_json_string_opt(&doc->root, "next-page-token");
+		if (next == NULL || next[0] == '\0')
+			break;
+		/* any earlier token, not only the last one: an A, B, A cycle never ends */
+		if (rest_strset_lookup(&seen, next, true))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("iceberg: the REST catalog returned the same page token twice for the %s",
+							what)));
+		pagetoken = next;
+	}
+	return items;
+}
+
+/*
+ * The levels of one namespace element (a JSON array of strings) as a List, or
+ * NIL when the element is not such an array.
+ */
+static List *
+rest_namespace_levels(JsonbValue *lv)
+{
+	List	   *levels = NIL;
+	uint32		nlev;
+	uint32		j;
+
+	if (lv == NULL || lv->type != jbvBinary ||
+		!JsonContainerIsArray(lv->val.binary.data))
+		return NIL;
+	nlev = JsonContainerSize(lv->val.binary.data);
+	for (j = 0; j < nlev; j++)
+	{
+		JsonbValue *pv = getIthJsonbValueFromContainer(lv->val.binary.data, j);
+
+		if (pv == NULL || pv->type != jbvString)
+			return NIL;
+		levels = lappend(levels, pnstrdup(pv->val.string.val, pv->val.string.len));
+	}
+	return levels;
+}
+
+/*
+ * A key for a namespace's levels that no two different namespaces share: each
+ * level with its length in front, so ["a.b"] and ["a","b"] differ.
+ */
+static char *
+rest_levels_key(List *levels)
+{
+	StringInfoData k;
+	ListCell   *lc;
+
+	initStringInfo(&k);
+	foreach(lc, levels)
+	{
+		const char *l = (const char *) lfirst(lc);
+
+		appendStringInfo(&k, "%zu:%s", strlen(l), l);
+	}
+	return k.data;
+}
+
+/*
+ * Emit every namespace under `parent` (NIL: the top level), then walk into
+ * each one with ?parent=. The REST spec lists only the direct children of
+ * `parent`, so a nested namespace appears only through this walk (#1793).
+ *
+ * Below the top level, a child must extend its parent by exactly one level;
+ * anything else (such as a catalog that ignores ?parent= and repeats the top
+ * level) is skipped, so the walk always goes deeper and ends.
+ *
+ * Some catalogs list nested namespaces at the top level too. Each one is
+ * emitted there, as before #1793, but not walked from there, and *topnested
+ * remembers it so the walk below does not emit it a second time. The walk
+ * still goes into it, to find its own children.
+ */
+static void
+rest_walk_namespaces(const char *catalog_uri, const char *token,
+					 RestCatalogConfig *cc, List *parent, HTAB **topnested,
+					 Tuplestorestate *ts, TupleDesc td)
+{
+	StringInfoData rp;
+	List	   *items;
+	ListCell   *lc;
+	int			depth = list_length(parent);
+
+	/* a namespace REST_MAX_NAMESPACE_DEPTH levels deep is still walked */
+	if (depth > REST_MAX_NAMESPACE_DEPTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("iceberg: the REST catalog nests namespaces deeper than %d levels",
+						REST_MAX_NAMESPACE_DEPTH)));
+	check_stack_depth();
+
+	initStringInfo(&rp);
+	appendStringInfoString(&rp, cc->base);
+	appendStringInfoString(&rp, "namespaces");
+	if (parent != NIL)
+	{
+		appendStringInfoString(&rp, "?parent=");
+		rest_append_levels(&rp, parent, cc->sep);
+	}
+	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token);
+
+	if (parent == NIL)
+	{
+		foreach(lc, items)
+		{
+			List	   *levels = rest_namespace_levels((JsonbValue *) lfirst(lc));
+
+			if (list_length(levels) > 1)
+				rest_strset_lookup(topnested, rest_levels_key(levels), true);
+		}
+	}
+
+	foreach(lc, items)
+	{
+		List	   *levels = rest_namespace_levels((JsonbValue *) lfirst(lc));
+		StringInfoData name;
+		ListCell   *l2;
+		Datum		values[1];
+		bool		nulls[1] = {false};
+
+		if (levels == NIL)
+			continue;
+		if (parent != NIL)
+		{
+			bool		extends = (list_length(levels) == depth + 1);
+			int			k = 0;
+
+			foreach(l2, parent)
+			{
+				if (!extends)
+					break;
+				extends = strcmp((const char *) lfirst(l2),
+								 (const char *) list_nth(levels, k++)) == 0;
+			}
+			if (!extends)
+				continue;
+		}
+
+		/* emitted already when the top level listed it */
+		if (parent == NIL ||
+			!rest_strset_lookup(topnested, rest_levels_key(levels), false))
+		{
+			/* dot-join the levels */
+			initStringInfo(&name);
+			foreach(l2, levels)
+			{
+				if (name.len > 0)
+					appendStringInfoChar(&name, '.');
+				appendStringInfoString(&name, (const char *) lfirst(l2));
+			}
+			values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
+			tuplestore_putvalues(ts, td, values, nulls);
+			pfree(name.data);
+		}
+
+		/* a nested namespace on the top-level list is walked from its parent */
+		if (parent == NIL && list_length(levels) > 1)
+			continue;
+		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, ts, td);
+	}
+}
+
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespaces);
 
 /*
  * SQL: iceberg_rest_namespaces(catalog_uri) RETURNS SETOF text. One row per
- * namespace; a multi-level namespace is dot-joined.
+ * namespace, at every level; a multi-level namespace is dot-joined.
  */
 Datum
 pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
@@ -866,11 +1315,9 @@ pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 	TupleDesc	td;
 	char	   *catalog_uri;
 	char	   *token;
-	Jsonb	   *doc;
-	JsonbValue	vbuf;
-	JsonbValue *nsv;
-	uint32		n;
-	uint32		i;
+	char	   *warehouse;
+	RestCatalogConfig cc;
+	HTAB	   *topnested = NULL;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -878,47 +1325,9 @@ pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
 	ts = rest_text_srf_setup(rsinfo, &td);
 
-	rest_resolve(arg0, &catalog_uri, &token, NULL);
-	doc = rest_get_json(catalog_uri, "/v1/namespaces", "namespaces", token);
-	if (!JsonContainerIsObject(&doc->root))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("iceberg: the REST catalog namespaces response is not a JSON object")));
-	nsv = getKeyJsonValueFromContainer(&doc->root, "namespaces", 10, &vbuf);
-	if (nsv == NULL || nsv->type != jbvBinary ||
-		!JsonContainerIsArray(nsv->val.binary.data))
-		return (Datum) 0;		/* no namespaces */
-
-	/* each element is itself an array of level strings; dot-join them */
-	n = JsonContainerSize(nsv->val.binary.data);
-	for (i = 0; i < n; i++)
-	{
-		JsonbValue *lv = getIthJsonbValueFromContainer(nsv->val.binary.data, i);
-		StringInfoData name;
-		uint32		nlev;
-		uint32		j;
-		Datum		values[1];
-		bool		nulls[1] = {false};
-
-		if (lv == NULL || lv->type != jbvBinary ||
-			!JsonContainerIsArray(lv->val.binary.data))
-			continue;
-		initStringInfo(&name);
-		nlev = JsonContainerSize(lv->val.binary.data);
-		for (j = 0; j < nlev; j++)
-		{
-			JsonbValue *pv = getIthJsonbValueFromContainer(lv->val.binary.data, j);
-
-			if (pv == NULL || pv->type != jbvString)
-				continue;
-			if (name.len > 0)
-				appendStringInfoChar(&name, '.');
-			appendBinaryStringInfo(&name, pv->val.string.val, pv->val.string.len);
-		}
-		values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
-		tuplestore_putvalues(ts, td, values, nulls);
-		pfree(name.data);
-	}
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
+	rest_walk_namespaces(catalog_uri, token, &cc, NIL, &topnested, ts, td);
 	return (Datum) 0;
 }
 
@@ -938,12 +1347,11 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 	TupleDesc	td;
 	char	   *catalog_uri;
 	char	   *token;
+	char	   *warehouse;
+	RestCatalogConfig cc;
 	StringInfoData rp;
-	Jsonb	   *doc;
-	JsonbValue	vbuf;
-	JsonbValue *idv;
-	uint32		n;
-	uint32		i;
+	List	   *items;
+	ListCell   *lc;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -951,32 +1359,24 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
 	ts = rest_text_srf_setup(rsinfo, &td);
 
-	rest_resolve(arg0, &catalog_uri, &token, NULL);
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
-	appendStringInfoString(&rp, "/v1/namespaces/");
-	rest_append_namespace(&rp, ns);
+	appendStringInfoString(&rp, cc.base);
+	appendStringInfoString(&rp, "namespaces/");
+	rest_append_namespace(&rp, ns, cc.sep);
 	appendStringInfoString(&rp, "/tables");
-	doc = rest_get_json(catalog_uri, rp.data, "table list", token);
-	if (!JsonContainerIsObject(&doc->root))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("iceberg: the REST catalog table-list response is not a JSON object")));
-	idv = getKeyJsonValueFromContainer(&doc->root, "identifiers", 11, &vbuf);
-	if (idv == NULL || idv->type != jbvBinary ||
-		!JsonContainerIsArray(idv->val.binary.data))
-		return (Datum) 0;		/* no tables */
+	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token);
 
-	n = JsonContainerSize(idv->val.binary.data);
-	for (i = 0; i < n; i++)
+	foreach(lc, items)
 	{
-		JsonbValue *e = getIthJsonbValueFromContainer(idv->val.binary.data, i);
+		JsonbValue *e = (JsonbValue *) lfirst(lc);
 		JsonbValue	nbuf;
 		JsonbValue *nm;
 		Datum		values[1];
 		bool		nulls[1] = {false};
 
-		if (e == NULL || e->type != jbvBinary ||
-			!JsonContainerIsObject(e->val.binary.data))
+		if (e->type != jbvBinary || !JsonContainerIsObject(e->val.binary.data))
 			continue;
 		nm = getKeyJsonValueFromContainer(e->val.binary.data, "name", 4, &nbuf);
 		if (nm == NULL || nm->type != jbvString)

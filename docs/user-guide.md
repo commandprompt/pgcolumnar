@@ -261,7 +261,9 @@ the conversion does not keep order across a daylight-saving change. For the same
 reason the Iceberg foreign table does not prune files on a `year()`, `month()`,
 `day()` or `hour()` partition of such a column. A column marked only with the
 older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type, with no `isAdjustedToUTC`
-flag, holds instants: the Parquet format defines it so.
+flag, holds instants: the Parquet format defines it so. `parquet_schema` advises
+`timestamptz` for every column that holds instants, and `timestamp` for wall
+times.
 
 The `path` may also be an object-storage URL. Every read and export function, and
 both foreign-data wrappers, accept an `s3://`, `http://`, or `https://` URL where
