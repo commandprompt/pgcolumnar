@@ -330,6 +330,20 @@ def pep(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_export_parquet('t_heap2'::regclass, '{w}/heaptgt', 2)",
             r"is not a columnar table or a partitioned table with columnar partitions")
 
+        # ---- the workers use the caller's export_group_bytes (#1843 review)
+        db.run("CREATE TABLE t_cap (id int, s text) USING pgcolumnar")
+        db.run("SELECT pgcolumnar.set_options('t_cap'::regclass, stripe_row_limit => 1000)")
+        db.run("INSERT INTO t_cap SELECT g, repeat('x', 3000) FROM generate_series(1, 4000) g")
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("SET pgcolumnar.export_group_bytes = 65536")
+                row = conn.execute("SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'t_cap'::regclass, '{w}/capdir', 2)").fetchone()
+                r["cap n"] = row[0]
+        except psycopg.Error as exc:
+            r["cap n"] = _err(exc)
+        r["cap dir"] = w / "capdir"
+
         r["up"] = _survived(pgc_cluster, db, before)
         yield r
     finally:
@@ -538,3 +552,29 @@ def test_pexport_rejects_a_non_columnar_target(pep, expect):
 
 def test_pexport_the_server_survives_the_exports(pep, expect):
     expect.text(pep["up"], "1", "server still up after the exports")
+
+
+def _cap_groups(pq, d):
+    """-> "rows read back|the most rows in any row group", over the part files."""
+    rows, most = 0, 0
+    for f in sorted(pathlib.Path(d).glob("part-*.parquet")):
+        md = pq.ParquetFile(str(f)).metadata
+        rows += md.num_rows
+        most = max([most] + [md.row_group(i).num_rows for i in range(md.num_row_groups)])
+    return f"{rows}|{most}"
+
+
+def test_pexport_workers_use_the_callers_group_byte_cap(pep, expect):
+    """#1843 review: background workers start with the server's settings, so a SET of
+    the byte cap did not reach them. Each row buffers 3010 bytes, so under a 65536-byte
+    cap a group holds at most 21 rows."""
+    pq = expect.require_module("pyarrow.parquet",
+                               name="the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group")
+    if pq is None:
+        return
+    try:
+        groups = _cap_groups(pq, pep["cap dir"])
+    except (OSError, ValueError) as exc:
+        groups = f"unreadable: {exc}"
+    expect.text(f"{_shown(pep['cap n'])}|{groups}", "4000|4000|21",
+                "the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group")

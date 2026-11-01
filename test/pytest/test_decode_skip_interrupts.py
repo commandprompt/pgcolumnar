@@ -2,16 +2,15 @@
 `test/decode_skip_interrupts.sh`, every check by the shell's name (#1341).
 
 PgColumnarThriftSkip walks every unrecognised field of a Parquet footer. Its list arm
-loops a file-declared count up to 0xFFFFFFFF, and a bool element consumes zero bytes,
-so a sub-2 KB footer holding 256 lists of 4.3e9 bools spins for hours unless the loop
-yields. The functional arm writes that footer, as the shell's heredoc does, and wants a
-1 s statement_timeout to cancel parquet_schema() over it:
+loops a file-declared count up to 0xFFFFFFFF, and a bool element consumed zero bytes,
+so a sub-2 KB footer holding 256 lists of 4.3e9 bools spun for hours unless the loop
+yielded. Since #1822 a bool element takes its one byte, so that footer runs off its own
+end and is refused as corrupt. The functional arm writes it, as the shell's heredoc
+does, and wants parquet_schema() over it, under a 1 s statement_timeout:
 
-- by the TIMEOUT: 57014 with the timeout's own message, so a guard that refused the
-  list under the cancel code does not pass;
-- within 3 s of the statement's start, so the cancel lands per skipped value: a check
-  per struct field also ends in 57014, but only once a whole list has been walked
-  (7 s here, inside the 30 s cap that decides a hang);
+- refused by the footer parser (0A000, could not parse), not cancelled by the timeout,
+  which would mean the skip walked the lists again;
+- within 3 s of the statement's start;
 - with no backend killed since the scenario began, read from the server log: a fresh
   SELECT 1 alone answers once crash recovery is over, and passed with an abort() in
   the list arm.
@@ -149,22 +148,22 @@ def dsi(pgc_cluster, server_dir):
     bomb = server_dir / "skip_bomb.parquet"
     _skip_bomb(bomb)
     before = _crashes(pgc_cluster)
-    r = {"probe": _probe(dsn, bomb)}
+    r = {"probe": _probe(dsn, bomb), "bomb": str(bomb)}
     print(f"probe: {r['probe']}")
     r["alive"] = _survived(dsn, pgc_cluster, before)
     return r
 
 
-def test_the_thrift_skip_bomb_is_cancelled_by_the_timeout(dsi, expect):
+def test_the_thrift_skip_bomb_is_refused_as_corrupt(dsi, expect):
     expect.text(dsi["probe"][0],
-                "57014: canceling statement due to statement timeout",
-                "Thrift skip-bomb footer is cancellable, not an uninterruptible hang")
+                f'0A000: could not parse "{dsi["bomb"]}" (unsupported or corrupt Parquet metadata)',
+                "Thrift skip-bomb footer is refused as corrupt, not an uninterruptible hang")
 
 
-def test_the_cancel_lands_inside_the_skip_loop(dsi, expect):
+def test_the_skip_bomb_answer_lands_within_3_s(dsi, expect):
     said, ms = dsi["probe"]
     expect.text("yes" if ms is not None and said != "NOERR" and ms < BOUND_MS else f"no ({said}, {ms} ms)", "yes",
-                "the cancel lands within 3 s of the statement's start under a 1 s timeout")
+                "the skip-bomb answer lands within 3 s of the statement's start under a 1 s timeout")
 
 
 def test_the_backend_survived_the_skip_bomb(dsi, expect):

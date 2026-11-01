@@ -78,12 +78,15 @@ psql_run "GRANT SELECT ON ift TO t_none, t_priv;"
 # tier_partition (#1295) writes its file through export_parquet, so its gate is
 # export_parquet's. To reach it a role needs SELECT and, for the SHARE lock the
 # function takes first, UPDATE on the partition; both roles get them, so the
-# role gate is the only thing between them. Past the gate, the privileged role
-# writes the file and is then stopped by DETACH, which needs the parent's owner.
+# role gate is the only thing between them. Since #1795 the export writes through
+# the server, so it needs USAGE on it too, and both roles get that. Past the gate,
+# the privileged role writes the file and is then stopped by DETACH, which needs
+# the parent's owner.
 psql_run "CREATE TABLE sfp_parent (k int) PARTITION BY RANGE (k);"
 psql_run "CREATE TABLE sfp_p1 PARTITION OF sfp_parent FOR VALUES FROM (0) TO (10) USING pgcolumnar;"
 psql_run "INSERT INTO sfp_parent VALUES (1);"
 psql_run "GRANT SELECT, UPDATE ON sfp_p1 TO t_none, t_priv;"
+psql_run "GRANT USAGE ON FOREIGN SERVER pqsrv TO t_none, t_priv;"
 
 run_as() {	# role sql -> combined output; SET ROLE drops to the test role in C.
 	# The first line proves the role took: "as:<role>". Without it a failed SET ROLE
