@@ -3071,6 +3071,8 @@ iceberg_deletes	iceberg_deletes	a dotdot-escaping delete path is refused (22023)
 iceberg_deletes	iceberg_deletes	a manifest list without partition_spec_id is refused for equality deletes (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete whose manifest list carries no partition_spec_id is not refused
 iceberg_deletes	iceberg_deletes	a never-applicable equality delete is skipped, not validated (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete at the oldest data file's sequence number is not skipped before validation
 iceberg_deletes	iceberg_deletes	a never-applicable equality delete without equality_ids is skipped (5 rows)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: an equality delete at the oldest data file's sequence number is not skipped before validation
+iceberg_deletes	iceberg_deletes	a non-Parquet equality-delete file is refused (0A000, only PARQUET)	15;16;17;18;19	2026-11-01	columnar_iceberg.c: an equality-delete file whose format is not PARQUET is read as Parquet instead of refused
+iceberg_deletes	iceberg_deletes	a non-Parquet position-delete file is refused (0A000, only PARQUET)	15;16;17;18;19	2026-11-01	columnar_iceberg.c: a position-delete file whose format is not PARQUET is read as Parquet instead of refused;columnar_iceberg.c: abort() in place of the non-PARQUET position-delete refusal
 iceberg_deletes	iceberg_deletes	a null delete value matches only null data values	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
 iceberg_deletes	iceberg_deletes	a partition spec without its fields key is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition spec without a fields array is not refused (a NULL deref kills the backend)
 iceberg_deletes	iceberg_deletes	a partition-scoped delete with an uncomparable partition value is refused (0A000)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a partition-scoped equality delete with an uncomparable partition tuple is not refused
@@ -3093,6 +3095,7 @@ iceberg_deletes	iceberg_deletes	backend still up after the bad-sequence refusal	
 iceberg_deletes	iceberg_deletes	backend still up after the equality applications	15;16;17;18;19	2026-10-21	columnar_iceberg.c: a null equality-delete value matches any data value (comparing the null Datum kills the backend)
 iceberg_deletes	iceberg_deletes	backend still up after the equality refusals	15;16;17;18;19	never	-
 iceberg_deletes	iceberg_deletes	backend still up after the negative-pos refusal	15;16;17;18;19	never	-
+iceberg_deletes	iceberg_deletes	backend still up after the non-Parquet position-delete refusal	15;16;17;18;19	2026-11-01	columnar_iceberg.c: abort() in place of the non-PARQUET position-delete refusal
 iceberg_deletes	iceberg_deletes	backend still up after the null-pos refusal	15;16;17;18;19	2026-10-21	columnar_iceberg.c: abort() in place of the null-pos refusal
 iceberg_deletes	iceberg_deletes	columns beyond equality_ids are ignored for matching	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches
 iceberg_deletes	iceberg_deletes	equality delete drops matching rows (survivors == oracle)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: no equality-delete row ever matches

@@ -191,6 +191,17 @@ check "a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain
 	      FROM pgcolumnar.iceberg_scan('$MDIR/zeropos.metadata.json')
 	        AS t(id bigint, region text, amount int)")" "2,3,4,5"
 
+# ---- #1873: a position-delete file in another format is refused -------------
+# posorc is the apply arm with its delete recorded as file_format ORC. The file it
+# names is the real posdel.parquet, so without the refusal the reader parses it as
+# Parquet and silently returns 3 rows: a guard reduced to false reds this arm as
+# "no error". The refusal's own message names the format it found.
+CRASHES_BEFORE="$(crashes)"
+check "a non-Parquet position-delete file is refused (0A000, only PARQUET)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/posorc.metadata.json')
+	                AS t(id bigint, region text, amount int)" "has format ORC; only PARQUET position deletes are supported")" "0A000"
+check "backend still up after the non-Parquet position-delete refusal" "$(survived "$CRASHES_BEFORE")" "1"
+
 # ---- 4b: equality deletes are applied ---------------------------------------
 # per-variant surviving id list from the generator's oracle
 eq_oracle() {
@@ -341,6 +352,12 @@ check "...and the boundary refusal names the escape" \
 check "a dotdot-escaping delete path is refused (22023)" \
 	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/eqdotdot.metadata.json')
 	                AS t(id bigint, region text, amount int)" "escapes the table location")" "22023"
+# #1873: eqapply's delete recorded as file_format AVRO. The file is the real
+# eqdel-id.parquet, so without the refusal the reader parses it as Parquet and
+# silently drops ids 2 and 4 ("no error"); it must refuse with its own message
+check "a non-Parquet equality-delete file is refused (0A000, only PARQUET)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/eqavro.metadata.json')
+	                AS t(id bigint, region text, amount int)" "has format AVRO; only PARQUET equality deletes are supported")" "0A000"
 check "backend still up after the equality refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- 4b audit arms (multi-agent adversarial audit findings) -----------------

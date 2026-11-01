@@ -10758,7 +10758,7 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 
 ## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
 
-The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; thirteen corrupt or unsupported snapshots are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes) and partition-scoped equality deletes, against the generator's oracle; fifteen corrupt or unsupported snapshots are refused, each by its own guard (among them a position-delete file recorded as ORC and an equality-delete file recorded as AVRO, #1873), and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
 
 ### Every test
 
@@ -10782,6 +10782,8 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_the_negative_pos_refusal_names_it` | ...and the negative-pos refusal names the negative pos |
 | `test_the_backend_survives_the_negative_pos_refusal` | backend still up after the negative-pos refusal |
 | `test_a_position_delete_of_ordinal_zero_deletes_the_first_row` | a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain) |
+| `test_a_non_parquet_position_delete_file_is_refused` | a non-Parquet position-delete file is refused (0A000, only PARQUET) |
+| `test_the_backend_survives_the_non_parquet_position_delete_refusal` | backend still up after the non-Parquet position-delete refusal |
 | `test_an_equality_delete_drops_matching_rows` | equality delete drops matching rows (survivors == oracle) |
 | `test_an_equality_delete_at_an_equal_sequence_does_not_apply` | an equality delete at an equal sequence number does not apply |
 | `test_multi_column_equality_is_an_and` | multi-column equality matches all columns (AND, not OR) |
@@ -10806,6 +10808,7 @@ Every test makes one check under the shell's name. A refusal reads as its SQLSTA
 | `test_an_equality_delete_path_outside_the_table_is_refused` | an equality-delete path outside the table location is refused (22023) |
 | `test_the_boundary_refusal_names_the_escape` | ...and the boundary refusal names the escape |
 | `test_a_dotdot_escaping_delete_path_is_refused` | a dotdot-escaping delete path is refused (22023) |
+| `test_a_non_parquet_equality_delete_file_is_refused` | a non-Parquet equality-delete file is refused (0A000, only PARQUET) |
 | `test_the_backend_survives_the_equality_refusals` | backend still up after the equality refusals |
 | `test_an_equality_id_beyond_int32_is_refused` | an equality_ids value beyond int32 refuses the manifest (XX001) |
 | `test_a_manifest_list_without_partition_spec_id_is_refused` | a manifest list without partition_spec_id is refused for equality deletes (XX001) |

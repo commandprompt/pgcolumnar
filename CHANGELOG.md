@@ -259,6 +259,13 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
+  file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
+  snapshot records its position-delete file as ORC and another records its
+  equality-delete file as AVRO. Both files are really Parquet, so a reader
+  without the refusal would read them and drop rows with no error. Before, the
+  two refusals could be removed with every check still green.
+  `gen_delete_fixture.py` writes the two snapshots.
 - The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
   two numbers (#1431). Every PR that changed the ledger used to append its
   derivation above the census line, so any two such PRs conflicted there. The
