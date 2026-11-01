@@ -243,6 +243,51 @@ check_text "multiple equality-delete files apply their union" \
 await_up
 check_text "position and equality deletes combine" \
 	"$(eq_ids_of eqmixed)" "$(eq_oracle eqmixed)"
+# many delete rows (#1817): 4005 data rows against 2000 id keys and 1001
+# (id, region) pairs. 20 rows match, including two NULL-region pairs. The
+# survivor list is long, so both sides are compared as an md5.
+await_up
+check_text "many equality-delete rows drop exactly the matching rows (survivors == oracle)" \
+	"$(q "SELECT md5(string_agg(id::text, ',' ORDER BY id))
+	      FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	        AS t(id bigint, region text, amount int)")" \
+	"$(eq_oracle eqmany | tr -d '\n' | md5sum | cut -d' ' -f1)"
+# the probe's DEBUG1 line, once per data file, reports how many hash-chain
+# rows it walked (visited), the longest single walk, and how many walks it made
+# (data_rows x delete_files). A hash probe walks about one chain row per walk;
+# the old linear walk, or a table stuck at one bucket, walks every delete row
+# for every data row: about 4005 x 3001 rows, and a longest walk of 2000.
+await_up
+eqmany_probe="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qtA -c "SET client_min_messages = debug1" \
+	-c "SELECT count(*) FROM pgcolumnar.iceberg_scan('$MDIR/eqmany.metadata.json')
+	      AS t(id bigint, region text, amount int)" 2>&1 |
+	awk -F'[ =]' '/equality-delete probe:/ {
+		for (i = 1; i <= NF; i++) {
+			if ($i == "data_rows") r1 = $(i + 1)
+			if ($i == "delete_files") f1 = $(i + 1)
+			if ($i == "delete_rows") d += $(i + 1)
+			if ($i == "visited") v += $(i + 1)
+			if ($i == "longest_walk" && $(i + 1) > l) l = $(i + 1)
+			if ($i == "comparisons") c += $(i + 1)
+		}
+		r += r1; w += r1 * f1
+		n++
+	}
+	END { if (n) printf "%d %d %d %d %d %d", r, w, d, v, l, c }')"
+read -r eqmany_rows eqmany_walks eqmany_dels eqmany_visited eqmany_longest eqmany_cmp <<<"$eqmany_probe"
+echo "-- eqmany probe (data_rows walks delete_rows visited longest_walk comparisons): $eqmany_probe"
+check "the equality-delete probe walks a short hash chain per data row, not every delete row (#1817)" \
+	"$(if [ -n "$eqmany_cmp" ] && [ "$eqmany_rows" -eq 4005 ] && [ "$eqmany_dels" -gt 0 ] &&
+	      [ "$eqmany_visited" -le $((2 * eqmany_walks)) ] && [ "$eqmany_longest" -le 16 ] &&
+	      [ "$eqmany_cmp" -le "$eqmany_rows" ]; then echo bounded
+	   else echo "unbounded (data_rows=${eqmany_rows:-none} walks=${eqmany_walks:-none} delete_rows=${eqmany_dels:-none} visited=${eqmany_visited:-none} longest_walk=${eqmany_longest:-none} comparisons=${eqmany_cmp:-none}; want visited <= 2 x walks, longest_walk <= 16, comparisons <= data_rows)"; fi)" \
+	"bounded"
+# a zero-row equality-delete file has no bucket array. The probe must skip it,
+# not read the missing array, and the id=5 file after it must still apply.
+await_up
+check_text "a zero-row equality-delete file deletes nothing and the next file still applies" \
+	"$(eq_ids_of eqempty)" "$(eq_oracle eqempty)"
 # the delete columns come from the table schema, not the output list: a scan
 # projecting only amount must still drop the id-matched rows
 await_up
@@ -432,5 +477,87 @@ q "CREATE FOREIGN TABLE del_tm (id bigint, region varchar(2))
 check "typmod: the Iceberg FDW does not coerce a position-deleted row's value" \
 	"$(tm_read "SELECT string_agg(id || ':' || region, ',' ORDER BY id) FROM del_tm")" \
 	"1:eu,3:us,5:us"
+
+# ---- delete files other writers describe (#1815, #1825) --------------------
+# The variants come from gen_iceberg_variants.py --deletes, written next to the
+# relocated table: delete manifests that spell file_format "parquet", two tables
+# with one position-delete file of a million rows, recorded under s3:// and s3a://,
+# and a table recorded under s3:// whose delete file names s3a://.
+DVARIANTS="$(python3 "$FX/gen_iceberg_variants.py" --deletes "$DEST" 2>&1)"
+chmod -R a+rwX "$DEST" 2>/dev/null
+dvar() { local p; p="$(sed -n "s/^$1=//p" <<<"$DVARIANTS")"; echo "${p:-no variant $1: $DVARIANTS}"; }
+# qe SQL -> the rows, or the server's ERROR line, so a failed read shows its cause
+qe() {
+	await_up
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | sed -n '/^ERROR:/{p;q};p'
+}
+check_text "a position-delete file whose file_format is lowercase parquet is applied" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(dvar plower)/apply.metadata.json')
+	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
+check_text "an equality-delete file whose file_format is lowercase parquet is applied" \
+	"$(qe "SELECT string_agg(id::text, ',' ORDER BY id)
+	       FROM pgcolumnar.iceberg_scan('$(dvar plower)/eqapply.metadata.json')
+	         AS t(id bigint, region text, amount int)")" "$(eq_oracle eqapply)"
+# mix_s3a records the data file as s3://bb/... and its delete file names it as
+# s3a://bb/...: the same object, so the delete applies (#1825 review)
+check_text "a position delete naming its s3:// data file as s3a:// is applied" \
+	"$(qe "SELECT id || '|' || region || '|' || amount
+	       FROM pgcolumnar.iceberg_scan('$(dvar mix_s3a)')
+	         AS t(id bigint, region text, amount int) ORDER BY id")" "$ORACLE"
+
+# peak QUERY -> "<kB the backend's peak rose by> <the query's last output line>",
+# or the reason there is no reading. VmHWM is the backend's peak resident memory and
+# only grows, so reading it before and after the statement cannot miss the peak.
+peak() {
+	local fifo pid="" n=0 base pk out
+	await_up
+	fifo="$PGC_WORKDIR/delpeak.$RANDOM.$RANDOM"; rm -f "$fifo"; mkfifo "$fifo"
+	env PATH="$PGC_BINDIR:$PATH" PGAPPNAME=pgcdelpeak \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		< "$fifo" > "$fifo.out" 2>&1 &
+	exec 9> "$fifo"
+	echo "SELECT 1;" >&9
+	while [ -z "$pid" ] && [ $n -lt 200 ]; do
+		pid="$(q "SELECT pid FROM pg_stat_activity WHERE application_name = 'pgcdelpeak' LIMIT 1;")"
+		n=$((n+1)); [ -z "$pid" ] && sleep 0.1
+	done
+	if [ -z "$pid" ]; then exec 9>&-; wait 2>/dev/null; rm -f "$fifo" "$fifo.out"; echo "no backend pid"; return; fi
+	base=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+	echo "$1;" >&9
+	n=0
+	while [ "$(q "SELECT count(*) FROM pg_stat_activity WHERE pid = $pid AND state = 'idle';")" != 1 ] && [ $n -lt 1200 ]; do
+		n=$((n+1)); sleep 0.1
+	done
+	pk=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+	exec 9>&-; wait 2>/dev/null
+	out="$(tail -1 "$fifo.out")"
+	if grep -q '^ERROR' "$fifo.out"; then out="$(grep -m1 '^ERROR' "$fifo.out")"; fi
+	rm -f "$fifo" "$fifo.out"
+	if pgc_is_number "$base" && pgc_is_number "$pk"; then echo "$(( pk - base )) $out"
+	else echo "no VmHWM for backend $pid ($out)"; fi
+}
+# The two tables differ only in the scheme their paths carry, so they must cost the
+# same. Before the fix, each delete row allocated a fresh s3:// copy of its path for
+# every data file it was compared with, and nothing freed them until the query ended.
+BLOAT_SQL="SELECT count(*) FROM pgcolumnar.iceberg_scan('%s') AS t(id bigint, region text, amount int)"
+# shellcheck disable=SC2059
+P_S3="$(peak "$(printf "$BLOAT_SQL" "$(dvar bloat_s3)")")"
+# shellcheck disable=SC2059
+P_S3A="$(peak "$(printf "$BLOAT_SQL" "$(dvar bloat_s3a)")")"
+echo "      peak over the scan: s3:// table [$P_S3], s3a:// table [$P_S3A] (kB, rows)"
+check_text "a million s3:// position-delete rows apply (3 rows left)" \
+	"$(awk '{ $1 = ""; sub(/^ /, ""); print }' <<<"$P_S3")" "3"
+check_text "a million s3a:// position-delete rows apply (3 rows left)" \
+	"$(awk '{ $1 = ""; sub(/^ /, ""); print }' <<<"$P_S3A")" "3"
+# 16 MiB is far above the noise between two runs of the same scan, and far below the
+# cost of one allocation per delete row: measured at about 140 MB for this table.
+# A scan that errored has no peak worth comparing, so both must have read 3 rows.
+s3kb="$(awk '{print $1}' <<<"$P_S3")"; s3akb="$(awk '{print $1}' <<<"$P_S3A")"
+check_text "s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB)" \
+	"$(pgc_is_number "$s3kb" && pgc_is_number "$s3akb" && [ "${P_S3#* }" = 3 ] && [ "${P_S3A#* }" = 3 ] \
+	   && [ $(( s3akb - s3kb )) -le 16384 ] && echo 1 \
+	   || echo "0 (peak rise: s3:// [$s3kb] kB, s3a:// [$s3akb] kB; readings [$P_S3] [$P_S3A])")" 1
 
 pgc_summary

@@ -184,6 +184,7 @@ typedef struct PqChunk
 typedef struct PqRowGroup
 {
 	int64		num_rows;
+	bool		has_num_rows;	/* num_rows (required) was present */
 	PqChunk    *chunks;			/* [nchunks]; consumers index by ncols, so a value
 								 * read path must call pq_check_row_groups() first */
 	int			nchunks;		/* column chunks this row group actually carries */
@@ -198,6 +199,9 @@ typedef struct PqFile
 	int			ntop;			/* top-level columns (root's children) */
 	int			nrowgroups;
 	PqRowGroup *rgs;
+	bool		has_row_groups; /* row_groups (required) was present */
+	bool		has_num_rows;	/* num_rows (required) was present */
+	int64		num_rows;		/* the footer's own total of rows */
 } PqFile;
 
 /*
@@ -622,6 +626,9 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->ntop = 0;
 	pf->nrowgroups = 0;
 	pf->rgs = NULL;
+	pf->has_row_groups = false;
+	pf->has_num_rows = false;
+	pf->num_rows = 0;
 
 	for (;;)
 	{
@@ -651,6 +658,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 			uint32		i;
 
 			pf->nrowgroups = n;
+			pf->has_row_groups = true;
 			pf->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
 			for (i = 0; i < n && !r.error; i++)
 			{
@@ -679,11 +687,19 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 							parse_column_chunk(&r, &rg->chunks[ci]);
 					}
 					else if (rfid == 3)		/* num_rows */
+					{
 						rg->num_rows = PgColumnarThriftZigzag(&r);
+						rg->has_num_rows = true;
+					}
 					else
 						PgColumnarThriftSkip(&r, rft);
 				}
 			}
+		}
+		else if (fid == 3 && (ft == TC_I64 || ft == TC_I32 || ft == TC_I16))	/* num_rows */
+		{
+			pf->num_rows = PgColumnarThriftZigzag(&r);
+			pf->has_num_rows = true;
 		}
 		else
 			PgColumnarThriftSkip(&r, ft);
@@ -730,11 +746,36 @@ static void
 pq_check_row_groups(const PqFile *pf, const char *path)
 {
 	int			rg;
+	int64		total = 0;
+
+	/*
+	 * row_groups, each row group's num_rows and the footer's num_rows are all
+	 * required. When one is missing, the reader counted that part as 0 rows and
+	 * returned a short answer with no error (#1822). The footer's total must
+	 * also match the row groups' sum, which catches a corrupt count that still
+	 * parses.
+	 */
+	if (!pf->has_row_groups)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no row_groups field.")));
+	if (!pf->has_num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no num_rows field.")));
 
 	for (rg = 0; rg < pf->nrowgroups; rg++)
 	{
 		PqRowGroup *g = &pf->rgs[rg];
 		int			ci;
+
+		if (!g->has_num_rows)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed row group", path),
+					 errdetail("Row group %d has no num_rows field.", rg)));
 
 		if (g->chunks == NULL || g->nchunks != pf->ncols)
 			ereport(ERROR,
@@ -790,7 +831,17 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 						 errdetail("Row group %d declares num_rows %ld, but column %d holds only %ld values.",
 								   rg, (long) g->num_rows, ci, (long) nv)));
 		}
+
+		/* each num_rows is now 0..MaxAllocSize/sizeof(Datum), so no overflow */
+		total += g->num_rows;
 	}
+
+	if (total != pf->num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer declares num_rows %ld, but its row groups hold %ld rows.",
+						   (long) pf->num_rows, (long) total)));
 }
 
 /* -------------------------------------------------------------------------
@@ -2677,8 +2728,15 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typmod = pq_decimal_typmod(sc);
 				return true;
 			}
+			/*
+			 * A UTC-adjusted timestamp holds an instant, so advise timestamptz
+			 * (#1807). Advising timestamp made a read convert the instant to a
+			 * wall time in the session zone (PQ_TS_INSTANT_TO_WALL). The legacy
+			 * TIMESTAMP_MILLIS/MICROS types are UTC-adjusted by definition.
+			 */
 			if (sc->time_unit == PQ_TU_MILLIS || sc->time_unit == PQ_TU_MICROS)
-				*typid = sc->is_timestamp ? TIMESTAMPOID : TIMEOID;
+				*typid = !sc->is_timestamp ? TIMEOID
+					: sc->adjusted_utc ? TIMESTAMPTZOID : TIMESTAMPOID;
 			else if (sc->is_unsigned)
 			{
 				/* UINT_64 reaches 2^64-1, 20 digits (#1814) */
