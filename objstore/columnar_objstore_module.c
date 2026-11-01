@@ -24,6 +24,11 @@
  *   wrong bytes quietly" is the failure mode this tree keeps deciding not to
  *   ship.
  *
+ * - One read sees one version of the object (#1805). Open keeps the HEAD's
+ *   strong ETag and every ranged GET sends it as If-Match, so a key that is
+ *   overwritten mid-read answers 412 and the read fails, instead of mixing a
+ *   footer from one object with chunks from another.
+ *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
  *   no handle survives its statement, so a live handle during an abort belongs
@@ -81,6 +86,13 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
 /* One wait slice; consecutive silent slices add up to the inactivity limit. */
 #define OS_WAIT_SLICE_MS	5000
 #define OS_MAX_QUIET_SLICES	12	/* 60 s of silence is a dead peer */
+/*
+ * Bytes kept of a response ETag, terminator included, so the longest ETag kept
+ * is OS_ETAG_BUF - 1 characters. The parsed ETag and the read pin share this one
+ * size: a pin smaller than the parse buffer would cut a kept ETag short, and a
+ * cut ETag matches nothing, so every pinned GET would fail (#1805 review).
+ */
+#define OS_ETAG_BUF			80
 
 struct PgColumnarObjHandle
 {
@@ -95,6 +107,13 @@ struct PgColumnarObjHandle
 	int			fd;				/* -1 when disconnected */
 	bool		fd_reserved;	/* ReserveExternalFD accounting */
 	int64		len;			/* object length from open's HEAD */
+
+	/*
+	 * The strong ETag open's HEAD returned, sent as If-Match on every ranged
+	 * GET so one read sees one version of the object (#1805). "" when the
+	 * server sent none, or only a weak one: then reads are not pinned.
+	 */
+	char		pin_etag[OS_ETAG_BUF];
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -156,7 +175,7 @@ typedef struct OsResponse
 	int64		content_length; /* -1 when absent */
 	bool		chunked;
 	bool		conn_close;
-	char		etag[80];		/* PUT part response ETag, "" when absent (#394) */
+	char		etag[OS_ETAG_BUF];	/* response ETag, "" when absent or too long */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
@@ -385,7 +404,12 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 /*
  * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. The same
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
+ * Compute Engine's at fd20:ce::254, and
+ * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
+ * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
@@ -404,10 +428,41 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		const struct in6_addr *a6 =
 			&((const struct sockaddr_in6 *) ai->ai_addr)->sin6_addr;
 
+		const uint8_t *b = a6->s6_addr;
+		static const uint8_t zero10[10] = {0};
+		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
+		bool		v4low = (b[12] == 169 && b[13] == 254);
+
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
-		if (IN6_IS_ADDR_V4MAPPED(a6))
-			return a6->s6_addr[12] == 169 && a6->s6_addr[13] == 254;
+		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
+		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
+		if (memcmp(b, gceimds6, 16) == 0)
+			return true;
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying 169.254/16 */
+		if (memcmp(b, zero10, 10) == 0 &&
+			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
+			return v4low;
+		/* 64:ff9b::/96, the NAT64 well-known prefix */
+		if (memcmp(b, nat64wkp, 12) == 0)
+			return v4low;
+		/*
+		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
+		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
+		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13). The guard
+		 * cannot tell which, so it checks all four and fails closed. That
+		 * also refuses some ordinary addresses whose bytes land on another
+		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
+		 * docs say so.
+		 */
+		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
+			b[4] == 0x00 && b[5] == 0x01)
+			return (b[6] == 169 && b[7] == 254) || (b[7] == 169 && b[9] == 254) ||
+				(b[9] == 169 && b[10] == 254) || v4low;
 	}
 	return false;
 }
@@ -485,8 +540,12 @@ os_connect(PgColumnarObjHandle *h)
 					 errmsg("columnar: \"%s\" resolves into a link-local range, "
 							"which object storage never legitimately uses",
 							h->host),
-					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
-							   "are refused unconditionally: they are the cloud "
+					 errdetail("Link-local and instance-metadata addresses "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
+							   "fd20:ce::254, and "
+							   "169.254.0.0/16 inside an IPv4-mapped, "
+							   "IPv4-compatible or NAT64 IPv6 address) are refused "
+							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
 
@@ -889,6 +948,9 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 					   i < (int) sizeof(resp->etag) - 1)
 					resp->etag[i++] = *p++;
 				resp->etag[i] = '\0';
+				/* A cut-down ETag would match nothing: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->etag[0] = '\0';
 			}
 			line = eol + 1;
 		}
@@ -1233,6 +1295,9 @@ os_request(PgColumnarObjHandle *h, const char *method,
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
 						 (long long) off, (long long) (off + n - 1));
+	/* Pin the read to the version open saw (#1805); S3 answers 412 if not. */
+	if (isGet && h->pin_etag[0] != '\0')
+		appendStringInfo(&req, "If-Match: %s\r\n", h->pin_etag);
 	if (h->sign)
 	{
 		char		rangeVal[64];
@@ -1719,6 +1784,13 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 
 	h->len = resp.content_length;
 	*len = h->len;
+
+	/*
+	 * If-Match compares strongly (RFC 9110 13.1.1), so a weak ETag would make
+	 * every ranged GET fail. Such a server's reads stay unpinned.
+	 */
+	if (strncmp(resp.etag, "W/", 2) != 0)
+		strlcpy(h->pin_etag, resp.etag, sizeof(h->pin_etag));
 	return h;
 }
 
@@ -1751,6 +1823,18 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_FILE),
 				 errmsg("columnar: \"%s\" does not exist (HTTP 404)", h->url)));
+	if (resp.status == 412 && h->pin_etag[0] != '\0')
+	{
+		/* The body is the server's, not ours; drop the connection with it. */
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object no longer has ETag %s, which it had when "
+						   "the read began, so the server refused the rest of "
+						   "the read (HTTP 412).", h->pin_etag),
+				 errhint("Run the statement again to read the new version.")));
+	}
 	if (resp.status != 206)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -2218,33 +2302,36 @@ objstore_sink_create(const char *url, const PgColumnarObjStoreConfig *cfg)
 	return s;
 }
 
+/*
+ * Stage the chunk a part at a time (#1812). The whole chunk used to be
+ * appended first, so the buffer held up to one part plus one chunk, and a
+ * writer's chunk is a whole Parquet page or Arrow batch: 500 MB staged plus a
+ * 600 MB page passed the 1 GiB allocation cap. Now the buffer is filled to the
+ * part size, uploaded, and filled again, so it never holds more than one part.
+ */
 static void
 objstore_sink_write(PgColumnarObjSink *s, const void *buf, size_t n)
 {
-	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	const char *p = (const char *) buf;
 
-	appendBinaryStringInfo(&s->buf, (const char *) buf, (int) n);
-	MemoryContextSwitchTo(oldcxt);
 	s->total += (int64) n;
-
-	while (s->buf.len >= s->partSize)
+	while (n > 0)
 	{
-		StringInfoData rest;
-		int			carry = s->buf.len - s->partSize;
+		size_t		room = (size_t) (s->partSize - s->buf.len);
+		size_t		take = Min(n, room);
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* peel exactly one part; keep the remainder for the next flush */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		initStringInfo(&rest);
-		if (carry > 0)
-			appendBinaryStringInfo(&rest, s->buf.data + s->partSize, carry);
-		s->buf.len = s->partSize;
-		s->buf.data[s->partSize] = '\0';
-		if (s->uploadId == NULL)
-			os_begin_multipart(s);
-		os_flush_part(s);
-		pfree(s->buf.data);
-		s->buf = rest;
+		appendBinaryStringInfo(&s->buf, p, (int) take);
 		MemoryContextSwitchTo(oldcxt);
+		p += take;
+		n -= take;
+
+		if (s->buf.len >= s->partSize)
+		{
+			if (s->uploadId == NULL)
+				os_begin_multipart(s);
+			os_flush_part(s);	/* uploads the part and empties the buffer */
+		}
 	}
 }
 
