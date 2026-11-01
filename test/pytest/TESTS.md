@@ -398,6 +398,7 @@ behaviour, the source of that number is named.
 - [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
 - [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
 - [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
+- [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 
 ## 1. How to read a test in here
 
@@ -8697,8 +8698,11 @@ The pytest twin of `test/vm_clear_on_renumber.sh` (ported for #1341), every chec
 
 Each check is its own test over a module fixture that runs the shell's steps in order. Every "cleared" reading is the transition `before->after` and wants `t->f`, so a VACUUM that set no bit cannot pass as a clear. The shell's geometry premises, which exit rather than record, refuse the fixture, so every test errors rather than passes.
 
+A private database does not keep VACUUM's horizon clear (#1875). Any session connected to it whose snapshot is older than the INSERT holds the all-visible marking back, such as an autovacuum worker's ANALYZE whose snapshot starts below an xid open in another database. So each VACUUM repeats until the blocks the arms read are set, up to 100 times, 0.2 s apart.
+
 | test | what it holds |
 | --- | --- |
+| `test_a_vacuum_of_cw_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: VACUUM, retried up to 100 times, set every block Part 1 reads; otherwise names the sessions holding an xmin here (#1875) |
 | `test_vacuum_set_all_visible_on_group_3s_late_block` | premise: VACUUM set group 3's late block all-visible |
 | `test_and_on_the_untouched_control_groups_block` | premise: and group 5's block |
 | `test_the_delete_cleared_the_block_holding_the_deleted_rows` | deleting the front of group 3 takes its first block `t->f` |
@@ -8708,6 +8712,8 @@ Each check is its own test over a module fixture that runs the shell's steps in 
 | `test_group_3_is_gone_from_the_catalog` | premise: group 3 has no `row_group` row |
 | `test_rewrite_one_group_cleared_the_retired_groups_late_block` | the late block goes `t->f` through the rewrite alone |
 | `test_a_group_the_rewrite_did_not_touch_keeps_its_all_visible_bit` | control: group 5's block stays `t`, which fails a clear widened to the relation |
+| `test_a_vacuum_of_rc_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: the same for `rc`'s early and late blocks (#1875) |
+| `test_a_vacuum_of_rcctl_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: and for `rcctl`'s (#1875) |
 | `test_vacuum_set_all_visible_early_in_rc` | premise: an interior early block of `rc` is set |
 | `test_and_late_in_rc` | premise: and an interior late block |
 | `test_and_on_the_control_relation` | premise: and the control relation's block |
@@ -13431,7 +13437,7 @@ Every test makes one check under the shell's name, on a private database with se
 | `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
 ## 347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open
 
-The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. The serial arms (#1810) cancel `export_parquet` and `export_arrow`, and terminate `export_parquet`, while their own CreateMultipartUpload is held: no upload at the key may stay open, and `notes.parquet` and the key plus `.old` must. The commit arms (#1813) cancel `export_parquet` while the store holds the answer to CompleteMultipartUpload (`__complete_delay__`) or to a single PUT (`__put_delay__`), after it wrote the new object over an earlier one: the report must match what the key holds, and the export must warn that it wrote the object. The complete-drop arm (#1846) has the store close the connection with no answer after it applied CompleteMultipartUpload (`__complete_drop__`) and the cancel arrived: the export must send the request only once and fail with the error that says the store may have written the object. The serial double-cancel arm (#1846) cancels `export_parquet` while its CreateMultipartUpload is held, and again while the store holds its cleanup's listing (`__list_uploads_delay__`, 3 s a page): the cleanup holds interrupts, so no upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small export's single PUT (`__put_status__`) while another writer's upload is open at the key: the export sent no create, so it must not list the uploads, and that upload must stay open. The commit arms also check that the clean export run first issued no commit warning. The serial tests are parametrized over the three serial arms and the commit tests over the two commit arms, one collected test per check. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. The serial arms (#1810) cancel `export_parquet` and `export_arrow`, and terminate `export_parquet`, while their own CreateMultipartUpload is held: no upload at the key may stay open, and `notes.parquet` and the key plus `.old` must. The commit arms (#1813) cancel `export_parquet` while the store holds the answer to CompleteMultipartUpload (`__complete_delay__`) or to a single PUT (`__put_delay__`), after it wrote the new object over an earlier one: the report must match what the key holds, and the export must warn that it wrote the object. The complete-drop arm (#1846) has the store close the connection with no answer after it applied CompleteMultipartUpload (`__complete_drop__`) and the cancel arrived: the export must send the request only once and fail with the error that says the store may have written the object. The serial double-cancel arm (#1846) cancels `export_parquet` while its CreateMultipartUpload is held, and again while the store holds its cleanup's listing (`__list_uploads_delay__`, 3 s a page): the cleanup holds interrupts, so no upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small export's single PUT (`__put_status__`) while another writer's upload is open at the key: the export sent no create, so it must not list the uploads, and that upload must stay open. The commit arms also check that the clean export run first issued no commit warning. The serial tests are parametrized over the three serial arms and the commit tests over the two commit arms, one collected test per check. Then the messages must name what the caller gave, never the dummy key `s3://pgc-bucket/_` a bucket-level request is resolved from (#1869): with worker 0's part PUT refused (`__put_status__`) and the cleanup's upload listing refused (`__list_uploads_status__`), the dispatcher's LOG of what the cleanup discarded names the prefix it listed; and with no region in the postmaster's environment, the export's endpoint check and `read_parquet`'s directory listing each name the prefix in the region refusal. A private cluster, because the postmaster starts with `AWS_*` in its environment.
 
 ### Every test
 
@@ -13498,6 +13504,11 @@ Every test reads one value from a module fixture that runs the whole scenario on
 | `test_put_refused_the_export_asked_for_no_open_uploads` | put refused: the export asked the store for no open uploads |
 | `test_put_refused_the_other_writers_upload_is_left_open` | put refused: the other writer's upload at the key is left open |
 | `test_put_refused_the_server_survived` | put refused: the server survived |
+| `test_refused_upload_listing_export_fails_on_the_refused_part` | premise: refused upload listing: the export fails on worker 0's refused part |
+| `test_refused_upload_listing_the_cleanup_listed_once` | premise: refused upload listing: the cleanup asked the store for its open uploads once |
+| `test_refused_upload_listing_names_the_listed_prefix` | refused upload listing: the server log names the prefix that was listed, not a dummy key |
+| `test_no_region_export_names_the_prefix` | no region: parallel_export_parquet's refusal names the prefix it was given, not a dummy key |
+| `test_no_region_read_parquet_names_the_prefix` | no region: read_parquet's directory listing refusal names the prefix it was given, not a dummy key |
 
 ## 348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation
 
@@ -13638,3 +13649,31 @@ The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the she
 | `test_an_unanswerable_aggregate_beside_it_declines` | an aggregate the metadata cannot answer beside it declines the fold |
 | `test_a_collate_override_declines_the_fold` | a COLLATE override declines the fold |
 | `test_the_collate_answer_is_the_plain_one` | and the override answers what the plain aggregate answers |
+
+## 353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status
+
+The twin of `test/objstore_error_advice.sh` (#1796), every check by the shell's name. Three object-store messages that pointed the reader at the wrong thing. A 403 hint must name where the refused key was configured: the server environment, the user mapping, or the credentials a REST catalog vended. An allow-list refusal's hint must suggest the `host:port` the message names, appended to the current list with any quote doubled, and the list it suggests must permit the endpoint. A single-PUT export larger than the socket buffers, which the store refuses before reading the body, must report the 403 and its hint, not `failed before a response`. One SigV4 fixture with a refused bucket (`--tamper-bucket`, which refuses before reading a body and closes with it unread), three REST catalogs over the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a storage-credentials entry (#1861), one vends nothing), and a postmaster whose environment holds the right key, so the environment would have read what the mapping and vended keys were refused. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario on the private cluster, and makes one check under the shell's name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_advice_suite_can_run_here` | premise: the SigV4 S3 fixture and both REST catalogs are up |
+| `test_the_environment_key_writes_and_reads` | premise: the server environment's key writes and reads s3://pgc-bucket/small.parquet |
+| `test_an_environment_key_refusal_hints_at_the_environment` | environment key refused: the 403 hint names the server environment |
+| `test_the_foreign_table_reads_with_the_right_mapping_secret` | premise: the foreign table reads with the right secret in the user mapping |
+| `test_a_user_mapping_key_refusal_hints_at_the_mapping` | user mapping key refused: the 403 hint names the user mapping |
+| `test_a_user_mapping_key_refused_on_a_glob_listing_hints_at_the_mapping` | user mapping key refused on a glob's listing: the 403 hint names the user mapping |
+| `test_the_iceberg_table_reads_through_a_catalog_vending_nothing` | premise: the iceberg table reads through a catalog that vends nothing (server environment) |
+| `test_a_vended_key_refusal_hints_at_the_vended_credentials` | vended key refused: the 403 hint names the catalog's vended credentials |
+| `test_a_vended_entry_key_refusal_hints_at_the_vended_credentials` | vended key refused through a storage-credentials entry: the 403 hint names the catalog's vended credentials |
+| `test_an_allow_list_refusal_with_an_empty_list_suggests_host_and_port` | allow-list refusal, empty list: the hint suggests host:port |
+| `test_an_allow_list_refusal_keeps_the_list_and_appends_host_and_port` | allow-list refusal: the hint keeps the current entries and appends host:port |
+| `test_an_allow_list_refusal_doubles_a_quote_in_the_list` | allow-list refusal: a quote in the current list is doubled in the hint |
+| `test_the_list_the_hint_suggests_permits_the_endpoint` | allow-list refusal: the list the hint suggests permits the endpoint |
+| `test_the_mid_size_export_is_one_put` | premise: the mid-size export is one PUT of more than 4 MiB |
+| `test_a_small_export_to_the_refused_bucket_reports_the_403` | a small export to the refused bucket reports the 403 and its hint |
+| `test_a_mid_size_export_refused_early_keeps_the_403` | mid-size export refused before its body was read: the 403 and its hint survive |
+| `test_the_server_survived_the_refusals` | the server survived the refusals |

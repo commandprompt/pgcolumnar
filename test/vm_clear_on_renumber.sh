@@ -33,14 +33,32 @@
 #
 # THE TWO CONTROLS DIFFER IN STRENGTH, and the difference is measured rather than
 # assumed. Part 1's control is a group in the SAME table the rewrite does not
-# touch, so widening that clear to the whole relation reddens it -- measured, 16
+# touch, so widening that clear to the whole relation reddens it -- measured, 19
 # passed + 1 failed with the range replaced by (rel, 1, 100000000). Part 2 has NO
 # in-table control available, because recluster renumbers every group and leaves
 # nothing untouched to compare against. Its control is a second relation, which
 # catches a clear reaching beyond the relation it was called on, NOT an
-# over-broad range: the same widening at :765 leaves the suite 17 passed + 0
+# over-broad range: the same widening at :765 leaves the suite 20 passed + 0
 # failed. That is a real limit of this half, stated here rather than left for a
 # reader to infer from an arm that looks like Part 1's.
+#
+# VACUUM IS RETRIED UNTIL THE ARMS' BLOCKS ARE ALL-VISIBLE, and only that (#1875).
+# A VACUUM marks a group all-visible only once its catalog row's xmin precedes the
+# database's removable horizon. Any session CONNECTED TO THIS DATABASE whose
+# snapshot is older than the INSERT holds that horizon back. The likely one is an
+# autovacuum worker: it visits a new database soon after CREATE EXTENSION fills
+# the catalogs, and ANALYZE holds a snapshot. A snapshot held in ANOTHER database
+# does not count by itself, because procarray.c counts only same-database backends
+# toward a table's horizon. But every snapshot taken here then starts below its
+# xid, and that is what turns a short-lived worker into a holder.
+#
+# Measured on the suite as it stood before this change. An xid held open in
+# `postgres` left it at 17 passed. The same xid plus a snapshot opened in this
+# database while rc was being filled took it to 10 passed + 7 failed: the seven
+# checks #1875 reports from CI. So each VACUUM is repeated, up to $VAC_TRIES
+# times, until every block an arm later reads is set. A budget that runs out is
+# a named premise failure that names the holders. The premises below are
+# unchanged: they still read `t` from the bits, not the retry's verdict.
 #
 # Usage:  test/vm_clear_on_renumber.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -67,6 +85,26 @@ blk_of() { echo $(( $1 / SPAN )); }
 # t/f for one synthetic block.
 vis() { q "SELECT pgcolumnar.vm_is_visible('$1', $2);"; }
 
+# vacuum_until_visible REL BLK... -> `yes` once a VACUUM of REL has left every named
+# block all-visible, or `no (...)` with the attempts, the readings and every session
+# in this database holding an xmin, after VAC_TRIES VACUUMs (#1875; see the header).
+VAC_TRIES=100
+vacuum_until_visible() {
+	local rel=$1 n=0 b miss
+	shift
+	while [ "$n" -lt "$VAC_TRIES" ]; do
+		[ "$n" -gt 0 ] && sleep 0.2
+		psql_run "VACUUM $rel;" >&2
+		n=$(( n + 1 ))
+		miss=""
+		for b in "$@"; do
+			[ "$(vis "$rel" "$b")" = "t" ] || miss="$miss $b"
+		done
+		[ -z "$miss" ] && { echo "yes"; return; }
+	done
+	echo "no (after $n VACUUMs of $rel, blocks [${miss# }] of [$*] still not all-visible; xmin holders in this database: $(q "SELECT coalesce(string_agg(backend_type || ' pid ' || pid || ' xmin ' || backend_xmin, ', '), 'none') FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_xmin IS NOT NULL;"))"
+}
+
 # ---------------------------------------------------------------------------
 # Part 1: rewrite_one_group, reached through pgcolumnar.compact_rewrite
 # ---------------------------------------------------------------------------
@@ -75,7 +113,6 @@ psql_run "CREATE TABLE cw (id int, v int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('cw', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
 psql_run "INSERT INTO cw SELECT g, g FROM generate_series(1,20480) g;"
 psql_run "CREATE INDEX cw_id ON cw (id);"
-psql_run "VACUUM cw;"
 
 # Take the geometry from the catalog rather than from the INSERT, so a change to
 # the group size is a premise failure here instead of an arm that silently moves
@@ -107,6 +144,9 @@ fi
 # the after state, a VACUUM that marked nothing all-visible left every block `f`, and
 # each arm passed as "cleared" with no bit ever set (measured: VMSetVisibleForRelation
 # made to return 0, and all four "cleared" checks passed while only the premises failed).
+check "premise: a VACUUM of cw set its arms' blocks all-visible within the retry budget" \
+	"$(vacuum_until_visible cw "$CW_FRONT_BLK" "$CW_TARGET_BLK" "$CW_CTRL_BLK")" "yes"
+
 CW_FRONT_V0="$(vis cw "$CW_FRONT_BLK")"
 check "premise: VACUUM set all-visible on group 3's late block" \
 	"$(vis cw "$CW_TARGET_BLK")" "t"
@@ -157,7 +197,7 @@ check "control: a group the rewrite did not touch keeps its all-visible bit" \
 # It does NOT fail an over-broad RANGE, and the arms below must not be read as if
 # it did. PgColumnarVMClearForRowRange takes `rel`, so widening the range cannot
 # make a clear on rc touch rcctl -- measured: with this site's range replaced by
-# (rel, 1, 100000000) the suite is 17 passed + 0 failed. A helper rewritten to
+# (rel, 1, 100000000) the suite is 20 passed + 0 failed. A helper rewritten to
 # clear globally WOULD be caught here; a wrong row range would not.
 
 for t in rc rcctl; do
@@ -165,7 +205,6 @@ for t in rc rcctl; do
 	psql_run "SELECT pgcolumnar.set_options('$t', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
 	psql_run "INSERT INTO $t SELECT g, ((g::bigint*7919)%200)::int, ((g::bigint*104729)%200)::int
 	          FROM generate_series(1,20480) g;"
-	psql_run "VACUUM $t;"
 done
 
 RC_FIRST="$(q "SELECT min(first_row_number) FROM pgcolumnar.row_group
@@ -187,6 +226,11 @@ if [ "$RC_EARLY_BLK" -ge "$RC_LATE_BLK" ] || \
 	echo "PREMISE FAILED: blocks $RC_EARLY_BLK/$RC_LATE_BLK are not wholly inside rows $RC_FIRST..$RC_LAST" >&2
 	exit 1
 fi
+
+check "premise: a VACUUM of rc set its arms' blocks all-visible within the retry budget" \
+	"$(vacuum_until_visible rc "$RC_EARLY_BLK" "$RC_LATE_BLK")" "yes"
+check "premise: a VACUUM of rcctl set its arms' blocks all-visible within the retry budget" \
+	"$(vacuum_until_visible rcctl "$RC_EARLY_BLK" "$RC_LATE_BLK")" "yes"
 
 RC_EARLY_V0="$(vis rc "$RC_EARLY_BLK")"; RC_LATE_V0="$(vis rc "$RC_LATE_BLK")"
 check "premise: VACUUM set all-visible early in rc"        "$RC_EARLY_V0"                 "t"
