@@ -491,6 +491,30 @@ true until the next version shipped.
   the seven CI reported. Each VACUUM now repeats, up to 100 times, until the
   blocks the arms read are set. Three new premises report a budget that runs out,
   with the sessions holding an xmin. Test-only.
+- Three object-store refusals now give advice that fits them (#1796). A 403's
+  hint names where the refused key was configured: the user mapping, the
+  credentials a REST catalog vended (in its flat config or in a
+  `storage-credentials` entry), or the server's `AWS_*` environment. It used to
+  name the environment for every key.
+  The allow-list refusal's hint suggests the `host:port` the message names,
+  added to the current list. It used to suggest the bare host as the whole list,
+  which opened every port on that host and dropped every other entry.
+  A single-PUT export that the store refuses before reading the body now reports
+  the 403 or other status. When the body was larger than the socket buffers, it
+  used to report `failed before a response`. The object-store module ABI is now
+  8, so the module and the extension must come from the same build.
+  `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
+- An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
+  (#1869). Three bucket-level requests are resolved from that dummy key: the
+  upload listing an export's cleanup makes, the object listing behind
+  `read_parquet` on a prefix, and the endpoint check `parallel_export_parquet`
+  makes before it starts workers. A refusal in any of them named the dummy
+  key. A refused ListMultipartUploads, or a
+  region or credential refusal in any of the three, now names the URL the caller
+  gave. The export's upload cleanup still never raises, but it now LOGs what it
+  discarded, so the server log says why an export's uploads were left open.
+  `test/objstore_export_open_uploads.sh` and
+  `test_objstore_export_open_uploads.py`.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a
