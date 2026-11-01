@@ -868,7 +868,11 @@ SELECT * FROM pgcolumnar.iceberg_data_files('.../00042.metadata.json');
 The reader resolves each output column to a schema field id, so a file written
 before a column rename still reads. It applies position deletes, equality
 deletes, and format-version 3 deletion vectors. The metadata path may be a local
-path or an `s3://`, `http://`, or `https://` URL.
+path or an `s3://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+`s3n://` as `s3://`. The metadata file may be gzip-compressed, as a writer makes it
+when `write.metadata.compression-codec` is `gzip`. Manifests must use the Avro
+codec `null` or `deflate`; [Limitations](limitations.md#reading-apache-iceberg)
+lists the rest.
 
 **Tuning.** Select only the columns you need. Read from object storage under the
 same allow-list as every other remote access.

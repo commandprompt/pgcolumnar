@@ -471,6 +471,33 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg reader now reads gzip-compressed table metadata (#1815). A writer
+  makes it when `write.metadata.compression-codec` is `gzip`, and names it
+  `*.gz.metadata.json` or `*.metadata.json.gz`. Before, every Iceberg function
+  failed on it with `22P02 invalid input syntax for type json`, which did not name
+  the cause. The reader detects gzip by its first two bytes. The 64 MiB cap holds
+  on the inflated size (SQLSTATE 54000), and a cut-short stream is refused as
+  corrupt (XX001). A file of several gzip members reads as their joined text, and
+  bytes after the last member that do not start a new one are ignored, as Java's
+  `GZIPInputStream` ignores them. `test/iceberg_scan.sh` and `test_iceberg_scan.py`.
+- `iceberg_scan` now reads a data file whose `file_format` is `parquet`, the
+  spelling the Iceberg spec uses (#1825). It compared the value with `PARQUET`
+  case-sensitively, for data, position-delete, and equality-delete files.
+  `test/iceberg_scan.sh` covers data files, and `test/iceberg_deletes.sh` the two
+  kinds of delete file.
+- The Iceberg reader treats `s3a://` and `s3n://` paths as `s3://` (#1825). Before,
+  an `s3a://` metadata path was opened as a local file and failed with "could not
+  open file". A table whose location used `s3://` while its files used `s3a://`
+  was refused as "not under the table location". `test/iceberg_objstore.sh` covers
+  the metadata path over S3, and `test/iceberg_scan.sh` the mixed schemes. Matching
+  a delete row to its data file allocates nothing, so an `s3a://` table with
+  position deletes uses the same memory as an `s3://` one. `test/iceberg_deletes.sh`
+  measures this with a million delete rows.
+- docs/limitations.md now lists the Avro codecs a manifest may use (`null` and
+  `deflate`) and the URL schemes the Iceberg reader accepts (#1825).
+  docs/sql-reference.md lists `az://`, which pgcolumnar treats as remote and
+  refuses, since no module reads it yet. `zstandard`
+  and `snappy` manifests are still refused.
 - The object-storage module now refuses the IPv6 instance-metadata addresses of
   AWS and Google Compute Engine, and `169.254.169.254` behind the standard NAT64
   prefixes, even when the host is listed in

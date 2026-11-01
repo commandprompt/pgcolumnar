@@ -1446,4 +1446,28 @@ guard_tests 854
 # `5444 tests collected`, guard 854 + cluster 4590.
 # cluster_tests 4826 -> 4827 for #1808's test_metadata_addresses_behind_ipv6_forms in
 # test_objstore_allowlist.py, by collection over the cluster files: `4561 tests collected`.
-cluster_tests 4827
+# cluster_tests 4787 -> 4797 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
+# lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
+# paths), by collection over the cluster files.
+# cluster_tests 4797 -> 4805 for #1815's and #1825's review tests (PR #1835) in test_iceberg_scan.py (3: a
+# two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
+# lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
+# memory), by collection over the cluster files.
+# cluster_tests 4805 -> 4807 for the second review of PR #1835 (#1815, #1825): two tests in
+# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
+# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
+# cluster_tests 4576 at the merge of origin/main (1a1c4018) into fix/1815-iceberg-metadata-formats,
+# by collection: `5430 tests collected` in all, less the 854 guard tests.
+# cluster_tests 4580 at the merge of origin/main (6f88f973) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4580 tests collected`.
+# cluster_tests 4617 at the merge of origin/main (312452ce) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4617 tests collected`.
+# cluster_tests 4631 at the merge of origin/main (6968a6f4) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4631 tests collected`.
+# cluster_tests 4847 -> 4849 for the third review of PR #1835 (#1815, #1825): one test in
+# test_iceberg_scan.py (a two-member gzip file that grows the buffer in its second member) and
+# one in test_iceberg_deletes.py (an s3a:// position delete on an s3:// data file), by collection
+# over the cluster files: `4633 tests collected`.
+# cluster_tests 4849 at the merge of origin/fix/1808-linklocal-ipv6-imds (16149a48) into
+# fix/1815-iceberg-metadata-formats, by collection over the cluster files: `4849 tests collected`.
+cluster_tests 4849

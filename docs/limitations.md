@@ -1226,7 +1226,25 @@ table at its current snapshot. It has these limits:
   It also rejects a manifest `content` or `status` value outside the Iceberg
   spec. A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
-  vectors. The data files must be Parquet.
+  vectors. The data files must be Parquet. The reader accepts the file format in
+  any case, so `parquet` and `PARQUET` both read.
+- The table metadata file may be plain JSON or gzip-compressed. Writers produce a
+  gzip file when the table property `write.metadata.compression-codec` is `gzip`,
+  and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects
+  gzip by its first two bytes, not by the name. The cap of 64 MiB applies to the
+  inflated JSON. A larger file is refused with SQLSTATE 54000.
+- Manifests and manifest lists must use the Avro codec `null` or `deflate`. The
+  reader refuses `zstandard`, `snappy`, `bzip2`, and `xz` with SQLSTATE 0A000.
+  Java Iceberg writes `zstd` or `snappy` manifests when the table property
+  `write.avro.compression-codec` asks for them. Rewrite such a table with
+  `gzip` (deflate) or no compression to read it here.
+- The metadata path and every path the table records may be a local path, or an
+  `s3://`, `gs://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+  `s3n://`, the Hadoop names for S3, as `s3://`. So a table may record its location
+  under one of the three names and its files under another. An `az://` URL is
+  refused with SQLSTATE 0A000, because no module reads Azure Blob Storage yet.
+  Other schemes, such as `abfs://` or `hdfs://`, are opened as local paths and fail
+  with "could not open file".
 - Only top-level primitive columns can be read. A column that names a struct,
   list or map field is an error, whatever type it is declared with (#1788).
 - A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
