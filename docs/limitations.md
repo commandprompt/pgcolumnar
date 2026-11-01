@@ -1135,6 +1135,13 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   written with smaller ones.
 - The column definition list, or a foreign table's column list, must cover every
   leaf column in the file. A shorter list is an error rather than a projection.
+- An object-storage URL cannot name its host as an IPv6 literal, such as
+  `http://[::1]:9000/key`. The reader refuses it with SQLSTATE 0A000. Name the
+  endpoint by a host name or an IPv4 address.
+- An `s3://` key that contains `*`, `?` or `[` costs a listing of its prefix
+  before the read, even when it names one object. The reader looks for an object
+  with exactly that key first, and matches the key as a pattern only when none
+  exists.
 - A remote read is pinned to one version of the object by the ETag of its first
   HEAD. The reader cannot pin the read when the server sends no ETag, only a weak
   one (`W/"..."`), or one longer than 79 characters. That count includes the
