@@ -1190,9 +1190,12 @@ table at its current snapshot. It has these limits:
 - The reader refuses malformed or hostile metadata rather than crashing or
   returning wrong rows. It rejects a non-regular file, such as a FIFO, named as a
   path. It also rejects a null manifest sequence number, a null or negative
-  position-delete position, and a `current-schema-id` that names no schema. It
-  also rejects a manifest `content` or `status` value outside the Iceberg spec.
-  A file of unknown kind is never skipped as a delete.
+  position-delete position, and a `current-schema-id` that names no schema.
+  It refuses a fractional number where the spec wants an integer, and a field
+  id outside 0 to 2147483647. It refuses a `format-version` other than 1, 2 or
+  3, and a `current-snapshot-id` that is present but not an integer (#1824).
+  It also rejects a manifest `content` or `status` value outside the Iceberg
+  spec. A file of unknown kind is never skipped as a delete.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet.
 - Only top-level primitive columns can be read. A column that names a struct,

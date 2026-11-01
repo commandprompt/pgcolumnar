@@ -466,6 +466,32 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader now refuses a footer it cannot parse exactly (#1822). A
+  Thrift field header with type 13, 14 or 15 was skipped as zero bytes, so the
+  parser lost its place and read the value bytes as more headers. One bad
+  footer byte could then return 0, 2000 or 2016 rows of a 3000-row file with
+  no error. Types 14 and 15 are not compact types, so the reader now refuses
+  them, as a field and as a list element. Type 13 is UUID, a 16-byte value that
+  parquet.thrift does not use; the reader skips it as 16 bytes. It also skips a
+  map field and a list of bools by their real size, which it could not do
+  before. A skipped byte or double that would run past the footer's end now
+  stops the parse at once: a list of 4294967295 of them took 10 to 12 seconds
+  to fail before. A header whose type nibble is 0 but whose field-id delta is
+  not is now refused too; it used to end the struct early, like STOP.
+  It refuses a footer that lacks `row_groups`, its own `num_rows`, or a row
+  group's `num_rows`, and one whose `num_rows` differs from the sum of its row
+  groups. `read_parquet`, the Parquet foreign table and `iceberg_scan` share
+  this reader. `test/native_parquet_hardening.sh` sets the type nibble of each
+  of the 209 field headers in a test footer, and every copy is now refused.
+- `iceberg_scan` now refuses malformed numbers in `metadata.json` (#1824). A
+  schema field id above INT32 truncated to another field's id, and a fraction
+  such as `1.4` rounded to 1, so a column returned another column's values.
+  The reader now refuses any fractional number where the spec wants an integer,
+  and a field id outside 0 to 2147483647. It refuses a `format-version` other
+  than 1, 2 or 3, which it used to read as version 2. It refuses a
+  `current-snapshot-id` that is present but not an integer, which it used to
+  read as an empty table. Absent, `null` and `-1` still mean no snapshot.
+
 - `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
   URL now write the object instead of crashing the backend (#1779). Every write
   request was signed, and a plain-HTTP target has no region or credentials, so the

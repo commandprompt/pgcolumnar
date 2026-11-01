@@ -14,6 +14,10 @@
 #      sub-2 KB file. The function had check_stack_depth() (recursion) but no
 #      CHECK_FOR_INTERRUPTS, so the loop ignored SIGINT and statement_timeout: an
 #      uninterruptible backend hang, the #686 FIFO-hang class on the footer path.
+#      Since #1822 a bool element of a list takes its one byte and an invalid type
+#      is refused, so every skipped value consumes a byte or stops the parse. The
+#      bomb now runs off the end of its footer and is refused as corrupt in
+#      milliseconds; the interrupt check stays, and the shape arm pins it.
 #
 #   2. av_skip (columnar_avro.c) skips unconsumed Avro manifest fields. Its
 #      interrupt check sat at block granularity; an array<null> block declares a
@@ -24,17 +28,17 @@
 # Both are reachable today by an honest caller who names a hostile file:
 # parquet_schema()/read_parquet() for (1), read_manifest/iceberg_scan for (2).
 #
-# This suite asserts the fix two ways. The functional arm crafts the bomb and
-# proves a 1 s statement_timeout now aborts it (SQLSTATE 57014) instead of the
-# backend spinning until a KILL: a genuine cancellation test, resolvable here --
-# unlike the in-memory decoders (see decode_interrupts.sh) -- precisely because
-# the unfixed loop is effectively unbounded, so there is no sub-100 ms window to
-# race. The shape arm (like decode_interrupts.sh / wal_envelope.sh) pins the
-# CHECK_FOR_INTERRUPTS into the skip bodies so a future edit that drops it fails
-# here in the matrix without depending on timing.
+# This suite asserts the fix two ways. The functional arm crafts the Thrift bomb
+# and wants it refused as corrupt within 3 s. Since #1822 that refusal comes from
+# the footer's end, not from the 1 s statement_timeout, so no test now runs the
+# Thrift skip's interrupt check: a hostile footer can make the skip loop only as
+# long as the footer itself. The shape arm (like decode_interrupts.sh /
+# wal_envelope.sh) pins the CHECK_FOR_INTERRUPTS into both skip bodies, so an edit
+# that drops either fails here without depending on timing.
 #
-# Removal proof: revert either fix and the matching functional check goes from
-# 57014 to HANG (the KILL fires), and the matching shape check goes to 0.
+# Removal proof: drop either interrupt check and the matching shape check goes to
+# 0. Skip a bool list element as zero bytes again and the functional check reads
+# 57014 instead of the corrupt-footer refusal.
 #
 # Usage:  test/decode_skip_interrupts.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -47,6 +51,9 @@ W="$PGC_WORKDIR"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
 
 # --- craft the Thrift skip-bomb footer ----------------------------------------
+# Before #1822 this spun until the 1 s statement_timeout cancelled it (57014). Now
+# each bool element consumes a byte, so the 256 lists of 4.3e9 bools run off the
+# end of a ~1.8 KB footer and the parse is refused at once.
 # A Parquet file is PAR1 + FileMetaData + <uint32 metalen> + PAR1; the crafted
 # metadata is what parse_file_metadata walks. No writer produces this, so it is
 # built by hand (as native_parquet_stack.sh does).
@@ -139,19 +146,15 @@ alive() {	# since CRASHES_BEFORE
 CRASHES_BEFORE="$(crashes)"
 P="$(probe "$W/skip_bomb.parquet")"
 echo "probe: $P"
-# 57014 is query_canceled, and the message says the TIMEOUT raised it: any other
-# 57014 (a user cancel, or a guard that refused the list under the cancel code)
-# is not this check's cancel. Before the fix this input spun uninterruptibly until
-# the KILL (HANG).
-check "Thrift skip-bomb footer is cancellable, not an uninterruptible hang" \
-	"${P%%|*}" "57014: canceling statement due to statement timeout"
-# The cancel must land inside the list loop, i.e. per skipped value. A check one
-# level up (per struct field, once per 4.3e9-element list) also ends in 57014, but
-# only after a whole list has been walked: within the 30 s KILL, so the check above
-# passed (7 s here). The bound is 3 s: the timeout is 1 s, and per value the cancel lands
-# within milliseconds of it.
+# The refusal must be the footer parser's own: a 57014 here would mean the skip
+# still walked the lists until the timeout, as it did before #1822. Before the
+# interrupt check this input spun uninterruptibly until the KILL (HANG).
+check "Thrift skip-bomb footer is refused as corrupt, not an uninterruptible hang" \
+	"${P%%|*}" "0A000: could not parse \"$W/skip_bomb.parquet\" (unsupported or corrupt Parquet metadata)"
+# The answer must come within 3 s under a 1 s timeout: a skip that walks the lists
+# again would take until the timeout or the 30 s KILL.
 ms="${P##*|}"
-check "the cancel lands within 3 s of the statement's start under a 1 s timeout" \
+check "the skip-bomb answer lands within 3 s of the statement's start under a 1 s timeout" \
 	"$( [[ "$P" == *"|"* && "$ms" =~ ^[0-9]+$ ]] && { [ "$ms" -lt 3000 ] && echo yes || echo "no (${ms} ms)"; } || echo "no ($P)")" "yes"
 check "backend survived the Thrift skip-bomb footer" "$(alive)" "yes"
 
