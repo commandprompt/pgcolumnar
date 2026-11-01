@@ -1142,17 +1142,17 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   query can return rows from both versions without an error. Garage v2.1.0 sends
   a strong ETag; we tested it. Amazon S3
   documents a strong ETag, but we have not tested against it.
-  The reader still compares the total length in each 206 `Content-Range` with
-  the length from the HEAD, so an overwrite that changes the length fails the
-  query. An overwrite that keeps the length is not caught.
+  The reader still checks the total length in each 206 `Content-Range`. When it
+  differs from the length the HEAD gave, the query fails. An overwrite that keeps
+  the length is not caught.
 - The reader treats a changed ETag as a changed object. Some servers send a
   different ETag for the same bytes on different requests. Nodes behind a load
   balancer can do this when each node builds the ETag from its own file time. A read
   from such a server fails with `changed while it was being read`, and running
   the statement again can fail the same way. Set `pgcolumnar.objstore_pin_reads`
-  to `off` for such a server (#1866). The read is then not pinned: if the object
-  is overwritten during the read with the same length, the query can return rows
-  from both versions without an error. The length check stays on.
+  to `off` for such a server (#1866). The read is then not pinned. If another
+  client overwrites the object during the read and keeps its length, the query
+  can return rows from both versions without an error. The length check stays on.
 - The reader pins by version id only when the HEAD sends `x-amz-version-id`
   (#1867). It ignores the id `null`, which S3 gives an object written while
   versioning was off. We tested the version pin against the suite's fixture

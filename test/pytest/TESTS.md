@@ -12758,7 +12758,7 @@ Every test reads one observation the module fixture took, and makes one check un
 
 ## 328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause
 
-The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
+The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A versioned object (#1867) is read with the version id the HEAD named, signed in the canonical query and percent-encoded, so an overwrite mid-read leaves the read on the old version. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
 
 ### Every test
 
@@ -12776,6 +12776,10 @@ Every test makes one check under the shell's name. Refusals are a SQLSTATE plus 
 | `test_count_over_s3` | A: count(*) over s3 |
 | `test_the_signed_run_logged_requests` | premise: signed run logged requests |
 | `test_signing_left_the_request_arithmetic_unchanged` | B: signing left the request arithmetic unchanged |
+| `test_the_versioned_overwrite_pair_has_one_byte_length` | premise: the versioned overwrite pair has one byte length |
+| `test_a_signed_versioned_read_overwritten_mid_read_finishes_on_the_version_it_opened` | C: a signed versioned read overwritten mid-read finishes on the version it opened |
+| `test_the_signed_versioned_read_logged_gets` | premise: the signed versioned read logged GETs |
+| `test_every_signed_ranged_get_of_a_versioned_read_names_the_version` | C: every signed ranged GET of a versioned read names the version |
 | `test_the_tamper_bucket_surfaces_its_403_as_28000` | 403: tamper bucket surfaces 28000 |
 | `test_a_verified_request_for_a_missing_key_still_reaches_404` | 403 ordering premise: verified requests still reach 404 = 58P01 |
 | `test_aws_default_region_is_the_fallback` | region: AWS_DEFAULT_REGION is the fallback |
@@ -12812,7 +12816,7 @@ Every test makes one check under the shell's name. A refusal is 08006, the modul
 
 ## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
 
-The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed.
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. With `pgcolumnar.objstore_pin_reads` off (#1866) that server is read whole, and an overwrite mid-read is read unpinned, old and new rows mixed. A versioned object is read whole from the version the read opened, with the version id on every ranged GET; an overwrite that changes the length, on a server with no ETag, is refused by the Content-Range total, with the pin on or off (#1867).
 
 ### Every test
 
@@ -12848,6 +12852,14 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_a_79_character_etag_reads_an_unchanged_object_whole` | C: a 79-character ETag reads an unchanged object whole (http == local) |
 | `test_an_80_character_etag_is_not_sent_cut_short` | C: an 80-character ETag is not sent cut short as If-Match |
 | `test_a_server_whose_etag_changes_on_every_request_is_refused` | C: a server whose ETag changes on every request is refused |
+| `test_the_length_change_pair_differs_in_length` | premise: the length-change pair differs in length |
+| `test_with_the_pin_off_a_fickle_etag_server_is_read_whole` | C: with pgcolumnar.objstore_pin_reads off, a server whose ETag changes on every request is read whole (http == local) |
+| `test_with_the_pin_off_an_overwrite_mid_read_is_read_unpinned` | C: with pgcolumnar.objstore_pin_reads off, an object overwritten mid-read is read unpinned |
+| `test_a_versioned_object_overwritten_mid_read_is_read_from_its_version` | C: a versioned object overwritten mid-read is read whole from the version the read opened |
+| `test_the_versioned_read_logged_gets` | premise: the versioned read logged GETs |
+| `test_every_ranged_get_of_a_versioned_read_names_the_version` | C: every ranged GET of a versioned read names the version |
+| `test_an_object_whose_length_changes_mid_read_is_refused` | C: an object whose length changes mid-read is refused (Content-Range total) |
+| `test_with_the_pin_off_a_length_change_is_still_refused` | C: with pgcolumnar.objstore_pin_reads off, an object whose length changes mid-read is still refused |
 | `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
 | `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
 | `test_the_server_survives` | survival: the server answers and no backend crashed |
