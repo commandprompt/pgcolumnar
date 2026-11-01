@@ -1755,7 +1755,8 @@ typedef struct PqPageHeader
 } PqPageHeader;
 
 /*
- * Read an i32 page header field of compact type ft. A field of another type is
+ * Read a required i32 page header field of compact type ft, whether or not the
+ * reader stores its value. A field of another type is
  * corrupt (#1935). Read anyway, a varint-shaped field such as an i64 kept the
  * parse in step, and a BOOL or UUID field had its next bytes taken as the value:
  * either way the page read without an error, where pyarrow refuses the header.
@@ -1775,7 +1776,14 @@ pq_page_i32(TCReader *r, PqPageHeader *h, int ft)
 	return (int) PgColumnarThriftZigzag(r);
 }
 
-/* A struct page header field (data_page_header and the like) of another type is corrupt too. */
+/*
+ * A struct page header field (data_page_header and the like) of another type is
+ * corrupt too. These fields are optional in parquet.thrift, so Thrift, and so
+ * pyarrow, skips one of the wrong type and fails later, if at all. When the
+ * struct is the page's own header, pyarrow then fails too. A data page that also
+ * carried a wrong-typed dictionary_page_header would be refused here where
+ * pyarrow might read it. That is the safe direction.
+ */
 static bool
 pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
 {
@@ -1813,6 +1821,10 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 				case 2:
 					h->encoding = pq_page_i32(r, h, ft);
 					break;
+				case 3:			/* definition_level_encoding: not stored */
+				case 4:			/* repetition_level_encoding: not stored */
+					(void) pq_page_i32(r, h, ft);
+					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
 					break;
@@ -1824,6 +1836,10 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			{
 				case 1:
 					h->num_values = pq_page_i32(r, h, ft);
+					break;
+				case 2:			/* num_nulls: not stored */
+				case 3:			/* num_rows: not stored */
+					(void) pq_page_i32(r, h, ft);
 					break;
 				case 4:
 					h->encoding = pq_page_i32(r, h, ft);
@@ -1900,6 +1916,8 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 							break;
 						if (dfid == 1)
 							h->num_values = pq_page_i32(r, h, dft);
+						else if (dfid == 2)	/* encoding: not stored */
+							(void) pq_page_i32(r, h, dft);
 						else
 							PgColumnarThriftSkip(r, dft);
 					}
