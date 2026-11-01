@@ -1185,12 +1185,26 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   version and keeps `If-Match`. That read is then pinned by ETag alone. We tested
   the version pin and the 403 fallback against the suite's fixture server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
   is pinned by ETag alone.
-- The pin lasts one top-level statement (#1894). Two reads of one URL in a
-  statement, such as a self-join, read the version the first read opened. When
-  the store names no version, the second read fails with `changed while it was
-  being read` if the object changed between the two reads. The reader tells
-  statements apart by their start time, the value `statement_timestamp()`
-  returns. The pin needs `pgcolumnar.objstore_pin_reads` on.
+- The pin also covers later reads of the same object in a statement (#1894).
+  Two reads of one object in a statement, such as a self-join, read the
+  version the first read opened. When the store names no version, the second
+  read fails with `changed while it was being read` if the ETag or the length
+  changed between the two reads. When the first read got no strong ETag (a
+  weak one, or one longer than 79 characters), the second read compares only
+  the length. An overwrite of the same length then goes unnoticed, and the
+  statement can return rows from both versions.
+- "The same object" means the same endpoint host, port and path. One
+  `s3://` URL on two foreign servers with different endpoints names two
+  objects, and each read gets its own pin.
+- The pin lasts while `statement_timestamp()` stays the same. PostgreSQL sets
+  that time once for each query string a client sends. So the statements of a
+  multi-statement string, such as `psql -c 'SELECT ...; SELECT ...'`, share one
+  pin. A later statement in the string fails if the object changed after an
+  earlier one read it. Statements sent one at a time each get their own pin,
+  also inside one transaction. The end of the transaction drops the pin too.
+  A statement that writes the object drops its pin, so a later read in that
+  statement reads the new object. The pin needs `pgcolumnar.objstore_pin_reads`
+  on.
 
 ### Row-group skipping
 

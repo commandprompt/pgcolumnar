@@ -529,12 +529,17 @@ true until the next version shipped.
   (#1894). Before, each read pinned the version its own HEAD saw. If another
   client overwrote the object between the two reads, a self-join or a
   `UNION ALL` of the same foreign table returned rows from both versions
-  without an error. Now the first read of a URL in a statement keeps its ETag,
-  version id and length for the rest of the statement. A later read of that URL
-  asks for the same version when the store names one. Otherwise it fails with
-  `changed while it was being read` when the ETag or length differs. The next
-  statement reads the new version. A statement that writes the URL drops its
-  pin. docs/limitations.md and docs/sql-reference.md.
+  without an error. Now the first read of an object in a statement keeps its
+  ETag, version id and length for the rest of the statement. A later read of
+  that object asks for the same version when the store names one. Otherwise
+  it fails with `changed while it was being read` when the ETag or length
+  differs; with no strong ETag, only the length is compared. The object is
+  the endpoint host, port and path, so one `s3://` URL on two servers with
+  different endpoints is two objects. The pin lasts while
+  `statement_timestamp()` stays the same: the statements of one
+  multi-statement query string share it, and a statement sent on its own
+  reads the new version. A statement that writes the object drops its pin.
+  docs/limitations.md and docs/sql-reference.md.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
   Reported by @OffgridwithJD.
 

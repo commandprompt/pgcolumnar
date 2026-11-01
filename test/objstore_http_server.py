@@ -62,6 +62,8 @@
 #                    writer overwrote the key between two reads of it in one
 #                    statement, each with its own HEAD (#1894).
 #   /vhswap/<file>   as /hswap/, in a versioned bucket as /vswap/ is.
+#   /whswap/<file>   as /hswap/, with a weak ETag as /weak/ sends (#1907
+#                    review): only the length can show the overwrite.
 #
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
@@ -273,7 +275,7 @@ class Handler(BaseHTTPRequestHandler):
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
                        "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
                        "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
-                       "/hswap/", "/vhswap/"):
+                       "/hswap/", "/vhswap/", "/whswap/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -383,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
     def _etag(self, local, mode):
         with open(local, "rb") as f:
             md5 = hashlib.md5(f.read()).hexdigest()
-        if mode == "weak":
+        if mode in ("weak", "whswap"):
             return 'W/"%s"' % md5
         if mode in ("swap79", "etag79", "longetag"):
             width = 80 if mode == "longetag" else 79
@@ -416,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "hangup":
             self.close_connection = True
             return
-        if mode in ("hswap", "vhswap"):
+        if mode in ("hswap", "vhswap", "whswap"):
             with self.server.uploads_lock:
                 seen = self.server.swap_heads.get(local, 0) + 1
                 self.server.swap_heads[local] = seen
@@ -620,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             size = len(data)
             etag = '"%s"' % hashlib.md5(data).hexdigest()
         want = self.headers.get("If-Match")
-        if want is not None and (mode == "weak" or want.strip() != etag):
+        if want is not None and (mode in ("weak", "whswap") or want.strip() != etag):
             self._deny(412, "PreconditionFailed")
             return
 

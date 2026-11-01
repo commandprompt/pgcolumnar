@@ -35,8 +35,9 @@
  *   If-Match stays. Whatever the pin, a 206 whose Content-Range total differs
  *   from the HEAD's length fails the read, and so does a 416 for bytes inside
  *   that length (#1867). The pin lasts the statement (#1894): a later read
- *   of the same URL in the statement asks for the first read's version, or,
- *   with no version, fails if the ETag or length changed.
+ *   of the same object in the statement asks for the first read's version,
+ *   or, with no version, fails if the ETag or length changed. "The same
+ *   object" is the same host, port and path, not the same URL text.
  *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
@@ -68,6 +69,7 @@
 
 #include "access/xact.h"
 #include "common/cryptohash.h"
+#include "common/hashfn.h"
 #include "common/hmac.h"
 #include "common/sha2.h"
 #include "fmgr.h"
@@ -78,6 +80,7 @@
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
@@ -224,23 +227,42 @@ static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
 static bool os_callback_registered = false;
 
 /*
- * The pins of the running statement (#1894). The first read of a URL in a
- * statement keeps its HEAD's length, strong ETag and version query here. A
- * later read of the same URL in that statement reads the same version, or
- * fails if the store names no version and the object has changed. A new
- * statement (a new statement start time) or the end of the top-level
- * transaction drops them all.
+ * The pins of the running statement (#1894). The first read of an object in
+ * a statement keeps its HEAD's length, strong ETag and version query here. A
+ * later read of the same object in that statement reads the same version, or
+ * fails if the store names no version and the object has changed.
+ *
+ * The key is the object as the module reaches it: scheme, host, port and
+ * request path after os_resolve_s3, not the URL the user wrote. One s3:// URL
+ * on two servers with different endpoints names two objects (#1907 review).
+ *
+ * A pin lasts while statement_timestamp() stays the same, and until the end
+ * of the top-level transaction. PostgreSQL sets that time once per message
+ * from the client, so the statements of one simple-query string, such as
+ * psql -c 'SELECT ..; SELECT ..', share their pins.
+ *
+ * The pins live in os_stmt_pin_cxt, found through a hash of the key, so a
+ * statement over a listing of N objects costs N lookups, not N*N string
+ * compares. A reset frees the whole context at once.
  */
 typedef struct OsStmtPin
 {
 	dlist_node	node;
-	char	   *url;
+	char	   *key;
 	int64		len;
 	char		etag[OS_ETAG_BUF];	/* "" when the first read was not pinned */
 	char	   *query;			/* the first read's pin_query, or NULL */
 } OsStmtPin;
 
-static dlist_head os_stmt_pins = DLIST_STATIC_INIT(os_stmt_pins);
+/* The pins whose keys share one hash value. */
+typedef struct OsStmtPinBucket
+{
+	uint32		hash;			/* the hash key; must be first */
+	dlist_head	pins;
+} OsStmtPinBucket;
+
+static MemoryContext os_stmt_pin_cxt = NULL;
+static HTAB *os_stmt_pin_tab = NULL;
 static TimestampTz os_stmt_pins_stamp = 0;
 
 static void os_tls_handshake(PgColumnarObjHandle *h);
@@ -314,7 +336,7 @@ static void
 os_stmt_pin_free(OsStmtPin *p)
 {
 	dlist_delete(&p->node);
-	pfree(p->url);
+	pfree(p->key);
 	if (p->query)
 		pfree(p->query);
 	pfree(p);
@@ -323,15 +345,25 @@ os_stmt_pin_free(OsStmtPin *p)
 static void
 os_stmt_pins_reset(void)
 {
-	while (!dlist_is_empty(&os_stmt_pins))
-		os_stmt_pin_free(dlist_container(OsStmtPin, node,
-										 dlist_head_node(&os_stmt_pins)));
+	os_stmt_pin_tab = NULL;		/* it lives in os_stmt_pin_cxt */
+	if (os_stmt_pin_cxt != NULL)
+		MemoryContextReset(os_stmt_pin_cxt);
 }
 
-/* This statement's pin for url, or NULL. Drops an earlier statement's pins. */
-static OsStmtPin *
-os_stmt_pin_find(const char *url)
+/* The pin key of an open handle: the object as the module reaches it. */
+static char *
+os_stmt_pin_key(const PgColumnarObjHandle *h)
 {
+	return psprintf("%s://%s:%d%s", h->tls ? "https" : "http",
+					h->host, h->port, h->abspath);
+}
+
+/* This statement's pin for key, or NULL. Drops an earlier statement's pins. */
+static OsStmtPin *
+os_stmt_pin_find(const char *key)
+{
+	uint32		hash;
+	OsStmtPinBucket *b;
 	dlist_iter	it;
 
 	if (os_stmt_pins_stamp != GetCurrentStatementStartTimestamp())
@@ -339,14 +371,52 @@ os_stmt_pin_find(const char *url)
 		os_stmt_pins_reset();
 		os_stmt_pins_stamp = GetCurrentStatementStartTimestamp();
 	}
-	dlist_foreach(it, &os_stmt_pins)
+	if (os_stmt_pin_tab == NULL)
+		return NULL;
+	hash = hash_bytes((const unsigned char *) key, strlen(key));
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_FIND, NULL);
+	if (b == NULL)
+		return NULL;
+	dlist_foreach(it, &b->pins)
 	{
 		OsStmtPin  *p = dlist_container(OsStmtPin, node, it.cur);
 
-		if (strcmp(p->url, url) == 0)
+		if (strcmp(p->key, key) == 0)
 			return p;
 	}
 	return NULL;
+}
+
+/* A new, zeroed pin for key. The caller has called os_stmt_pin_find first. */
+static OsStmtPin *
+os_stmt_pin_add(const char *key)
+{
+	uint32		hash = hash_bytes((const unsigned char *) key, strlen(key));
+	OsStmtPinBucket *b;
+	OsStmtPin  *p;
+	bool		found;
+
+	if (os_stmt_pin_cxt == NULL)
+		os_stmt_pin_cxt = AllocSetContextCreate(TopMemoryContext,
+												"pgcolumnar objstore statement pins",
+												ALLOCSET_SMALL_SIZES);
+	if (os_stmt_pin_tab == NULL)
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(uint32);
+		ctl.entrysize = sizeof(OsStmtPinBucket);
+		ctl.hcxt = os_stmt_pin_cxt;
+		os_stmt_pin_tab = hash_create("pgcolumnar objstore statement pins", 64,
+									  &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_ENTER, &found);
+	if (!found)
+		dlist_init(&b->pins);
+	p = MemoryContextAllocZero(os_stmt_pin_cxt, sizeof(OsStmtPin));
+	p->key = MemoryContextStrdup(os_stmt_pin_cxt, key);
+	dlist_push_tail(&b->pins, &p->node);
+	return p;
 }
 
 /*
@@ -2052,17 +2122,16 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 	 * same ETag and length, or the object changed between the two reads.
 	 */
 	{
-		OsStmtPin  *p = os_stmt_pin_find(url);
+		char	   *key = os_stmt_pin_key(h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
 
 		if (p == NULL)
 		{
-			p = MemoryContextAllocZero(TopMemoryContext, sizeof(OsStmtPin));
-			p->url = MemoryContextStrdup(TopMemoryContext, url);
+			p = os_stmt_pin_add(key);
 			p->len = h->len;
 			strlcpy(p->etag, h->pin_etag, sizeof(p->etag));
 			if (h->pin_query)
-				p->query = MemoryContextStrdup(TopMemoryContext, h->pin_query);
-			dlist_push_tail(&os_stmt_pins, &p->node);
+				p->query = MemoryContextStrdup(os_stmt_pin_cxt, h->pin_query);
 		}
 		else if (p->query != NULL)
 		{
@@ -2078,13 +2147,15 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 					 errmsg("columnar: \"%s\" changed while it was being read", url),
-					 errdetail("An earlier read of the object in this statement saw "
-							   "ETag %s and %lld bytes; this read sees ETag %s "
+					 errdetail("An earlier read of the object in this statement, or "
+							   "in an earlier statement of the same query string, "
+							   "saw ETag %s and %lld bytes; this read sees ETag %s "
 							   "and %lld bytes.",
 							   p->etag[0] ? p->etag : "(none)", (long long) p->len,
 							   h->pin_etag[0] ? h->pin_etag : "(none)",
 							   (long long) h->len),
 					 errhint("Run the statement again to read the new version.")));
+		pfree(key);
 	}
 	return h;
 }
@@ -2899,12 +2970,14 @@ objstore_sink_finish(PgColumnarObjSink *s)
 	}
 	os_sink_report_late_interrupt(s);
 
-	/* This statement wrote the URL: a later read in it reads the new object. */
+	/* This statement wrote the object: a later read in it reads the new one. */
 	{
-		OsStmtPin  *p = os_stmt_pin_find(s->h->url);
+		char	   *key = os_stmt_pin_key(s->h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
 
 		if (p != NULL)
 			os_stmt_pin_free(p);
+		pfree(key);
 	}
 	os_free_handle(s->h);
 	s->h = NULL;

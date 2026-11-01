@@ -15,7 +15,10 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
    server hangs up on (asked once, never retried). A keep-alive connection the server
    dropped is the one failure that is retried, and the read equals the local one. An
    object overwritten between two ranged GETs is refused, and a weak ETag is never
-   sent as If-Match (#1805).
+   sent as If-Match (#1805). Two reads of one object in one statement read one
+   version (#1894); one s3 key on two endpoints is two objects; the pin lasts one
+   statement start time; a write drops it; with a weak ETag only the length is
+   compared (#1907 review).
 D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
 E  only an s3:// key is a pattern (#1785): a query string on an http URL reaches the
    server, and a bracketed IPv6 host is refused by name.
@@ -104,6 +107,8 @@ NOPIN = "SET pgcolumnar.objstore_pin_reads = off"
 # Two reads of one object in one statement (#1894), as the shell's TWO_READS.
 TWO_READS = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
              "count(*) FILTER (WHERE c0 < 0) FROM (SELECT c0 FROM %s UNION ALL SELECT c0 FROM %s) _u")
+ONE_READ = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+            "count(*) FILTER (WHERE c0 < 0) FROM %s")
 HASH_SQL = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), 'EMPTY') FROM "
             "(SELECT _r::text AS t FROM (SELECT c3, c7 FROM %s) _r) _s")
 
@@ -184,6 +189,46 @@ def _nopin(dsn, sql, phrase):
     return f"no error: {out[:200]}"
 
 
+def _session(dsn, sqls, phrase):
+    """The shell's refusal_of over several statements, each its own message on one
+    connection: -> "no error: " and every row in turn, or the first refusal."""
+    _await_server(dsn)
+    out = []
+    try:
+        with _connect(dsn) as conn:
+            for sql in sqls:
+                cur = conn.execute(sql)
+                if cur.description is not None:
+                    out.extend(" ".join(str(v) for v in row) for row in cur.fetchall())
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        primary = exc.diag.message_primary or ""
+        return f"{exc.sqlstate}: " + (phrase if phrase in primary else primary)
+    return f"no error: {' '.join(out)[:200]}"
+
+
+def _one_message(dsn, sql, phrase):
+    """The shell's refusal_of_message: `sql`, several statements sent in one
+    simple-query message as psql -c sends them, read as _refusal reads one."""
+    _await_server(dsn)
+    try:
+        with _connect(dsn) as conn:
+            cur = conn.execute(sql)
+            out = []
+            while True:
+                if cur.description is not None:
+                    out.extend(" ".join(str(v) for v in row) for row in cur.fetchall())
+                if not cur.nextset():
+                    break
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        primary = exc.diag.message_primary or ""
+        return f"{exc.sqlstate}: " + (phrase if phrase in primary else primary)
+    return f"no error: {' '.join(out)[:200]}"
+
+
 def _requests(log):
     """-> the request log's lines split into fields, or a query_error()."""
     try:
@@ -230,9 +275,22 @@ def ohr(pgc_cluster):
     swap, swap79 = work / "swap.parquet", work / "swap79.parquet"
     swapoff, vswap = work / "swapoff.parquet", work / "vswap.parquet"
     hswap, vhswap = work / "hswap.parquet", work / "vhswap.parquet"
+    # #1907 review: two more /hswap/ pairs, the weak-ETag pair, the pair split
+    # over servers A and B, and the object a statement overwrites, as the shell's
+    hswaptx, whswap = work / "hswaptx.parquet", work / "whswap.parquet"
+    xpair, rw, hswapmsg = work / "xpair.parquet", work / "rw.parquet", work / "hswapmsg.parquet"
     subprocess.run([sys.executable, "-c", SWAP_WRITER, str(swap), str(swap79), str(swapoff), str(vswap),
-                    str(hswap), str(vhswap)],
+                    str(hswap), str(vhswap), str(hswaptx), str(whswap), str(xpair), str(rw),
+                    str(hswapmsg)],
                    check=True, capture_output=True, text=True)
+    (work / "bkt").mkdir()
+    (work / "b" / "bkt").mkdir(parents=True)
+    shutil.copyfile(xpair, work / "bkt" / "x.parquet")
+    shutil.copyfile(xpair.with_name("xpair.parquet.next"), work / "b" / "bkt" / "x.parquet")
+    (work / "b").chmod(0o755)
+    for d in (work / "bkt", work / "b" / "bkt"):
+        d.chmod(0o755)
+        (d / "x.parquet").chmod(0o644)
     swap_sizes = (swap.with_name("swap.parquet.next").stat().st_size, swap.stat().st_size)
     lenswap, lenswapoff = work / "lenswap.parquet", work / "lenswapoff.parquet"
     subprocess.run([sys.executable, "-c", LENSWAP_WRITER, str(lenswap), str(lenswapoff)],
@@ -244,7 +302,8 @@ def ohr(pgc_cluster):
                    check=True, capture_output=True, text=True)
     shrank = (lenshrink.stat().st_size
               - lenshrink.with_name("lenshrink.parquet.next").stat().st_size > 60000)
-    for f in (swap, swap79, swapoff, vswap, hswap, vhswap, lenswap, lenswapoff, lenshrink):
+    for f in (swap, swap79, swapoff, vswap, hswap, vhswap, hswaptx, whswap, xpair, rw, hswapmsg,
+              lenswap, lenswapoff, lenshrink):
         f.chmod(0o644)
         f.with_name(f.name + ".next").chmod(0o644)
 
@@ -257,11 +316,22 @@ def ohr(pgc_cluster):
         if out.is_file() and "READY" in out.read_text(errors="replace"):
             break
         time.sleep(0.1)
+    # server B (#1907 review): the same s3 key as server A, other bytes
+    port_b = pick_port(35)
+    out_b, hlog_b = work / "http_server_b.out", str(work / "http_b.log")
+    srv_b = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir",
+                              str(work / "b"), "--port", str(port_b), "--log", hlog_b],
+                             stdout=open(out_b, "w"), stderr=subprocess.STDOUT)
+    for _ in range(50):
+        if out_b.is_file() and "READY" in out_b.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
 
     dsn, plog = pgc_cluster.dsn(), pgc_cluster.datadir / "server.log"
     base = f"http://127.0.0.1:{port}"
     r = {"absent": None, "fixture": "yes" if fixture.stat().st_size > 0 else "no",
          "server up": out.read_text(errors="replace").count("READY") if out.is_file() else 0,
+         "server b up": out_b.read_text(errors="replace").count("READY") if out_b.is_file() else 0,
          "swap sizes": swap_sizes, "lenswap grew": "1" if lenswap_grew else "0",
          "shrank": "1" if shrank else "0"}
 
@@ -275,6 +345,8 @@ def ohr(pgc_cluster):
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
             c.execute("DROP SERVER IF EXISTS ohr_srv CASCADE")
+            c.execute("DROP SERVER IF EXISTS ohr_sa CASCADE")
+            c.execute("DROP SERVER IF EXISTS ohr_sb CASCADE")
             c.execute(f"CREATE SCHEMA {SCHEMA}")
             c.execute("CREATE SERVER ohr_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
             dead = pick_port(33)
@@ -306,9 +378,32 @@ def ohr(pgc_cluster):
                                ("flenswapoff", "lenswap/lenswapoff.parquet"),
                                ("flenshrink", "lenswap/lenshrink.parquet"),
                                ("fhswap", "hswap/hswap.parquet"),
-                               ("fvhswap", "vhswap/vhswap.parquet")):
+                               ("fvhswap", "vhswap/vhswap.parquet"),
+                               ("fhswaptx", "hswap/hswaptx.parquet"),
+                               ("fhswapmsg", "hswap/hswapmsg.parquet"),
+                               ("fwhswap", "whswap/whswap.parquet"),
+                               ("frw", "rw.parquet")):
                 c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.{name} (c0 int8) SERVER ohr_srv "
                           f"OPTIONS (path '{base}/{path}')")
+            # one s3 key on two endpoints (#1907 review), as the shell's sa and sb
+            for s_, p_ in (("a", port), ("b", port_b)):
+                c.execute(f"CREATE SERVER ohr_s{s_} FOREIGN DATA WRAPPER pgcolumnar_parquet "
+                          f"OPTIONS (endpoint 'http://127.0.0.1:{p_}', region 'us-east-1')")
+                c.execute(f"CREATE USER MAPPING FOR CURRENT_USER SERVER ohr_s{s_} "
+                          "OPTIONS (access_key_id 'pgc', secret_access_key 'pgc')")
+                c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fx{s_} (c0 int8) SERVER ohr_s{s_} "
+                          "OPTIONS (path 's3://bkt/x.parquet')")
+                c.execute(f"CREATE FOREIGN TABLE {SCHEMA}.fvx{s_} (c0 int8) SERVER ohr_s{s_} "
+                          "OPTIONS (path 's3://vswap/bkt/x.parquet')")
+            c.execute(f"CREATE TABLE {SCHEMA}.rwneg USING pgcolumnar AS SELECT (-1 - g)::int8 AS c0 "
+                      f"FROM generate_series(0, {G * ROWS_PER_GROUP - 1}) g")
+            # pgc_rw(), as the shell's: read frw, overwrite it with rwneg, read it again
+            sel = ("SELECT 'old=' || count(*) FILTER (WHERE c0 >= 0) || ' new=' || "
+                   "count(*) FILTER (WHERE c0 < 0) INTO %s FROM frw;")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_rw() RETURNS text LANGUAGE plpgsql AS $f$ "
+                      f"DECLARE a text; b text; BEGIN {sel % 'a'} "
+                      f"PERFORM pgcolumnar.export_parquet('rwneg', '{base}/rw.parquet'); "
+                      f"{sel % 'b'} RETURN a || ' | ' || b; END $f$")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -417,6 +512,16 @@ def ohr(pgc_cluster):
         got = _refusal(dsn, TWO_READS % ("fvhswap", "fvhswap"), changed)
         r["C vhswap"] = f"{got}; HEADs: {heads('/vhswap/vhswap')}"
 
+        # #1907 review: the pin is per store, per statement start time, and a
+        # write drops it; with a weak ETag only the length is compared
+        r["C xab"] = _refusal(dsn, TWO_READS % ("fxa", "fxb"), changed)
+        r["C vxab"] = _refusal(dsn, TWO_READS % ("fvxa", "fvxb"), changed)
+        r["C tx"] = _session(dsn, ["BEGIN", ONE_READ % "fhswaptx", ONE_READ % "fhswaptx", "COMMIT"],
+                             changed)
+        r["C msg"] = _one_message(dsn, f"{ONE_READ % 'fhswapmsg'}; {ONE_READ % 'fhswapmsg'}", changed)
+        r["C rw"] = _refusal(dsn, "SELECT pgc_rw()", changed)
+        r["C whswap"] = _refusal(dsn, TWO_READS % ("fwhswap", "fwhswap"), changed)
+
         _await_server(dsn)
         t0 = time.monotonic()
         try:
@@ -446,10 +551,14 @@ def ohr(pgc_cluster):
             with psycopg.connect(dsn, autocommit=True) as c:
                 c.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
                 c.execute("DROP SERVER IF EXISTS ohr_srv CASCADE")
+                c.execute("DROP SERVER IF EXISTS ohr_sa CASCADE")
+                c.execute("DROP SERVER IF EXISTS ohr_sb CASCADE")
         except psycopg.Error:
             pass
         srv.kill()
         srv.wait()
+        srv_b.kill()
+        srv_b.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -477,6 +586,12 @@ def test_the_http_read_fixture_server_is_up(ohr, expect):
     if _declined(ohr, expect):
         return
     expect.num(ohr["server up"], 1, "premise: fixture server is up")
+
+
+def test_the_http_read_fixture_server_b_is_up(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["server b up"], 1, "premise: fixture server B is up")
 
 
 def test_a_full_scan_over_http_equals_the_local_file(ohr, expect):
@@ -772,6 +887,55 @@ def test_two_reads_of_one_versioned_object_read_the_version_the_first_opened(ohr
     expect.text(ohr["C vhswap"], f"no error: old={2 * G * ROWS_PER_GROUP} new=0; HEADs: 2",
                 "C: two reads of one versioned object in one statement, overwritten between them, "
                 "read the version the first opened")
+
+
+def test_one_s3_key_on_two_endpoints_reads_each_endpoints_own_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C xab"], f"no error: old={n} new={n}",
+                "C: one s3 key on two endpoints, read in one statement, reads each endpoint's own object")
+
+
+def test_one_versioned_s3_key_on_two_endpoints_reads_each_endpoints_own_version(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C vxab"], f"no error: old={n} new={n}",
+                "C: one versioned s3 key on two endpoints, read in one statement, reads each "
+                "endpoint's own version")
+
+
+def test_in_one_transaction_the_next_statement_reads_the_new_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C tx"], f"no error: old={n} new=0 old=0 new={n}",
+                "C: in one transaction, the next statement reads the new object")
+
+
+def test_two_statements_sent_in_one_query_string_share_the_pin(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C msg"], "55000: changed while it was being read",
+                "C: two statements sent in one query string share the pin")
+
+
+def test_a_statement_that_overwrites_an_object_and_reads_it_again_reads_the_new_object(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C rw"], f"no error: old={n} new=0 | old=0 new={n}",
+                "C: a statement that overwrites an object and reads it again reads the new object")
+
+
+def test_with_a_weak_etag_a_same_length_overwrite_between_two_reads_is_not_caught(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    n = G * ROWS_PER_GROUP
+    expect.text(ohr["C whswap"], f"no error: old={n} new={n}",
+                "C: with a weak ETag, a same-length overwrite between two reads of one statement is "
+                "not caught")
 
 
 def test_a_stalled_transfer_is_cancelled(ohr, expect):
