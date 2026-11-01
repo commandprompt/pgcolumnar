@@ -7403,7 +7403,7 @@ The pytest twin of `test/objstore_credentials.sh` (#393 M4, ported for #1341), e
 
 | test | what it holds |
 | --- | --- |
-| `test_object_store_credentials` | placement, per-user resolution, the half-credential refusals and the request count behind them, no leak, and ambient credentials as a privilege across the restart |
+| `test_object_store_credentials` | placement, per-user resolution, the half-credential refusals and the request count behind them, no leak, and ambient credentials as a privilege across the restart; and (#1887) `a pgcolumnar_iceberg server refuses an endpoint option (#1887)`, `a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)`, `premise: carol has no user mapping on either server (#1887)`, `ambient: carol, with no mapping, is refused on the pgcolumnar_parquet table: no credentials (#1887)` and `ambient: carol, with no mapping, reads 5 rows through the pgcolumnar_iceberg table (#1887)` |
 
 ## 112. test_debug_hook_privilege.py: the debug metadata mutators are owner-only
 
@@ -10788,6 +10788,7 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_reads_an_id_less_file_over_s3` | name mapping reads an id-less file over s3 (5 rows) |
 | `test_an_s3a_metadata_path_reads_over_s3_as_s3_does` | an s3a:// metadata path reads over s3 as s3:// does (3 rows) |
 | `test_an_s3n_metadata_path_reads_over_s3_as_s3_does` | an s3n:// metadata path reads over s3 as s3:// does (3 rows) |
+| `test_iceberg_current_snapshot_reads_an_s3_metadata_file` | iceberg_current_snapshot reads an s3:// metadata file: snapshot id and operation (#1887) |
 | `test_the_backend_is_still_up_after_the_s3_reads` | backend still up after the s3 reads |
 | `test_a_delete_path_outside_the_table_location_is_refused_over_s3` | a delete path outside the table location is refused over s3 (22023) |
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
@@ -13574,6 +13575,9 @@ The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the
 | `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
 | `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
 | `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |
+| `test_pxt_the_four_type_file_holds_four_row_groups` | premise: the four-type file holds 4 row groups (pyarrow's own count) (#1887) |
+| `test_pxt_a_cross_type_constant_skips_row_groups` | parametrized over four (#1887): `an int4 constant on an int2 column skips 3 of the 4 row groups (#1887)`, `an int8 constant on an int4 column skips all 4 row groups (#1887)`, `a float8 constant on a float4 column skips 3 of the 4 row groups (#1887)` and `a date constant on a timestamp column skips 2 of the 4 row groups (#1887)` |
+| `test_pxt_a_cross_type_constant_returns_the_heap_rows` | parametrized over four (#1887): `an int4 constant on an int2 column returns the heap copy's 5000 rows (#1887)`, `an int8 constant on an int4 column returns the heap copy's 0 rows (#1887)`, `a float8 constant on a float4 column returns the heap copy's 20000 rows (#1887)` and `a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)`; each shows the foreign table's count beside the heap copy's |
 
 ## 345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap
 

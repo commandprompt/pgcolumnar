@@ -271,6 +271,15 @@ true until the next version shipped.
   depends on. A path a foreign table in the database reads is refused; a retry
   over a failed attempt's file is allowed.
 
+- Three object-storage and row-group behaviours that the docs state now have
+  checks (#1887). `iceberg_current_snapshot` reads an `s3://` metadata file
+  (`test/iceberg_objstore.sh`). A role with no user mapping reads through a
+  `pgcolumnar_iceberg` table with the server's credentials, and is refused on a
+  `pgcolumnar_parquet` table (`test/objstore_credentials.sh`). An int4 constant
+  on an int2 column, an int8 constant on an int4 column, a float8 constant on a
+  float4 column and a date constant on a timestamp column each skip row groups
+  (`test/parquet_skip_cross_type.sh`). Each has a pytest twin.
+
 ### Changed
 
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete

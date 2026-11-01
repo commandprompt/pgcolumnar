@@ -171,6 +171,17 @@ check "an s3a:// metadata path reads over s3 as s3:// does (3 rows)" \
 check "an s3n:// metadata path reads over s3 as s3:// does (3 rows)" \
 	"$(qe "SELECT count(*) FROM pgcolumnar.iceberg_scan('s3n://$BUCKET/db/t/metadata/apply.metadata.json')
 	       AS t(id bigint, region text, amount int)")" "3"
+# iceberg_current_snapshot reads an s3:// metadata file (#1887). docs/sql-reference.md
+# says it reads a local path or an object-storage URL; no check called it on a remote
+# path. The oracle is the fixture's own JSON, read by python, not by pgColumnar.
+SNAP_ORACLE="$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+s = [x for x in d["snapshots"] if x["snapshot-id"] == d["current-snapshot-id"]][0]
+print(s["snapshot-id"], s["summary"]["operation"])' "$FX/warehouse_del/db/t/metadata/apply.metadata.json" 2>&1)"
+check "iceberg_current_snapshot reads an s3:// metadata file: snapshot id and operation (#1887)" \
+	"$(qe "SELECT snapshot_id || ' ' || operation
+	       FROM pgcolumnar.iceberg_current_snapshot('$MDROOT/apply.metadata.json')")" "${SNAP_ORACLE:-no oracle}"
 check "backend still up after the s3 reads" "$(survived "$CRASHES_BEFORE")" "1"
 
 # ---- refusals over s3 -------------------------------------------------------
