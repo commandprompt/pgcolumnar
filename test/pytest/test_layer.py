@@ -506,14 +506,21 @@ def test_a_listed_decliner_under_xdist_leaves_the_run_green(pytester, monkeypatc
     Before the fix the controller printed `unrunnable on PG17, and not expected to
     be` for the listed test and exited 67, and the worker that did not run it
     printed `expected to be unrunnable ... and RAN`.
+
+    THE SECOND ROW IS IN A FILE THIS RUN NEVER COLLECTS, as most rows are in the
+    issue's one-file run. The controller must intersect the list with what the
+    workers collected, as a serial run intersects with `session.items` (#1204).
+    Mutant M6 skipped that intersection whenever the workers reported ids, and
+    then called the uncollected row stale. Measured under M6: `got 1 want 0`.
     """
     result, out = _xdist_unrunnable_run(
         pytester, monkeypatch, _XDIST_UNRUNNABLE_BODY,
-        "17 test_xd.py::test_xdist_inner_decliner\n")
+        "17 test_xd.py::test_xdist_inner_decliner\n"
+        "17 test_elsewhere.py::test_never_collected\n")
     expect.num(out.count("and not expected to be"), 0,
                "under -n 2 a listed decline is not reported as unexpected")
     expect.num(out.count("so the list is stale"), 0,
-               "under -n 2 no worker reports a listed decline as stale")
+               "under -n 2 no listed row, collected or not, is reported as stale")
     expect.num(int(result.ret), 0,
                "under -n 2 a run whose only decline is listed exits 0")
 
