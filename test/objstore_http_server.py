@@ -80,6 +80,9 @@
 #                         writes the object at once, waits that long, and then
 #                         closes the connection with no answer, as a store
 #                         that applied the request and lost the connection.
+#   __list_uploads_status__ an HTTP status: ListMultipartUploads (GET ?uploads)
+#                         is answered with it and an AccessDenied body, so a
+#                         suite can refuse the upload listing alone (#1869).
 #   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
 #                         "bucket/KEY" is answered with STATUS and not stored,
 #                         so a suite can refuse one object, such as a parallel
@@ -421,6 +424,11 @@ class Handler(BaseHTTPRequestHandler):
         # with `prefix`, sorted by key then upload id, paged by --list-page-size
         # with key-marker/upload-id-marker as S3 does it.
         _hook_sleep(self.server.rootdir, "__list_uploads_delay__")
+        lust = os.path.join(self.server.rootdir, "__list_uploads_status__")
+        if os.path.exists(lust):
+            with open(lust) as f:
+                self._deny(int(f.read().strip()), "AccessDenied")
+            return
         q = self._qdict()
         bucket = self._list_bucket()
         prefix = q.get("prefix", "")

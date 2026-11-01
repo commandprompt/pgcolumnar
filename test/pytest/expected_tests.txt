@@ -1510,4 +1510,7 @@ guard_tests 854
 # in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
 # cluster_tests 4903 -> 4904 for #1820's fourth review: one test in test_iceberg_rest_vended.py (an entry
 # with a secret and no key id is ignored), by collection: `4659 tests collected`.
-cluster_tests 4904
+# cluster_tests 4645 -> 4650 for #1869: test_objstore_export_open_uploads.py gains the twins of
+# objstore_export_open_uploads.sh's refused-upload-listing and no-region arms (5 tests), by collection: `4650 tests collected`.
+# cluster_tests 4904 -> 4909 at the merge of origin/main (56a95f5f) into fix/1869-list-uploads-url: main's 4904 plus this branch's 5 tests in test_objstore_export_open_uploads.py, by collection: `4909 tests collected`.
+cluster_tests 4909

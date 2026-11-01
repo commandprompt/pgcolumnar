@@ -1439,6 +1439,11 @@ os_require_env(const char *name, const char *url)
  * (superuser, credentials_required=false, or a function-path caller), else a
  * 28000 refusal. Path-style request target with the key percent-encoded
  * exactly as it is signed.
+ *
+ * Its messages name h->url, not `url`. The two are the same except for a
+ * bucket-level request, which resolves from a dummy key, "s3://bucket/_", and
+ * names the URL the caller gave in h->url (os_write_handle_as). A refusal here
+ * used to name that dummy key (#1869).
  */
 static void
 os_resolve_s3(PgColumnarObjHandle *h, const char *url,
@@ -1463,7 +1468,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (slash == NULL || slash == bucket || slash[1] == '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: \"%s\" is not %s://bucket/key", url,
+				 errmsg("columnar: \"%s\" is not %s://bucket/key", h->url,
 						isGs ? "gs" : "s3")));
 
 	/*
@@ -1498,7 +1503,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (memchr(bucket, '@', slash - bucket) != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: userinfo in \"%s\" is not supported", url)));
+				 errmsg("columnar: userinfo in \"%s\" is not supported", h->url)));
 
 	if (cfg != NULL && cfg->endpoint != NULL)
 		ep = cfg->endpoint;
@@ -1512,7 +1517,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 			if (isGs)
 				ep = "https://storage.googleapis.com";
 			else
-				ep = os_require_env("AWS_ENDPOINT_URL", url);
+				ep = os_require_env("AWS_ENDPOINT_URL", h->url);
 		}
 	}
 	/*
@@ -1602,7 +1607,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 						 errmsg("columnar: reading \"%s\" requires a region option "
 								"on the server, or AWS_REGION in the server "
-								"environment", url)));
+								"environment", h->url)));
 		}
 	}
 
@@ -1617,8 +1622,8 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	}
 	else if (ambientOk)
 	{
-		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", url));
-		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", url));
+		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", h->url));
+		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", h->url));
 		token = getenv("AWS_SESSION_TOKEN");
 		h->token = (token != NULL && token[0] != '\0') ? pstrdup(token) : NULL;
 	}
@@ -1627,7 +1632,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 		MemoryContextSwitchTo(oldcxt);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-				 errmsg("columnar: no credentials for \"%s\"", url),
+				 errmsg("columnar: no credentials for \"%s\"", h->url),
 				 errdetail("No user mapping for this server carries "
 						   "access_key_id and secret_access_key for the "
 						   "current role."),
@@ -1886,6 +1891,9 @@ struct PgColumnarObjSink
 	int64		total;			/* bytes handed to sink_write */
 };
 
+static PgColumnarObjHandle *os_write_handle_as(const char *url, const char *name,
+											   const PgColumnarObjStoreConfig *cfg);
+
 /*
  * Resolve a write target into a connection handle exactly as the read path
  * does (endpoint, credentials, path-style key, allow-list and link-local
@@ -1894,6 +1902,20 @@ struct PgColumnarObjSink
  */
 static PgColumnarObjHandle *
 os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	return os_write_handle_as(url, url, cfg);
+}
+
+/*
+ * os_write_handle, resolved from `url` and named `name` in every message. A
+ * bucket-level request (a LIST, the endpoint check) resolves from a dummy key
+ * in the bucket and names the URL the caller gave, so no error, from the
+ * resolve or from any later request, names "s3://bucket/_" (#1781, #1869).
+ * h->url is read only by messages: signing, host and path come from `url`.
+ */
+static PgColumnarObjHandle *
+os_write_handle_as(const char *url, const char *name,
+				   const PgColumnarObjStoreConfig *cfg)
 {
 	PgColumnarObjHandle *h;
 	bool		isS3 = (pg_strncasecmp(url, "s3://", 5) == 0 ||
@@ -1909,7 +1931,7 @@ os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 	h = (PgColumnarObjHandle *) palloc0(sizeof(PgColumnarObjHandle));
 	h->fd = -1;
-	h->url = pstrdup(url);
+	h->url = pstrdup(name);
 	h->rb = (uint8 *) palloc(OS_RBUF);
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
@@ -2942,25 +2964,17 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	bucket = pnstrdup(bstart, slash - bstart);
 	prefix = pstrdup(slash + 1);	/* may be "" (list the whole bucket) */
 
-	/* resolve host/region/credentials from a dummy key, then point the request
-	 * target at the bucket root and carry the prefix in the signed query */
+	/*
+	 * Resolve host/region/credentials from a dummy key, then point the request
+	 * target at the bucket root and carry the prefix in the signed query. The
+	 * handle is named for the prefix being listed, so a refusal, of the
+	 * listing or of the resolve, names it and not "s3://bucket/_" (#1781,
+	 * #1869).
+	 */
 	dummyUrl = psprintf("s3://%s/_", bucket);
-	h = os_write_handle(dummyUrl, cfg);
+	h = os_write_handle_as(dummyUrl, url, cfg);
 	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
-
-	/*
-	 * h->url only names the target in error messages. Name the prefix being
-	 * listed, not the dummy key: a refused listing used to report
-	 * "s3://bucket/_" (#1781). Signing and the host were resolved above.
-	 */
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-
-		pfree(h->url);
-		h->url = pstrdup(url);
-		MemoryContextSwitchTo(oldcxt);
-	}
 
 	PG_TRY();
 	{
@@ -3162,8 +3176,11 @@ objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
 	bucket = pnstrdup(bstart, slash - bstart);
 	encPrefix = os_uriencode_query(slash + 1);
 
-	/* as objstore_list_objects: resolve from a dummy key, request the bucket */
-	h = os_write_handle(psprintf("s3://%s/_", bucket), cfg);
+	/*
+	 * As objstore_list_objects: resolve from a dummy key, request the bucket,
+	 * and name the prefix being listed in every message (#1869).
+	 */
+	h = os_write_handle_as(psprintf("s3://%s/_", bucket), url, cfg);
 	os_set_deadline(h, timeout_ms);
 	os_target_bucket_root(h, bucket);
 
@@ -3440,7 +3457,7 @@ objstore_check_endpoint(const char *url, const PgColumnarObjStoreConfig *cfg)
 					 errmsg("columnar: \"%s\" names no bucket", url)));
 		target = psprintf("%.5s%.*s/_", url, blen, bstart);
 	}
-	h = os_write_handle(target, cfg);
+	h = os_write_handle_as(target, url, cfg);	/* messages name `url` (#1869) */
 	os_check_endpoint_allowed(h);
 	os_free_handle(h);
 	if (target != url)
