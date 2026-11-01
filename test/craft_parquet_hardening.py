@@ -6,7 +6,9 @@ footers whose Thrift is malformed (#1822). Given the committed Iceberg warehouse
 writes two copies of its events table under DIR: one whose eu data file holds an
 invalid string, and one whose manifest records the eu partition value as invalid
 bytes. It also writes the footers that do not match their pages (#1855, #1852) and
-the INT96 values that are not timestamps (#1870). One writer for both twins, so
+the INT96 values that are not timestamps (#1870), the pages whose decompressed
+length is not their header's (#1910) and a group with a negative num_children
+(#1921). One writer for both twins, so
 neither can drift from the other. Needs pyarrow."""
 import os
 import shutil
@@ -885,3 +887,51 @@ def _rep_wide(m):
 variant("no_schema_name", lambda m: fld(m, 2)[2][1][1].remove(fld(fld(m, 2)[2][1][1], 4)))
 variant("rep_nohist", _drop_size_stats)
 variant("rep_wide_nohist", _rep_wide)
+
+
+# ---- a page whose decompressed length is not its header's (#1910) ----------------
+# 100 nullable INT64 values, PLAIN, one data page each, no statistics. The page
+# header begins at byte 4, and its uncompressed_page_size (field 2) is a two-byte
+# zigzag varint. Each copy changes only that varint, to a value of the same width:
+#   page_snappy_v1_long.parquet   SNAPPY v1 page: 807 bytes decompress, header says 808
+#   page_snappy_v1_short.parquet  the same page: header says 806
+#   page_snappy_v2_long.parquet   SNAPPY v2 page: 3 level bytes + 800 values; header
+#                                 says 804, so 801 value bytes are due and 800 come out
+#   page_none_v1_long.parquet     UNCOMPRESSED v1 page: header says 808 of 807 bytes.
+#                                 pyarrow reads it (the bytes are there, the codec
+#                                 copies nothing), so it is the control that reads.
+# pyarrow refuses every SNAPPY copy ("Page didn't decompress to expected size").
+_PAGE_T = pa.table({"id": pa.array(range(1, 101), pa.int64())})
+for _name, _kw, _old, _new in (
+        ("snappy_v1_long", dict(compression="SNAPPY"), b"\x15\xce\x0c\x15\xea", b"\x15\xd0\x0c\x15\xea"),
+        ("snappy_v1_short", dict(compression="SNAPPY"), b"\x15\xce\x0c\x15\xea", b"\x15\xcc\x0c\x15\xea"),
+        ("snappy_v2_long", dict(compression="SNAPPY", data_page_version="2.0"),
+         b"\x15\xc6\x0c\x15\xc4", b"\x15\xc8\x0c\x15\xc4"),
+        ("none_v1_long", dict(compression="NONE"), b"\x15\xce\x0c\x15\xce", b"\x15\xd0\x0c\x15\xce")):
+    _base = f"{W}/page_{_name.rsplit('_', 1)[0]}.parquet"
+    pq.write_table(_PAGE_T, _base, use_dictionary=False, write_statistics=False, **_kw)
+    _pg = open(_base, "rb").read()
+    assert _pg[6:11] == _old, (_name, _pg[4:16].hex())
+    open(f"{W}/page_{_name}.parquet", "wb").write(_pg[:6] + _new + _pg[11:])
+
+
+# ---- a group whose num_children is negative (#1921) ------------------------------
+# a bigint, s struct<x bigint>, b bigint. grp_neg_children.parquet sets s's
+# num_children (field 5 of schema element 2) to -1. The schema walk took it as a
+# group with no children: x then read as the root's third child, b was never
+# reached, and parquet_schema stopped at s and returned one row with no error.
+pq.write_table(pa.table({"a": pa.array([1, 2, 3], pa.int64()),
+                         "s": pa.array([{"x": 4}, {"x": 5}, {"x": 6}],
+                                       pa.struct([("x", pa.int64())])),
+                         "b": pa.array([7, 8, 9], pa.int64())}),
+               f"{W}/grp_base.parquet")
+_grp = open(f"{W}/grp_base.parquet", "rb").read()
+_glen = int.from_bytes(_grp[-8:-4], "little")
+_gstart = len(_grp) - 8 - _glen
+_gm = strip(Dec(_grp[_gstart:_gstart + _glen]).struct())
+_gs = fld(_gm, 2)[2][1][2]
+assert fld(_gs, 4)[2] == b"s" and fld(_gs, 5)[2] == 1, _gs
+fld(_gs, 5)[2] = -1
+_gfoot = enc_struct(_gm)
+open(f"{W}/grp_neg_children.parquet", "wb").write(
+    _grp[:_gstart] + _gfoot + len(_gfoot).to_bytes(4, "little") + b"PAR1")

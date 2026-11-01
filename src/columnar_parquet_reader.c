@@ -148,7 +148,9 @@ typedef struct PqSchemaCol
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
-	int			num_children;	/* >0 for a group */
+	int			num_children;	/* >0 for a group; -1 when the stored value is
+								 * negative or wider than int (#1921) */
+	int64		num_children_stored;	/* as stored, for the refusal's DETAIL */
 	int			field_id;		/* SchemaElement field 9, or -1 when absent:
 								 * 0 is a legal id, so absence needs its own
 								 * value. Iceberg projects by this (#388). */
@@ -211,6 +213,8 @@ typedef struct PqFile
 	bool		has_row_groups; /* row_groups (required) was present */
 	bool		has_num_rows;	/* num_rows (required) was present */
 	int64		num_rows;		/* the footer's own total of rows */
+	int			bad_children;	/* schema element whose num_children is negative
+								 * or wider than int, or -1 (#1921) */
 } PqFile;
 
 /*
@@ -534,6 +538,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->scale = 0;
 	sc->precision = 0;
 	sc->num_children = 0;
+	sc->num_children_stored = 0;
 	sc->field_id = -1;
 	sc->name = NULL;
 
@@ -566,7 +571,10 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 					break;
 				}
 			case 5:				/* num_children */
-				num_children = (int) PgColumnarThriftZigzag(r);
+				sc->num_children_stored = PgColumnarThriftZigzag(r);
+				num_children = (sc->num_children_stored < 0 ||
+								sc->num_children_stored > PG_INT32_MAX)
+					? -1 : (int) sc->num_children_stored;
 				sc->num_children = num_children;
 				break;
 			case 6:				/* converted_type */
@@ -687,6 +695,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->has_row_groups = false;
 	pf->has_num_rows = false;
 	pf->num_rows = 0;
+	pf->bad_children = -1;
 
 	for (;;)
 	{
@@ -776,6 +785,20 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	for (e = 0; e < pf->nelems; e++)
 		if (pf->elems[e].name == NULL)
 			return false;
+
+	/*
+	 * A negative num_children is no valid count (#1921). The walk below read it
+	 * as a group with no children: the next element then took that group's
+	 * place in the tree, and parquet_schema stopped at the empty group and
+	 * dropped every column after it, with no error. The caller names the
+	 * element; a count wider than int is refused the same way.
+	 */
+	for (e = 0; e < pf->nelems; e++)
+		if (pf->elems[e].num_children < 0)
+		{
+			pf->bad_children = e;
+			return false;
+		}
 
 	/* derive leaf columns + their level bounds from the schema tree */
 	{
@@ -2162,6 +2185,13 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 	if (!parse_file_metadata(src->meta, src->metalen, pf))
 	{
 		pq_source_close(src);
+		if (pf->bad_children >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed schema", path),
+					 errdetail("Schema element \"%s\" has num_children " INT64_FORMAT "; a valid one is 0 or more.",
+							   pf->elems[pf->bad_children].name,
+							   pf->elems[pf->bad_children].num_children_stored)));
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("could not parse \"%s\" (unsupported or corrupt Parquet metadata)", path)));
 	}
@@ -2440,9 +2470,14 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 					/* v2 stores levels uncompressed; the compressed body is the
 					 * values, whose uncompressed size is the page total minus the
 					 * (uncompressed) level bytes. */
-					size_t		vusize = (h.uncompressed_size > levLen)
-						? (size_t) (h.uncompressed_size - levLen) : 0;
+					size_t		vusize;
 
+					/* the levels are part of the page's uncompressed size, so a
+					 * size below them is corrupt (#1910); read as 0, it let a
+					 * codec skip its values as an empty page */
+					if (h.uncompressed_size < levLen)
+						return false;
+					vusize = (size_t) (h.uncompressed_size - levLen);
 					if (!PgColumnarParquetDecompress(ch->codec, vraw, vrawlen, vusize,
 									   &dec, &valbuf, &vallen))
 						return false;
