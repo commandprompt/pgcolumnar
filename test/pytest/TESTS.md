@@ -2165,6 +2165,7 @@ cluster fixture then failed at setup, and the driver control reported a missing 
 | --- | --- |
 | `test_the_default_pg_config_is_one_this_box_has` | `PG_CONFIG_CANDIDATES` holds every prefix in `bench/provision.sh`'s `WANT_PG_MATRIX` and the dev container's five, naming any it lacks; the default is executable whenever a candidate or the `PATH` one is, listing the ones it found |
 | `test_the_default_pg_config_takes_the_first_candidate_that_exists` | the resolver's order over files the test writes: a missing or non-executable candidate is passed over, then `PATH`, then the first candidate stays named |
+| `test_the_run_reports_which_pg_config_it_used_and_why` | a run prints `pg_config: <path> (from <source>) -- <pg_config --version>` exactly once: in the header at default verbosity, in the closing summary under `-q`, and once only under `-n 2`. The source is `--pg-config`, `PGC_PG_CONFIG`, `candidate`, `PATH` or `first candidate, none found`; the option wins over the variable. The child runs one database-free test with a `pg_config` script the test writes |
 
 ## 17. Adding a test
 

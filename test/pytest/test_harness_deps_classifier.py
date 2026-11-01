@@ -503,3 +503,71 @@ def test_the_default_pg_config_takes_the_first_candidate_that_exists(tmp_path, e
                 "with no candidate present, the pg_config on PATH is the default")
     expect.text(pick((missing, plain), lambda _: None), missing,
                 "with nothing at all, the first candidate stays named")
+
+
+def test_the_run_reports_which_pg_config_it_used_and_why(tmp_path, expect):
+    """A run must say which build it tested (#1933, review of PR #1938). The
+    default is chosen from ten prefixes and then PATH, so a green run that names
+    no pg_config does not say which major it measured.
+
+    The child runs one database-free test of this file, so it starts no cluster.
+    Its pg_config is a script this test writes, so the version line it prints is
+    known. The header shows at default verbosity; CI runs with -q, which hides
+    the header, so the same line then goes in the closing summary. Either way it
+    must appear exactly once, and with -n 2 only the controller prints it."""
+    import subprocess
+    import sys
+    import conftest
+
+    fake = tmp_path / "bin" / "pg_config"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\necho 'PostgreSQL 99.7 (fake for #1933)'\n")
+    fake.chmod(0o755)
+    here = pathlib.Path(__file__).resolve().parent
+    target = ("test_harness_deps_classifier.py::"
+              "test_prose_naming_the_driver_is_not_a_driver_dependency")
+
+    def run(flags, env_value=None):
+        env = dict(os.environ)
+        env.pop("PGC_PG_CONFIG", None)
+        if env_value:
+            env["PGC_PG_CONFIG"] = env_value
+        env["PYTHONPATH"] = str(here)
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+             *flags, target],
+            cwd=str(here), env=env, capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    cases = (
+        ("PGC_PG_CONFIG, default verbosity", [], str(fake), "PGC_PG_CONFIG"),
+        ("--pg-config, -q", ["-q", "--pg-config", str(fake)], None, "--pg-config"),
+        ("--pg-config over PGC_PG_CONFIG, -q -n 2",
+         ["-q", "-n", "2", "--pg-config", str(fake)], "/nonexistent/pg_config",
+         "--pg-config"),
+    )
+    for label, flags, env_value, source in cases:
+        rc, out = run(flags, env_value)
+        expect.num(rc, 0, f"{label}: the child run passes; tail {out[-300:]!r}")
+        want = f"pg_config: {fake} (from {source}) -- PostgreSQL 99.7 (fake for #1933)"
+        lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+        expect.num(lines.count(want), 1,
+                   f"{label}: the run prints {want!r} once; it printed {lines}")
+        expect.num(len(lines), 1,
+                   f"{label}: exactly one pg_config line; it printed {lines}")
+
+    # The other three sources cannot be forced in a child on a box whose
+    # /usr/local has a candidate, so the resolver is asked directly, over files
+    # this test writes.
+    missing = str(tmp_path / "missing")
+    on_path = str(fake)
+    resolve = conftest.resolve_pg_config
+    for label, cands, which, want in (
+        ("a candidate exists", (missing, str(fake)), lambda _: None,
+         (str(fake), "candidate")),
+        ("only PATH has one", (missing,), lambda _: on_path, (on_path, "PATH")),
+        ("nothing anywhere", (missing,), lambda _: None,
+         (missing, "first candidate, none found")),
+    ):
+        got = resolve(cands, which)
+        expect.text(repr(got), repr(want), f"{label}: the resolver reports {got}")

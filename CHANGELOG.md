@@ -543,8 +543,9 @@ true until the next version shipped.
   control now checks that the `pg_config` it hands its child resolves to an
   executable, and names the value if not. A bare name such as `pg_config` is
   looked up on `PATH`, as the harness itself does. `test/pytest/README.md`
-  describes the default. Two new tests in `test_harness_deps_classifier.py`.
-  Reported by @OffgridwithJD.
+  describes the default. Every run now prints which `pg_config` it used, how it
+  chose it, and the version it reports: in the header, or at the end under `-q`.
+  Three new tests in `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
 
 - The five functions that read local files only now also refuse an `s3a://` or
   `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,

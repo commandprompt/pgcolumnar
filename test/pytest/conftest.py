@@ -28,6 +28,7 @@ import re
 import pathlib
 import shutil
 import signal
+import subprocess
 
 import pytest
 
@@ -58,26 +59,88 @@ PG_CONFIG_CANDIDATES = (
 )
 
 
-def default_pg_config(candidates=PG_CONFIG_CANDIDATES, which=shutil.which):
-    """The first executable candidate, else the pg_config on PATH, else the first
-    candidate. The last case keeps a named path in the option, so the cluster
-    fixture fails on that path rather than on an empty string."""
+def resolve_pg_config(candidates=PG_CONFIG_CANDIDATES, which=shutil.which):
+    """-> (path, source). The first executable candidate, else the pg_config on
+    PATH, else the first candidate. The last case keeps a named path in the
+    option, so the cluster fixture fails on that path rather than on an empty
+    string. The source is what the run header prints (#1933)."""
     for path in candidates:
         if os.access(path, os.X_OK):
-            return path
-    return which("pg_config") or candidates[0]
+            return path, "candidate"
+    on_path = which("pg_config")
+    if on_path:
+        return on_path, "PATH"
+    return candidates[0], "first candidate, none found"
 
 
-DEFAULT_PG_CONFIG = default_pg_config()
+def default_pg_config(candidates=PG_CONFIG_CANDIDATES, which=shutil.which):
+    """The path half of `resolve_pg_config`."""
+    return resolve_pg_config(candidates, which)[0]
+
+
+DEFAULT_PG_CONFIG, DEFAULT_PG_CONFIG_SOURCE = resolve_pg_config()
 
 
 def pytest_addoption(parser):
+    # No default here: pytest_configure fills it in, so that it knows whether
+    # the value came from the option, from PGC_PG_CONFIG or from the resolver.
     parser.addoption(
         "--pg-config",
         action="store",
-        default=os.environ.get("PGC_PG_CONFIG", DEFAULT_PG_CONFIG),
-        help="pg_config of the server build under test (assert-enabled, per lib.sh)",
+        default=None,
+        help="pg_config of the server build under test (assert-enabled, per lib.sh); "
+             "default PGC_PG_CONFIG, else the first of PG_CONFIG_CANDIDATES, else PATH",
     )
+
+
+_PG_CONFIG_SOURCE = pytest.StashKey[str]()
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Fill in `--pg-config` and record where the value came from."""
+    if config.option.pg_config:
+        source = "--pg-config"
+    elif os.environ.get("PGC_PG_CONFIG"):
+        config.option.pg_config = os.environ["PGC_PG_CONFIG"]
+        source = "PGC_PG_CONFIG"
+    else:
+        config.option.pg_config = DEFAULT_PG_CONFIG
+        source = DEFAULT_PG_CONFIG_SOURCE
+    config.stash[_PG_CONFIG_SOURCE] = source
+
+
+def pg_config_line(config):
+    """The line that says which build this run tested, how the pg_config was
+    chosen, and what it reports. A pg_config that does not run is named with
+    the error, not left out: that is the run the line matters most for."""
+    path = config.getoption("--pg-config")
+    try:
+        version = subprocess.run([path, "--version"], capture_output=True,
+                                 text=True, timeout=30, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        version = f"pg_config --version failed: {e}"
+    return f"pg_config: {path} (from {config.stash[_PG_CONFIG_SOURCE]}) -- {version}"
+
+
+def pytest_report_header(config):
+    """Name the build under test at the top of the run (#1933, review of PR
+    #1938). Before this, the only print was the cluster fixture's, which pytest
+    captures, so a passing run named no pg_config unless run with -s.
+
+    NO xdist WORKER CHECK, BECAUSE NONE IS NEEDED. A worker has no terminal
+    reporter, so pytest never calls this hook or the summary below there. A
+    `workerinput` guard was tried and removing it changed nothing: the -n 2 case
+    of test_the_run_reports_which_pg_config_it_used_and_why still saw one line."""
+    return pg_config_line(config)
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    """The same line at the end, but only when -q or --no-header hid the
+    header. CI runs with -q, and the line must reach its log too."""
+    if terminalreporter.verbosity >= 0 and not config.option.no_header:
+        return
+    terminalreporter.write_line(pg_config_line(config))
 
 
 SRCDIR = pathlib.Path(__file__).resolve().parents[2]
