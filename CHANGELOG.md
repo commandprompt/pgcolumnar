@@ -481,6 +481,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- The REST functions can now name a namespace level that contains a dot (#1865).
+  Before, `iceberg_rest_table_location`, `iceberg_rest_scan` and
+  `iceberg_rest_tables` split their namespace argument on every dot, so the
+  single level `a.b` reached the catalog as the two levels `a` and `b`. Each now
+  also takes the namespace as a `text[]` of levels, such as `ARRAY['a.b']`. The
+  dotted `text` form works as before. The new `iceberg_rest_namespace_levels`
+  lists namespaces in the `text[]` form, so a row passes back unchanged. A level
+  that contains the catalog's own namespace separator is refused with SQLSTATE
+  22023, because the catalog would split it; the Apache Iceberg REST catalog's
+  separator is `.`. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`; gate checks in `test/server_file_privilege.sh`.
+  Found in review of PR #1859.
 - `iceberg_rest_scan` now chooses a vended storage credential for each file it
   reads (#1820). Before, it matched each `storage-credentials` prefix against the
   metadata location only, and that one credential signed every file. So a

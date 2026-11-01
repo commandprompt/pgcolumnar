@@ -395,6 +395,70 @@ check "paging: a page token cycle A, B, A is refused" \
 	   "returned the same page token twice for the table list" " repeated token")" \
 	"08P01 repeated token"
 
+# ---- #1865: a namespace level that holds a dot -----------------------------
+# This catalog uses the default separator (%1F). Its table is in the namespace
+# with the ONE level "db.x". It also has the two-level namespace db, x, which
+# holds no table. The text form 'db.x' names db, x, as it always has; a text[]
+# names each level as given, so ARRAY['db.x'] reaches the one level.
+start_fx dotlevel --namespace-levels '["db.x"]' --table events --extra-namespace db.x
+DOTCAT="http://127.0.0.1:$FX_PORT"
+check "dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY array_to_json(ns)::text COLLATE \"C\")
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$DOTCAT') AS ns")" \
+	'["db","x"] ["db"] ["db.x"]'
+check "dotted level: iceberg_rest_namespaces still dot-joins the levels" \
+	"$(rows_of "SELECT string_agg(ns, ' ' ORDER BY ns COLLATE \"C\") FROM pgcolumnar.iceberg_rest_namespaces('$DOTCAT') AS ns")" \
+	"db db.x db.x"
+check "dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY['db.x']) AS t")" \
+	"events"
+check "dotted level: iceberg_rest_table_location of ARRAY['db.x'] resolves the table" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$DOTCAT', ARRAY['db.x'], 'events')")" \
+	"$MDLOC"
+check "dotted level: iceberg_rest_scan of ARRAY['db.x'] returns the five rows" \
+	"$(rows_of "SELECT id || '|' || region || '|' || amount
+	            FROM pgcolumnar.iceberg_rest_scan('$DOTCAT', ARRAY['db.x'], 'events') AS t(id bigint, region text, amount int)
+	            ORDER BY id")" \
+	"$ROWS5"
+check "dotted level: a listed level array passes back to iceberg_rest_tables" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text || '=' || t, ' ' ORDER BY t)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$DOTCAT') AS ns,
+	                 LATERAL pgcolumnar.iceberg_rest_tables('$DOTCAT', ns) AS t
+	            WHERE ns = ARRAY['db.x']")" \
+	'["db.x"]=events'
+check "dotted level: the text form 'db.x' still names the two levels db, x" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT','db.x')" \
+	   "no such namespace" " for db, x")" \
+	"3F000 for db, x"
+# On the nested catalog (separator %2E), ARRAY['db','x'] is the same
+# namespace as 'db.x'. A level that holds a dot cannot be sent there: the
+# catalog would read the dot as a separator, so the client refuses it.
+check "text[] form: ARRAY['db','x'] names the same namespace as 'db.x'" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$NCAT', ARRAY['db','x']) AS t")" \
+	"events,more"
+check "text[] form: a level that holds the catalog's separator is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$NCAT', ARRAY['db.x'])" \
+	   'the namespace level "db.x" contains the catalog'"'"'s namespace separator' " with the level named")" \
+	"22023 with the level named"
+# A catalog (separator %2E) that lists the one level "db.x". No request can
+# name it, so the walk lists it and does not ask for its children.
+start_fx dotsep --namespace-levels '["db.x"]' --table events --namespace-separator %2E
+check "text[] form: a listed level that holds the separator is listed, not walked" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ') FROM pgcolumnar.iceberg_rest_namespace_levels('http://127.0.0.1:$FX_PORT') AS ns")" \
+	'["db.x"]'
+check "text[] form: an empty namespace array is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[]::text[])" \
+	   "a namespace array must hold at least one level" " as empty")" \
+	"22023 as empty"
+check "text[] form: a NULL level is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY['db',NULL])" \
+	   "a namespace level must not be NULL" " as NULL")" \
+	"22004 as NULL"
+check "text[] form: a two-dimensional namespace array is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DOTCAT', ARRAY[['db'],['x']])" \
+	   "a namespace array must have one dimension" " as 2-D")" \
+	"22023 as 2-D"
+
 check "backend still up after the REST read" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

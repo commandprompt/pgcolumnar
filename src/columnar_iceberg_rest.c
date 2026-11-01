@@ -35,6 +35,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/jsonb.h"
@@ -295,26 +296,54 @@ typedef struct RestCatalogConfig
 {
 	char	   *base;
 	char	   *sep;
+	char	   *rawsep;			/* sep decoded: the bytes a level must not hold */
 } RestCatalogConfig;
 
 /* The REST spec's default namespace separator, the unit separator 0x1F. */
 #define REST_DEFAULT_SEPARATOR	"%1F"
 
 /*
- * Append a namespace, given as a List of level strings, to a resource path. The
- * levels are joined with the catalog's separator `sep` (already encoded). Each
- * level is percent-encoded, so a level bearing '/', '.', or a control byte
- * cannot alter the request path.
+ * The first level in `levels` that holds the catalog's separator, or NULL. The
+ * catalog splits a namespace on its separator, so it would read such a level
+ * as two levels (#1865). The Apache Iceberg REST catalog's separator is ".".
  */
-static void
-rest_append_levels(StringInfo out, List *levels, const char *sep)
+static const char *
+rest_unnameable_level(List *levels, const RestCatalogConfig *cc)
 {
 	ListCell   *lc;
 
 	foreach(lc, levels)
 	{
+		if (strstr((const char *) lfirst(lc), cc->rawsep) != NULL)
+			return (const char *) lfirst(lc);
+	}
+	return NULL;
+}
+
+/*
+ * Append a namespace, given as a List of level strings, to a resource path. The
+ * levels are joined with the catalog's separator (already encoded). Each level
+ * is percent-encoded, so a level bearing '/', '.', or a control byte cannot
+ * alter the request path. A level that holds the separator is refused: the
+ * catalog would read it as a different namespace (#1865).
+ */
+static void
+rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc)
+{
+	ListCell   *lc;
+	const char *bad = rest_unnameable_level(levels, cc);
+
+	if (bad != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace level \"%s\" contains the catalog's namespace separator",
+						bad),
+				 errdetail("The catalog joins namespace levels with %s, so it would read this level as more than one.",
+						   cc->sep)));
+	foreach(lc, levels)
+	{
 		if (lc != list_head(levels))
-			appendStringInfoString(out, sep);
+			appendStringInfoString(out, cc->sep);
 		rest_pct_encode(out, (const char *) lfirst(lc));
 	}
 }
@@ -340,11 +369,52 @@ rest_split_namespace(const char *ns)
 	return levels;
 }
 
-/* Append a dot-separated namespace to a resource path, joined with `sep`. */
-static void
-rest_append_namespace(StringInfo out, const char *ns, const char *sep)
+/*
+ * The levels of a namespace given as a text[] (#1865): each element is one
+ * level, as given, so a level may hold a dot. The array must have one
+ * dimension, at least one element, and no NULL element.
+ */
+static List *
+rest_array_levels(ArrayType *arr)
 {
-	rest_append_levels(out, rest_split_namespace(ns), sep);
+	Datum	   *elems;
+	bool	   *nulls;
+	int			n;
+	int			i;
+	List	   *levels = NIL;
+
+	if (ARR_NDIM(arr) > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: a namespace array must have one dimension, not %d",
+						ARR_NDIM(arr))));
+	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT, &elems, &nulls, &n);
+	if (n == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: a namespace array must hold at least one level")));
+	for (i = 0; i < n; i++)
+	{
+		if (nulls[i])
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					 errmsg("iceberg: a namespace level must not be NULL"),
+					 errdetail("Element %d of the namespace array is NULL.", i + 1)));
+		levels = lappend(levels, TextDatumGetCString(elems[i]));
+	}
+	return levels;
+}
+
+/*
+ * The namespace argument of a REST function: a dot-separated text, split on
+ * every dot, or a text[] of levels (#1865).
+ */
+static List *
+rest_namespace_arg(FunctionCallInfo fcinfo, int argno, bool is_array)
+{
+	if (is_array)
+		return rest_array_levels(PG_GETARG_ARRAYTYPE_P(argno));
+	return rest_split_namespace(text_to_cstring(PG_GETARG_TEXT_PP(argno)));
 }
 
 static int
@@ -366,13 +436,15 @@ rest_hexval(char c)
  * a hostile value can never put a '/', '?' or '#' into the request.
  */
 static char *
-rest_encode_separator(const char *advertised)
+rest_encode_separator(const char *advertised, char **raw)
 {
 	static const char hex[] = "0123456789ABCDEF";
 	StringInfoData out;
+	StringInfoData dec;
 	const char *p;
 
 	initStringInfo(&out);
+	initStringInfo(&dec);
 	for (p = advertised; *p != '\0'; p++)
 	{
 		int			c = (unsigned char) *p;
@@ -398,7 +470,9 @@ rest_encode_separator(const char *advertised)
 		appendStringInfoChar(&out, '%');
 		appendStringInfoChar(&out, hex[c >> 4]);
 		appendStringInfoChar(&out, hex[c & 0x0f]);
+		appendStringInfoChar(&dec, (char) c);
 	}
+	*raw = dec.data;
 	if (out.len == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -781,7 +855,8 @@ rest_catalog_config(const char *catalog_uri, const char *token,
 	cc->base = base.data;
 
 	sep = rest_config_value(&cfg->root, "namespace-separator");
-	cc->sep = rest_encode_separator(sep != NULL ? sep : REST_DEFAULT_SEPARATOR);
+	cc->sep = rest_encode_separator(sep != NULL ? sep : REST_DEFAULT_SEPARATOR,
+									&cc->rawsep);
 }
 
 /*
@@ -790,7 +865,7 @@ rest_catalog_config(const char *catalog_uri, const char *token,
  * metadata-location.
  */
 static Jsonb *
-rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
+rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 					const char *token, const char *warehouse, char **out_location)
 {
 	RestCatalogConfig cc;
@@ -801,7 +876,7 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_namespace(&rp, ns, cc.sep);
+	rest_append_levels(&rp, levels, &cc);
 	appendStringInfoString(&rp, "/tables/");
 	rest_pct_encode(&rp, table);
 
@@ -931,8 +1006,43 @@ PgColumnarIcebergRestLoadTableLocation(const char *catalog_uri,
 {
 	char	   *loc;
 
-	(void) rest_load_table_doc(catalog_uri, ns, table, token, warehouse, &loc);
+	(void) rest_load_table_doc(catalog_uri, rest_split_namespace(ns), table,
+							   token, warehouse, &loc);
 	return loc;
+}
+
+/* Every REST entry point reads an external service: superuser or this role. */
+static void
+rest_check_privilege(void)
+{
+	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+}
+
+/*
+ * iceberg_rest_table_location, with the namespace as a dot-separated text or
+ * as a text[] of levels (#1865).
+ */
+static Datum
+rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
+{
+	char	   *arg0;
+	List	   *levels;
+	char	   *table;
+	char	   *catalog_uri;
+	char	   *token;
+	char	   *warehouse;
+	char	   *loc;
+
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
+	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
+	PG_RETURN_TEXT_P(cstring_to_text(loc));
 }
 
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location);
@@ -945,40 +1055,30 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location);
 Datum
 pgcolumnar_iceberg_rest_table_location(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	char	   *table = text_to_cstring(PG_GETARG_TEXT_PP(2));
-	char	   *catalog_uri;
-	char	   *token;
-	char	   *warehouse;
-	char	   *loc;
-
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
-
-	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
-	loc = PgColumnarIcebergRestLoadTableLocation(catalog_uri, ns, table, token,
-												 warehouse);
-	PG_RETURN_TEXT_P(cstring_to_text(loc));
+	return rest_table_location(fcinfo, false);
 }
 
-PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan);
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location_levels);
+
+/* SQL: iceberg_rest_table_location(catalog_uri text, namespace text[], table_name text). */
+Datum
+pgcolumnar_iceberg_rest_table_location_levels(PG_FUNCTION_ARGS)
+{
+	return rest_table_location(fcinfo, true);
+}
 
 /*
- * SQL: iceberg_rest_scan(catalog_uri, namespace, table_name) RETURNS SETOF
- * record. Resolve the table's current metadata-location through the catalog,
- * then read it through the very same path as iceberg_scan (a resolved remote
- * location reads because the reader is remote-capable). Superuser /
+ * iceberg_rest_scan: resolve the table's current metadata-location through the
+ * catalog, then read it through the very same path as iceberg_scan (a resolved
+ * remote location reads because the reader is remote-capable). Superuser /
  * pg_read_server_files, materialize-mode SRF, column definition list required.
  */
-Datum
-pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
+static Datum
+rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	char	   *table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	char	   *arg0;
+	List	   *levels;
+	char	   *table;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	char	   *catalog_uri;
@@ -988,10 +1088,7 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	char	   *loc;
 	PgColumnarObjStoreConfig *cfg;
 
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+	rest_check_privilege();
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo) ||
 		(rsinfo->allowedModes & SFRM_Materialize) == 0)
 		ereport(ERROR,
@@ -1003,9 +1100,12 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 				 errmsg("pgcolumnar.iceberg_rest_scan requires a column definition list"),
 				 errhint("Call it as SELECT * FROM pgcolumnar.iceberg_rest_scan(uri, ns, tbl) AS t(col1 type1, ...).")));
 
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
+	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
-	lt = rest_load_table_doc(catalog_uri, ns, table, token, warehouse, &loc);
+	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
 	cfg = rest_vended_cfg(&lt->root);
 	/*
 	 * A metadata-location is a URI. The reader's remote path handles s3:// and
@@ -1016,6 +1116,24 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 		loc += 7;
 	PgColumnarIcebergScanInto(loc, tupdesc, rsinfo, cfg);
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan);
+
+/* SQL: iceberg_rest_scan(catalog_uri, namespace text, table_name) RETURNS SETOF record. */
+Datum
+pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
+{
+	return rest_scan(fcinfo, false);
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan_levels);
+
+/* SQL: iceberg_rest_scan(catalog_uri, namespace text[], table_name) RETURNS SETOF record. */
+Datum
+pgcolumnar_iceberg_rest_scan_levels(PG_FUNCTION_ARGS)
+{
+	return rest_scan(fcinfo, true);
 }
 
 /*
@@ -1210,11 +1328,16 @@ rest_levels_key(List *levels)
  * emitted there, as before #1793, but not walked from there, and *topnested
  * remembers it so the walk below does not emit it a second time. The walk
  * still goes into it, to find its own children.
+ *
+ * Each namespace is emitted as its dot-joined levels (text), or with
+ * `as_array` as a text[] of its levels, which keeps a level that holds a dot
+ * apart from two levels (#1865). A level that holds the catalog's separator
+ * is emitted but not walked into: no request can name it.
  */
 static void
 rest_walk_namespaces(const char *catalog_uri, const char *token,
 					 RestCatalogConfig *cc, List *parent, HTAB **topnested,
-					 Tuplestorestate *ts, TupleDesc td)
+					 bool as_array, Tuplestorestate *ts, TupleDesc td)
 {
 	StringInfoData rp;
 	List	   *items;
@@ -1235,7 +1358,7 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 	if (parent != NIL)
 	{
 		appendStringInfoString(&rp, "?parent=");
-		rest_append_levels(&rp, parent, cc->sep);
+		rest_append_levels(&rp, parent, cc);
 	}
 	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token);
 
@@ -1280,24 +1403,68 @@ rest_walk_namespaces(const char *catalog_uri, const char *token,
 		if (parent == NIL ||
 			!rest_strset_lookup(topnested, rest_levels_key(levels), false))
 		{
-			/* dot-join the levels */
-			initStringInfo(&name);
-			foreach(l2, levels)
+			if (as_array)
 			{
-				if (name.len > 0)
-					appendStringInfoChar(&name, '.');
-				appendStringInfoString(&name, (const char *) lfirst(l2));
+				Datum	   *elems = palloc(sizeof(Datum) * list_length(levels));
+				int			k = 0;
+
+				foreach(l2, levels)
+					elems[k++] = CStringGetTextDatum((const char *) lfirst(l2));
+				values[0] = PointerGetDatum(construct_array(elems, k, TEXTOID, -1,
+															false, TYPALIGN_INT));
+				tuplestore_putvalues(ts, td, values, nulls);
 			}
-			values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
-			tuplestore_putvalues(ts, td, values, nulls);
-			pfree(name.data);
+			else
+			{
+				/* dot-join the levels */
+				initStringInfo(&name);
+				foreach(l2, levels)
+				{
+					if (name.len > 0)
+						appendStringInfoChar(&name, '.');
+					appendStringInfoString(&name, (const char *) lfirst(l2));
+				}
+				values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
+				tuplestore_putvalues(ts, td, values, nulls);
+				pfree(name.data);
+			}
 		}
 
 		/* a nested namespace on the top-level list is walked from its parent */
 		if (parent == NIL && list_length(levels) > 1)
 			continue;
-		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, ts, td);
+		/* a level the catalog cannot be asked about has no children we can list */
+		if (rest_unnameable_level(levels, cc) != NULL)
+			continue;
+		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, as_array,
+							 ts, td);
 	}
+}
+
+/* iceberg_rest_namespaces (text rows) and iceberg_rest_namespace_levels (text[]) */
+static Datum
+rest_namespaces(FunctionCallInfo fcinfo, bool as_array)
+{
+	char	   *arg0;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Tuplestorestate *ts;
+	TupleDesc	td;
+	char	   *catalog_uri;
+	char	   *token;
+	char	   *warehouse;
+	RestCatalogConfig cc;
+	HTAB	   *topnested = NULL;
+
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	ts = rest_text_srf_setup(rsinfo, &td);
+	if (as_array)
+		TupleDescInitEntry(td, 1, "namespace", TEXTARRAYOID, -1, 0);
+
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
+	rest_walk_namespaces(catalog_uri, token, &cc, NIL, &topnested, as_array, ts, td);
+	return (Datum) 0;
 }
 
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespaces);
@@ -1309,39 +1476,31 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespaces);
 Datum
 pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Tuplestorestate *ts;
-	TupleDesc	td;
-	char	   *catalog_uri;
-	char	   *token;
-	char	   *warehouse;
-	RestCatalogConfig cc;
-	HTAB	   *topnested = NULL;
-
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
-	ts = rest_text_srf_setup(rsinfo, &td);
-
-	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
-	rest_catalog_config(catalog_uri, token, warehouse, &cc);
-	rest_walk_namespaces(catalog_uri, token, &cc, NIL, &topnested, ts, td);
-	return (Datum) 0;
+	return rest_namespaces(fcinfo, false);
 }
 
-PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables);
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
 
 /*
- * SQL: iceberg_rest_tables(catalog_uri, namespace) RETURNS SETOF text. One row
- * per table name in the namespace.
+ * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
+ * same namespaces, each as a text[] of its levels (#1865). A row passes back
+ * unchanged as the namespace argument of the other REST functions.
  */
 Datum
-pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
+pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	return rest_namespaces(fcinfo, true);
+}
+
+/*
+ * iceberg_rest_tables: one row per table name in the namespace, given as a
+ * dot-separated text or as a text[] of levels (#1865).
+ */
+static Datum
+rest_tables(FunctionCallInfo fcinfo, bool ns_is_array)
+{
+	char	   *arg0;
+	List	   *levels;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Tuplestorestate *ts;
 	TupleDesc	td;
@@ -1353,10 +1512,9 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 	List	   *items;
 	ListCell   *lc;
 
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	ts = rest_text_srf_setup(rsinfo, &td);
 
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
@@ -1364,7 +1522,7 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_namespace(&rp, ns, cc.sep);
+	rest_append_levels(&rp, levels, &cc);
 	appendStringInfoString(&rp, "/tables");
 	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token);
 
@@ -1386,6 +1544,24 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(ts, td, values, nulls);
 	}
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables);
+
+/* SQL: iceberg_rest_tables(catalog_uri, namespace text) RETURNS SETOF text. */
+Datum
+pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
+{
+	return rest_tables(fcinfo, false);
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables_levels);
+
+/* SQL: iceberg_rest_tables(catalog_uri, namespace text[]) RETURNS SETOF text. */
+Datum
+pgcolumnar_iceberg_rest_tables_levels(PG_FUNCTION_ARGS)
+{
+	return rest_tables(fcinfo, true);
 }
 
 /* -------------------------------------------------------------------------

@@ -1277,6 +1277,9 @@ SELECT id, region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_table_location(catalog_uri text, namespace text, table_name text) returns text
 
+Also `iceberg_rest_table_location(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
+
 Resolves a table named by an Iceberg REST catalog to the URI of its current
 metadata file. The function calls the catalog over HTTP or HTTPS. It reads the
 catalog configuration, loads the table, and returns the reported metadata
@@ -1321,9 +1324,32 @@ URL or a log line. A mapping that sets only one of the pair is refused before an
 request is made, even when it also sets a static `token`. A mapping that sets a
 `token` and the complete pair uses the token and mints no bearer.
 
-Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions. The server form
-also requires `USAGE` on the server.
+The function requires the `pg_read_server_files` role, like the other Iceberg
+functions. The server form also requires `USAGE` on the server.
+
+#### Name a namespace
+
+Every REST function that takes a namespace accepts it in two forms:
+
+- **`text`**, with levels separated by dots, such as `'analytics.daily'`. The
+  function splits the text on every dot. So this form cannot name a level that
+  itself contains a dot.
+- **`text[]`**, one element per level, such as `ARRAY['analytics', 'daily']`.
+  Each element is one level, exactly as given, so a level may contain a dot:
+  `ARRAY['analytics.v2']` is the single level `analytics.v2` (#1865).
+
+A bare string literal, such as `'analytics'`, selects the `text` form. The
+`text[]` array must have one dimension, at least one element, and no `NULL`
+element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
+level).
+
+A catalog cannot be asked about a level that contains its own namespace
+separator, because the catalog would split that level in two. The function
+then fails with SQLSTATE 22023 before it sends any request that names the
+namespace. The Apache Iceberg REST
+catalog uses `.` as its separator, so a level that contains a dot cannot be
+named on it in either form. Such a catalog also stores `ARRAY['a.b']` as the
+two levels `a` and `b`.
 
 Every REST function first reads the catalog configuration (`GET /v1/config`) and
 follows it:
@@ -1341,6 +1367,10 @@ follows it:
 SELECT pgcolumnar.iceberg_rest_table_location(
          'https://catalog.example.com', 'analytics', 'events');
 --> s3://warehouse/analytics/events/metadata/00042-....metadata.json
+
+-- a namespace level that contains a dot: give the levels as text[]
+SELECT pgcolumnar.iceberg_rest_table_location(
+         'https://catalog.example.com', ARRAY['analytics.v2'], 'events');
 
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
@@ -1376,6 +1406,9 @@ When the reply carries the catalog's own error message, the error detail repeats
 it as `The catalog said: <message>`. The message is cut to 512 bytes.
 
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
+
+Also `iceberg_rest_scan(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
 
 Reads a table named by an Iceberg REST catalog at its current snapshot. It takes
 a column definition list exactly like `iceberg_scan`. The catalog resolves the
@@ -1425,7 +1458,30 @@ catalog, list the tables of a namespace you know with `iceberg_rest_tables`.
 Some catalogs also list nested namespaces at the top level. The function
 returns each namespace once.
 
+The dot-joined form is ambiguous: the single level `a.b` and the two levels
+`a`, `b` both come out as `a.b`. To tell them apart, use
+`iceberg_rest_namespace_levels`.
+
+### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
+
+Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
+its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
+levels `a`, `b` as `{a,b}`. Pass a row back unchanged as the namespace argument
+of the other REST functions.
+
+A level may contain the catalog's separator. No request can name such a
+namespace, so the function returns it but does not ask for its children.
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t;
+```
+
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
+
+Also `iceberg_rest_tables(catalog_uri text, namespace text[])`.
+See [Name a namespace](#name-a-namespace).
 
 Lists the table names in a namespace, one per row.
 
