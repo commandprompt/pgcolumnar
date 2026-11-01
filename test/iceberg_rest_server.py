@@ -12,13 +12,43 @@
 #
 # Endpoints:
 #   GET /v1/config[?warehouse=...]                 -> {"defaults":{},"overrides":{...}}
-#   GET /v1/namespaces                             -> {"namespaces":[["db"],...]}
+#   GET /v1/namespaces[?parent=...]                -> {"namespaces":[["db"],...]}
 #   GET /v1/namespaces/{ns}/tables                 -> {"identifiers":[...]}
 #   GET /v1/namespaces/{ns}/tables/{table}         -> loadTable {metadata-location,...}
-# with an optional {prefix} segment after /v1/ when --prefix is given, exactly
-# as a real catalog splices the config-returned prefix.
+# with an optional {prefix} after /v1/ when --prefix is given, exactly as a real
+# catalog splices the config-returned prefix. A prefix may hold a '/', such as
+# catalogs/main; it is matched on the raw path, so a client that sends it as one
+# encoded segment (catalogs%2Fmain) gets a 404 (#1793).
+#
+# Namespaces (#1793). --namespace may be multi-level, dot-separated (db.x); the
+# catalog serves it, every ancestor of it, and each --extra-namespace. The list
+# without ?parent= returns only the top level, as the REST spec says; ?parent=
+# returns the direct children of that namespace. The levels of a namespace are
+# joined with the separator the catalog advertises in /v1/config:
+#   --namespace-separator %2E   advertise "%2E" (as Apache Iceberg 1.12 does),
+#                               and answer 400 to any path that holds %1F, as
+#                               its Jetty does ("Suspicious Path Character").
+# Other catalog behaviours:
+#   --prefix-in-defaults        put the prefix in config "defaults", not "overrides"
+#   --warehouse W               answer 400 to /v1/config unless ?warehouse=W
+#   --page-size N               return list results N at a time with a
+#                               next-page-token, even when no pageToken was sent
+#   --extra-table T             list T in the table's namespace as well
+#   --top-level-all             list every namespace, at every level, when no
+#                               ?parent= is given (not what the spec says)
+#   --ignore-parent             answer ?parent= as if it were absent
+#   --parent-status N           answer HTTP N to any ?parent= request
+#   --config-json J             answer /v1/config with the JSON text J
+#   --bad-page-token same|cycle return every list item on the first page, then
+#                               page tokens that never end: "same" repeats one
+#                               token, "cycle" goes A, B, A, B, ...
 #
 # Special table names drive the failure arms:
+#   forbidden  loadTable answers 403 with an ErrorModel message (#1820).
+#   failing    loadTable answers 500 with an ErrorModel message (#1820).
+#   deepjson   loadTable answers 500 with a body nested too deep to parse (#1820).
+#   badjson    loadTable answers 500 with a body that starts with "{" and is cut
+#              off, so it is not JSON; the client reports the status (#1820).
 #   toobig   loadTable answers 200 with a huge Content-Length and no body, so a
 #            client honoring a response cap refuses before reading it.
 #   closedelim  loadTable answers 200 with Connection: close and neither
@@ -75,10 +105,49 @@ class Handler(BaseHTTPRequestHandler):
                                         "type": "NotAuthorizedException",
                                         "code": 401}})
 
-    def _not_found(self, msg):
+    def _not_found(self, msg, kind="NoSuchTableException"):
+        # The spec's ErrorModel. The type tells a missing namespace from a
+        # missing table, and the message reaches the client's errdetail (#1820).
         self._send_json(404, {"error": {"message": msg,
-                                        "type": "NoSuchTableException",
+                                        "type": kind,
                                         "code": 404}})
+
+    def _sep(self):
+        # the advertised separator, decoded: "%2E" -> ".", default "%1F" -> 0x1F
+        return urllib.parse.unquote(ARGS.namespace_separator or "%1F")
+
+    def _all_namespaces(self):
+        out = set()
+        for ns in [ARGS.namespace] + (ARGS.extra_namespace or []):
+            levels = tuple(ns.split("."))
+            for i in range(1, len(levels) + 1):
+                out.add(levels[:i])
+        return out
+
+    def _page(self, key, items, query):
+        # A list result, cut into pages when --page-size is set. The token is the
+        # offset of the next page. Without --page-size, everything in one reply.
+        start = 0
+        tok = query.get("pageToken", [""])[0]
+        if ARGS.bad_page_token:
+            if ARGS.bad_page_token == "same":
+                nxt = "T"
+            else:
+                nxt = "B" if tok == "A" else "A"
+            self._send_json(200, {key: [] if tok else items, "next-page-token": nxt})
+            return
+        if tok:
+            try:
+                start = int(tok)
+            except ValueError:
+                self._send_json(400, {"error": {"message": "bad pageToken",
+                                                "type": "BadRequestException",
+                                                "code": 400}})
+                return
+        size = ARGS.page_size if ARGS.page_size > 0 else len(items) + 1
+        page = items[start:start + size]
+        nxt = str(start + size) if start + size < len(items) else None
+        self._send_json(200, {key: page, "next-page-token": nxt})
 
     def _strip_prefix(self, rest):
         # rest is the path after "/v1/". Consume the optional {prefix} segment.
@@ -112,10 +181,33 @@ class Handler(BaseHTTPRequestHandler):
                 # client must refuse this, not walk it as key/value pairs.
                 self._send_json(200, [])
                 return
+            if ARGS.warehouse:
+                got = urllib.parse.parse_qs(parsed.query).get("warehouse", [""])[0]
+                if got != ARGS.warehouse:
+                    self._send_json(400, {"error": {
+                        "message": "warehouse %r is required" % ARGS.warehouse,
+                        "type": "BadRequestException", "code": 400}})
+                    return
+            if ARGS.config_json:
+                self._send_json(200, json.loads(ARGS.config_json))
+                return
             overrides = {}
+            defaults = {}
             if ARGS.prefix:
-                overrides["prefix"] = ARGS.prefix.strip("/")
-            self._send_json(200, {"defaults": {}, "overrides": overrides})
+                (defaults if ARGS.prefix_in_defaults else overrides)["prefix"] = \
+                    ARGS.prefix.strip("/")
+            if ARGS.namespace_separator:
+                overrides["namespace-separator"] = ARGS.namespace_separator
+            self._send_json(200, {"defaults": defaults, "overrides": overrides})
+            return
+
+        # An advertised separator other than %1F: refuse a %1F path the way the
+        # Apache Iceberg 1.12 REST catalog's Jetty does.
+        if (ARGS.namespace_separator and ARGS.namespace_separator.upper() != "%1F"
+                and "%1F" in path.upper()):
+            self._send_json(400, {"error": {"message": "Suspicious Path Character",
+                                            "type": "BadRequestException",
+                                            "code": 400}})
             return
 
         rest = self._strip_prefix(path[len("/v1/"):])
@@ -123,23 +215,48 @@ class Handler(BaseHTTPRequestHandler):
             self._not_found("bad prefix")
             return
 
+        query = urllib.parse.parse_qs(parsed.query)
         if rest == "namespaces":
-            self._send_json(200, {"namespaces": [[ARGS.namespace]]})
+            known = self._all_namespaces()
+            parent = query.get("parent", [""])[0]
+            if parent and ARGS.parent_status:
+                self._send_json(ARGS.parent_status, {"error": {
+                    "message": "parent is not supported", "type": "BadRequestException",
+                    "code": ARGS.parent_status}})
+                return
+            if ARGS.ignore_parent:
+                parent = ""
+            if parent:
+                ptuple = tuple(parent.split(self._sep()))
+                if ptuple not in known:
+                    self._not_found("no such namespace %s" % parent)
+                    return
+                kids = [n for n in known
+                        if len(n) == len(ptuple) + 1 and n[:len(ptuple)] == ptuple]
+            elif ARGS.top_level_all:
+                kids = list(known)
+            else:
+                kids = [n for n in known if len(n) == 1]
+            self._page("namespaces", [list(n) for n in sorted(kids)], query)
             return
 
         parts = rest.split("/")
         # namespaces/{ns}/tables  and  namespaces/{ns}/tables/{table}
         if len(parts) >= 3 and parts[0] == "namespaces" and parts[2] == "tables":
-            ns = urllib.parse.unquote(parts[1])
+            # split the levels on the advertised separator, then decode each
+            ns = urllib.parse.unquote(parts[1]).replace(self._sep(), ".")
             if len(parts) == 3:
                 # Only the namespace this catalog serves has tables. Echoing any
                 # namespace back let a client that ignored its namespace argument
                 # list "events" anyway.
-                if ns.replace("\x1f", ".") != ARGS.namespace:
-                    self._not_found("no such namespace %s" % ns)
+                if ns != ARGS.namespace:
+                    self._not_found("no such namespace %s" % ns,
+                                    "NoSuchNamespaceException")
                     return
-                self._send_json(200, {"identifiers": [
-                    {"namespace": [ns], "name": ARGS.table}]})
+                levels = ns.split(".")
+                self._page("identifiers",
+                           [{"namespace": levels, "name": t}
+                            for t in [ARGS.table] + (ARGS.extra_table or [])], query)
                 return
             table = urllib.parse.unquote(parts[3])
             self._load_table(ns, table)
@@ -186,6 +303,40 @@ class Handler(BaseHTTPRequestHandler):
             pass                        # the client stopped reading at its cap
 
     def _load_table(self, ns, table):
+        # Error replies with the spec's ErrorModel (#1820): the client must put
+        # the catalog's message in its error detail for every status it maps.
+        if table == "forbidden":
+            self._send_json(403, {"error": {
+                "message": "no read access to %s.forbidden" % ns,
+                "type": "ForbiddenException", "code": 403}})
+            return
+        if table == "failing":
+            self._send_json(500, {"error": {
+                "message": "catalog backend unavailable",
+                "type": "ServiceFailureException", "code": 500}})
+            return
+        if table == "deepjson":
+            # a 500 whose body nests arrays a million deep and never closes. The
+            # client's JSON parser runs out of stack before it sees the end, and
+            # that error must reach the client, not be dropped as "not JSON".
+            body = b'{"error": {"message": "deep", "nest": ' + b"[" * 1000000
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if table == "badjson":
+            # a 500 whose body opens like an ErrorModel and stops mid-string. It
+            # passes the client's "starts with {" pre-check, so only the parse
+            # rejects it, and that parse error must be dropped, not raised.
+            body = b'{"error": {"message": "half'
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if table == "closedelim":
             pad = [{"snapshot-id": i, "summary": {"operation": "append"}}
                    for i in range(4000)]
@@ -211,10 +362,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "100000000")
             self.end_headers()
             return
-        # the namespace wire form joins multi-level parts with 0x1F; accept both
-        # a single "db" and the unit-separated form.
-        ns_norm = ns.replace("\x1f", ".")
-        if ns_norm != ARGS.namespace or table != ARGS.table:
+        # ns arrives dot-joined: do_GET split it on the advertised separator.
+        if ns != ARGS.namespace:
+            self._not_found("no such namespace %s" % ns,
+                            "NoSuchNamespaceException")
+            return
+        if table != ARGS.table:
             self._not_found("no such table %s.%s" % (ns, table))
             return
         config = {}
@@ -251,6 +404,31 @@ class Handler(BaseHTTPRequestHandler):
                     "s3.endpoint": ARGS.vend_endpoint}},
                 {"prefix": ARGS.storage_cred_prefix, "config": config},
             ]
+        # --storage-cred PREFIX=good|bad|akidonly|secretonly, repeatable (#1820):
+        # an explicit storage-credentials array. "good" is the vended key, "bad"
+        # a key the SigV4 fixture refuses with 403, "akidonly" a key id with no
+        # secret and "secretonly" a secret with no key id. Neither of the last
+        # two vends a usable credential, so the client must ignore them. The flat config follows --flat-config:
+        # "none" (the default here) vends nothing flat, "good" the vended key.
+        # A reader that matched one entry against the metadata-location only, or
+        # fell back to ambient for a path no entry covers, reads where it must not.
+        if ARGS.storage_cred:
+            bad = dict(config, **{"s3.access-key-id": "BADSCOPEDKEY",
+                                  "s3.secret-access-key": "bad-scoped-secret"})
+            entries = []
+            for spec in ARGS.storage_cred:
+                prefix, _, kind = spec.rpartition("=")
+                if kind == "akidonly":
+                    ecfg = {k: v for k, v in config.items()
+                            if k != "s3.secret-access-key"}
+                elif kind == "secretonly":
+                    ecfg = {k: v for k, v in config.items()
+                            if k != "s3.access-key-id"}
+                else:
+                    ecfg = config if kind == "good" else bad
+                entries.append({"prefix": prefix, "config": ecfg})
+            resp["storage-credentials"] = entries
+            resp["config"] = config if ARGS.flat_config == "good" else {}
         self._send_json(200, resp)
 
 
@@ -272,8 +450,21 @@ def main():
     ap.add_argument("--vend-region", default="")
     ap.add_argument("--vend-endpoint", default="")
     ap.add_argument("--storage-cred-prefix", default="")
+    ap.add_argument("--storage-cred", action="append", default=[])
+    ap.add_argument("--flat-config", choices=["none", "good"], default="none")
     ap.add_argument("--oauth-client-id", default="")
     ap.add_argument("--oauth-client-secret", default="")
+    ap.add_argument("--namespace-separator", default="")
+    ap.add_argument("--extra-namespace", action="append")
+    ap.add_argument("--extra-table", action="append")
+    ap.add_argument("--prefix-in-defaults", action="store_true")
+    ap.add_argument("--warehouse", default="")
+    ap.add_argument("--page-size", type=int, default=0)
+    ap.add_argument("--top-level-all", action="store_true")
+    ap.add_argument("--ignore-parent", action="store_true")
+    ap.add_argument("--parent-status", type=int, default=0)
+    ap.add_argument("--config-json", default="")
+    ap.add_argument("--bad-page-token", choices=["same", "cycle"], default="")
     ARGS = ap.parse_args()
     open(ARGS.log, "w").close()
     httpd = ThreadingHTTPServer(("127.0.0.1", ARGS.port), Handler)

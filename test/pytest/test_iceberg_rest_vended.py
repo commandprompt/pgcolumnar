@@ -13,7 +13,12 @@ refused by S3 with its own 403 message, not by "no credentials"; of two
 storage-credentials entries the longest matching prefix wins, and the flat config is
 wrong too, so the array must have been read; a vended endpoint off the allow-list is
 refused by the allow-list itself; a catalog that vends nothing falls back to ambient
-credentials; and no backend died on the way.
+credentials; and no backend died on the way. Each file gets its own longest-prefix
+credential (#1820): with split metadata/ and data/ entries the data/ key signs the data
+files, the flat config covers a file no prefix matches, the longest prefix wins when it
+is listed before a broader one, an entry with a key id and no secret is ignored without
+killing the backend, an entry with a secret and no key id is ignored, and a file nothing vended covers is refused even when the server
+holds ambient keys S3 accepts.
 
 A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival also reads the private
 cluster's server log for killed backends, and an unreadable log fails it.
@@ -236,6 +241,38 @@ def irv(pgc_cluster):
                         "--storage-cred-prefix", f"s3://{BUCKET}/db/t")
         r["prefix"] = _value(dsn, f"SELECT count(*) FROM {scan(sc)}")
 
+        # each file gets its OWN longest-prefix match (#1820); neither prefix covers
+        # the other, so one choice made against the metadata-location is wrong
+        tl = f"s3://{BUCKET}/db/t"
+        good = [*vend, "--vend-secret", SECRET, "--vend-endpoint", s3ep]
+        split = start_rest(*good, "--storage-cred", f"{tl}/metadata/=good",
+                           "--storage-cred", f"{tl}/data/=good")
+        r["split"] = _value(dsn, f"SELECT count(*) FROM {scan(split)}")
+        splitbad = start_rest(*good, "--storage-cred", f"{tl}/metadata/=good",
+                              "--storage-cred", f"{tl}/data/=bad")
+        r["split bad"] = _refusal(dsn, f"SELECT * FROM {scan(splitbad)}",
+                                  '.parquet" was denied (HTTP 403')
+        flat = start_rest(*good, "--storage-cred", f"{tl}/data/=good", "--flat-config", "good")
+        r["flat"] = _value(dsn, f"SELECT count(*) FROM {scan(flat)}")
+        # the longer prefix listed FIRST, a broader bad one after it: a reader that
+        # kept the last match instead of the longest reads the bad key
+        longfirst = start_rest(*good, "--storage-cred", f"{tl}/=good",
+                               "--storage-cred", f"s3://{BUCKET}/=bad")
+        r["long first"] = _value(dsn, f"SELECT count(*) FROM {scan(longfirst)}")
+        # a key id with no secret vends nothing: ignored, the broader good entry signs,
+        # and the backend survives it
+        akid_before = _crashes(log)
+        akidonly = start_rest(*good, "--storage-cred", f"s3://{BUCKET}/=good",
+                              "--storage-cred", f"{tl}/=akidonly")
+        r["akid only"] = _value(dsn, f"SELECT count(*) FROM {scan(akidonly)}")
+        r["akid only survived"] = _survived(dsn, log, akid_before)
+        # a secret with no key id vends nothing either: ignored, the broader good entry signs
+        secretonly = start_rest(*good, "--storage-cred", f"s3://{BUCKET}/=good",
+                                "--storage-cred", f"{tl}/=secretonly")
+        r["secret only"] = _value(dsn, f"SELECT count(*) FROM {scan(secretonly)}")
+        # read after the restart below gives the server ambient keys S3 accepts
+        dataonly = start_rest(*good, "--storage-cred", f"{tl}/data/=bad")
+
         off = start_rest(*vend, "--vend-secret", SECRET, "--vend-endpoint", f"http://127.0.0.2:{s3_port}")
         r["off list"] = _refusal(dsn, f"SELECT * FROM {scan(off)}",
                                  "is not in pgcolumnar.objstore_allowed_endpoints",
@@ -249,6 +286,8 @@ def irv(pgc_cluster):
             c.execute("ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'")
             c.execute("SELECT pg_reload_conf()")
         r["ambient"] = _value(dsn, f"SELECT count(*) FROM {scan(amb)}")
+        r["uncovered"] = _refusal(dsn, f"SELECT * FROM {scan(dataonly)}",
+                                  "no vended storage credential covers")
         r["survived"] = _survived(dsn, log, before)
         yield r
     finally:
@@ -320,6 +359,50 @@ def test_the_longest_storage_credentials_prefix_wins(irv, expect):
     expect.text(irv["prefix"], "3", "storage-credentials longest-prefix match selects the right creds")
 
 
+def test_split_credentials_each_sign_their_own_files(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["split"], "3", "split metadata/ and data/ credentials each sign their own files")
+
+
+def test_the_data_credential_signs_a_data_file(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["split bad"], "28000",
+                "the data/ credential, not the metadata/ one, signs a data file (28000)")
+
+
+def test_the_flat_config_signs_an_uncovered_file(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["flat"], "3", "the flat config signs a file no storage-credentials prefix covers")
+
+
+def test_the_longest_prefix_wins_when_listed_first(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["long first"], "3", "the longest prefix wins when it is listed before a broader one")
+
+
+def test_an_entry_with_a_key_id_and_no_secret_is_ignored(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["akid only"], "3", "an entry with a key id and no secret is ignored, not used")
+
+
+def test_an_entry_with_a_secret_and_no_key_id_is_ignored(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["secret only"], "3", "an entry with a secret and no key id is ignored, not used")
+
+
+def test_the_backend_survives_an_entry_with_no_secret(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["akid only survived"], "1",
+                "backend still up after an entry with a key id and no secret")
+
+
 def test_a_vended_endpoint_off_the_allow_list_is_refused(irv, expect):
     if _declined(irv, expect):
         return
@@ -330,6 +413,13 @@ def test_a_catalog_vending_nothing_falls_back_to_ambient(irv, expect):
     if _declined(irv, expect):
         return
     expect.text(irv["ambient"], "3", "a table vending no creds still reads with ambient (cfg NULL path)")
+
+
+def test_an_uncovered_file_is_refused_not_read_ambient(irv, expect):
+    if _declined(irv, expect):
+        return
+    expect.text(irv["uncovered"], "28000",
+                "a file no vended credential covers is refused, not read ambient (28000)")
 
 
 def test_the_backend_survives_the_vended_arms(irv, expect):

@@ -198,6 +198,69 @@ check "storage-credentials longest-prefix match selects the right creds" \
 	      AS t(id bigint, region text, amount int)")" \
 	"3"
 
+# ---- storage-credentials: each file gets its OWN longest-prefix match (#1820) --
+# Neither prefix covers the other, so one choice made against the
+# metadata-location cannot be right for the data files. A reader that signed
+# every file with the metadata/ entry reads the bad-key arm with no error.
+TL="s3://$BUCKET/db/t"
+VEND_GOOD=(--token "$RESTTOK" --vend-key "$AKID" --vend-secret "$SECRET" \
+	--vend-region "$REGION" --vend-endpoint "$S3EP")
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/metadata/=good" --storage-cred "$TL/data/=good"
+SPLIT_PORT="$LAST_PORT"
+check "split metadata/ and data/ credentials each sign their own files" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SPLIT_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/metadata/=good" --storage-cred "$TL/data/=bad"
+SPLITBAD_PORT="$LAST_PORT"
+check "the data/ credential, not the metadata/ one, signs a data file (28000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SPLITBAD_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" '.parquet" was denied (HTTP 403')" \
+	"28000"
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=good" --flat-config good
+FLAT_PORT="$LAST_PORT"
+check "the flat config signs a file no storage-credentials prefix covers" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$FLAT_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+# The longer prefix is listed FIRST and a broader bad one after it. In every
+# arm above the prefixes are listed shortest first or don't overlap, so a
+# reader that kept the last match instead of the longest one read them all.
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/=good" --storage-cred "s3://$BUCKET/=bad"
+LONGFIRST_PORT="$LAST_PORT"
+check "the longest prefix wins when it is listed before a broader one" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$LONGFIRST_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+# An entry with a key id and no secret vends no usable credential, so the
+# reader ignores it and the broader good entry signs every file. It is the
+# longest match and listed last, so a reader that kept it would either sign
+# with no secret (a NULL secret reaches the module) or treat its prefix as
+# covered by nothing (28000). The backend must survive it.
+AKIDONLY_CRASHES="$(crashes)"
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=akidonly"
+AKIDONLY_PORT="$LAST_PORT"
+check "an entry with a key id and no secret is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AKIDONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+check "backend still up after an entry with a key id and no secret" \
+	"$(survived "$AKIDONLY_CRASHES")" "1"
+# The other half of the both-keys rule: an entry with a secret and no key id
+# vends nothing either. It is the longest match and listed last. A reader that
+# kept it hands the module a config with no key id, which refuses the read
+# (28000) instead of letting the broader good entry sign it.
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=secretonly"
+SECRETONLY_PORT="$LAST_PORT"
+check "an entry with a secret and no key id is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SECRETONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"
+
+# Started now, read after the restart below that gives the server ambient keys.
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=bad"
+DATAONLY_PORT="$LAST_PORT"
+
 # ---- vended creds do NOT bypass the allow-list ------------------------------
 # a catalog that vends an endpoint off the allow-list is refused at the read.
 start_rest --token "$RESTTOK" \
@@ -223,6 +286,14 @@ check "a table vending no creds still reads with ambient (cfg NULL path)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AMB_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
 	"3"
+
+# The server now holds ambient keys that S3 accepts. The catalog vends one
+# credential, for data/ only, so nothing covers the metadata file: reading it
+# with the ambient identity is the silent fallback #1820 removes.
+check "a file no vended credential covers is refused, not read ambient (28000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$DATAONLY_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" "no vended storage credential covers")" \
+	"28000"
 
 check "backend still up after the vended-credential arms" "$(survived "$CRASHES_BEFORE")" "1"
 
