@@ -130,6 +130,13 @@ struct PgColumnarObjHandle
 	TimestampTz deadline;
 	int			deadline_ms;	/* the timeout it came from, for the message */
 
+	/*
+	 * When true, os_write_request holds interrupts from the last body byte
+	 * sent until the answer is read (#1813). Set around a request whose
+	 * effect the store may apply even if its answer never arrives.
+	 */
+	bool		holdForAnswer;
+
 	/* receive staging */
 	uint8	   *rb;
 	int			rb_off;			/* consumed up to here */
@@ -378,7 +385,12 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 /*
  * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. The same
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
+ * Compute Engine's at fd20:ce::254, and
+ * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
+ * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
@@ -397,10 +409,41 @@ os_addr_is_linklocal(const struct addrinfo *ai)
 		const struct in6_addr *a6 =
 			&((const struct sockaddr_in6 *) ai->ai_addr)->sin6_addr;
 
+		const uint8_t *b = a6->s6_addr;
+		static const uint8_t zero10[10] = {0};
+		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
+		bool		v4low = (b[12] == 169 && b[13] == 254);
+
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
-		if (IN6_IS_ADDR_V4MAPPED(a6))
-			return a6->s6_addr[12] == 169 && a6->s6_addr[13] == 254;
+		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
+		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
+		if (memcmp(b, gceimds6, 16) == 0)
+			return true;
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying 169.254/16 */
+		if (memcmp(b, zero10, 10) == 0 &&
+			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
+			return v4low;
+		/* 64:ff9b::/96, the NAT64 well-known prefix */
+		if (memcmp(b, nat64wkp, 12) == 0)
+			return v4low;
+		/*
+		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
+		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
+		 * /48 (bytes 6,7), /56 (7,9), /64 (9,10) or /96 (12,13). The guard
+		 * cannot tell which, so it checks all four and fails closed. That
+		 * also refuses some ordinary addresses whose bytes land on another
+		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
+		 * docs say so.
+		 */
+		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
+			b[4] == 0x00 && b[5] == 0x01)
+			return (b[6] == 169 && b[7] == 254) || (b[7] == 169 && b[9] == 254) ||
+				(b[9] == 169 && b[10] == 254) || v4low;
 	}
 	return false;
 }
@@ -478,8 +521,12 @@ os_connect(PgColumnarObjHandle *h)
 					 errmsg("columnar: \"%s\" resolves into a link-local range, "
 							"which object storage never legitimately uses",
 							h->host),
-					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
-							   "are refused unconditionally: they are the cloud "
+					 errdetail("Link-local and instance-metadata addresses "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
+							   "fd20:ce::254, and "
+							   "169.254.0.0/16 inside an IPv4-mapped, "
+							   "IPv4-compatible or NAT64 IPv6 address) are refused "
+							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
 
@@ -1303,6 +1350,19 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 		pfree(body);
 	}
 
+	/*
+	 * Only an s3:// or gs:// handle signs (h->sign). An http(s):// request
+	 * carries no credential, so pointing its reader at the AWS_* environment
+	 * would send them to settings the request never used (#1779).
+	 */
+	if (!h->sign)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
+						h->url, code[0] ? ": " : "", code),
+				 errhint("Requests to http:// and https:// URLs are never "
+						 "signed. Use an s3:// or gs:// URL for a store that "
+						 "needs credentials.")));
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
@@ -1774,6 +1834,8 @@ struct PgColumnarObjSink
 	PgColumnarObjHandle *h;		/* the resolved connection + credentials */
 	StringInfoData buf;			/* bytes not yet flushed as a part */
 	char	   *uploadId;		/* NULL until a multipart upload begins */
+	bool		createSent;		/* POST ?uploads was sent (#1810) */
+	PgColumnarObjStoreConfig *cfg;	/* a copy of create's cfg, or NULL */
 	StringInfoData completeXml; /* <Part> list built as parts complete */
 	int			partNo;			/* next part number (1-based) */
 	int			partSize;		/* frozen at create from the GUC */
@@ -1939,13 +2001,14 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
 }
 
 /*
- * One signed write request (PUT/POST/DELETE) with an optional body, a single
- * reconnect on a stale keep-alive. `rawQuery` is the query as it goes on the
- * wire AND the canonical query the signature covers: the caller builds it with
- * keys already sorted (partNumber < uploadId; single-key queries are trivially
- * sorted) and any UploadId value already percent-encoded through
- * os_uriencode_query, so wire and canonical are byte-identical. The response
- * body, if any, is captured into *outBody (palloc'd) for the caller.
+ * One write request (PUT/POST/DELETE), signed when the handle is an S3 one,
+ * with an optional body and a single reconnect on a stale keep-alive.
+ * `rawQuery` is the query as it goes on the wire AND the canonical query the
+ * signature covers: the caller builds it with keys already sorted (partNumber
+ * < uploadId; single-key queries are trivially sorted) and any UploadId value
+ * already percent-encoded through os_uriencode_query, so wire and canonical
+ * are byte-identical. The response body, if any, is captured into *outBody
+ * (palloc'd) for the caller.
  */
 static void
 os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuery,
@@ -1955,6 +2018,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	uint8		phash[PG_SHA256_DIGEST_LENGTH];
 	char		payloadHex[PG_SHA256_DIGEST_LENGTH * 2 + 1];
 	int			attempt;
+	bool		held = false;
 
 	os_sha256(body, (size_t) bodylen, phash);
 	os_hex(phash, sizeof(phash), payloadHex);
@@ -1973,18 +2037,60 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 						 method, h->abspath, rawQuery[0] ? "?" : "", rawQuery,
 						 h->host, h->port);
 		appendStringInfo(&req, "Content-Length: %lld\r\n", (long long) bodylen);
-		os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
+
+		/*
+		 * Sign only an S3 handle, as os_request does (#1779). An http(s)://
+		 * target has no region or credentials, so signing it read a NULL
+		 * region and crashed the backend; its write goes unsigned, like its
+		 * read.
+		 */
+		if (h->sign)
+			os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
 		if (os_send_all(h, req.data, req.len) &&
-			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen)) &&
-			os_read_head(h, resp))
+			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen)))
 		{
-			pfree(req.data);
-			break;
+			/*
+			 * The store has the whole request and may apply it. From here a
+			 * cancel waits for the answer, so the caller learns the outcome
+			 * (#1813). The wait stays bounded by the quiet-slice timeout and
+			 * any deadline, which os_wait checks with interrupts held.
+			 */
+			if (h->holdForAnswer && !held)
+			{
+				HOLD_INTERRUPTS();
+				held = true;
+			}
+			if (os_read_head(h, resp))
+			{
+				pfree(req.data);
+				break;
+			}
 		}
 		pfree(req.data);
 		os_disconnect(h);
+
+		/*
+		 * The store had the whole commit request when the connection closed,
+		 * so it may have applied it (#1846). With a cancel or terminate
+		 * pending, do not send it again: the retry would let the interrupt
+		 * end the statement with no word of the write. Say instead that the
+		 * object may be written.
+		 */
+		if (held)
+		{
+			bool		interrupted = (QueryCancelPending || ProcDiePending);
+
+			RESUME_INTERRUPTS();
+			held = false;
+			if (interrupted || fresh || attempt > 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("columnar: lost the connection to \"%s\" after sending the request that commits the object",
+								h->url),
+						 errdetail("The store may have written the object at that key.")));
+		}
 		if (!fresh && attempt == 0)
 			continue;			/* stale keep-alive: one reconnect */
 		ereport(ERROR,
@@ -2018,6 +2124,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		os_disconnect(h);
 	else
 		h->served++;
+	if (held)
+		RESUME_INTERRUPTS();
 }
 
 /* Upload the buffered bytes as the next multipart part; record its ETag. */
@@ -2062,6 +2170,8 @@ os_begin_multipart(PgColumnarObjSink *s)
 	char	   *idEnd;
 	MemoryContext oldcxt;
 
+	/* from here the store may hold an upload this sink has no id for */
+	s->createSent = true;
 	os_write_request(s->h, "POST", "uploads=", NULL, 0, &resp, &body);
 	if (resp.status != 200 || body == NULL)
 		ereport(ERROR,
@@ -2097,7 +2207,24 @@ os_sink_free(PgColumnarObjSink *s)
 		pfree(s->completeXml.data);
 	if (s->uploadId != NULL)
 		pfree(s->uploadId);
+	if (s->cfg != NULL)
+	{
+		const char *strs[] = {s->cfg->endpoint, s->cfg->region, s->cfg->akid,
+		s->cfg->secret, s->cfg->token};
+		int			i;
+
+		for (i = 0; i < lengthof(strs); i++)
+			if (strs[i] != NULL)
+				pfree((char *) strs[i]);
+		pfree(s->cfg);
+	}
 	pfree(s);
+}
+
+static const char *
+os_strdup_or_null(const char *v)
+{
+	return v != NULL ? pstrdup(v) : NULL;
 }
 
 static PgColumnarObjSink *
@@ -2110,40 +2237,77 @@ objstore_sink_create(const char *url, const PgColumnarObjStoreConfig *cfg)
 	s = (PgColumnarObjSink *) palloc0(sizeof(PgColumnarObjSink));
 	initStringInfo(&s->buf);
 	initStringInfo(&s->completeXml);
+
+	/*
+	 * Keep the cfg: an abort with no upload id lists and aborts with it, so
+	 * it must use the same endpoint and credentials as the upload (#1846).
+	 */
+	if (cfg != NULL)
+	{
+		s->cfg = (PgColumnarObjStoreConfig *) palloc(sizeof(*cfg));
+		*s->cfg = *cfg;
+		s->cfg->endpoint = os_strdup_or_null(cfg->endpoint);
+		s->cfg->region = os_strdup_or_null(cfg->region);
+		s->cfg->akid = os_strdup_or_null(cfg->akid);
+		s->cfg->secret = os_strdup_or_null(cfg->secret);
+		s->cfg->token = os_strdup_or_null(cfg->token);
+	}
 	MemoryContextSwitchTo(oldcxt);
 	s->partSize = os_part_size();
 	s->h = os_write_handle(url, cfg);
 	return s;
 }
 
+/*
+ * Stage the chunk a part at a time (#1812). The whole chunk used to be
+ * appended first, so the buffer held up to one part plus one chunk, and a
+ * writer's chunk is a whole Parquet page or Arrow batch: 500 MB staged plus a
+ * 600 MB page passed the 1 GiB allocation cap. Now the buffer is filled to the
+ * part size, uploaded, and filled again, so it never holds more than one part.
+ */
 static void
 objstore_sink_write(PgColumnarObjSink *s, const void *buf, size_t n)
 {
-	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	const char *p = (const char *) buf;
 
-	appendBinaryStringInfo(&s->buf, (const char *) buf, (int) n);
-	MemoryContextSwitchTo(oldcxt);
 	s->total += (int64) n;
-
-	while (s->buf.len >= s->partSize)
+	while (n > 0)
 	{
-		StringInfoData rest;
-		int			carry = s->buf.len - s->partSize;
+		size_t		room = (size_t) (s->partSize - s->buf.len);
+		size_t		take = Min(n, room);
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* peel exactly one part; keep the remainder for the next flush */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		initStringInfo(&rest);
-		if (carry > 0)
-			appendBinaryStringInfo(&rest, s->buf.data + s->partSize, carry);
-		s->buf.len = s->partSize;
-		s->buf.data[s->partSize] = '\0';
-		if (s->uploadId == NULL)
-			os_begin_multipart(s);
-		os_flush_part(s);
-		pfree(s->buf.data);
-		s->buf = rest;
+		appendBinaryStringInfo(&s->buf, p, (int) take);
 		MemoryContextSwitchTo(oldcxt);
+		p += take;
+		n -= take;
+
+		if (s->buf.len >= s->partSize)
+		{
+			if (s->uploadId == NULL)
+				os_begin_multipart(s);
+			os_flush_part(s);	/* uploads the part and empties the buffer */
+		}
 	}
+}
+
+/*
+ * After the commit request succeeded: a cancel or terminate that arrived while
+ * its answer was awaited is still pending, and it ends the statement at the
+ * next interrupt check. Say first that the object is written, so the error
+ * that follows does not read as "nothing was written" (#1813). A committed
+ * object cannot be taken back: it may have replaced an earlier one. The detail
+ * does not say the object stays: a parallel_export_parquet worker runs this
+ * too, and its dispatcher deletes the worker's object when the export fails.
+ */
+static void
+os_sink_report_late_interrupt(PgColumnarObjSink *s)
+{
+	if (QueryCancelPending || ProcDiePending)
+		ereport(WARNING,
+				(errmsg("columnar: the export wrote \"%s\" before the interrupt took effect",
+						s->h->url),
+				 errdetail("The store accepted the object before the cancel or terminate took effect.")));
 }
 
 static void
@@ -2151,11 +2315,14 @@ objstore_sink_finish(PgColumnarObjSink *s)
 {
 	OsResponse	resp;
 
+	/* the commit request: the PUT or the CompleteMultipartUpload (#1813) */
 	if (s->uploadId == NULL)
 	{
 		/* small object: a single PUT is the whole story */
+		s->h->holdForAnswer = true;
 		os_write_request(s->h, "PUT", "", (uint8 *) s->buf.data, s->buf.len,
 						 &resp, NULL);
+		s->h->holdForAnswer = false;
 		if (resp.status != 200)
 			ereport(ERROR,
 					(errcode(ERRCODE_IO_ERROR),
@@ -2173,8 +2340,10 @@ objstore_sink_finish(PgColumnarObjSink *s)
 		initStringInfo(&xml);
 		appendStringInfo(&xml, "<CompleteMultipartUpload>%s</CompleteMultipartUpload>",
 						 s->completeXml.data);
+		s->h->holdForAnswer = true;
 		os_write_request(s->h, "POST", query, (uint8 *) xml.data, xml.len,
 						 &resp, NULL);
+		s->h->holdForAnswer = false;
 		pfree(xml.data);
 		pfree(query);
 		pfree(encId);
@@ -2184,14 +2353,73 @@ objstore_sink_finish(PgColumnarObjSink *s)
 					 errmsg("columnar: completing the upload of \"%s\" failed (HTTP %d)",
 							s->h->url, resp.status)));
 	}
+	os_sink_report_late_interrupt(s);
 	os_free_handle(s->h);
 	s->h = NULL;
 	os_sink_free(s);
 }
 
+/*
+ * How long the abort of an upload whose id never arrived may take, from the
+ * listing's start to the last abort (#1810): the same bound the parallel
+ * dispatcher uses for its own cleanup (#1743).
+ */
+#define OS_SINK_CLEANUP_MS	10000
+
+static char **objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
+									int timeout_ms, char ***upload_ids, int *nuploads);
+static int	objstore_abort_upload(const char *url, const char *upload_id,
+								  const PgColumnarObjStoreConfig *cfg, int timeout_ms);
+
+/*
+ * The sink sent POST ?uploads but has no UploadId (#1810): a cancel or
+ * terminate landed while it waited for the answer, or the answer was lost.
+ * The store may hold the upload anyway. List the uploads for this exact key
+ * and abort each one. A listing by the key as a prefix also returns longer
+ * keys (key.old); those belong to someone else and stay open. An upload that
+ * another writer started at this same key cannot be told apart, and is
+ * aborted too.
+ *
+ * Only s3:// has a listing, so a gs:// upload stays open here (#1854). The
+ * listing and the aborts use the cfg the sink was created with, so they reach
+ * the same endpoint with the same credentials as the upload. Raises on
+ * failure; the caller holds interrupts and catches.
+ */
+static void
+os_sink_abort_unanswered(PgColumnarObjSink *s)
+{
+	const char *url = s->h->url;
+	TimestampTz start = GetCurrentTimestamp();
+	char	  **keys;
+	char	  **ids = NULL;
+	int			n = 0;
+	int			i;
+
+	if (pg_strncasecmp(url, "s3://", 5) != 0)
+		return;
+	keys = objstore_list_uploads(url, s->cfg, OS_SINK_CLEANUP_MS, &ids, &n);
+	for (i = 0; i < n; i++)
+	{
+		long		left;
+
+		/* the listing names keys s3://bucket/key; compare past the scheme */
+		if (strlen(keys[i]) < 5 || strcmp(keys[i] + 5, url + 5) != 0)
+			continue;
+		left = OS_SINK_CLEANUP_MS -
+			TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+		if (left <= 0)
+			break;
+		(void) objstore_abort_upload(url, ids[i], s->cfg, (int) left);
+	}
+}
+
 static void
 objstore_sink_abort(PgColumnarObjSink *s)
 {
+	MemoryContext cxt;
+	volatile uint32 held = 0;
+	volatile uint32 cancelHeld = 0;
+
 	if (s == NULL)
 		return;
 	if (s->h == NULL)			/* finish already ran; just reclaim */
@@ -2199,6 +2427,13 @@ objstore_sink_abort(PgColumnarObjSink *s)
 		os_sink_free(s);
 		return;
 	}
+	cxt = CurrentMemoryContext;
+
+	/*
+	 * A commit request that raised leaves holdForAnswer set (finish clears it
+	 * only on success). The DELETE below is not a commit request.
+	 */
+	s->h->holdForAnswer = false;
 	/* best effort, never raises: an ABORT that itself failed must not mask
 	 * the error that triggered it */
 	PG_TRY();
@@ -2221,9 +2456,33 @@ objstore_sink_abort(PgColumnarObjSink *s)
 			pfree(query);
 			pfree(encId);
 		}
+		else if (s->createSent)
+		{
+			/*
+			 * Interrupts held, so a second cancel cannot cut the cleanup
+			 * short; every wait is bounded by OS_SINK_CLEANUP_MS instead.
+			 */
+			HOLD_INTERRUPTS();
+			held = InterruptHoldoffCount;
+			cancelHeld = QueryCancelHoldoffCount;
+			os_sink_abort_unanswered(s);
+			RESUME_INTERRUPTS();
+			held = 0;
+		}
 	}
 	PG_CATCH();
 	{
+		/*
+		 * errfinish zeroed the holdoff counts before the longjmp. Put back
+		 * what the branch above held, then balance it.
+		 */
+		if (held != 0)
+		{
+			InterruptHoldoffCount = held;
+			QueryCancelHoldoffCount = cancelHeld;
+			RESUME_INTERRUPTS();
+		}
+		MemoryContextSwitchTo(cxt);
 		FlushErrorState();
 	}
 	PG_END_TRY();

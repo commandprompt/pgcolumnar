@@ -27,6 +27,7 @@
 #include "columnar_sink.h"
 
 int			pgcolumnar_sink_fail_after = -1;	/* dev injection; see header */
+int			pgcolumnar_export_group_bytes = PGC_EXPORT_GROUP_BYTES_MAX;	/* #1811 */
 
 struct PqSink
 {
@@ -303,4 +304,69 @@ void
 PgColumnarSinkAbortAndRethrow(PqSink *snk)
 {
 	PgColumnarCleanupAndRethrow(sink_abort_cleanup, snk);
+}
+
+/*
+ * PgcTextQueuePush
+ *		Keep the text made from one value of the current row. A queue whose
+ *		texts were all popped starts over, so it holds at most one row's texts.
+ *		A text longer than PGC_TEXT_QUEUE_KEEP_MAX is freed and its slot kept
+ *		empty, so a row of huge values does not hold every text twice; the
+ *		append converts that value again.
+ */
+void
+PgcTextQueuePush(PgcTextQueue *q, Datum value, char *text, int len)
+{
+	if (q->next == q->n)
+		q->n = q->next = 0;
+	if (q->n == q->cap)
+	{
+		int			cap = Max(q->cap * 2, 8);
+
+		if (q->text == NULL)
+		{
+			q->text = palloc(sizeof(char *) * cap);
+			q->len = palloc(sizeof(int) * cap);
+			q->value = palloc(sizeof(Datum) * cap);
+		}
+		else
+		{
+			q->text = repalloc(q->text, sizeof(char *) * cap);
+			q->len = repalloc(q->len, sizeof(int) * cap);
+			q->value = repalloc(q->value, sizeof(Datum) * cap);
+		}
+		q->cap = cap;
+	}
+	if (len > PGC_TEXT_QUEUE_KEEP_MAX)
+	{
+		pfree(text);
+		text = NULL;
+	}
+	q->text[q->n] = text;
+	q->len[q->n] = len;
+	q->value[q->n] = value;
+	q->n++;
+}
+
+/*
+ * PgcTextQueuePop
+ *		The next kept text and its length, when it was made from this value.
+ *		Otherwise NULL, and the caller converts the value itself: the slot was
+ *		empty, or it belongs to another value, in which case the queue is
+ *		dropped. The caller frees a returned text.
+ */
+char *
+PgcTextQueuePop(PgcTextQueue *q, Datum value, int *len)
+{
+	if (q->next >= q->n)
+		return NULL;
+	if (q->value[q->next] != value)
+	{
+		for (; q->next < q->n; q->next++)
+			if (q->text[q->next])
+				pfree(q->text[q->next]);
+		return NULL;
+	}
+	*len = q->len[q->next];
+	return q->text[q->next++];
 }

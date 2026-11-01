@@ -44,6 +44,9 @@ from pgc_vacuity import query_error
 
 TEST = pathlib.Path(__file__).resolve().parents[1]
 AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
+DENIED_BUCKET = "pgc-denied"   # the fixture checks this bucket's signatures against another secret
+# the sibling-prefix part objects every #1782 export must leave in place
+SIBLINGS = "sl2/part-0005.parquet slx/part-0007.parquet"
 PART = "SET pgcolumnar.objstore_part_size = 262144"
 
 GEN_SMALL = "SELECT g, 'row-'||g FROM generate_series(1,1000) g"
@@ -100,6 +103,19 @@ def _refusal(dsn, sql, phrase, label, setup=()):
         if not exc.sqlstate:
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
+    return "no error"
+
+
+def _hint(dsn, sql):
+    """-> the HINT of the error `sql` raises, so a failure shows what the hint said."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if exc.diag.message_hint:
+            return exc.diag.message_hint
+        return f"no hint ({_message(exc)})"
     return "no error"
 
 
@@ -196,7 +212,8 @@ def _restart(cluster, datadir, log, env):
 
 def _cancel_run(dsn, s3log, bucket, r):
     """The shell's cancel arm: a 4-worker export of es_parbig in the background, cancelled
-    once a worker has PUT a part."""
+    once a worker has PUT a part. The prefix ends in a slash (#1782), so the cleanup
+    DELETEs and the multipart listing run on the stripped prefix."""
     out = {}
 
     def run():
@@ -204,7 +221,7 @@ def _cancel_run(dsn, s3log, bucket, r):
             with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
                 conn.execute(PART)
                 conn.execute("SELECT pgcolumnar.parallel_export_parquet("
-                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx', 4)").fetchall()
+                             f"'es_parbig'::regclass, 's3://{BUCKET}/cx/', 4)").fetchall()
             out["result"] = "completed"
         except psycopg.Error as exc:
             out["result"] = str(exc)
@@ -215,7 +232,7 @@ def _cancel_run(dsn, s3log, bucket, r):
     bg.start()
     wrote = "no"
     for _ in range(300):
-        n = _logn(s3log, r"^PUT /pgc-bucket/cx/part-")
+        n = _logn(s3log, r"^PUT /pgc-bucket/cx/+part-")
         if isinstance(n, int) and n >= 1:
             wrote = "yes"
             break
@@ -247,6 +264,7 @@ def _cancel_run(dsn, s3log, bucket, r):
                          else "completed")
     n = _logn(s3log, r"^DELETE /pgc-bucket/cx/part-")
     r["cx delete"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+    r["cx empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
     r["cx parts"] = str(_parts(bucket / "cx"))
     r["cx marker"] = "present" if (bucket / "cx" / "_SUCCESS").exists() else "absent"
     r["cx open"] = _open_uploads(bucket.parent, r"^pgc-bucket/cx/")
@@ -309,6 +327,118 @@ def _silent_run(dsn, s3log, bucket, srv, r):
         r["hs exit"] = f"slow ({n_workers} workers, {left} left after {dt}s)"
 
 
+def _part_set(dsn, value):
+    """-> "accepted", or the message of the refusal, as the shell's part_set reads it."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(f"SET pgcolumnar.objstore_part_size = {value}")
+    except psycopg.Error as exc:
+        return exc.diag.message_primary or query_error(_message(exc))
+    return "accepted"
+
+
+def _staged_run(dsn, s3log, bucket, work):
+    """#1812's chunk arm: about 500 MB staged, then the Arrow batch of one row with two
+    400 MB values, at the 512 MiB part size. -> "rows|parts=N|identical" against a local
+    export of the table."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute("CREATE TABLE es_staged (id int, a text, b text) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('es_staged', stripe_row_limit => 1000)")
+        c.execute("INSERT INTO es_staged SELECT g, repeat('y', 250000), '' FROM generate_series(1, 2000) g")
+        c.execute("INSERT INTO es_staged VALUES (2001, repeat('z', 400000000), repeat('w', 400000000))")
+    open(s3log, "w").close()
+    remote, local = bucket / "staged.arrow", work / "staged-local.arrow"
+    try:
+        got = _row(dsn, f"SELECT pgcolumnar.export_arrow('es_staged', 's3://{BUCKET}/staged.arrow')",
+                   setup=["SET statement_timeout = '900s'", "SET pgcolumnar.objstore_part_size = 536870912"])
+        _row(dsn, f"SELECT pgcolumnar.export_arrow('es_staged', '{local}')")
+        parts = _logn(s3log, r"^PUT /pgc-bucket/staged.arrow partNumber=")
+        if remote.is_file() and local.is_file() and remote.read_bytes() == local.read_bytes():
+            same = "identical"
+        else:
+            size = {p: (p.stat().st_size if p.is_file() else "missing") for p in (remote, local)}
+            same = f"differs ({size[remote]} vs {size[local]} bytes)"
+        return f"{got}|parts={parts}|{same}"
+    finally:
+        remote.unlink(missing_ok=True)
+        local.unlink(missing_ok=True)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("DROP TABLE es_staged")
+
+
+def _plain_run(dsn, work, r, procs):
+    """The shell's #1779 arm: exports to an allow-listed http:// target, served by a
+    second fixture server WITHOUT the --sigv4-* options. An http:// handle has no region
+    or credentials, and signing it read a NULL region and killed the backend (signal
+    11). Writes now go unsigned, as reads do: one PUT, the multipart protocol and the
+    abort are each read back or read from the server. The server process goes into
+    `procs` at once, so the fixture stops it even when this arm raises."""
+    from pgc_cluster import pick_port
+
+    pdir = work / "plain"
+    (pdir / "pb").mkdir(parents=True)
+    plog = str(work / "plain.log")
+    out = work / "plain_server.out"
+    port = pick_port(32)
+    proc = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(pdir),
+                             "--port", str(port), "--log", plog],
+                            stdout=open(out, "w"), stderr=subprocess.STDOUT)
+    procs.append(proc)
+    for _ in range(50):
+        if out.is_file() and "READY" in out.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
+    r["plain up"] = str(out.read_text(errors="replace").count("READY") if out.is_file() else 0)
+    url = f"http://127.0.0.1:{port}/pb"
+
+    open(plog, "w").close()
+    r["plain small"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_small', '{url}/small.parquet')")
+    n = _logn(plog, r"^PUT /pb/small.parquet -")
+    r["plain small put"] = str(n) if isinstance(n, int) else n
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fh_small (id int, t text) SERVER wsrv "
+                      f"OPTIONS (path '{url}/small.parquet')")
+    except psycopg.Error as exc:
+        print(f"-- fh_small: {_message(exc)}")
+    r["plain small back"] = _set_hash(dsn, "SELECT * FROM fh_small")
+    # export_arrow shares the sink, and #1779 names it too: the object goes to the
+    # http:// target and is imported back from the fixture server's directory.
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE eh_arrow_back (id int, t text) USING pgcolumnar")
+    except psycopg.Error as exc:
+        print(f"-- eh_arrow_back: {_message(exc)}")
+    _row(dsn, f"SELECT pgcolumnar.export_arrow('es_small', '{url}/small.arrow')")
+    _row(dsn, f"SELECT pgcolumnar.import_arrow('eh_arrow_back', '{pdir}/pb/small.arrow')")
+    r["plain arrow back"] = _set_hash(dsn, "SELECT * FROM eh_arrow_back")
+
+    open(plog, "w").close()
+    r["plain big"] = _row(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/big.parquet')", setup=[PART])
+    starts = _logn(plog, r"^POST /pb/big.parquet uploads=")
+    parts = _logn(plog, r"^PUT /pb/big.parquet partNumber=")
+    completes = _logn(plog, r"^POST /pb/big.parquet uploadId=")
+    r["plain big multipart"] = ("yes" if starts >= 1 and parts >= 2 and completes == 1
+                                else f"no (starts={starts} parts={parts} completes={completes})") \
+        if all(isinstance(x, int) for x in (starts, parts, completes)) \
+        else query_error(f"{starts} / {parts} / {completes}")
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fh_big (id int8, pad text) SERVER wsrv "
+                      f"OPTIONS (path '{url}/big.parquet')")
+    except psycopg.Error as exc:
+        print(f"-- fh_big: {_message(exc)}")
+    r["plain big back"] = _set_hash(dsn, "SELECT * FROM fh_big")
+
+    open(plog, "w").close()
+    r["plain inject"] = _refusal(dsn, f"SELECT pgcolumnar.export_parquet('es_big', '{url}/fail.parquet')",
+                                 "export write failed (injected fault)", " by the injected fault",
+                                 setup=[PART, "SET pgcolumnar.sink_fail_after = 900000"])
+    n = _logn(plog, r"^POST /pb/fail.parquet uploads=")
+    r["plain inject started"] = ("yes" if n >= 1 else f"no (starts={n})") if isinstance(n, int) else n
+    r["plain inject open"] = _open_uploads(pdir, r"^pb/fail\.parquet$")
+
+
 @pytest.fixture(scope="module")
 def osw(pgc_cluster):
     from pgc_cluster import Cluster, pick_port
@@ -320,6 +450,7 @@ def osw(pgc_cluster):
     bucket.chmod(0o777)
     r = {}
     srv = None
+    plain = []
     cluster = None
     datadir = work / "data"
     try:
@@ -328,7 +459,8 @@ def osw(pgc_cluster):
         s3log = str(work / "sink.log")
         srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
                                 "--port", str(s3_port), "--log", s3log,
-                                "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION],
+                                "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
+                                "--tamper-bucket", DENIED_BUCKET],
                                stdout=open(out, "w"), stderr=subprocess.STDOUT)
         for _ in range(50):
             if out.is_file() and "READY" in out.read_text(errors="replace"):
@@ -381,6 +513,11 @@ def osw(pgc_cluster):
             c.execute(f"CREATE FOREIGN TABLE f_big (id int8, pad text) SERVER wsrv "
                       f"OPTIONS (path 's3://{BUCKET}/big.parquet')")
         r["big back"], r["big gen"] = _set_hash(dsn, "SELECT * FROM f_big"), _set_hash(dsn, GEN_BIG)
+
+        # #1812: the part size has a ceiling the sink can hold
+        r["part over"] = _part_set(dsn, 536870913)
+        r["part max"] = _part_set(dsn, 536870912)
+        r["staged"] = _staged_run(dsn, s3log, bucket, work) if os.environ.get("PGC_RUN_OVER_1GB", "0") == "1" else None
 
         # injection: abort mid-part leaves nothing
         open(s3log, "w").close()
@@ -498,6 +635,90 @@ def osw(pgc_cluster):
             not (sr / "part-0003.parquet").exists() else "present"
         r["sr marker"] = "yes" if (sr / "_SUCCESS").is_file() else "no"
 
+        # #1782: a prefix ending in '/' must not put an empty segment in the keys.
+        # The fixture stores files, which collapse '//', so only the log shows it.
+        # An S3 listing matches leading characters, so each export runs beside part
+        # objects under the sibling prefixes slx/ and sl2/, which must survive.
+        sl = bucket / "sl"
+
+        def plant():
+            for d, name in (("slx", "part-0007.parquet"), ("sl2", "part-0005.parquet")):
+                (bucket / d).mkdir(parents=True, exist_ok=True)
+                (bucket / d / name).write_text("x")
+
+        def siblings_left():
+            left = [f"{d}/{n}" for d, n in (("sl2", "part-0005.parquet"), ("slx", "part-0007.parquet"))
+                    if (bucket / d / n).exists()]
+            return " ".join(left) or "none"
+
+        def sl_put_keys():
+            try:
+                lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            except OSError as exc:
+                return query_error(f"request log unreadable: {exc}")
+            return str(len({m.group(0) for m in
+                            (re.match(r"^PUT /pgc-bucket/sl/part-[0-9]+\.parquet", ln) for ln in lines)
+                            if m}))
+
+        def pexport(prefix, workers):
+            return _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                             f"'es_par'::regclass, 's3://{BUCKET}/{prefix}', {workers})")
+
+        plant()
+        open(s3log, "w").close()
+        r["sl export"] = pexport("sl/", 4)
+        r["sl puts"] = sl_put_keys()
+        n = _logn(s3log, r"^PUT /pgc-bucket/sl/_SUCCESS")
+        r["sl marker put"] = ("yes" if n >= 1 else "no") if isinstance(n, int) else n
+        r["sl empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["sl glob back"] = _set_hash(dsn, f"SELECT * FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/sl/*.parquet') AS t(id int8, v int)")
+        r["sl siblings"] = siblings_left()
+
+        # a listing with no delimiter also returns keys below sl/, so a part
+        # under sl/sub/ (another export's prefix) must survive the reconcile too
+        plant()
+        nested = sl / "sub" / "part-0009.parquet"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("x")
+        r["ns export"] = pexport("sl", 2)
+        r["ns parts"] = str(_parts(sl))
+        r["ns siblings"] = siblings_left()
+        r["ns nested"] = "sl/sub/part-0009.parquet" if nested.exists() else "none"
+
+        plant()
+        open(s3log, "w").close()
+        r["ss export"] = pexport("sl//", 3)
+        r["ss puts"] = sl_put_keys()
+        r["ss empty segment"] = str(_logn(s3log, r"^[A-Z]+ /pgc-bucket/[^ ]*//"))
+        r["ss parts"] = str(_parts(sl))
+        r["ss siblings"] = siblings_left()
+
+        # The scheme is matched in any case, but the listing returns keys spelled
+        # "s3://...": the reconcile must still drop the stale tail for "S3://".
+        _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet('es_par'::regclass, 's3://{BUCKET}/up', 4)")
+        open(s3log, "w").close()
+        r["up export"] = _row(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 'S3://{BUCKET}/up/', 2)")
+        r["up parts"] = str(_parts(bucket / "up"))
+        try:
+            lines = pathlib.Path(s3log).read_text(errors="replace").splitlines()
+            r["up deletes"] = " ".join(sorted({m.group(1) for m in
+                                               (re.match(r"^DELETE /pgc-bucket/(up/part-000[23]\.parquet)", ln)
+                                                for ln in lines) if m}))
+        except OSError as exc:
+            r["up deletes"] = query_error(f"request log unreadable: {exc}")
+
+        # a bare bucket names no prefix: refused before any worker starts
+        open(s3log, "w").close()
+        for key, prefix in (("bb slash", "/"), ("bb bare", "")):
+            r[key] = _refusal(dsn, f"SELECT pgcolumnar.parallel_export_parquet("
+                                   f"'es_par'::regclass, 's3://{BUCKET}{prefix}', 2)",
+                              "names no prefix under the bucket", " (no prefix)")
+        r["bb puts"] = str(_logn(s3log, r"^PUT "))
+        r["bb root parts"] = str(sum(1 for p in bucket.iterdir()
+                                     if p.is_file() and re.search(r"^part-.*\.parquet$", p.name)))
+
         # #1780: the workers obey the calling session's settings, not only the system's
         open(s3log, "w").close()
         r["sa refused"] = _refusal(
@@ -537,6 +758,17 @@ def osw(pgc_cluster):
                       "FROM generate_series(1,3000000) g")
         _cancel_run(dsn, s3log, bucket, r)
         _silent_run(dsn, s3log, bucket, srv, r)
+        _plain_run(dsn, work, r, plain)
+        # A 403 from an http(s):// target cannot be about AWS_* credentials: those
+        # requests are never signed. The SigV4 server refuses a request with no
+        # Authorization header, so an http:// export to it draws that 403.
+        r["unsigned 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                            f"'http://127.0.0.1:{s3_port}/{BUCKET}/denied.parquet')")
+        # The other side of that branch: an s3:// request IS signed, so its 403 keeps
+        # the AWS_* hint. The fixture verifies the denied bucket against a different
+        # secret, so this correctly signed export is refused as a wrong secret would be.
+        r["signed 403 hint"] = _hint(dsn, "SELECT pgcolumnar.export_parquet('es_small', "
+                                          f"'s3://{DENIED_BUCKET}/denied.parquet')")
 
         # optional: a real S3 implementation, the shell's last arm. The endpoint's host
         # replaces the fixture's in the allow-list, and the cluster restarts with its
@@ -567,9 +799,10 @@ def osw(pgc_cluster):
     finally:
         if cluster is not None:
             _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
-        if srv is not None:
-            srv.kill()
-            srv.wait()
+        for proc in [srv] + plain:
+            if proc is not None:
+                proc.kill()
+                proc.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -603,6 +836,30 @@ def test_the_large_export_completed_its_upload_once(osw, expect):
 
 def test_the_large_object_reads_back_as_the_generator(osw, expect):
     expect.text(osw["big back"], osw["big gen"], "large round trip: s3 read-back == source")
+
+
+PART_OVER = '536870913 is outside the valid range for parameter "pgcolumnar.objstore_part_size" (0 .. 536870912)'
+STAGED_NAME = "an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts"
+
+
+def test_the_part_size_refuses_more_than_512_mib(osw, expect):
+    expect.text(osw["part over"], PART_OVER, "objstore_part_size refuses a value above its 512 MiB maximum")
+
+
+def test_the_part_size_accepts_512_mib(osw, expect):
+    expect.text(osw["part max"], "accepted", "objstore_part_size accepts its 512 MiB maximum")
+
+
+def test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole(osw, expect):
+    """#1812: the sink appended a whole chunk before it cut a part, so about 500 MB
+    staged plus an 800 MB chunk passed what one allocation holds. Opt-in, as the shell's
+    arm is: the export is about 1.3 GB."""
+    if osw["staged"] is None:
+        expect.cannot_run("UNMET_PRECONDITION",
+                          "PGC_RUN_OVER_1GB is not 1; the arm needs several GB of memory and disk",
+                          name=STAGED_NAME)
+        return
+    expect.text(osw["staged"], "2001|parts=3|identical", STAGED_NAME)
 
 
 def test_an_injected_mid_upload_failure_surfaces_as_disk_full(osw, expect):
@@ -752,6 +1009,108 @@ def test_the_marker_certifies_the_reconciled_prefix(osw, expect):
     expect.text(osw["sr marker"], "yes", "shrink: _SUCCESS certifies the reconciled prefix")
 
 
+def test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds(osw, expect):
+    expect.text(osw["sl export"], "80000",
+                "trailing slash: parallel export to an s3:// prefix ending in / succeeds")
+
+
+def test_a_trailing_slash_prefix_puts_parts_with_one_slash(osw, expect):
+    expect.text(osw["sl puts"], "4", "trailing slash: every worker PUT went to sl/part- (one slash)")
+
+
+def test_a_trailing_slash_prefix_puts_the_marker_with_one_slash(osw, expect):
+    expect.text(osw["sl marker put"], "yes", "trailing slash: the marker went to sl/_SUCCESS (one slash)")
+
+
+def test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["sl empty segment"], "0",
+                "trailing slash: no request named a key with an empty segment (//)")
+
+
+def test_a_trailing_slash_export_reads_back_through_the_documented_glob(osw, expect):
+    expect.text(osw["sl glob back"], osw["par gen"],
+                "trailing slash: the documented glob read-back equals the source")
+
+
+def test_a_trailing_slash_export_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["sl siblings"], SIBLINGS,
+                "trailing slash: an export to sl/ leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_succeeds(osw, expect):
+    expect.text(osw["ns export"], "80000", "no slash: a 2-worker re-run to s3://bucket/sl succeeds")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_its_own_parts(osw, expect):
+    expect.text(osw["ns parts"], "2", "no slash: the re-run leaves exactly its own 2 parts under sl/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ns siblings"], SIBLINGS,
+                "no slash: a re-run to sl leaves the parts under slx/ and sl2/")
+
+
+def test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part(osw, expect):
+    expect.text(osw["ns nested"], "sl/sub/part-0009.parquet",
+                "no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet")
+
+
+def test_an_export_to_a_prefix_with_several_slashes_succeeds(osw, expect):
+    expect.text(osw["ss export"], "80000",
+                "several slashes: a 3-worker export to s3://bucket/sl// succeeds")
+
+
+def test_several_slashes_put_parts_with_one_slash(osw, expect):
+    expect.text(osw["ss puts"], "3", "several slashes: every worker PUT went to sl/part- (one slash)")
+
+
+def test_several_slashes_name_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["ss empty segment"], "0",
+                "several slashes: no request named a key with an empty segment (//)")
+
+
+def test_several_slashes_leave_exactly_this_runs_parts(osw, expect):
+    expect.text(osw["ss parts"], "3", "several slashes: sl/ holds exactly this run's 3 parts")
+
+
+def test_several_slashes_leave_the_sibling_prefixes_parts(osw, expect):
+    expect.text(osw["ss siblings"], SIBLINGS,
+                "several slashes: an export to sl// leaves the parts under slx/ and sl2/")
+
+
+def test_an_uppercase_scheme_rerun_succeeds(osw, expect):
+    expect.text(osw["up export"], "80000",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds")
+
+
+def test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts(osw, expect):
+    expect.text(osw["up parts"], "2",
+                "uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts")
+
+
+def test_an_uppercase_scheme_rerun_deletes_the_stale_parts(osw, expect):
+    expect.text(osw["up deletes"], "up/part-0002.parquet up/part-0003.parquet",
+                "uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003")
+
+
+def test_a_bare_bucket_with_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb slash"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket/ is refused as naming no prefix")
+
+
+def test_a_bare_bucket_without_a_slash_is_refused(osw, expect):
+    expect.text(osw["bb bare"], "22023 (no prefix)",
+                "bare bucket: an export to s3://bucket is refused as naming no prefix")
+
+
+def test_the_refused_bare_bucket_exports_sent_no_put(osw, expect):
+    expect.text(osw["bb puts"], "0", "bare bucket: the refused exports sent no PUT")
+
+
+def test_no_part_object_lands_at_the_bucket_root(osw, expect):
+    expect.text(osw["bb root parts"], "0", "bare bucket: no part object at the bucket root")
+
+
 def test_a_session_set_to_empty_refuses_the_parallel_export(osw, expect):
     expect.text(osw["sa refused"], "42501 by the allow-list",
                 "premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check")
@@ -798,6 +1157,11 @@ def test_the_dispatcher_deleted_the_known_keys_on_cancel(osw, expect):
     expect.text(osw["cx delete"], "yes", "cancel: the dispatcher issued DELETE over the known keys")
 
 
+def test_the_cancel_names_no_key_with_an_empty_segment(osw, expect):
+    expect.text(osw["cx empty segment"], "0",
+                "cancel: no request named a key with an empty segment (//)")
+
+
 def test_no_completed_object_remains_after_the_cancel(osw, expect):
     expect.text(osw["cx parts"], "0", "cancel: no completed object remains at the prefix")
 
@@ -815,6 +1179,70 @@ def test_terminated_workers_exit_while_the_store_is_silent(osw, expect):
     # #1727 review: the exit callback's abort waits in slices that time out, so the 60 s
     # quiet limit ends it; a silent store cannot hold a terminated worker
     expect.text(osw["hs exit"], "bounded", "terminate: export workers exit within 75 s while the store is silent")
+
+
+def test_the_unsigned_http_fixture_server_is_up(osw, expect):
+    expect.text(osw["plain up"], "1", "premise: unsigned http fixture server is up")
+
+
+def test_a_small_export_to_http_succeeds_unsigned(osw, expect):
+    # #1779: the backend crashed here with signal 11 (a NULL region in the signer)
+    expect.text(osw["plain small"], "1000", "http:// small export succeeds unsigned (no crash)")
+
+
+def test_a_small_http_object_goes_as_one_plain_put(osw, expect):
+    expect.text(osw["plain small put"], "1", "http:// small object went as ONE plain PUT")
+
+
+def test_the_small_http_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["plain small back"], osw["small gen"], "http:// small round trip: read-back == source")
+
+
+def test_an_arrow_export_to_http_imports_back_as_the_generator(osw, expect):
+    # #1779 names export_arrow too: it writes through the same sink
+    expect.text(osw["plain arrow back"], osw["small gen"], "http:// arrow export round-trips unsigned (no crash)")
+
+
+def test_a_large_export_to_http_succeeds_unsigned(osw, expect):
+    expect.text(osw["plain big"], "400000", "http:// large export succeeds unsigned (no crash)")
+
+
+def test_the_large_http_export_took_the_multipart_protocol(osw, expect):
+    expect.text(osw["plain big multipart"], "yes", "the http:// large export took the multipart protocol")
+
+
+def test_the_large_http_object_reads_back_as_the_generator(osw, expect):
+    expect.text(osw["plain big back"], osw["big gen"], "http:// large round trip: read-back == source")
+
+
+def test_an_injected_failure_on_http_surfaces_as_disk_full(osw, expect):
+    expect.text(osw["plain inject"], "53100 by the injected fault",
+                "http:// inject: mid-upload failure surfaces as disk-full (53100)")
+
+
+def test_the_injected_http_fault_landed_mid_multipart(osw, expect):
+    expect.text(osw["plain inject started"], "yes",
+                "the http:// fault landed mid-multipart (an upload was started)")
+
+
+def test_the_injected_http_failure_leaves_no_open_upload(osw, expect):
+    expect.text(osw["plain inject open"], "0", "http:// inject: the server holds no open upload for the key")
+
+
+def test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned(osw, expect):
+    # #1779: the hint used to send the reader to the AWS_* credentials, which an
+    # http(s):// request never carries
+    expect.text(osw["unsigned 403 hint"],
+                "Requests to http:// and https:// URLs are never signed. "
+                "Use an s3:// or gs:// URL for a store that needs credentials.",
+                "http:// 403: the hint says the request went unsigned, not to check AWS_* credentials")
+
+
+def test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials(osw, expect):
+    # #1779 review: the unsigned hint must not reach a request that was signed
+    expect.text(osw["signed 403 hint"],
+                "Check the AWS_* credential environment of the server process.",
+                "s3:// 403: a signed request that is refused still hints to check AWS_* credentials")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation, so the shell "

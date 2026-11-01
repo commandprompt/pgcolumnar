@@ -32,6 +32,7 @@
 #include <math.h>
 
 #include "fmgr.h"
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -193,6 +194,7 @@ typedef struct PqLeaf
 	StringInfoData boolbits;	/* 1 byte per non-null bool value */
 	int64		nEntries;		/* level entries in the current row group */
 	PqStats		st;				/* statistics for the current row group */
+	PgcTextQueue pending;		/* this row's texts, made by pq_row_bytes */
 }			PqLeaf;
 
 /* how a top-level column shreds into leaves */
@@ -510,9 +512,19 @@ write_leaf_value(PqLeaf *c, Datum d, __int128 dec)
 		case P_BINARY:
 			if (c->convertText)
 			{
-				/* numeric/jsonb fallback: canonical text via output function */
-				char	   *str = OutputFunctionCall(&c->outFinfo, d);
-				int32		len = (int32) strlen(str);
+				/*
+				 * numeric/jsonb fallback: canonical text via output function,
+				 * or the text pq_row_bytes already made for this row
+				 */
+				int			plen = 0;
+				char	   *str = PgcTextQueuePop(&c->pending, d, &plen);
+				int32		len = plen;
+
+				if (str == NULL)
+				{
+					str = OutputFunctionCall(&c->outFinfo, d);
+					len = (int32) strlen(str);
+				}
 
 				appendBinaryStringInfo(&c->values, (char *) &len, 4);
 				if (len > 0)
@@ -1168,6 +1180,244 @@ PgColumnarParquetCheckExportable(Relation rel)
 }
 
 /*
+ * pq_value_width
+ *		The PLAIN bytes one non-null value of a fixed-width leaf adds: the
+ *		physical width, which can be wider than the stored one (int2 is written
+ *		as INT32). 0 for a variable-length leaf.
+ */
+static int
+pq_value_width(const PqLeaf *c)
+{
+	switch (c->kind)
+	{
+		case P_BOOL:
+			return 1;
+		case P_INT16:
+		case P_INT32:
+		case P_FLOAT:
+		case P_DATE:
+			return 4;
+		case P_INT64:
+		case P_DOUBLE:
+		case P_TIME:
+		case P_TIMESTAMP:
+			return 8;
+		case P_UUID:
+			return UUID_LEN;
+		case P_DECIMAL:
+			return 16;
+		case P_UTF8:
+		case P_BINARY:
+			return 0;
+	}
+	return 0;
+}
+
+/*
+ * pq_entry_bytes
+ *		An upper bound on the bytes leaf_entry adds for one entry, counted in
+ *		the written form (#1811, #1843 review): the level bytes, then the PLAIN
+ *		value. A numeric or jsonb written as text is measured by its text, which
+ *		can be far longer than the stored value. The leaf keeps that text for
+ *		write_leaf_value, which takes the texts in the same order, so each value
+ *		converts once.
+ */
+static int64
+pq_entry_bytes(PqLeaf *c, bool hasValue, Datum d)
+{
+	int64		bytes = (c->max_rep > 0) ? 2 : 1;
+
+	if (!hasValue)
+		return bytes;
+	if (pq_value_width(c) > 0)
+		return bytes + pq_value_width(c);
+	if (c->convertText)
+	{
+		char	   *str = OutputFunctionCall(&c->outFinfo, d);
+		int32		len = (int32) strlen(str);
+
+		bytes += 4 + (int64) len;
+		PgcTextQueuePush(&c->pending, d, str, len);
+	}
+	else
+		bytes += 4 + (int64) toast_raw_datum_size(d) - VARHDRSZ;
+	return bytes;
+}
+
+/*
+ * pq_row_bytes
+ *		An upper bound on the bytes shred_top adds for one row, over all its
+ *		columns (#1811, #1843 review). The writers cut a group before a row that
+ *		would take the group past the byte cap, so this must not undercount.
+ */
+static int64
+pq_row_bytes(TopColumn *tops, int ntop, PqLeaf *leaves,
+			 const Datum *values, const bool *nulls)
+{
+	int64		bytes = 0;
+	int			i;
+
+	for (i = 0; i < ntop; i++)
+	{
+		TopColumn  *tc = &tops[i];
+
+		switch (tc->tkind)
+		{
+			case TOP_SCALAR:
+				bytes += pq_entry_bytes(&leaves[tc->firstLeaf], !nulls[i], values[i]);
+				break;
+			case TOP_LIST:
+				{
+					PqLeaf	   *leaf = &leaves[tc->firstLeaf];
+					ArrayType  *arr;
+					int			n;
+
+					if (nulls[i])
+					{
+						bytes += 2;
+						break;
+					}
+					arr = DatumGetArrayTypeP(values[i]);
+					n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+					if (n == 0)
+						bytes += 2;
+					else if (pq_value_width(leaf) > 0)
+						bytes += (int64) n * (2 + pq_value_width(leaf));
+					else if (!leaf->convertText)
+						bytes += (int64) n * (2 + 4) + ARR_SIZE(arr);
+					else
+					{
+						Datum	   *elems;
+						bool	   *enulls;
+						int			k;
+
+						deconstruct_array(arr, tc->elemtype, tc->elemlen,
+										  tc->elembyval, tc->elemalign,
+										  &elems, &enulls, &n);
+						for (k = 0; k < n; k++)
+							bytes += pq_entry_bytes(leaf, !enulls[k], elems[k]);
+						pfree(elems);
+						pfree(enulls);
+					}
+					if ((Pointer) arr != DatumGetPointer(values[i]))
+						pfree(arr);
+					break;
+				}
+			case TOP_STRUCT:
+				{
+					TupleDesc	sd = tc->structDesc;
+					Datum	   *fv = NULL;
+					bool	   *fn = NULL;
+					int			a;
+
+					if (!nulls[i])
+					{
+						HeapTupleHeader th = DatumGetHeapTupleHeader(values[i]);
+						HeapTupleData tmp;
+
+						fv = palloc(sizeof(Datum) * sd->natts);
+						fn = palloc(sizeof(bool) * sd->natts);
+						tmp.t_len = HeapTupleHeaderGetDatumLength(th);
+						ItemPointerSetInvalid(&tmp.t_self);
+						tmp.t_tableOid = InvalidOid;
+						tmp.t_data = th;
+						heap_deform_tuple(&tmp, sd, fv, fn);
+					}
+					for (a = 0; a < sd->natts; a++)
+					{
+						int			li = tc->fieldLeaf[a];
+
+						if (li < 0)
+							continue;
+						bytes += pq_entry_bytes(&leaves[li], !nulls[i] && !fn[a],
+												nulls[i] ? (Datum) 0 : fv[a]);
+					}
+					if (fv)
+					{
+						pfree(fv);
+						pfree(fn);
+					}
+					break;
+				}
+		}
+	}
+	return bytes;
+}
+
+/*
+ * pq_group_bytes
+ *		The bytes the current row group has buffered, over all leaves (#1811).
+ */
+static int64
+pq_group_bytes(const PqLeaf *leaves, int nleaves)
+{
+	int64		bytes = 0;
+	int			i;
+
+	for (i = 0; i < nleaves; i++)
+		bytes += (int64) leaves[i].defs.len + leaves[i].reps.len +
+			leaves[i].values.len + leaves[i].boolbits.len;
+	return bytes;
+}
+
+/*
+ * pq_flush_row_group
+ *		Write the buffered rows as one row group: a data page per leaf, then
+ *		record the group for the footer and reset the leaves.
+ */
+static void
+pq_flush_row_group(PqSink *snk, PqLeaf *leaves, int nleaves, int64 groupRows,
+				   int64 *offset, PqRowGroup **rgs, int *nrgs, int *rgCap,
+				   MemoryContext rgCtx)
+{
+	PqRowGroup *rg;
+	int			i;
+
+	if (*nrgs == *rgCap)
+	{
+		*rgCap = *rgCap ? *rgCap * 2 : 8;
+		*rgs = *rgs ? repalloc(*rgs, sizeof(PqRowGroup) * *rgCap)
+			: palloc(sizeof(PqRowGroup) * *rgCap);
+	}
+	rg = &(*rgs)[(*nrgs)++];
+	rg->cols = MemoryContextAlloc(rgCtx, sizeof(PqColMeta) * Max(nleaves, 1));
+	rg->numRows = groupRows;
+	rg->totalByteSize = 0;
+
+	for (i = 0; i < nleaves; i++)
+	{
+		StringInfoData body;
+		StringInfoData ph;
+		int64		pageStart = *offset;
+
+		initStringInfo(&body);
+		build_leaf_body(&body, &leaves[i]);
+
+		initStringInfo(&ph);
+		write_page_header(&ph, leaves[i].nEntries, (int32) body.len);
+
+		PgColumnarSinkWrite(snk, ph.data, ph.len);
+		PgColumnarSinkWrite(snk, body.data, body.len);
+		*offset += ph.len + body.len;
+
+		rg->cols[i].dataPageOffset = pageStart;
+		rg->cols[i].totalSize = ph.len + body.len;
+		rg->cols[i].numValues = leaves[i].nEntries;
+		/*
+		 * Take the statistics before pqleaf_reset() below clears them. The
+		 * footer is written after every row group has been flushed, so by
+		 * then the leaf holds only the last group's accumulator.
+		 */
+		rg->cols[i].st = leaves[i].st;
+		rg->totalByteSize += ph.len + body.len;
+
+		pfree(body.data);
+		pfree(ph.data);
+		pqleaf_reset(&leaves[i]);
+	}
+}
+
+/*
  * PgColumnarWriteParquetFile
  *		Write rel's live rows to a Parquet file at filepath, under snapshot.
  *		When restrictGroups is non-NULL, only those row groups are written (the
@@ -1269,6 +1519,22 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 		if (got)
 		{
 			CHECK_FOR_INTERRUPTS();
+
+			/*
+			 * Cut by bytes too (#1811): start a new row group before a row
+			 * that would take the buffered bytes past the cap. Each leaf
+			 * buffers its values in one allocation, capped at 1 GiB. The row
+			 * is counted as written, not as stored (#1843 review).
+			 */
+			if (groupRows > 0 &&
+				pq_group_bytes(leaves, nleaves) +
+				pq_row_bytes(tops, ntop, leaves, values, nulls) >
+				(int64) pgcolumnar_export_group_bytes)
+			{
+				pq_flush_row_group(snk, leaves, nleaves, groupRows, &offset,
+								   &rgs, &nrgs, &rgCap, rgCtx);
+				groupRows = 0;
+			}
 			for (i = 0; i < ntop; i++)
 				shred_top(&tops[i], leaves, values[i], nulls[i]);
 			groupRows++;
@@ -1278,50 +1544,8 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 		/* flush a row group when full, or at end if it holds rows */
 		if ((groupRows == PARQUET_ROWGROUP_ROWS) || (!got && groupRows > 0))
 		{
-			PqRowGroup *rg;
-
-			if (nrgs == rgCap)
-			{
-				rgCap = rgCap ? rgCap * 2 : 8;
-				rgs = rgs ? repalloc(rgs, sizeof(PqRowGroup) * rgCap)
-					: palloc(sizeof(PqRowGroup) * rgCap);
-			}
-			rg = &rgs[nrgs++];
-			rg->cols = MemoryContextAlloc(rgCtx, sizeof(PqColMeta) * Max(nleaves, 1));
-			rg->numRows = groupRows;
-			rg->totalByteSize = 0;
-
-			for (i = 0; i < nleaves; i++)
-			{
-				StringInfoData body;
-				StringInfoData ph;
-				int64		pageStart = offset;
-
-				initStringInfo(&body);
-				build_leaf_body(&body, &leaves[i]);
-
-				initStringInfo(&ph);
-				write_page_header(&ph, leaves[i].nEntries, (int32) body.len);
-
-				PgColumnarSinkWrite(snk, ph.data, ph.len);
-				PgColumnarSinkWrite(snk, body.data, body.len);
-				offset += ph.len + body.len;
-
-				rg->cols[i].dataPageOffset = pageStart;
-				rg->cols[i].totalSize = ph.len + body.len;
-				rg->cols[i].numValues = leaves[i].nEntries;
-				/*
-				 * Take the statistics before pqleaf_reset() below clears them.
-				 * The footer is written after every row group has been flushed,
-				 * so by then the leaf holds only the last group's accumulator.
-				 */
-				rg->cols[i].st = leaves[i].st;
-				rg->totalByteSize += ph.len + body.len;
-
-				pfree(body.data);
-				pfree(ph.data);
-				pqleaf_reset(&leaves[i]);
-			}
+			pq_flush_row_group(snk, leaves, nleaves, groupRows, &offset,
+							   &rgs, &nrgs, &rgCap, rgCtx);
 			groupRows = 0;
 		}
 
