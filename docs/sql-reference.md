@@ -1744,9 +1744,7 @@ object-store module, since only it can issue the listing.
 
 Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
 scheme and the bucket never are. An `http://` or `https://` URL is always one
-object, so a `?` in it starts a query string, which is sent to the server. The
-reader and the writer add their own parameters, such as `versionId=` or
-`uploadId=`, after that query with `&`. A key
+object, so a `?` in it starts a query string, which is sent to the server. A key
 may itself contain `*`, `?` or `[`, because S3 allows them. When an `s3://` URL
 holds one of these characters, the reader lists the prefix and first looks for
 an object with exactly that key. If one exists, the reader reads that object
@@ -1754,7 +1752,9 @@ alone, whatever its suffix. Only when none exists is the key matched as a
 pattern. A backslash before a character makes the pattern match that character
 literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
 from a host written as an IPv6 literal in brackets, such as
-`http://[::1]:9000/`, is refused with SQLSTATE 0A000.
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000. When the reader or the
+writer adds a parameter of its own to an `http(s)://` URL that has a query
+string, such as `versionId=` or `uploadId=`, it joins it with `&`.
 
 On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
 refuses every other remote URL before any worker starts. It writes one
