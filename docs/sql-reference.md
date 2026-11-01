@@ -1109,7 +1109,7 @@ as one column gets one row under its own name:
 one row for each leaf. A map, a list of structs, a struct of a struct and a struct
 that holds a list are examples. Each row is named by the leaf's path in the file,
 joined with dots, for example `m.key_value.key`. Its type is an array type when
-the leaf repeats, so a map with string keys and bigint values reports
+the leaf repeats. So a map with string keys and bigint values reports
 `m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
 must be quoted in a column definition list, or you can use any other name: the
 reader matches columns by position.

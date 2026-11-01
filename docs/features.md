@@ -307,7 +307,7 @@ and writes continue.
 ## Reading external Parquet in place
 
 - `pgcolumnar.read_parquet(path) AS t(...)` reads a server-side Parquet file's
-  rows without importing them, and `pgcolumnar.parquet_schema(path)` reports its
+  rows without importing them. `pgcolumnar.parquet_schema(path)` reports its
   columns, one row per column `read_parquet` declares, and the PostgreSQL type
   each maps to.
 - The `pgcolumnar_parquet` foreign-data wrapper exposes a Parquet file as a
