@@ -9,6 +9,10 @@ of its exact name still expands, and a bracketed authority is refused as IPv6 (#
 When one object under a prefix or glob does not match the declared columns, the refusal
 names it in its DETAIL (#1902), for read_parquet by position and by field id, and for
 the FDW.
+s3a:// and s3n:// read as s3://, in any case, through read_parquet, parquet_schema,
+import_parquet and the FDW, a Hive root included; an error after the rewrite names the
+s3:// URL; s3ax:// and xs3a:// stay local paths; and the three exports refuse an alias
+with 0A000 and a hint naming the s3:// URL, sending no request (#1930).
 The local SigV4 fixture server (test/objstore_http_server.py, the shell's own) answers
 the listing two keys a page, so the continuation-token loop runs.
 
@@ -99,6 +103,11 @@ LITERAL_READS = [("s3://", "lit/q?mark.parquet"), ("s3://", "lit/brack[1].parque
                  ("s3://", "lit/star*x.parquet"), ("s3://", "lit/raw[1]"), ("S3://", "lit/q?mark.parquet"),
                  ("s3://", "lit/q?mar?.parquet"), ("s3://", "lit/q\\?mark.parquet")]
 
+# (scheme, key after the bucket) of each #1930 alias reading
+ALIAS_READS = [("s3a://", "lst/part-0000.parquet"), ("s3n://", "lst/part-0000.parquet"), ("s3a://", "lst/"),
+               ("s3n://", "lst/"), ("s3a://", "lst/*.parquet"), ("S3A://", "lst/"),
+               ("S3n://", "lst/part-0000.parquet")]
+
 STUCK = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated>'
          '<NextContinuationToken>STUCK</NextContinuationToken>'
          '<Contents><Key>lst/part-0000.parquet</Key></Contents></ListBucketResult>\n')
@@ -157,6 +166,23 @@ def _refusal(dsn, sql, phrase, label):
         if not exc.sqlstate:
             return query_error(_message(exc))
         return exc.sqlstate + (label if phrase in str(exc) else "")
+    return "no error"
+
+
+def _alias_refusal(dsn, sql, func, url, s3url):
+    """-> "0A000 named" when `sql` raised 0A000 with the export's own message for `url`
+    and a hint naming `s3url`, else what it raised (#1930)."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        if (exc.sqlstate == "0A000" and exc.diag.message_primary == f'columnar: {func} does not write "{url}"'
+                and exc.diag.message_hint == f'Write to "{s3url}" instead.'):
+            return "0A000 named"
+        return f"{exc.sqlstate} ({exc.diag.message_primary})"
     return "no error"
 
 
@@ -469,6 +495,45 @@ def osl(pgc_cluster):
         r["pruned"] = pruned[0].split(":")[-1].strip() if pruned else (plan if plan.startswith("QUERY_ERROR")
                                                                        else "no Files Pruned line")
 
+        # #1930: s3a:// and s3n:// read as s3://, in any case; the exports refuse them
+        for scheme, sub in ALIAS_READS:
+            r[f"alias {scheme}{sub}"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                                  f"'{scheme}{BUCKET}/{sub}') AS t(id int8)")
+        r["alias schema"] = (_rows(dsn, f"SELECT * FROM pgcolumnar.parquet_schema("
+                                        f"'s3a://{BUCKET}/lst/part-0000.parquet')"),
+                             _rows(dsn, f"SELECT * FROM pgcolumnar.parquet_schema("
+                                        f"'s3://{BUCKET}/lst/part-0000.parquet')"))
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE alias_dst (id int8) USING pgcolumnar")
+            c.execute(f"CREATE FOREIGN TABLE falias (id int8) SERVER s3srv OPTIONS (path 's3a://{BUCKET}/lst/')")
+            c.execute(f"CREATE FOREIGN TABLE fhive_alias (id int8, dt date) SERVER s3srv "
+                      f"OPTIONS (path 'S3A://{BUCKET}/hive/', partition_columns 'dt')")
+            c.execute(f"CREATE FOREIGN TABLE fhive_root (id int8, dt date) SERVER s3srv "
+                      f"OPTIONS (path 's3a://{BUCKET}/hive/dt=2026-01-01/', partition_columns 'dt')")
+            c.execute("CREATE TABLE alias_src (id int8) USING pgcolumnar")
+            c.execute("INSERT INTO alias_src VALUES (7), (8)")
+        r["alias import"] = (_row(dsn, f"SELECT pgcolumnar.import_parquet('alias_dst', "
+                                       f"'s3n://{BUCKET}/lst/part-0001.parquet')"),
+                             _row(dsn, "SELECT sum(id) FROM alias_dst"))
+        r["alias fdw"] = (_rows(dsn, "SELECT * FROM falias"), r["rp rows"])
+        r["alias hive"] = _rows(dsn, "SELECT dt, count(*) FROM fhive_alias GROUP BY dt ORDER BY dt")
+        r["alias hive root"] = _refusal(dsn, "SELECT count(*) FROM fhive_root",
+                                        f'file "s3://{BUCKET}/hive/dt=2026-01-01/part.parquet" has no "dt=" '
+                                        'directory component', " naming the s3:// file")
+        r["alias missing"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                           f"'s3a://{BUCKET}/lst/nope.parquet') AS t(id int8)",
+                                      f'"s3://{BUCKET}/lst/nope.parquet" does not exist', " by its s3:// URL")
+        for scheme in ("s3ax://", "xs3a://"):
+            r["control " + scheme] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                                   f"'{scheme}{BUCKET}/lst/part-0000.parquet') AS t(id int8)",
+                                              f'could not open file "{scheme}{BUCKET}/lst/part-0000.parquet"',
+                                              " as a local file")
+        for func, url in (("export_parquet", f"s3a://{BUCKET}/out/e.parquet"),
+                          ("export_arrow", f"s3n://{BUCKET}/out/e.arrow"),
+                          ("parallel_export_parquet", f"S3A://{BUCKET}/out/pe/")):
+            r["alias export " + func] = _alias_refusal(dsn, f"SELECT pgcolumnar.{func}('alias_src', '{url}')",
+                                                       func, url, "s3://" + url.split("://", 1)[1])
+
         override = work / "__listing_override__"
         stmt = f"SELECT count(*) FROM {rp}"
         override.write_text(STUCK)
@@ -650,6 +715,86 @@ def test_a_list_that_fails_is_refused_not_read_as_empty(request, expect):
     if r is not None:
         expect.text(r["http500"], "08006 by the HTTP status check",
                     "a LIST that returns HTTP 500 is refused, not read as an empty prefix")
+
+
+@pytest.mark.parametrize("key, want, name", [
+    ("s3a://lst/part-0000.parquet", "3 3", "an s3a:// exact key reads the object s3:// reads"),
+    ("s3n://lst/part-0000.parquet", "3 3", "an s3n:// exact key reads the object s3:// reads"),
+    ("s3a://lst/", "12 192", "an s3a:// prefix lists and reads every object under it, as s3:// does"),
+    ("s3n://lst/", "12 192", "an s3n:// prefix lists and reads every object under it, as s3:// does"),
+    ("s3a://lst/*.parquet", "9 99", "an s3a:// glob lst/*.parquet matches the 3 top-level parts, as s3:// does"),
+    ("S3A://lst/", "12 192", "an upper-case S3A:// prefix reads as s3:// does"),
+    ("S3n://lst/part-0000.parquet", "3 3", "a mixed-case S3n:// exact key reads as s3:// does"),
+])
+def test_an_s3a_or_s3n_url_reads_as_s3(request, expect, key, want, name):
+    """#1930: the Hadoop names for S3 read as s3://, in any case, as in the Iceberg reader."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias " + key], want, name)
+
+
+def test_parquet_schema_through_s3a_equals_through_s3(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        a, b = r["alias schema"]
+        expect.text(f"{a}|{b}", "id bigint True None|id bigint True None",
+                    "parquet_schema through s3a:// == through s3://")
+
+
+def test_import_parquet_through_s3n_loads_the_objects_rows(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text("|".join(r["alias import"]), "3|33", "import_parquet through s3n:// loads the object's rows")
+
+
+def test_the_fdw_over_an_s3a_prefix_reads_what_read_parquet_reads_over_s3(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        got, want = r["alias fdw"]
+        expect.text(got, want, "the FDW over an s3a:// prefix == read_parquet over the s3:// prefix")
+
+
+def test_hive_over_an_upper_case_s3a_prefix_stamps_the_partition_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias hive"], "2026-01-01 3\n2026-01-02 3",
+                    "Hive over an S3A:// prefix stamps the partition column")
+
+
+def test_an_s3a_fdw_roots_own_component_is_not_a_partition_value(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias hive root"], "HV004 naming the s3:// file",
+                    "an s3a:// FDW root's own dt= component is not a partition value, as with s3://")
+
+
+def test_a_missing_object_through_s3a_is_reported_under_its_s3_url(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias missing"], "58P01 by its s3:// URL",
+                    "a missing object through s3a:// is reported under its s3:// URL")
+
+
+@pytest.mark.parametrize("scheme, name", [
+    ("s3ax://", "control: an s3ax:// URL is a local path, not S3"),
+    ("xs3a://", "control: an xs3a:// URL is a local path, not S3"),
+])
+def test_a_scheme_that_only_resembles_s3a_is_a_local_path(request, expect, scheme, name):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["control " + scheme], "58P01 as a local file", name)
+
+
+@pytest.mark.parametrize("func, name", [
+    ("export_parquet", "export_parquet refuses s3a:// with 0A000 and a hint naming the s3:// URL"),
+    ("export_arrow", "export_arrow refuses s3n:// with 0A000 and a hint naming the s3:// URL"),
+    ("parallel_export_parquet", "parallel_export_parquet refuses S3A:// with 0A000 and a hint naming the s3:// URL"),
+])
+def test_an_export_refuses_an_s3a_or_s3n_url(request, expect, func, name):
+    """#1930: the exports write s3:// only, as the Iceberg reader writes nothing."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias export " + func], "0A000 named", name)
 
 
 MIX_TYPE = '42804: Parquet column 0 physical type is not compatible with target column "id" (bigint)'

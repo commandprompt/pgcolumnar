@@ -133,16 +133,13 @@ ice_slurp_remote(const char *url, int64 *outlen,
 /*
  * s3a:// and s3n:// are the Hadoop names for an S3 store, and Spark and Hive
  * write them into table metadata. Return the s3:// form of such a path, which
- * the object-store module reads, and any other path unchanged (#1825).
+ * the object-store module reads, and any other path unchanged (#1825). The
+ * Parquet readers share the rewrite (#1930).
  */
 static const char *
 ice_s3_alias(const char *path)
 {
-	if (path != NULL &&
-		(pg_strncasecmp(path, "s3a://", 6) == 0 ||
-		 pg_strncasecmp(path, "s3n://", 6) == 0))
-		return psprintf("s3://%s", path + 6);
-	return path;
+	return PgColumnarS3Alias(path);
 }
 
 #ifdef HAVE_LIBZ

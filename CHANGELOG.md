@@ -541,9 +541,21 @@ true until the next version shipped.
   reader accepts (#1825). Before this they failed with
   `58P01 could not open file "s3a://..." for reading`, which says the object
   does not exist. The match ignores case, and the message and hint are #1886's.
-  Only this refusal changes: the Parquet readers and writers still treat such a
-  path as local. docs/sql-reference.md. `test/arrow_import.sh`,
+  Only this refusal changes here. The Parquet readers read such a path as
+  `s3://` since #1930. docs/sql-reference.md. `test/arrow_import.sh`,
   `test/parallel_copy.sh`, `test/avro_manifest.sh` and their pytest twins.
+- The Parquet readers read an `s3a://` or `s3n://` URL as `s3://`, in any case,
+  as the Iceberg reader does (#1930). These are `read_parquet`,
+  `parquet_schema`, `import_parquet` and the `pgcolumnar_parquet` wrapper.
+  Before this they took such a URL for a local path and failed with
+  `58P01 could not open file "s3a://..." for reading`. The reader rewrites the
+  URL before it routes, lists, globs or signs it, so a prefix, a glob and a Hive
+  root all work, and an error names the `s3://` URL that was requested. Only the
+  start of the path counts, so `xs3a://` and `s3ax://` stay local paths. The
+  exports write `s3://` only: `export_parquet`, `export_arrow` and
+  `parallel_export_parquet` refuse an alias with SQLSTATE 0A000 and a hint that
+  names the `s3://` URL, where they failed with 58P01 before.
+  docs/sql-reference.md. `test/objstore_listing.sh` and its pytest twin.
 - `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
   with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
   local files only, and before this an `s3://` or `http://` URL failed with

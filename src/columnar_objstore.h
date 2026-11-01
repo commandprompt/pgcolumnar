@@ -259,6 +259,22 @@ extern void PgColumnarObjStoreStatementEnd(void);
 /* Does `path` look like a remote URL at all? Cheap, no module load. */
 extern bool PgColumnarPathIsRemote(const char *path);
 
+/* Does `path` start with s3a:// or s3n://, in any case (#1930)? */
+extern bool PgColumnarPathIsS3Alias(const char *path);
+
+/*
+ * The s3:// form of an s3a:// or s3n:// path (palloc'd), else `path` itself.
+ * The Iceberg and Parquet readers read the Hadoop aliases through it (#1825,
+ * #1930).
+ */
+extern const char *PgColumnarS3Alias(const char *path);
+
+/*
+ * Raise 0A000 when `path` is s3a:// or s3n://, for an export (#1930), with a
+ * hint naming the s3:// URL. Returns normally for any other path.
+ */
+extern void PgColumnarRefuseS3AliasWrite(const char *funcname, const char *path);
+
 /*
  * Raise 0A000 when `path` is a remote URL, for a function that reads local files
  * only (#1886): "columnar: <funcname> does not read "<path>"", with a hint that

@@ -1748,17 +1748,22 @@ wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
 `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
 `read_manifest_list` read local files only. Each of them refuses a URL in any of
 the schemes below with SQLSTATE 0A000 before it reads anything, for example
-`columnar: import_arrow does not read "s3://bucket/m.arrow"`. They also refuse
-`s3a://` and `s3n://`, the Hadoop names for S3, in any case. These URL schemes
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
 are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
 | `s3://bucket/key` | An S3 or S3-compatible object. The request is signed with AWS Signature Version 4. |
+| `s3a://bucket/key`, `s3n://bucket/key` | The Hadoop names for S3, matched in any case. The readers read them as `s3://bucket/key`: the Parquet functions, the `pgcolumnar_parquet` wrapper and the Iceberg reader. The exports refuse them with SQLSTATE 0A000, for example `columnar: export_parquet does not write "s3a://bucket/t.parquet"`, with a hint that names the `s3://` URL. The local-only functions above refuse them too. |
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
 | `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
 | `az://container/key` | Reserved for Azure Blob Storage, which no module reads yet. pgcolumnar treats the URL as remote, not as a local path, and refuses it with SQLSTATE 0A000: `reading "az://..." is not supported`, or, without the object-store module, `reading "az://..." requires the object-store module`. |
+
+A reader rewrites an `s3a://` or `s3n://` URL to `s3://` before it lists, signs or
+opens anything. So the request, the endpoint and the credentials are those of the
+`s3://` URL. Error messages name the `s3://` URL too, because that is the URL that was
+requested. Only the start of the URL counts: `xs3a://` or `s3ax://` is a local path.
 
 Requests to an `http://` or `https://` URL are never signed and carry no
 credential, for reads and for exports alike. An export sends one `PUT`, or, for a
