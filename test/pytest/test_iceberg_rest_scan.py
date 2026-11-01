@@ -459,7 +459,10 @@ def irs(pgc_cluster):
         olog = work / "emptyonly.log"
         listed = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ') "
                             f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ocat}') AS ns")
-        r["only listed"] = f"{listed} parent requests={olog.read_text().count('parent=')}"
+        # An empty ?parent= is a query value, not a path segment, so the walk
+        # still asks for the children of ARRAY[''].
+        empty_parent = sum(1 for ln in olog.read_text().splitlines() if "?parent= " in ln)
+        r["only listed"] = f"{listed} empty parent requests={empty_parent}"
         r["only tables"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{ocat}', ARRAY[''])",
                                     "Level 1 of 1 of the namespace is empty", " hint level 1")
         r["only location"] = _refusal(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{ocat}', '', 'events')",
@@ -471,7 +474,26 @@ def irs(pgc_cluster):
                                       f"LATERAL pgcolumnar.iceberg_rest_tables('{ocat}', ns) AS t "
                                       "WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0) "
                                       "AND ns <> ARRAY['']")
-        r["only empty segment"] = str(sum(1 for ln in olog.read_text().splitlines()
+        # The Apache Iceberg REST catalog reads an empty ?parent= as ARRAY[''].
+        # This fixture does too, and serves ARRAY['','x'].
+        kcat = start_fx("emptykids", "--namespace-levels", '["","x"]', "--table", "events",
+                        "--honour-empty-parent")
+        klog = work / "emptykids.log"
+        r["kids levels"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY ns) "
+                                      f"FROM pgcolumnar.iceberg_rest_namespace_levels('{kcat}') AS ns")
+        r["kids text"] = _rows(dsn, "SELECT string_agg(quote_literal(ns), ' ' ORDER BY ns COLLATE \"C\") "
+                                    f"FROM pgcolumnar.iceberg_rest_namespaces('{kcat}') AS ns")
+        r["kids filter"] = _rows(dsn, "SELECT coalesce(string_agg(array_to_json(ns)::text || '=' || t, ' '), 'no rows') "
+                                      f"FROM pgcolumnar.iceberg_rest_namespace_levels('{kcat}') AS ns, "
+                                      f"LATERAL pgcolumnar.iceberg_rest_tables('{kcat}', ns) AS t "
+                                      "WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE strpos(level, chr(31)) > 0) "
+                                      "AND ns <> ARRAY['']")
+        # The refusal needs no catalog, so it comes before any request.
+        r["only down location"] = _refusal(dsn, "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', '', 'events')",
+                                           "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only down tables"] = _refusal(dsn, "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY[''])",
+                                         "Level 1 of 1 of the namespace is empty", " hint level 1")
+        r["only empty segment"] = str(sum(1 for ln in (olog.read_text() + klog.read_text()).splitlines()
                                           if re.match(r"GET [^ ?]*//", ln)))
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
@@ -1049,11 +1071,11 @@ def test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint(irs
                 "empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2")
 
 
-def test_empty_only_level_iceberg_rest_namespace_levels_lists_it_and_asks_for_no_children(irs, expect):
+def test_empty_only_level_iceberg_rest_namespace_levels_asks_for_its_children(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["only listed"], '[""] parent requests=0',
-                'empty only level: iceberg_rest_namespace_levels lists [""] and asks for no children')
+    expect.text(irs["only listed"], '[""] empty parent requests=1',
+                "empty only level: iceberg_rest_namespace_levels lists ARRAY[''] and asks for its children with an empty parent")
 
 
 def test_empty_only_level_iceberg_rest_tables_of_the_array_form_is_refused(irs, expect):
@@ -1082,6 +1104,41 @@ def test_empty_only_level_the_documented_filter_keeps_the_lateral_example_runnin
         return
     expect.text(irs["only filter"], "no rows",
                 "empty only level: the documented filter keeps the LATERAL example running")
+
+
+def test_empty_only_level_iceberg_rest_namespace_levels_lists_the_child(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["kids levels"], '[""] ["","x"]',
+                "empty only level: iceberg_rest_namespace_levels lists the child of ARRAY[''] when the catalog reads an empty parent as ARRAY['']")
+
+
+def test_empty_only_level_iceberg_rest_namespaces_lists_the_child(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["kids text"], "'' '.x'",
+                "empty only level: iceberg_rest_namespaces lists '' and its child '.x'")
+
+
+def test_empty_only_level_the_documented_filter_reaches_the_child(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["kids filter"], '["","x"]=events',
+                "empty only level: the documented filter lets the LATERAL example reach the child of ARRAY['']")
+
+
+def test_empty_only_level_location_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only down location"], "22023 hint level 1",
+                "empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached")
+
+
+def test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["only down tables"], "22023 hint level 1",
+                "empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached")
 
 
 def test_empty_only_level_no_request_has_an_empty_path_segment(irs, expect):

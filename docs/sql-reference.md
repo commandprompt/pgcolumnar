@@ -1455,7 +1455,8 @@ a hint that names the empty level, such as
 such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
 
 A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
-SQLSTATE 22023 before any request names it (#1922). Its request path would hold
+SQLSTATE 22023 (#1922). The refusal comes before any request, so it does not
+depend on whether the catalog can be reached. Its request path would hold
 an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
 catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
 The REST spec has no other way to write it. The error's hint reads
@@ -1582,7 +1583,8 @@ returns each namespace once.
 
 The dot-joined form is ambiguous: the single level `a.b` and the two levels
 `a`, `b` both come out as `a.b`. To tell them apart, use
-`iceberg_rest_namespace_levels`.
+`iceberg_rest_namespace_levels`. An empty level keeps its dot: the levels `""`,
+`x` come out as `.x` (#1922).
 
 ### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
 
@@ -1597,8 +1599,11 @@ namespace, so the function returns it but does not ask for its children.
 Passing that row back fails with SQLSTATE 22023.
 
 A catalog may also hold the namespace whose only level is empty. The function
-returns it as `{""}` but does not ask for its children. Passing that row back
-fails with SQLSTATE 22023 too (#1922).
+returns it as `{""}`. Passing that row back fails with SQLSTATE 22023 too
+(#1922). The function still asks for its children, with an empty `?parent=`.
+The Apache Iceberg REST catalog reads an empty `?parent=` as `{""}`, so a child
+such as `{"",x}` is listed, and passes back. A catalog that reads an empty
+`?parent=` as the top level gives no children of `{""}`.
 
 ```sql
 SELECT ns, t

@@ -539,9 +539,13 @@ true until the next version shipped.
   empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
   catalog answers that path with HTTP 400, and a proxy may collapse `//` to
   `/` and reach another resource. The REST spec has no other way to write it.
-  The hint names level 1 as empty. `iceberg_rest_namespace_levels` still lists
-  `{""}`, but no longer asks for its children. A namespace with an empty level
-  among other levels, such as `{db,""}`, still works (#1891).
+  The refusal comes before any request, so it does not depend on whether the
+  catalog is up. The hint names level 1 as empty. `iceberg_rest_namespace_levels`
+  still lists `{""}` and still asks for its children with an empty `?parent=`,
+  which is a query value, not a path segment. The Apache Iceberg REST catalog
+  reads it as `{""}`. `iceberg_rest_namespaces` now writes the levels `""`, `x`
+  as `.x`; before, it wrote `x`, the name of another namespace. A namespace with
+  an empty level among other levels, such as `{db,""}`, still works (#1891).
   docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
   `test_iceberg_rest_scan.py`.
 

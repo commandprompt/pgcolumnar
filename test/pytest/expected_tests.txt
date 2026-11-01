@@ -1668,4 +1668,8 @@ guard_tests 858
 # level is empty: listed and not walked, refused by iceberg_rest_tables, iceberg_rest_table_location and
 # iceberg_rest_scan, the documented LATERAL filter, no request with an empty path segment), by collection:
 # test_iceberg_rest_scan.py collects 83 tests, 77 on main.
-cluster_tests 5206
+# cluster_tests 5206 -> 5211 for #1922's five review tests in test_iceberg_rest_scan.py (the walk
+# asks for the children of ARRAY[''] with an empty parent and lists ARRAY['','x'] in both forms, the
+# LATERAL filter reaches that child, '' and ARRAY[''] are refused with the catalog down; one test is
+# renamed, from "asks for no children"), by collection: test_iceberg_rest_scan.py collects 88 tests.
+cluster_tests 5211
