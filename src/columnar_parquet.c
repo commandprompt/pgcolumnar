@@ -42,6 +42,8 @@
 #include "catalog/pg_foreign_server.h"
 #include "foreign/foreign.h"
 #include "miscadmin.h"
+#include "nodes/value.h"
+#include "parser/parse_func.h"
 #include "utils/acl.h"
 #include "storage/fd.h"
 #include "utils/builtins.h"
@@ -1633,7 +1635,7 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
  *		Thin wrapper over PgColumnarWriteParquetFile for the whole table.
  *
  *		SQL: pgcolumnar.export_parquet(rel regclass, path text, server name)
- *		writes a remote path with that pgcolumnar_parquet server's endpoint and
+ *		writes a remote path with that Parquet server's endpoint and
  *		region and the caller's user mapping, the configuration a foreign table
  *		of that server reads with (#1795). The two-argument form writes with the
  *		server process environment.
@@ -1670,6 +1672,8 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 	if (PG_NARGS() > 2)
 	{
 		ForeignServer *server;
+		ForeignDataWrapper *fdw;
+		Oid			handler;
 		AclResult	ac;
 
 		if (PG_ARGISNULL(2))
@@ -1677,13 +1681,21 @@ pgcolumnar_export_parquet(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
 					 errmsg("server must not be null")));
 		server = GetForeignServerByName(NameStr(*PG_GETARG_NAME(2)), false);
-		if (strcmp(GetForeignDataWrapper(server->fdwid)->fdwname,
-				   "pgcolumnar_parquet") != 0)
+		fdw = GetForeignDataWrapper(server->fdwid);
+
+		/*
+		 * The wrapper is known by its handler, the SQL function
+		 * pgcolumnar.parquet_fdw_handler, not by its name: tier_partition
+		 * finds the Parquet reader the same way (#1955, #1963).
+		 */
+		handler = LookupFuncName(list_make2(makeString("pgcolumnar"),
+											makeString("parquet_fdw_handler")),
+								 0, NULL, true);
+		if (!OidIsValid(handler) || fdw->fdwhandler != handler)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("server \"%s\" uses the %s wrapper, not pgcolumnar_parquet",
-							server->servername,
-							GetForeignDataWrapper(server->fdwid)->fdwname)));
+					 errmsg("server \"%s\" uses the %s wrapper, whose handler is not pgcolumnar.parquet_fdw_handler",
+							server->servername, fdw->fdwname)));
 #if PG_VERSION_NUM >= 160000
 		ac = object_aclcheck(ForeignServerRelationId, server->serverid,
 							 GetUserId(), ACL_USAGE);
