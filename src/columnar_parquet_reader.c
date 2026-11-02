@@ -3943,6 +3943,7 @@ pq_local_glob_bound(const char *pattern)
  * '/a.parquet'. A '.' at the end is kept, as it makes the pattern match only
  * directories, and so is a name followed by '..', as a symbolic link before the
  * '..' leads the kernel somewhere else. A '/' after a backslash is not folded.
+ * Unlike pq_local_path_fold, keeps x/..: a symlink x changes what is opened.
  */
 static char *
 pq_local_glob_fold(const char *pattern)
@@ -3997,6 +3998,7 @@ pq_remote_glob_bound(const char *pattern)
  * A symbolic link is not resolved, so a ".." can fold to a path the kernel
  * would not reach; path_glob_matches only adds matches with this form
  * (#1982). It neither allocates nor raises an error.
+ * Unlike pq_local_glob_fold, drops x/..: here over-refusing is the safe side.
  */
 static void
 pq_local_path_fold(const char *path, char *out)
