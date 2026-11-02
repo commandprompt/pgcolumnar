@@ -542,7 +542,8 @@ true until the next version shipped.
   above 0. It no longer excuses a compound test joined by `-a`, `-o`, `&&` or
   `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
   so `no` hid which half failed. `&&` and `||` count without spaces around
-  them. It ignores quotes, command substitutions and backticks when it looks
+  them. A `-a` or `-o` with no test after it, as in `[ "$arg" = -a ]`, is an
+  operand and not a join. It ignores quotes, command substitutions and backticks when it looks
   for a compound, so `"$(grep -c "x)" f || true)" -gt 0` is still excused. A
   `test` no longer ends at a `<` or `|` inside a substitution, so
   `test "$(wc -l < f)" -ge 20` is read whole. A redirect into a quoted path
