@@ -834,10 +834,13 @@ server. The Parquet reader refuses the same patterns with the same error
 A local pattern that makes the walk too long also raises error 54000 (#1973).
 Each directory in the tree in memory lists `.` and `..`, as a real one does,
 and a name such as `.*` matches both. So each level of `/.*` doubles the
-walk. The function stops after 1,000,000 steps of the walk. Measured on
-PostgreSQL 18, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)` is
-refused after about 60 ms. The function never answers false for a walk it
-stopped.
+walk. The function stops after 1,000,000 steps of the walk. The number of
+steps depends on the glibc `glob(3)` code, not on the PostgreSQL version.
+With glibc 2.43, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)`
+is refused after about 60 ms. The function never answers false for a walk it
+stopped. The step count starts again at zero for each call, so a refused
+pattern does not affect later calls in the same session.
+
 The function compares spellings: `path` must be spelled as `glob(3)` would
 return it, so `/w//x` does not match `/w/x*`.
 
@@ -1122,6 +1125,12 @@ pattern could crash the server. The limits are those of
 [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean).
 The reader checks the pattern before it looks for an object of that exact
 name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
+
+The reader does not yet bound the number of steps of a local walk (#1984).
+Each real directory lists `.` and `..`, so each level of `.*/` in a local
+pattern multiplies the walk. With 15 such levels the walk can run for minutes,
+and a cancel does not stop it until `glob(3)` returns. Avoid `.*` as a whole
+level of a local pattern.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 

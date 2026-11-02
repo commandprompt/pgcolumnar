@@ -302,6 +302,14 @@ def _sqlstate(cluster, sql, options=None):
     return "ok"
 
 
+def _answer(conn, sql):
+    """-> the value `sql` returns on `conn`, or the SQLSTATE it fails with."""
+    try:
+        return str(conn.execute(sql).fetchone()[0])
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+
+
 def _wait_up(cluster):
     """Return once the server answers SELECT 1, or after 60 s."""
     for _ in range(60):
@@ -344,6 +352,15 @@ def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster
     expect.text(_one(pgc_conn.cursor(), "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', "
                                         "repeat('/..', 10) || '/x')::text"),
                 "true", "path_glob_matches still matches repeat('/.*', 10) against its own path")
+    # The step count and the "stopped" flag are statics. Each walk must reset
+    # them, or one refused walk fails every later call in that session with 54000.
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        same = [_answer(c, sql) for sql in (
+            "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text",
+            "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text",
+            "SELECT pgcolumnar.path_glob_matches('/a/*', '/a/b')::text")]
+    expect.text("|".join(same), "54000|true|true",
+                "after a refused walk, path_glob_matches still answers true in the same session")
 
     deep = f"'{d}/' || repeat('*/', 4000) || 'x.parquet'"
     expect.text(f"{_sqlstate(pgc_cluster, rp(deep))}|{_up(pgc_cluster)}", "54000|1",

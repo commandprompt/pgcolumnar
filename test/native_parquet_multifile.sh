@@ -291,6 +291,16 @@ check "path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s state
 	"54000"
 check "path_glob_matches still matches repeat('/.*', 10) against its own path" \
 	"$(q "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text;")" "true"
+# The step count and the "stopped" flag are statics. Each walk must reset
+# them, or one refused walk fails every later call in that session with
+# 54000. Every other check opens a new connection, so only one session that
+# runs all three statements can see a missing reset.
+check "after a refused walk, path_glob_matches still answers true in the same session" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text;" \
+		-c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text;" \
+		-c "SELECT pgcolumnar.path_glob_matches('/a/*', '/a/b')::text;" 2>&1 | sed 's/^ERROR: *//' | paste -sd'|')" \
+	"54000|true|true"
 
 # Last in the suite: before the fix these reads crashed the server, and the
 # crash recovery failed every check after them. Each check waits for the

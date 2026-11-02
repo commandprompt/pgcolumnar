@@ -558,7 +558,9 @@ true until the next version shipped.
   `..`, and `.*` matches both, so `repeat('/.*', 40)` grew the backend to 2 GB
   in memory that glibc allocates outside PostgreSQL. The walk now stops after
   1,000,000 steps with error 54000, in about 60 ms, and never answers false.
-  docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  Each call starts the count again, so a refused pattern does not fail later
+  calls in the same session. The reader's own walk on the real filesystem is
+  not bounded yet (#1984). docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
 
 - `tier_partition` now refuses a path under the location of a
