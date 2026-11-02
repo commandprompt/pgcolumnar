@@ -516,6 +516,26 @@ def irs(pgc_cluster):
                                              "Level 1 of 1 of the namespace is empty", " hint level 1")
         r["only empty segment"] = str(sum(1 for ln in (olog.read_text() + klog.read_text()).splitlines()
                                           if re.match(r"GET [^ ?]*//", ln)))
+        # #1931: an empty table name makes the path /v1/namespaces/db/tables/.
+        # It is refused (22023) before any request, including the token request.
+        tcat = start_fx("emptytable", "--table", "events")
+        tlog = work / "emptytable.log"
+        for key, sql in (
+            ("table empty location", f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', 'db', '')"),
+            ("table empty scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{tcat}', 'db', '') AS t(id bigint)"),
+            ("table empty array location", f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', ARRAY['db'], '')"),
+            ("table empty array scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{tcat}', ARRAY['db'], '') AS t(id bigint)"),
+            ("table empty down location", "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '')"),
+            ("table empty oauth location", "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '')"),
+            ("table empty oauth scan", "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '') AS t(id bigint)"),
+        ):
+            r[key] = _refusal(dsn, sql, "the table name is empty", " as empty")
+        # The control proves the fixture's log records requests.
+        r["table empty control"] = _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', 'db', 'events')")
+        tlines = tlog.read_text().splitlines() if tlog.is_file() else []
+        r["table empty segment"] = (
+            f"loadTable events={sum(1 for ln in tlines if re.match(r'GET [^ ?]*/tables/events ', ln))} "
+            f"empty table segment={sum(1 for ln in tlines if re.match(r'GET [^ ?]*/tables/ ', ln))}")
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -1202,3 +1222,66 @@ def test_empty_only_level_no_request_has_an_empty_path_segment(irs, expect):
         return
     expect.text(irs["only empty segment"], "0",
                 "empty only level: no request reaches the catalog with an empty path segment")
+
+
+def test_empty_table_name_location_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty location"], "22023 as empty",
+                "empty table name: iceberg_rest_table_location of '' is refused")
+
+
+def test_empty_table_name_scan_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty scan"], "22023 as empty",
+                "empty table name: iceberg_rest_scan of '' is refused")
+
+
+def test_empty_table_name_array_form_location_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty array location"], "22023 as empty",
+                "empty table name: the text[] form of iceberg_rest_table_location of '' is refused")
+
+
+def test_empty_table_name_array_form_scan_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty array scan"], "22023 as empty",
+                "empty table name: the text[] form of iceberg_rest_scan of '' is refused")
+
+
+def test_empty_table_name_location_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty down location"], "22023 as empty",
+                "empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached")
+
+
+def test_empty_table_name_oauth_server_location_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty oauth location"], "22023 as empty",
+                "empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request")
+
+
+def test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty oauth scan"], "22023 as empty",
+                "empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request")
+
+
+def test_empty_table_name_the_same_catalog_still_resolves_the_table(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty control"], irs["mdloc"],
+                "empty table name: the same catalog still resolves db.events")
+
+
+def test_empty_table_name_no_request_has_an_empty_table_segment(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty segment"], "loadTable events=1 empty table segment=0",
+                "empty table name: no request reaches the catalog with an empty table segment")

@@ -11207,6 +11207,15 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
 | `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
 | `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
+| `test_empty_table_name_location_is_refused` | empty table name: iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_scan_is_refused` | empty table name: iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_array_form_location_is_refused` | empty table name: the text[] form of iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_array_form_scan_is_refused` | empty table name: the text[] form of iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_location_is_refused_when_the_catalog_cannot_be_reached` | empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_table_name_oauth_server_location_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_table_name_the_same_catalog_still_resolves_the_table` | empty table name: the same catalog still resolves db.events |
+| `test_empty_table_name_no_request_has_an_empty_table_segment` | empty table name: no request reaches the catalog with an empty table segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

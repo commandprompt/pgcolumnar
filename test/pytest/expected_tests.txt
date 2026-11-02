@@ -1736,4 +1736,9 @@ guard_tests 863
 # cluster_tests 5297 -> 5299 for #1939's review fixes in test_iceberg_rest_scan.py (the child
 # db, '', x, y of db, '', x, and the text form iceberg_rest_namespaces), by collection: 6144 tests
 # collected, less guard_tests 860.
-cluster_tests 5299
+# cluster_tests 5299 -> 5308 for #1931's nine tests in test_iceberg_rest_scan.py: an empty table name is
+# refused (22023) by iceberg_rest_table_location and iceberg_rest_scan in the text and text[] forms, with
+# the catalog down, and in the OAuth server form before the token request; the same catalog still resolves
+# db.events, and no request ends in an empty table segment, by collection: test_iceberg_rest_scan.py
+# collects 99 tests, 6168 tests collected, less guard_tests 863.
+cluster_tests 5308

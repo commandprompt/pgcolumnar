@@ -597,6 +597,15 @@ true until the next version shipped.
   `test/harness_isolation.sh` and `test_harness_isolation.py`.
   Reported by @OffgridwithJD.
 
+- `iceberg_rest_table_location` and `iceberg_rest_scan` now refuse an empty
+  table name, `''`, with SQLSTATE 22023 (#1931). Before, they sent
+  `GET /v1/namespaces/db/tables/`, a path that ends in an empty segment. A
+  proxy that strips the trailing slash would send it to listTables. The
+  client would then fail with a misleading error: the loadTable response is
+  missing the "metadata-location" field. The refusal comes before any
+  request, including a server's OAuth token request. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+  Reported by @OffgridwithJD.
 - Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
   of a namespace with an empty level among other levels, such as `{db,"",x}`
   under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level
