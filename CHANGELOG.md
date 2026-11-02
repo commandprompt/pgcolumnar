@@ -606,6 +606,15 @@ true until the next version shipped.
   request, including a server's OAuth token request. docs/sql-reference.md.
   `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
   Reported by @OffgridwithJD.
+- Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
+  of a namespace with an empty level among other levels, such as `{db,"",x}`
+  under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level
+  sits in the middle (#1939). A third check shows that the text form,
+  `iceberg_rest_namespaces`, lists `db`, `db.`, `db..x` and `db..x.y`. Before,
+  no check covered these, so a walk that stopped at `{db,""}` passed every
+  check. The code was already correct. The `emptylevel` fixture in
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py` now serves
+  `{db,"",x,y}`. docs/sql-reference.md.
 
 - The Iceberg REST functions now refuse a namespace whose only level is empty,
   `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an

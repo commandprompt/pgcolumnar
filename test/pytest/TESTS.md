@@ -11184,6 +11184,9 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint` | empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1 |
 | `test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint` | empty level: a missing namespace with no empty level gets no empty-level hint |
 | `test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the namespace db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_middle_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x |
+| `test_empty_level_iceberg_rest_namespaces_lists_the_text_form_of_each_namespace` | empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y |
 | `test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables` | empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables |
 | `test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables` | empty level: iceberg_rest_tables of the text form 'db.' lists its tables |
 | `test_empty_level_iceberg_rest_table_location_resolves_the_table` | empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table |
