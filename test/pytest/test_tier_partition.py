@@ -225,12 +225,25 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_requiv": "s3://tierb/seq/[[=]=]].parquet",
               "s_dup_rzq": "s3://tierb/szq/[[:z:]].parquet",
               "s_dup_rrange": "s3://tierb/srg/a[!:-[:digit:]].parquet",
+              "s_dup_rlate": "s3://tierb/slt/[1a-[:alpha:]]x.parquet",
+              "s_dup_rlateq": "s3://tierb/sle/[1a-[=b=]]x.parquet",
+              "s_dup_llate": f"{server_dir}/sllt/[1a-[:alpha:]]x.parquet",
+              "s_dup_rcdash": "s3://tierb/scd/[[:alpha:]-[:digit:]].parquet",
+              "s_dup_rrdash": "s3://tierb/srd/-[/-[-[:alpha:][=a=]].parquet",
+              "s_dup_rnone": "s3://tierb/snn/[1[::]-a]x.parquet",
+              "s_dup_rcollab": "s3://tierb/scb/[1[.ab.]-a]x.parquet",
+              "s_dup_rvneg": "s3://tierb/svn/[^-:-[:alpha:]x].parquet",
+              "s_dup_lvneg": f"{server_dir}/slvn/[!-:-[:alpha:]x].parquet",
               "s_dup_hglob": "http://h.example/shg/*.parquet",
               "s_dup_gglob": "gs://tierb/sgg/*.parquet",
               "s_dup_rcunt": "s3://tierb/snc/a[^]x*",
               "s_dup_rspan": "s3://tierb/ssp/x[a/b].parquet",
               "s_dup_rcoll": "s3://tierb/sco/[[.].]].parquet",
-              "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet"}
+              "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet",
+              "s_dup_rquote": "s3://tierb/sq/it''s.parquet",
+              "s_dup_rdslash": "s3://tierb/sdp/[1a-[:alpha:]]x/*.parquet",
+              "s_dup_rndash": "s3://tierb/snd/[^[:alpha:]-[-[=a=]]x.parquet",
+              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -310,6 +323,54 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "an s3:// glob [class] may span a slash, so a path the class matches is refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sco/].parquet")),
                 "58P02", "a collating symbol [.].] in a glob holds a ], so a path the class matches is refused")
+    # After a member matches, glibc skips to the closing ] with code that knows
+    # no ranges. So when a range ends in a plain [ and a POSIX class or an
+    # equivalence class seems to follow, a member before the range makes
+    # fnmatch close the class at a later ]. Such a glob is refused from that
+    # class on, whatever follows it. A - after a class or a range is a plain
+    # member, and [::] or [.ab.] is one unit to the skip (#1951, found by
+    # comparing with glibc fnmatch).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/slt/1x.parquet")),
+                "58P02", "a [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sle/1x.parquet")),
+                "58P02", "a [ that ends a range before an equivalence class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/sllt/1x.parquet")),
+                "58P02", "a local glob [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/scd/-.parquet")),
+                "58P02", "a - after a POSIX class in a glob is a member, not a range, so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/srd/-a.parquet")),
+                "58P02", "a - after a range in a glob is a member, so the POSIX class after it is one member and a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snn/1x.parquet")),
+                "58P02", "an empty [::] in a glob class is one unit to fnmatch, so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/scb/1x.parquet")),
+                "58P02", "a collating symbol [.ab.] in a glob class is one unit to fnmatch, so a path the class matches is refused")
+    # A ! or ^ right after [ always negates, even where reading it as a member
+    # would give a longer token. Here fnmatch closes at the first ] and the x]
+    # after it is literal (#1953 review).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/svn/1x].parquet")),
+                "58P02", "a ! or ^ after [ in a glob always negates, so a path the negated class matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slvn/1x].parquet")),
+                "58P02", "a ! or ^ after [ in a local glob always negates, so a path the negated class matches is refused")
+    # The widened class runs to the end of the pattern, so it still refuses a
+    # key below a / that follows it. And a - after a POSIX class stays a member
+    # in a negated class too, where reading it as a range would give the longer
+    # token: fnmatch closes at the first ], so 1] matches (#1953 review, third
+    # round).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdp/1x/f.parquet")),
+                "58P02", "a widened bracket followed by a slash still refuses the deeper key")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snd/1]x.parquet")),
+                "58P02", "a - after a POSIX class in a negated glob class is a member, so a path the class matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slnd/1]x.parquet")),
+                "58P02", "a - after a POSIX class in a negated local glob class is a member, so a path the class matches is refused")
+    expect.text(_errdetail(conn, tier.format("s3://tierb/se/*.parquet")),
+                "Foreign table public.s_dup_resc reads path 's3://tierb/se/\\*.parquet'.",
+                "the refusal's detail prints a path holding a backslash as written, not as an E'' string")
+    # The detail quotes the path by hand, so it doubles a ' in it. Otherwise a
+    # table owner's path could close the quote and append a line that reads
+    # like a server HINT under the refusal (#1953 review).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/sq/it''s.parquet")),
+                "Foreign table public.s_dup_rquote reads path 's3://tierb/sq/it''s.parquet'.",
+                "the refusal's detail doubles a quote in the path, so the path cannot close its quotes early")
     # The function reads its own patterns with standard_conforming_strings on,
     # so a session that turns it off gets the same refusal (#1946 review).
     # PostgreSQL 19 refuses to turn it off (0A000), so there the session keeps
@@ -327,6 +388,8 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "28000", "a glob * does not cross a slash, so a path one level deeper is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sc/a_x/.parquet")),
                 "28000", "a glob [class] does not match a slash, so a path with a slash in its place is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/slt//x.parquet")),
+                "28000", "a class fnmatch may close at either ] still does not match a slash, so a path with a slash in its place is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/se/x.parquet")),
                 "28000", "an escaped star in a glob matches only a literal star, so another name is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/skey/x.parquet")),

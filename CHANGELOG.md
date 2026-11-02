@@ -589,6 +589,25 @@ true until the next version shipped.
   are refused the same way. A file whose offsets run past its buffers is still
   refused with XX001. docs/sql-reference.md and docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now refuses a path that a foreign table's glob matches when
+  the glob holds a rare bracket (#1951). Before this the check could read such
+  a bracket as ending at another `]` than glibc's `fnmatch` does, so a move
+  could overwrite an object that table reads. Three cases were wrong. A `-`
+  after a POSIX class, an equivalence class or a range is a plain member, not
+  a range. An empty `[::]` and a `[.ab.]` are one unit. And when a range ends
+  in a plain `[` that a POSIX or an equivalence class seems to follow, as in
+  `[1a-[:alpha:]]`, glibc closes the bracket at a later `]` once a member
+  before the range has matched. The check cannot follow that, so it refuses
+  every path that has one character other than `/` in the bracket's place and
+  anything after it. A `!` or `^` right after `[` always negates; the check
+  no longer reads it as a member to make a longer bracket (#1953 review).
+  One known family still gets past the check (#1957): a negated bracket whose
+  closing `]` glibc looks for past the end of the pattern.
+  The error detail now prints the foreign table's path as written, except
+  that a `'` in it is doubled, so the path cannot close its quotes. A path
+  that holds a backslash printed as `E'...'` with the backslash doubled.
+  docs/how-to.md. `test/tier_partition.sh` and its pytest twin. Reported by
+  @OffgridwithJD.
 - `tier_partition` now refuses a path under a directory or matching a glob
   that a foreign table reads (#1941). Before this it compared one path with
   one other path. A foreign table on `s3://b/dir/` or `s3://b/g/*.parquet` did
