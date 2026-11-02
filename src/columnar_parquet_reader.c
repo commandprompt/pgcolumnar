@@ -3950,6 +3950,125 @@ pq_remote_glob_bound(const char *pattern)
 }
 
 /*
+ * Write to `out`, which holds strlen(path) + 3 bytes, the lexical form of a
+ * local path, as tier_partition's SQL folds it (#1965, #1978): a run of '/'
+ * is one, a "." name is dropped, and a name is dropped with the ".." after
+ * it. A ".." at the root stays at the root; one that starts a relative path
+ * is kept. A trailing '/' is kept, an empty result is ".", and "" stays "".
+ * A symbolic link is not resolved, so a ".." can fold to a path the kernel
+ * would not reach; path_glob_matches only adds matches with this form
+ * (#1982). It neither allocates nor raises an error.
+ */
+static void
+pq_local_path_fold(const char *path, char *out)
+{
+	size_t		base = (path[0] == '/') ? 1 : 0;
+	size_t		o = base;
+	int			names = 0;		/* names in out */
+	int			ups = 0;		/* of them, the leading ".." of a relative path */
+	const char *p = path;
+
+	if (path[0] == '\0')
+	{
+		out[0] = '\0';
+		return;
+	}
+	if (base)
+		out[0] = '/';
+	while (*p != '\0')
+	{
+		const char *e = strchrnul(p, '/');
+		size_t		n = e - p;
+		bool		dotdot = (n == 2 && p[0] == '.' && p[1] == '.');
+
+		if (n == 0 || (n == 1 && p[0] == '.'))
+			;
+		else if (dotdot && names > ups)
+		{
+			/* drop the last name, and the '/' before it */
+			while (o > base && out[o - 1] != '/')
+				o--;
+			if (o > base)
+				o--;
+			names--;
+		}
+		else if (dotdot && base)
+			;
+		else
+		{
+			if (dotdot)
+				ups++;
+			if (o > base)
+				out[o++] = '/';
+			memcpy(out + o, p, n);
+			o += n;
+			names++;
+		}
+		p = (*e == '/') ? e + 1 : e;
+	}
+	if (o == 0)
+		out[o++] = '.';
+	if (p[-1] == '/' && out[o - 1] != '/')
+		out[o++] = '/';
+	out[o] = '\0';
+}
+
+/*
+ * Add to the tree, as directories, the names a local pattern spells before
+ * the name that holds its first *, ?, [ or backslash. glob(3) opens them as
+ * written, and the tree holds only the path, so without them a glob that goes
+ * down one and back up through a name that matches "..", such as
+ * /w/sub/.?/a for /w/a, could not reach the path. Each is taken to exist,
+ * which only adds matches (#1982). The array holds a node for every byte of
+ * the pattern.
+ */
+static void
+pq_vtree_seed(PqVTree *t, const char *pattern)
+{
+	const char *meta = strpbrk(pattern, "*?[\\");
+	char	   *copy;
+	char	   *end;
+	char	   *p;
+	int			cur = 0;
+
+	if (meta == NULL)
+		return;
+	copy = pnstrdup(pattern, meta - pattern);
+	end = strrchr(copy, '/');
+	if (end == NULL)
+		return;
+	*end = '\0';
+	for (p = copy; *p != '\0';)
+	{
+		char	   *e = strchrnul(p, '/');
+		size_t		len = e - p;
+		bool		last = (*e == '\0');
+
+		*e = '\0';
+		if (len >= sizeof(((struct dirent *) NULL)->d_name))
+			return;
+		if (len == 2 && p[0] == '.' && p[1] == '.')
+			cur = t->nodes[cur].parent;
+		else if (len > 0 && !(len == 1 && p[0] == '.'))
+		{
+			int			next = pq_vchild(t, cur, p, len);
+
+			if (next < 0)
+			{
+				next = t->n++;
+				t->nodes[next].name = p;
+				t->nodes[next].parent = cur;
+			}
+			t->nodes[next].isdir = true;
+			cur = next;
+		}
+		if (last)
+			break;
+		p = e + 1;
+	}
+}
+
+/*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
  * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
  * than a directory entry holds, cannot be opened, so it matches nothing. A
@@ -3958,7 +4077,8 @@ pq_remote_glob_bound(const char *pattern)
  * no answer can be given safely. So does a walk of more than PQ_GLOB_MAX_STEPS
  * steps (#1973). It never answers false for a walk an interrupt cut short,
  * nor for a glob(3) error: it processes the interrupt and walks again, or
- * raises an error.
+ * raises an error. A path glob(3) returns matches when it is `path` as
+ * spelled, or when the two have the same lexical form (#1982).
  */
 static bool
 pq_local_glob_match(const char *pattern, const char *path)
@@ -3972,6 +4092,7 @@ pq_local_glob_match(const char *pattern, const char *path)
 	bool		found = false;
 	size_t		i;
 	int			attempt;
+	char	   *want;
 
 	pq_local_glob_bound(pattern);
 	if (strlen(path) >= PATH_MAX)
@@ -3979,7 +4100,7 @@ pq_local_glob_match(const char *pattern, const char *path)
 
 	copy = pstrdup(path);
 	p = copy;
-	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + 2));
+	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + strlen(pattern) + 2));
 	tree.nodes[0].name = "";
 	tree.nodes[0].parent = 0;
 	tree.nodes[0].isdir = true;
@@ -4022,6 +4143,9 @@ pq_local_glob_match(const char *pattern, const char *path)
 	}
 	if (path[0] != '\0' && path[strlen(path) - 1] == '/')
 		tree.nodes[cur].isdir = true;
+	pq_vtree_seed(&tree, pattern);
+	want = palloc(strlen(path) + 3);
+	pq_local_path_fold(path, want);
 
 	for (attempt = 1;; attempt++)
 	{
@@ -4061,8 +4185,38 @@ pq_local_glob_match(const char *pattern, const char *path)
 							pattern, path, attempt)));
 	}
 	if (rc == 0)
+	{
+		/*
+		 * glob(3) returns a name a glob reached through "." or ".." as it
+		 * built it, such as /w/x/../a for /w/x/.?/a. Each is compared as
+		 * returned, then in its lexical form with the target's (#1982). The
+		 * buffer is malloc'd, so an error cannot leave glob(3)'s memory
+		 * behind.
+		 */
+		size_t		longest = 0;
+		char	   *got;
+
+		for (i = 0; i < g.gl_pathc; i++)
+			longest = Max(longest, strlen(g.gl_pathv[i]));
+		got = malloc(longest + 3);
+		if (got == NULL)
+		{
+			globfree(&g);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
 		for (i = 0; i < g.gl_pathc && !found; i++)
+		{
 			found = (strcmp(g.gl_pathv[i], path) == 0);
+			if (!found)
+			{
+				pq_local_path_fold(g.gl_pathv[i], got);
+				found = (strcmp(got, want) == 0);
+			}
+		}
+		free(got);
+	}
 	globfree(&g);
 	return found;
 }
