@@ -752,7 +752,7 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
   class, and `[^...]` counts like `[!...]`. In a rare bracket a range ends in
   a plain `[` before a POSIX or an equivalence class, as in `[1a-[:alpha:]]`.
-  There glibc can close the bracket at a later `]`, so the function refuses
+  There glibc can close the bracket at a later `]`. So the function refuses
   every path that has one character other than `/` in the bracket's place,
   whatever follows (#1951).
 
