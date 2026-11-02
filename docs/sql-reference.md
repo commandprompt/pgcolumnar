@@ -779,12 +779,16 @@ The function refuses these:
   [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
   as the reader matches it (#1957). The scheme and the host of an http(s) URL match in any case,
   and `s3a://` or `s3n://` match `s3://`. A local path is compared as
-  written, and again in the form the kernel reads it (#1965, #1959). That
-  form reads `//` as `/`, drops a `.` name, and drops a name followed by
-  `..`. So
-  `/w//*.parquet` and `/w/x/../*.parquet` refuse `/w/a.parquet`. A symbolic
-  link is not resolved, and a relative path is not resolved against the data
-  directory. A remote key is compared as written, because `//` is part of a
+  written, and again in a folded form (#1965, #1959). The folded form reads
+  `//` as `/`, drops a `.` name, and drops a name followed by `..`. In a
+  glob, a name such as `\.` counts as `.`, because `glob(3)` removes the
+  backslash. So `/w//*.parquet`, `/w/./*.parquet`, `/w/\./*.parquet` and
+  `/w/x/../*.parquet` refuse `/w/a.parquet`. The folded form is the file the
+  kernel opens only when no symbolic link comes before a `..`. When one does,
+  the kernel goes up from the directory the link leads to. The check can then
+  refuse a file the reader does not read, and allow the file it does read.
+  A symbolic link is not resolved, and a relative path is not resolved
+  against the data directory. A remote key is compared as written, because `//` is part of a
   key. A new file under a directory a foreign table reads is refused too;
   docs/how-to.md shows ways around it.
   Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
@@ -798,17 +802,19 @@ The function refuses these:
   stays on one line (#1960). A backslash before an `x` prints as `\x5C`, so a
   path that holds the characters `\x0A` does not print like a newline. In a
   `WIN1252` database the euro sign, byte `0x80`, prints as written;
-- a local `path` when a foreign table's glob is too large to match
-  (`54000`, see `path_glob_matches` below). The function cannot tell whether
-  that table reads `path`, so it refuses. The error detail names the foreign
-  table and its glob, escaped as above (#1974). A table that does read
-  `path` is reported as `58P02` first;
+- a `path` when a foreign table's glob is too large to match (`54000`, see
+  `path_glob_matches` below). This is a local glob for a local `path`, and an
+  `s3://` glob with more than 128 `*` for an `s3://` `path`. The function
+  cannot tell whether that table reads `path`, so it refuses. The error
+  detail names the foreign table and its glob, escaped as above (#1974). A
+  table that does read `path` is reported as `58P02` instead. This holds
+  also when its glob is too large as written but not in the folded form;
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
 - a relation that is not a columnar partition (`42809`);
 - a `server` whose wrapper does not have pgcolumnar's Parquet handler
-  (`42809`).
+  (`42809`);
 - a caller that is not a member of both `pg_write_server_files` and
   `pg_read_server_files` (`42501`), before anything is written.
 
@@ -851,8 +857,9 @@ A pattern that is too large for glibc to match safely raises error 54000
 server.
 The function compares spellings: `path` must be spelled as `glob(3)` would
 return it, so `/w//x` does not match `/w/x*`. `tier_partition` also compares
-the form the kernel reads, without `//`, `.` names or a name followed by
-`..`. So it refuses what the reader opens under either spelling (#1965).
+a folded form, without `//`, `.` names or a name followed by `..`. So it
+refuses what the reader opens under either spelling, unless a symbolic link
+comes before a `..` (#1965).
 
 ```sql
 SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true

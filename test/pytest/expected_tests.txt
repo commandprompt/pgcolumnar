@@ -1818,4 +1818,9 @@ guard_tests 863
 # spelled with //, /./ or a name and .. is refused; an Iceberg location with .. is refused, one through a
 # symbolic link is not; a glob too large to match names its table), added to existing tests, by
 # collection: 6199 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1978 review's checks in test_tier_partition.py (a target with .. at the
+# root; export_parquet through a renamed Parquet wrapper; a glob reader after a glob too large to match;
+# a glob too large only as written; an s3:// glob over 128 *; no matcher call for a plain reader; a glob
+# spelled with an escaped . or ..), added to existing tests, by collection: 6199 tests collected, less
+# guard_tests 863.
 cluster_tests 5336

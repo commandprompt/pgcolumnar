@@ -605,6 +605,9 @@ check "a target spelled with /./ is refused when a foreign table reads the plain
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/./a.parquet');")" "58P02"
 check "a target spelled with a name and .. is refused when a foreign table reads the plain spelling" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/sub/../a.parquet');")" "58P02"
+# A .. at the root stays at the root, as the kernel reads it (#1978 review).
+check "a target spelled with .. at the root is refused when a foreign table reads the plain spelling" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '/..$W/sq/a.parquet');")" "58P02"
 # An s3:// key is not a path: // in it is part of the key, so it is not folded.
 psql_run "DROP FOREIGN TABLE dup_lplain;
           CREATE FOREIGN TABLE dup_rdbl (x int) SERVER tier_pq OPTIONS (path 's3://tierb/kd//a.parquet');"
@@ -670,6 +673,11 @@ check "a server on a wrapper with the Parquet handler under another name is acce
 check "a server on a wrapper without the Parquet handler is refused as the target" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_other', '$W/pq2t/o.parquet');")|$([ -e "$W/pq2t/o.parquet" ] && echo file || echo nofile)" \
 	"42809|nofile"
+# export_parquet takes the server by the same rule, in C (#1963 review).
+check "export_parquet through a server on a wrapper with the Parquet handler under another name writes the file" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q \
+		-v VERBOSITY=sqlstate -c "SELECT pgcolumnar.export_parquet('m_feb', '$W/pq2t/e.parquet', 'tier_pq2s');" 2>&1 | head -1)|$([ -e "$W/pq2t/e.parquet" ] && echo file || echo nofile)" \
+	"$feb_rows|file"
 # A glob too large for glibc raises 54000 in path_glob_matches. The move
 # still fails closed, and the error names the table that blocks it (#1974).
 # A table that really reads the path is still reported as such.
@@ -682,7 +690,75 @@ check "a path another foreign table reads is still refused as read beside a glob
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/pq2/x.parquet');")" "58P02"
 check "a foreign table whose glob is too large to match does not block a remote target" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/deep/x.parquet');")" "28000"
-psql_run "DROP FOREIGN TABLE dup_deep;"
+# The loop goes on past a glob too large to match, so a later glob that
+# really reads the path is still reported as 58P02 (#1978 review). dup_deep
+# was made first, so the loop meets it first.
+psql_run "CREATE FOREIGN TABLE dup_gsp (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sp/*.parquet');"
+check "a path a glob reads is refused as read when a glob too large to match comes first" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")|$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" \
+	"58P02|Foreign table public.dup_gsp reads path '$W/sp/*.parquet'."
+psql_run "DROP FOREIGN TABLE dup_gsp, dup_deep;"
+# A glob over the limit as written can be within it once folded. The folded
+# form is matched on its own, so a table that reads the path is reported as
+# 58P02, not 54000 (#1978 review).
+psql_run "CREATE FOREIGN TABLE dup_fold2 (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/s[p]$(printf '/.%.0s' $(seq 200))/a.parquet');"
+check "a glob over the limit as written but not once folded reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_fold2;")" "$feb_rows"
+check "a path a glob reads once folded is refused as read although the glob as written is too large to match" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_fold2;"
+# A remote glob with more than 128 * blocks a remote move with 54000 too, and
+# the detail names the table (#1974, #1978 review).
+psql_run "CREATE FOREIGN TABLE dup_rdeep (x int) SERVER tier_pq
+            OPTIONS (path 's3://tierb/$(printf '*%.0s' $(seq 130))');"
+check "a foreign table whose s3:// glob is too large to match blocks a remote target with an error that names it" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/k/x.parquet');")|$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/k/x.parquet');")" \
+	"54000|A glob pattern may have at most 128 * in an s3:// key. Foreign table public.dup_rdeep reads path 's3://tierb/$(printf '*%.0s' $(seq 130))', so tier_partition cannot tell whether it reads the target."
+psql_run "DROP FOREIGN TABLE dup_rdeep;"
+# A table whose path is the target, plainly, is found without a call of the
+# matcher: such rows come first, and the loop stops at the first table that
+# reads the path (#1978 review). dup_gzz is a glob made first, which matches
+# nothing; it would cost one call if it came first.
+matcher_calls() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q \
+		-c "SET track_functions = 'all'" \
+		-c "DO \$\$ DECLARE b bigint; r text; BEGIN
+		      b := coalesce(pg_stat_get_xact_function_calls('pgcolumnar.path_glob_matches(text,text)'::regprocedure), 0);
+		      BEGIN $1;
+		            RAISE EXCEPTION 'done' USING ERRCODE = 'P0001';
+		      EXCEPTION WHEN OTHERS THEN r := CASE WHEN SQLERRM = 'done' THEN 'ok' ELSE SQLSTATE END; END;
+		      PERFORM set_config('pgc.calls', r || '|' || (coalesce(pg_stat_get_xact_function_calls(
+		          'pgcolumnar.path_glob_matches(text,text)'::regprocedure), 0) - b) || ' matcher calls', false);
+		    END \$\$; SELECT current_setting('pgc.calls');" 2>&1
+}
+psql_run "CREATE FOREIGN TABLE dup_gzz (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/zz/*.parquet');
+          CREATE FOREIGN TABLE dup_lsq (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sq/a.parquet');"
+check "premise: the counter of matcher calls counts each call" \
+	"$(matcher_calls "PERFORM pgcolumnar.path_glob_matches('/a*', '/a' || g) FROM generate_series(1, 2) g")" \
+	"ok|2 matcher calls"
+check "a path a foreign table reads as written is refused without a call of the glob matcher" \
+	"$(matcher_calls "PERFORM pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/a.parquet')")" "58P02|0 matcher calls"
+psql_run "DROP FOREIGN TABLE dup_gzz, dup_lsq;"
+# glob(3) unescapes a name without a glob character, so \. is . and \.\. is
+# .. to the reader. The fold reads such a name as the reader does (#1978
+# review). Each reader check first proves that the reader reads the plain file.
+psql_run "CREATE FOREIGN TABLE dup_lesc (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sp/\./*.parquet');
+          CREATE FOREIGN TABLE dup_lesc2 (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sq/sub/\.\./*.parquet');"
+check "a local glob spelled with an escaped . reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_lesc;")" "$feb_rows"
+check "a local glob spelled with an escaped .. reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_lesc2;")" "$feb_rows"
+check "a path a local glob spelled with an escaped . reads is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" "58P02"
+check "a path a local glob spelled with an escaped .. reads is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/a.parquet');")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_lesc, dup_lesc2;"
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar

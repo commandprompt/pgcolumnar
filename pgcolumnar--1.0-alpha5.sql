@@ -3131,6 +3131,7 @@ DECLARE
 	hice	boolean;
 	lim_msg	text;
 	lim_detail text;
+	pass	int;
 	callers_timeout text := current_setting('lock_timeout');
 BEGIN
 	-- A REPEATABLE READ or SERIALIZABLE snapshot predates the lock taken below, so
@@ -3257,6 +3258,8 @@ BEGIN
 	-- its path (#1974). A table that really reads the path is reported first.
 	-- Only a row whose pattern holds *, ? or [ calls the matcher, each in a
 	-- block of its own, so a table without a glob costs no subtransaction.
+	-- A row that reads the path without a glob comes first, so it costs no
+	-- call of the matcher; then the rows go in the order of their oid.
 	FOR cand IN
 		SELECT h.* FROM (
 		SELECT c.relid, c.opath, c.ice, c.tp, c.fp, c.ntp, c.nfp,
@@ -3299,7 +3302,13 @@ BEGIN
 							CASE WHEN p IS NULL OR p = '' OR p ~ '^(s3|gs|az|https?)://' THEN p
 								 ELSE (WITH RECURSIVE
 										 pt(k, a) AS (SELECT row_number() OVER (ORDER BY ord), a COLLATE "C"
-														FROM unnest(string_to_array(p, '/')) WITH ORDINALITY AS u(a, ord)
+														FROM unnest(string_to_array(p, '/')) WITH ORDINALITY AS u(w, ord),
+															 -- glob(3) unescapes a name without a glob
+															 -- character, so a glob's \. is . (#1978 review)
+															 LATERAL (SELECT CASE WHEN n = 2 AND p ~ '[*?[]'
+																				   AND regexp_replace(w, '\\(.)', '\1', 'g') IN ('.', '..')
+																				  THEN regexp_replace(w, '\\(.)', '\1', 'g')
+																				  ELSE w END) AS e(a)
 													   WHERE a NOT IN ('', '.')),
 										 st(k, s) AS (SELECT 0::bigint, ARRAY[]::text[] COLLATE "C"
 													  UNION ALL
@@ -3320,14 +3329,17 @@ BEGIN
 			 WHERE (w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure AND o.opt LIKE 'path=%')
 				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c) AS h
 		 WHERE h.hit OR h.fp ~ '[*?[]'
-		 ORDER BY h.hit IS TRUE DESC
+		 ORDER BY h.hit IS TRUE DESC, h.relid
 	LOOP
 		hit := cand.hit IS TRUE;
-		IF NOT hit THEN
+		-- The glob as written, then its folded form, each in a block of its
+		-- own: a glob over the limit as written can be within it once folded
+		-- (#1978 review).
+		FOR pass IN 1 .. CASE WHEN cand.nfp <> cand.fp OR cand.ntp <> cand.tp THEN 2 ELSE 1 END LOOP
+			EXIT WHEN hit;
 			BEGIN
-				hit := pgcolumnar.path_glob_matches(cand.fp, cand.tp)
-					OR ((cand.nfp <> cand.fp OR cand.ntp <> cand.tp)
-						AND pgcolumnar.path_glob_matches(cand.nfp, cand.ntp));
+				hit := coalesce(CASE pass WHEN 1 THEN pgcolumnar.path_glob_matches(cand.fp, cand.tp)
+										  ELSE pgcolumnar.path_glob_matches(cand.nfp, cand.ntp) END, false);
 			EXCEPTION WHEN program_limit_exceeded THEN
 				IF kind IS NULL THEN
 					GET STACKED DIAGNOSTICS lim_msg = MESSAGE_TEXT, lim_detail = PG_EXCEPTION_DETAIL;
@@ -3338,7 +3350,7 @@ BEGIN
 				END IF;
 				hit := false;
 			END;
-		END IF;
+		END LOOP;
 		IF hit THEN
 			kind := 'read';
 			hrel := cand.relid;

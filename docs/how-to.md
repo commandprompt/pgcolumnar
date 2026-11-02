@@ -770,8 +770,10 @@ as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
 refused. A relative `metadata/v1.metadata.json` gives `./`, which matches
 only a path written as `./...`, because a relative path is not resolved
 against the data directory. A location that holds `..`, such as
-`/w/x/../t/`, refuses paths under `/w/t/`, as the reader reads it (#1959).
-A location reached through a symbolic link does not refuse paths in the
+`/w/x/../t/`, refuses paths under `/w/t/` (#1959). The reader reads `/w/t/`
+too, unless `/w/x` is a symbolic link. Then the reader goes up from the
+directory the link leads to, and the check refuses the wrong directory. A
+location reached through a symbolic link does not refuse paths in the
 directory the link leads to, although the reader reads that directory.
 
 **A new file under a directory that a foreign table reads is refused too.**
@@ -801,12 +803,17 @@ another tool, do one of these:
 - Drop that table before the move and create it again after.
 
 The bucket and the key must match in case. A local path is compared as
-written, and again in the form the kernel reads it (#1965, #1959). That form
-reads a run of `/` as one `/`, drops a `.` name, and drops a name followed by
-`..`. So a foreign table on `/w//*.parquet` blocks a move to `/w/a.parquet`. The
-function does not resolve a symbolic link or a relative path. So it does not
-see a local file reached through a link, or spelled relative to the data
-directory. It does not follow a link because a link can change after the check,
+written, and again in a folded form (#1965, #1959). That form reads a run of
+`/` as one `/`, drops a `.` name, and drops a name followed by `..`. In a
+glob, `\.` counts as `.`, because `glob(3)` removes the backslash. So a
+foreign table on `/w//*.parquet` or `/w/\./*.parquet` blocks a move to
+`/w/a.parquet`. The function does not resolve a symbolic link or a relative
+path. So it does not see a local file reached through a link, or spelled
+relative to the data directory. A link followed by `..` is worse: for
+`/w/lnk/../*.parquet`, where `/w/lnk` leads to `/z/q`, the reader reads
+`/z/*.parquet`. The function refuses `/w/a.parquet` instead, and allows a move
+that overwrites `/z/a.parquet`. Do not spell a reader's path with a link
+followed by `..`. It does not follow a link because a link can change after the check,
 and the reader follows it at each query. A `file://` URL is not another spelling
 of a local path. The Parquet reader opens `file://...` as a file of that
 name, which does not exist. So a foreign table on it reads nothing and blocks
@@ -816,7 +823,8 @@ reads under another spelling.
 
 Some globs are too large for glibc to match: see `path_glob_matches` in
 docs/sql-reference.md. A foreign table with such a glob blocks every move to a
-local path, with error `54000`. The function cannot tell whether that table reads
+local path, with error `54000`. An `s3://` glob with more than 128 `*` blocks
+every move to an `s3://` path the same way. The function cannot tell whether that table reads
 the path, so it refuses. The error detail names the table and its glob
 (#1974). Change that table's path, or drop the table, to move again.
 

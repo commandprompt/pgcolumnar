@@ -688,6 +688,9 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a target spelled with /./ is refused when a foreign table reads the plain spelling")
     expect.text(rolled(tier.format(f"{server_dir}/ssq/sub/../a.parquet")),
                 "58P02", "a target spelled with a name and .. is refused when a foreign table reads the plain spelling")
+    # A .. at the root stays at the root, as the kernel reads it (#1978 review).
+    expect.text(rolled(tier.format(f"/..{server_dir}/ssq/a.parquet")),
+                "58P02", "a target spelled with .. at the root is refused when a foreign table reads the plain spelling")
     # An s3:// key is not a path: // in it is part of the key, so it is not folded.
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_lplain")
@@ -781,6 +784,11 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     other_sql = f"SELECT pgcolumnar.tier_partition('s_apr', 's_other', '{other}')"
     expect.text(f"{_sqlstate(conn, other_sql)}|{'file' if other.exists() else 'nofile'}",
                 "42809|nofile", "a server on a wrapper without the Parquet handler is refused as the target")
+    # export_parquet takes the server by the same rule, in C (#1963 review).
+    exported = server_dir / "spq2t" / "e.parquet"
+    rows = rolled_one(f"SELECT pgcolumnar.export_parquet('s_apr', '{exported}', 's_pq2s')")
+    expect.text(f"{rows}|{'file' if exported.exists() else 'nofile'}", f"{apr}|file",
+                "export_parquet through a server on a wrapper with the Parquet handler under another name writes the file")
     # A glob too large for glibc raises 54000 in path_glob_matches. The move
     # still fails closed, and the error names the table that blocks it (#1974).
     deep = "/elsewhere/" + "*/" * 200 + "x"
@@ -796,8 +804,92 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a path another foreign table reads is still refused as read beside a glob too large to match")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sdeep/y.parquet")),
                 "28000", "a foreign table whose glob is too large to match does not block a remote target")
+    # The loop goes on past a glob too large to match, so a later glob that
+    # really reads the path is still reported as 58P02 (#1978 review).
+    # s_dup_deep was made first, so the loop meets it first.
     with conn.cursor() as cur:
-        cur.execute("DROP FOREIGN TABLE s_dup_deep")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_gsp {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssp/*.parquet')")
+    gsp = tier.format(f"{server_dir}/ssp/a.parquet")
+    expect.text(f"{rolled(gsp)}|{rolled_detail(gsp)}",
+                f"58P02|Foreign table public.s_dup_gsp reads path '{server_dir}/ssp/*.parquet'.",
+                "a path a glob reads is refused as read when a glob too large to match comes first")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_gsp, s_dup_deep")
+    # A glob over the limit as written can be within it once folded. The
+    # folded form is matched on its own, so a table that reads the path is
+    # reported as 58P02, not 54000 (#1978 review).
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_fold2 {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ss[p]{'/.' * 200}/a.parquet')")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_fold2"), apr,
+               "a glob over the limit as written but not once folded reads the file spelled plainly")
+    expect.text(rolled(tier.format(f"{server_dir}/ssp/a.parquet")), "58P02",
+                "a path a glob reads once folded is refused as read although the glob as written is too large to match")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_fold2")
+    # A remote glob with more than 128 * blocks a remote move with 54000 too,
+    # and the detail names the table (#1974, #1978 review).
+    rdeep = "s3://tierb/" + "*" * 130
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_rdeep (x int) SERVER tq OPTIONS (path '{rdeep}')")
+    rk = tier.format("s3://tierb/sk/y.parquet")
+    expect.text(f"{_sqlstate(conn, rk)}|{_errdetail(conn, rk)}",
+                f"54000|A glob pattern may have at most 128 * in an s3:// key. Foreign table public.s_dup_rdeep"
+                f" reads path '{rdeep}', so tier_partition cannot tell whether it reads the target.",
+                "a foreign table whose s3:// glob is too large to match blocks a remote target with an error that names it")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_rdeep")
+    # A table whose path is the target, plainly, is found without a call of
+    # the matcher: such rows come first, and the loop stops at the first table
+    # that reads the path (#1978 review). s_dup_gzz is a glob made first,
+    # which matches nothing; it would cost one call if it came first. Each
+    # count runs in a new session, as the shell suite's does.
+    def matcher_calls(stmt):
+        with psycopg.connect(_dsn(pgc_cluster, conn), autocommit=True) as fresh:
+            with fresh.cursor() as cur:
+                cur.execute("SET track_functions = 'all'")
+                cur.execute(
+                    "DO $$ DECLARE b bigint; r text; BEGIN"
+                    " b := coalesce(pg_stat_get_xact_function_calls("
+                    "'pgcolumnar.path_glob_matches(text,text)'::regprocedure), 0);"
+                    f" BEGIN {stmt}; RAISE EXCEPTION 'done' USING ERRCODE = 'P0001';"
+                    " EXCEPTION WHEN OTHERS THEN r := CASE WHEN SQLERRM = 'done' THEN 'ok' ELSE SQLSTATE END; END;"
+                    " PERFORM set_config('pgc.calls', r || '|' || (coalesce(pg_stat_get_xact_function_calls("
+                    "'pgcolumnar.path_glob_matches(text,text)'::regprocedure), 0) - b) || ' matcher calls', false);"
+                    " END $$")
+            return _one(fresh, "SELECT current_setting('pgc.calls')")
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_gzz {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/szz/*.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_lsq {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssq/a.parquet')")
+    expect.text(matcher_calls("PERFORM pgcolumnar.path_glob_matches('/a*', '/a' || g) FROM generate_series(1, 2) g"),
+                "ok|2 matcher calls", "premise: the counter of matcher calls counts each call")
+    expect.text(matcher_calls(f"PERFORM pgcolumnar.tier_partition('s_apr', 'tq', '{server_dir}/ssq/a.parquet')"),
+                "58P02|0 matcher calls",
+                "a path a foreign table reads as written is refused without a call of the glob matcher")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_gzz, s_dup_lsq")
+    # glob(3) unescapes a name without a glob character, so \. is . and \.\.
+    # is .. to the reader. The fold reads such a name as the reader does
+    # (#1978 review). Each reader check first proves that the reader reads the
+    # plain file.
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_lesc {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssp/\\./*.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_lesc2 {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssq/sub/\\.\\./*.parquet')")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_lesc"), apr,
+               "a local glob spelled with an escaped . reads the file spelled plainly")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_lesc2"), apr,
+               "a local glob spelled with an escaped .. reads the file spelled plainly")
+    expect.text(rolled(tier.format(f"{server_dir}/ssp/a.parquet")),
+                "58P02", "a path a local glob spelled with an escaped . reads is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/ssq/a.parquet")),
+                "58P02", "a path a local glob spelled with an escaped .. reads is refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_lesc, s_dup_lesc2")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
