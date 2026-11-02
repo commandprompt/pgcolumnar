@@ -112,7 +112,7 @@ check_num "EXPLAIN group total == stats() group count" \
 	"$DEFER_Y" "$NGROUPS"
 # Not a premise: with the writer ignoring stripe_row_limit, it went red (#1339).
 check "the fixture spans several groups" \
-	"$([ "${DEFER_Y:-0}" -ge 3 ] 2>/dev/null && echo yes)" "yes"
+	"$([ "${DEFER_Y:-0}" -ge 3 ] 2>/dev/null && echo yes || echo "no (groups=${DEFER_Y:-unset})")" "yes"
 check "deferred: every group deferred at 1% survival" \
 	"$(grep -oE '[0-9]+ of [0-9]+' <<<"$DEFER_LINE")" "$DEFER_Y of $DEFER_Y"
 

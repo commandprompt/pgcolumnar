@@ -321,6 +321,11 @@ check "read_parquet reads a local glob over 128 levels as written but not once i
 check "read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. matches nothing" \
 	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/.') AS t($cols)")" \
 	"58P01"
+# glob(3) matches a pattern that ends in '/' against a file, so dropping a '.'
+# name that only '/' or '\/' follow would read the file (#1977 review).
+check "read_parquet keeps a '.' name that only '/' follow at the end of a local glob, so a file followed by /./ matches nothing" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/./') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/.//') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/./\/') AS t($cols)")" \
+	"58P01|58P01|58P01"
 # fold/ln leads to fold/away/inner, so fold/ln/.. is fold/away to the kernel.
 # fold/away/z-0.parquet holds part-0 (ids 0..999); fold/z-0.parquet, the file
 # a lexical fold of ln/.. would read, holds part-1 (ids 1000..1999).
@@ -345,6 +350,13 @@ wait_up
 # form glob(3) expands; it holds that the read is not refused.
 check "read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s' || repeat('/.', 1990) || '/part-0.parquet') AS t($cols)")|$(q "SELECT 1;")" \
+	"1000|1"
+wait_up
+# Over 10,000 bytes and 5001 levels as written, 1 level once folded. glob(3) of
+# the form as written crashed the server (#1977 review), so this check fails
+# if the reader globs the pattern as written instead of the folded form.
+check "read_parquet reads a local glob over PATH_MAX as written but not once folded, and the server stays up" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s' || repeat('/.', 5000) || '/part-0.parquet') AS t($cols)")|$(q "SELECT 1;")" \
 	"1000|1"
 wait_up
 psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ($cols) SERVER pq OPTIONS (path %L)', '$DIR/' || repeat('*/', 4000) || 'x.parquet'); END\$\$;"

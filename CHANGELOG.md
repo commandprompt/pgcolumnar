@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now finds more check arms that print only `no` when
+  they fail (#1980). It missed an arm with a redirect after the test, such as
+  `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.
+  A redirect into a variable also hid an arm in the `if/then/else` form. It
+  excused `-gt 1`, which fails on 0 and on 1, so `no` does not say which. It
+  also excused `-ge 0`, which a count always passes. Of the `-gt` and `-ge`
+  forms, it now excuses only `-gt 0` and `-ge 1`, as its awk rule already did.
+  The `-eq`, `-ne`, `=` and file-test excuses are unchanged. The wider sweep
+  found 13 such arms in 9 suites. Each now prints its measurement when it
+  fails, for example `no (groups=1)`. No check changed its name or what it
+  passes on.
 - `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
   pytest twins no longer fail when another session holds an old snapshot during
   `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
@@ -636,7 +647,9 @@ true until the next version shipped.
   opens the same files by either spelling. So a table on
   `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
   `tier_partition` check reads, is read and not refused (#1977 review). A `.`
-  at the end and a name followed by `..` are kept as written.
+  at the end, a `.` that only `/` follow, and a name followed by `..` are
+  kept as written, so `'/w/s[p]/a.parquet/./'` matches nothing, as `glob(3)`
+  of it does.
   docs/sql-reference.md. `test/native_parquet_multifile.sh`,
   `test/objstore_listing.sh` and their pytest twins.
 - `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of

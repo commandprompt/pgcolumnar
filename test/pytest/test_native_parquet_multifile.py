@@ -331,7 +331,7 @@ def _up(cluster):
 
 
 def test_a_local_glob_is_bounded_and_read_in_its_folded_form(pgc_conn, pgc_cluster, server_dir, expect):
-    """#1968 review. The reader bounds and globs a local pattern in a folded form:
+    """#1977 review. The reader bounds and globs a local pattern in a folded form:
     a run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
     The kernel reads both spellings as the same file, so the rows do not change.
     A '.' at the end is kept, as it makes the pattern match only directories, and
@@ -379,6 +379,12 @@ def test_a_local_glob_is_bounded_and_read_in_its_folded_form(pgc_conn, pgc_clust
         expect.text(_errcode(cur, cnt(f"'{w}/par[t]s/part-0.parquet/.'")), "58P01",
                     "read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. "
                     "matches nothing")
+        # glob(3) matches a pattern that ends in '/' against a file, so dropping a
+        # '.' name that only '/' or '\/' follow would read the file.
+        ends = [_errcode(cur, cnt(f"'{w}/par[t]s/part-0.parquet{tail}'")) for tail in ("/./", "/.//", "/./\\/")]
+        expect.text("|".join(ends), "58P01|58P01|58P01",
+                    "read_parquet keeps a '.' name that only '/' follow at the end of a local glob, so a file "
+                    "followed by /./ matches nothing")
         expect.text(_one(cur, f"SELECT sum(id) FROM pgcolumnar.read_parquet('{w}/fold/ln/../z-[0].parquet') "
                               f"AS t({COLS})"), "499500",
                     "read_parquet does not fold a name followed by '..' in a local glob, so it reads past a "
@@ -392,6 +398,16 @@ def test_a_local_glob_is_bounded_and_read_in_its_folded_form(pgc_conn, pgc_clust
         got = _answer(c, cnt(deep))
     expect.text(f"{got}|{_up(pgc_cluster)}", "1000|1",
                 "read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up")
+    _wait_up(pgc_cluster)
+    # 5001 levels and over PATH_MAX as written, 1 level once folded. glob(3) of
+    # the form as written crashed the server, so this check fails if the reader
+    # globs the pattern as written instead of the folded form.
+    over = f"'{w}/par[t]s' || repeat('/.', 5000) || '/part-0.parquet'"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        got = _answer(c, cnt(over))
+    expect.text(f"{got}|{_up(pgc_cluster)}", "1000|1",
+                "read_parquet reads a local glob over PATH_MAX as written but not once folded, and the server "
+                "stays up")
     _wait_up(pgc_cluster)
 
 
