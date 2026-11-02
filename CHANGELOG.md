@@ -606,6 +606,20 @@ true until the next version shipped.
   request, including a server's OAuth token request. docs/sql-reference.md.
   `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
   Reported by @OffgridwithJD.
+- The Iceberg REST functions now refuse a table name of `.` or `..`, and a
+  namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`,
+  with SQLSTATE 22023 (#1948). Before, `rest_pct_encode` kept the dots, so
+  `iceberg_rest_table_location(cat, 'db', '..')` sent
+  `GET /v1/namespaces/db/tables/..`. A server or proxy that removes dot
+  segments would have sent that to `/v1/namespaces/db`, and
+  `/v1/namespaces/../tables` to `/v1/tables`. The refusal comes before any
+  request, including a server's OAuth token request. On a catalog whose
+  separator is `%2E`, levels that join to `%2E` or `%2E%2E`, such as the
+  `text` forms `'.'` and `'..'`, are refused after `/v1/config`. Names that
+  only hold dots, such as `a.b` or `...`, are still sent. The namespace walk
+  still lists `{".."}` and asks for its children with `?parent=..`, a query
+  value. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
 - Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
   of a namespace with an empty level among other levels, such as `{db,"",x}`
   under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level

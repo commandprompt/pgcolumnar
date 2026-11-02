@@ -1741,4 +1741,11 @@ guard_tests 863
 # the catalog down, and in the OAuth server form before the token request; the same catalog still resolves
 # db.events, and no request ends in an empty table segment, by collection: test_iceberg_rest_scan.py
 # collects 99 tests, 6168 tests collected, less guard_tests 863.
-cluster_tests 5308
+# cluster_tests 5308 -> 5334 for #1948's 26 tests in test_iceberg_rest_scan.py: a table name or a
+# namespace whose path segment is '.' or '..' is refused (22023, with its hint) by iceberg_rest_table_location,
+# iceberg_rest_scan and iceberg_rest_tables, in the text and text[] forms, with the catalog down, in the OAuth
+# server form before the token request, and when the separator %2E joins levels into a dot segment; the walk
+# lists ARRAY['..'] through a ?parent= query, names that only hold dots still reach the catalog, and no request
+# path holds a dot segment, by collection: test_iceberg_rest_scan.py collects 128 tests, 6197 tests collected,
+# less guard_tests 863.
+cluster_tests 5334

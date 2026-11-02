@@ -1491,6 +1491,18 @@ including a server's OAuth token request. The request path would end in an
 empty segment, as in `/v1/namespaces/db/tables/`. A proxy that strips the
 trailing slash would send it to the table list instead.
 
+A table named `.` or `..` is refused with SQLSTATE 22023 too (#1948). So is a
+namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`. Such a
+segment is a dot segment. A server or proxy that normalises the path removes
+it, so `/v1/namespaces/db/tables/..` would reach `/v1/namespaces/db` instead.
+The refusal comes before any request, including a server's OAuth token
+request. On a catalog whose separator is `.`, the `text` forms `'.'` and `'..'`
+are refused as well. Their levels join to `%2E` and `%2E%2E`, which a
+normaliser may decode to dots. That check follows the request for
+`/v1/config`, which names the separator. A name that only holds dots, such as
+`a.b`, `...` or `.hidden`, is not a dot segment and is sent as given. So is
+`ARRAY['db','..']`, whose path segment is not only dots.
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
@@ -1636,6 +1648,11 @@ The Apache Iceberg REST catalog reads an empty `?parent=` as `{""}`, so a child
 such as `{"",x}` is listed, and passes back. A catalog that reads an empty
 `?parent=` as the top level gives no children of `{""}`.
 
+The rows `{"."}` and `{".."}` are listed too, and passing either back fails
+with SQLSTATE 22023 (#1948). The function asks for their children with
+`?parent=.` or `?parent=..`. A query value is not a path segment, so a
+normaliser leaves it alone.
+
 ```sql
 SELECT ns, t
   FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
@@ -1658,7 +1675,9 @@ On a catalog with the default separator, replace `level LIKE '%.%'` with
 `strpos(level, chr(31)) > 0`.
 
 The row `{""}` also makes the whole query fail with SQLSTATE 22023 (#1922). To
-skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause.
+skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause. The rows `{"."}` and
+`{".."}` do too (#1948). Add `AND ns NOT IN (ARRAY['.'], ARRAY['..'])` to skip
+them.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
