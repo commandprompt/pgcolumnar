@@ -824,7 +824,7 @@ catalog_scan_index	catalog_scan_index	a sorted rewrite reached pgcolumnar.storag
 catalog_scan_index	catalog_scan_index	a sorted rewrite took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an end truncation does not read pgcolumnar.free_space whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	an end truncation reached pgcolumnar.free_space	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	an end truncation took effect	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	an end truncation took effect	15;16;17;18;19	2026-11-02	the end-truncation arm run once, without its retry, while a session that started after the DELETE holds a snapshot (#1979)
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction reached pgcolumnar.storage	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction took effect	15;16;17;18;19	never	-
@@ -841,6 +841,7 @@ catalog_scan_index	catalog_scan_index	dropping a projection does not read pgcolu
 catalog_scan_index	catalog_scan_index	dropping a projection reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	dropping a projection took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: eleven operations are measured	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	premise: every noise table holds two free ranges	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.free_space is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.projection_declaration is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.row_group is at least index_min_blocks pages	15;16;17;18;19	never	-
@@ -859,6 +860,17 @@ catalog_scan_index	catalog_scan_index	premise: the truncating a projected table 
 catalog_scan_index	catalog_scan_index	renaming a projected column does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	renaming a projected column reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	renaming a projected column took effect	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	the a one-row delete target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the a parallel bulk load target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the a sorted rewrite target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the an end truncation target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the an insert into a table created in the same transaction target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the an insert into an existing table target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the an online rewrite target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the dropping a projected table target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the dropping a projection target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the renaming a projected column target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
+catalog_scan_index	catalog_scan_index	the truncating a projected table target: compact retired both dead groups	15;16;17;18;19	2026-11-02	pgcolumnar.compact and pgcolumnar.expire return 0 in place of the groups they retired (#1979)
 catalog_scan_index	catalog_scan_index	truncating a projected table does not read pgcolumnar.projection_declaration whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	truncating a projected table reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	truncating a projected table took effect	15;16;17;18;19	never	-
@@ -5484,6 +5496,26 @@ native_reclaim	native_reclaim	repeated recluster reuses space (file plateaus)	15
 native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
+native_reclaim_cycles	native_reclaim_cycles	compact retired every dead group	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 1 returns a count (no self-conflict)	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 1 rewrites several groups in one command, the shape #84 needs	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 2 returns a count (no self-conflict)	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 2 rewrites several groups in one command, the shape #84 needs	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 3 returns a count (no self-conflict)	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 3 rewrites several groups in one command, the shape #84 needs	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 4 returns a count (no self-conflict)	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 4 rewrites several groups in one command, the shape #84 needs	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 5 returns a count (no self-conflict)	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	compact_rewrite cycle 5 rewrites several groups in one command, the shape #84 needs	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	file reaches steady state (cycle 5 <= cycle 2)	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
+native_reclaim_cycles	native_reclaim_cycles	initial parity	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	parity after compact_rewrite cycle 1	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	parity after compact_rewrite cycle 2	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	parity after compact_rewrite cycle 3	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	parity after compact_rewrite cycle 4	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	parity after compact_rewrite cycle 5	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	premise: coalescing is off, which is what lets this suite reach #84	15;16;17;18;19	never	-
+native_reclaim_cycles	native_reclaim_cycles	premise: the table has several row groups to rewrite	15;16;17;18;19	never	-
 native_reclaim_frag	native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975);record_free_space does not coalesce adjacent frees: if (pgcolumnar_reclaim_coalesce) -> if (false) (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce never larger than whole-range reuse	15;16;17;18;19	never	-
 native_reclaim_frag	native_reclaim_frag	coalesce off: compact leaves more than one free_space row	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
@@ -5492,6 +5524,7 @@ native_reclaim_frag	native_reclaim_frag	coalesce off: parity with heap	15;16;17;
 native_reclaim_frag	native_reclaim_frag	coalesce on: compact retired every dead group	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce on: parity with heap	15;16;17;18;19	never	-
 native_reclaim_frag	native_reclaim_frag	coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost	15;16;17;18;19	never	-
+native_reclaim_frag	native_reclaim_frag	the horizon report names a session that holds a snapshot	15;16;17;18;19	2026-11-02	pgc_horizon_holders removed, the code before #1981 (#1981);the holder report removed from pgc_retry_past_horizon and retry_past_horizon (#1981)
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite recorded the free ranges it left	15;16;17;18;19	2026-10-22	columnar_metadata.c: record_free_space drops its insert, so every freed range leaks
 native_reclaim_reconcile	native_reclaim_reconcile	data intact after compact reconcile	15;16;17;18;19	never	-
@@ -5771,9 +5804,12 @@ native_toasted_write	native_toasted_write	the min/max zone map is correct below 
 native_toasted_write	native_toasted_write	the non-toasted column is byte-identical too	15;16;17;18;19	never	-
 native_toasted_write	native_toasted_write	toasted values are byte-identical to the heap mirror	15;16;17;18;19	never	-
 native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c)
-native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
-native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
-native_truncate	native_truncate	file shrank	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	compact retired the 15 trailing groups	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
+native_truncate	native_truncate	compact retired the 3 groups from id 30001 to 33000	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
+native_truncate	native_truncate	compact retired the 5 groups above id 35000	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
+native_truncate	native_truncate	file shrank	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_truncate	native_truncate	file unchanged after refused in-txn truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	indexed lookup after truncate	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 native_truncate	native_truncate	load parity	15;16;17;18;19	never	-
@@ -5787,7 +5823,7 @@ native_truncate	native_truncate	row count after truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	second truncate is a no-op	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate before any delete is a no-op	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate refused inside a transaction block	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() runs inside a transaction block, its IsTransactionBlock refusal removed (columnar_vacuum.c)
-native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_varlena_bound	native_varlena_bound	a 4-byte header cut off by the buffer's end is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded reads a 4-byte header with fewer than 4 bytes left
 native_varlena_bound	native_varlena_bound	a max with an over-long varlena length is refused, not an OOB read (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded trusts the stored length (no check that it fits the stream);columnar_reader.c: native_zone_excludes decodes the zone map's maximum with no bound (its end 2 GB away)
 native_varlena_bound	native_varlena_bound	a min whose length exactly fits its buffer reads cleanly	15;16;17;18;19	never	-

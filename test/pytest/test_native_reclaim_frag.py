@@ -30,7 +30,12 @@ and no `free_space` row covers it. So the live groups, rounded up to whole pages
 the allocator reserves them, and the free ranges are laid out in offset order, and
 each must end where the next one starts.
 """
-import time
+import contextlib
+import io
+
+import psycopg
+
+from pgc_horizon import retry_past_horizon
 
 ROWS = 30_000
 GROUP = 1_000
@@ -97,16 +102,12 @@ def _run(conn, expect, mode):
         # transaction in this database can still see its rows. A transaction whose
         # snapshot or transaction ID is older than the DELETE holds that back: an
         # autoanalyze of some other table, a prepared transaction, a replication
-        # slot. compact then retires 0 groups and frees nothing. So retry, for up
-        # to 30 s, until all the dead groups are retired. An error from compact
-        # raises at once.
-        retired = tries = 0
-        while retired < DEAD_GROUPS and tries < 60:
-            if tries:
-                time.sleep(0.5)
-            cur.execute("SELECT pgcolumnar.compact('n')")
-            retired += cur.fetchone()[0]
-            tries += 1
+        # slot. compact then retires 0 groups and frees nothing. So
+        # retry_past_horizon calls it again, for up to 30 s, until all the dead
+        # groups are retired. An error from compact raises at once. When the wait
+        # runs out, it prints what holds the horizon back (#1981).
+        retired, tries = retry_past_horizon(conn, "SELECT pgcolumnar.compact('n')",
+                                            DEAD_GROUPS)
         cur.execute("SELECT count(*) FROM n")
         expect.num(cur.fetchone()[0], LIVE,
                    f"premise: coalesce {mode} -- {LIVE} rows survive the delete")
@@ -177,4 +178,27 @@ def test_native_reclaim_frag(pgc_conn, expect):
         "0 gaps of 0 bytes",
         "coalesce on: reuse splits an oversized freed range, so no byte between "
         "ranges is lost",
+    )
+
+    # A RED NAMES WHAT HOLDS THE HORIZON (#1981). When compact still retires too
+    # few groups after the wait, retry_past_horizon prints horizon_holders. CI once
+    # went red here with no way to tell which session held the horizon. So a second
+    # session holds a snapshot, and a wait that cannot reach its count ("SELECT 0",
+    # 2 calls) must print a report that names its pid.
+    with psycopg.connect(pgc_conn.info.dsn, autocommit=True) as holder:
+        holder.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        pid = holder.execute("SELECT pg_backend_pid()").fetchone()[0]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            retry_past_horizon(pgc_conn, "SELECT 0", 1, calls=2, pause=0)
+        holder.execute("ROLLBACK")
+    lines = out.getvalue().splitlines()
+    print(f"-- what a short wait printed while pid {pid} holds a snapshot:")
+    for line in lines:
+        print(f"--   {line}")
+    expect.text(
+        "named" if any(f"session pid={pid} " in line for line in lines)
+        else f"not named (pid={pid})",
+        "named",
+        "the horizon report names a session that holds a snapshot",
     )

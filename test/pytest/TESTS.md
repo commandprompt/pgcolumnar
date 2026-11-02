@@ -5541,11 +5541,19 @@ own source and printing its own `.so` hash:
 Row sets are compared as sorted tuples in Python rather than through `pgc_set_hash`, so
 the two harnesses stay independent by construction.
 
+`compact` retires a dead group only when no transaction in the database is older than
+the `DELETE` (#1979). With one call, a session that held a snapshot across it left the
+free list empty. The cycles then started with no reusable space, and `file reaches
+steady state (cycle 5 <= cycle 2)` went red. Both harnesses now call `compact` again every
+0.5 s, for up to 30 s, through the shared helper (`pgc_retry_past_horizon` in
+`lib.sh`, `retry_past_horizon` in `pgc_horizon.py`). Then `compact retired every dead
+group` must read 18. The fixture tables have autovacuum off.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
-| `test_native_reclaim_cycles` | every arm: the fixture's groups and its fragmented free list, initial parity, then per cycle that `compact_rewrite` returned a count and parity held, and that the file reaches a steady state |
+| `test_native_reclaim_cycles` | every arm: the fixture's groups, `compact retired every dead group` (18), the coalescing premise, initial parity, then per cycle that `compact_rewrite` returned a count and parity held, and that the file reaches a steady state |
 
 ## 62. test_native_reclaim_frag.py: coalescing must merge, stay correct, and cost nothing
 
@@ -5571,11 +5579,19 @@ free_space row` must hold, before the on/off comparison is read. Without the fir
 check, a snapshot held across the coalesce-on run left the on side with 0 rows, and
 "fewer rows with coalescing on" passed as 0 < 18.
 
+When the wait runs out, the helper prints what holds the horizon back (#1981). It lists
+each session with a snapshot or a transaction ID, and any prepared transaction or
+replication slot. For a session it prints the pid, backend type, database, state,
+`backend_xmin`, `backend_xid`, transaction start and query. `the horizon report names a
+session that holds a snapshot` holds a snapshot in a second session, runs a wait that
+cannot reach its count (`SELECT 0`, 2 calls), and checks that what the wait printed
+names the holder's pid.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
-| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, `coalesce on: parity with heap`, `coalesce off: parity with heap`, `coalesce on: compact retired every dead group`, `coalesce off: compact retired every dead group`, `coalesce off: compact leaves more than one free_space row`, `coalesce merges adjacent frees (fewer free_space rows)`, `coalesce never larger than whole-range reuse`, and `coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost` |
+| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, `coalesce on: parity with heap`, `coalesce off: parity with heap`, `coalesce on: compact retired every dead group`, `coalesce off: compact retired every dead group`, `coalesce off: compact leaves more than one free_space row`, `coalesce merges adjacent frees (fewer free_space rows)`, `coalesce never larger than whole-range reuse`, `coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost`, and `the horizon report names a session that holds a snapshot` |
 
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
@@ -6842,6 +6858,10 @@ TWO COST MEASURES WERE TRIED FIRST, AND A REVERT SURVIVED BOTH. Comparing the de
 
 EVERY ARM HAS AN EFFECT PREMISE, AND BOTH SILENT FAILURES IT GUARDS AGAINST HAPPENED. `compact()` cannot retire rows deleted by a transaction that has not committed, so a fixture that deleted and compacted in one transaction left no free range to measure. `pgcolumnar.truncate()` refuses a transaction block, so a multi-statement call raised and read zero. "No sequential scan" is exactly what an operation that never ran reports. Each arm therefore asserts what the operation changed, and that it reached the catalog at all.
 
+EACH TARGET WAITS FOR THE HORIZON (#1979). `compact` retires a dead group only when no transaction in the database is older than the `DELETE`. A session that held a snapshot across the single `compact` left every target with no free range. Each premise read 0, and `an online rewrite took effect` and `an end truncation took effect` went red. Both harnesses now call `compact` again every 0.5 s, for up to 30 s, through the shared helper, and check `the <operation> target: compact retired both dead groups` as a number. The targets have autovacuum off.
+
+THE NOISE TABLES AND THE END TRUNCATION WAIT TOO (#1979). The noise fixture called `compact` once per table. Under a held snapshot it retired nothing, `free_space` stayed under `index_min_blocks` pages, and the `free_space` arms read it whole by design. Measured on PG 18 with a snapshot held across the noise load: `premise: every noise table holds two free ranges` read 0 of 800 (shell) and 0 of 700 (pytest). Both harnesses now call `compact` again, 50 tables per call, on each noise table that still lacks its two free ranges. `truncate` removes the trailing range only when no transaction is older than the `compact` that freed it. A session that started between the `DELETE` and the `compact` made `an end truncation took effect` read 2 instead of 1. That arm now runs again every 0.5 s, for up to 30 s, until the effect shows, and the reading is the run that took effect.
+
 THE END-TRUNCATION TARGET HAS NO PROJECTION. A projection is its own storage in the same file, written after the base's groups, so its live data sits behind the base's last group and there is no tail to reclaim. Measured: with the projection, `truncate()` returns 0 and both free ranges stay; without it, 3 blocks are reclaimed and one range is left.
 
 Removal proof, on the shell twin at PG 17: the full revert reddens all eleven path arms, and reverting each of the twelve sites ALONE reddens at least one arm named for the operation that reaches it. This twin aborts at its first failure, so under the revert it reports the first arm (`storage seq_scan=2`).
@@ -6852,7 +6872,7 @@ The two halves share no code and no fixture. The shell suite adds 400 tables wit
 
 | test | what it holds |
 | --- | --- |
-| `test_catalog_scans_do_not_read_their_catalog_whole` | each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
+| `test_catalog_scans_do_not_read_their_catalog_whole` | `premise: every noise table holds two free ranges`; each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), `the <operation> target: compact retired both dead groups`, that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
 
 ## 84. test_native_format.py: the format stamp is a range, and an append raises it
 
@@ -8388,13 +8408,15 @@ The pytest twin of `test/native_ios.sh` (ported for #1341), every check by the s
 
 The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.truncate()` returns trailing reclaimed blocks to the OS. After the trailing half is deleted and compacted, the file shrinks and the rows still match a heap mirror. A second truncate has nothing to do, and the table stays usable: reinsert, index, and an indexed lookup forced through the index and asserted to read it. With `pgcolumnar.enable_end_truncation` off, truncate must return 0 and leave the file alone. The call is a statement of its own on both sides, because sent with the `SET` as one string it ran in an implicit transaction block and was refused, which passed whatever the GUC did. Inside a transaction block truncate is refused and changes nothing, because its shrink is not transactional, and a truncate followed by reinsert and compaction keeps parity.
 
+`compact` retires a dead group only when no transaction in the database is older than the `DELETE` (#1979). `truncate` removes a freed range only when no transaction is older than the `compact` that freed it. With one call each, a session that held a snapshot across them left nothing to truncate. Both harnesses now call each one through the shared helper, which retries every 0.5 s for up to 30 s. They check how many groups each `compact` retired. The fixture tables have autovacuum off.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; after delete and compact it returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
-| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
-| `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
+| `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; `compact retired the 15 trailing groups`; then truncate returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
+| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
+| `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | `compact retired the 3 groups from id 30001 to 33000`; refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
 
 ## 177. test_native_gap.py: a write beyond EOF fills the gap and loses no row
 
