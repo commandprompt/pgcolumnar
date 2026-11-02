@@ -1829,4 +1829,6 @@ guard_tests 863
 # foreign table, last in the file), and five tests in test_objstore_listing.py (128/129 s3:// * with no LIST for
 # 129; a 4095/4096-byte s3:// glob; a foreign table over 129 *; the listing returns a 1000-level key that one * matches; 1000 s3://
 # */ levels in a UTF-8 database), by collection: 6205 tests collected, less guard_tests 863.
+# cluster_tests stays 5342 for #1982's checks (a glob name that matches . or .., such as .* or .?, folded in
+# path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 5342 cluster tests collected.
 cluster_tests 5342
