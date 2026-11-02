@@ -4236,16 +4236,16 @@ native_cluster	native_cluster	single-column clustering lets an id range skip mos
 native_cluster	native_cluster	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
 native_cluster	native_cluster	unsupported type errors cleanly	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb_validate drops its unsupported-type guard, so a later guard refuses text in other words
 native_compact	native_compact	and still reads all of them after the delete and the compact	15;16;17;18;19	never	-
-native_compact	native_compact	and the group count drops to five	15;16;17;18;19	2026-10-22	columnar_metadata.c: compact retires none of the groups it finds fully deleted
-native_compact	native_compact	and the group count stays at six while that snapshot lives	15;16;17;18;19	2026-10-22	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted
+native_compact	native_compact	and the group count drops to five	15;16;17;18;19	2026-11-02	columnar_metadata.c: compact retires none of the groups it finds fully deleted;each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
+native_compact	native_compact	and the group count stays at six while that snapshot lives	15;16;17;18;19	2026-11-02	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted;each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 native_compact	native_compact	compact holds ShareUpdateExclusiveLock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact opens the table under AccessExclusiveLock
 native_compact	native_compact	compact holds no AccessExclusiveLock	15;16;17;18;19	2026-10-22	columnar_vacuum.c: compact opens the table under AccessExclusiveLock
 native_compact	native_compact	compact keeps a group an older snapshot can still see	15;16;17;18;19	2026-10-22	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted
-native_compact	native_compact	compact retired the two fully-deleted groups	15;16;17;18;19	2026-10-22	columnar_metadata.c: compact retires none of the groups it finds fully deleted
-native_compact	native_compact	group count dropped by two	15;16;17;18;19	2026-10-22	columnar_metadata.c: compact retires none of the groups it finds fully deleted
+native_compact	native_compact	compact retired the two fully-deleted groups	15;16;17;18;19	2026-11-02	columnar_metadata.c: compact retires none of the groups it finds fully deleted;each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
+native_compact	native_compact	group count dropped by two	15;16;17;18;19	2026-11-02	columnar_metadata.c: compact retires none of the groups it finds fully deleted;each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 native_compact	native_compact	initial group count	15;16;17;18;19	never	-
 native_compact	native_compact	live row count after compact	15;16;17;18;19	2026-10-22	columnar_metadata.c: a group half deleted counts as fully deleted
-native_compact	native_compact	once that snapshot ends, compact retires the group	15;16;17;18;19	2026-10-22	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted
+native_compact	native_compact	once that snapshot ends, compact retires the group	15;16;17;18;19	2026-11-02	columnar_metadata.c: a delete newer than the oldest-xmin horizon counts toward a group being fully deleted;each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 native_compact	native_compact	parity after compact	15;16;17;18;19	2026-10-22	columnar_metadata.c: a group half deleted counts as fully deleted
 native_compact	native_compact	parity after deletes	15;16;17;18;19	never	-
 native_compact	native_compact	parity after the held-snapshot compact	15;16;17;18;19	2026-10-22	columnar_metadata.c: a group half deleted counts as fully deleted
@@ -5826,9 +5826,11 @@ native_toasted_write	native_toasted_write	the min/max zone map is correct (range
 native_toasted_write	native_toasted_write	the min/max zone map is correct below a bound (range count matches heap)	15;16;17;18;19	2026-10-17	columnar_write_state.c: the running minimum is never lowered past a chunk's first value
 native_toasted_write	native_toasted_write	the non-toasted column is byte-identical too	15;16;17;18;19	never	-
 native_toasted_write	native_toasted_write	toasted values are byte-identical to the heap mirror	15;16;17;18;19	never	-
-native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c)
+native_truncate	native_truncate	GUC off: no transaction older than the compact was open	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers before the fix: counts sessions in every database, and reads 0 for a table with no freed range (#1992);pgc_wait_freed_range_past_horizon cut to one call (the code before the fix), a session holding a snapshot from between the DELETE and the compact (#1988)
+native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-11-02	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (src/columnar_vacuum.c), a session holding a snapshot across the compact (#1988)
 native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
-native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (columnar_vacuum.c);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	GUC on: truncate reclaims	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (src/columnar_vacuum.c), a session holding a snapshot across the compact (#1988);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
+native_truncate	native_truncate	a table with no freed range gives the horizon helper no count	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers before the fix: counts sessions in every database, and reads 0 for a table with no freed range (#1992)
 native_truncate	native_truncate	compact retired the 15 trailing groups	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
 native_truncate	native_truncate	compact retired the 3 groups from id 30001 to 33000	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
 native_truncate	native_truncate	compact retired the 5 groups above id 35000	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979)
@@ -5841,10 +5843,21 @@ native_truncate	native_truncate	parity after post-truncate insert	15;16;17;18;19
 native_truncate	native_truncate	parity after refused in-txn truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	parity after truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	parity after truncate + reinsert + compaction	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: a snapshot older than the compact is open in another database	15;16;17;18;19	never	-
 native_truncate	native_truncate	premise: the indexed lookup reads n_id	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a prepared transaction in another database is open	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a snapshot from just before the compact is open	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a writer in another database is open	15;16;17;18;19	never	-
 native_truncate	native_truncate	row count after truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	second truncate is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	the horizon helper counts a prepared transaction in another database	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers at a451d173: leaves out a transaction ID in another database, from a session or a prepared transaction (#1992);pgc_freed_range_blockers counts a prepared transaction only in this database (#1992)
+native_truncate	native_truncate	the horizon helper counts a snapshot from just before the compact	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers compares age with > instead of >=, so an xid equal to freed_xid is not counted (#1992)
+native_truncate	native_truncate	the horizon helper counts a writer in another database	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers at a451d173: leaves out a transaction ID in another database, from a session or a prepared transaction (#1992)
+native_truncate	native_truncate	the other-database snapshot was still open after the GUC-on truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate before any delete is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the prepared transaction in another database ends	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the snapshot from just before the compact ends	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the writer in another database ends	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate refused inside a transaction block	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() runs inside a transaction block, its IsTransactionBlock refusal removed (columnar_vacuum.c)
 native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_varlena_bound	native_varlena_bound	a 4-byte header cut off by the buffer's end is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded reads a 4-byte header with fewer than 4 bytes left
@@ -8080,7 +8093,8 @@ replication	replication	and the projection's storage came across intact and read
 replication	replication	and the row counts agree	15;16;17;18;19	never	-
 replication	replication	and the standby is actually connected through it	15;16;17;18;19	never	-
 replication	replication	compact replays identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
-replication	replication	compact retired the fully deleted row group on the primary	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0)
+replication	replication	compact retired the 15 trailing row groups of t on the primary	15;16;17;18;19	2026-11-02	each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
+replication	replication	compact retired the fully deleted row group on the primary	15;16;17;18;19	2026-11-02	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0);each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 replication	replication	content still matches after the truncate record	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
 replication	replication	insert, delete and update replay identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
 replication	replication	it replayed columnar WAL past the primary's LSN without the module	15;16;17;18;19	never	-
@@ -8089,7 +8103,7 @@ replication	replication	pg_basebackup produced a data directory	15;16;17;18;19	n
 replication	replication	premise: the primary wrote r2's second batch while the standby ran without the module	15;16;17;18;19	never	-
 replication	replication	streaming replay carried a projection created after the backup	15;16;17;18;19	never	-
 replication	replication	the base backup carried the initial rows	15;16;17;18;19	never	-
-replication	replication	the primary actually truncated (record was emitted)	15;16;17;18;19	2026-10-16	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0)
+replication	replication	the primary actually truncated (record was emitted)	15;16;17;18;19	2026-11-02	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0);each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 replication	replication	the primary has a projection to preserve, before the backup runs	15;16;17;18;19	never	-
 replication	replication	the primary now has a second, post-backup projection	15;16;17;18;19	never	-
 replication	replication	the primary still has both projections when the backup is taken	15;16;17;18;19	never	-

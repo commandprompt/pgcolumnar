@@ -556,6 +556,33 @@ true until the next version shipped.
   all is refused too, even a partitioned tree whose directories are each
   small; a directory read of the same tree works. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
+- `native_compact`, `replication` and their pytest twins no longer fail when
+  another session holds an old snapshot during `compact` or `truncate` (#1987).
+  They called each one once, and a held snapshot made the call do nothing. Now
+  they call it through the shared helper `pgc_retry_past_horizon` (Python:
+  `retry_past_horizon`), which retries for up to 30 s. The fixture tables have
+  autovacuum turned off. `replication` gains a check that `compact` retired the
+  15 trailing row groups of `t` before `truncate` runs.
+- `native_truncate`'s check `GUC off: truncate does nothing` now tests the
+  setting (#1988). Before, it passed while a transaction older than the
+  `compact` was open, because `truncate` then does nothing whatever the setting
+  says. The arm now waits until nothing holds the horizon at the freed range,
+  and a new check, `GUC off: no transaction older than the compact was open`,
+  counts what still holds it. The new helper is
+  `pgc_wait_freed_range_past_horizon` in `test/lib.sh` and
+  `wait_freed_range_past_horizon` in `test/pytest/pgc_horizon.py`.
+  docs/testing.md describes it.
+- The horizon helper `pgc_wait_freed_range_past_horizon` (Python:
+  `wait_freed_range_past_horizon`) no longer counts a snapshot with no
+  transaction ID in another database (#1992). truncate's horizon ignores it. So
+  a long read-only transaction in another database made the wait run its full
+  30 s, and the check `GUC off: no transaction older than the compact was open`
+  failed although truncate was not held back. A transaction ID in another
+  database, from a session or a prepared transaction, does hold truncate back,
+  and the helper still counts it. The helper also gives no count, instead of 0,
+  for a table with no freed range. `native_truncate` and its twin gain checks
+  for each case: a snapshot, a writer and a prepared transaction in another
+  database, and a snapshot taken just before the `compact`.
 - Self-test part 540 now finds more check arms that print only `no` when
   they fail (#1980). It missed an arm with a redirect after the test, such as
   `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.
