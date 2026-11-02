@@ -631,6 +631,36 @@ true until the next version shipped.
   `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
   changes: an unknown verdict still lets the run go ahead, and only a server
   that started before the install is refused.
+- A deep glob pattern no longer crashes the Parquet reader (#1968, #1972). The
+  reader passed a local pattern to `glob(3)` and matched an `s3://` pattern with
+  `fnmatch`, with no bound. Both use stack space for each level, so a pattern
+  such as `'/tmp/' || repeat('*/', 4000) || 'x.parquet'` killed the backend
+  with SIGSEGV, and the server restarted every session. An `s3://` pattern of
+  1000 `*/` levels did the same when a key had that many levels. Now
+  `read_parquet`, `parquet_schema`, `import_parquet` and the
+  `pgcolumnar_parquet` foreign table refuse such a pattern with error 54000, as
+  `path_glob_matches` does since #1964: 4096 bytes or more, more than 128 `/`
+  after the first `*`, `?` or `[` in a local pattern, or more than 128 `*` in an
+  `s3://` pattern. The reader and `path_glob_matches` share one check.
+  The reader counts and expands a local pattern in a folded form, with each
+  run of `/` as one `/` and without a `.` name followed by `/`. The kernel
+  opens the same files by either spelling. So a table on
+  `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
+  `tier_partition` check reads, is read and not refused (#1977 review). A `.`
+  at the end, a `.` that only `/` follow, and a name followed by `..` are
+  kept as written, so `'/w/s[p]/a.parquet/./'` matches nothing, as `glob(3)`
+  of it does.
+  docs/sql-reference.md. `test/native_parquet_multifile.sh`,
+  `test/objstore_listing.sh` and their pytest twins.
+- `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of
+  repeated `/.*` (#1973). Each directory in its tree in memory lists `.` and
+  `..`, and `.*` matches both, so `repeat('/.*', 40)` grew the backend to 2 GB
+  in memory that glibc allocates outside PostgreSQL. The walk now stops after
+  1,000,000 steps with error 54000, in about 60 ms, and never answers false.
+  Each call starts the count again, so a refused pattern does not fail later
+  calls in the same session. The reader's own walk on the real filesystem is
+  not bounded yet (#1984). docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`

@@ -258,4 +258,112 @@ cp "$DIR/part-0.parquet" "$d/"
 check "a tree deeper than the bound is rejected, not truncated" \
 	"$(errs "SELECT count(*) FROM pgcolumnar.read_parquet('$deep') AS t($cols)")" "OK"
 
+# ---- a glob too deep or too long for glob(3) is an error (#1968, #1973) -----
+#
+# glibc glob(3) calls itself once for every '/' after the first *, ? or [, and
+# each call keeps a copy of the pattern on the stack. The reader refuses a
+# pattern with more than 128 such levels, or of PATH_MAX (4096) bytes or more,
+# with error 54000 before glob(3) runs, as path_glob_matches does (#1964).
+# st SQL -> the SQLSTATE SQL fails with, "ok" when it succeeds, or "no answer"
+st() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
+	echo "${out:-no answer}"
+}
+# wait_up -> return once the server answers SELECT 1, or after 60 s
+wait_up() { local i; for i in $(seq 60); do [ "$(q "SELECT 1;")" = 1 ] && return; sleep 1; done; }
+check "read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 128) || 'x.parquet') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 129) || 'x.parquet') AS t($cols)")" \
+	"58P01|54000"
+check "read_parquet refuses a local glob of 4096 bytes with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('$DIR/*', 4088, 'a') || '.parquet') AS t($cols)")" \
+	"54000"
+# glob(3) in path_glob_matches walks a tree in memory where every directory
+# lists . and .., and .* matches both. So repeat('/.*', n) walks 2^n paths in
+# memory that glibc allocates outside PostgreSQL. The walk is bounded, and a
+# pattern past the bound fails with 54000; it never answers false (#1973).
+check "path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=sqlstate -c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')" \
+	"54000"
+check "path_glob_matches still matches repeat('/.*', 10) against its own path" \
+	"$(q "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text;")" "true"
+# The step count and the "stopped" flag are statics. Each walk must reset
+# them, or one refused walk fails every later call in that session with
+# 54000. Every other check opens a new connection, so only one session that
+# runs all three statements can see a missing reset.
+check "after a refused walk, path_glob_matches still answers true in the same session" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text;" \
+		-c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text;" \
+		-c "SELECT pgcolumnar.path_glob_matches('/a/*', '/a/b')::text;" 2>&1 | sed 's/^ERROR: *//' | paste -sd'|')" \
+	"54000|true|true"
+
+# The reader bounds and globs a local pattern in a folded form: a run of '/'
+# becomes one '/', and a '.' name with a '/' after it is dropped. The kernel
+# reads both spellings as the same file, so the rows do not change, and a
+# pattern over 128 levels as written but not once folded is read (#1978's
+# tier_partition check reads such a table). A '.' at the end is kept: it
+# makes the pattern match only directories. A name followed by '..' is kept
+# too: a symbolic link before the '..' leads the kernel somewhere else.
+plain_rows="$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$DIR/part-0.parquet') AS t($cols)")"
+fold_dot="'$W/par[t]s' || repeat('/.', 200) || '/part-0.parquet'"
+check "read_parquet reads a local glob over 128 levels as written but not once its '.' names are dropped, the same rows as the plain path" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet($fold_dot) AS t($cols)")|$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet($fold_dot) AS t($cols)")" \
+	"1000|$plain_rows"
+fold_slash="'$W/par[t]s' || repeat('/', 201) || 'part-0.parquet'"
+check "read_parquet reads a local glob over 128 levels as written but not once its runs of '/' are folded, the same rows as the plain path" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet($fold_slash) AS t($cols)")|$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet($fold_slash) AS t($cols)")" \
+	"1000|$plain_rows"
+check "read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. matches nothing" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/.') AS t($cols)")" \
+	"58P01"
+# glob(3) matches a pattern that ends in '/' against a file, so dropping a '.'
+# name that only '/' or '\/' follow would read the file (#1977 review).
+check "read_parquet keeps a '.' name that only '/' follow at the end of a local glob, so a file followed by /./ matches nothing" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/./') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/.//') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s/part-0.parquet/./\/') AS t($cols)")" \
+	"58P01|58P01|58P01"
+# fold/ln leads to fold/away/inner, so fold/ln/.. is fold/away to the kernel.
+# fold/away/z-0.parquet holds part-0 (ids 0..999); fold/z-0.parquet, the file
+# a lexical fold of ln/.. would read, holds part-1 (ids 1000..1999).
+mkdir -p "$W/fold/away/inner"
+cp "$DIR/part-0.parquet" "$W/fold/away/z-0.parquet"
+cp "$DIR/part-1.parquet" "$W/fold/z-0.parquet"
+ln -s "$W/fold/away/inner" "$W/fold/ln"
+check "read_parquet does not fold a name followed by '..' in a local glob, so it reads past a symbolic link as the kernel does" \
+	"$(q "SELECT sum(id) FROM pgcolumnar.read_parquet('$W/fold/ln/../z-[0].parquet') AS t($cols)")" \
+	"499500"
+
+# Last in the suite: before the fix these reads crashed the server, and the
+# crash recovery failed every check after them. Each check waits for the
+# server to answer first, so a regression fails its own check alone.
+check "read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 4000) || 'x.parquet') AS t($cols)")|$(q "SELECT 1;")" \
+	"54000|1"
+wait_up
+# The pattern has 1991 levels as written and 1 once folded, so the bound
+# lets it through. glob(3) of the form as written did not crash in a probe on
+# glibc 2.43 (2022 levels, #1977 review), so this check does not tell which
+# form glob(3) expands; it holds that the read is not refused.
+check "read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s' || repeat('/.', 1990) || '/part-0.parquet') AS t($cols)")|$(q "SELECT 1;")" \
+	"1000|1"
+wait_up
+# Over 10,000 bytes and 5001 levels as written, 1 level once folded. glob(3) of
+# the form as written crashed the server (#1977 review), so this check fails
+# if the reader globs the pattern as written instead of the folded form.
+check "read_parquet reads a local glob over PATH_MAX as written but not once folded, and the server stays up" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_parquet('$W/par[t]s' || repeat('/.', 5000) || '/part-0.parquet') AS t($cols)")|$(q "SELECT 1;")" \
+	"1000|1"
+wait_up
+psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ($cols) SERVER pq OPTIONS (path %L)', '$DIR/' || repeat('*/', 4000) || 'x.parquet'); END\$\$;"
+check "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, and the server stays up" \
+	"$(st "SELECT count(*) FROM ftdeep")|$(q "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DROP FOREIGN TABLE ftdeep;"
+
 pgc_summary
