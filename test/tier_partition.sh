@@ -450,18 +450,35 @@ check "path_glob_matches lists . and .. in a local directory, so .* matches both
 # lists must hold the path asked about, not merely some path (#1964 review).
 check "path_glob_matches counts only the path asked about, not another path the glob returns" \
 	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/*', '/w/a/b.parquet')::text;")" "false"
-# glibc glob(3) calls itself once for each directory level that holds *, ? or
-# [, and each call keeps a copy of the pattern on the stack. So the helper
-# refuses a pattern of more than 128 such levels, or of PATH_MAX (4096) bytes
-# or more, with an error, before glob(3) runs. A crash here would restart the
-# server, and any role may call the helper (#1964 review).
+# glibc glob(3) splits a pattern at its last slash and, when the part before
+# it holds *, ? or [, calls itself on that part. So it calls itself once for
+# every slash after the first *, ? or [, even a slash between literal names,
+# and each call keeps a copy of the pattern on the stack. The helper refuses a
+# pattern with more than 128 such slashes, or of PATH_MAX bytes or more, with
+# an error, before glob(3) runs. A crash here would restart the server, and
+# any role may call the helper (#1964 review). PATH_MAX is 4096 on Linux, the
+# only system the suite runs on, so the checks spell it as 4096.
 # ansst SQL -> the query's one value, or its SQLSTATE when it fails
 ansst() { local s; s=$(sqlstate "$1"); if [ "$s" = ok ]; then qerr "$1"; else echo "${s:-no answer}"; fi; }
 check "path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error" \
 	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 128) || 'x', repeat('a/', 128) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 129) || 'x', repeat('a/', 129) || 'x')::text;")" \
 	"true|54000"
+check "path_glob_matches counts every level after the first *, so one * and 129 more levels are refused with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/*/' || repeat('a/', 129) || 'x', '/b/' || repeat('a/', 129) || 'x')::text;")" "54000"
+check "path_glob_matches counts a level after a ? or a [, so 129 of either are refused with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('?/', 129) || 'x', repeat('a/', 129) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('[a]/', 129) || 'x', repeat('a/', 129) || 'x')::text;")" \
+	"54000|54000"
 check "path_glob_matches refuses a pattern of 4096 bytes with an error" \
-	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4092) || ']', '/w/a')::text;")" "54000"
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4091) || ']', '/w/a')::text;")" "54000"
+# glibc fnmatch calls itself for each * of an s3:// key, so the helper bounds
+# a remote pattern as it bounds a local one: at most 128 *, and shorter than
+# PATH_MAX bytes (#1964 review).
+check "path_glob_matches matches an s3:// pattern of 128 * and refuses 129 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 128) || 'x', 's3://b/' || repeat('a/', 128) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 129) || 'x', 's3://b/' || repeat('a/', 129) || 'x')::text;")" \
+	"true|54000"
+check "path_glob_matches matches an s3:// pattern of 4095 bytes and refuses one of 4096 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4087) || '*', 's3://b/' || repeat('a', 4087) || 'b')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4088) || '*', 's3://b/' || repeat('a', 4088) || 'b')::text;")" \
+	"true|54000"
 # No file has a path of PATH_MAX bytes or more: the reader could not open it.
 # So the helper answers false for such a path before it builds anything, and a
 # long path cannot keep a backend busy past a cancel (#1964 review).
@@ -471,16 +488,16 @@ check "path_glob_matches matches a path of 4095 bytes but not one of 4096, which
 check "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout" \
 	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-X -At -c "SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))::text;" 2>&1 | head -1)" "false"
-# An interrupt that raises no error, such as a request to log memory
-# contexts, must not turn a match into no match: a false answer lets a move
-# overwrite a file a table reads (#1964 review). The request is sent in the
-# same row, just before the call. Each row prints pattern=answer.
-psql_run "CREATE TABLE pgm_pp (pat text, p text);
-          INSERT INTO pgm_pp VALUES ('/w/*.parquet', '/w/a.parquet'), ('s3://b/*.parquet', 's3://b/a.parquet');"
-check "path_glob_matches gives the same answer when an interrupt that raises no error arrives during the call" \
-	"$(qerr "SELECT string_agg(pat || '=' || m::text, ',' ORDER BY pat COLLATE \"C\") FROM (SELECT pat, pg_log_backend_memory_contexts(pg_backend_pid()) AS l, pgcolumnar.path_glob_matches(pat, p) AS m FROM pgm_pp) s;")" \
-	"/w/*.parquet=true,s3://b/*.parquet=true"
-psql_run "DROP TABLE pgm_pp;"
+# An interrupt that raises no error, such as a check that the client is
+# still connected, must not turn a match into no match: a false answer lets a
+# move overwrite a file a table reads (#1964 review). .* matches . and .., so
+# 18 levels of it make a walk of 2^18 names, far longer than the 1 ms timer.
+# Every walk is cut short, and the helper gives up with 57014 after 100 walks.
+# An answer of false would mean it took a cut walk as a full one.
+check "path_glob_matches never answers false for a walk an interrupt that raises no error cut short" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c client_connection_check_interval=1ms' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=sqlstate -c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 18) || '/x', repeat('/..', 18) || '/x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')" \
+	"57014"
 # The detail escapes a C1 control character, U+0080 to U+009F, by what the
 # character means, not by its byte. In LATIN1 the byte 0x85 is the control
 # NEL, so it prints as \x85. In WIN1252 the byte 0x80 is the euro sign, a
@@ -1049,11 +1066,39 @@ check "and the move refused at the read-back leaves the rows local and attached,
 
 # ---- a pattern too deep for glob(3) is an error, not a crash (#1964 review) --
 #
-# Last in the suite: before the fix this call crashed the server, and the
-# crash recovery failed every check after it. Here a regression fails this
-# check alone.
+# Last in the suite: before the fix these calls crashed the server, and the
+# crash recovery failed every check after them. Each check below waits up to
+# 60 s for the server to answer first, so a regression fails its own check
+# alone.
+# wait_up -> return once the server answers SELECT 1, or after 60 s
+wait_up() { local i; for i in $(seq 60); do [ "$(qerr "SELECT 1;")" = 1 ] && return; sleep 1; done; }
 check "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up" \
 	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')::text;")|$(qerr "SELECT 1;")" \
 	"54000|1"
+# A role may first use most of max_stack_depth in SQL, and glob(3) then has
+# only what is left. pgm_deep calls itself n times, then the helper. The
+# deepest n that still answers is found in steps of 100, from 3000 down.
+wait_up
+psql_run "CREATE FUNCTION pgm_deep(n int, p text, q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          BEGIN IF n = 0 THEN RETURN pgcolumnar.path_glob_matches(p, q)::text; END IF; RETURN pgm_deep(n - 1, p, q); END \$\$;"
+deep=3000
+while [ "$deep" -gt 0 ] && [ "$(ansst "SELECT pgm_deep($deep, '/w/*', '/w/a');")" != true ]; do deep=$((deep - 100)); done
+echo "-- pgm_deep answers at $deep levels of SQL"
+check "path_glob_matches refuses one * and 2045 more levels with an error near max_stack_depth, and the server stays up" \
+	"$(ansst "SELECT pgm_deep($deep, '/*/' || repeat('a/', 2045) || 'x', '/b');")|$(qerr "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DROP FUNCTION pgm_deep(int, text, text);"
+# fnmatch keeps more on the stack for each * in a UTF-8 locale than in C, so
+# this runs in a database whose LC_CTYPE is C.UTF-8.
+psql_run "DROP DATABASE IF EXISTS tier_cutf8;"
+psql_run "CREATE DATABASE tier_cutf8 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8';"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d tier_cutf8 -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pgcolumnar;"
+check "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d tier_cutf8 -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 1000) || 'x', 's3://b/' || repeat('a/', 1000) || 'x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')|$(qerr "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DROP DATABASE tier_cutf8;"
 
 pgc_summary

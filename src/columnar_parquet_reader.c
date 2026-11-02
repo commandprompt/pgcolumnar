@@ -3857,20 +3857,46 @@ pq_vstat(const char *path, struct stat *st)
 }
 
 /*
- * glibc glob(3) calls itself once for each directory level of the pattern
- * that holds *, ? or [, and each call keeps a copy of the pattern on the
- * stack. Measured with glibc 2.43, 128 such levels in a pattern of 4095 bytes
- * use 0.7 MB of stack, and 4000 levels overflow an 8 MB stack (#1964 review).
+ * glibc glob(3) splits a pattern at its last '/' and, when the part before it
+ * holds *, ? or [, calls itself on that part. So it calls itself once for
+ * every '/' after the first *, ? or [, a '/' between literal names too, and
+ * each call keeps a copy of the pattern on the stack. glibc fnmatch calls
+ * itself for each * of an s3:// key. Measured with glibc 2.43, 128 levels in
+ * a pattern of 4095 bytes use 0.7 MB of stack, and 2046 levels overflow an
+ * 8 MB stack (#1964 review). PQ_GLOB_MAX_LEVELS bounds both.
  */
 #define PQ_GLOB_MAX_LEVELS 128
+
+/*
+ * Refuse, with an error, a pattern of PATH_MAX bytes or more, or one whose
+ * `levels` (counted by the caller) pass PQ_GLOB_MAX_LEVELS, before glibc
+ * matches it. `what` names the level in the detail.
+ */
+static void
+pq_glob_bound(const char *pattern, int levels, const char *what)
+{
+	if (strlen(pattern) >= PATH_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern is too long to match: %zu bytes",
+						strlen(pattern)),
+				 errdetail("A glob pattern must be shorter than %d bytes.",
+						   PATH_MAX)));
+	if (levels > PQ_GLOB_MAX_LEVELS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern has too many levels to match: %d", levels),
+				 errdetail("A glob pattern may have at most %d %s.",
+						   PQ_GLOB_MAX_LEVELS, what)));
+}
 
 /*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
  * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
  * than a directory entry holds, cannot be opened, so it matches nothing. A
- * pattern of PATH_MAX bytes or more, or of more than PQ_GLOB_MAX_LEVELS levels
- * that hold *, ? or [, raises an error before glob(3) runs, as no answer can
- * be given safely. It never answers false for a walk an interrupt cut short,
+ * pattern of PATH_MAX bytes or more, or with more than PQ_GLOB_MAX_LEVELS
+ * slashes after its first *, ? or [, raises an error before glob(3) runs, as
+ * no answer can be given safely. It never answers false for a walk an interrupt cut short,
  * nor for a glob(3) error: it processes the interrupt and walks again, or
  * raises an error.
  */
@@ -3887,34 +3913,12 @@ pq_local_glob_match(const char *pattern, const char *path)
 	size_t		i;
 	int			attempt;
 	int			levels = 0;
-	bool		meta = false;
 	const char *c;
 
-	if (strlen(pattern) >= PATH_MAX)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("glob pattern is too long to match: %zu bytes",
-						strlen(pattern)),
-				 errdetail("A local glob pattern must be shorter than %d bytes.",
-						   PATH_MAX)));
-	for (c = pattern;; c++)
-	{
-		if (*c == '\0' || *c == '/')
-		{
-			levels += meta ? 1 : 0;
-			meta = false;
-			if (*c == '\0')
-				break;
-		}
-		else if (*c == '*' || *c == '?' || *c == '[')
-			meta = true;
-	}
-	if (levels > PQ_GLOB_MAX_LEVELS)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("glob pattern has too many levels to match: %d", levels),
-				 errdetail("A local glob pattern may have at most %d levels that hold *, ? or [.",
-						   PQ_GLOB_MAX_LEVELS)));
+	/* every '/' after the first *, ? or [ is a call of glob(3) to itself */
+	for (c = strpbrk(pattern, "*?["); c != NULL && *c != '\0'; c++)
+		levels += (*c == '/') ? 1 : 0;
+	pq_glob_bound(pattern, levels, "levels after the first *, ? or [");
 	if (strlen(path) >= PATH_MAX)
 		return false;
 
@@ -4017,8 +4021,18 @@ pgcolumnar_path_glob_matches(PG_FUNCTION_ARGS)
 	const char *path = PgColumnarS3Alias(text_to_cstring(PG_GETARG_TEXT_PP(1)));
 
 	if (PgColumnarPathIsRemote(pattern))
-		PG_RETURN_BOOL(pq_remote_glob_start(pattern) != NULL &&
-					   pq_remote_glob_match(pattern, path));
+	{
+		int			stars = 0;
+		const char *c;
+
+		if (pq_remote_glob_start(pattern) == NULL || !PgColumnarPathIsRemote(path))
+			PG_RETURN_BOOL(false);
+		/* fnmatch calls itself for each *, so bound them as glob(3)'s levels */
+		for (c = pattern; *c != '\0'; c++)
+			stars += (*c == '*') ? 1 : 0;
+		pq_glob_bound(pattern, stars, "* in an s3:// key");
+		PG_RETURN_BOOL(pq_remote_glob_match(pattern, path));
+	}
 	PG_RETURN_BOOL(!PgColumnarPathIsRemote(path) && pq_has_glob_meta(pattern) &&
 				   pq_local_glob_match(pattern, path));
 }

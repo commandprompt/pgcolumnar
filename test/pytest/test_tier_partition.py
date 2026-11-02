@@ -503,30 +503,39 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     other = "SELECT pgcolumnar.path_glob_matches('/w/*', '/w/a/b.parquet')::text"
     expect.text(_sqlstate(conn, other) == "ok" and _one(conn, other) or _errtext(conn, other),
                 "false", "path_glob_matches counts only the path asked about, not another path the glob returns")
-    # glibc glob(3) calls itself once for each directory level that holds *, ?
-    # or [, and each call keeps a copy of the pattern on the stack. So the
-    # helper refuses a pattern of more than 128 such levels, or of PATH_MAX
-    # (4096) bytes or more, with an error, before glob(3) runs. A crash here
+    # glibc glob(3) splits a pattern at its last slash and, when the part
+    # before it holds *, ? or [, calls itself on that part. So it calls itself
+    # once for every slash after the first *, ? or [, even a slash between
+    # literal names, and each call keeps a copy of the pattern on the stack.
+    # The helper refuses a pattern with more than 128 such slashes, or of
+    # PATH_MAX bytes or more, with an error, before glob(3) runs. A crash here
     # would restart the server, and any role may call the helper (#1964
-    # review). Each probe gets its own session, so a crash names itself.
+    # review). PATH_MAX is 4096 on Linux, the only system the suite runs on, so
+    # the checks spell it as 4096. Each probe gets its own session.
     pgm_dsn = _dsn(pgc_cluster, conn)
 
     def ansst(sql, opts=None):
-        """the query's one value as text, or its SQLSTATE when it fails"""
-        try:
-            with psycopg.connect(pgm_dsn, autocommit=True, options=opts or "") as c:
-                with c.cursor() as cur:
-                    cur.execute(sql)
-                    v = cur.fetchone()[0]
-                    return str(v).lower() if isinstance(v, bool) else str(v)
-        except psycopg.Error as e:
-            return e.sqlstate or "no answer"
+        return _ansst(pgm_dsn, sql, opts)
 
     expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 128) || 'x', repeat('a/', 128) || 'x')")
                 + "|" + ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 129) || 'x', repeat('a/', 129) || 'x')"),
                 "true|54000", "path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error")
-    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4092) || ']', '/w/a')"),
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/*/' || repeat('a/', 129) || 'x', '/b/' || repeat('a/', 129) || 'x')"),
+                "54000", "path_glob_matches counts every level after the first *, so one * and 129 more levels are refused with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('?/', 129) || 'x', repeat('a/', 129) || 'x')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches(repeat('[a]/', 129) || 'x', repeat('a/', 129) || 'x')"),
+                "54000|54000", "path_glob_matches counts a level after a ? or a [, so 129 of either are refused with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4091) || ']', '/w/a')"),
                 "54000", "path_glob_matches refuses a pattern of 4096 bytes with an error")
+    # glibc fnmatch calls itself for each * of an s3:// key, so the helper
+    # bounds a remote pattern as it bounds a local one: at most 128 *, and
+    # shorter than PATH_MAX bytes (#1964 review).
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 128) || 'x', 's3://b/' || repeat('a/', 128) || 'x')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 129) || 'x', 's3://b/' || repeat('a/', 129) || 'x')"),
+                "true|54000", "path_glob_matches matches an s3:// pattern of 128 * and refuses 129 with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4087) || '*', 's3://b/' || repeat('a', 4087) || 'b')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4088) || '*', 's3://b/' || repeat('a', 4088) || 'b')"),
+                "true|54000", "path_glob_matches matches an s3:// pattern of 4095 bytes and refuses one of 4096 with an error")
     # No file has a path of PATH_MAX bytes or more: the reader could not open
     # it. So the helper answers false for such a path before it builds
     # anything, and a long path cannot keep a backend busy past a cancel
@@ -537,25 +546,16 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))",
                       opts="-c statement_timeout=1s"),
                 "false", "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout")
-    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')")
-                + "|" + ansst("SELECT 1"),
-                "54000|1", "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up")
-    # An interrupt that raises no error, such as a request to log memory
-    # contexts, must not turn a match into no match: a false answer lets a move
-    # overwrite a file a table reads (#1964 review). The request is sent in the
-    # same row, just before the call. Each row prints pattern=answer.
-    with conn.cursor() as cur:
-        cur.execute("CREATE TABLE pgm_pp (pat text, p text)")
-        cur.execute("INSERT INTO pgm_pp VALUES ('/w/*.parquet', '/w/a.parquet'),"
-                    " ('s3://b/*.parquet', 's3://b/a.parquet')")
-    intr = ("SELECT string_agg(pat || '=' || m::text, ',' ORDER BY pat COLLATE \"C\") FROM"
-            " (SELECT pat, pg_log_backend_memory_contexts(pg_backend_pid()) AS l,"
-            " pgcolumnar.path_glob_matches(pat, p) AS m FROM pgm_pp) s")
-    expect.text(_sqlstate(conn, intr) == "ok" and _one(conn, intr) or _errtext(conn, intr),
-                "/w/*.parquet=true,s3://b/*.parquet=true",
-                "path_glob_matches gives the same answer when an interrupt that raises no error arrives during the call")
-    with conn.cursor() as cur:
-        cur.execute("DROP TABLE pgm_pp")
+    # An interrupt that raises no error, such as a check that the client is
+    # still connected, must not turn a match into no match: a false answer lets
+    # a move overwrite a file a table reads (#1964 review). .* matches . and
+    # .., so 18 levels of it make a walk of 2^18 names, far longer than the
+    # 1 ms timer. Every walk is cut short, and the helper gives up with 57014
+    # after 100 walks. An answer of false would mean it took a cut walk as a
+    # full one.
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('/.*', 18) || '/x', repeat('/..', 18) || '/x')",
+                      opts="-c client_connection_check_interval=1ms"),
+                "57014", "path_glob_matches never answers false for a walk an interrupt that raises no error cut short")
 
     # The detail escapes a C1 control character, U+0080 to U+009F, by what the
     # character means, not by its byte. In LATIN1 the byte 0x85 is the control
@@ -656,6 +656,18 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
 
 def _dsn(pgc_cluster, conn):
     return pgc_cluster.dsn(dbname=_one(conn, "SELECT current_database()"))
+
+
+def _ansst(dsn, sql, opts=None):
+    """the query's one value as text, or its SQLSTATE when it fails, in a session of its own"""
+    try:
+        with psycopg.connect(dsn, autocommit=True, options=opts or "") as c:
+            with c.cursor() as cur:
+                cur.execute(sql)
+                v = cur.fetchone()[0]
+                return str(v).lower() if isinstance(v, bool) else str(v)
+    except psycopg.Error as e:
+        return e.sqlstate or "no answer"
 
 
 def _relkind(conn, t):
@@ -1281,3 +1293,58 @@ def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
             s.kill()
             s.wait()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def test_tier_partition_path_glob_matches_errors_where_glibc_would_crash(pgc_own_db, pgc_cluster, expect):
+    """The patterns that crashed the server before #1964's bounds, last in the file.
+
+    Before the bounds each of these calls overflowed the backend's stack, and the
+    crash recovery failed every check after it. Each probe gets its own session,
+    and each check waits up to 60 s for the server to answer first, so a
+    regression fails its own check alone."""
+    own = _one(pgc_own_db, "SELECT current_database()")
+    dsn = pgc_cluster.dsn(dbname=own)
+
+    def wait_up():
+        for _ in range(60):
+            if _ansst(dsn, "SELECT 1") == "1":
+                return
+            time.sleep(1)
+
+    def run(sql):
+        wait_up()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(sql)
+
+    expect.text(_ansst(dsn, "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')")
+                + "|" + _ansst(dsn, "SELECT 1"),
+                "54000|1", "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up")
+    # A role may first use most of max_stack_depth in SQL, and glob(3) then has
+    # only what is left. pgm_deep calls itself n times, then the helper. The
+    # deepest n that still answers is found in steps of 100, from 3000 down.
+    run("CREATE FUNCTION pgm_deep(n int, p text, q text) RETURNS text LANGUAGE plpgsql AS $$"
+        " BEGIN IF n = 0 THEN RETURN pgcolumnar.path_glob_matches(p, q)::text; END IF;"
+        " RETURN pgm_deep(n - 1, p, q); END $$")
+    deep = 3000
+    while deep > 0 and _ansst(dsn, f"SELECT pgm_deep({deep}, '/w/*', '/w/a')") != "true":
+        deep -= 100
+    print(f"-- pgm_deep answers at {deep} levels of SQL")
+    expect.text(_ansst(dsn, f"SELECT pgm_deep({deep}, '/*/' || repeat('a/', 2045) || 'x', '/b')")
+                + "|" + _ansst(dsn, "SELECT 1"),
+                "54000|1", "path_glob_matches refuses one * and 2045 more levels with an error near max_stack_depth, and the server stays up")
+    run("DROP FUNCTION pgm_deep(int, text, text)")
+    # fnmatch keeps more on the stack for each * in a UTF-8 locale than in C,
+    # so this runs in a database whose LC_CTYPE is C.UTF-8.
+    db = "tier_cutf8_py"
+    run(f"DROP DATABASE IF EXISTS {db}")
+    run(f"CREATE DATABASE {db} TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'")
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as e:
+            e.execute("CREATE EXTENSION pgcolumnar")
+        expect.text(_ansst(pgc_cluster.dsn(dbname=db),
+                           "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 1000) || 'x',"
+                           " 's3://b/' || repeat('a/', 1000) || 'x')")
+                    + "|" + _ansst(dsn, "SELECT 1"),
+                    "54000|1", "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up")
+    finally:
+        run(f"DROP DATABASE IF EXISTS {db}")
