@@ -1763,4 +1763,8 @@ guard_tests 863
 # cluster_tests 5334 -> 5334 for #1946's third review: four checks in test_tier_partition.py (an unclosed
 # [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
 # the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's eight checks in test_tier_partition.py (a path under an Iceberg
+# foreign table's location is refused, local and s3://, with its detail; two paths beside it are not; another
+# wrapper's path option refuses nothing; a wrapper with the Parquet handler under another name still does),
+# added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
 cluster_tests 5334

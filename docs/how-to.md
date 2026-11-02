@@ -754,6 +754,19 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   function (#1951). It is a class with a range that ends in `[` and also a
   `[:name:]`, `[=c=]` or `[.c.]`, such as `[z1-[:alpha:]]`.
 
+The function reads the `path` option only of foreign tables whose wrapper uses
+pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
+option of another wrapper's foreign table means what that wrapper says, so it
+blocks no move. A path that such a table really reads is not refused either.
+
+A `pgcolumnar_iceberg` foreign table has no `path` option. It reads data files
+under its table location. The function takes that location as the reader
+does: the parent of the directory that holds `metadata_path`. So with
+`metadata_path` `s3://wh/db/t/metadata/v3.metadata.json`, the function refuses
+any path under `s3://wh/db/t/` (#1949). The function does not read the table's
+manifests. So it does not see a data file that the table keeps outside its
+location, for example under a separate `write.data.path`.
+
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,
 the foreign table on the directory reads the new file as well. So this common

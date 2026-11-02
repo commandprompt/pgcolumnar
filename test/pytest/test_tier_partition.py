@@ -357,6 +357,49 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P01", "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
+    # An Iceberg foreign table has no path option. It reads data files under its
+    # table location, the parent of the directory holding metadata_path (#1949).
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE s_dup_ice (at timestamptz, r int) SERVER ti"
+                    f" OPTIONS (metadata_path '{server_dir}/sice/metadata/v2.metadata.json')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_rice (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path 'S3N://tierb/swh/sice/metadata/v7.metadata.json')")
+    for d in (server_dir / "sice", server_dir / "sice" / "data"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    expect.text(rolled(tier.format(f"{server_dir}/sice/data/s_apr.parquet")),
+                "58P02", "a local path under an Iceberg foreign table's location is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sice/data/y.parquet")),
+                "58P02", "an s3:// path under an Iceberg foreign table's location is refused")
+    expect.text(_errdetail(conn, tier.format("s3://tierb/swh/sice/data/y.parquet")),
+                "Foreign table public.s_dup_rice reads Iceberg files under 'S3N://tierb/swh/sice/'.",
+                "the Iceberg refusal's detail names the foreign table and its location")
+    expect.text(rolled(tier.format(f"{server_dir}/sicex/s_apr.parquet")),
+                "58P01", "a local path that only starts with an Iceberg location's name is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sicex.parquet")),
+                "28000", "an s3:// path beside an Iceberg foreign table's location is not refused")
+    # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
+    # (#1949); a wrapper made with the Parquet handler under another name does.
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_other_fdw")
+        cur.execute("CREATE SERVER s_other FOREIGN DATA WRAPPER s_other_fdw")
+        cur.execute("CREATE FOREIGN TABLE s_dup_oroot (x int) SERVER s_other OPTIONS (path '/')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_osame (x int) SERVER s_other"
+                    f" OPTIONS (path '{server_dir}/soth/y.parquet')")
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_pq2 HANDLER pgcolumnar.parquet_fdw_handler"
+                    " VALIDATOR pgcolumnar.parquet_fdw_validator")
+        cur.execute("CREATE SERVER s_pq2s FOREIGN DATA WRAPPER s_pq2")
+        cur.execute("CREATE FOREIGN TABLE s_dup_pq2 (x int) SERVER s_pq2s"
+                    f" OPTIONS (path '{server_dir}/spq2/y.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "58P01", "a path option of '/' under another wrapper does not refuse a local path")
+    expect.text(rolled(tier.format(f"{server_dir}/soth/y.parquet")),
+                "58P01", "a path option under another wrapper does not refuse the same path")
+    expect.text(rolled(tier.format(f"{server_dir}/spq2/y.parquet")),
+                "58P02", "a path a wrapper with the Parquet handler under another name reads is refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ice, s_dup_rice")
+        cur.execute("DROP FOREIGN DATA WRAPPER s_other_fdw, s_pq2 CASCADE")
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")
