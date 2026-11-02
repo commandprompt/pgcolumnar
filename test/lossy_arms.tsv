@@ -124,7 +124,6 @@ native_fold_deferral	premise: the selective predicate is genuinely selective (<=
 native_gap	gap was physically materialized
 native_groupagg	a lookalike function with the same signature gets NO bound
 native_groupagg	a non-time expression key gets no bound either
-native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)
 native_reclaim_frag	coalesce never larger than whole-range reuse
 native_reclaim	repeated recluster reuses space (file plateaus)
 native_recluster	reclustering increases 2D skipping

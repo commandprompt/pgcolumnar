@@ -221,6 +221,13 @@ Retires row groups that are fully deleted, dropping their metadata so scans skip
 them. Holds only `ShareUpdateExclusiveLock`, so it runs against a live table.
 Returns the number of groups retired.
 
+A group counts as fully deleted only when no transaction can still see its
+rows. While a transaction in the same database is older than the `DELETE`,
+`compact` retires none of those groups and can return 0. Such a transaction
+holds a snapshot or a transaction ID from before the `DELETE` committed. A
+prepared transaction or a replication slot holds rows back the same way. Call
+`compact` again after that transaction ends.
+
 ```sql
 SELECT pgcolumnar.compact('events');
 ```
