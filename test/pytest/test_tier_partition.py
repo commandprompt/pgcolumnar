@@ -232,6 +232,8 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rrdash": "s3://tierb/srd/-[/-[-[:alpha:][=a=]].parquet",
               "s_dup_rnone": "s3://tierb/snn/[1[::]-a]x.parquet",
               "s_dup_rcollab": "s3://tierb/scb/[1[.ab.]-a]x.parquet",
+              "s_dup_rvneg": "s3://tierb/svn/[^-:-[:alpha:]x].parquet",
+              "s_dup_lvneg": f"{server_dir}/slvn/[!-:-[:alpha:]x].parquet",
               "s_dup_hglob": "http://h.example/shg/*.parquet",
               "s_dup_gglob": "gs://tierb/sgg/*.parquet",
               "s_dup_rcunt": "s3://tierb/snc/a[^]x*",
@@ -338,6 +340,13 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "an empty [::] in a glob class is one unit to fnmatch, so a path the class matches is refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/scb/1x.parquet")),
                 "58P02", "a collating symbol [.ab.] in a glob class is one unit to fnmatch, so a path the class matches is refused")
+    # A ! or ^ right after [ always negates, even where reading it as a member
+    # would give a longer token. Here fnmatch closes at the first ] and the x]
+    # after it is literal (#1953 review).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/svn/1x].parquet")),
+                "58P02", "a ! or ^ after [ in a glob always negates, so a path the negated class matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slvn/1x].parquet")),
+                "58P02", "a ! or ^ after [ in a local glob always negates, so a path the negated class matches is refused")
     expect.text(_errdetail(conn, tier.format("s3://tierb/se/*.parquet")),
                 "Foreign table public.s_dup_resc reads path 's3://tierb/se/\\*.parquet'.",
                 "the refusal's detail prints a path holding a backslash as written, not as an E'' string")

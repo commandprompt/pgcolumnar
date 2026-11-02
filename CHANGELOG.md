@@ -579,8 +579,10 @@ true until the next version shipped.
   `[1a-[:alpha:]]`, glibc closes the bracket at a later `]` once a member
   before the range has matched. The check cannot follow that, so it refuses
   every path that has one character other than `/` in the bracket's place and
-  anything after it. A comparison with glibc 2.43 `fnmatch` over nine random
-  pattern sets (256,776 matches) now finds no match the check misses.
+  anything after it. A `!` or `^` right after `[` always negates; the check
+  no longer reads it as a member to make a longer bracket (#1953 review).
+  One known family still gets past the check (#1957): a negated bracket whose
+  closing `]` glibc looks for past the end of the pattern.
   The error detail now prints the foreign table's path as written. A path
   that holds a backslash printed as `E'...'` with the backslash doubled.
   docs/how-to.md. `test/tier_partition.sh` and its pytest twin. Reported by

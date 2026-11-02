@@ -750,11 +750,16 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   The function treats a `[...]` class as any one character other than `/`, so
   it can refuse a path that the class would not match. A `[` with no closing
   `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
-  class, and `[^...]` counts like `[!...]`. In a rare bracket a range ends in
-  a plain `[` before a POSIX or an equivalence class, as in `[1a-[:alpha:]]`.
-  There glibc can close the bracket at a later `]`. So the function refuses
-  every path that has one character other than `/` in the bracket's place,
-  whatever follows (#1951).
+  class, and `[^...]` counts like `[!...]`. A rare bracket can close at a
+  later `]` in glibc. That bracket is not negated and starts with a member.
+  Then a range in it ends in a plain `[` before a POSIX or an equivalence
+  class, as in `[1a-[:alpha:]]`. For such a bracket the function refuses every path
+  that has one character other than `/` in the bracket's place, whatever
+  follows (#1951). A bracket that starts with the range, as in
+  `[a-[:alpha:]]`, or a negated one, as in `[!1a-[:alpha:]]`, closes at the
+  first `]`.
+  One rare negated form still gets past the function (#1957). In it glibc
+  looks for the closing `]` past the end of the pattern, as in `[^[*-[::]`.
 
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,
