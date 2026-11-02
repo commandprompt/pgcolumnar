@@ -469,8 +469,16 @@ check "a threshold behind a spaced redirect" \
 	"$([ "$a" -le "$b" ] 2> /dev/null && echo yes || echo no)" "yes"
 check "a threshold behind an and-redirect" \
 	"$([ "$a" -le "$b" ] &>/dev/null && echo yes || echo no)" "yes"
+check "a threshold behind an and-redirect into a variable" \
+	"$([ "$a" -le "$b" ] &>"$LOG" && echo yes || echo no)" "yes"
+check "a threshold behind a spaced redirect into a variable" \
+	"$([ "$a" -le "$b" ] 2> "$LOG" && echo yes || echo no)" "yes"
 check_num "an if/then/else threshold behind a redirect into a variable" \
 	"$(if [ "$a" -le "$b" ] 2>"$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind an and-redirect into a variable" \
+	"$(if [ "$a" -le "$b" ] &>"$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind a spaced redirect into a variable" \
+	"$(if [ "$a" -le "$b" ] 2> "$LOG"; then echo 1; else echo 0; fi)" "1"
 check_num "carried: an if/then/else behind a redirect names the number" \
 	"$(if [ "$a" -le "$b" ] 2>"$LOG"; then echo 1; else echo "0 (a=$a)"; fi)" "1"
 PROBE
@@ -479,7 +487,7 @@ PROBE
 # the runner. Measured: as root on PG15 the names came out in the other order.
 _lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
-	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a redirect into a variable;a threshold behind a spaced redirect;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind two redirects;an if/then/else threshold behind a redirect into a variable;"
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind two redirects;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused
