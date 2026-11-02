@@ -148,13 +148,17 @@ _hr_diagnose() {	# _hr_diagnose LOGFILE -> the tail, or WHY there is no tail
 }
 
 _hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> missing|untouched|overwritten|changed-elsewhere
-	# DID THE REBUILD WRITE IT (#1942). An unchanged mtime is untouched. A changed one is the
+	# DID THE REBUILD WRITE IT (#1942). An unchanged reading is untouched. A changed one is the
 	# rebuild's only if the rebuild targeted the live library, because PGXS
 	# installs into the same `pg_config --pkglibdir` that rebuild.sh prints as
 	# its target. A rebuild that printed no target cannot be cleared by it, so an
 	# empty target is blamed rather than excused.
 	# AN EMPTY READING IS A MISSING LIBRARY (#1950), not a match: two empty
-	# readings compare equal, and used to read as untouched.
+	# readings compare equal, and used to read as untouched. The empty test
+	# comes before the target test on purpose. So a library that another
+	# session's rebuild.sh deletes during this part (it runs `rm -f` before its
+	# install) now fails as missing, where it used to skip as changed
+	# elsewhere. The per-major lock makes that window unlikely.
 	if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
 		echo missing
 	elif [ "$1" = "$2" ]; then
@@ -441,6 +445,15 @@ if [ "$(_hr_dependents "$_hr_rc")" = run ]; then
 	# (inode, size, mtime), the owner now, and the rebuild's target, so a reader
 	# can judge when the write happened and who made it.
 	_hr_live_after="$(_hr_live_reading "$_hr_live_so")"
+	# THE LIVE CALL SITES USE THE READING (#1954 review). The checks above
+	# drive _hr_live_reading on a file of their own, so a call site put back
+	# to whole-second `stat -c %Y` left them all green. This check reads the
+	# two live readings themselves. It also fails when the library is absent.
+	_hr_live_form='^inode [0-9]+ size [0-9]+ mtime [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9} '
+	check_text "both live readings carry the inode, the size and the mtime to the nanosecond" \
+		"$(if [[ "$_hr_live_before" =~ $_hr_live_form ]] && [[ "$_hr_live_after" =~ $_hr_live_form ]];
+		then echo well-formed; else echo "before [$_hr_live_before] after [$_hr_live_after]"; fi)" \
+		"well-formed"
 	_hr_live_owner="$(stat -c %U "$_hr_live_so" 2>/dev/null)"
 	_hr_live_v="$(_hr_live_verdict "$_hr_live_before" "$_hr_live_after" "$_hr_target" "$_hr_live_so")"
 	_hr_live_m="$_hr_live_v: $_hr_live_so [${_hr_live_before:-absent}] -> [${_hr_live_after:-absent}], owner ${_hr_live_owner:-<none>}, rebuild target ${_hr_target:-<none>}"
@@ -463,6 +476,7 @@ else
 		"and the freshness gate then reads the tree as built from this source" \
 		"and it reads a different source as stale rather than fresh" \
 		"the rebuild names the temporary prefix as its target" \
+		"both live readings carry the inode, the size and the mtime to the nanosecond" \
 		"and the installed library of the running major was never touched"; do
 		check_skip "$_hr_arm" \
 			"SKIP  $_hr_arm (the hand rebuild failed, so there is no stamp to read)" \

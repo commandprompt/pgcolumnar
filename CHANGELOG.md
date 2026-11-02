@@ -541,7 +541,9 @@ true until the next version shipped.
   untouched. A library missing before and after gave two empty readings, which
   also read as untouched. The check now compares the inode, the size and the
   modification time to the nanosecond. An empty reading on either side fails
-  the check as `missing`, with both readings printed. docs/testing.md.
+  the check as `missing`, with both readings printed. A new check confirms
+  that both live readings carry the inode, the size and the nanosecond time.
+  docs/testing.md.
 
 - `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
   session installs into the same prefix during the run (#1942). The check
