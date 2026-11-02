@@ -3718,7 +3718,10 @@ typedef struct PqVTree
 typedef struct PqVDir
 {
 	int			node;			/* the directory being listed */
+	int			up;				/* stand-ins below node; 0 for node itself */
 	int			next;			/* -2 for ".", -1 for "..", then a node index */
+	int			depth;			/* the index of the name it is listed for */
+	const char *stand;			/* a stand-in still to list, or NULL */
 	struct dirent ent;
 } PqVDir;
 
@@ -3739,6 +3742,41 @@ static bool pq_vcut = false;	/* a callback stopped for an interrupt */
 #define PQ_GLOB_MAX_STEPS 1000000
 static int	pq_vsteps = 0;
 static bool pq_vover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
+
+/*
+ * A wildcard name, then a later name that matches "..", climbs out of
+ * whatever directory the wildcard matched: /w/x/?/.?/a reads /w/x/a whenever
+ * /w/x holds a directory of one letter (#1991). The tree holds no directory
+ * a wildcard could match. So when the first walk finds no match, a second
+ * walk runs in which each name of the pattern before the last one that can
+ * match ".." is open. Any name glob(3) looks up there exists as a directory,
+ * a stand-in, and a directory listed for a wildcard name there also lists one
+ * stand-in that the wildcard matches. A stand-in has no node: a path below
+ * one is its real ancestor plus a count of stand-ins, which ".." takes off one
+ * by one. Names are counted as glob(3) builds its paths, one for each name of
+ * the pattern, without empty names. The second walk only adds matches.
+ *
+ * Each . and .. and stand-in multiplies that walk, so it lists an entry the
+ * name matches only once for each place it leads to: glob(3) expands every
+ * path of one name before it lists any directory for the next, so a second
+ * path to the same place would only repeat the first. The first walk lists
+ * every entry, as before, so its bounds are unchanged.
+ */
+#define PQ_VSTAND 3				/* candidate names for each stand-in */
+#define PQ_VSEEN 65536			/* places a second walk remembers */
+
+typedef struct PqVOpen
+{
+	int			open;			/* names before this index are open */
+	int			nnames;
+	char	  **names;			/* the names of the pattern */
+	char	  **stand;			/* PQ_VSTAND candidates for each open name */
+	bool		reldot;			/* "." lists the first name of the pattern */
+	uint64	   *seen;			/* places reached, PQ_VSEEN slots, 0 if free */
+	int			nseen;
+} PqVOpen;
+
+static PqVOpen *pq_vo = NULL;	/* set during a second walk only */
 
 /* count one step of the walk -> false once the walk must stop */
 static bool
@@ -3771,14 +3809,19 @@ pq_vchild(const PqVTree *t, int dir, const char *name, size_t len)
 
 /*
  * The node a path names, resolving "." and ".." as the kernel does; a path
- * with or without a leading '/' starts at the root. -> -1 with errno set.
+ * with or without a leading '/' starts at the root. *up is set to the number
+ * of stand-ins below that node the path ends in (PqVOpen). -> -1 with errno
+ * set.
  */
 static int
-pq_vresolve(const char *p)
+pq_vresolve(const char *p, int *up)
 {
 	const PqVTree *t = pq_vtree;
 	int			cur = 0;
+	int			depth = 0;		/* the names before this one */
+	int			next;
 
+	*up = 0;
 	if (!pq_vstep())
 	{
 		errno = EINTR;
@@ -3791,18 +3834,28 @@ pq_vresolve(const char *p)
 
 		if (len == 0 || (len == 1 && p[0] == '.'))
 			;
-		else if (!t->nodes[cur].isdir)
+		else if (*up == 0 && !t->nodes[cur].isdir)
 		{
 			errno = ENOTDIR;
 			return -1;
 		}
 		else if (len == 2 && p[0] == '.' && p[1] == '.')
-			cur = t->nodes[cur].parent;
-		else if ((cur = pq_vchild(t, cur, p, len)) < 0)
+		{
+			if (*up > 0)
+				(*up)--;
+			else
+				cur = t->nodes[cur].parent;
+		}
+		else if (*up == 0 && (next = pq_vchild(t, cur, p, len)) >= 0)
+			cur = next;
+		else if (pq_vo != NULL && depth < pq_vo->open)
+			(*up)++;
+		else
 		{
 			errno = ENOENT;
 			return -1;
 		}
+		depth += (len > 0) ? 1 : 0;
 		p = (*e == '/') ? e + 1 : e;
 	}
 	return cur;
@@ -3811,12 +3864,15 @@ pq_vresolve(const char *p)
 static void *
 pq_vopendir(const char *path)
 {
-	int			node = pq_vresolve(path);
+	int			up;
+	int			node = pq_vresolve(path, &up);
 	PqVDir	   *d;
+	int			depth = 0;
+	const char *p;
 
 	if (node < 0)
 		return NULL;
-	if (!pq_vtree->nodes[node].isdir)
+	if (up == 0 && !pq_vtree->nodes[node].isdir)
 	{
 		errno = ENOTDIR;
 		return NULL;
@@ -3825,8 +3881,55 @@ pq_vopendir(const char *path)
 	if (d == NULL)
 		return NULL;
 	d->node = node;
+	d->up = up;
 	d->next = -2;
+	d->stand = NULL;
+	/* the index of the name this listing is for */
+	for (p = path; *p != '\0'; p++)
+		depth += (*p != '/' && (p == path || p[-1] == '/')) ? 1 : 0;
+	if (pq_vo != NULL && pq_vo->reldot && strcmp(path, ".") == 0)
+		depth = 0;
+	d->depth = depth;
+	if (pq_vo != NULL && depth < pq_vo->open)
+	{
+		int			k;
+
+		/* a candidate no real entry of the directory already has */
+		for (k = 0; k < PQ_VSTAND && d->stand == NULL; k++)
+		{
+			const char *c = pq_vo->stand[depth * PQ_VSTAND + k];
+
+			if (c != NULL && (up > 0 || pq_vchild(pq_vtree, node, c, strlen(c)) < 0))
+				d->stand = c;
+		}
+	}
 	return d;
+}
+
+/*
+ * Has a second walk already listed an entry, for the name at `depth`, that
+ * leads to node `node` with `up` stand-ins below it? Records it if not. Once
+ * the table is full, nothing more is recorded and every entry is listed.
+ */
+static bool
+pq_vrepeat(int depth, int node, int up)
+{
+	uint64		key = (UINT64CONST(1) << 63) | ((uint64) depth << 42) |
+		((uint64) up << 21) | (uint64) node;
+	uint32		i = (uint32) ((key * UINT64CONST(0x9E3779B97F4A7C15)) >> 48);
+
+	while (pq_vo->seen[i] != 0)
+	{
+		if (pq_vo->seen[i] == key)
+			return true;
+		i = (i + 1) % PQ_VSEEN;
+	}
+	if (pq_vo->nseen < PQ_VSEEN / 4 * 3)
+	{
+		pq_vo->seen[i] = key;
+		pq_vo->nseen++;
+	}
+	return false;
 }
 
 static struct dirent *
@@ -3836,29 +3939,52 @@ pq_vreaddir(void *dirp)
 	const PqVTree *t = pq_vtree;
 	const char *name;
 	int			node;
+	int			to;				/* the node the entry leads to */
+	int			toup;			/* and the stand-ins below it */
 
-	if (!pq_vstep())
-		return NULL;
-	if (d->next == -2 || d->next == -1)
+	for (;;)
 	{
-		name = (d->next == -2) ? "." : "..";
-		node = (d->next == -2) ? d->node : t->nodes[d->node].parent;
-		d->next++;
-		if (d->next == 0)
-			d->next = 1;
-	}
-	else
-	{
-		while (d->next < t->n && t->nodes[d->next].parent != d->node)
-			d->next++;
-		if (d->next >= t->n)
+		if (!pq_vstep())
 			return NULL;
-		node = d->next++;
-		name = t->nodes[node].name;
+		if (d->next == -2 || d->next == -1)
+		{
+			name = (d->next == -2) ? "." : "..";
+			to = (d->next == -2 || d->up > 0) ? d->node : t->nodes[d->node].parent;
+			toup = (d->next == -2) ? d->up : Max(d->up - 1, 0);
+			node = (d->up > 0) ? -1 : to;	/* -1: a stand-in, or above one */
+			d->next++;
+			if (d->next == 0)
+				d->next = 1;
+		}
+		else
+		{
+			while (d->up == 0 && d->next < t->n && t->nodes[d->next].parent != d->node)
+				d->next++;
+			if (d->up == 0 && d->next < t->n)
+			{
+				node = to = d->next++;
+				toup = 0;
+				name = t->nodes[node].name;
+			}
+			else if (d->stand != NULL)
+			{
+				node = -1;
+				to = d->node;
+				toup = d->up + 1;
+				name = d->stand;
+				d->stand = NULL;
+			}
+			else
+				return NULL;
+		}
+		if (pq_vo == NULL || d->depth >= pq_vo->nnames ||
+			fnmatch(pq_vo->names[d->depth], name, FNM_PERIOD) != 0 ||
+			!pq_vrepeat(d->depth + 1, to, toup))
+			break;
 	}
 	memset(&d->ent, 0, sizeof(d->ent));
-	d->ent.d_ino = node + 1;
-	d->ent.d_type = t->nodes[node].isdir ? DT_DIR : DT_REG;
+	d->ent.d_ino = (node >= 0) ? node + 1 : t->n + 1;
+	d->ent.d_type = (node < 0 || t->nodes[node].isdir) ? DT_DIR : DT_REG;
 	strlcpy(d->ent.d_name, name, sizeof(d->ent.d_name));
 	return &d->ent;
 }
@@ -3872,14 +3998,15 @@ pq_vclosedir(void *dirp)
 static int
 pq_vstat(const char *path, struct stat *st)
 {
-	int			node = pq_vresolve(path);
+	int			up;
+	int			node = pq_vresolve(path, &up);
 
 	if (node < 0)
 		return -1;
 	memset(st, 0, sizeof(*st));
-	st->st_ino = node + 1;
+	st->st_ino = (up > 0) ? pq_vtree->n + up : node + 1;
 	st->st_nlink = 1;
-	st->st_mode = pq_vtree->nodes[node].isdir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+	st->st_mode = (up > 0 || pq_vtree->nodes[node].isdir) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
 	return 0;
 }
 
@@ -4131,6 +4258,256 @@ pq_vtree_seed(PqVTree *t, const char *pattern)
 }
 
 /*
+ * The end of the bracket expression that starts at `p`, just past its ']', or
+ * NULL when it has none and glob(3) reads the '[' as itself.
+ */
+static const char *
+pq_bracket_end(const char *p)
+{
+	const char *c = p + 1;
+
+	if (*c == '!' || *c == '^')
+		c++;
+	if (*c == ']')
+		c++;
+	while (*c != '\0' && *c != ']')
+	{
+		if (c[0] == '[' && (c[1] == ':' || c[1] == '=' || c[1] == '.'))
+		{
+			const char *e = c + 2;
+
+			while (*e != '\0' && !(e[0] == c[1] && e[1] == ']'))
+				e++;
+			if (*e == '\0')
+				return NULL;
+			c = e + 2;
+		}
+		else if (c[0] == '\\' && c[1] != '\0')
+			c += 2;
+		else
+			c++;
+	}
+	return (*c == ']') ? c + 1 : NULL;
+}
+
+/*
+ * Write to `out`, which holds strlen(name) + 1 bytes, the k-th name that the
+ * glob name `name` matches as glob(3) matches it, with FNM_PERIOD: a * or a ?
+ * stands for the k-th letter, and a bracket for the k-th byte it matches, or
+ * its last. -> false when no such name is found, or it is "." or "..".
+ */
+static bool
+pq_vstand_name(const char *name, int k, char *out)
+{
+	size_t		o = 0;
+	const char *c = name;
+
+	while (*c != '\0')
+	{
+		const char *end = (*c == '[') ? pq_bracket_end(c) : NULL;
+
+		if (c[0] == '\\' && c[1] != '\0')
+		{
+			out[o++] = c[1];
+			c += 2;
+		}
+		else if (*c == '*' || *c == '?')
+		{
+			out[o++] = "abc"[k];
+			c++;
+		}
+		else if (end != NULL)
+		{
+			char	   *br = pnstrdup(c, end - c);
+			char		one[2] = {0, 0};
+			int			b;
+			int			seen = 0;
+
+			for (b = 1; b < 256; b++)
+			{
+				one[0] = (char) b;
+				if (b == '/' || (o == 0 && b == '.') || fnmatch(br, one, 0) != 0)
+					continue;
+				if (seen == 0 || seen <= k)
+					out[o] = (char) b;
+				if (++seen > k)
+					break;
+			}
+			pfree(br);
+			if (seen == 0)
+				return false;
+			o++;
+			c = end;
+		}
+		else
+			out[o++] = *c++;
+	}
+	out[o] = '\0';
+	return o > 0 && strcmp(out, ".") != 0 && strcmp(out, "..") != 0 &&
+		o < sizeof(((struct dirent *) NULL)->d_name) &&
+		fnmatch(name, out, FNM_PERIOD) == 0;
+}
+
+/*
+ * The second walk of a pattern (PqVOpen), or NULL when it needs none: its
+ * names before the last one that can match "..", as fnmatch with FNM_PERIOD
+ * reads it, and that comes after a name holding *, ? or [, are open. Sets
+ * *closed when a wildcard name it opens has no stand-in: the caller then
+ * answers true.
+ */
+static PqVOpen *
+pq_vopen_names(const char *pattern, bool *closed)
+{
+	char	   *copy = pstrdup(pattern);
+	PqVOpen    *vo = palloc0(sizeof(PqVOpen));
+	bool		wild = false;
+	char	   *p;
+	int			i;
+	int			k;
+
+	*closed = false;
+	vo->names = palloc(sizeof(char *) * (strlen(pattern) + 1));
+	for (p = strtok(copy, "/"); p != NULL; p = strtok(NULL, "/"))
+		vo->names[vo->nnames++] = p;
+	for (i = 0; i < vo->nnames; i++)
+	{
+		if (wild && fnmatch(vo->names[i], "..", FNM_PERIOD) == 0)
+			vo->open = i;
+		if (strpbrk(vo->names[i], "*?[") != NULL)
+			wild = true;
+	}
+	if (vo->open == 0)
+		return NULL;
+	/* glob(3) lists "." for the first name of a relative pattern */
+	vo->reldot = (pattern[0] != '/' && strpbrk(vo->names[0], "*?[") != NULL);
+	vo->stand = palloc0(sizeof(char *) * vo->open * PQ_VSTAND);
+	for (i = 0; i < vo->open; i++)
+	{
+		bool		any = false;
+
+		if (strpbrk(vo->names[i], "*?[") == NULL)
+			continue;
+		for (k = 0; k < PQ_VSTAND; k++)
+		{
+			char	   *c = palloc(strlen(vo->names[i]) + 1);
+
+			if (pq_vstand_name(vo->names[i], k, c))
+			{
+				vo->stand[i * PQ_VSTAND + k] = c;
+				any = true;
+			}
+		}
+		if (!any)
+			*closed = true;
+	}
+	vo->seen = palloc(sizeof(uint64) * PQ_VSEEN);
+	return vo;
+}
+
+/*
+ * One walk of glob(3) over the tree; a second walk when `vo` is not NULL
+ * (PqVOpen) -> does a path it returns match `path` (want is its lexical
+ * form)? Past PQ_GLOB_MAX_STEPS the first walk raises an error, and a second
+ * walk sets *over and answers false.
+ */
+static bool
+pq_vwalk(const char *pattern, const char *path, const char *want,
+		 PqVTree *tree, PqVOpen *vo, bool *over)
+{
+	glob_t		g;
+	int			rc;
+	int			attempt;
+	bool		found = false;
+	size_t		i;
+
+	*over = false;
+	for (attempt = 1;; attempt++)
+	{
+		memset(&g, 0, sizeof(g));
+		g.gl_opendir = pq_vopendir;
+		g.gl_readdir = pq_vreaddir;
+		g.gl_closedir = pq_vclosedir;
+		g.gl_stat = pq_vstat;
+		g.gl_lstat = pq_vstat;
+		pq_vcut = false;
+		pq_vover = false;
+		pq_vsteps = 0;
+		if (vo != NULL)
+		{
+			memset(vo->seen, 0, sizeof(uint64) * PQ_VSEEN);
+			vo->nseen = 0;
+		}
+		pq_vtree = tree;
+		pq_vo = vo;
+		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
+		pq_vtree = NULL;
+		pq_vo = NULL;
+		if (!pq_vover && !pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
+			break;
+		globfree(&g);
+		if (pq_vover && vo != NULL)
+		{
+			*over = true;
+			return false;
+		}
+		if (pq_vover)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("glob pattern walks too many paths to match: more than %d steps",
+							PQ_GLOB_MAX_STEPS),
+					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
+		if (!pq_vcut)
+			ereport(ERROR,
+					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not match glob \"%s\" against path \"%s\": glob(3) returned %d",
+							pattern, path, rc)));
+		/* a cancel raises its error here; any other interrupt is processed */
+		CHECK_FOR_INTERRUPTS();
+		/* an interrupt that cannot be processed now cuts every walk short */
+		if (attempt >= 100)
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("could not match glob \"%s\" against path \"%s\": interrupted %d times",
+							pattern, path, attempt)));
+	}
+	if (rc == 0)
+	{
+		/*
+		 * glob(3) returns a name a glob reached through "." or ".." as it
+		 * built it, such as /w/x/../a for /w/x/.?/a. Each is compared as
+		 * returned, then in its lexical form with the target's (#1982). The
+		 * buffer is malloc'd, so an error cannot leave glob(3)'s memory
+		 * behind.
+		 */
+		size_t		longest = 0;
+		char	   *got;
+
+		for (i = 0; i < g.gl_pathc; i++)
+			longest = Max(longest, strlen(g.gl_pathv[i]));
+		got = malloc(longest + 3);
+		if (got == NULL)
+		{
+			globfree(&g);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
+		for (i = 0; i < g.gl_pathc && !found; i++)
+		{
+			found = (strcmp(g.gl_pathv[i], path) == 0);
+			if (!found)
+			{
+				pq_local_path_fold(g.gl_pathv[i], got);
+				found = (strcmp(got, want) == 0);
+			}
+		}
+		free(got);
+	}
+	globfree(&g);
+	return found;
+}
+
+/*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
  * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
  * than a directory entry holds, cannot be opened, so it matches nothing. A
@@ -4140,20 +4517,23 @@ pq_vtree_seed(PqVTree *t, const char *pattern)
  * steps (#1973). It never answers false for a walk an interrupt cut short,
  * nor for a glob(3) error: it processes the interrupt and walks again, or
  * raises an error. A path glob(3) returns matches when it is `path` as
- * spelled, or when the two have the same lexical form (#1982).
+ * spelled, or when the two have the same lexical form (#1982). When the
+ * first walk finds none, and a wildcard name comes before a name that can
+ * match "..", a second walk with stand-ins for the directories the wildcard
+ * could match decides (PqVOpen, #1991). It answers true when that walk
+ * passes PQ_GLOB_MAX_STEPS, or a stand-in cannot be named.
  */
 static bool
 pq_local_glob_match(const char *pattern, const char *path)
 {
 	char	   *copy;
 	PqVTree		tree;
-	glob_t		g;
-	int			rc;
 	int			cur = 0;
 	char	   *p;
-	bool		found = false;
-	size_t		i;
-	int			attempt;
+	bool		found;
+	bool		over;
+	bool		closed;
+	PqVOpen    *vo;
 	char	   *want;
 
 	pq_local_glob_bound(pattern);
@@ -4209,77 +4589,13 @@ pq_local_glob_match(const char *pattern, const char *path)
 	want = palloc(strlen(path) + 3);
 	pq_local_path_fold(path, want);
 
-	for (attempt = 1;; attempt++)
+	found = pq_vwalk(pattern, path, want, &tree, NULL, &over);
+	if (!found && (vo = pq_vopen_names(pattern, &closed)) != NULL)
 	{
-		memset(&g, 0, sizeof(g));
-		g.gl_opendir = pq_vopendir;
-		g.gl_readdir = pq_vreaddir;
-		g.gl_closedir = pq_vclosedir;
-		g.gl_stat = pq_vstat;
-		g.gl_lstat = pq_vstat;
-		pq_vcut = false;
-		pq_vover = false;
-		pq_vsteps = 0;
-		pq_vtree = &tree;
-		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
-		pq_vtree = NULL;
-		if (!pq_vover && !pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
-			break;
-		globfree(&g);
-		if (pq_vover)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("glob pattern walks too many paths to match: more than %d steps",
-							PQ_GLOB_MAX_STEPS),
-					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
-		if (!pq_vcut)
-			ereport(ERROR,
-					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
-					 errmsg("could not match glob \"%s\" against path \"%s\": glob(3) returned %d",
-							pattern, path, rc)));
-		/* a cancel raises its error here; any other interrupt is processed */
-		CHECK_FOR_INTERRUPTS();
-		/* an interrupt that cannot be processed now cuts every walk short */
-		if (attempt >= 100)
-			ereport(ERROR,
-					(errcode(ERRCODE_QUERY_CANCELED),
-					 errmsg("could not match glob \"%s\" against path \"%s\": interrupted %d times",
-							pattern, path, attempt)));
+		found = closed || pq_vwalk(pattern, path, want, &tree, vo, &over);
+		/* a walk too long to finish is taken to match: refuse more, not less */
+		found = found || over;
 	}
-	if (rc == 0)
-	{
-		/*
-		 * glob(3) returns a name a glob reached through "." or ".." as it
-		 * built it, such as /w/x/../a for /w/x/.?/a. Each is compared as
-		 * returned, then in its lexical form with the target's (#1982). The
-		 * buffer is malloc'd, so an error cannot leave glob(3)'s memory
-		 * behind.
-		 */
-		size_t		longest = 0;
-		char	   *got;
-
-		for (i = 0; i < g.gl_pathc; i++)
-			longest = Max(longest, strlen(g.gl_pathv[i]));
-		got = malloc(longest + 3);
-		if (got == NULL)
-		{
-			globfree(&g);
-			ereport(ERROR,
-					(errcode(ERRCODE_OUT_OF_MEMORY),
-					 errmsg("out of memory")));
-		}
-		for (i = 0; i < g.gl_pathc && !found; i++)
-		{
-			found = (strcmp(g.gl_pathv[i], path) == 0);
-			if (!found)
-			{
-				pq_local_path_fold(g.gl_pathv[i], got);
-				found = (strcmp(got, want) == 0);
-			}
-		}
-		free(got);
-	}
-	globfree(&g);
 	return found;
 }
 
