@@ -935,6 +935,36 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "a path a local glob * reaches only through . or .. is not refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_dplain")
+    # A wildcard name, then a later name that matches .., lets a glob climb
+    # out of a directory it never names: a table on ssw/*/.?/a.parquet reads
+    # ssw/a.parquet whenever ssw holds any directory, as * matches it and .?
+    # matches .. (#1991). path_glob_matches does not know which directory *
+    # matched, so it walks a stand-in for it. A table on snw/*/a.parquet still
+    # refuses nothing above *. The directory snw does not exist, so a move
+    # that is not refused fails 58P01.
+    for d in (server_dir / "ssw", server_dir / "ssw" / "d"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    wdq = f"{server_dir}/ssw/*/.?/a.parquet"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT pgcolumnar.export_parquet('s_apr', '{server_dir}/ssw/a.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_wdq {cols} SERVER tq OPTIONS (path '{wdq}')")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_wdq"), apr,
+               "premise: a local glob through a * name and then a .? name reads the file one .. above")
+    ssw = tier.format(f"{server_dir}/ssw/a.parquet")
+    expect.text(f"{rolled(ssw)}|{rolled_detail(ssw)}",
+                f"58P02|Foreign table public.s_dup_wdq reads path '{wdq}'.",
+                "a path a local glob reads through a * name and then a .? name is refused, and the detail names that table")
+    expect.text(rolled(tier.format(f"{server_dir}/snw/a.parquet")), "58P01",
+                "a path no table reads is not refused beside a glob through a * name and then a .? name")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_wdq")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_wplain {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/snw/*/a.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/snw/a.parquet")), "58P01",
+                "a path above a local glob * with no later name that matches .. is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_wplain")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
@@ -1762,3 +1792,24 @@ def test_tier_partition_path_glob_matches_errors_where_glibc_would_crash(pgc_own
                      "SELECT pgcolumnar.path_glob_matches('s3://c/y/*.parquet', 's3://c/y/a.parquet')"),
                 "false|true",
                 "path_glob_matches does not fold an s3:// key, so s3://b/x/*.parquet does not match s3://b/x/./a.parquet")
+    # A wildcard name, then a later name that matches .., climbs back out of
+    # the directory the wildcard matched (#1991). The helper cannot know that
+    # directory, so it walks a stand-in for it, and takes a name the glob
+    # spells below it to exist. A name that cannot match .., such as ?? (a
+    # leading dot must be spelled), climbs nothing, and the last name must
+    # still match.
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/sw/*/.?/a.parquet', '/v/sw/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/*/.?/.?/a.parquet', '/v/y/a.parquet')"),
+                "true|true", "path_glob_matches answers true for a path a local glob reaches through a * name and then a .? name")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/?/../a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/[d]/.*/a.parquet', '/v/y/a.parquet')"),
+                "true|true",
+                "path_glob_matches answers true for a path a local glob reaches through a ? name and then .., or a [class] name and then .*")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/*/.?/sub/../a.parquet', '/v/y/a.parquet')::text"),
+                "true",
+                "path_glob_matches answers true for a path a local glob reaches through a * name, a .? name and a directory it names after them")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/*/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/??/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/.?/a.parquet', '/v/y/b.parquet')"),
+                "false|false|false",
+                "path_glob_matches answers false for a path above a * name that no later name climbs back from, or that the last name does not match")

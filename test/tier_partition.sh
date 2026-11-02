@@ -796,6 +796,29 @@ psql_run "DROP FOREIGN TABLE dup_dstar, dup_dq;
 check "a path a local glob * reaches only through . or .. is not refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nd/a.parquet');")" "58P01"
 psql_run "DROP FOREIGN TABLE dup_dplain;"
+# A wildcard name, then a later name that matches .., lets a glob climb out of
+# a directory it never names: a table on sw/*/.?/a.parquet reads sw/a.parquet
+# whenever sw holds any directory, as * matches it and .? matches .. (#1991).
+# path_glob_matches does not know which directory * matched, so it walks a
+# stand-in for it. A table on nw/*/a.parquet still refuses nothing above *.
+# The directory nw does not exist, so a move that is not refused fails 58P01.
+mkdir -p "$W/sw/d" && chmod 777 "$W/sw" "$W/sw/d"
+psql_run "SELECT pgcolumnar.export_parquet('m_feb', '$W/sw/a.parquet');
+          CREATE FOREIGN TABLE dup_wdq (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sw/*/.?/a.parquet');"
+check "premise: a local glob through a * name and then a .? name reads the file one .. above" \
+	"$(q "SELECT count(*) FROM dup_wdq;")" "$feb_rows"
+check "a path a local glob reads through a * name and then a .? name is refused, and the detail names that table" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sw/a.parquet');")|$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sw/a.parquet');")" \
+	"58P02|Foreign table public.dup_wdq reads path '$W/sw/*/.?/a.parquet'."
+check "a path no table reads is not refused beside a glob through a * name and then a .? name" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nw/a.parquet');")" "58P01"
+psql_run "DROP FOREIGN TABLE dup_wdq;
+          CREATE FOREIGN TABLE dup_wplain (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/nw/*/a.parquet');"
+check "a path above a local glob * with no later name that matches .. is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nw/a.parquet');")" "58P01"
+psql_run "DROP FOREIGN TABLE dup_wplain;"
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar
@@ -1425,5 +1448,22 @@ check "a local glob * or ?? does not match . or .., so path_glob_matches answers
 check "path_glob_matches does not fold an s3:// key, so s3://b/x/*.parquet does not match s3://b/x/./a.parquet" \
 	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/x/*.parquet', 's3://b/x/./a.parquet') || '|' || pgcolumnar.path_glob_matches('s3://b/x/*.parquet', 's3://b/x/a.parquet');")" \
 	"false|true"
+# A wildcard name, then a later name that matches .., climbs back out of the
+# directory the wildcard matched (#1991). The helper cannot know that
+# directory, so it walks a stand-in for it, and takes a name the glob spells
+# below it to exist. A name that cannot match .., such as ?? (a leading dot
+# must be spelled), climbs nothing, and the last name must still match.
+check "path_glob_matches answers true for a path a local glob reaches through a * name and then a .? name" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('$W/sw/*/.?/a.parquet', '$W/sw/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/*/*/.?/.?/a.parquet', '/w/x/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers true for a path a local glob reaches through a ? name and then .., or a [class] name and then .*" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/?/../a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/[d]/.*/a.parquet', '/w/x/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers true for a path a local glob reaches through a * name, a .? name and a directory it names after them" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/*/.?/sub/../a.parquet', '/w/x/a.parquet')::text;")" \
+	"true"
+check "path_glob_matches answers false for a path above a * name that no later name climbs back from, or that the last name does not match" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/*/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/*/??/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/*/.?/a.parquet', '/w/x/b.parquet');")" \
+	"false|false|false"
 
 pgc_summary
