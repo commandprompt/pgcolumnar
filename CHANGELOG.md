@@ -583,7 +583,8 @@ true until the next version shipped.
   no longer reads it as a member to make a longer bracket (#1953 review).
   One known family still gets past the check (#1957): a negated bracket whose
   closing `]` glibc looks for past the end of the pattern.
-  The error detail now prints the foreign table's path as written. A path
+  The error detail now prints the foreign table's path as written, except
+  that a `'` in it is doubled, so the path cannot close its quotes. A path
   that holds a backslash printed as `E'...'` with the backslash doubled.
   docs/how-to.md. `test/tier_partition.sh` and its pytest twin. Reported by
   @OffgridwithJD.

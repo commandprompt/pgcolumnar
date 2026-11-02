@@ -240,7 +240,10 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rspan": "s3://tierb/ssp/x[a/b].parquet",
               "s_dup_rcoll": "s3://tierb/sco/[[.].]].parquet",
               "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet",
-              "s_dup_rquote": "s3://tierb/sq/it''s.parquet"}
+              "s_dup_rquote": "s3://tierb/sq/it''s.parquet",
+              "s_dup_rdslash": "s3://tierb/sdp/[1a-[:alpha:]]x/*.parquet",
+              "s_dup_rndash": "s3://tierb/snd/[^[:alpha:]-[-[=a=]]x.parquet",
+              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -348,6 +351,17 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a ! or ^ after [ in a glob always negates, so a path the negated class matches is refused")
     expect.text(rolled(tier.format(f"{server_dir}/slvn/1x].parquet")),
                 "58P02", "a ! or ^ after [ in a local glob always negates, so a path the negated class matches is refused")
+    # The widened class runs to the end of the pattern, so it still refuses a
+    # key below a / that follows it. And a - after a POSIX class stays a member
+    # in a negated class too, where reading it as a range would give the longer
+    # token: fnmatch closes at the first ], so 1] matches (#1953 review, third
+    # round).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdp/1x/f.parquet")),
+                "58P02", "a widened bracket followed by a slash still refuses the deeper key")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snd/1]x.parquet")),
+                "58P02", "a - after a POSIX class in a negated glob class is a member, so a path the class matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slnd/1]x.parquet")),
+                "58P02", "a - after a POSIX class in a negated local glob class is a member, so a path the class matches is refused")
     expect.text(_errdetail(conn, tier.format("s3://tierb/se/*.parquet")),
                 "Foreign table public.s_dup_resc reads path 's3://tierb/se/\\*.parquet'.",
                 "the refusal's detail prints a path holding a backslash as written, not as an E'' string")

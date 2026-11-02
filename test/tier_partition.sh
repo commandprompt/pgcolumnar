@@ -214,6 +214,9 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_rvneg (x int) SERVER tier_pq OPTIONS (path 's3://tierb/vn/[^-:-[:alpha:]x].parquet');
           CREATE FOREIGN TABLE dup_lvneg (x int) SERVER tier_pq OPTIONS (path '$W/lvn/[!-:-[:alpha:]x].parquet');
           CREATE FOREIGN TABLE dup_rquote (x int) SERVER tier_pq OPTIONS (path 's3://tierb/q/it''s.parquet');
+          CREATE FOREIGN TABLE dup_rdslash (x int) SERVER tier_pq OPTIONS (path 's3://tierb/dp/[1a-[:alpha:]]x/*.parquet');
+          CREATE FOREIGN TABLE dup_rndash (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nd/[^[:alpha:]-[-[=a=]]x.parquet');
+          CREATE FOREIGN TABLE dup_lndash (x int) SERVER tier_pq OPTIONS (path '$W/lnd/[![:alpha:]-[-[=a=]]x.parquet');
           CREATE FOREIGN TABLE dup_hglob (x int) SERVER tier_pq OPTIONS (path 'http://h.example/hg/*.parquet');
           CREATE FOREIGN TABLE dup_gglob (x int) SERVER tier_pq OPTIONS (path 'gs://tierb/gg/*.parquet');
           CREATE FOREIGN TABLE dup_rcunt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nc/a[^]x*');
@@ -311,6 +314,16 @@ check "a ! or ^ after [ in a glob always negates, so a path the negated class ma
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/vn/1x].parquet');")" "58P02"
 check "a ! or ^ after [ in a local glob always negates, so a path the negated class matches is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lvn/1x].parquet');")" "58P02"
+# The widened class runs to the end of the pattern, so it still refuses a key
+# below a / that follows it. And a - after a POSIX class stays a member in a
+# negated class too, where reading it as a range would give the longer token:
+# fnmatch closes at the first ], so 1] matches (#1953 review, third round).
+check "a widened bracket followed by a slash still refuses the deeper key" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/dp/1x/f.parquet');")" "58P02"
+check "a - after a POSIX class in a negated glob class is a member, so a path the class matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/nd/1]x.parquet');")" "58P02"
+check "a - after a POSIX class in a negated local glob class is a member, so a path the class matches is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lnd/1]x.parquet');")" "58P02"
 check "the refusal's detail prints a path holding a backslash as written, not as an E'' string" \
 	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/e/*.parquet');")" \
 	"Foreign table public.dup_resc reads path 's3://tierb/e/\\*.parquet'."
@@ -364,7 +377,7 @@ check "a local glob splits at a slash inside an equivalence class, so a path the
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/le/a.parquet');")" "58P01"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
-          dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote;"
+          dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote, dup_rdslash, dup_rndash, dup_lndash;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"
