@@ -1777,4 +1777,40 @@ guard_tests 863
 # cluster_tests 5334 -> 5334 for #1953 review's third round: three checks in test_tier_partition.py (a
 # widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
 # added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
-cluster_tests 5334
+# cluster_tests 5334 -> 5334 for #1949's eight checks in test_tier_partition.py (a path under an Iceberg
+# foreign table's location is refused, local and s3://, with its detail; two paths beside it are not; another
+# wrapper's path option refuses nothing; a wrapper with the Parquet handler under another name still does),
+# added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's review (PR #1955): three checks in test_tier_partition.py (an Iceberg
+# table whose metadata file sits at the root refuses a local path, with its detail; a relative metadata_path
+# refuses a path under '.'), added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's second review (PR #1955): three checks in test_tier_partition.py (a path
+# under the location of a table on a wrapper with the Iceberg handler under another name is refused; a path option
+# under a wrapper with the Iceberg handler, or with a handler pgcolumnar does not know, refuses nothing), added to
+# an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's third review (PR #1955): one check in test_tier_partition.py (the refusal
+# under a wrapper with the Iceberg handler under another name names that table and its location), added to an
+# existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5335 for #1957's path_glob_matches: ten checks in test_tier_partition.py (a
+# negated class glibc cannot close, in an s3:// and a local glob; a local [\/] and a local glob ending in
+# //; a dot name under * not refused, in an s3:// and a local glob; a newline in the detail printed as an
+# escape, and no HINT line under the refusal; the helper's volatility and its slash rule), added to an
+# existing test, and test_path_glob_matches_needs_no_server_file_role in test_server_file_privilege.py,
+# by collection: 6160 tests collected, less guard_tests 863.
+# cluster_tests 5335 -> 5335 for #1964 review's seven checks in test_tier_partition.py (an interrupt
+# that raises no error leaves the answer alone; . and .. are listed; the helper is VOLATILE; the
+# detail escapes a newline in the table's name, a backslash before an x and the LATIN1 NEL, and prints
+# the WIN1252 euro sign as written), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
+# cluster_tests 5335 -> 5335 for #1964 review round two's six checks in test_tier_partition.py (a
+# glob result other than the path does not count; 128 levels match and 129 error; a 4096-byte pattern
+# errors; a 4096-byte path is false; 400000 parts answer inside a 1 s timeout; a 4000-level pattern
+# errors and the server stays up), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
+# cluster_tests 5335 -> 5336 for #1964 review round three: test_tier_partition_path_glob_matches_errors_
+# where_glibc_would_crash in test_tier_partition.py (the 4000-level check moved there, last in the file;
+# one * and 2045 levels near max_stack_depth; 1000 s3:// */ levels in a UTF-8 database), and five checks
+# added to an existing test (one * and 129 levels; 129 ? or [ levels; 128/129 s3:// *; a 4095/4096-byte
+# s3:// pattern; a walk cut by an interrupt is never false, replacing the vacuous interrupt check), by
+# collection: 6161 tests collected, less guard_tests 863.
+cluster_tests 5336

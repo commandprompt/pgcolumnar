@@ -1048,7 +1048,8 @@ pgc_freshness_verdict() {	# pgc_freshness_verdict RECORDED CURRENT -> verdict
 #
 # fresh     the server started after the binary was installed
 # predates  the binary is newer than the server, so the server has older code
-# unknown   one of the two timestamps could not be read
+# unknown   one of the two timestamps could not be read, or the two are
+#           exactly equal, which says nothing about which came first (#1956)
 # pgc_check_running_binary SO_PATH
 #
 # The runtime half of the freshness check: does the RUNNING server postdate the
@@ -1071,11 +1072,18 @@ pgc_freshness_verdict() {	# pgc_freshness_verdict RECORDED CURRENT -> verdict
 # Returns non-zero rather than calling exit, so a caller that is not a suite can
 # turn it into its own kind of failure. pgc_setup passes the status through.
 pgc_check_running_binary() {	# pgc_check_running_binary SO_PATH -> 0|1
-	local _so_path="$1" _so_epoch _pm_epoch
-	_so_epoch="$(stat -c %Y "$_so_path" 2>/dev/null || echo '')"
+	local _so_path="$1" _so_epoch _so_stat _so_frac _pm_epoch
+	# Both readings keep their sub-second part (#1956). Whole seconds made an
+	# install in the same second after the server start read as fresh.
+	# %Y is the whole-second epoch and %y carries the same instant's
+	# nanoseconds, so one stat call gives SECONDS.FRACTION without parsing a date.
+	_so_stat="$(stat -c '%Y %y' "$_so_path" 2>/dev/null || echo '')"
+	_so_epoch="${_so_stat%% *}"
+	_so_frac="$(printf '%s\n' "$_so_stat" | grep -o '\.[0-9][0-9]*' | head -n 1)"
+	[ -n "$_so_epoch" ] && _so_epoch="$_so_epoch$_so_frac"
 	_pm_epoch="$(psql_admin_scalar \
-		"SELECT floor(extract(epoch from pg_postmaster_start_time()))::bigint;" \
-		2>/dev/null | tr -dc '0-9')"
+		"SELECT extract(epoch from pg_postmaster_start_time());" \
+		2>/dev/null | tr -dc '0-9.')"
 	case "$(pgc_running_binary_verdict "$_so_epoch" "$_pm_epoch")" in
 		fresh)
 			echo "-- server: started after the binary was installed"
@@ -1089,17 +1097,38 @@ pgc_check_running_binary() {	# pgc_check_running_binary SO_PATH -> 0|1
 			return 1
 			;;
 		unknown)
-			echo "-- server: could not compare binary and postmaster timestamps"
+			echo "-- server: could not compare binary and postmaster timestamps" \
+				"(.so [$_so_epoch], postmaster [$_pm_epoch])"
 			;;
 	esac
 	return 0
 }
 
+# Each epoch is SECONDS or SECONDS.FRACTION. The comparison is exact decimal
+# arithmetic on the digits, not floating point. A server that started strictly
+# after the install is fresh, strictly before is predates. An exactly equal
+# pair cannot say which came first, so it is unknown, never fresh (#1956).
 pgc_running_binary_verdict() {	# pgc_running_binary_verdict SO_EPOCH PM_EPOCH
-	local so="${1:-}" pm="${2:-}"
-	case "$so" in '' | *[!0-9]*) echo unknown; return ;; esac
-	case "$pm" in '' | *[!0-9]*) echo unknown; return ;; esac
-	[ "$pm" -ge "$so" ] && echo fresh || echo predates
+	local so="${1:-}" pm="${2:-}" re='^[0-9]+([.][0-9]+)?$'
+	local so_i so_f pm_i pm_f
+	[[ "$so" =~ $re ]] || { echo unknown; return; }
+	[[ "$pm" =~ $re ]] || { echo unknown; return; }
+	so_i="${so%%.*}"; pm_i="${pm%%.*}"
+	so_f="${so#"$so_i"}"; so_f="${so_f#.}"
+	pm_f="${pm#"$pm_i"}"; pm_f="${pm_f#.}"
+	# Pad both fractions to 18 digits, so each is an integer count of the same
+	# unit. 18 digits fit a 64-bit integer; a cut past them can only turn a
+	# difference into unknown, never into fresh.
+	so_f="${so_f}000000000000000000"; so_f="${so_f:0:18}"
+	pm_f="${pm_f}000000000000000000"; pm_f="${pm_f:0:18}"
+	so_i=$((10#$so_i)); pm_i=$((10#$pm_i))
+	so_f=$((10#$so_f)); pm_f=$((10#$pm_f))
+	if [ "$pm_i" -gt "$so_i" ]; then echo fresh
+	elif [ "$pm_i" -lt "$so_i" ]; then echo predates
+	elif [ "$pm_f" -gt "$so_f" ]; then echo fresh
+	elif [ "$pm_f" -lt "$so_f" ]; then echo predates
+	else echo unknown
+	fi
 }
 
 # THE BINARY, NOT ONLY THE SOURCE (#959). `pgc_freshness_verdict` compares two

@@ -243,10 +243,21 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rquote": "s3://tierb/sq/it''s.parquet",
               "s_dup_rdslash": "s3://tierb/sdp/[1a-[:alpha:]]x/*.parquet",
               "s_dup_rndash": "s3://tierb/snd/[^[:alpha:]-[-[=a=]]x.parquet",
-              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet"}
+              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet",
+              "s_dup_rnskip": "s3://tierb/snsk/[![-x[!-[=a=]",
+              "s_dup_lnskip": f"{server_dir}/slnsk/[![-x[!-[=a=]",
+              "s_dup_lbslash": f"{server_dir}/slbs/[\\/]",
+              "s_dup_ltrail": f"{server_dir}/slts/*//",
+              "s_dup_lhide": f"{server_dir}/slgh/*.parquet",
+              "s_dup_rnl": "s3://tierb/snl/a.parquet\nHINT:  x",
+              "s_dup_rnlg": "s3://tierb/snlg/[a\nHINT:  x]x.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
+        cur.execute("CREATE FOREIGN TABLE \"s_dup_tnl\nHINT:  trust me\" (x int) SERVER tq"
+                    " OPTIONS (path 's3://tierb/stnl/a.parquet')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_rlitx (x int) SERVER tq"
+                    " OPTIONS (path 's3://tierb/slitx/a\\x0A.parquet')")
     # The directories exist, so a local target the check let through would be written.
     for d in (server_dir / "sldir", server_dir / "sldir" / "sub", server_dir / "slg"):
         d.mkdir(exist_ok=True)
@@ -257,6 +268,15 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
             cur.execute("BEGIN")
         try:
             return _sqlstate(conn, sql)
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK")
+
+    def rolled_detail(sql):
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+        try:
+            return _errdetail(conn, sql)
         finally:
             with conn.cursor() as cur:
                 cur.execute("ROLLBACK")
@@ -418,8 +438,262 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     # the table reads no file named a.parquet in that directory.
     expect.text(rolled(tier.format(f"{server_dir}/sle/a.parquet")),
                 "58P01", "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused")
+    # The check matches with the reader's own fnmatch and glob(3), through
+    # pgcolumnar.path_glob_matches, so it agrees with them where a reading of
+    # the glob in SQL did not (#1957, #1962). A negated class that glibc cannot
+    # close after a member matched is a literal [ to glibc.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snsk/[!a")),
+                "58P02", "a negated glob class that glibc cannot close is a literal [, so a path holding it is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slnsk/[!a")),
+                "58P02", "a negated local glob class that glibc cannot close is a literal [, so a path holding it is refused")
+    # glob(3) splits a local pattern at every slash first, an escaped one too,
+    # so [\/] is a directory [ holding a file ]. And a pattern that ends in //
+    # names the directories it matches, as one that ends in / does.
+    expect.text(rolled(tier.format(f"{server_dir}/slbs/[/]")),
+                "58P02", "a local glob splits at a backslash-escaped slash in a bracket, so a path of [ and ] is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slts/d/")),
+                "58P02", "a local glob that ends in // matches the directory with one slash, so that path is refused")
+    # glibc skips a name that starts with '.' unless the pattern spells the dot
+    # (FNM_PERIOD), in an s3:// key as in a local glob, so the check refuses no
+    # more than the table reads.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/.x.parquet")),
+                "28000", "a glob * does not match a leading dot in an s3:// key, so a hidden key is not refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slgh/.x.parquet")),
+                "58P01", "a local glob * does not match a leading dot, so a hidden file is not refused")
+    # The detail prints a control character in the path as \xHH, so a table
+    # owner's path cannot add a line, such as a fake HINT, under the refusal
+    # (#1960).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/snl/a.parquet\nHINT:  x")),
+                "Foreign table public.s_dup_rnl reads path 's3://tierb/snl/a.parquet\\x0AHINT:  x'.",
+                "the refusal's detail prints a newline in the path as an escape, on one line")
+    # The class [a\n...] matches ax.parquet, so only the foreign table's path
+    # holds the newline: the reading is the refusal's SQLSTATE and the count of
+    # detail lines that start with HINT:.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(tier.format("s3://tierb/snlg/ax.parquet"))
+        nl = "ok with 0 HINT lines"
+    except psycopg.Error as e:
+        hints = sum(1 for ln in (e.diag.message_detail or "").splitlines() if ln.startswith("HINT:"))
+        nl = f"{e.sqlstate} with {hints} HINT lines"
+    expect.text(nl, "58P02 with 0 HINT lines",
+                "a newline in a foreign table's path adds no HINT line under the refusal")
+    # The foreign table's name is another role's text too, and regclass output
+    # keeps a newline inside its quotes. The detail escapes the name as it
+    # escapes the path (#1964 review).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/stnl/a.parquet")),
+                "Foreign table public.\"s_dup_tnl\\x0AHINT:  trust me\" reads path 's3://tierb/stnl/a.parquet'.",
+                "the refusal's detail prints a newline in the foreign table's name as an escape, on one line")
+    # A path may hold the four characters \x0A. The detail prints a backslash
+    # that comes before an x as \x5C, so that path does not print as a newline.
+    expect.text(_errdetail(conn, tier.format("s3://tierb/slitx/a\\x0A.parquet")),
+                "Foreign table public.s_dup_rlitx reads path 's3://tierb/slitx/a\\x5Cx0A.parquet'.",
+                "the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline")
+    # The helper itself. Its answer follows LC_COLLATE and glibc, which can
+    # answer a rare range differently from one call to the next, so it is
+    # VOLATILE (#1964 review).
+    expect.text(_sqlstate(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure") == "ok"
+                and _one(conn, "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc"
+                               " WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure")
+                or _errtext(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure"),
+                "vtrues", "path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE")
+    pgm = ("SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|'"
+           " || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa')")
+    expect.text(_sqlstate(conn, pgm) == "ok" and _one(conn, pgm) or _errtext(conn, pgm),
+                "true|false", "path_glob_matches lets an s3:// class span a slash but splits a local glob there")
+    # glob(3) lists . and .. in each directory, and a pattern that spells the
+    # leading dot matches them, so the tree in memory lists them too.
+    dots = ("SELECT pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/./a.parquet') || '|'"
+            " || pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/../a.parquet')")
+    expect.text(_sqlstate(conn, dots) == "ok" and _one(conn, dots) or _errtext(conn, dots),
+                "true|true", "path_glob_matches lists . and .. in a local directory, so .* matches both")
+    # glob(3) only ever returns a path built from the tree, so a directory it
+    # lists must hold the path asked about, not merely some path (#1964 review).
+    other = "SELECT pgcolumnar.path_glob_matches('/w/*', '/w/a/b.parquet')::text"
+    expect.text(_sqlstate(conn, other) == "ok" and _one(conn, other) or _errtext(conn, other),
+                "false", "path_glob_matches counts only the path asked about, not another path the glob returns")
+    # glibc glob(3) splits a pattern at its last slash and, when the part
+    # before it holds *, ? or [, calls itself on that part. So it calls itself
+    # once for every slash after the first *, ? or [, even a slash between
+    # literal names, and each call keeps a copy of the pattern on the stack.
+    # The helper refuses a pattern with more than 128 such slashes, or of
+    # PATH_MAX bytes or more, with an error, before glob(3) runs. A crash here
+    # would restart the server, and any role may call the helper (#1964
+    # review). PATH_MAX is 4096 on Linux, the only system the suite runs on, so
+    # the checks spell it as 4096. Each probe gets its own session.
+    pgm_dsn = _dsn(pgc_cluster, conn)
+
+    def ansst(sql, opts=None):
+        return _ansst(pgm_dsn, sql, opts)
+
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 128) || 'x', repeat('a/', 128) || 'x')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 129) || 'x', repeat('a/', 129) || 'x')"),
+                "true|54000", "path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/*/' || repeat('a/', 129) || 'x', '/b/' || repeat('a/', 129) || 'x')"),
+                "54000", "path_glob_matches counts every level after the first *, so one * and 129 more levels are refused with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('?/', 129) || 'x', repeat('a/', 129) || 'x')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches(repeat('[a]/', 129) || 'x', repeat('a/', 129) || 'x')"),
+                "54000|54000", "path_glob_matches counts a level after a ? or a [, so 129 of either are refused with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4091) || ']', '/w/a')"),
+                "54000", "path_glob_matches refuses a pattern of 4096 bytes with an error")
+    # glibc fnmatch calls itself for each * of an s3:// key, so the helper
+    # bounds a remote pattern as it bounds a local one: at most 128 *, and
+    # shorter than PATH_MAX bytes (#1964 review).
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 128) || 'x', 's3://b/' || repeat('a/', 128) || 'x')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 129) || 'x', 's3://b/' || repeat('a/', 129) || 'x')"),
+                "true|54000", "path_glob_matches matches an s3:// pattern of 128 * and refuses 129 with an error")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4087) || '*', 's3://b/' || repeat('a', 4087) || 'b')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4088) || '*', 's3://b/' || repeat('a', 4088) || 'b')"),
+                "true|54000", "path_glob_matches matches an s3:// pattern of 4095 bytes and refuses one of 4096 with an error")
+    # No file has a path of PATH_MAX bytes or more: the reader could not open
+    # it. So the helper answers false for such a path before it builds
+    # anything, and a long path cannot keep a backend busy past a cancel
+    # (#1964 review).
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'b')")
+                + "|" + ansst("SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'bc')"),
+                "true|false", "path_glob_matches matches a path of 4095 bytes but not one of 4096, which no file can have")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))",
+                      opts="-c statement_timeout=1s"),
+                "false", "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout")
+    # An interrupt that raises no error, such as a check that the client is
+    # still connected, must not turn a match into no match: a false answer lets
+    # a move overwrite a file a table reads (#1964 review). .* matches . and
+    # .., so 18 levels of it make a walk of 2^18 names, far longer than the
+    # 1 ms timer. Every walk is cut short, and the helper gives up with 57014
+    # after 100 walks. An answer of false would mean it took a cut walk as a
+    # full one.
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('/.*', 18) || '/x', repeat('/..', 18) || '/x')",
+                      opts="-c client_connection_check_interval=1ms"),
+                "57014", "path_glob_matches never answers false for a walk an interrupt that raises no error cut short")
+
+    # The detail escapes a C1 control character, U+0080 to U+009F, by what the
+    # character means, not by its byte. In LATIN1 the byte 0x85 is the control
+    # NEL, so it prints as \x85. In WIN1252 the byte 0x80 is the euro sign, a
+    # printable character, so it prints as written (#1964 review).
+    own = _one(conn, "SELECT current_database()")
+
+    def encdetail(enc, code):
+        db = f"tier_enc_{enc.lower()}"
+        with psycopg.connect(pgc_cluster.dsn(dbname=own), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {db}")
+            a.execute(f"CREATE DATABASE {db} TEMPLATE template0 ENCODING '{enc}' LC_COLLATE 'C' LC_CTYPE 'C'")
+        try:
+            with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True, client_encoding="UTF8") as e:
+                e.execute("CREATE EXTENSION pgcolumnar")
+                e.execute("CREATE SERVER s FOREIGN DATA WRAPPER pgcolumnar_parquet")
+                e.execute("CREATE TABLE p (d int) PARTITION BY RANGE (d)")
+                e.execute("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10) USING pgcolumnar")
+                e.execute("DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE e (x int) SERVER s"
+                          f" OPTIONS (path %L)', 's3://b/n' || chr({code}) || '.parquet'); END$$")
+                return _errdetail(e, f"SELECT pgcolumnar.tier_partition('p1', 's', 's3://b/n' || chr({code}) || '.parquet')")
+        finally:
+            with psycopg.connect(pgc_cluster.dsn(dbname=own), autocommit=True) as a:
+                a.execute(f"DROP DATABASE IF EXISTS {db}")
+    expect.text(encdetail("LATIN1", 133), "Foreign table public.e reads path 's3://b/n\\x85.parquet'.",
+                "the refusal's detail escapes the LATIN1 control NEL in a path")
+    expect.text(encdetail("WIN1252", 128), "Foreign table public.e reads path 's3://b/n\u20ac.parquet'.",
+                "the refusal's detail prints the WIN1252 euro sign in a path as written")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
+        cur.execute("DROP FOREIGN TABLE \"s_dup_tnl\nHINT:  trust me\", s_dup_rlitx")
+    # An Iceberg foreign table has no path option. It reads data files under its
+    # table location, the parent of the directory holding metadata_path (#1949).
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE s_dup_ice (at timestamptz, r int) SERVER ti"
+                    f" OPTIONS (metadata_path '{server_dir}/sice/metadata/v2.metadata.json')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_rice (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path 'S3N://tierb/swh/sice/metadata/v7.metadata.json')")
+    for d in (server_dir / "sice", server_dir / "sice" / "data"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    expect.text(rolled(tier.format(f"{server_dir}/sice/data/s_apr.parquet")),
+                "58P02", "a local path under an Iceberg foreign table's location is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sice/data/y.parquet")),
+                "58P02", "an s3:// path under an Iceberg foreign table's location is refused")
+    expect.text(_errdetail(conn, tier.format("s3://tierb/swh/sice/data/y.parquet")),
+                "Foreign table public.s_dup_rice reads Iceberg files under 'S3N://tierb/swh/sice/'.",
+                "the Iceberg refusal's detail names the foreign table and its location")
+    expect.text(rolled(tier.format(f"{server_dir}/sicex/s_apr.parquet")),
+                "58P01", "a local path that only starts with an Iceberg location's name is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sicex.parquet")),
+                "28000", "an s3:// path beside an Iceberg foreign table's location is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ice, s_dup_rice")
+    # The location is cut from metadata_path as the reader cuts it: a metadata
+    # file at the root gives '/', a relative one gives '.' (#1955 review).
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE s_dup_iroot (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path '/v4.metadata.json')")
+    expect.text(rolled(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "58P02", "an Iceberg table whose metadata file sits at the root refuses a local path")
+    expect.text(rolled_detail(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "Foreign table public.s_dup_iroot reads Iceberg files under '/'.",
+                "the root Iceberg refusal's detail names the location '/'")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_iroot")
+        cur.execute("CREATE FOREIGN TABLE s_dup_irel (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path 'metadata/v4.metadata.json')")
+    expect.text(rolled_detail(tier.format("./snodir/y.parquet")),
+                "Foreign table public.s_dup_irel reads Iceberg files under './'.",
+                "an Iceberg table with a relative metadata_path refuses a path under '.'")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_irel")
+    # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
+    # (#1949); a wrapper made with the Parquet handler under another name does.
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_other_fdw")
+        cur.execute("CREATE SERVER s_other FOREIGN DATA WRAPPER s_other_fdw")
+        cur.execute("CREATE FOREIGN TABLE s_dup_oroot (x int) SERVER s_other OPTIONS (path '/')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_osame (x int) SERVER s_other"
+                    f" OPTIONS (path '{server_dir}/soth/y.parquet')")
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_pq2 HANDLER pgcolumnar.parquet_fdw_handler"
+                    " VALIDATOR pgcolumnar.parquet_fdw_validator")
+        cur.execute("CREATE SERVER s_pq2s FOREIGN DATA WRAPPER s_pq2")
+        cur.execute("CREATE FOREIGN TABLE s_dup_pq2 (x int) SERVER s_pq2s"
+                    f" OPTIONS (path '{server_dir}/spq2/y.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "58P01", "a path option of '/' under another wrapper does not refuse a local path")
+    expect.text(rolled(tier.format(f"{server_dir}/soth/y.parquet")),
+                "58P01", "a path option under another wrapper does not refuse the same path")
+    expect.text(rolled(tier.format(f"{server_dir}/spq2/y.parquet")),
+                "58P02", "a path a wrapper with the Parquet handler under another name reads is refused")
+    # The Iceberg reader is also chosen by its handler, not by the wrapper's
+    # name. A path option under a wrapper with any handler but the Parquet one
+    # refuses nothing: the Iceberg handler does not read path, and a handler
+    # pgcolumnar does not know is another wrapper. pgcolumnar knows a reader
+    # only by the SQL function pgcolumnar.parquet_fdw_handler or
+    # pgcolumnar.iceberg_fdw_handler; here the unknown handler is the Iceberg
+    # reader's C function declared under another SQL name (#1955 review).
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_ice2 HANDLER pgcolumnar.iceberg_fdw_handler"
+                    " VALIDATOR pgcolumnar.iceberg_fdw_validator")
+        cur.execute("CREATE SERVER s_ice2s FOREIGN DATA WRAPPER s_ice2")
+        cur.execute("CREATE FOREIGN TABLE s_dup_ice2 (at timestamptz, r int) SERVER s_ice2s"
+                    f" OPTIONS (metadata_path '{server_dir}/sice2/metadata/v5.metadata.json')")
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_ice3 HANDLER pgcolumnar.iceberg_fdw_handler")
+        cur.execute("CREATE SERVER s_ice3s FOREIGN DATA WRAPPER s_ice3")
+        cur.execute("CREATE FOREIGN TABLE s_dup_ipath (x int) SERVER s_ice3s"
+                    f" OPTIONS (path '{server_dir}/sipath/y.parquet')")
+        cur.execute("CREATE FUNCTION public.s_unknown_handler() RETURNS fdw_handler"
+                    " AS 'pgcolumnar', 'pgcolumnar_iceberg_fdw_handler' LANGUAGE C")
+        cur.execute("CREATE FOREIGN DATA WRAPPER s_unk HANDLER public.s_unknown_handler")
+        cur.execute("CREATE SERVER s_unks FOREIGN DATA WRAPPER s_unk")
+        cur.execute("CREATE FOREIGN TABLE s_dup_upath (x int) SERVER s_unks"
+                    f" OPTIONS (path '{server_dir}/supath/y.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/sice2/data/y.parquet")),
+                "58P02", "a path under the location of a table on a wrapper with the Iceberg handler under another name is refused")
+    # s_dup_oroot (path '/' under s_other_fdw) is still here, so the SQLSTATE
+    # alone cannot tell which table refused; the detail names s_dup_ice2.
+    expect.text(rolled_detail(tier.format(f"{server_dir}/sice2/data/y.parquet")),
+                f"Foreign table public.s_dup_ice2 reads Iceberg files under '{server_dir}/sice2/'.",
+                "the refusal under a wrapper with the Iceberg handler under another name names that table and its location")
+    expect.text(rolled(tier.format(f"{server_dir}/sipath/y.parquet")),
+                "58P01", "a path option under a wrapper with the Iceberg handler does not refuse the same path")
+    expect.text(rolled(tier.format(f"{server_dir}/supath/y.parquet")),
+                "58P01", "a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN DATA WRAPPER s_other_fdw, s_pq2, s_ice2, s_ice3, s_unk CASCADE")
+        cur.execute("DROP FUNCTION public.s_unknown_handler()")
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")
@@ -489,6 +763,18 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
 
 def _dsn(pgc_cluster, conn):
     return pgc_cluster.dsn(dbname=_one(conn, "SELECT current_database()"))
+
+
+def _ansst(dsn, sql, opts=None):
+    """the query's one value as text, or its SQLSTATE when it fails, in a session of its own"""
+    try:
+        with psycopg.connect(dsn, autocommit=True, options=opts or "") as c:
+            with c.cursor() as cur:
+                cur.execute(sql)
+                v = cur.fetchone()[0]
+                return str(v).lower() if isinstance(v, bool) else str(v)
+    except psycopg.Error as e:
+        return e.sqlstate or "no answer"
 
 
 def _relkind(conn, t):
@@ -1114,3 +1400,58 @@ def test_tier_partition_writes_through_the_named_server(pgc_cluster, expect):
             s.kill()
             s.wait()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def test_tier_partition_path_glob_matches_errors_where_glibc_would_crash(pgc_own_db, pgc_cluster, expect):
+    """The patterns that crashed the server before #1964's bounds, last in the file.
+
+    Before the bounds each of these calls overflowed the backend's stack, and the
+    crash recovery failed every check after it. Each probe gets its own session,
+    and each check waits up to 60 s for the server to answer first, so a
+    regression fails its own check alone."""
+    own = _one(pgc_own_db, "SELECT current_database()")
+    dsn = pgc_cluster.dsn(dbname=own)
+
+    def wait_up():
+        for _ in range(60):
+            if _ansst(dsn, "SELECT 1") == "1":
+                return
+            time.sleep(1)
+
+    def run(sql):
+        wait_up()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(sql)
+
+    expect.text(_ansst(dsn, "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')")
+                + "|" + _ansst(dsn, "SELECT 1"),
+                "54000|1", "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up")
+    # A role may first use most of max_stack_depth in SQL, and glob(3) then has
+    # only what is left. pgm_deep calls itself n times, then the helper. The
+    # deepest n that still answers is found in steps of 100, from 3000 down.
+    run("CREATE FUNCTION pgm_deep(n int, p text, q text) RETURNS text LANGUAGE plpgsql AS $$"
+        " BEGIN IF n = 0 THEN RETURN pgcolumnar.path_glob_matches(p, q)::text; END IF;"
+        " RETURN pgm_deep(n - 1, p, q); END $$")
+    deep = 3000
+    while deep > 0 and _ansst(dsn, f"SELECT pgm_deep({deep}, '/w/*', '/w/a')") != "true":
+        deep -= 100
+    print(f"-- pgm_deep answers at {deep} levels of SQL")
+    expect.text(_ansst(dsn, f"SELECT pgm_deep({deep}, '/*/' || repeat('a/', 2045) || 'x', '/b')")
+                + "|" + _ansst(dsn, "SELECT 1"),
+                "54000|1", "path_glob_matches refuses one * and 2045 more levels with an error near max_stack_depth, and the server stays up")
+    run("DROP FUNCTION pgm_deep(int, text, text)")
+    # fnmatch keeps more on the stack for each * in a UTF-8 locale than in C,
+    # so this runs in a database whose LC_CTYPE is C.UTF-8.
+    db = "tier_cutf8_py"
+    run(f"DROP DATABASE IF EXISTS {db}")
+    run(f"CREATE DATABASE {db} TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'")
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as e:
+            e.execute("CREATE EXTENSION pgcolumnar")
+        expect.text(_ansst(pgc_cluster.dsn(dbname=db),
+                           "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 1000) || 'x',"
+                           " 's3://b/' || repeat('a/', 1000) || 'x')")
+                    + "|" + _ansst(dsn, "SELECT 1"),
+                    "54000|1", "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up")
+    finally:
+        run(f"DROP DATABASE IF EXISTS {db}")

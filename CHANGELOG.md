@@ -548,6 +548,36 @@ true until the next version shipped.
   premise itself still fails. A new environment variable,
   `PGC_VENDED_S3_START_DELAY`, delays the fixture's start, to test the wait.
   `test_iceberg_rest_vended.py` does the same.
+- The pytest harness now reads an exactly equal library install time and
+  postmaster start time as unknown, not fresh, as the shell harness has since
+  #1956 (#1969). `Cluster.server_binary_verdict` in
+  `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
+  changes: an unknown verdict still lets the run go ahead, and only a server
+  that started before the install is refused.
+
+- `tier_partition` now refuses a path under the location of a
+  `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
+  options, and an Iceberg foreign table has none, so a move could overwrite a
+  data file an Iceberg table reads. The location is the parent of the directory
+  that holds `metadata_path`, as the Iceberg reader takes it. The reader
+  refuses a file outside the location, so the location covers every file the
+  table can read. The error detail names the foreign table and the location.
+  The function also reads the `path` option only of foreign tables whose
+  wrapper uses pgcolumnar's Parquet handler. Before, a `path` of `/` on any
+  other wrapper's foreign table blocked every local move. Both the install script and the
+  alpha4 to alpha5 upgrade script change. docs/how-to.md,
+  docs/sql-reference.md. Reported by @OffgridwithJD.
+- The shell harness now refuses a server that started earlier in the same
+  second as the library install (#1956). `pgc_check_running_binary` in
+  `test/lib.sh` compared the library's modification time and the postmaster
+  start time in whole seconds, and an equal pair read as fresh. So the backends
+  could run the old library while the check passed. Both times now keep their
+  sub-second part, and `pgc_running_binary_verdict` compares them as exact
+  decimals. A server that started strictly after the install is fresh. A
+  server that started strictly before is refused. An exactly equal pair is
+  unknown, not fresh, and the message prints both times. `harness_selftest`
+  part 340 now drives this against the live cluster: a library stamped a few
+  hundred nanoseconds after the real postmaster start is refused.
 
 - `harness_selftest` part 580 now sees every write to the installed library
   and fails when the library is missing (#1950). The check "the installed
@@ -604,6 +634,39 @@ true until the next version shipped.
   are refused the same way. A file whose offsets run past its buffers is still
   refused with XX001. docs/sql-reference.md and docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now matches a foreign table's glob with the reader's own
+  code, through the new function `pgcolumnar.path_glob_matches(pattern,
+  path)` (#1957, #1962). Before, the check read the glob with SQL regular
+  expressions, and these disagreed with glibc. Three families of path got
+  past the check, so a move could overwrite a file that a foreign table
+  reads: a negated bracket that glibc cannot close after a member matched,
+  as in `[![-x[!-[=a=]` (#1957); a local `[\/]`, which `glob(3)` splits into
+  the names `[` and `]`; and a local glob that ends in `//` (#1962). The
+  check also refused paths that the table does not read, such as a name
+  that starts with `.` under `*`, and any path in a bracket's place. Now an
+  `s3://` key is matched by the reader's `fnmatch` call, and a local path by
+  `glob(3)` over a tree in memory that holds only that path. A fuzz run in
+  the C locale compared 131 million pattern and path pairs with glibc
+  `fnmatch` and a real `glob(3)`: of 256,691 matches it missed none, and it
+  refused no pair glibc does not match. The function is `VOLATILE`, because
+  its answer follows `LC_COLLATE` and glibc. An interrupt that raises no
+  error, such as a request to log memory contexts, makes it walk again; it
+  never turns a match into no match. The error detail now prints a control
+  character in the foreign table's name or path as `\xHH`, such as `\x0A`
+  for a newline, so neither can add a line under the refusal that reads like
+  a server `HINT` (#1960). A backslash before an `x` prints as `\x5C`, and a
+  printable character such as the `WIN1252` euro sign prints as written.
+  A local pattern of 4096 bytes or more, or with more than 128 `/` after its
+  first `*`, `?` or `[`, raises error 54000 before `glob(3)` runs. So does
+  an `s3://` pattern of 4096 bytes or more, or with more than 128 `*`, before
+  `fnmatch` runs. A deeper pattern overflowed the stack and crashed the
+  server, for any role. A `path` of 4096 bytes
+  or more returns false at once; before, a long one kept the backend busy for
+  minutes, past a cancel.
+  docs/sql-reference.md and
+  docs/how-to.md. `test/tier_partition.sh`, `test/entry_point_privilege.sh`,
+  `test/server_file_privilege.sh` and their pytest twins. Reported by
+  @OffgridwithJD.
 - `tier_partition` now refuses a path that a foreign table's glob matches when
   the glob holds a rare bracket (#1951). Before this the check could read such
   a bracket as ending at another `]` than glibc's `fnmatch` does, so a move
