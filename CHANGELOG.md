@@ -546,6 +546,18 @@ true until the next version shipped.
   other wrapper's foreign table blocked every local move. Both the install script and the
   alpha4 to alpha5 upgrade script change. docs/how-to.md,
   docs/sql-reference.md. Reported by @OffgridwithJD.
+- The shell harness now refuses a server that started earlier in the same
+  second as the library install (#1956). `pgc_check_running_binary` in
+  `test/lib.sh` compared the library's modification time and the postmaster
+  start time in whole seconds, and an equal pair read as fresh. So the backends
+  could run the old library while the check passed. Both times now keep their
+  sub-second part, and `pgc_running_binary_verdict` compares them as exact
+  decimals. A server that started strictly after the install is fresh. A
+  server that started strictly before is refused. An exactly equal pair is
+  unknown, not fresh, and the message prints both times. `harness_selftest`
+  part 340 now drives this against the live cluster: a library stamped a few
+  hundred nanoseconds after the real postmaster start is refused.
+
 - `harness_selftest` part 580 now sees every write to the installed library
   and fails when the library is missing (#1950). The check "the installed
   library of the running major was never touched" compared whole-second
