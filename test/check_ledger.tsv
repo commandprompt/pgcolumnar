@@ -5484,10 +5484,12 @@ native_reclaim	native_reclaim	repeated recluster reuses space (file plateaus)	15
 native_reclaim	native_reclaim	reused-block data matches heap mirror	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	row count correct after cycle	15;16;17;18;19	never	-
 native_reclaim	native_reclaim	ten row groups, every one half deleted	15;16;17;18;19	2026-10-14	the write state ignores stripe_row_limit
-native_reclaim_frag	native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)	15;16;17;18;19	2026-11-02	a second session held a snapshot from before the DELETE past the 30 s compact wait, so compact retired no group (#1975)
+native_reclaim_frag	native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975);record_free_space does not coalesce adjacent frees: if (pgcolumnar_reclaim_coalesce) -> if (false) (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce never larger than whole-range reuse	15;16;17;18;19	never	-
-native_reclaim_frag	native_reclaim_frag	coalesce off: compact leaves more than one free_space row	15;16;17;18;19	2026-11-02	a second session held a snapshot from before the DELETE past the 30 s compact wait, so compact retired no group (#1975)
+native_reclaim_frag	native_reclaim_frag	coalesce off: compact leaves more than one free_space row	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
+native_reclaim_frag	native_reclaim_frag	coalesce off: compact retired every dead group	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce off: parity with heap	15;16;17;18;19	never	-
+native_reclaim_frag	native_reclaim_frag	coalesce on: compact retired every dead group	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce on: parity with heap	15;16;17;18;19	never	-
 native_reclaim_frag	native_reclaim_frag	coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost	15;16;17;18;19	never	-
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not

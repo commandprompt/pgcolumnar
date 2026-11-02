@@ -94,10 +94,12 @@ def _run(conn, expect, mode):
         cur.execute(f"DELETE FROM h WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
         cur.execute(f"DELETE FROM n WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
         # WAIT FOR THE HORIZON (#1975). compact retires a group only once no
-        # snapshot can still see its rows. Any other session in this database that
-        # took a snapshot before the DELETE (another test, an autoanalyze of some
-        # other table) holds that back, and compact then retires 0 groups and frees
-        # nothing. So retry, for up to 30 s, until all the dead groups are retired.
+        # transaction in this database can still see its rows. A transaction whose
+        # snapshot or transaction ID is older than the DELETE holds that back: an
+        # autoanalyze of some other table, a prepared transaction, a replication
+        # slot. compact then retires 0 groups and frees nothing. So retry, for up
+        # to 30 s, until all the dead groups are retired. An error from compact
+        # raises at once.
         retired = tries = 0
         while retired < DEAD_GROUPS and tries < 60:
             if tries:
@@ -143,6 +145,13 @@ def test_native_reclaim_frag(pgc_conn, expect):
     print(f"-- free_space rows after compact: on={on_free} off={off_free}")
     print(f"-- final file size: on={on_size} off={off_size}")
     print(f"-- (gaps, unowned bytes) after recluster: on={on_gap} off={off_gap}")
+
+    # EACH MODE MUST HAVE FREED THE SAME 18 GROUPS (#1975). If compact retired
+    # nothing in one mode, that mode freed nothing, and every arm below compares
+    # against an empty free list. With the on run empty, "fewer rows with
+    # coalescing on" reads 0 < 18 as a pass. So both counts are checked, as numbers.
+    expect.num(on_ret[0], DEAD_GROUPS, "coalesce on: compact retired every dead group")
+    expect.num(off_ret[0], DEAD_GROUPS, "coalesce off: compact retired every dead group")
 
     # THE COMPARISON NEEDS SOMETHING TO MERGE (#1975). With coalescing off, compact
     # must leave many separate free ranges. CI once counted 0 here, and "fewer rows

@@ -29,10 +29,11 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 GEN="SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload
   FROM generate_series(1, 30000) g"
 
-# compact, as the session with the given coalesce mode, and print the groups it retired.
+# compact, as the session with the given coalesce mode, and print the groups it
+# retired. On an error it prints psql's message instead, so the caller can show it.
 compact_n() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qAt -c "SET pgcolumnar.reclaim_coalesce = $1; SELECT pgcolumnar.compact('n');" 2>/dev/null
+		-d "$PGC_DB" -qAt -c "SET pgcolumnar.reclaim_coalesce = $1; SELECT pgcolumnar.compact('n');" 2>&1
 }
 
 freerows() { q "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('n');"; }
@@ -79,17 +80,21 @@ run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MIS
 		psql_run "SET pgcolumnar.reclaim_coalesce = $1; DELETE FROM n WHERE id BETWEEN 6001 AND 24000;"
 	} >/dev/null 2>&1
 
-	# WAIT FOR THE HORIZON (#1975). compact retires a group only once no snapshot
-	# can still see its rows. Any other session in this database that took a
-	# snapshot before the DELETE (another test, an autoanalyze of some other
-	# table) holds that back, and compact then retires 0 groups and frees nothing.
-	# So retry, for up to 30 s, until all the dead groups are retired.
+	# WAIT FOR THE HORIZON (#1975). compact retires a group only once no
+	# transaction in this database can still see its rows. A transaction whose
+	# snapshot or transaction ID is older than the DELETE holds that back: an
+	# autoanalyze of some other table, a prepared transaction, a replication
+	# slot. compact then retires 0 groups and frees nothing. So retry, for up to
+	# 30 s, until all the dead groups are retired. An error from compact stops
+	# the wait at once and is printed, so it does not read as a held snapshot.
 	local fr size ph hh gp r retired=0 tries=0
 	while [ "$retired" -lt "$DEAD_GROUPS" ] && [ "$tries" -lt 60 ]; do
 		[ "$tries" -gt 0 ] && sleep 0.5
-		r="$(compact_n "$1")"
-		case "$r" in ''|*[!0-9]*) r=0 ;; esac
-		retired=$((retired + r)); tries=$((tries + 1))
+		r="$(compact_n "$1")"; tries=$((tries + 1))
+		case "$r" in
+			''|*[!0-9]*) echo "  compact errored (coalesce $1, call $tries): $r" >&2; break ;;
+		esac
+		retired=$((retired + r))
 	done
 
 	# free_space rows right after the compaction, before anything consumes them.
@@ -118,6 +123,12 @@ echo "  (groups compact retired/compact calls: coalesce-on=$on_ret coalesce-off=
 echo "  (free_space rows after compact: coalesce-on=$on_fr coalesce-off=$off_fr)"
 echo "  (final file size: coalesce-on=$on_size coalesce-off=$off_size)"
 echo "  (unowned bytes between ranges after recluster: coalesce-on=$on_gap coalesce-off=$off_gap)"
+# EACH MODE MUST HAVE FREED THE SAME 18 GROUPS (#1975). If compact retired
+# nothing in one mode, that mode freed nothing, and every arm below compares
+# against an empty free list. With the on run empty, "fewer rows with coalescing
+# on" reads 0 < 18 as a pass. So both counts are checked, as numbers.
+check "coalesce on: compact retired every dead group"  "${on_ret%/*}"  "$DEAD_GROUPS"
+check "coalesce off: compact retired every dead group" "${off_ret%/*}" "$DEAD_GROUPS"
 # THE COMPARISON NEEDS SOMETHING TO MERGE (#1975). With coalescing off, compact
 # must leave many separate free ranges. CI once counted 0 here, and "fewer rows
 # with coalescing on" then failed as a verdict on coalescing it could not give.
