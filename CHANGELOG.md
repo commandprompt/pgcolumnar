@@ -569,6 +569,19 @@ true until the next version shipped.
   are refused the same way. A file whose offsets run past its buffers is still
   refused with XX001. docs/sql-reference.md and docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now refuses a path under a directory or matching a glob
+  that a foreign table reads (#1941). Before this it compared one path with
+  one other path. A foreign table on `s3://b/dir/` or `s3://b/g/*.parquet` did
+  not stop a move to `s3://b/dir/x.parquet` or `s3://b/g/x.parquet`, so the
+  move could overwrite an object that table reads. The check now follows the
+  Parquet reader: a remote directory ends in `/`, a local directory may end in
+  `/` or not, and a glob's `*` and `?` do not match `/`. It treats a `[...]`
+  class as any one character other than `/`, so it can refuse more than the
+  class matches. The host of an http(s) URL now matches in any case. The error
+  detail names the foreign table and its path. A local path is still compared
+  as written: SQL cannot resolve a symbolic link or `..`, so docs/how-to.md
+  states that limit. docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin. Reported by @OffgridwithJD.
 - `tier_partition` now refuses a path that a foreign table reads under another
   spelling of the same object (#1936). Before this it compared the `path`
   option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a

@@ -194,6 +194,60 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "22004", "a NULL path is refused as null, not as a file a foreign table reads")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_s3a, s_dup_upper, " + ", ".join(dups))
+    # A foreign table on a directory or a glob reads every file the reader
+    # expands it to, so a path under that directory or matching that glob names
+    # a file the table reads (#1941). The host of an http(s) URL matches in any
+    # case. A remote target that passes the check fails in the export with
+    # 28000 (tq has no credentials), so nothing is written. A local target that
+    # passed would move the partition, so each local call is rolled back.
+    covers = {"s_dup_rdir": "s3://tierb/sdir/", "s_dup_rglob": "s3a://tierb/sg/*.parquet",
+              "s_dup_rclass": "s3://tierb/sc/a_?[0-9].parquet",
+              "s_dup_resc": "s3://tierb/se/\\*.parquet", "s_dup_rkey": "s3://tierb/skey",
+              "s_dup_host": "http://H.Example/s_apr_k.parquet",
+              "s_dup_ldir": f"{server_dir}/sldir", "s_dup_lglob": f"{server_dir}/slg/*.parquet"}
+    with conn.cursor() as cur:
+        for name, p in covers.items():
+            cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
+    # The directories exist, so a local target the check let through would be written.
+    for d in (server_dir / "sldir", server_dir / "sldir" / "sub", server_dir / "slg"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+
+    def rolled(sql):
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+        try:
+            return _sqlstate(conn, sql)
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK")
+
+    tier = "SELECT pgcolumnar.tier_partition('s_apr', 'tq', '{}')"
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdir/x.parquet")),
+                "58P02", "a path under a directory a foreign table reads as s3://b/dir/ is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdir/a/b.parquet")),
+                "58P02", "a path two levels under a directory a foreign table reads is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/x.parquet")),
+                "58P02", "a path matching a glob a foreign table reads as s3a://b/g/*.parquet is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sc/a_x7.parquet")),
+                "58P02", "a path matching a glob with ? and a [class] a foreign table reads is refused")
+    expect.text(_sqlstate(conn, tier.format("http://h.example/s_apr_k.parquet")),
+                "58P02", "an http path is refused when a foreign table reads the same URL with its host in another case")
+    expect.text(rolled(tier.format(f"{server_dir}/sldir/sub/x.parquet")),
+                "58P02", "a local path under a directory a foreign table reads without a trailing slash is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slg/x.parquet")),
+                "58P02", "a local path matching a glob a foreign table reads is refused")
+    # The rule follows the reader, so it refuses no more than the table reads.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/sub/x.parquet")),
+                "28000", "a glob * does not cross a slash, so a path one level deeper is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/se/x.parquet")),
+                "28000", "an escaped star in a glob matches only a literal star, so another name is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/skey/x.parquet")),
+                "28000", "a remote key without a trailing slash is one object, so a path under it is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdirx.parquet")),
+                "28000", "a path that only starts with a remote directory's name is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")

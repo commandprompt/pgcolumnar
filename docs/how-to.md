@@ -735,17 +735,27 @@ every row is stored exactly once.
 **A failed attempt leaves its file behind.** A transaction cannot remove a file
 that it wrote. You can retry with the same `path`: the function overwrites a
 file that no foreign table in the database reads. It refuses a `path` that a
-foreign table in this database reads (`58P02`). The check normalises the
-scheme of each path and then compares the two. The scheme of a remote URL
-matches in any case, and `s3a://` and `s3n://` match `s3://`. So `s3a://b/k`
-and `S3://b/k` both block a move to `s3://b/k` (#1936). The host, bucket and
-key must match exactly, so `http://H.example/k` does not block
-`http://h.example/k`. The check compares one path with another. It does not
-see a foreign table on a directory or a glob, such as `s3://b/dir/` or
-`s3://b/g/*.parquet`, that covers the path. It does not see a local file
-spelled another way, for example through a symbolic link. It also cannot see
-readers outside the database. So do not reuse a path that another system reads,
-or that any foreign table reads under another spelling (#1941).
+foreign table in this database reads (`58P02`). A foreign table reads every
+file its `path` names, so the function refuses a `path` when a foreign table's
+`path` is one of these (#1941):
+
+- The same path. The scheme of a remote URL matches in any case, and `s3a://`
+  and `s3n://` match `s3://`. So `s3a://b/k` and `S3://b/k` both block a move
+  to `s3://b/k` (#1936). The host of an `http://` or `https://` URL also
+  matches in any case.
+- A directory that holds the path at any depth. A remote directory ends in
+  `/`, such as `s3://b/dir/`. A local directory may end in `/` or not.
+- A glob that matches the path, such as `s3://b/g/*.parquet`. In a glob, `*`
+  and `?` do not match `/`, and a backslash makes the next character literal.
+  The function treats a `[...]` class as any one character other than `/`, so
+  it can refuse a path that the class would not match.
+
+The bucket and the key must match in case. A local path is compared as
+written. The function does not resolve a symbolic link, `..` or a relative
+path, so a local file spelled another way is not seen. SQL has no way to
+resolve a path to the file it names. The function also cannot see readers
+outside the database. So do not reuse a path that another system reads, or a
+local file that a foreign table reads under another spelling.
 
 The function refuses these partitions before it moves anything:
 
