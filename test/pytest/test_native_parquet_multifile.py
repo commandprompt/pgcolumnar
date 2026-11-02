@@ -13,6 +13,7 @@ orders files by full path.
 import os
 import shutil
 import threading
+import time
 
 import psycopg
 
@@ -288,3 +289,185 @@ def test_the_recursive_walk(pgc_conn, pgc_cluster, server_dir, expect):
         d.mkdir(parents=True)
         shutil.copy(w / "p0.parquet", d / "part-0.parquet")
         expect.text(_errs(cur, _count(w / "deep")), "OK", "a tree deeper than the bound is rejected, not truncated")
+
+
+def _sqlstate(cluster, sql, options=None):
+    """-> the SQLSTATE `sql` fails with on its own connection, "ok" when it succeeds,
+    or "no answer" when the connection is lost, as the shell's st reads it."""
+    try:
+        with psycopg.connect(cluster.dsn(), autocommit=True, options=options or "") as c:
+            c.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
+def _answer(conn, sql):
+    """-> the value `sql` returns on `conn`, or the SQLSTATE it fails with."""
+    try:
+        return str(conn.execute(sql).fetchone()[0])
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+
+
+def _wait_up(cluster):
+    """Return once the server answers SELECT 1, or after 60 s."""
+    for _ in range(60):
+        try:
+            with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as c:
+                c.execute("SELECT 1")
+            return
+        except psycopg.Error:
+            time.sleep(1)
+
+
+def _up(cluster):
+    """-> "1" when the server answers SELECT 1 now, else why not."""
+    try:
+        with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as c:
+            return str(c.execute("SELECT 1").fetchone()[0])
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
+
+
+def test_a_local_glob_is_bounded_and_read_in_its_folded_form(pgc_conn, pgc_cluster, server_dir, expect):
+    """#1977 review. The reader bounds and globs a local pattern in a folded form:
+    a run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
+    The kernel reads both spellings as the same file, so the rows do not change.
+    A '.' at the end is kept, as it makes the pattern match only directories, and
+    so is a name followed by '..', as a symbolic link before it leads the kernel
+    somewhere else."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; multi-file suite needs it")
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow not available; multi-file suite needs it")
+    w = server_dir / "foldglob"
+    parts = w / "parts"
+    parts.mkdir(parents=True)
+
+    def tbl(lo, hi):
+        return pa.table({"id": pa.array(range(lo, hi), pa.int32()),
+                         "v": pa.array([i * 2 for i in range(lo, hi)], pa.int64())})
+
+    pq.write_table(tbl(0, 1000), str(parts / "part-0.parquet"), row_group_size=1000)
+    # fold/ln leads to fold/away/inner, so fold/ln/.. is fold/away to the kernel.
+    # fold/away/z-0.parquet holds ids 0..999; fold/z-0.parquet, the file a
+    # lexical fold of ln/.. would read, holds ids 1000..1999.
+    (w / "fold" / "away" / "inner").mkdir(parents=True)
+    pq.write_table(tbl(0, 1000), str(w / "fold" / "away" / "z-0.parquet"), row_group_size=1000)
+    pq.write_table(tbl(1000, 2000), str(w / "fold" / "z-0.parquet"), row_group_size=1000)
+    (w / "fold" / "ln").symlink_to(w / "fold" / "away" / "inner")
+    for p in (parts / "part-0.parquet", w / "fold" / "away" / "z-0.parquet", w / "fold" / "z-0.parquet"):
+        p.chmod(0o644)
+
+    def rp(expr):
+        return f"SELECT * FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    def cnt(expr):
+        return f"SELECT count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    with pgc_conn.cursor() as cur:
+        plain = _hash(cur, _rp(parts / "part-0.parquet"))
+        fold_dot = f"'{w}/par[t]s' || repeat('/.', 200) || '/part-0.parquet'"
+        expect.text(f"{_one(cur, cnt(fold_dot))}|{_hash(cur, rp(fold_dot))}", f"1000|{plain}",
+                    "read_parquet reads a local glob over 128 levels as written but not once its '.' names "
+                    "are dropped, the same rows as the plain path")
+        fold_slash = f"'{w}/par[t]s' || repeat('/', 201) || 'part-0.parquet'"
+        expect.text(f"{_one(cur, cnt(fold_slash))}|{_hash(cur, rp(fold_slash))}", f"1000|{plain}",
+                    "read_parquet reads a local glob over 128 levels as written but not once its runs of '/' "
+                    "are folded, the same rows as the plain path")
+        expect.text(_errcode(cur, cnt(f"'{w}/par[t]s/part-0.parquet/.'")), "58P01",
+                    "read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. "
+                    "matches nothing")
+        # glob(3) matches a pattern that ends in '/' against a file, so dropping a
+        # '.' name that only '/' or '\/' follow would read the file.
+        ends = [_errcode(cur, cnt(f"'{w}/par[t]s/part-0.parquet{tail}'")) for tail in ("/./", "/.//", "/./\\/")]
+        expect.text("|".join(ends), "58P01|58P01|58P01",
+                    "read_parquet keeps a '.' name that only '/' follow at the end of a local glob, so a file "
+                    "followed by /./ matches nothing")
+        expect.text(_one(cur, f"SELECT sum(id) FROM pgcolumnar.read_parquet('{w}/fold/ln/../z-[0].parquet') "
+                              f"AS t({COLS})"), "499500",
+                    "read_parquet does not fold a name followed by '..' in a local glob, so it reads past a "
+                    "symbolic link as the kernel does")
+    # The pattern has 1991 levels as written and 1 once folded, so the bound lets
+    # it through. glob(3) of the form as written did not crash in a probe on glibc
+    # 2.43 (2022 levels, #1977 review), so this check does not tell which form
+    # glob(3) expands; it holds that the read is not refused.
+    deep = f"'{w}/par[t]s' || repeat('/.', 1990) || '/part-0.parquet'"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        got = _answer(c, cnt(deep))
+    expect.text(f"{got}|{_up(pgc_cluster)}", "1000|1",
+                "read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up")
+    _wait_up(pgc_cluster)
+    # 5001 levels and over PATH_MAX as written, 1 level once folded. glob(3) of
+    # the form as written crashed the server, so this check fails if the reader
+    # globs the pattern as written instead of the folded form.
+    over = f"'{w}/par[t]s' || repeat('/.', 5000) || '/part-0.parquet'"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        got = _answer(c, cnt(over))
+    expect.text(f"{got}|{_up(pgc_cluster)}", "1000|1",
+                "read_parquet reads a local glob over PATH_MAX as written but not once folded, and the server "
+                "stays up")
+    _wait_up(pgc_cluster)
+
+
+def _errcode(cur, sql):
+    """-> the SQLSTATE `sql` fails with on `cur` (an autocommit connection), or "ok"."""
+    try:
+        cur.execute(sql)
+        cur.fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
+def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster, server_dir, expect):
+    """#1968, #1973. glob(3) calls itself for every '/' after the first *, ? or [;
+    the reader refuses more than 128 such levels, or 4096 bytes, with 54000. The
+    in-memory walk of path_glob_matches is bounded, so repeat('/.*', 40) fails
+    with 54000 rather than walking 2^40 paths. The crash probes run last and wait
+    for the server to answer first."""
+    d = server_dir / "deepglob"
+    d.mkdir()
+
+    def rp(expr):
+        return f"SELECT count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    levels = [_sqlstate(pgc_cluster, rp("'%s/' || repeat('*/', %d) || 'x.parquet'" % (d, n))) for n in (128, 129)]
+    expect.text("|".join(levels), "58P01|54000", "read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000")
+    expect.text(_sqlstate(pgc_cluster, rp(f"rpad('{d}/*', 4088, 'a') || '.parquet'")), "54000",
+                "read_parquet refuses a local glob of 4096 bytes with 54000")
+    expect.text(_sqlstate(pgc_cluster, "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', "
+                                       "repeat('/..', 40) || '/x')", options="-c statement_timeout=1s"),
+                "54000", "path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout")
+    expect.text(_one(pgc_conn.cursor(), "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', "
+                                        "repeat('/..', 10) || '/x')::text"),
+                "true", "path_glob_matches still matches repeat('/.*', 10) against its own path")
+    # The step count and the "stopped" flag are statics. Each walk must reset
+    # them, or one refused walk fails every later call in that session with 54000.
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        same = [_answer(c, sql) for sql in (
+            "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text",
+            "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text",
+            "SELECT pgcolumnar.path_glob_matches('/a/*', '/a/b')::text")]
+    expect.text("|".join(same), "54000|true|true",
+                "after a refused walk, path_glob_matches still answers true in the same session")
+
+    deep = f"'{d}/' || repeat('*/', 4000) || 'x.parquet'"
+    expect.text(f"{_sqlstate(pgc_cluster, rp(deep))}|{_up(pgc_cluster)}", "54000|1",
+                "read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up")
+    _wait_up(pgc_cluster)
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute("CREATE SERVER IF NOT EXISTS pq_multi FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        c.execute(f"DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ({COLS}) SERVER pq_multi "
+                  f"OPTIONS (path %L)', {deep}); END$$")
+    try:
+        expect.text(f"{_sqlstate(pgc_cluster, 'SELECT count(*) FROM ftdeep')}|{_up(pgc_cluster)}", "54000|1",
+                    "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, "
+                    "and the server stays up")
+    finally:
+        # the cluster is shared: tier_partition matches every foreign table's
+        # path, and this one's is past the bound, so it must not outlive the test
+        _wait_up(pgc_cluster)
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+            c.execute("DROP FOREIGN TABLE IF EXISTS ftdeep")

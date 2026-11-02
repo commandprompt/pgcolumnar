@@ -3725,6 +3725,37 @@ typedef struct PqVDir
 static const PqVTree *pq_vtree = NULL;
 static bool pq_vcut = false;	/* a callback stopped for an interrupt */
 
+/*
+ * .* matches both . and .., so repeat('/.*', n) makes glob(3) walk 2^n paths,
+ * and glibc keeps every path it returns in memory it mallocs, outside any
+ * memory context (#1973). So the callbacks count the directory entries and
+ * stats glob(3) asks for. Past PQ_GLOB_MAX_STEPS they set pq_vover and report
+ * every directory empty, and the caller raises an error: no answer is given.
+ * A pattern that does not fan out over . and .. takes a few steps per level,
+ * so at most 128 levels stay far below the bound. Measured on PG18, a walk
+ * stops at the bound after about 60 ms; repeat('/.*', 17) still answers, and
+ * repeat('/.*', 18) is refused.
+ */
+#define PQ_GLOB_MAX_STEPS 1000000
+static int	pq_vsteps = 0;
+static bool pq_vover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
+
+/* count one step of the walk -> false once the walk must stop */
+static bool
+pq_vstep(void)
+{
+	if (++pq_vsteps > PQ_GLOB_MAX_STEPS)
+		pq_vover = true;
+	if (pq_vover)
+		return false;
+	if (pq_vtree == NULL || InterruptPending)
+	{
+		pq_vcut = true;
+		return false;
+	}
+	return true;
+}
+
 /* the child of `dir` called name[0..len), or -1 */
 static int
 pq_vchild(const PqVTree *t, int dir, const char *name, size_t len)
@@ -3748,9 +3779,8 @@ pq_vresolve(const char *p)
 	const PqVTree *t = pq_vtree;
 	int			cur = 0;
 
-	if (t == NULL || InterruptPending)
+	if (!pq_vstep())
 	{
-		pq_vcut = true;
 		errno = EINTR;
 		return -1;
 	}
@@ -3807,11 +3837,8 @@ pq_vreaddir(void *dirp)
 	const char *name;
 	int			node;
 
-	if (t == NULL || InterruptPending)
-	{
-		pq_vcut = true;
+	if (!pq_vstep())
 		return NULL;
-	}
 	if (d->next == -2 || d->next == -1)
 	{
 		name = (d->next == -2) ? "." : "..";
@@ -3891,14 +3918,229 @@ pq_glob_bound(const char *pattern, int levels, const char *what)
 }
 
 /*
+ * Bound a local pattern before glob(3) runs: every '/' after the first *, ?
+ * or [ is a call of glob(3) to itself. The reader and path_glob_matches both
+ * call this (#1968): the reader on the folded form it globs
+ * (pq_local_glob_fold), path_glob_matches on the pattern it is given.
+ */
+static void
+pq_local_glob_bound(const char *pattern)
+{
+	int			levels = 0;
+	const char *c;
+
+	for (c = strpbrk(pattern, "*?["); c != NULL && *c != '\0'; c++)
+		levels += (*c == '/') ? 1 : 0;
+	pq_glob_bound(pattern, levels, "levels after the first *, ? or [");
+}
+
+/*
+ * Is `s` empty or made only of '/' and "\/"? (pq_local_glob_fold)
+ */
+static bool
+pq_only_seps(const char *s)
+{
+	while (*s != '\0')
+	{
+		if (s[0] == '/')
+			s++;
+		else if (s[0] == '\\' && s[1] == '/')
+			s += 2;
+		else
+			return false;
+	}
+	return true;
+}
+
+/*
+ * The folded form of a local pattern, which the reader bounds and globs: each
+ * run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
+ * open(2) and glob(3) read both spellings as the same file, so the files read
+ * do not change, but the folded form can have far fewer levels: #1978's
+ * tier_partition check reads a table on '<dir>/s[p]' || repeat('/.', 200) ||
+ * '/a.parquet'. A '.' at the end is kept, as it makes the pattern match only
+ * directories. So is a '.' that only '/' or "\/" follow: glob(3) matches a
+ * pattern that ends in '/' against a file, so 'f/./' would read the file 'f'
+ * once folded to 'f/' (#1977 review). A name followed by '..' is kept, as a
+ * symbolic link before the '..' leads the kernel somewhere else. A '/' after
+ * a backslash is not folded.
+ * Unlike pq_local_path_fold, keeps x/..: a symlink x changes what is opened.
+ */
+static char *
+pq_local_glob_fold(const char *pattern)
+{
+	char	   *out = palloc(strlen(pattern) + 1);
+	char	   *o = out;
+	const char *c = pattern;
+
+	while (*c != '\0')
+	{
+		bool		escaped = (o > out && o[-1] == '\\');
+
+		*o++ = *c;
+		if (*c++ != '/' || escaped)
+			continue;
+		for (;;)
+		{
+			if (c[0] == '/')
+				c++;
+			else if (c[0] == '.' && c[1] == '/' && !pq_only_seps(c + 1))
+				c += 2;
+			else
+				break;
+		}
+	}
+	*o = '\0';
+	return out;
+}
+
+/*
+ * Bound an s3:// pattern before fnmatch runs: fnmatch calls itself for each *,
+ * so they are bounded as glob(3)'s levels. The reader and path_glob_matches
+ * both call this (#1972).
+ */
+static void
+pq_remote_glob_bound(const char *pattern)
+{
+	int			stars = 0;
+	const char *c;
+
+	for (c = pattern; *c != '\0'; c++)
+		stars += (*c == '*') ? 1 : 0;
+	pq_glob_bound(pattern, stars, "* in an s3:// key");
+}
+
+/*
+ * Write to `out`, which holds strlen(path) + 3 bytes, the lexical form of a
+ * local path, as tier_partition's SQL folds it (#1965, #1978): a run of '/'
+ * is one, a "." name is dropped, and a name is dropped with the ".." after
+ * it. A ".." at the root stays at the root; one that starts a relative path
+ * is kept. A trailing '/' is kept, an empty result is ".", and "" stays "".
+ * A symbolic link is not resolved, so a ".." can fold to a path the kernel
+ * would not reach; path_glob_matches only adds matches with this form
+ * (#1982). It neither allocates nor raises an error.
+ * Unlike pq_local_glob_fold, drops x/..: here over-refusing is the safe side.
+ */
+static void
+pq_local_path_fold(const char *path, char *out)
+{
+	size_t		base = (path[0] == '/') ? 1 : 0;
+	size_t		o = base;
+	int			names = 0;		/* names in out */
+	int			ups = 0;		/* of them, the leading ".." of a relative path */
+	const char *p = path;
+
+	if (path[0] == '\0')
+	{
+		out[0] = '\0';
+		return;
+	}
+	if (base)
+		out[0] = '/';
+	while (*p != '\0')
+	{
+		const char *e = strchrnul(p, '/');
+		size_t		n = e - p;
+		bool		dotdot = (n == 2 && p[0] == '.' && p[1] == '.');
+
+		if (n == 0 || (n == 1 && p[0] == '.'))
+			;
+		else if (dotdot && names > ups)
+		{
+			/* drop the last name, and the '/' before it */
+			while (o > base && out[o - 1] != '/')
+				o--;
+			if (o > base)
+				o--;
+			names--;
+		}
+		else if (dotdot && base)
+			;
+		else
+		{
+			if (dotdot)
+				ups++;
+			if (o > base)
+				out[o++] = '/';
+			memcpy(out + o, p, n);
+			o += n;
+			names++;
+		}
+		p = (*e == '/') ? e + 1 : e;
+	}
+	if (o == 0)
+		out[o++] = '.';
+	if (p[-1] == '/' && out[o - 1] != '/')
+		out[o++] = '/';
+	out[o] = '\0';
+}
+
+/*
+ * Add to the tree, as directories, the names a local pattern spells before
+ * the name that holds its first *, ?, [ or backslash. glob(3) opens them as
+ * written, and the tree holds only the path, so without them a glob that goes
+ * down one and back up through a name that matches "..", such as
+ * /w/sub/.?/a for /w/a, could not reach the path. Each is taken to exist,
+ * which only adds matches (#1982). The array holds a node for every byte of
+ * the pattern.
+ */
+static void
+pq_vtree_seed(PqVTree *t, const char *pattern)
+{
+	const char *meta = strpbrk(pattern, "*?[\\");
+	char	   *copy;
+	char	   *end;
+	char	   *p;
+	int			cur = 0;
+
+	if (meta == NULL)
+		return;
+	copy = pnstrdup(pattern, meta - pattern);
+	end = strrchr(copy, '/');
+	if (end == NULL)
+		return;
+	*end = '\0';
+	for (p = copy; *p != '\0';)
+	{
+		char	   *e = strchrnul(p, '/');
+		size_t		len = e - p;
+		bool		last = (*e == '\0');
+
+		*e = '\0';
+		if (len >= sizeof(((struct dirent *) NULL)->d_name))
+			return;
+		if (len == 2 && p[0] == '.' && p[1] == '.')
+			cur = t->nodes[cur].parent;
+		else if (len > 0 && !(len == 1 && p[0] == '.'))
+		{
+			int			next = pq_vchild(t, cur, p, len);
+
+			if (next < 0)
+			{
+				next = t->n++;
+				t->nodes[next].name = p;
+				t->nodes[next].parent = cur;
+			}
+			t->nodes[next].isdir = true;
+			cur = next;
+		}
+		if (last)
+			break;
+		p = e + 1;
+	}
+}
+
+/*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
  * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
  * than a directory entry holds, cannot be opened, so it matches nothing. A
  * pattern of PATH_MAX bytes or more, or with more than PQ_GLOB_MAX_LEVELS
  * slashes after its first *, ? or [, raises an error before glob(3) runs, as
- * no answer can be given safely. It never answers false for a walk an interrupt cut short,
+ * no answer can be given safely. So does a walk of more than PQ_GLOB_MAX_STEPS
+ * steps (#1973). It never answers false for a walk an interrupt cut short,
  * nor for a glob(3) error: it processes the interrupt and walks again, or
- * raises an error.
+ * raises an error. A path glob(3) returns matches when it is `path` as
+ * spelled, or when the two have the same lexical form (#1982).
  */
 static bool
 pq_local_glob_match(const char *pattern, const char *path)
@@ -3912,19 +4154,15 @@ pq_local_glob_match(const char *pattern, const char *path)
 	bool		found = false;
 	size_t		i;
 	int			attempt;
-	int			levels = 0;
-	const char *c;
+	char	   *want;
 
-	/* every '/' after the first *, ? or [ is a call of glob(3) to itself */
-	for (c = strpbrk(pattern, "*?["); c != NULL && *c != '\0'; c++)
-		levels += (*c == '/') ? 1 : 0;
-	pq_glob_bound(pattern, levels, "levels after the first *, ? or [");
+	pq_local_glob_bound(pattern);
 	if (strlen(path) >= PATH_MAX)
 		return false;
 
 	copy = pstrdup(path);
 	p = copy;
-	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + 2));
+	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + strlen(pattern) + 2));
 	tree.nodes[0].name = "";
 	tree.nodes[0].parent = 0;
 	tree.nodes[0].isdir = true;
@@ -3967,6 +4205,9 @@ pq_local_glob_match(const char *pattern, const char *path)
 	}
 	if (path[0] != '\0' && path[strlen(path) - 1] == '/')
 		tree.nodes[cur].isdir = true;
+	pq_vtree_seed(&tree, pattern);
+	want = palloc(strlen(path) + 3);
+	pq_local_path_fold(path, want);
 
 	for (attempt = 1;; attempt++)
 	{
@@ -3977,12 +4218,20 @@ pq_local_glob_match(const char *pattern, const char *path)
 		g.gl_stat = pq_vstat;
 		g.gl_lstat = pq_vstat;
 		pq_vcut = false;
+		pq_vover = false;
+		pq_vsteps = 0;
 		pq_vtree = &tree;
 		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
 		pq_vtree = NULL;
-		if (!pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
+		if (!pq_vover && !pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
 			break;
 		globfree(&g);
+		if (pq_vover)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("glob pattern walks too many paths to match: more than %d steps",
+							PQ_GLOB_MAX_STEPS),
+					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
 		if (!pq_vcut)
 			ereport(ERROR,
 					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
@@ -3998,8 +4247,38 @@ pq_local_glob_match(const char *pattern, const char *path)
 							pattern, path, attempt)));
 	}
 	if (rc == 0)
+	{
+		/*
+		 * glob(3) returns a name a glob reached through "." or ".." as it
+		 * built it, such as /w/x/../a for /w/x/.?/a. Each is compared as
+		 * returned, then in its lexical form with the target's (#1982). The
+		 * buffer is malloc'd, so an error cannot leave glob(3)'s memory
+		 * behind.
+		 */
+		size_t		longest = 0;
+		char	   *got;
+
+		for (i = 0; i < g.gl_pathc; i++)
+			longest = Max(longest, strlen(g.gl_pathv[i]));
+		got = malloc(longest + 3);
+		if (got == NULL)
+		{
+			globfree(&g);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
 		for (i = 0; i < g.gl_pathc && !found; i++)
+		{
 			found = (strcmp(g.gl_pathv[i], path) == 0);
+			if (!found)
+			{
+				pq_local_path_fold(g.gl_pathv[i], got);
+				found = (strcmp(got, want) == 0);
+			}
+		}
+		free(got);
+	}
 	globfree(&g);
 	return found;
 }
@@ -4022,15 +4301,9 @@ pgcolumnar_path_glob_matches(PG_FUNCTION_ARGS)
 
 	if (PgColumnarPathIsRemote(pattern))
 	{
-		int			stars = 0;
-		const char *c;
-
 		if (pq_remote_glob_start(pattern) == NULL || !PgColumnarPathIsRemote(path))
 			PG_RETURN_BOOL(false);
-		/* fnmatch calls itself for each *, so bound them as glob(3)'s levels */
-		for (c = pattern; *c != '\0'; c++)
-			stars += (*c == '*') ? 1 : 0;
-		pq_glob_bound(pattern, stars, "* in an s3:// key");
+		pq_remote_glob_bound(pattern);
 		PG_RETURN_BOOL(pq_remote_glob_match(pattern, path));
 	}
 	PG_RETURN_BOOL(!PgColumnarPathIsRemote(path) && pq_has_glob_meta(pattern) &&
@@ -4256,6 +4529,9 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		{
 			const char *seg = meta;
 
+			/* before the listing, as fnmatch below could overflow the stack */
+			pq_remote_glob_bound(path);
+
 			/* the prefix to list is the literal head up to the last '/' before
 			 * the first metacharacter */
 			while (seg > path && *seg != '/')
@@ -4331,9 +4607,15 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		glob_t		g;
 		int			rc;
 		size_t		i;
+		char	   *folded = pq_local_glob_fold(path);
 
+		/*
+		 * glob(3) calls itself for each level; bound them first (#1968), in
+		 * the folded form that glob(3) then expands (#1977 review)
+		 */
+		pq_local_glob_bound(folded);
 		memset(&g, 0, sizeof(g));
-		rc = glob(path, GLOB_NOSORT, NULL, &g);
+		rc = glob(folded, GLOB_NOSORT, NULL, &g);
 		if (rc == GLOB_NOMATCH || g.gl_pathc == 0)
 		{
 			globfree(&g);

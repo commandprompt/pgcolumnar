@@ -815,7 +815,10 @@ The function refuses these:
   cannot tell whether that table reads `path`, so it refuses. The error
   detail names the foreign table and its glob, escaped as above (#1974). A
   table that does read `path` is reported as `58P02` instead. This holds
-  also when its glob is too large as written but not in the folded form;
+  also when its glob is too large as written but not in the folded form.
+  The reader bounds a local glob in its own folded form too, so it reads
+  such a table (see
+  [Glob patterns too large to match](#glob-patterns-too-large-to-match));
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
@@ -861,12 +864,38 @@ A pattern that is too large for glibc to match safely raises error 54000
 
 `glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
 `fnmatch` uses stack space for each `*`. A larger pattern could crash the
-server.
-The function compares spellings: `path` must be spelled as `glob(3)` would
-return it, so `/w//x` does not match `/w/x*`. `tier_partition` also compares
-a folded form, without `//`, `.` names or a name followed by `..`. So it
-refuses what the reader opens under either spelling, unless a symbolic link
-comes before a `..` (#1965).
+server. The Parquet reader refuses the same patterns with the same error
+(#1968, #1972). It counts the levels of a local pattern in a folded form; see
+[Glob patterns too large to match](#glob-patterns-too-large-to-match).
+
+A local pattern that makes the walk too long also raises error 54000 (#1973).
+Each directory in the tree in memory lists `.` and `..`, as a real one does,
+and a name such as `.*` matches both. So each level of `/.*` doubles the
+walk. The function stops after 1,000,000 steps of the walk. The number of
+steps depends on the glibc `glob(3)` code, not on the PostgreSQL version.
+With glibc 2.43, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)`
+is refused after about 60 ms. The function never answers false for a walk it
+stopped. The step count starts again at zero for each call, so a refused
+pattern does not affect later calls in the same session.
+
+For a local pattern, the function compares each path `glob(3)` returns with
+`path`, first as spelled and then in a folded form (#1982). The folded form
+reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
+`/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
+name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
+`\.*`. So `/w/x/.*/a.parquet` matches `/w/x/a.parquet`, through
+`/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
+`/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
+pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
+`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. A
+directory that a wildcard matched is not known. So `/w/x/*/.?/a.parquet` does
+not match `/w/x/a.parquet`, although the reader reads that file when `/w/x`
+holds a directory. The folded form does not resolve a symbolic link before a
+`..`. So it can match a file the reader does not open, and `tier_partition`
+then refuses more than it must. An `s3://` key is not folded: `//` and `.` are
+part of a key. `tier_partition` also compares the folded forms of the foreign
+table's path and the target. So it refuses what the reader opens under either
+spelling, unless a symbolic link comes before a `..` (#1965).
 
 ```sql
 SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
@@ -1132,6 +1161,52 @@ unless the extra characters are spaces; those it drops. A `timestamp(p)` or
 elements and composite fields. So `CREATE TABLE AS` or `INSERT ... SELECT` from a
 reader never stores a value that breaks the declared type. A row that an Iceberg
 delete removes is not checked.
+
+### Glob patterns too large to match
+
+The readers refuse a glob pattern that is too large for glibc to match
+safely, with error 54000 (`program_limit_exceeded`), before they read
+anything (#1968, #1972):
+
+- a pattern of 4096 bytes (`PATH_MAX`) or more, measured for a local
+  pattern in its folded form (see below);
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`,
+  counted in its folded form;
+- an `s3://` pattern with more than 128 `*`. The reader refuses it before it
+  lists the prefix.
+
+The reader counts and expands a local pattern in a folded form. In that
+form, each run of `/` becomes one `/`, and a `.` name followed by `/` is
+dropped. The kernel
+opens the same file by either spelling, so the files read do not change. So
+`'/w/s[p]' || repeat('/.', 200) || '/a.parquet'` has 201 levels as written,
+but 1 in the folded form, and the reader reads `/w/sp/a.parquet`. With
+`repeat('/.', 5000)` the pattern is over 4096 bytes as written but not in
+the folded form, and the reader reads it too. Two names are kept as written:
+
+- a `.` at the end, or a `.` that only `/` follow, because it makes the
+  pattern match only directories. Without it, `glob(3)` matches a pattern
+  that ends in `/` against a file, so `'/w/s[p]/a.parquet/./'` would read
+  `/w/sp/a.parquet` (#1977 review);
+- a name followed by `..`, because when that name is a symbolic link, the
+  kernel goes up from the directory the link leads to.
+
+A backslash before a `/` keeps the `/` from being folded with what follows
+it, and a name such as `\.` is not dropped. So `tier_partition`, which folds
+these as well as a name followed by `..`, can find fewer levels than the
+reader does.
+
+`glob(3)` and `fnmatch` use stack space for each such level, and a larger
+pattern could crash the server. The limits are those of
+[`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean).
+The reader checks the pattern before it looks for an object of that exact
+name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
+
+The reader does not yet bound the number of steps of a local walk (#1984).
+Each real directory lists `.` and `..`, so each level of `.*/` in a local
+pattern multiplies the walk. With 15 such levels the walk can run for minutes,
+and a cancel does not stop it until `glob(3)` returns. Avoid `.*` as a whole
+level of a local pattern.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 

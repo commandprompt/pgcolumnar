@@ -228,7 +228,15 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			# `c` is in the class -- and silently excused five real offenders.
 			if (t ~ /^[[:space:]]*!?[[:space:]]*-[fdersxwLhpSbcgkuGnz][[:space:]]/) return 1
 			if (t ~ /(^|[[:space:]])(-eq|-ne|!=|==|=)([[:space:]]|$)/) return 1
-			if (t ~ /-(gt|ge)[[:space:]]+"?[01]"?[[:space:]]*$/) return 1
+			# OF THE -gt AND -ge FORMS, ONLY `-gt 0` AND `-ge 1` (#1980). The
+			# class used to be `-(gt|ge) [01]`. That also excused `-gt 1`, which
+			# fails on 0 AND on 1, so its `no` does not say which, and `-ge 0`,
+			# which a count always passes. The awk carve-out reads `> 0` and
+			# `>= 1` only, and now the two agree. `-lt 1` and `-le 0` are also
+			# nothing-versus-something, but this rule does not excuse them, and
+			# it does not read a mirrored test such as `[ 0 -lt "$x" ]`.
+			if (t ~ /-gt[[:space:]]+"?0"?[[:space:]]*$/) return 1
+			if (t ~ /-ge[[:space:]]+"?1"?[[:space:]]*$/) return 1
 			return 0
 		}
 		# The same carve-outs the `[` rule uses, written in awk syntax.
@@ -319,11 +327,17 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# the corpus -- 101 before, 101 after, both comm directions empty -- so
 		# it closes a shape rather than removing a live wrong name.
 		line ~ /(^|[[:space:]])(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/ &&
-		line ~ /\$\([[:space:]]*\[[^]]*\][[:space:]]*&&[[:space:]]*echo/ {
+		# A REDIRECT MAY SIT BETWEEN THE `]` AND THE `&&` (#1980). The rule
+		# required `&&` straight after the `]`, so `[ ... ] 2>/dev/null && echo
+		# yes || echo no` was never examined. The redirect may be `2>x`, `2> x`,
+		# `2>&1`, `>&2` or `&>x`. It is stripped from the arms too, so a
+		# `2>"$LOG"` is not read as a branch that carries a value.
+		line ~ /\$\([[:space:]]*\[[^]]*\][[:space:]]*((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*&&[[:space:]]*echo/ {
 			body = line
 			sub(/^.*\$\([[:space:]]*\[/, "", body)
 			test = body; sub(/\].*$/, "", test)
 			arms = body; sub(/^[^]]*\][[:space:]]*/, "", arms)
+			sub(/^((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*/, "", arms)
 			# (b) a branch that interpolates carries the value already.
 			if (arms ~ /\$/) next
 			if (determinate(test)) next
@@ -349,7 +363,12 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			ib = line
 			sub(/^.*\$\([[:space:]]*if[[:space:]]*\[/, "", ib)
 			itest = ib; sub(/\].*$/, "", itest)
-			iarms = ib; sub(/^[^]]*\][[:space:]]*;?[[:space:]]*/, "", iarms)
+			# THE REDIRECT IS STRIPPED HERE TOO (#1980), by the same pattern as
+			# the `[` rule. Without it, `if [ ... ] 2>"$LOG"; then echo 1; else
+			# echo 0; fi` reads as carrying its value, because of the `$`.
+			iarms = ib; sub(/^[^]]*\][[:space:]]*/, "", iarms)
+			sub(/^((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*/, "", iarms)
+			sub(/^;?[[:space:]]*/, "", iarms)
 			sub(/[[:space:]]*fi[[:space:]]*\).*$/, "", iarms)
 			if (iarms !~ /then[[:space:]]*echo/) next
 			if (iarms !~ /else[[:space:]]*echo/) next
@@ -409,6 +428,66 @@ check "control: the sweep sees a shell if/then/else that discards its operand" \
 _lam_ifs_names="$(_lam_sweep "$_lam_probe_ifs" | cut -f2 | sort | tr '\n' ';')"
 check_text "control: the carve-outs hold and the innocent arm above the helper is not named" \
 	"$_lam_ifs_names" "an if/then/else verdict whose operand vanishes;"
+
+# A REDIRECT AFTER THE TEST, AND A FLOOR OF TWO (#1980). Two arms that print
+# only `no` on failure were not seen:
+#
+#   - `[ ... ] 2>/dev/null && echo yes || echo no`. The `[` rule required `&&`
+#     straight after the `]`, so any redirect in between hid the arm.
+#   - `[ "$x" -gt 1 ]`. The carve-out excused `-gt 0`, `-gt 1`, `-ge 0` and
+#     `-ge 1`. It now excuses only `-gt 0` and `-ge 1` of these. `-gt 1`
+#     fails on 0 and on 1, so `no` does not say which. The awk carve-out
+#     already reads `> 0` and `>= 1` only.
+#
+# The determinate and carrying arms behind a redirect are the controls: a
+# redirect must not make the carve-outs stop working. A redirect into a
+# variable (`2>"$LOG"`) must not excuse an arm, in the `[` rule or in the
+# if/then/else rule. `-ge 0` must not be excused.
+_lam_probe_redir="$PGC_WORKDIR/lam_probe_redir.sh"
+cat > "$_lam_probe_redir" <<'PROBE'
+check "a threshold behind a stderr redirect" \
+	"$([ "$a" -le "$b" ] 2>/dev/null && echo yes || echo no)" "yes"
+check "a threshold behind two redirects" \
+	"$([ "$a" -le "$b" ] >/dev/null 2>&1 && echo yes || echo no)" "yes"
+check "a count above one" \
+	"$([ "$x" -gt 1 ] && echo yes || echo no)" "yes"
+check "a count above one behind a redirect" \
+	"$([ "$x" -gt 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "determinate: nothing versus something behind a redirect" \
+	"$([ "$rows" -gt 0 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "determinate: a floor of one behind a redirect" \
+	"$([ "$rows" -ge 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "carried: a branch behind a redirect names the number" \
+	"$([ "$n" -ge 5 ] 2>/dev/null && echo yes || echo "no (found $n)")" "yes"
+check "a threshold behind a redirect into a variable" \
+	"$([ "$a" -le "$b" ] 2>"$LOG" && echo yes || echo no)" "yes"
+check "a threshold behind a dup and a redirect into a variable" \
+	"$([ "$a" -le "$b" ] 2>&1 >"$LOG" && echo yes || echo no)" "yes"
+check "a floor of zero" \
+	"$([ "$x" -ge 0 ] && echo yes || echo no)" "yes"
+check "a threshold behind a spaced redirect" \
+	"$([ "$a" -le "$b" ] 2> /dev/null && echo yes || echo no)" "yes"
+check "a threshold behind an and-redirect" \
+	"$([ "$a" -le "$b" ] &>/dev/null && echo yes || echo no)" "yes"
+check "a threshold behind an and-redirect into a variable" \
+	"$([ "$a" -le "$b" ] &>"$LOG" && echo yes || echo no)" "yes"
+check "a threshold behind a spaced redirect into a variable" \
+	"$([ "$a" -le "$b" ] 2> "$LOG" && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold behind a redirect into a variable" \
+	"$(if [ "$a" -le "$b" ] 2>"$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind an and-redirect into a variable" \
+	"$(if [ "$a" -le "$b" ] &>"$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind a spaced redirect into a variable" \
+	"$(if [ "$a" -le "$b" ] 2> "$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "carried: an if/then/else behind a redirect names the number" \
+	"$(if [ "$a" -le "$b" ] 2>"$LOG"; then echo 1; else echo "0 (a=$a)"; fi)" "1"
+PROBE
+# SORTED IN THE C LOCALE. A locale-aware sort ignores spaces, so it puts
+# `an if/then/else ...` before `a threshold ...` and the order would depend on
+# the runner. Measured: as root on PG15 the names came out in the other order.
+_lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
+check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind two redirects;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused

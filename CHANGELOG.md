@@ -561,6 +561,17 @@ true until the next version shipped.
   for a table with no freed range. `native_truncate` and its twin gain checks
   for each case: a snapshot, a writer and a prepared transaction in another
   database, and a snapshot taken just before the `compact`.
+- Self-test part 540 now finds more check arms that print only `no` when
+  they fail (#1980). It missed an arm with a redirect after the test, such as
+  `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.
+  A redirect into a variable also hid an arm in the `if/then/else` form. It
+  excused `-gt 1`, which fails on 0 and on 1, so `no` does not say which. It
+  also excused `-ge 0`, which a count always passes. Of the `-gt` and `-ge`
+  forms, it now excuses only `-gt 0` and `-ge 1`, as its awk rule already did.
+  The `-eq`, `-ne`, `=` and file-test excuses are unchanged. The wider sweep
+  found 13 such arms in 9 suites. Each now prints its measurement when it
+  fails, for example `no (groups=1)`. No check changed its name or what it
+  passes on.
 - `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
   pytest twins no longer fail when another session holds an old snapshot during
   `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
@@ -647,6 +658,50 @@ true until the next version shipped.
   `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
   changes: an unknown verdict still lets the run go ahead, and only a server
   that started before the install is refused.
+- A deep glob pattern no longer crashes the Parquet reader (#1968, #1972). The
+  reader passed a local pattern to `glob(3)` and matched an `s3://` pattern with
+  `fnmatch`, with no bound. Both use stack space for each level, so a pattern
+  such as `'/tmp/' || repeat('*/', 4000) || 'x.parquet'` killed the backend
+  with SIGSEGV, and the server restarted every session. An `s3://` pattern of
+  1000 `*/` levels did the same when a key had that many levels. Now
+  `read_parquet`, `parquet_schema`, `import_parquet` and the
+  `pgcolumnar_parquet` foreign table refuse such a pattern with error 54000, as
+  `path_glob_matches` does since #1964: 4096 bytes or more, more than 128 `/`
+  after the first `*`, `?` or `[` in a local pattern, or more than 128 `*` in an
+  `s3://` pattern. The reader and `path_glob_matches` share one check.
+  The reader counts and expands a local pattern in a folded form, with each
+  run of `/` as one `/` and without a `.` name followed by `/`. The kernel
+  opens the same files by either spelling. So a table on
+  `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
+  `tier_partition` check reads, is read and not refused (#1977 review). A `.`
+  at the end, a `.` that only `/` follow, and a name followed by `..` are
+  kept as written, so `'/w/s[p]/a.parquet/./'` matches nothing, as `glob(3)`
+  of it does.
+  docs/sql-reference.md. `test/native_parquet_multifile.sh`,
+  `test/objstore_listing.sh` and their pytest twins.
+- `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of
+  repeated `/.*` (#1973). Each directory in its tree in memory lists `.` and
+  `..`, and `.*` matches both, so `repeat('/.*', 40)` grew the backend to 2 GB
+  in memory that glibc allocates outside PostgreSQL. The walk now stops after
+  1,000,000 steps with error 54000, in about 60 ms, and never answers false.
+  Each call starts the count again, so a refused pattern does not fail later
+  calls in the same session. The reader's own walk on the real filesystem is
+  not bounded yet (#1984). docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a name that matches `.` or `..` (#1982). `glob(3)` lists `.` and
+  `..` in each directory, and `.*`, `.?`, `.[.]` and `\.*` match them, so a
+  table on `/w/x/.*/a.parquet` reads `/w/x/./a.parquet`, which is
+  `/w/x/a.parquet`. `path_glob_matches` compared the names `glob(3)` returned
+  with the target as spelled, so it answered false, and the move overwrote
+  the file. It now also compares each name in its folded form with the
+  target's: a run of `/` as one, without a `.` name, and without a name
+  followed by `..`, as `tier_partition` folds paths since #1965. It also takes
+  the directories a glob names before its first `*`, `?`, `[` or `\` to
+  exist, so `/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`. Both only add
+  matches. A `*` alone still does not match `.` or `..`. An `s3://` key is not
+  folded. docs/sql-reference.md. `test/tier_partition.sh` and its pytest
+  twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`

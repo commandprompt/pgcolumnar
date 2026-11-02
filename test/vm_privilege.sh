@@ -117,7 +117,7 @@ check "premise: the heap fixture really is heap, or the #748 arm is vacuous" \
 check "no all-visible bit is set yet" \
 	"$(q "SELECT pgcolumnar.vm_is_visible('vmvictim'::regclass,0);")" "f"
 check "the fixture spans more than one block" \
-	"$([ "${nblocks:-0}" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "${nblocks:-0}" -gt 1 ] && echo yes || echo "no (blocks=${nblocks:-unset})")" "yes"
 
 # tail -1 is not cosmetic. psql -At -c with several statements echoes a command
 # tag per statement, so these helpers returned "SET\nSET\n20000". check_num then
@@ -232,7 +232,7 @@ for b in $(seq 0 $(( ${heap_blocks:-1} - 1 ))); do
 	q "SELECT pgcolumnar.vm_selftest('vmheap'::regclass, $b);" >/dev/null 2>&1
 done
 check "premise: the heap sweep covered more than one block" \
-	"$([ "${heap_blocks:-0}" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "${heap_blocks:-0}" -gt 1 ] && echo yes || echo "no (heap blocks=${heap_blocks:-unset})")" "yes"
 check "the heap index-only scan still returns only live rows after the sweep (#748)" \
 	"$(ios_count)" "10000"
 check "and it still agrees with the sequential scan (#748)" \

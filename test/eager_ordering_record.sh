@@ -126,8 +126,9 @@ mk gate
 psql_run "SELECT pgcolumnar.cluster('gate', 'k', 'j');"
 # So that "nothing changed" cannot be true because there was nothing there: the
 # fixture must have live rows in more than one group.
+GATE_GROUPS="$(q "SELECT total_groups FROM pgcolumnar.sort_status('gate');")"
 check "the gate fixture has more than one group" \
-	"$([ "$(q "SELECT total_groups FROM pgcolumnar.sort_status('gate');")" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "$GATE_GROUPS" -gt 1 ] && echo yes || echo "no (total_groups=$GATE_GROUPS)")" "yes"
 check_num "premise: and live rows in them" "$(q 'SELECT count(*) FROM gate;')" "5000"
 
 GATE_BEFORE="$(layout gate)"
