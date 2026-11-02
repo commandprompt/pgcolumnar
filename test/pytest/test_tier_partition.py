@@ -225,6 +225,13 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_requiv": "s3://tierb/seq/[[=]=]].parquet",
               "s_dup_rzq": "s3://tierb/szq/[[:z:]].parquet",
               "s_dup_rrange": "s3://tierb/srg/a[!:-[:digit:]].parquet",
+              "s_dup_rlate": "s3://tierb/slt/[1a-[:alpha:]]x.parquet",
+              "s_dup_rlateq": "s3://tierb/sle/[1a-[=b=]]x.parquet",
+              "s_dup_llate": f"{server_dir}/sllt/[1a-[:alpha:]]x.parquet",
+              "s_dup_rcdash": "s3://tierb/scd/[[:alpha:]-[:digit:]].parquet",
+              "s_dup_rrdash": "s3://tierb/srd/-[/-[-[:alpha:][=a=]].parquet",
+              "s_dup_rnone": "s3://tierb/snn/[1[::]-a]x.parquet",
+              "s_dup_rcoll": "s3://tierb/sco/[1[.ab.]-a]x.parquet",
               "s_dup_hglob": "http://h.example/shg/*.parquet",
               "s_dup_gglob": "gs://tierb/sgg/*.parquet"}
     with conn.cursor() as cur:
@@ -297,6 +304,30 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a [:z:] in a glob is not a POSIX class to fnmatch, so a path that reads it as members is refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/srg/ab].parquet")),
                 "58P02", "a [ that ends a range in a glob is a plain member, so a path the shorter class matches is refused")
+    # After a member matches, glibc skips to the closing ] with code that knows
+    # no ranges. So when a range ends in a plain [ and a POSIX class or an
+    # equivalence class seems to follow, a member before the range makes
+    # fnmatch close the class at a later ]. Such a glob is refused from that
+    # class on, whatever follows it. A - after a class or a range is a plain
+    # member, and [::] or [.ab.] is one unit to the skip (#1951, found by
+    # comparing with glibc fnmatch).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/slt/1x.parquet")),
+                "58P02", "a [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sle/1x.parquet")),
+                "58P02", "a [ that ends a range before an equivalence class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/sllt/1x.parquet")),
+                "58P02", "a local glob [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/scd/-.parquet")),
+                "58P02", "a - after a POSIX class in a glob is a member, not a range, so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/srd/-a.parquet")),
+                "58P02", "a - after a range in a glob is a member, so the POSIX class after it is one member and a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snn/1x.parquet")),
+                "58P02", "an empty [::] in a glob class is one unit to fnmatch, so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sco/1x.parquet")),
+                "58P02", "a collating symbol [.ab.] in a glob class is one unit to fnmatch, so a path the class matches is refused")
+    expect.text(_errdetail(conn, tier.format("s3://tierb/se/*.parquet")),
+                "Foreign table public.s_dup_resc reads path 's3://tierb/se/\\*.parquet'.",
+                "the refusal's detail prints a path holding a backslash as written, not as an E'' string")
     # The function reads its own patterns with standard_conforming_strings on,
     # so a session that turns it off gets the same refusal (#1946 review).
     # PostgreSQL 19 refuses to turn it off (0A000), so there the session keeps
@@ -314,6 +345,8 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "28000", "a glob * does not cross a slash, so a path one level deeper is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sc/a_x/.parquet")),
                 "28000", "a glob [class] does not match a slash, so a path with a slash in its place is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/slt//x.parquet")),
+                "28000", "a class fnmatch may close at either ] still does not match a slash, so a path with a slash in its place is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/se/x.parquet")),
                 "28000", "an escaped star in a glob matches only a literal star, so another name is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/skey/x.parquet")),
