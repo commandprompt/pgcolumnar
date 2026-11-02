@@ -2019,8 +2019,10 @@ harness_selftest	340-the-binary-must-be-built-from	a file that is not a build in
 harness_selftest	340-the-binary-must-be-built-from	a fingerprint different from the record is stale	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a fingerprint equal to the record is fresh	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a fingerprint is 12 hex characters	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	a library installed a fraction of a second after the server start, in the same second, is REFUSED	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
 harness_selftest	340-the-binary-must-be-built-from	a library newer than the running server is REFUSED	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a library older than the running server is accepted	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	a library stamped at the exact server start instant is accepted	15;18	never	-
 harness_selftest	340-the-binary-must-be-built-from	a missing binary timestamp is unknown, not predates	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a missing postmaster timestamp is unknown, not predates	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a new source file under objstore moves the fingerprint	15;16;17;18;19	never	-
@@ -2029,8 +2031,10 @@ harness_selftest	340-the-binary-must-be-built-from	a recorded digest different f
 harness_selftest	340-the-binary-must-be-built-from	a recorded library digest equal to the installed one is fresh	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a relative path hashes the same tree the same way	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a server older than the binary predates it	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	a server started a fraction of a second after the install, in the same second, is fresh	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
+harness_selftest	340-the-binary-must-be-built-from	a server started a fraction of a second before the install, in the same second, predates it	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
 harness_selftest	340-the-binary-must-be-built-from	a server started after the binary is fresh	15;16;17;18;19	never	-
-harness_selftest	340-the-binary-must-be-built-from	a server started at the same second is fresh	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	a server started at the same instant as the install is unknown, not fresh	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
 harness_selftest	340-the-binary-must-be-built-from	a stale source is refused whatever the binary says	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a symlink to the tree hashes it the same way	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	a symlinked src contributes nothing, as find -P contributes nothing	15;16;17;18;19	never	-
@@ -2046,6 +2050,7 @@ harness_selftest	340-the-binary-must-be-built-from	an unhashable tree has an emp
 harness_selftest	340-the-binary-must-be-built-from	an unreadable b.c yields no fingerprint, not a wrong one	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	an unreadable c.c yields no fingerprint, not a wrong one	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	an unreadable library is not a failure	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	and a fraction is compared as a number, not as text	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
 harness_selftest	340-the-binary-must-be-built-from	and a non-numeric timestamp is unknown rather than compared as text	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and a short first line does not splice the second into it	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and a stale source with a replaced binary is still refused for the source	15;16;17;18;19	never	-
@@ -2059,9 +2064,11 @@ harness_selftest	340-the-binary-must-be-built-from	and restoring the partition r
 harness_selftest	340-the-binary-must-be-built-from	and the major is still readable in the name	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and the reader reads back the fingerprint the writer recorded	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and the refusal says the server must be restarted	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	and trailing zeros in a fraction do not change an equal reading	15;18	never	-
 harness_selftest	340-the-binary-must-be-built-from	and two pg_configs for one prefix share a stamp, keyed on pkglibdir	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and yields NO library digest, rather than reusing the source hash	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	and yields the library digest second	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	but it is not reported as fresh	15;18	2026-11-02	pgc_check_running_binary and pgc_running_binary_verdict reverted to whole-second readings with an equal pair read as fresh (#1956)
 harness_selftest	340-the-binary-must-be-built-from	but it says which question went unanswered	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	control: a caller passing a pg_config is not flagged	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	control: a readable run still reads fresh	15;16;17;18;19	never	-
@@ -2087,6 +2094,7 @@ harness_selftest	340-the-binary-must-be-built-from	premise: both fake configs re
 harness_selftest	340-the-binary-must-be-built-from	premise: every locale produced a fingerprint	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	premise: the argument parser reads the second argument at all	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	premise: the build path ran to completion, so a stamp was due	15;16;17;18;19	never	-
+harness_selftest	340-the-binary-must-be-built-from	premise: the filesystem keeps the library's sub-second mtime	15;18	never	-
 harness_selftest	340-the-binary-must-be-built-from	premise: the partition fixture fingerprints at all	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	premise: the same function returns a fingerprint for a real tree	15;16;17;18;19	never	-
 harness_selftest	340-the-binary-must-be-built-from	premise: the spelling fixture fingerprints at all	15;16;17;18;19	never	-
