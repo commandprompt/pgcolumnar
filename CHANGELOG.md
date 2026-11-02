@@ -612,7 +612,9 @@ true until the next version shipped.
   opens the same files by either spelling. So a table on
   `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
   `tier_partition` check reads, is read and not refused (#1977 review). A `.`
-  at the end and a name followed by `..` are kept as written.
+  at the end, a `.` that only `/` follow, and a name followed by `..` are
+  kept as written, so `'/w/s[p]/a.parquet/./'` matches nothing, as `glob(3)`
+  of it does.
   docs/sql-reference.md. `test/native_parquet_multifile.sh`,
   `test/objstore_listing.sh` and their pytest twins.
 - `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of

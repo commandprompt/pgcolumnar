@@ -1155,9 +1155,10 @@ The readers refuse a glob pattern that is too large for glibc to match
 safely, with error 54000 (`program_limit_exceeded`), before they read
 anything (#1968, #1972):
 
-- a pattern of 4096 bytes (`PATH_MAX`) or more;
+- a pattern of 4096 bytes (`PATH_MAX`) or more, measured for a local
+  pattern in its folded form (see below);
 - a local pattern with more than 128 `/` after its first `*`, `?` or `[`,
-  counted in its folded form (see below);
+  counted in its folded form;
 - an `s3://` pattern with more than 128 `*`. The reader refuses it before it
   lists the prefix.
 
@@ -1166,10 +1167,14 @@ form, each run of `/` becomes one `/`, and a `.` name followed by `/` is
 dropped. The kernel
 opens the same file by either spelling, so the files read do not change. So
 `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'` has 201 levels as written,
-but 1 in the folded form, and the reader reads `/w/sp/a.parquet`. Two names
-are kept as written:
+but 1 in the folded form, and the reader reads `/w/sp/a.parquet`. With
+`repeat('/.', 5000)` the pattern is over 4096 bytes as written but not in
+the folded form, and the reader reads it too. Two names are kept as written:
 
-- a `.` at the end, because it makes the pattern match only directories;
+- a `.` at the end, or a `.` that only `/` follow, because it makes the
+  pattern match only directories. Without it, `glob(3)` matches a pattern
+  that ends in `/` against a file, so `'/w/s[p]/a.parquet/./'` would read
+  `/w/sp/a.parquet` (#1977 review);
 - a name followed by `..`, because when that name is a symbolic link, the
   kernel goes up from the directory the link leads to.
 

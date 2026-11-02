@@ -3935,14 +3935,35 @@ pq_local_glob_bound(const char *pattern)
 }
 
 /*
+ * Is `s` empty or made only of '/' and "\/"? (pq_local_glob_fold)
+ */
+static bool
+pq_only_seps(const char *s)
+{
+	while (*s != '\0')
+	{
+		if (s[0] == '/')
+			s++;
+		else if (s[0] == '\\' && s[1] == '/')
+			s += 2;
+		else
+			return false;
+	}
+	return true;
+}
+
+/*
  * The folded form of a local pattern, which the reader bounds and globs: each
  * run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
  * open(2) and glob(3) read both spellings as the same file, so the files read
  * do not change, but the folded form can have far fewer levels: #1978's
  * tier_partition check reads a table on '<dir>/s[p]' || repeat('/.', 200) ||
  * '/a.parquet'. A '.' at the end is kept, as it makes the pattern match only
- * directories, and so is a name followed by '..', as a symbolic link before the
- * '..' leads the kernel somewhere else. A '/' after a backslash is not folded.
+ * directories. So is a '.' that only '/' or "\/" follow: glob(3) matches a
+ * pattern that ends in '/' against a file, so 'f/./' would read the file 'f'
+ * once folded to 'f/' (#1977 review). A name followed by '..' is kept, as a
+ * symbolic link before the '..' leads the kernel somewhere else. A '/' after
+ * a backslash is not folded.
  */
 static char *
 pq_local_glob_fold(const char *pattern)
@@ -3962,7 +3983,7 @@ pq_local_glob_fold(const char *pattern)
 		{
 			if (c[0] == '/')
 				c++;
-			else if (c[0] == '.' && c[1] == '/')
+			else if (c[0] == '.' && c[1] == '/' && !pq_only_seps(c + 1))
 				c += 2;
 			else
 				break;
