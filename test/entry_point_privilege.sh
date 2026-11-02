@@ -68,6 +68,8 @@ SQLFILE="$_epp_root/pgcolumnar--$_epp_ver.sql"
 #   row_tid                maps a row number to a TID by arithmetic (#1294): it
 #                          takes no relation and reads nothing. A version that
 #                          took a relation would need the SELECT check the others have.
+#   path_glob_matches      compares a glob with a path as strings (#1957): it
+#                          takes no relation and reads nothing, as row_tid.
 #   rollup_record_dependencies  a TRIGGER function (#1376): PostgreSQL refuses to call it
 #                          directly, and it runs only on writes to pgcolumnar.rollup,
 #                          whose row-level security asks that the writer own the
@@ -82,7 +84,7 @@ SQLFILE="$_epp_root/pgcolumnar--$_epp_ver.sql"
 # line end is followed by a newline rather than a space, so it silently fails to
 # match and reads as an unbucketed function. That is not hypothetical: it is what
 # the first run of this suite reported for parquet_fdw_validator.
-EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_namespace_levels iceberg_rest_tables read_avro_manifest read_manifest_list row_tid rollup_record_dependencies approx_count_distinct approx_count_distinct_transfn approx_count_distinct_combinefn approx_count_distinct_serialfn approx_count_distinct_deserialfn approx_count_distinct_finalfn"
+EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_namespace_levels iceberg_rest_tables read_avro_manifest read_manifest_list row_tid path_glob_matches rollup_record_dependencies approx_count_distinct approx_count_distinct_transfn approx_count_distinct_combinefn approx_count_distinct_serialfn approx_count_distinct_deserialfn approx_count_distinct_finalfn"
 EXEMPT="$(echo $EXEMPT)"
 
 # Relation-taking entry points with NO privilege check of any kind on main.

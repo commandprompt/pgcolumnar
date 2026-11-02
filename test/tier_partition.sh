@@ -222,7 +222,17 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_rcunt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nc/a[^]x*');
           CREATE FOREIGN TABLE dup_rspan (x int) SERVER tier_pq OPTIONS (path 's3://tierb/sp/x[a/b].parquet');
           CREATE FOREIGN TABLE dup_rcoll (x int) SERVER tier_pq OPTIONS (path 's3://tierb/co/[[.].]].parquet');
-          CREATE FOREIGN TABLE dup_lequiv (x int) SERVER tier_pq OPTIONS (path '$W/le/[[=/=]a].parquet');"
+          CREATE FOREIGN TABLE dup_lequiv (x int) SERVER tier_pq OPTIONS (path '$W/le/[[=/=]a].parquet');
+          CREATE FOREIGN TABLE dup_rnskip (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nsk/[![-x[!-[=a=]');
+          CREATE FOREIGN TABLE dup_lnskip (x int) SERVER tier_pq OPTIONS (path '$W/lnsk/[![-x[!-[=a=]');
+          CREATE FOREIGN TABLE dup_lbslash (x int) SERVER tier_pq OPTIONS (path '$W/lbs/[\\/]');
+          CREATE FOREIGN TABLE dup_ltrail (x int) SERVER tier_pq OPTIONS (path '$W/lts/*//');
+          CREATE FOREIGN TABLE dup_lhide (x int) SERVER tier_pq OPTIONS (path '$W/lgh/*.parquet');
+          CREATE FOREIGN TABLE dup_rnl (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nl/a.parquet\\nHINT:  x');
+          CREATE FOREIGN TABLE dup_rnlg (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nlg/[a\\nHINT:  x]x.parquet');
+          CREATE FOREIGN TABLE \"dup_tnl
+HINT:  trust me\" (x int) SERVER tier_pq OPTIONS (path 's3://tierb/tnl/a.parquet');
+          CREATE FOREIGN TABLE dup_rlitx (x int) SERVER tier_pq OPTIONS (path 's3://tierb/litx/a\\x0A.parquet');"
 # The directories exist, so a local target the check let through would be written.
 mkdir -p "$W/ldir/sub" "$W/lg" && chmod 777 "$W/ldir" "$W/ldir/sub" "$W/lg"
 # rolled SQL -> the SQLSTATE of SQL run inside a transaction that rolls back
@@ -375,6 +385,148 @@ check "a gs:// path holding * is one object, not a glob, so another name is not 
 # table reads no file named a.parquet in that directory.
 check "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/le/a.parquet');")" "58P01"
+# The check matches with the reader's own fnmatch and glob(3), through
+# pgcolumnar.path_glob_matches, so it agrees with them where a reading of the
+# glob in SQL did not (#1957, #1962). A negated class that glibc cannot close
+# after a member matched is a literal [ to glibc.
+check "a negated glob class that glibc cannot close is a literal [, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/nsk/[!a');")" "58P02"
+check "a negated local glob class that glibc cannot close is a literal [, so a path holding it is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lnsk/[!a');")" "58P02"
+# glob(3) splits a local pattern at every slash first, an escaped one too, so
+# [\/] is a directory [ holding a file ]. And a pattern that ends in // names
+# the directories it matches, as one that ends in / does.
+check "a local glob splits at a backslash-escaped slash in a bracket, so a path of [ and ] is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lbs/[/]');")" "58P02"
+check "a local glob that ends in // matches the directory with one slash, so that path is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lts/d/');")" "58P02"
+# glibc skips a name that starts with '.' unless the pattern spells the dot
+# (FNM_PERIOD), in an s3:// key as in a local glob, so the check refuses no
+# more than the table reads.
+check "a glob * does not match a leading dot in an s3:// key, so a hidden key is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/.x.parquet');")" "28000"
+check "a local glob * does not match a leading dot, so a hidden file is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lgh/.x.parquet');")" "58P01"
+# The detail prints a control character in the path as \xHH, so a table
+# owner's path cannot add a line, such as a fake HINT, under the refusal (#1960).
+check "the refusal's detail prints a newline in the path as an escape, on one line" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', E's3://tierb/nl/a.parquet\\nHINT:  x');")" \
+	"Foreign table public.dup_rnl reads path 's3://tierb/nl/a.parquet\\x0AHINT:  x'."
+# The class [a\n...] matches ax.parquet, so only the foreign table's path holds
+# the newline: the reading is the refusal's SQLSTATE and its HINT line count.
+nl_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At \
+	-v VERBOSITY=verbose -c "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/nlg/ax.parquet');" 2>&1 >/dev/null)"
+check "a newline in a foreign table's path adds no HINT line under the refusal" \
+	"$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$nl_out" | head -1) with $(grep -c '^HINT:' <<<"$nl_out") HINT lines" \
+	"58P02 with 0 HINT lines"
+# The foreign table's name is another role's text too, and regclass output
+# keeps a newline inside its quotes. The detail escapes the name as it
+# escapes the path (#1964 review).
+check "the refusal's detail prints a newline in the foreign table's name as an escape, on one line" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/tnl/a.parquet');")" \
+	"Foreign table public.\"dup_tnl\\x0AHINT:  trust me\" reads path 's3://tierb/tnl/a.parquet'."
+# A path may hold the four characters \x0A. The detail prints a backslash
+# that comes before an x as \x5C, so that path does not print as a newline.
+check "the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/litx/a\\x0A.parquet');")" \
+	"Foreign table public.dup_rlitx reads path 's3://tierb/litx/a\\x5Cx0A.parquet'."
+# The helper itself: it reads no file, so the planner may fold and share it.
+# qerr SQL -> the result, or the error when the query fails
+qerr() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -c "$1" 2>&1 | head -1
+}
+# Its answer follows LC_COLLATE and glibc, which can answer a rare range
+# differently from one call to the next, so it is VOLATILE (#1964 review).
+check "path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE" \
+	"$(qerr "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure;")" "vtrues"
+check "path_glob_matches lets an s3:// class span a slash but splits a local glob there" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|' || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');")" "true|false"
+# glob(3) lists . and .. in each directory, and a pattern that spells the
+# leading dot matches them, so the tree in memory lists them too.
+check "path_glob_matches lists . and .. in a local directory, so .* matches both" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/./a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/../a.parquet');")" "true|true"
+# glob(3) only ever returns a path built from the tree, so a directory it
+# lists must hold the path asked about, not merely some path (#1964 review).
+check "path_glob_matches counts only the path asked about, not another path the glob returns" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/*', '/w/a/b.parquet')::text;")" "false"
+# glibc glob(3) splits a pattern at its last slash and, when the part before
+# it holds *, ? or [, calls itself on that part. So it calls itself once for
+# every slash after the first *, ? or [, even a slash between literal names,
+# and each call keeps a copy of the pattern on the stack. The helper refuses a
+# pattern with more than 128 such slashes, or of PATH_MAX bytes or more, with
+# an error, before glob(3) runs. A crash here would restart the server, and
+# any role may call the helper (#1964 review). PATH_MAX is 4096 on Linux, the
+# only system the suite runs on, so the checks spell it as 4096.
+# ansst SQL -> the query's one value, or its SQLSTATE when it fails
+ansst() { local s; s=$(sqlstate "$1"); if [ "$s" = ok ]; then qerr "$1"; else echo "${s:-no answer}"; fi; }
+check "path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 128) || 'x', repeat('a/', 128) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 129) || 'x', repeat('a/', 129) || 'x')::text;")" \
+	"true|54000"
+check "path_glob_matches counts every level after the first *, so one * and 129 more levels are refused with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/*/' || repeat('a/', 129) || 'x', '/b/' || repeat('a/', 129) || 'x')::text;")" "54000"
+check "path_glob_matches counts a level after a ? or a [, so 129 of either are refused with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('?/', 129) || 'x', repeat('a/', 129) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('[a]/', 129) || 'x', repeat('a/', 129) || 'x')::text;")" \
+	"54000|54000"
+check "path_glob_matches refuses a pattern of 4096 bytes with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4091) || ']', '/w/a')::text;")" "54000"
+# glibc fnmatch calls itself for each * of an s3:// key, so the helper bounds
+# a remote pattern as it bounds a local one: at most 128 *, and shorter than
+# PATH_MAX bytes (#1964 review).
+check "path_glob_matches matches an s3:// pattern of 128 * and refuses 129 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 128) || 'x', 's3://b/' || repeat('a/', 128) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 129) || 'x', 's3://b/' || repeat('a/', 129) || 'x')::text;")" \
+	"true|54000"
+check "path_glob_matches matches an s3:// pattern of 4095 bytes and refuses one of 4096 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4087) || '*', 's3://b/' || repeat('a', 4087) || 'b')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('a', 4088) || '*', 's3://b/' || repeat('a', 4088) || 'b')::text;")" \
+	"true|54000"
+# No file has a path of PATH_MAX bytes or more: the reader could not open it.
+# So the helper answers false for such a path before it builds anything, and a
+# long path cannot keep a backend busy past a cancel (#1964 review).
+check "path_glob_matches matches a path of 4095 bytes but not one of 4096, which no file can have" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'b')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'bc')::text;")" \
+	"true|false"
+check "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -c "SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))::text;" 2>&1 | head -1)" "false"
+# An interrupt that raises no error, such as a check that the client is
+# still connected, must not turn a match into no match: a false answer lets a
+# move overwrite a file a table reads (#1964 review). .* matches . and .., so
+# 18 levels of it make a walk of 2^18 names, far longer than the 1 ms timer.
+# Every walk is cut short, and the helper gives up with 57014 after 100 walks.
+# An answer of false would mean it took a cut walk as a full one.
+check "path_glob_matches never answers false for a walk an interrupt that raises no error cut short" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c client_connection_check_interval=1ms' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=sqlstate -c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 18) || '/x', repeat('/..', 18) || '/x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')" \
+	"57014"
+# The detail escapes a C1 control character, U+0080 to U+009F, by what the
+# character means, not by its byte. In LATIN1 the byte 0x85 is the control
+# NEL, so it prints as \x85. In WIN1252 the byte 0x80 is the euro sign, a
+# printable character, so it prints as written (#1964 review).
+# encdetail ENCODING CODE -> the refusal's DETAIL in a database of ENCODING,
+# for a foreign table whose path holds chr(CODE), read as UTF-8
+encdetail() {
+	local db="tier_$(tr 'A-Z' 'a-z' <<<"$1")" out
+	psql_run "DROP DATABASE IF EXISTS $db;"
+	psql_run "CREATE DATABASE $db TEMPLATE template0 ENCODING '$1' LC_COLLATE 'C' LC_CTYPE 'C';"
+	out=$(env PATH="$PGC_BINDIR:$PATH" PGCLIENTENCODING=UTF8 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$db" \
+		-X -At -v ON_ERROR_STOP=1 \
+		-c "CREATE EXTENSION pgcolumnar;" \
+		-c "CREATE SERVER s FOREIGN DATA WRAPPER pgcolumnar_parquet;" \
+		-c "CREATE TABLE p (d int) PARTITION BY RANGE (d);" \
+		-c "CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10) USING pgcolumnar;" \
+		-c "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE e (x int) SERVER s OPTIONS (path %L)', 's3://b/n' || chr($2) || '.parquet'); END\$\$;" \
+		-c "SELECT pgcolumnar.tier_partition('p1', 's', 's3://b/n' || chr($2) || '.parquet');" 2>&1 >/dev/null)
+	psql_run "DROP DATABASE $db;"
+	out=$(sed -n 's/^DETAIL: *//p' <<<"$out" | head -1)
+	echo "${out:-none}"
+}
+check "the refusal's detail escapes the LATIN1 control NEL in a path" \
+	"$(encdetail LATIN1 133)" "Foreign table public.e reads path 's3://b/n\\x85.parquet'."
+check "the refusal's detail prints the WIN1252 euro sign in a path as written" \
+	"$(encdetail WIN1252 128)" "Foreign table public.e reads path 's3://b/n€.parquet'."
+psql_run "DROP FOREIGN TABLE dup_rnskip, dup_lnskip, dup_lbslash, dup_ltrail, dup_lhide, dup_rnl, dup_rnlg, dup_rlitx;
+          DROP FOREIGN TABLE \"dup_tnl
+HINT:  trust me\";"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
           dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote, dup_rdslash, dup_rndash, dup_lndash;"
@@ -999,5 +1151,42 @@ check "a key that can write but not read refuses the move (28000)" \
 rm -f "$PGC_WORKDIR/s3b/__deny_reads__"
 check "and the move refused at the read-back leaves the rows local and attached, every row once" \
 	"$(mdigest sr)|$(jan_shape sr)" "$srb|r:pgcolumnar:$JAN_BOUND"
+
+# ---- a pattern too deep for glob(3) is an error, not a crash (#1964 review) --
+#
+# Last in the suite: before the fix these calls crashed the server, and the
+# crash recovery failed every check after them. Each check below waits up to
+# 60 s for the server to answer first, so a regression fails its own check
+# alone.
+# wait_up -> return once the server answers SELECT 1, or after 60 s
+wait_up() { local i; for i in $(seq 60); do [ "$(qerr "SELECT 1;")" = 1 ] && return; sleep 1; done; }
+check "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')::text;")|$(qerr "SELECT 1;")" \
+	"54000|1"
+# A role may first use most of max_stack_depth in SQL, and glob(3) then has
+# only what is left. pgm_deep calls itself n times, then the helper. The
+# deepest n that still answers is found in steps of 100, from 3000 down.
+wait_up
+psql_run "CREATE FUNCTION pgm_deep(n int, p text, q text) RETURNS text LANGUAGE plpgsql AS \$\$
+          BEGIN IF n = 0 THEN RETURN pgcolumnar.path_glob_matches(p, q)::text; END IF; RETURN pgm_deep(n - 1, p, q); END \$\$;"
+deep=3000
+while [ "$deep" -gt 0 ] && [ "$(ansst "SELECT pgm_deep($deep, '/w/*', '/w/a');")" != true ]; do deep=$((deep - 100)); done
+echo "-- pgm_deep answers at $deep levels of SQL"
+check "path_glob_matches refuses one * and 2045 more levels with an error near max_stack_depth, and the server stays up" \
+	"$(ansst "SELECT pgm_deep($deep, '/*/' || repeat('a/', 2045) || 'x', '/b');")|$(qerr "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DROP FUNCTION pgm_deep(int, text, text);"
+# fnmatch keeps more on the stack for each * in a UTF-8 locale than in C, so
+# this runs in a database whose LC_CTYPE is C.UTF-8.
+psql_run "DROP DATABASE IF EXISTS tier_cutf8;"
+psql_run "CREATE DATABASE tier_cutf8 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8';"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d tier_cutf8 -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pgcolumnar;"
+check "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d tier_cutf8 -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT pgcolumnar.path_glob_matches('s3://b/' || repeat('*/', 1000) || 'x', 's3://b/' || repeat('a/', 1000) || 'x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')|$(qerr "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DROP DATABASE tier_cutf8;"
 
 pgc_summary

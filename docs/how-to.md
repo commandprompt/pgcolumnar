@@ -745,21 +745,14 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   matches in any case.
 - A directory that holds the path at any depth. A remote directory ends in
   `/`, such as `s3://b/dir/`. A local directory may end in `/` or not.
-- A glob that matches the path, such as `s3://b/g/*.parquet`. In a glob, `*`
-  and `?` do not match `/`, and a backslash makes the next character literal.
-  The function treats a `[...]` class as any one character other than `/`, so
-  it can refuse a path that the class would not match. A `[` with no closing
-  `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
-  class, and `[^...]` counts like `[!...]`. A rare bracket can close at a
-  later `]` in glibc. That bracket is not negated and starts with a member.
-  Then a range in it ends in a plain `[` before a POSIX or an equivalence
-  class, as in `[1a-[:alpha:]]`. For such a bracket the function refuses every path
-  that has one character other than `/` in the bracket's place, whatever
-  follows (#1951). A bracket that starts with the range, as in
-  `[a-[:alpha:]]`, or a negated one, as in `[!1a-[:alpha:]]`, closes at the
-  first `]`.
-  One rare negated form still gets past the function (#1957). In it glibc
-  looks for the closing `]` past the end of the pattern, as in `[^[*-[::]`.
+- A glob that matches the path, such as `s3://b/g/*.parquet`. The function
+  asks `pgcolumnar.path_glob_matches`, which matches with the reader's own
+  code: `fnmatch` for an `s3://` key, and `glob(3)` for a local path. So it
+  refuses the paths that the glob expands to, and no others (#1957, #1962).
+  In a glob, `*`, `?` and a `[...]` class do not match `/`, except that a
+  class in an `s3://` key can. A name that starts with `.` matches only when
+  the glob spells the dot. A range such as `[a-c]` follows the database's
+  collation, as it does when the foreign table reads.
 
 The function reads the `path` option only of foreign tables whose wrapper uses
 pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
@@ -799,8 +792,8 @@ another tool, do one of these:
   prefix that no move writes to.
 - Give that table a glob that leaves out the next file's name, such as
   `s3://archive/metrics/2025_*.parquet` while you move the months of 2026.
-  Do not use a `[...]` class for this: the function treats it as any one
-  character, so `2026_0[1].parquet` still blocks `2026_02.parquet`.
+  A `[...]` class works too: `2026_0[1-6].parquet` does not block
+  `2026_07.parquet`.
 - Drop that table before the move and create it again after.
 
 The bucket and the key must match in case. A local path is compared as
