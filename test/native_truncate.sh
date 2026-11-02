@@ -86,9 +86,26 @@ check "indexed lookup after truncate" \
 # GUC off: truncate is a no-op even with reclaimable trailing space.
 psql_run "DELETE FROM h WHERE id > 35000;"
 psql_run "DELETE FROM n WHERE id > 35000;"
+# A SNAPSHOT IN ANOTHER DATABASE (#1992). truncate's horizon for a user table
+# ignores sessions in other databases. So a snapshot taken in database postgres
+# before the compact below must not count as holding the freed range. It stays
+# open until after the GUC-on truncate, which shows that truncate is not held.
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d postgres -Atq \
+	-c "SET application_name = 'nt_xdb_holder'" -c "SELECT pg_sleep(120)" >/dev/null 2>&1 &
+xdb_pid=$!
+for _ in $(seq 1 40); do
+	[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'nt_xdb_holder' AND wait_event = 'PgSleep'")" = 1 ] && break
+	sleep 0.25
+done
 retired="$(pgc_retry_past_horizon 5 "SELECT pgcolumnar.compact('n');")"
 echo "  (compact retired/calls: $retired)"
 check_num "compact retired the 5 groups above id 35000" "${retired%/*}" "5"
+check_num "premise: a snapshot older than the compact is open in another database" \
+	"$(q "WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+	                 WHERE storage_id = pgcolumnar.get_storage_id('n') AND freed_xid >= 3)
+	      SELECT count(*) FROM pg_stat_activity, f
+	       WHERE application_name = 'nt_xdb_holder' AND datname <> current_database()
+	         AND age(backend_xmin) >= f.a;")" "1"
 size_guard="$(size)"
 # WAIT FOR THE HORIZON FIRST (#1988). truncate also leaves the file alone while
 # any transaction older than the compact above is open. Then this arm passed
@@ -110,7 +127,17 @@ guc_on="${guc_on%/*}"
 check "GUC on: truncate reclaims" \
 	"$([ "$guc_on" -gt 0 ] 2>/dev/null && echo yes || echo "no ($guc_on)")" "yes"
 check "GUC on: file shrank" "$([ "$(size)" -lt "$size_guard" ] && echo yes || echo "no ($(size) >= $size_guard)")" "yes"
+check_num "the other-database snapshot was still open after the GUC-on truncate" \
+	"$(q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = 'nt_xdb_holder';")" "1"
+wait "$xdb_pid" 2>/dev/null
 check "parity after guard cycle" "$(hash_n)" "$(hash_h)"
+
+# THE HELPER REFUSES A TABLE WITH NO FREED RANGE (#1992). With no freed_xid to
+# compare against, every comparison is NULL and the count would read 0, a pass
+# that measured nothing. It must give no count instead.
+psql_run "CREATE TABLE nf (id int) USING pgcolumnar WITH (autovacuum_enabled = false);"
+check "a table with no freed range gives the horizon helper no count" \
+	"$(pgc_wait_freed_range_past_horizon nf 2>/dev/null)" "none/1"
 
 # TRANSACTION-BLOCK GUARD: truncate must refuse inside a transaction block, so a
 # ROLLBACK can never leave the metapage highwater lowered while the transactional

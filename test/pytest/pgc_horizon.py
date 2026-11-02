@@ -70,23 +70,33 @@ def retry_past_horizon(conn, sql, want, calls=CALLS, pause=PAUSE):
     return total, made
 
 
-# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988). xid has no ordering
-# operator, so age() compares: the older xid has the larger age.
+# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988, #1992). For a user
+# table, PostgreSQL computes truncate's horizon from this database only, so the
+# sessions and prepared transactions counted are this database's (and sessions with
+# no database, such as walsenders). xid has no ordering operator, so age()
+# compares: the older xid has the larger age. With no freed range the query returns
+# NULL, because a count would read 0 without measuring anything.
 FREED_RANGE_BLOCKERS = """
 WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
             WHERE storage_id = pgcolumnar.get_storage_id(%s) AND freed_xid >= 3)
-SELECT (SELECT count(*) FROM pg_stat_activity, f
-         WHERE pid <> pg_backend_pid()
-           AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
-     + (SELECT count(*) FROM pg_prepared_xacts, f WHERE age(transaction) >= f.a)
-     + (SELECT count(*) FROM pg_replication_slots, f WHERE age(xmin) >= f.a)
+SELECT CASE WHEN f.a IS NOT NULL THEN
+         (SELECT count(*) FROM pg_stat_activity
+           WHERE pid <> pg_backend_pid() AND (datname = current_database() OR datid IS NULL)
+             AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
+       + (SELECT count(*) FROM pg_prepared_xacts
+           WHERE database = current_database() AND age(transaction) >= f.a)
+       + (SELECT count(*) FROM pg_replication_slots WHERE age(xmin) >= f.a)
+       END
+  FROM f
 """
 
 
 def freed_range_blockers(conn, table):
-    """How many sessions, prepared transactions and replication slots hold the horizon
-    at or before the newest range compact freed in `table`. truncate removes a freed
-    range only when the horizon has passed the transaction that freed it."""
+    """How many sessions and prepared transactions in this database, and replication
+    slots, hold the horizon at or before the newest range compact freed in `table`.
+    truncate removes a freed range only when the horizon has passed the transaction
+    that freed it. None when `table` has no freed range. A backend running VACUUM is
+    counted although PostgreSQL skips it; that only makes a wait longer."""
     with conn.cursor() as cur:
         cur.execute(FREED_RANGE_BLOCKERS, (table,))
         return cur.fetchone()[0]
@@ -98,7 +108,8 @@ def wait_freed_range_past_horizon(conn, table, calls=CALLS, pause=PAUSE):
     while the horizon holds, truncate leaves the file alone for that reason alone.
 
     -> (blockers, calls made). When blockers is not 0, what holds the horizon is
-    printed.
+    printed. blockers is None, after one call, when `table` has no freed range
+    (#1992), so a check that wants 0 fails.
     """
     n = made = 0
     while made < calls:
@@ -106,6 +117,9 @@ def wait_freed_range_past_horizon(conn, table, calls=CALLS, pause=PAUSE):
             time.sleep(pause)
         n = freed_range_blockers(conn, table)
         made += 1
+        if n is None:
+            print(f"-- no count for {table}: it has no freed range")
+            return None, made
         if n == 0:
             break
     if n != 0:

@@ -344,10 +344,24 @@ blockers, calls = wait_freed_range_past_horizon(conn, "n")
 ```
 
 The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
-table. It counts each session, prepared transaction and replication slot whose
-transaction ID or `xmin` is not newer than that. It asks every 0.5 s, up to 60
-times. The shell helper prints `<count>/<calls>`. When the count is not 0 after
-the last call, it prints what holds the horizon back, as above.
+table. It counts what has a transaction ID or `xmin` not newer than that:
+
+- each session in the current database, and each session with no database,
+  such as a walsender;
+- each prepared transaction in the current database;
+- each replication slot.
+
+For a user table, PostgreSQL computes the horizon from the current database
+only, so a session in another database does not hold truncate back (#1992). The
+helper counts one thing the horizon skips: a backend running `VACUUM`. That only
+makes the wait longer.
+
+It asks every 0.5 s, up to 60 times. The shell helper prints `<count>/<calls>`.
+When the count is not 0 after the last call, it prints what holds the horizon
+back, as above. When the table has no freed range, there is nothing to compare
+against. The helper then stops after one call and gives no count: the shell
+helper prints `none/1`, and the Python helper returns `None`. A check that wants
+0 then fails.
 
 ## Before merging: build every major
 

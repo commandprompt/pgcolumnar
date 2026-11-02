@@ -550,6 +550,14 @@ true until the next version shipped.
   `pgc_wait_freed_range_past_horizon` in `test/lib.sh` and
   `wait_freed_range_past_horizon` in `test/pytest/pgc_horizon.py`.
   docs/testing.md describes it.
+- The horizon helper `pgc_wait_freed_range_past_horizon` (Python:
+  `wait_freed_range_past_horizon`) no longer counts sessions and prepared
+  transactions in other databases (#1992). truncate's horizon ignores them. So
+  a long transaction in another database made the wait run its full 30 s, and
+  the check `GUC off: no transaction older than the compact was open` failed
+  although truncate was not held back. The helper also gives no count, instead
+  of 0, for a table with no freed range. `native_truncate` and its twin gain
+  three checks that cover both cases.
 - `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
   pytest twins no longer fail when another session holds an old snapshot during
   `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
