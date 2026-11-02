@@ -2046,6 +2046,68 @@ chunk_group_count() {
 	     AND vector_index >= 0 AND column_index = 0;"
 }
 
+# pgc_horizon_holders -- one line for each thing that can hold the oldest-xmin
+# horizon back: a session with a snapshot (backend_xmin) or a transaction ID
+# (backend_xid), a prepared transaction, a replication slot. Prints "none found"
+# when there is nothing. The session that runs this query is left out (#1981).
+pgc_horizon_holders() {
+	local out
+	out="$(q "SELECT 'session pid=' || pid || ' backend_type=' || coalesce(backend_type, '-')
+	          || ' database=' || coalesce(datname, '-') || ' state=' || coalesce(state, '-')
+	          || ' backend_xid=' || coalesce(backend_xid::text, '-')
+	          || ' backend_xmin=' || coalesce(backend_xmin::text, '-')
+	          || ' xact_start=' || coalesce(xact_start::text, '-')
+	          || ' query=' || translate(left(coalesce(query, ''), 200), E'\n\r\t', '   ')
+	     FROM pg_stat_activity
+	    WHERE pid <> pg_backend_pid() AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)
+	   UNION ALL
+	   SELECT 'prepared transaction gid=' || gid || ' transaction=' || transaction
+	          || ' database=' || database || ' prepared=' || prepared
+	     FROM pg_prepared_xacts
+	   UNION ALL
+	   SELECT 'replication slot ' || slot_name || ' xmin=' || coalesce(xmin::text, '-')
+	          || ' catalog_xmin=' || coalesce(catalog_xmin::text, '-')
+	     FROM pg_replication_slots WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL;")"
+	echo "${out:-none found}"
+}
+
+# pgc_retry_past_horizon WANT SQL [CALLS] -- run SQL until the counts it returns
+# add up to WANT, and print "<total>/<calls>" (#1979).
+#
+# For compact and truncate. compact retires a dead row group only when no
+# transaction in the database is older than the DELETE. truncate removes a freed
+# range only when no transaction is older than the compact that freed it. While
+# such a transaction is open, either one returns 0 and the check after it
+# measures nothing. An autoanalyze, or a session another test left open, is
+# enough. So SQL runs again every 0.5 s, up to CALLS calls (default 60, so 30 s).
+#
+# SQL must return one integer. When it returns anything else, the wait stops at
+# once and the output is printed, so an error does not read as a held horizon.
+# When the total is still short after the last call, the things that hold the
+# horizon back are printed (#1981), so a red names the holder. Both go to
+# stderr: the caller's check prints the total itself.
+pgc_retry_past_horizon() {
+	local want="$1" sql="$2" max="${3:-60}" r total=0 calls=0
+	while [ "$total" -lt "$want" ] && [ "$calls" -lt "$max" ]; do
+		[ "$calls" -gt 0 ] && sleep 0.5
+		r="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -qAt -c "$sql" 2>&1)"
+		calls=$((calls + 1))
+		case "$r" in
+			''|*[!0-9]*)
+				echo "  [$sql] did not return a count on call $calls: $r" >&2
+				echo "$total/$calls"
+				return ;;
+		esac
+		total=$((total + r))
+	done
+	if [ "$total" -lt "$want" ]; then
+		echo "  [$sql] returned $total of $want in $calls calls. What holds the horizon back:" >&2
+		pgc_horizon_holders | sed 's/^/    /' >&2
+	fi
+	echo "$total/$calls"
+}
+
 # ---- summary ---------------------------------------------------------------
 
 # A dependency this suite needs is not installed.

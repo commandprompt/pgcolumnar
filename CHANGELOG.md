@@ -545,6 +545,71 @@ true until the next version shipped.
   found 13 such arms in 9 suites. Each now prints its measurement when it
   fails, for example `no (groups=1)`. No check changed its name or what it
   passes on.
+- `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
+  pytest twins no longer fail when another session holds an old snapshot during
+  `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
+  before #1975. A held snapshot made `compact` retire nothing, and the checks
+  after it measured an empty free list. Now each suite calls `compact` through
+  one shared helper that retries for up to 30 s. `native_truncate` calls
+  `truncate` through it too. The helper is `pgc_retry_past_horizon` in
+  `test/lib.sh` and `retry_past_horizon` in `test/pytest/pgc_horizon.py`.
+  `native_reclaim_frag` uses it too. New checks print how many groups each
+  `compact` retired. The fixture tables have autovacuum turned off.
+  `catalog_scan_index` also retries `compact` on its noise tables until each
+  holds its two free ranges, and retries its end-truncation arm until the
+  truncation takes effect. A new premise counts the noise tables' free ranges.
+  `native_reclaim_reconcile` needs no change. No `compact` in it has a whole
+  group to retire. It stays green with a snapshot held through the whole suite.
+- When the retry runs out, the helper now prints what holds the horizon back
+  (#1981). It lists each session with a snapshot or a transaction ID, and any
+  prepared transaction or replication slot. For a session it prints the pid,
+  backend type, database, state, `backend_xmin`, `backend_xid`, transaction
+  start and query. A CI red then names the holder. `native_reclaim_frag` and its
+  twin check this: while a second session holds a snapshot, a wait that cannot
+  reach its count must print a report that names that session.
+  docs/testing.md describes the helper.
+
+- `tier_partition` now refuses a local path that a foreign table reads under
+  another spelling of the same file (#1965, #1959). It compares each local
+  path as written and again in a folded form: a run of `/` as one, without a
+  `.` name, and without a name followed by `..`. In a glob, `\.` counts as
+  `.`, as `glob(3)` reads it. Before, a foreign table on `/w//*.parquet`,
+  `/w/./*.parquet` or `/w/\./*.parquet` did not block a move to
+  `/w/a.parquet`, although the reader reads that file, so the move overwrote
+  it. An Iceberg location that holds `..` now refuses the directory the reader
+  reads. A symbolic link is still not resolved. The folded form is the file
+  the kernel opens only when no symbolic link comes before a `..`; when one
+  does, the check can refuse the wrong file and allow the file the reader
+  reads. The docs state this limit.
+- `tier_partition` and `export_parquet(rel, path, server)` now accept a
+  server whose wrapper has pgcolumnar's Parquet handler under another name
+  (#1963). Before, they refused it with `42809`, while the path check already
+  read that wrapper's foreign tables as Parquet tables (#1955).
+- When a foreign table's glob is too large to match, `tier_partition` still
+  refuses the move with `54000`, and the error detail now names that foreign
+  table and its glob (#1974). This holds for a local glob and a local path,
+  and for an `s3://` glob with more than 128 `*` and an `s3://` path. Before,
+  the error named neither, and a table that really read the path could be
+  reported as `54000` instead of `58P02`. A glob too large only as written,
+  and not once folded, is now matched in its folded form.
+
+  All three change the install script and the alpha4 to alpha5 upgrade
+  script. docs/sql-reference.md, docs/how-to.md. `test/tier_partition.sh` and
+  `test_tier_partition.py`.
+- `native_reclaim_frag` and its pytest twin no longer fail when another session
+  holds an old snapshot during `compact` (#1975). `compact` retires a dead group
+  only after every transaction older than the `DELETE` is gone. While one remains,
+  it retires nothing, and the coalesce-off run counted 0 `free_space` rows in CI.
+  The fixture tables now have autovacuum turned off, and both harnesses call
+  `compact` again for up to 30 s until it has retired all 18 groups. Three new
+  arms run before the on/off comparison and print their counts when they fail:
+  `coalesce on: compact retired every dead group`, `coalesce off: compact
+  retired every dead group` and `coalesce off: compact leaves more than one
+  free_space row`. Before, a snapshot held through the coalesce-on run let every
+  coalescing arm pass with nothing measured. The shell suite now prints an error
+  from `compact` and stops waiting, as the pytest twin raises it. The product
+  does not change. docs/sql-reference.md now says that `compact` can return 0
+  while such a transaction is open.
 
 - `iceberg_rest_vended` now waits up to 30 seconds for its S3 fixture, and
   says why when the fixture does not start (#1961). It waited 5 seconds. On a

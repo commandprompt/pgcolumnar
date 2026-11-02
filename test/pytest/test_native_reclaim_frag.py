@@ -30,10 +30,18 @@ and no `free_space` row covers it. So the live groups, rounded up to whole pages
 the allocator reserves them, and the free ranges are laid out in offset order, and
 each must end where the next one starts.
 """
+import contextlib
+import io
+
+import psycopg
+
+from pgc_horizon import retry_past_horizon
+
 ROWS = 30_000
 GROUP = 1_000
 DEL_LO, DEL_HI = 6001, 24000
 LIVE = ROWS - (DEL_HI - DEL_LO + 1)
+DEAD_GROUPS = (DEL_HI - DEL_LO + 1) // GROUP   # 18 whole groups of 1000 rows
 
 GEN = (f"SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload "
        f"FROM generate_series(1, {ROWS}) g")
@@ -63,14 +71,19 @@ def _rows(conn, table):
 def _run(conn, expect, mode):
     """One whole cycle in one coalesce mode.
 
-    -> (free rows after compact, final size, (gaps, unowned bytes) after recluster)
+    -> (free rows after compact, final size, (gaps, unowned bytes) after recluster,
+        (groups compact retired, compact calls))
     """
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS n")
         cur.execute("DROP TABLE IF EXISTS h")
         cur.execute(f"SET pgcolumnar.reclaim_coalesce = {mode}")
-        cur.execute("CREATE TABLE h (id int, payload text)")
-        cur.execute("CREATE TABLE n (id int, payload text) USING pgcolumnar")
+        # NO AUTOVACUUM ON THE FIXTURE (#1975). An autovacuum of n would retire the
+        # dead groups itself, in the server's coalesce mode rather than this one. An
+        # autoanalyze holds a snapshot, and while it does, compact retires nothing.
+        cur.execute("CREATE TABLE h (id int, payload text) WITH (autovacuum_enabled = false)")
+        cur.execute("CREATE TABLE n (id int, payload text) USING pgcolumnar "
+                    "WITH (autovacuum_enabled = false)")
         cur.execute(
             f"SELECT pgcolumnar.set_options('n', stripe_row_limit => {GROUP}, "
             f"chunk_group_row_limit => {GROUP})"
@@ -85,7 +98,16 @@ def _run(conn, expect, mode):
         # one transaction -- which is the only shape coalescing can merge.
         cur.execute(f"DELETE FROM h WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
         cur.execute(f"DELETE FROM n WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
-        cur.execute("SELECT pgcolumnar.compact('n')")
+        # WAIT FOR THE HORIZON (#1975). compact retires a group only once no
+        # transaction in this database can still see its rows. A transaction whose
+        # snapshot or transaction ID is older than the DELETE holds that back: an
+        # autoanalyze of some other table, a prepared transaction, a replication
+        # slot. compact then retires 0 groups and frees nothing. So
+        # retry_past_horizon calls it again, for up to 30 s, until all the dead
+        # groups are retired. An error from compact raises at once. When the wait
+        # runs out, it prints what holds the horizon back (#1981).
+        retired, tries = retry_past_horizon(conn, "SELECT pgcolumnar.compact('n')",
+                                            DEAD_GROUPS)
         cur.execute("SELECT count(*) FROM n")
         expect.num(cur.fetchone()[0], LIVE,
                    f"premise: coalesce {mode} -- {LIVE} rows survive the delete")
@@ -107,22 +129,40 @@ def _run(conn, expect, mode):
         size = cur.fetchone()[0]
         cur.execute(GAPS)
         gaps, unowned = cur.fetchone()
-    return free_rows, size, (gaps, int(unowned))
+    return free_rows, size, (gaps, int(unowned)), (retired, tries)
 
 
 def test_native_reclaim_frag(pgc_conn, expect):
-    on_free, on_size, on_gap = _run(pgc_conn, expect, "on")
+    on_free, on_size, on_gap, on_ret = _run(pgc_conn, expect, "on")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce on: parity with heap")
 
-    off_free, off_size, off_gap = _run(pgc_conn, expect, "off")
+    off_free, off_size, off_gap, off_ret = _run(pgc_conn, expect, "off")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce off: parity with heap")
 
+    print(f"-- (groups compact retired, compact calls): on={on_ret} off={off_ret}, "
+          f"of {DEAD_GROUPS}")
     print(f"-- free_space rows after compact: on={on_free} off={off_free}")
     print(f"-- final file size: on={on_size} off={off_size}")
     print(f"-- (gaps, unowned bytes) after recluster: on={on_gap} off={off_gap}")
 
+    # EACH MODE MUST HAVE FREED THE SAME 18 GROUPS (#1975). If compact retired
+    # nothing in one mode, that mode freed nothing, and every arm below compares
+    # against an empty free list. With the on run empty, "fewer rows with
+    # coalescing on" reads 0 < 18 as a pass. So both counts are checked, as numbers.
+    expect.num(on_ret[0], DEAD_GROUPS, "coalesce on: compact retired every dead group")
+    expect.num(off_ret[0], DEAD_GROUPS, "coalesce off: compact retired every dead group")
+
+    # THE COMPARISON NEEDS SOMETHING TO MERGE (#1975). With coalescing off, compact
+    # must leave many separate free ranges. CI once counted 0 here, and "fewer rows
+    # with coalescing on" then failed as a verdict on coalescing it could not give.
+    # An arm, not a premise: a snapshot held past the wait above reddens it.
+    expect.text(
+        "yes" if off_free > 1 else f"no (off={off_free})",
+        "yes",
+        "coalesce off: compact leaves more than one free_space row",
+    )
     expect.text(
         "yes" if on_free < off_free else f"no (on={on_free} off={off_free})",
         "yes",
@@ -138,4 +178,27 @@ def test_native_reclaim_frag(pgc_conn, expect):
         "0 gaps of 0 bytes",
         "coalesce on: reuse splits an oversized freed range, so no byte between "
         "ranges is lost",
+    )
+
+    # A RED NAMES WHAT HOLDS THE HORIZON (#1981). When compact still retires too
+    # few groups after the wait, retry_past_horizon prints horizon_holders. CI once
+    # went red here with no way to tell which session held the horizon. So a second
+    # session holds a snapshot, and a wait that cannot reach its count ("SELECT 0",
+    # 2 calls) must print a report that names its pid.
+    with psycopg.connect(pgc_conn.info.dsn, autocommit=True) as holder:
+        holder.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        pid = holder.execute("SELECT pg_backend_pid()").fetchone()[0]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            retry_past_horizon(pgc_conn, "SELECT 0", 1, calls=2, pause=0)
+        holder.execute("ROLLBACK")
+    lines = out.getvalue().splitlines()
+    print(f"-- what a short wait printed while pid {pid} holds a snapshot:")
+    for line in lines:
+        print(f"--   {line}")
+    expect.text(
+        "named" if any(f"session pid={pid} " in line for line in lines)
+        else f"not named (pid={pid})",
+        "named",
+        "the horizon report names a session that holds a snapshot",
     )
