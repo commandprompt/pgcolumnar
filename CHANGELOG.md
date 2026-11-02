@@ -534,6 +534,50 @@ true until the next version shipped.
 
 ### Fixed
 
+- `tier_partition` now refuses a path under the location of a
+  `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
+  options, and an Iceberg foreign table has none, so a move could overwrite a
+  data file an Iceberg table reads. The location is the parent of the directory
+  that holds `metadata_path`, as the Iceberg reader takes it. The reader
+  refuses a file outside the location, so the location covers every file the
+  table can read. The error detail names the foreign table and the location.
+  The function also reads the `path` option only of foreign tables whose
+  wrapper uses pgcolumnar's Parquet handler. Before, a `path` of `/` on any
+  other wrapper's foreign table blocked every local move. Both the install script and the
+  alpha4 to alpha5 upgrade script change. docs/how-to.md,
+  docs/sql-reference.md. Reported by @OffgridwithJD.
+- The shell harness now refuses a server that started earlier in the same
+  second as the library install (#1956). `pgc_check_running_binary` in
+  `test/lib.sh` compared the library's modification time and the postmaster
+  start time in whole seconds, and an equal pair read as fresh. So the backends
+  could run the old library while the check passed. Both times now keep their
+  sub-second part, and `pgc_running_binary_verdict` compares them as exact
+  decimals. A server that started strictly after the install is fresh. A
+  server that started strictly before is refused. An exactly equal pair is
+  unknown, not fresh, and the message prints both times. `harness_selftest`
+  part 340 now drives this against the live cluster: a library stamped a few
+  hundred nanoseconds after the real postmaster start is refused.
+
+- `harness_selftest` part 580 now sees every write to the installed library
+  and fails when the library is missing (#1950). The check "the installed
+  library of the running major was never touched" compared whole-second
+  modification times. A write in the same second as the first reading read as
+  untouched. A library missing before and after gave two empty readings, which
+  also read as untouched. The check now compares the inode, the size and the
+  modification time to the nanosecond. An empty reading on either side fails
+  the check as `missing`, with both readings printed. A new check confirms
+  that both live readings carry the inode, the size and the nanosecond time.
+  docs/testing.md.
+
+- `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
+  session installs into the same prefix during the run (#1942). The check
+  "the installed library of the running major was never touched" now reads the
+  rebuild's own target. A change to the installed library that the rebuild did
+  not target skips the check, with the measurement as the reason. In GitHub
+  Actions the same change still fails the check. The check reads
+  `GITHUB_ACTIONS` itself, so no caller can drop it. A failure now prints both
+  modification times, both inodes, the owner and the target. docs/testing.md.
+
 - The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
   unset (#1933). That fixed default does not exist in the dev container, so
   every cluster fixture failed at setup, and
@@ -670,6 +714,39 @@ true until the next version shipped.
   digests. The pytest session's teardown does the same. docs/testing.md.
   `test/harness_isolation.sh` and `test_harness_isolation.py`.
   Reported by @OffgridwithJD.
+
+- `iceberg_rest_table_location` and `iceberg_rest_scan` now refuse an empty
+  table name, `''`, with SQLSTATE 22023 (#1931). Before, they sent
+  `GET /v1/namespaces/db/tables/`, a path that ends in an empty segment. A
+  proxy that strips the trailing slash would send it to listTables. The
+  client would then fail with a misleading error: the loadTable response is
+  missing the "metadata-location" field. The refusal comes before any
+  request, including a server's OAuth token request. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+  Reported by @OffgridwithJD.
+- The Iceberg REST functions now refuse a table name of `.` or `..`, and a
+  namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`,
+  with SQLSTATE 22023 (#1948). Before, `rest_pct_encode` kept the dots, so
+  `iceberg_rest_table_location(cat, 'db', '..')` sent
+  `GET /v1/namespaces/db/tables/..`. A server or proxy that removes dot
+  segments would have sent that to `/v1/namespaces/db`, and
+  `/v1/namespaces/../tables` to `/v1/tables`. The refusal comes before any
+  request, including a server's OAuth token request. On a catalog whose
+  separator is `%2E`, levels that join to `%2E` or `%2E%2E`, such as the
+  `text` forms `'.'` and `'..'`, are refused after `/v1/config`. Names that
+  only hold dots, such as `a.b` or `...`, are still sent. The namespace walk
+  still lists `{".."}` and asks for its children with `?parent=..`, a query
+  value. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
+- Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
+  of a namespace with an empty level among other levels, such as `{db,"",x}`
+  under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level
+  sits in the middle (#1939). A third check shows that the text form,
+  `iceberg_rest_namespaces`, lists `db`, `db.`, `db..x` and `db..x.y`. Before,
+  no check covered these, so a walk that stopped at `{db,""}` passed every
+  check. The code was already correct. The `emptylevel` fixture in
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py` now serves
+  `{db,"",x,y}`. docs/sql-reference.md.
 
 - The Iceberg REST functions now refuse a namespace whose only level is empty,
   `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
