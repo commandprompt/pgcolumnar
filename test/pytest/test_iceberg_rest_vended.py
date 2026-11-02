@@ -30,6 +30,7 @@ AWS_* variable of this process is removed before each start.
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -142,6 +143,45 @@ def _ready(out):
         time.sleep(0.1)
 
 
+def _s3_state(proc, out, port):
+    """-> "up" once the S3 fixture prints READY, which it does right after it binds its
+    port. Otherwise, what was seen: whether the process is still running or exited,
+    whether the port accepts a connection, and what s3.out holds (#1961).
+
+    The wait is 30 s. It was 5 s, and a busy CI runner took longer than that to start
+    Python. It stops early when the process has exited, because an exited fixture will
+    never print READY."""
+    def ready():
+        return out.is_file() and "READY" in out.read_text(errors="replace")
+
+    t0 = time.monotonic()
+    for _ in range(300):
+        if ready():
+            return "up"
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if ready():
+        return "up"
+    el = f"{time.monotonic() - t0:.1f} s"
+    st = proc.poll()
+    alive = f"still running with no READY after {el}" if st is None \
+        else f"exited with status {st} after {el}"
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=1).close()
+        # A port that accepts a connection while the fixture is not running is held by
+        # another process. In CI run 41425423611 the arms got HTTP 501 from it.
+        accepts = "yes" if proc.poll() is None \
+            else "yes, so another process holds it and the fixture never served it"
+    except OSError:
+        accepts = "no"
+    try:
+        text = out.read_text(errors="replace")[:2000].replace("\n", " ").replace("\t", " ")
+    except OSError as exc:
+        text = f"unreadable: {exc}"
+    return f"{alive}; port {port} accepts a connection: {accepts}; s3.out: [{text or 'empty'}]"
+
+
 def _module_installed(pg_config):
     try:
         lib = subprocess.run([pg_config, "--pkglibdir"], capture_output=True, text=True).stdout.strip()
@@ -170,12 +210,17 @@ def irv(pgc_cluster):
 
     s3_port = pick_port(30)
     s3out = work / "s3.out"
-    procs.append(subprocess.Popen(
-        [sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+    # PGC_VENDED_S3_START_DELAY (seconds, default 0) delays the fixture's start, the
+    # shell's own knob: a slow runner, made on purpose, to test the wait (#1961).
+    delay = os.environ.get("PGC_VENDED_S3_START_DELAY", "0")
+    s3 = subprocess.Popen(
+        ["sh", "-c", 'sleep "$0"; exec "$@"', delay,
+         sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
          "--port", str(s3_port), "--log", str(work / "s3.log"),
          "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION],
-        stdout=open(s3out, "w"), stderr=subprocess.STDOUT))
-    _ready(s3out)
+        stdout=open(s3out, "w"), stderr=subprocess.STDOUT)
+    procs.append(s3)
+    s3_state = _s3_state(s3, s3out, s3_port)
     s3ep = f"http://127.0.0.1:{s3_port}"
 
     def start_rest(*extra):
@@ -198,7 +243,7 @@ def irv(pgc_cluster):
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "icevend", datadir, pick_port(31))
-    r = {"s3 up": s3out.read_text(errors="replace").count("READY") if s3out.is_file() else 0}
+    r = {"s3 up": s3_state}
     try:
         cluster.initdb()
         tok = {"PGCOLUMNAR_ICEBERG_REST_TOKEN": RESTTOK}
@@ -308,6 +353,18 @@ def _declined(irv, expect):
     return True
 
 
+def _no_s3(irv, expect, name):
+    """True, with `name` recorded as unrunnable, when the S3 fixture is not up. An arm
+    that reads S3 without a fixture fails for a reason unrelated to what it tests, and
+    11 such failures hid the one that mattered (#1961). The premise stays a failure."""
+    if irv["s3 up"] == "up":
+        return False
+    expect.cannot_run("UNMET_PRECONDITION",
+                      "the SigV4 S3 fixture is not up, so this arm cannot read S3 (see the premise)",
+                      name=name)
+    return True
+
+
 def test_the_vended_suite_can_run_here(irv, expect):
     """The shell skips the whole suite under each of these names."""
     expect.require_module("json", name="python3 is needed")
@@ -319,11 +376,12 @@ def test_the_vended_suite_can_run_here(irv, expect):
         expect.cannot_run("ABSENT_FIXTURE", "the committed iceberg fixtures are not in this tree",
                           name="iceberg fixtures are missing")
         return
-    expect.text(str(irv["s3 up"]), "1", "premise: the SigV4 S3 fixture is up")
+    expect.text(irv["s3 up"], "up", "premise: the SigV4 S3 fixture is up")
 
 
 def test_a_rest_scan_reads_via_vended_credentials(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "iceberg_rest_scan reads via vended credentials (no ambient creds set)"):
         return
     expect.text(irv["core"], "1|eu|10\n3|us|30\n5|us|50",
                 "iceberg_rest_scan reads via vended credentials (no ambient creds set)")
@@ -342,56 +400,65 @@ def test_the_vended_secret_is_not_in_the_server_log(irv, expect):
 
 
 def test_the_vended_secret_is_not_in_the_s3_request_log(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "the vended secret never appears in the S3 request log"):
         return
     expect.text(irv["secret s3"], "0", "the vended secret never appears in the S3 request log")
 
 
 def test_a_wrong_vended_secret_is_refused_by_s3(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "a wrong vended secret is refused by S3, not bypassed (28000)"):
         return
     expect.text(irv["wrong"], "28000", "a wrong vended secret is refused by S3, not bypassed (28000)")
 
 
 def test_the_longest_storage_credentials_prefix_wins(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "storage-credentials longest-prefix match selects the right creds"):
         return
     expect.text(irv["prefix"], "3", "storage-credentials longest-prefix match selects the right creds")
 
 
 def test_split_credentials_each_sign_their_own_files(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "split metadata/ and data/ credentials each sign their own files"):
         return
     expect.text(irv["split"], "3", "split metadata/ and data/ credentials each sign their own files")
 
 
 def test_the_data_credential_signs_a_data_file(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "the data/ credential, not the metadata/ one, signs a data file (28000)"):
         return
     expect.text(irv["split bad"], "28000",
                 "the data/ credential, not the metadata/ one, signs a data file (28000)")
 
 
 def test_the_flat_config_signs_an_uncovered_file(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "the flat config signs a file no storage-credentials prefix covers"):
         return
     expect.text(irv["flat"], "3", "the flat config signs a file no storage-credentials prefix covers")
 
 
 def test_the_longest_prefix_wins_when_listed_first(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "the longest prefix wins when it is listed before a broader one"):
         return
     expect.text(irv["long first"], "3", "the longest prefix wins when it is listed before a broader one")
 
 
 def test_an_entry_with_a_key_id_and_no_secret_is_ignored(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "an entry with a key id and no secret is ignored, not used"):
         return
     expect.text(irv["akid only"], "3", "an entry with a key id and no secret is ignored, not used")
 
 
 def test_an_entry_with_a_secret_and_no_key_id_is_ignored(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "an entry with a secret and no key id is ignored, not used"):
         return
     expect.text(irv["secret only"], "3", "an entry with a secret and no key id is ignored, not used")
 
@@ -410,7 +477,8 @@ def test_a_vended_endpoint_off_the_allow_list_is_refused(irv, expect):
 
 
 def test_a_catalog_vending_nothing_falls_back_to_ambient(irv, expect):
-    if _declined(irv, expect):
+    if _declined(irv, expect) or _no_s3(
+            irv, expect, "a table vending no creds still reads with ambient (cfg NULL path)"):
         return
     expect.text(irv["ambient"], "3", "a table vending no creds still reads with ambient (cfg NULL path)")
 
