@@ -774,7 +774,10 @@ The function refuses these:
   the table's glob (#1941). The scheme and the host of an http(s) URL match in any case,
   and `s3a://` or `s3n://` match `s3://`. A local path is compared as written,
   so a symbolic link or `..` is not resolved. A new file under a directory a
-  foreign table reads is refused too; docs/how-to.md shows ways around it;
+  foreign table reads is refused too; docs/how-to.md shows ways around it.
+  Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
+  For a `pgcolumnar_iceberg` foreign table, a path under the table location is
+  refused: the parent of the directory that holds `metadata_path` (#1949);
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);

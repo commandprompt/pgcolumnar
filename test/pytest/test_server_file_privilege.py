@@ -27,6 +27,10 @@ import pytest
 DB = "pgc_server_file_privilege"
 ROLES = ("t_none", "t_priv")
 NOPE = "/tmp/pgc_sfp_does_not_exist.parquet"
+# In a metadata/ directory, as Iceberg lays it out: tier_partition refuses a path
+# under an Iceberg table's location, the parent of that directory, and with NOPE
+# that location is '/', which would refuse tier_partition's own output (#1949).
+ICE_NOPE = "/tmp/pgc_sfp_does_not_exist/metadata/v1.metadata.json"
 
 # What each entry point says once past the gate, measured on PG17. None: the call
 # succeeds. Two of the four are 42501 themselves, so a SQLSTATE cannot stand in.
@@ -208,7 +212,7 @@ def sf(pgc_cluster, server_dir):
                         f"CREATE FOREIGN TABLE ft (id int, v text) SERVER pqsrv OPTIONS (path '{NOPE}')",
                         "GRANT SELECT ON ft TO t_none, t_priv",
                         "CREATE SERVER icesrv FOREIGN DATA WRAPPER pgcolumnar_iceberg",
-                        f"CREATE FOREIGN TABLE ift (id bigint) SERVER icesrv OPTIONS (metadata_path '{NOPE}')",
+                        f"CREATE FOREIGN TABLE ift (id bigint) SERVER icesrv OPTIONS (metadata_path '{ICE_NOPE}')",
                         "GRANT SELECT ON ift TO t_none, t_priv",
                         "CREATE TABLE sfp_parent (k int) PARTITION BY RANGE (k)",
                         "CREATE TABLE sfp_p1 PARTITION OF sfp_parent FOR VALUES FROM (0) TO (10) USING pgcolumnar",

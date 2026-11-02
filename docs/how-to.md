@@ -761,6 +761,22 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   One rare negated form still gets past the function (#1957). In it glibc
   looks for the closing `]` past the end of the pattern, as in `[^[*-[::]`.
 
+The function reads the `path` option only of foreign tables whose wrapper uses
+pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
+option of another wrapper's foreign table means what that wrapper says, so it
+blocks no move. A path that such a table really reads is not refused either.
+
+A `pgcolumnar_iceberg` foreign table has no `path` option. It reads data files
+under its table location. The function takes that location as the reader
+does: the parent of the directory that holds `metadata_path`. So with
+`metadata_path` `s3://wh/db/t/metadata/v3.metadata.json`, the function refuses
+any path under `s3://wh/db/t/` (#1949). The reader refuses a file outside the
+table location and does not read it. So the location covers every file the
+table can read. A `metadata_path` with no directory above `metadata/` is cut
+as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
+refused. A relative `metadata/v1.metadata.json` gives `./`, which matches
+only a path written as `./...`, because a local path is compared as written.
+
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,
 the foreign table on the directory reads the new file as well. So this common

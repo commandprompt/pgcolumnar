@@ -3223,10 +3223,35 @@ BEGIN
 	-- http(s) URL. The bucket and key keep their case. A local path is compared
 	-- as written: a symbolic link, '..' or a relative spelling is not resolved.
 	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
-	SELECT c.relid, c.opath INTO covered
-	  FROM (SELECT t.ftrelid::regclass AS relid, substr(o.opt, 6) AS opath,
+	-- Only a wrapper with pgcolumnar's Parquet handler reads path= as above.
+	-- Another wrapper's path option means what that wrapper says, so it is not
+	-- read (#1949). An Iceberg foreign table (pgcolumnar's Iceberg handler) has
+	-- no path option: it reads data files under its table location, which is
+	-- the parent of the directory holding metadata_path. The location is cut
+	-- as the reader cuts it: the part before the last '/', taken twice, where
+	-- a path with no '/' gives '.' and '/x' gives '/'. A path under that
+	-- location is refused, as under a directory. The reader refuses any file
+	-- outside the location, so this covers every file it reads (#1949). The
+	-- location always ends in '/', so read as a glob it can match only a path
+	-- that ends in '/', which names no file (#1955 review).
+	SELECT c.relid, c.opath, c.ice INTO covered
+	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
 				   v.np[1] AS tp, v.np[2] AS fp
-			  FROM pg_foreign_table t, unnest(t.ftoptions) AS o(opt),
+			  FROM pg_foreign_table t
+			  JOIN pg_foreign_server fs ON fs.oid = t.ftserver
+			  JOIN pg_foreign_data_wrapper w ON w.oid = fs.srvfdw,
+				   unnest(t.ftoptions) AS o(opt),
+				   LATERAL (SELECT w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure,
+								   CASE WHEN w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure
+										THEN (SELECT CASE WHEN right(d, 1) = '/' THEN d ELSE d || '/' END
+												FROM (SELECT CASE WHEN strpos(d1, '/') = 0 THEN '.'
+																  WHEN d1 ~ '^/[^/]*$' THEN '/'
+																  ELSE regexp_replace(d1, '/[^/]*$', '') END
+														FROM (SELECT CASE WHEN strpos(m, '/') = 0 THEN '.'
+																		  WHEN m ~ '^/[^/]*$' THEN '/'
+																		  ELSE regexp_replace(m, '/[^/]*$', '') END
+																FROM (SELECT substr(o.opt, 15)) AS x(m)) AS y(d1)) AS z(d))
+										ELSE substr(o.opt, 6) END) AS f(ice, opath),
 				   LATERAL (SELECT array_agg(
 							CASE WHEN p ~* '^s3[an]?://'
 								 THEN 's3://' || substr(p, strpos(p, '://') + 3)
@@ -3236,8 +3261,9 @@ BEGIN
 								 WHEN p ~* '^(gs|az)://'
 								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
 								 ELSE p END ORDER BY n)
-						   FROM unnest(ARRAY[path, substr(o.opt, 6)]) WITH ORDINALITY AS s(p, n)) AS v(np)
-			 WHERE o.opt LIKE 'path=%') AS c
+						   FROM unnest(ARRAY[path, f.opath]) WITH ORDINALITY AS s(p, n)) AS v(np)
+			 WHERE (w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure AND o.opt LIKE 'path=%')
+				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c
 	 WHERE c.tp = c.fp
 		OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
 		OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
@@ -3262,8 +3288,11 @@ BEGIN
 	IF FOUND THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
 			USING ERRCODE = 'duplicate_file',
-				  DETAIL = format('Foreign table %s reads path ''%s''.', covered.relid,
-								   replace(covered.opath, '''', ''''''));
+				  DETAIL = CASE WHEN covered.ice
+								THEN format('Foreign table %s reads Iceberg files under ''%s''.', covered.relid,
+											replace(covered.opath, '''', ''''''))
+								ELSE format('Foreign table %s reads path ''%s''.', covered.relid,
+											replace(covered.opath, '''', '''''')) END;
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not

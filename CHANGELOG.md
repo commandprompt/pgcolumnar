@@ -541,6 +541,18 @@ true until the next version shipped.
   changes: an unknown verdict still lets the run go ahead, and only a server
   that started before the install is refused.
 
+- `tier_partition` now refuses a path under the location of a
+  `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
+  options, and an Iceberg foreign table has none, so a move could overwrite a
+  data file an Iceberg table reads. The location is the parent of the directory
+  that holds `metadata_path`, as the Iceberg reader takes it. The reader
+  refuses a file outside the location, so the location covers every file the
+  table can read. The error detail names the foreign table and the location.
+  The function also reads the `path` option only of foreign tables whose
+  wrapper uses pgcolumnar's Parquet handler. Before, a `path` of `/` on any
+  other wrapper's foreign table blocked every local move. Both the install script and the
+  alpha4 to alpha5 upgrade script change. docs/how-to.md,
+  docs/sql-reference.md. Reported by @OffgridwithJD.
 - The shell harness now refuses a server that started earlier in the same
   second as the library install (#1956). `pgc_check_running_binary` in
   `test/lib.sh` compared the library's modification time and the postmaster
