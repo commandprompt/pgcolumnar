@@ -48,6 +48,15 @@ errtext() {
 	[ -z "$out" ] && { echo ok; return; }
 	echo "$out" | sed -n 's/^ERROR: *//p' | head -1
 }
+# errdetail SQL... -> the first DETAIL line of the error, or ok, or none
+errdetail() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 "${@/#/-c}" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(echo "$out" | sed -n 's/^DETAIL: *//p' | head -1)
+	echo "${out:-none}"
+}
 
 q "CREATE EXTENSION IF NOT EXISTS pgcolumnar;" >/dev/null
 psql_run "CREATE SERVER tier_pq FOREIGN DATA WRAPPER pgcolumnar_parquet;"
@@ -182,7 +191,10 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_rkey (x int) SERVER tier_pq OPTIONS (path 's3://tierb/key');
           CREATE FOREIGN TABLE dup_host (x int) SERVER tier_pq OPTIONS (path 'http://H.Example/m_feb_k.parquet');
           CREATE FOREIGN TABLE dup_ldir (x int) SERVER tier_pq OPTIONS (path '$W/ldir');
-          CREATE FOREIGN TABLE dup_lglob (x int) SERVER tier_pq OPTIONS (path '$W/lg/*.parquet');"
+          CREATE FOREIGN TABLE dup_lglob (x int) SERVER tier_pq OPTIONS (path '$W/lg/*.parquet');
+          CREATE FOREIGN TABLE dup_runt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/u/?[]x.parquet');
+          CREATE FOREIGN TABLE dup_rbang (x int) SERVER tier_pq OPTIONS (path 's3://tierb/n/a[!]x*');
+          CREATE FOREIGN TABLE dup_rbesc (x int) SERVER tier_pq OPTIONS (path 's3://tierb/b/m[\\]]x.parquet');"
 # The directories exist, so a local target the check let through would be written.
 mkdir -p "$W/ldir/sub" "$W/lg" && chmod 777 "$W/ldir" "$W/ldir/sub" "$W/lg"
 # rolled SQL -> the SQLSTATE of SQL run inside a transaction that rolls back
@@ -201,16 +213,30 @@ check "a local path under a directory a foreign table reads without a trailing s
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ldir/sub/x.parquet');")" "58P02"
 check "a local path matching a glob a foreign table reads is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lg/x.parquet');")" "58P02"
+check "the refusal's detail names the foreign table and the path it reads" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/dir/x.parquet');")" \
+	"Foreign table public.dup_rdir reads path 's3://tierb/dir/'."
+# A bracket follows fnmatch: a '[' with no closing ']' is a literal '[', and a
+# backslash inside a class escapes the next character, so '[\]]' is one class.
+check "an unterminated [ in a glob is a literal [, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/u/q[]x.parquet');")" "58P02"
+check "a [!] with no closing bracket in a glob is literal, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/n/a[!]xfoo.parquet');")" "58P02"
+check "a backslash in a glob [class] escapes a ], so a path the class matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/b/m]x.parquet');")" "58P02"
 # The rule follows the reader, so it refuses no more than the table reads.
 check "a glob * does not cross a slash, so a path one level deeper is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/sub/x.parquet');")" "28000"
+check "a glob [class] does not match a slash, so a path with a slash in its place is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/c/m_x/.parquet');")" "28000"
 check "an escaped star in a glob matches only a literal star, so another name is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/e/x.parquet');")" "28000"
 check "a remote key without a trailing slash is one object, so a path under it is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/key/x.parquet');")" "28000"
 check "a path that only starts with a remote directory's name is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/dirx.parquet');")" "28000"
-psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob;"
+psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
+          dup_runt, dup_rbang, dup_rbesc;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"

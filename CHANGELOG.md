@@ -577,10 +577,16 @@ true until the next version shipped.
   Parquet reader: a remote directory ends in `/`, a local directory may end in
   `/` or not, and a glob's `*` and `?` do not match `/`. It treats a `[...]`
   class as any one character other than `/`, so it can refuse more than the
-  class matches. The host of an http(s) URL now matches in any case. The error
-  detail names the foreign table and its path. A local path is still compared
-  as written: SQL cannot resolve a symbolic link or `..`, so docs/how-to.md
-  states that limit. docs/how-to.md and docs/sql-reference.md.
+  class matches. It reads a bracket as the reader does: a `[` with no closing
+  `]` is a literal `[`, and a backslash in a class escapes the next character.
+  The host of an http(s) URL now matches in any case. The error detail names
+  the foreign table and its path. This also refuses a new file under a
+  directory that a foreign table reads, so one foreign table on the whole
+  archive prefix now blocks the next move into it. docs/how-to.md shows that
+  layout and three ways around it. A local path is still compared as written:
+  SQL cannot resolve a symbolic link or `..`, so docs/how-to.md states that
+  limit. A `file://` path is not a local alias, because the reader opens it as
+  a literal file name. docs/how-to.md and docs/sql-reference.md.
   `test/tier_partition.sh` and its pytest twin. Reported by @OffgridwithJD.
 - `tier_partition` now refuses a path that a foreign table reads under another
   spelling of the same object (#1936). Before this it compared the `path`

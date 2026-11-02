@@ -3193,7 +3193,11 @@ BEGIN
 	--   - a glob that the path matches: a local path, or an s3:// key, holding
 	--     *, ? or [. A * or ? does not match '/', a backslash escapes the next
 	--     character, and a [class] matches any one character but '/', which
-	--     refuses at least what the class matches.
+	--     refuses at least what the class matches. A class is read as fnmatch
+	--     reads it: a ']' right after '[' or '[!' is a member, a backslash
+	--     inside it escapes the next character, and a '[' with no closing ']'
+	--     is a literal '['. The longest token wins, so a token of just '[]' or
+	--     '[!]' is such an unclosed '[' (#1946 review).
 	-- Both paths are normalised first (#1936): a remote scheme matches in any
 	-- case, s3a:// and s3n:// match s3:// (#1930), and so does the host of an
 	-- http(s) URL. The bucket and key keep their case. A local path is compared
@@ -3221,10 +3225,12 @@ BEGIN
 		OR (c.fp !~ '^(gs|az|https?)://' AND c.fp ~ '[*?[]'
 			AND c.tp ~ ('^' || (SELECT string_agg(
 								CASE WHEN m[1] = '*' THEN '[^/]*'
+									 WHEN m[1] IN ('[]', '[!]')
+									 THEN regexp_replace(m[1], '([].[^$|()*+?{}\\])', '\\\1', 'g')
 									 WHEN m[1] = '?' OR m[1] ~ '^\[.+\]$' THEN '[^/]'
 									 ELSE regexp_replace(right(m[1], 1), '([].[^$|()*+?{}\\])', '\\\1', 'g')
 								END, '' ORDER BY k)
-							FROM regexp_matches(c.fp, '(\\.|\[!?\]?[^]]*\]|.)', 'g')
+							FROM regexp_matches(c.fp, '(\\.|\[!?\]?(?:\\.|[^]\\])*\]|.)', 'g')
 								 WITH ORDINALITY AS r(m, k)) || '$'))
 	 LIMIT 1;
 	IF FOUND THEN

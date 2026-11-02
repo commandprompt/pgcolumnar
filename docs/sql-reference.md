@@ -773,7 +773,8 @@ The function refuses these:
   the same path, a path under the table's directory, or a path that matches
   the table's glob (#1941). The scheme and the host of an http(s) URL match in any case,
   and `s3a://` or `s3n://` match `s3://`. A local path is compared as written,
-  so a symbolic link or `..` is not resolved;
+  so a symbolic link or `..` is not resolved. A new file under a directory a
+  foreign table reads is refused too; docs/how-to.md shows ways around it;
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);

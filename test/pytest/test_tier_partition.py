@@ -54,6 +54,15 @@ def _errtext(conn, sql):
         return str(e).splitlines()[0]
 
 
+def _errdetail(conn, sql):
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        return "ok"
+    except psycopg.Error as e:
+        return e.diag.message_detail or "none"
+
+
 def _build(conn, t):
     with conn.cursor() as cur:
         cur.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
@@ -204,7 +213,9 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rclass": "s3://tierb/sc/a_?[0-9].parquet",
               "s_dup_resc": "s3://tierb/se/\\*.parquet", "s_dup_rkey": "s3://tierb/skey",
               "s_dup_host": "http://H.Example/s_apr_k.parquet",
-              "s_dup_ldir": f"{server_dir}/sldir", "s_dup_lglob": f"{server_dir}/slg/*.parquet"}
+              "s_dup_ldir": f"{server_dir}/sldir", "s_dup_lglob": f"{server_dir}/slg/*.parquet",
+              "s_dup_runt": "s3://tierb/su/?[]x.parquet", "s_dup_rbang": "s3://tierb/sn/a[!]x*",
+              "s_dup_rbesc": "s3://tierb/sb/m[\\]]x.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -237,9 +248,22 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a local path under a directory a foreign table reads without a trailing slash is refused")
     expect.text(rolled(tier.format(f"{server_dir}/slg/x.parquet")),
                 "58P02", "a local path matching a glob a foreign table reads is refused")
+    expect.text(_errdetail(conn, tier.format("s3://tierb/sdir/x.parquet")),
+                "Foreign table public.s_dup_rdir reads path 's3://tierb/sdir/'.",
+                "the refusal's detail names the foreign table and the path it reads")
+    # A bracket follows fnmatch: a '[' with no closing ']' is a literal '[', and
+    # a backslash inside a class escapes the next character, so '[\]]' is one class.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/su/q[]x.parquet")),
+                "58P02", "an unterminated [ in a glob is a literal [, so a path holding it is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sn/a[!]xfoo.parquet")),
+                "58P02", "a [!] with no closing bracket in a glob is literal, so a path holding it is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sb/m]x.parquet")),
+                "58P02", "a backslash in a glob [class] escapes a ], so a path the class matches is refused")
     # The rule follows the reader, so it refuses no more than the table reads.
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/sub/x.parquet")),
                 "28000", "a glob * does not cross a slash, so a path one level deeper is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sc/a_x/.parquet")),
+                "28000", "a glob [class] does not match a slash, so a path with a slash in its place is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/se/x.parquet")),
                 "28000", "an escaped star in a glob matches only a literal star, so another name is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/skey/x.parquet")),

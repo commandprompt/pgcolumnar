@@ -748,14 +748,44 @@ file its `path` names, so the function refuses a `path` when a foreign table's
 - A glob that matches the path, such as `s3://b/g/*.parquet`. In a glob, `*`
   and `?` do not match `/`, and a backslash makes the next character literal.
   The function treats a `[...]` class as any one character other than `/`, so
-  it can refuse a path that the class would not match.
+  it can refuse a path that the class would not match. A `[` with no closing
+  `]` is a literal `[`.
+
+**A new file under a directory that a foreign table reads is refused too.**
+The function cannot tell a new file from an old one. Once the move is done,
+the foreign table on the directory reads the new file as well. So this common
+layout fails from the second move on:
+
+1. You move January to `s3://archive/metrics/2026_01.parquet`.
+2. You create one foreign table on `s3://archive/metrics/` to read every
+   month.
+3. You move February to `s3://archive/metrics/2026_02.parquet`. The function
+   refuses it (`58P02`), and the error detail names the foreign table on
+   `s3://archive/metrics/`.
+
+You do not need such a table to read the moved months. Each move attaches its
+file as a foreign partition, so the parent table already reads every moved
+month. If you still want a foreign table over the moved files, for example for
+another tool, do one of these:
+
+- Keep the moves and that table apart. Move each month under one prefix, such
+  as `s3://archive/metrics/`. Give the table a copy of the files under another
+  prefix that no move writes to.
+- Give that table a glob that leaves out the next file's name, such as
+  `s3://archive/metrics/2025_*.parquet` while you move the months of 2026.
+  Do not use a `[...]` class for this: the function treats it as any one
+  character, so `2026_0[1].parquet` still blocks `2026_02.parquet`.
+- Drop that table before the move and create it again after.
 
 The bucket and the key must match in case. A local path is compared as
 written. The function does not resolve a symbolic link, `..` or a relative
 path, so a local file spelled another way is not seen. SQL has no way to
-resolve a path to the file it names. The function also cannot see readers
-outside the database. So do not reuse a path that another system reads, or a
-local file that a foreign table reads under another spelling.
+resolve a path to the file it names. A `file://` URL is not another spelling
+of a local path. The Parquet reader opens `file://...` as a file of that
+name, which does not exist. So a foreign table on it reads nothing and blocks
+nothing. The function also cannot see readers outside the database. So do not
+reuse a path that another system reads, or a local file that a foreign table
+reads under another spelling.
 
 The function refuses these partitions before it moves anything:
 
