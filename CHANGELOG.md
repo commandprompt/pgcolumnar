@@ -542,16 +542,21 @@ true until the next version shipped.
   one shared helper that retries for up to 30 s. `native_truncate` calls
   `truncate` through it too. The helper is `pgc_retry_past_horizon` in
   `test/lib.sh` and `retry_past_horizon` in `test/pytest/pgc_horizon.py`.
-  `native_reclaim_frag` uses it too. New checks print how many groups each `compact` retired. The
-  fixture tables have autovacuum turned off. `native_reclaim_reconcile` needs no
-  change. No `compact` in it has a whole group to retire. It stays green with a
-  snapshot held through the whole suite.
+  `native_reclaim_frag` uses it too. New checks print how many groups each
+  `compact` retired. The fixture tables have autovacuum turned off.
+  `catalog_scan_index` also retries `compact` on its noise tables until each
+  holds its two free ranges, and retries its end-truncation arm until the
+  truncation takes effect. A new premise counts the noise tables' free ranges.
+  `native_reclaim_reconcile` needs no change. No `compact` in it has a whole
+  group to retire. It stays green with a snapshot held through the whole suite.
 - When the retry runs out, the helper now prints what holds the horizon back
   (#1981). It lists each session with a snapshot or a transaction ID, and any
   prepared transaction or replication slot. For a session it prints the pid,
-  backend type, state, `backend_xmin`, `backend_xid`, transaction start and
-  query. A CI red then names the holder. `native_reclaim_frag` and its twin check that the report names a
-  session that holds a snapshot. docs/testing.md describes the helper.
+  backend type, database, state, `backend_xmin`, `backend_xid`, transaction
+  start and query. A CI red then names the holder. `native_reclaim_frag` and its
+  twin check this: while a second session holds a snapshot, a wait that cannot
+  reach its count must print a report that names that session.
+  docs/testing.md describes the helper.
 
 - `native_reclaim_frag` and its pytest twin no longer fail when another session
   holds an old snapshot during `compact` (#1975). `compact` retires a dead group

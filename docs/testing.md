@@ -305,14 +305,15 @@ Do these three things:
    ```
 
    The helper runs the statement again every 0.5 s, up to 60 calls, until the
-   counts add up. The shell helper prints `<total>/<calls>`.
+   counts add up. The shell helper prints `<total>/<calls>`. A third argument
+   (`calls=` in Python) sets a different call limit.
 3. Check the total as a number, for example
    `check_num "compact retired every dead group" "${retired%/*}" "18"`.
 
-When the total is still short after 60 calls, the helper prints what holds the
+When the total is still short after the last call, the helper prints what holds the
 horizon back (#1981). Each line names a session with its pid, backend type,
-state, `backend_xmin`, `backend_xid`, transaction start and query, or a prepared
-transaction or replication slot. For example:
+database, state, `backend_xmin`, `backend_xid`, transaction start and query, or
+a prepared transaction or replication slot. For example:
 
 ```
   [SET pgcolumnar.reclaim_coalesce = on; SELECT pgcolumnar.compact('n');] returned 0 of 18 in 60 calls. What holds the horizon back:

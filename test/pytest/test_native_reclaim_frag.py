@@ -30,9 +30,12 @@ and no `free_space` row covers it. So the live groups, rounded up to whole pages
 the allocator reserves them, and the free ranges are laid out in offset order, and
 each must end where the next one starts.
 """
+import contextlib
+import io
+
 import psycopg
 
-from pgc_horizon import horizon_holders, retry_past_horizon
+from pgc_horizon import retry_past_horizon
 
 ROWS = 30_000
 GROUP = 1_000
@@ -180,17 +183,21 @@ def test_native_reclaim_frag(pgc_conn, expect):
     # A RED NAMES WHAT HOLDS THE HORIZON (#1981). When compact still retires too
     # few groups after the wait, retry_past_horizon prints horizon_holders. CI once
     # went red here with no way to tell which session held the horizon. So a second
-    # session holds a snapshot, and the report must name its pid.
+    # session holds a snapshot, and a wait that cannot reach its count ("SELECT 0",
+    # 2 calls) must print a report that names its pid.
     with psycopg.connect(pgc_conn.info.dsn, autocommit=True) as holder:
         holder.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
         pid = holder.execute("SELECT pg_backend_pid()").fetchone()[0]
-        lines = horizon_holders(pgc_conn)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            retry_past_horizon(pgc_conn, "SELECT 0", 1, calls=2, pause=0)
         holder.execute("ROLLBACK")
-    print(f"-- horizon report while pid {pid} holds a snapshot:")
+    lines = out.getvalue().splitlines()
+    print(f"-- what a short wait printed while pid {pid} holds a snapshot:")
     for line in lines:
         print(f"--   {line}")
     expect.text(
-        "named" if any(line.startswith(f"session pid={pid} ") for line in lines)
+        "named" if any(f"session pid={pid} " in line for line in lines)
         else f"not named (pid={pid})",
         "named",
         "the horizon report names a session that holds a snapshot",

@@ -134,7 +134,8 @@ check "coalesce on: reuse splits an oversized freed range, so no byte between ra
 # A RED NAMES WHAT HOLDS THE HORIZON (#1981). When compact still retires too few
 # groups after the wait, pgc_retry_past_horizon prints pgc_horizon_holders. CI
 # once went red here with no way to tell which session held the horizon. So a
-# second session holds a snapshot, and the report must name its pid.
+# second session holds a snapshot, and a wait that cannot reach its count
+# ("SELECT 0", 2 calls) must print a report that names its pid.
 env PGAPPNAME=pgc_horizon_holder PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
 	-U postgres -d "$PGC_DB" -qAt -c "SELECT pg_sleep(20);" >/dev/null 2>&1 &
 holder_job=$!
@@ -145,8 +146,8 @@ for _ in $(seq 1 50); do
 	[ -n "$holder_pid" ] && break
 	sleep 0.1
 done
-holders="$(pgc_horizon_holders 2>&1)"
-echo "  (horizon report while pid ${holder_pid:-none} holds a snapshot:)"
+holders="$(pgc_retry_past_horizon 1 "SELECT 0;" 2 2>&1 >/dev/null)"
+echo "  (what a short wait printed while pid ${holder_pid:-none} holds a snapshot:)"
 echo "${holders:-<empty>}" | sed 's/^/    /'
 check "the horizon report names a session that holds a snapshot" \
 	"$(grep -q "session pid=${holder_pid:-none} " <<<"$holders" && echo named || echo "not named (pid=${holder_pid:-none})")" "named"

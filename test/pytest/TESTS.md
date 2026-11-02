@@ -5581,10 +5581,11 @@ check, a snapshot held across the coalesce-on run left the on side with 0 rows, 
 
 When the wait runs out, the helper prints what holds the horizon back (#1981). It lists
 each session with a snapshot or a transaction ID, and any prepared transaction or
-replication slot. For a session it prints the pid, backend type, state, `backend_xmin`,
-`backend_xid`, transaction start and query. `the horizon report names a session that holds a
-snapshot` holds a snapshot in a second session and checks that the report names its
-pid.
+replication slot. For a session it prints the pid, backend type, database, state,
+`backend_xmin`, `backend_xid`, transaction start and query. `the horizon report names a
+session that holds a snapshot` holds a snapshot in a second session, runs a wait that
+cannot reach its count (`SELECT 0`, 2 calls), and checks that what the wait printed
+names the holder's pid.
 
 ### Every arm
 
@@ -6859,6 +6860,8 @@ EVERY ARM HAS AN EFFECT PREMISE, AND BOTH SILENT FAILURES IT GUARDS AGAINST HAPP
 
 EACH TARGET WAITS FOR THE HORIZON (#1979). `compact` retires a dead group only when no transaction in the database is older than the `DELETE`. A session that held a snapshot across the single `compact` left every target with no free range. Each premise read 0, and `an online rewrite took effect` and `an end truncation took effect` went red. Both harnesses now call `compact` again every 0.5 s, for up to 30 s, through the shared helper, and check `the <operation> target: compact retired both dead groups` as a number. The targets have autovacuum off.
 
+THE NOISE TABLES AND THE END TRUNCATION WAIT TOO (#1979). The noise fixture called `compact` once per table. Under a held snapshot it retired nothing, `free_space` stayed under `index_min_blocks` pages, and the `free_space` arms read it whole by design. Measured on PG 18 with a snapshot held across the noise load: `premise: every noise table holds two free ranges` read 0 of 800 (shell) and 0 of 700 (pytest). Both harnesses now call `compact` again, 50 tables per call, on each noise table that still lacks its two free ranges. `truncate` removes the trailing range only when no transaction is older than the `compact` that freed it. A session that started between the `DELETE` and the `compact` made `an end truncation took effect` read 2 instead of 1. That arm now runs again every 0.5 s, for up to 30 s, until the effect shows, and the reading is the run that took effect.
+
 THE END-TRUNCATION TARGET HAS NO PROJECTION. A projection is its own storage in the same file, written after the base's groups, so its live data sits behind the base's last group and there is no tail to reclaim. Measured: with the projection, `truncate()` returns 0 and both free ranges stay; without it, 3 blocks are reclaimed and one range is left.
 
 Removal proof, on the shell twin at PG 17: the full revert reddens all eleven path arms, and reverting each of the twelve sites ALONE reddens at least one arm named for the operation that reaches it. This twin aborts at its first failure, so under the revert it reports the first arm (`storage seq_scan=2`).
@@ -6869,7 +6872,7 @@ The two halves share no code and no fixture. The shell suite adds 400 tables wit
 
 | test | what it holds |
 | --- | --- |
-| `test_catalog_scans_do_not_read_their_catalog_whole` | each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), `the <operation> target: compact retired both dead groups`, that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
+| `test_catalog_scans_do_not_read_their_catalog_whole` | `premise: every noise table holds two free ranges`; each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), `the <operation> target: compact retired both dead groups`, that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
 
 ## 84. test_native_format.py: the format stamp is a range, and an append raises it
 

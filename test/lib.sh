@@ -2071,24 +2071,24 @@ pgc_horizon_holders() {
 	echo "${out:-none found}"
 }
 
-# pgc_retry_past_horizon WANT SQL -- run SQL until the counts it returns add up to
-# WANT, and print "<total>/<calls>" (#1979).
+# pgc_retry_past_horizon WANT SQL [CALLS] -- run SQL until the counts it returns
+# add up to WANT, and print "<total>/<calls>" (#1979).
 #
 # For compact and truncate. compact retires a dead row group only when no
 # transaction in the database is older than the DELETE. truncate removes a freed
 # range only when no transaction is older than the compact that freed it. While
 # such a transaction is open, either one returns 0 and the check after it
 # measures nothing. An autoanalyze, or a session another test left open, is
-# enough. So SQL runs again every 0.5 s, up to 60 calls (30 s).
+# enough. So SQL runs again every 0.5 s, up to CALLS calls (default 60, so 30 s).
 #
 # SQL must return one integer. When it returns anything else, the wait stops at
 # once and the output is printed, so an error does not read as a held horizon.
-# When the total is still short after 60 calls, the things that hold the horizon
-# back are printed (#1981), so a red names the holder. Both go to stderr: the
-# caller's check prints the total itself.
+# When the total is still short after the last call, the things that hold the
+# horizon back are printed (#1981), so a red names the holder. Both go to
+# stderr: the caller's check prints the total itself.
 pgc_retry_past_horizon() {
-	local want="$1" sql="$2" r total=0 calls=0
-	while [ "$total" -lt "$want" ] && [ "$calls" -lt 60 ]; do
+	local want="$1" sql="$2" max="${3:-60}" r total=0 calls=0
+	while [ "$total" -lt "$want" ] && [ "$calls" -lt "$max" ]; do
 		[ "$calls" -gt 0 ] && sleep 0.5
 		r="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 			-d "$PGC_DB" -qAt -c "$sql" 2>&1)"

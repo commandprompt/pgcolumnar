@@ -156,13 +156,33 @@ work() {
 # that could not retire, a truncate() that refused a transaction block), and
 # this premise and the next are what caught each.
 N_ARM=0
+ARM_RETRY=0
 N_MEASURED=0	# arms whose catalog statistics came back as numbers
 arm() {
 	local name="$1" cat="$2" tmpl="$3" effect="$4" want="$5"
 	N_ARM=$((N_ARM + 1))
 	local t="arm${N_ARM}" r bufs seq idx
 	make_target "$t" "$name"
-	r="$(work "$cat" "$min_blocks" "${tmpl//@T/$t}")"
+	# AN ARM WITH ARM_RETRY=1 WAITS FOR THE HORIZON (#1979). truncate removes the
+	# trailing range only when no transaction is older than the compact that
+	# freed it, and returns 0 while one is open. So the arm runs again every
+	# 0.5 s, up to 60 times (30 s), until the effect shows. work resets the
+	# statistics each time, so the reading is the run that took effect. When the
+	# wait runs out, what holds the horizon back is printed.
+	local runs=0
+	while :; do
+		r="$(work "$cat" "$min_blocks" "${tmpl//@T/$t}")"
+		runs=$((runs + 1))
+		[ "$ARM_RETRY" = 1 ] || break
+		[ "$(q "${effect//@T/$t}")" = "$want" ] && break
+		if [ "$runs" -ge 60 ]; then
+			echo "  [$name] no effect after $runs runs. What holds the horizon back:" >&2
+			pgc_horizon_holders | sed 's/^/    /' >&2
+			break
+		fi
+		sleep 0.5
+	done
+	[ "$ARM_RETRY" = 1 ] && echo "-- $name: ran $runs times"
 	read -r bufs seq idx <<<"$r"
 	pgc_is_number "$seq" && pgc_is_number "$idx" && N_MEASURED=$((N_MEASURED + 1))
 	echo "-- $name: pgcolumnar.$cat buffers=$bufs seq_scan=$seq idx_scan=$idx"
@@ -199,6 +219,26 @@ SELECT pgcolumnar.compact('noise_$i');
 SQL
 done
 psql_file "$G" >/dev/null
+
+# EVERY NOISE TABLE HOLDS ITS TWO FREE RANGES (#1979). The free_space premise
+# below counts on them: without them the catalog stays under index_min_blocks
+# pages, and the free_space arms read it whole by design. The one compact per
+# table above retires nothing while another session holds an older snapshot.
+# So compact runs again on each noise table that still lacks its ranges, 50
+# tables per call, until it has retired both groups of each.
+NOISE_SHORT="SELECT c.oid::regclass FROM pg_class c
+              WHERE c.relname ~ '^noise_[0-9]+$'
+                AND (SELECT count(*) FROM pgcolumnar.free_space f
+                      WHERE f.storage_id = pgcolumnar.get_storage_id(c.oid)) < 2"
+noise_short="$(q "SELECT count(*) FROM ($NOISE_SHORT) s;")"
+noise_retired="$(pgc_retry_past_horizon "$((2 * ${noise_short:-0}))" \
+	"SELECT coalesce(sum(pgcolumnar.compact(t)), 0) FROM ($NOISE_SHORT LIMIT 50) s(t);")"
+echo "-- noise tables short of their free ranges: ${noise_short:-?}; compact retired/calls=$noise_retired"
+noise_ranges="$(q "SELECT count(*) FROM pgcolumnar.free_space
+                   WHERE storage_id IN (SELECT pgcolumnar.get_storage_id(c.oid)
+                                          FROM pg_class c WHERE c.relname ~ '^noise_[0-9]+$');")"
+echo "-- noise tables: $noise_ranges free ranges"
+check_num "premise: every noise table holds two free ranges" "$noise_ranges" "$((2 * NOISE))"
 
 # EACH PREMISE IS THE CONDITION ITS ARMS NEED. A catalog still below the
 # threshold in the big database is read whole by design (#1213), it grows by
@@ -242,9 +282,11 @@ arm "an online rewrite" free_space \
 	"SELECT sum(deletedrows) FROM pgcolumnar.stats('@T');" "0"
 # Two free ranges before (groups 0 and 6); the trailing one is removed.
 TARGET_PROJ=0
+ARM_RETRY=1
 arm "an end truncation" free_space \
 	"SET pgcolumnar.enable_end_truncation = on;;SELECT pgcolumnar.truncate('@T');" \
 	"SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('@T');" "1"
+ARM_RETRY=0
 TARGET_PROJ=1
 arm "a sorted rewrite" storage \
 	"SELECT pgcolumnar.vacuum_sorted('@T', 'a');" \
