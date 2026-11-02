@@ -425,14 +425,84 @@ rest_refuse_empty_table(const char *table)
 						   "A proxy that strips the trailing slash would reach the table list instead.")));
 }
 
+/* Whether `s` is a dot segment, "." or "..", which RFC 3986 removes from a path. */
+static bool
+rest_is_dot_segment(const char *s)
+{
+	return strcmp(s, ".") == 0 || strcmp(s, "..") == 0;
+}
+
+/*
+ * Refuse a table named "." or "..". rest_pct_encode keeps '.', so its loadTable
+ * path would end in a dot segment, as in "/v1/namespaces/db/tables/..". A
+ * server or proxy that removes dot segments (RFC 3986 section 5.2.4) would reach
+ * another endpoint: loadNamespace for "..", the table list for "." (#1948). A
+ * name that only holds dots, such as "a.b" or "...", is not a dot segment. The
+ * check needs no catalog config, so callers run it before any request.
+ */
+static void
+rest_refuse_dot_table(const char *table)
+{
+	if (rest_is_dot_segment(table))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the table name \"%s\" is a dot segment", table),
+				 errdetail("Its request path would end in \"/tables/%s\". A server or proxy "
+						   "that removes dot segments from a path would reach another endpoint.",
+						   table),
+				 errhint("A table named \".\" or \"..\" cannot be sent in a request path.")));
+}
+
+/*
+ * Refuse a namespace whose request path segment would be "." or ".." (#1948):
+ * a server or proxy that removes dot segments would reach another endpoint,
+ * such as /v1/tables for /v1/namespaces/../tables. The segment is the levels
+ * joined with the catalog's separator `rawsep`. With no catalog config yet
+ * (rawsep NULL), only a namespace of one level can be judged, and callers do
+ * that before any request. rest_append_levels judges again with the separator:
+ * the separator "%2E" joins ["", ""] into "%2E", and a normaliser may decode
+ * that to "." first (RFC 3986 section 6.2.2.2). A level "..", among others, is
+ * not a whole segment, so ["db", ".."] passes.
+ */
+static void
+rest_refuse_dot_namespace(List *levels, const char *rawsep)
+{
+	StringInfoData seg;
+	ListCell   *lc;
+
+	if (rawsep == NULL && list_length(levels) != 1)
+		return;
+	initStringInfo(&seg);
+	foreach(lc, levels)
+	{
+		if (lc != list_head(levels))
+			appendStringInfoString(&seg, rawsep);
+		appendStringInfoString(&seg, (const char *) lfirst(lc));
+	}
+	if (rest_is_dot_segment(seg.data))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace would make the dot segment \"%s\" in the request path",
+						seg.data),
+				 errdetail("A server or proxy that removes dot segments from a path "
+						   "would reach another endpoint."),
+				 errhint("A namespace whose levels, joined with the catalog's separator, "
+						 "read \".\" or \"..\" cannot be sent in a request path.")));
+	pfree(seg.data);
+}
+
 /*
  * Append a namespace, given as a List of level strings, to a resource path or
  * to a ?parent= query value. The levels are joined with the catalog's
  * separator (already encoded). Each level is percent-encoded, so a level
- * bearing '/', '.', or a control byte cannot alter the request path. A level
- * that holds the separator is refused: the catalog would read it as a
- * different namespace (#1865). With `in_path`, the namespace [""] is refused
- * too: it would make an empty path segment (#1922).
+ * bearing '/' or a control byte cannot alter the request path. A '.' is
+ * unreserved and goes out as it is, so a namespace whose path segment is "."
+ * or ".." would be a dot segment, which a normalising server or proxy removes:
+ * with `in_path` it is refused (#1948). A ?parent= value is a query, which
+ * dot-segment removal leaves alone. A level that holds the separator is
+ * refused: the catalog would read it as a different namespace (#1865). With
+ * `in_path`, the namespace [""] is refused too: it would make an empty path
+ * segment (#1922).
  */
 static void
 rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc,
@@ -442,7 +512,10 @@ rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc,
 	const char *bad = rest_unnameable_level(levels, cc);
 
 	if (in_path)
+	{
 		rest_refuse_only_empty_level(levels);
+		rest_refuse_dot_namespace(levels, cc->rawsep);
+	}
 	if (bad != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -1010,11 +1083,12 @@ rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 
 	rest_refuse_only_empty_level(levels);
 	/*
-	 * A guard for future callers. The SQL functions refuse '' before
-	 * rest_resolve, and PgColumnarIcebergRestLoadTableLocation has no caller
-	 * yet, so no test reaches this call today.
+	 * Guards for future callers. The SQL functions refuse '', "." and ".."
+	 * before rest_resolve, and PgColumnarIcebergRestLoadTableLocation has no
+	 * caller yet, so no test reaches these calls today.
 	 */
 	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
@@ -1187,7 +1261,9 @@ rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	/* before rest_resolve: a server's OAuth token POST is a request too */
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
 	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
 	PG_RETURN_TEXT_P(cstring_to_text(loc));
@@ -1253,7 +1329,9 @@ rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	/* before rest_resolve: a server's OAuth token POST is a request too */
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
 	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
 	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
@@ -1484,7 +1562,8 @@ rest_levels_key(List *levels)
  * `as_array` as a text[] of its levels, which keeps a level that holds a dot
  * apart from two levels (#1865). A level that holds the catalog's separator
  * is emitted but not walked into: no request can name it. The namespace [""]
- * is walked into with an empty ?parent= (#1922).
+ * is walked into with an empty ?parent= (#1922), and [".."] with ?parent=..:
+ * a query value is not a path segment, so no dot segment is sent (#1948).
  */
 static void
 rest_walk_namespaces(const char *catalog_uri, const char *token,
@@ -1638,9 +1717,9 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
  * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
  * same namespaces, each as a text[] of its levels (#1865). A row passes back
  * unchanged as the namespace argument of the other REST functions, except a
- * row with a level that holds the catalog's separator, or the row {""}: they
- * refuse it (22023, #1922). Another row with an empty level passes back too
- * (#1891).
+ * row with a level that holds the catalog's separator, or the row {""}, {"."}
+ * or {".."}: they refuse it (22023, #1922, #1948). Another row with an empty
+ * level passes back too (#1891).
  */
 Datum
 pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)
@@ -1674,6 +1753,7 @@ rest_tables(FunctionCallInfo fcinfo, bool ns_is_array)
 	ts = rest_text_srf_setup(rsinfo, &td);
 
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);

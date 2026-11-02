@@ -11108,6 +11108,8 @@ Four more tests cover the review of PR #1884. On the `%2E` fixture with the leve
 
 Four more tests cover the second review of PR #1884. In a LATIN1 database, `é` is the one byte E9, so in the level `é.x` the dot is a whole character: on the `%2E` fixture it must be refused with 22023. A refused level that holds a newline shows it as `\x0A`, not only 0x1F as `\x1F`. `iceberg_rest_tables` of a NULL `text[]` returns no rows, because the function is STRICT; this test runs last, so a crash reddens only it and the survival test. A further fixture serves the level `db<0x1F>x` with the default separator, and the documented filter `strpos(level, chr(31)) > 0` keeps the LATERAL example running with no rows.
 
+Four more fixtures cover #1948, a table name or namespace that would be a dot segment, `.` or `..`, in the request path. One serves a table named `..`, one the namespace `ARRAY['..']`; neither normalises paths, so either would answer such a request. The table names `.` and `..`, and the namespace arrays `ARRAY['.']` and `ARRAY['..']`, are refused with 22023 and the hint, in the text and `text[]` forms, with the catalog down, and in the OAuth server form before the token request. The walk lists `ARRAY['..']` and asks for its children with `?parent=..`, a query value. A third fixture advertises the separator `%2E` and serves `ARRAY['','']`, whose segment `%2E` a normaliser may decode to `.`; `'.'`, `'..'` and `ARRAY['','']` are refused there too. A fourth serves the table `.hidden` and `a.b` in `ARRAY['...']`, and both must reach the catalog, as must `ARRAY['db','..']`. No request path in the four logs may hold a dot segment, plain or percent-encoded.
+
 ### Every test
 
 Every test makes one check under the shell's name. The not-found reads as 42P01, or 3F000 for a namespace, only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
@@ -11216,6 +11218,32 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
 | `test_empty_table_name_the_same_catalog_still_resolves_the_table` | empty table name: the same catalog still resolves db.events |
 | `test_empty_table_name_no_request_has_an_empty_table_segment` | empty table name: no request reaches the catalog with an empty table segment |
+| `test_dot_segment_location_of_table_dotdot_is_refused` | dot segment: iceberg_rest_table_location of table '..' is refused |
+| `test_dot_segment_location_of_table_dot_is_refused` | dot segment: iceberg_rest_table_location of table '.' is refused |
+| `test_dot_segment_scan_of_table_dotdot_is_refused` | dot segment: iceberg_rest_scan of table '..' is refused |
+| `test_dot_segment_scan_of_table_dot_is_refused` | dot segment: iceberg_rest_scan of table '.' is refused |
+| `test_dot_segment_array_form_location_of_table_dotdot_is_refused` | dot segment: the text[] form of iceberg_rest_table_location of table '..' is refused |
+| `test_dot_segment_array_form_scan_of_table_dot_is_refused` | dot segment: the text[] form of iceberg_rest_scan of table '.' is refused |
+| `test_dot_segment_location_of_table_dotdot_is_refused_when_the_catalog_cannot_be_reached` | dot segment: iceberg_rest_table_location of table '..' is refused when the catalog cannot be reached |
+| `test_dot_segment_oauth_server_location_of_table_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_table_location of table '..' is refused before the token request |
+| `test_dot_segment_oauth_server_scan_of_table_dot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_scan of table '.' is refused before the token request |
+| `test_dot_segment_tables_of_namespace_dotdot_is_refused` | dot segment: iceberg_rest_tables of ARRAY['..'] is refused |
+| `test_dot_segment_tables_of_namespace_dot_is_refused` | dot segment: iceberg_rest_tables of ARRAY['.'] is refused |
+| `test_dot_segment_location_in_namespace_dot_is_refused` | dot segment: iceberg_rest_table_location of ARRAY['.'] is refused |
+| `test_dot_segment_scan_in_namespace_dotdot_is_refused` | dot segment: iceberg_rest_scan of ARRAY['..'] is refused |
+| `test_dot_segment_tables_of_namespace_dotdot_is_refused_when_the_catalog_cannot_be_reached` | dot segment: iceberg_rest_tables of ARRAY['..'] is refused when the catalog cannot be reached |
+| `test_dot_segment_oauth_server_tables_of_namespace_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_tables of ARRAY['..'] is refused before the token request |
+| `test_dot_segment_oauth_server_location_in_namespace_dot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_table_location of ARRAY['.'] is refused before the token request |
+| `test_dot_segment_oauth_server_scan_in_namespace_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_scan of ARRAY['..'] is refused before the token request |
+| `test_dot_segment_tables_of_text_dot_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_tables of '.' is refused when the catalog's separator is %2E |
+| `test_dot_segment_location_in_text_dotdot_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_table_location of '..' is refused when the catalog's separator is %2E |
+| `test_dot_segment_scan_in_two_empty_levels_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_scan of ARRAY['',''] is refused when the catalog's separator is %2E |
+| `test_dot_segment_namespace_levels_walks_into_dotdot_by_query_value` | dot segment: iceberg_rest_namespace_levels lists ARRAY['..'] and asks for its children in a query value |
+| `test_dot_segment_namespaces_walks_into_dotdot_by_query_value` | dot segment: iceberg_rest_namespaces lists '..' and asks for its children in a query value |
+| `test_dot_segment_tables_of_a_dotted_namespace_reaches_the_catalog` | dot segment: iceberg_rest_tables of ARRAY['...'] reaches the catalog and lists .hidden and a.b |
+| `test_dot_segment_location_of_a_dotted_table_resolves` | dot segment: iceberg_rest_table_location of .hidden in ARRAY['...'] resolves |
+| `test_dot_segment_a_dotdot_level_among_others_reaches_the_catalogs_404` | dot segment: iceberg_rest_tables of ARRAY['db','..'] reaches the catalog's 404 |
+| `test_dot_segment_no_request_has_a_dot_segment` | dot segment: no request reaches the catalog with a dot segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 
