@@ -213,6 +213,7 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_rcollab (x int) SERVER tier_pq OPTIONS (path 's3://tierb/cb/[1[.ab.]-a]x.parquet');
           CREATE FOREIGN TABLE dup_rvneg (x int) SERVER tier_pq OPTIONS (path 's3://tierb/vn/[^-:-[:alpha:]x].parquet');
           CREATE FOREIGN TABLE dup_lvneg (x int) SERVER tier_pq OPTIONS (path '$W/lvn/[!-:-[:alpha:]x].parquet');
+          CREATE FOREIGN TABLE dup_rquote (x int) SERVER tier_pq OPTIONS (path 's3://tierb/q/it''s.parquet');
           CREATE FOREIGN TABLE dup_hglob (x int) SERVER tier_pq OPTIONS (path 'http://h.example/hg/*.parquet');
           CREATE FOREIGN TABLE dup_gglob (x int) SERVER tier_pq OPTIONS (path 'gs://tierb/gg/*.parquet');
           CREATE FOREIGN TABLE dup_rcunt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nc/a[^]x*');
@@ -313,6 +314,12 @@ check "a ! or ^ after [ in a local glob always negates, so a path the negated cl
 check "the refusal's detail prints a path holding a backslash as written, not as an E'' string" \
 	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/e/*.parquet');")" \
 	"Foreign table public.dup_resc reads path 's3://tierb/e/\\*.parquet'."
+# The detail quotes the path by hand, so it doubles a ' in it. Otherwise a
+# table owner's path could close the quote and append a line that reads like
+# a server HINT under the refusal (#1953 review).
+check "the refusal's detail doubles a quote in the path, so the path cannot close its quotes early" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/q/it''s.parquet');")" \
+	"Foreign table public.dup_rquote reads path 's3://tierb/q/it''s.parquet'."
 # The function reads its own patterns with standard_conforming_strings on, so a
 # session that turns it off gets the same refusal (#1946 review). PostgreSQL 19
 # refuses to turn it off (0A000), so there the session keeps it on.
@@ -357,7 +364,7 @@ check "a local glob splits at a slash inside an equivalence class, so a path the
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/le/a.parquet');")" "58P01"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
-          dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg;"
+          dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"

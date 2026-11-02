@@ -239,7 +239,8 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rcunt": "s3://tierb/snc/a[^]x*",
               "s_dup_rspan": "s3://tierb/ssp/x[a/b].parquet",
               "s_dup_rcoll": "s3://tierb/sco/[[.].]].parquet",
-              "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet"}
+              "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet",
+              "s_dup_rquote": "s3://tierb/sq/it''s.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -350,6 +351,12 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     expect.text(_errdetail(conn, tier.format("s3://tierb/se/*.parquet")),
                 "Foreign table public.s_dup_resc reads path 's3://tierb/se/\\*.parquet'.",
                 "the refusal's detail prints a path holding a backslash as written, not as an E'' string")
+    # The detail quotes the path by hand, so it doubles a ' in it. Otherwise a
+    # table owner's path could close the quote and append a line that reads
+    # like a server HINT under the refusal (#1953 review).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/sq/it''s.parquet")),
+                "Foreign table public.s_dup_rquote reads path 's3://tierb/sq/it''s.parquet'.",
+                "the refusal's detail doubles a quote in the path, so the path cannot close its quotes early")
     # The function reads its own patterns with standard_conforming_strings on,
     # so a session that turns it off gets the same refusal (#1946 review).
     # PostgreSQL 19 refuses to turn it off (0A000), so there the session keeps

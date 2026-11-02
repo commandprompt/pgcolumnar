@@ -1955,10 +1955,14 @@ BEGIN
 								 ELSE '(\\.|(\[(?![!^])(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\]|\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))*(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])-\[(?=:[a-y]*:\]|=[^/]=\]).*)|\[(?:[!^]|(?![!^]))(?:(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\]|\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))*)?\]|.)' END, 'g')
 								 WITH ORDINALITY AS r(m, k)) || '$'))
 	 LIMIT 1;
+	-- The detail quotes the path by hand, not with %L, so a backslash prints as
+	-- written. It doubles a ', so the path cannot close the quote and append a
+	-- line that reads like a server HINT (#1953 review).
 	IF FOUND THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
 			USING ERRCODE = 'duplicate_file',
-				  DETAIL = format('Foreign table %s reads path ''%s''.', covered.relid, covered.opath);
+				  DETAIL = format('Foreign table %s reads path ''%s''.', covered.relid,
+								   replace(covered.opath, '''', ''''''));
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not
