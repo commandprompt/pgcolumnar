@@ -372,7 +372,32 @@ check "a path option under another wrapper does not refuse the same path" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/oth/x.parquet');")" "58P01"
 check "a path a wrapper with the Parquet handler under another name reads is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/pq2/x.parquet');")" "58P02"
-psql_run "DROP FOREIGN DATA WRAPPER tier_other_fdw, tier_pq2 CASCADE;"
+# The Iceberg reader is also chosen by its handler, not by the wrapper's name.
+# A path option under a wrapper with any handler but the Parquet one refuses
+# nothing: the Iceberg handler does not read path, and a handler pgcolumnar
+# does not know (here the Iceberg reader declared under another function name)
+# is another wrapper (#1955 review).
+psql_run "CREATE FOREIGN DATA WRAPPER tier_ice2 HANDLER pgcolumnar.iceberg_fdw_handler
+            VALIDATOR pgcolumnar.iceberg_fdw_validator;
+          CREATE SERVER tier_ice2s FOREIGN DATA WRAPPER tier_ice2;
+          CREATE FOREIGN TABLE dup_ice2 (ts timestamptz, v int) SERVER tier_ice2s
+            OPTIONS (metadata_path '$W/ice2/metadata/v1.metadata.json');
+          CREATE FOREIGN DATA WRAPPER tier_ice3 HANDLER pgcolumnar.iceberg_fdw_handler;
+          CREATE SERVER tier_ice3s FOREIGN DATA WRAPPER tier_ice3;
+          CREATE FOREIGN TABLE dup_ipath (x int) SERVER tier_ice3s OPTIONS (path '$W/ipath/x.parquet');
+          CREATE FUNCTION public.tier_unknown_handler() RETURNS fdw_handler
+            AS 'pgcolumnar', 'pgcolumnar_iceberg_fdw_handler' LANGUAGE C;
+          CREATE FOREIGN DATA WRAPPER tier_unk HANDLER public.tier_unknown_handler;
+          CREATE SERVER tier_unks FOREIGN DATA WRAPPER tier_unk;
+          CREATE FOREIGN TABLE dup_upath (x int) SERVER tier_unks OPTIONS (path '$W/upath/x.parquet');"
+check "a path under the location of a table on a wrapper with the Iceberg handler under another name is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice2/data/x.parquet');")" "58P02"
+check "a path option under a wrapper with the Iceberg handler does not refuse the same path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ipath/x.parquet');")" "58P01"
+check "a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/upath/x.parquet');")" "58P01"
+psql_run "DROP FOREIGN DATA WRAPPER tier_other_fdw, tier_pq2, tier_ice2, tier_ice3, tier_unk CASCADE;
+          DROP FUNCTION public.tier_unknown_handler();"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"
