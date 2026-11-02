@@ -1750,4 +1750,7 @@ guard_tests 863
 # class; the refusal's detail printing a backslash path as written; and a slash in such a bracket's
 # place that is not refused), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
+# cluster_tests 5296 -> 5296 for #1953 review's two checks in test_tier_partition.py (a ! or ^ after [
+# always negates, in an s3:// and a local glob), added to an existing test, by collection: 6159 tests
+# collected, less guard_tests 863.
 cluster_tests 5296
