@@ -5543,8 +5543,8 @@ the two harnesses stay independent by construction.
 
 `compact` retires a dead group only when no transaction in the database is older than
 the `DELETE` (#1979). With one call, a session that held a snapshot across it left the
-free list empty, and the cycles started with no reusable space: `file reaches steady
-state (cycle 5 <= cycle 2)` went red. Both harnesses now call `compact` again every
+free list empty. The cycles then started with no reusable space, and `file reaches
+steady state (cycle 5 <= cycle 2)` went red. Both harnesses now call `compact` again every
 0.5 s, for up to 30 s, through the shared helper (`pgc_retry_past_horizon` in
 `lib.sh`, `retry_past_horizon` in `pgc_horizon.py`). Then `compact retired every dead
 group` must read 18. The fixture tables have autovacuum off.
@@ -5579,10 +5579,10 @@ free_space row` must hold, before the on/off comparison is read. Without the fir
 check, a snapshot held across the coalesce-on run left the on side with 0 rows, and
 "fewer rows with coalescing on" passed as 0 < 18.
 
-When the wait runs out, the helper prints what holds the horizon back (#1981): each
-session with a snapshot or a transaction ID, with its pid, backend type, state,
-`backend_xmin`, `backend_xid`, transaction start and query, and any prepared
-transaction or replication slot. `the horizon report names a session that holds a
+When the wait runs out, the helper prints what holds the horizon back (#1981). It lists
+each session with a snapshot or a transaction ID, and any prepared transaction or
+replication slot. For a session it prints the pid, backend type, state, `backend_xmin`,
+`backend_xid`, transaction start and query. `the horizon report names a session that holds a
 snapshot` holds a snapshot in a second session and checks that the report names its
 pid.
 
@@ -6857,7 +6857,7 @@ TWO COST MEASURES WERE TRIED FIRST, AND A REVERT SURVIVED BOTH. Comparing the de
 
 EVERY ARM HAS AN EFFECT PREMISE, AND BOTH SILENT FAILURES IT GUARDS AGAINST HAPPENED. `compact()` cannot retire rows deleted by a transaction that has not committed, so a fixture that deleted and compacted in one transaction left no free range to measure. `pgcolumnar.truncate()` refuses a transaction block, so a multi-statement call raised and read zero. "No sequential scan" is exactly what an operation that never ran reports. Each arm therefore asserts what the operation changed, and that it reached the catalog at all.
 
-EACH TARGET WAITS FOR THE HORIZON (#1979). `compact` retires a dead group only when no transaction in the database is older than the `DELETE`. A session that held a snapshot across the single `compact` left every target with no free range: each premise read 0, and `an online rewrite took effect` and `an end truncation took effect` went red. Both harnesses now call `compact` again every 0.5 s, for up to 30 s, through the shared helper, and check `the <operation> target: compact retired both dead groups` as a number. The targets have autovacuum off.
+EACH TARGET WAITS FOR THE HORIZON (#1979). `compact` retires a dead group only when no transaction in the database is older than the `DELETE`. A session that held a snapshot across the single `compact` left every target with no free range. Each premise read 0, and `an online rewrite took effect` and `an end truncation took effect` went red. Both harnesses now call `compact` again every 0.5 s, for up to 30 s, through the shared helper, and check `the <operation> target: compact retired both dead groups` as a number. The targets have autovacuum off.
 
 THE END-TRUNCATION TARGET HAS NO PROJECTION. A projection is its own storage in the same file, written after the base's groups, so its live data sits behind the base's last group and there is no tail to reclaim. Measured: with the projection, `truncate()` returns 0 and both free ranges stay; without it, 3 blocks are reclaimed and one range is left.
 
@@ -8405,7 +8405,7 @@ The pytest twin of `test/native_ios.sh` (ported for #1341), every check by the s
 
 The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.truncate()` returns trailing reclaimed blocks to the OS. After the trailing half is deleted and compacted, the file shrinks and the rows still match a heap mirror. A second truncate has nothing to do, and the table stays usable: reinsert, index, and an indexed lookup forced through the index and asserted to read it. With `pgcolumnar.enable_end_truncation` off, truncate must return 0 and leave the file alone. The call is a statement of its own on both sides, because sent with the `SET` as one string it ran in an implicit transaction block and was refused, which passed whatever the GUC did. Inside a transaction block truncate is refused and changes nothing, because its shrink is not transactional, and a truncate followed by reinsert and compaction keeps parity.
 
-`compact` retires a dead group only when no transaction in the database is older than the `DELETE`, and `truncate` removes a freed range only when no transaction is older than the `compact` that freed it (#1979). With one call each, a session that held a snapshot across them left nothing to truncate. Both harnesses now call each one again every 0.5 s, for up to 30 s, through the shared helper, and check how many groups each `compact` retired. The fixture tables have autovacuum off.
+`compact` retires a dead group only when no transaction in the database is older than the `DELETE` (#1979). `truncate` removes a freed range only when no transaction is older than the `compact` that freed it. With one call each, a session that held a snapshot across them left nothing to truncate. Both harnesses now call each one through the shared helper, which retries every 0.5 s for up to 30 s. They check how many groups each `compact` retired. The fixture tables have autovacuum off.
 
 ### Every test
 
