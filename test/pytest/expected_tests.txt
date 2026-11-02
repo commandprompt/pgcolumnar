@@ -1759,4 +1759,10 @@ guard_tests 863
 # cluster_tests 5296 -> 5296 for #1953 review's third round: three checks in test_tier_partition.py (a
 # widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
 # added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
-cluster_tests 5296
+# cluster_tests 5296 -> 5297 for #1957's path_glob_matches: ten checks in test_tier_partition.py (a
+# negated class glibc cannot close, in an s3:// and a local glob; a local [\/] and a local glob ending in
+# //; a dot name under * not refused, in an s3:// and a local glob; a newline in the detail printed as an
+# escape, and no HINT line under the refusal; the helper's volatility and its slash rule), added to an
+# existing test, and test_path_glob_matches_needs_no_server_file_role in test_server_file_privilege.py,
+# by collection: 6160 tests collected, less guard_tests 863.
+cluster_tests 5297
