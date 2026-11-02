@@ -702,6 +702,19 @@ true until the next version shipped.
   matches. A `*` alone still does not match `.` or `..`. An `s3://` key is not
   folded. docs/sql-reference.md. `test/tier_partition.sh` and its pytest
   twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a wildcard directory and then a name that matches `..` (#1991). A
+  table on `/w/x/*/.?/a.parquet` reads `/w/x/a.parquet` whenever `/w/x` holds
+  any directory: `*` matches it and `.?` matches `..`. `path_glob_matches`
+  walks a tree that holds only the target, so `*` had nothing to match, and it
+  answered false. When a wildcard name comes before a name that can match
+  `..`, and the first walk finds no match, a second walk now assumes a
+  directory each wildcard there matches, and each name the pattern spells
+  there, to exist. Measured against glibc `glob(3)` on a real tree, over
+  317,454 patterns: no file the reader reads gets false. A name such as `??`
+  cannot match `..`, so `/w/x/*/??/a.parquet` still does not match
+  `/w/x/a.parquet`. docs/sql-reference.md. `test/tier_partition.sh` and its
+  pytest twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`

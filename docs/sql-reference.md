@@ -887,13 +887,19 @@ name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
 `/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
 `/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
 pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
-`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. A
-directory that a wildcard matched is not known. So `/w/x/*/.?/a.parquet` does
-not match `/w/x/a.parquet`, although the reader reads that file when `/w/x`
-holds a directory. The folded form does not resolve a symbolic link before a
-`..`. So it can match a file the reader does not open, and `tier_partition`
-then refuses more than it must. An `s3://` key is not folded: `//` and `.` are
-part of a key. `tier_partition` also compares the folded forms of the foreign
+`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
+function cannot know which directory a wildcard matched. So when a wildcard
+name comes before a name that can match `..`, it also assumes that a
+directory the wildcard matches exists (#1991). It assumes as well that each
+name the pattern spells there exists as a directory. So
+`/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
+`/w/x` holds any directory. Without such a directory, `tier_partition` then
+refuses more than it must. A name such as `??` cannot match `..`, so
+`/w/x/*/??/a.parquet` does not match `/w/x/a.parquet`. If the walk with
+these assumptions passes 1,000,000 steps, the function answers true. The
+folded form does not resolve a symbolic link before a `..`. So it can match a
+file the reader does not open, and `tier_partition` then refuses more than it
+must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
 table's path and the target. So it refuses what the reader opens under either
 spelling, unless a symbolic link comes before a `..` (#1965).
 
