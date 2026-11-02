@@ -12,7 +12,7 @@ isolation specs' (specs/truncate_vs_*.spec).
 import psycopg
 import pytest
 
-from pgc_horizon import retry_past_horizon
+from pgc_horizon import retry_past_horizon, wait_freed_range_past_horizon
 from pgc_vacuity import query_error
 
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
@@ -120,6 +120,12 @@ def test_the_table_stays_usable_and_the_guc_turns_it_off(nt, expect):
     _both(c, "DELETE FROM {t} WHERE id > 35000")
     expect.num(_compacted(c, 5), 5, "compact retired the 5 groups above id 35000")
     guard = _size(c)
+    # wait for the horizon first (#1988): truncate also leaves the file alone while a
+    # transaction older than the compact is open, and the arm then passed whatever
+    # the setting said
+    blockers, calls = wait_freed_range_past_horizon(c, "n")
+    print(f"-- horizon blockers/calls before the GUC-off call: {blockers}/{calls}")
+    expect.num(blockers, 0, "GUC off: no transaction older than the compact was open")
     # its own statement, and its answer checked: the shell once sent SET and the call
     # as one string, an implicit transaction block that truncate refuses
     c.execute("SET pgcolumnar.enable_end_truncation = off")

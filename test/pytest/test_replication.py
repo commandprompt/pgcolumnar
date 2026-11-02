@@ -26,6 +26,7 @@ import time
 
 import psycopg
 
+from pgc_horizon import retry_past_horizon
 from pgc_vacuity import query_error
 
 PROJ_SQL = ("SELECT count(*) FROM pgcolumnar.projection "
@@ -48,6 +49,18 @@ def _run(cluster, *sqls):
     with psycopg.connect(cluster.dsn(), autocommit=True) as c:
         for sql in sqls:
             c.execute(sql)
+
+
+def _retry(cluster, sql, want):
+    """-> what `sql` (compact or truncate) returned in all, waiting for the horizon
+    (#1987): with one call, a snapshot held by another session made it do nothing."""
+    try:
+        with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as c:
+            total, calls = retry_past_horizon(c, sql, want)
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0])
+    print(f"-- [{sql}] returned {total} in {calls} calls")
+    return total
 
 
 def _hash(cluster, table):
@@ -197,11 +210,13 @@ def test_a_streaming_standby_and_a_restore_replay_columnar_tables(pgc_cluster, e
                     "vacuum rewrote r into a new relfilenode on the primary")
         assert _caught_up(pri, sb), "the standby did not catch up (sync 5)"
         expect.hash(_hash(sb, "r"), _hash(pri, "r"), "vacuum replays identically")
-        # a row group of its own (one INSERT is one flush), then all of it deleted
+        # a row group of its own (one INSERT is one flush), then all of it deleted;
+        # no autovacuum from here, which would retire the dead groups itself (#1987)
+        _run(pri, "ALTER TABLE r SET (autovacuum_enabled = false)")
         _run(pri, "INSERT INTO r SELECT g, 'doomed' || g FROM generate_series(50001,51000) g",
              "DELETE FROM r WHERE v LIKE 'doomed%'")
         rg_before = _q(pri, RG_SQL)
-        retired = _q(pri, "SELECT pgcolumnar.compact('r')")
+        retired = _retry(pri, "SELECT pgcolumnar.compact('r')", 1)
         expect.text(f"{retired}|{rg_before - _q(pri, RG_SQL)}", "1|1",
                     "compact retired the fully deleted row group on the primary")
         assert _caught_up(pri, sb), "the standby did not catch up (sync 6)"
@@ -211,14 +226,15 @@ def test_a_streaming_standby_and_a_restore_replay_columnar_tables(pgc_cluster, e
         # the trailing rows need row groups of their own that compact frees first.
         # One statement per call: set_options and compact must commit before the next.
         _run(pri, "ALTER DATABASE postgres SET pgcolumnar.enable_end_truncation = on")
-        _run(pri, "CREATE TABLE t (id int, v text) USING pgcolumnar")
+        _run(pri, "CREATE TABLE t (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false)")
         _run(pri, "SELECT pgcolumnar.set_options('t', stripe_row_limit => 1000, chunk_group_row_limit => 1000)")
         _run(pri, "INSERT INTO t SELECT g, md5(g::text) FROM generate_series(1,30000) g")
         assert _caught_up(pri, sb), "the standby did not catch up (sync 7)"
         _run(pri, "DELETE FROM t WHERE id > 15000")
-        _run(pri, "SELECT pgcolumnar.compact('t')")
+        expect.num(_retry(pri, "SELECT pgcolumnar.compact('t')", 15), 15,
+                   "compact retired the 15 trailing row groups of t on the primary")
         pri_before = _q(pri, "SELECT pg_relation_size('t')")
-        trunc = _q(pri, "SELECT pgcolumnar.truncate('t')")
+        trunc = _retry(pri, "SELECT pgcolumnar.truncate('t')", 1)
         expect.text("yes" if isinstance(trunc, int) and trunc > 0 else f"no (returned {trunc})", "yes",
                     "the primary actually truncated (record was emitted)")
         pri_after = _q(pri, "SELECT pg_relation_size('t')")

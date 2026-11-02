@@ -68,3 +68,49 @@ def retry_past_horizon(conn, sql, want, calls=CALLS, pause=PAUSE):
         for line in horizon_holders(conn):
             print(f"--   {line}")
     return total, made
+
+
+# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988). xid has no ordering
+# operator, so age() compares: the older xid has the larger age.
+FREED_RANGE_BLOCKERS = """
+WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+            WHERE storage_id = pgcolumnar.get_storage_id(%s) AND freed_xid >= 3)
+SELECT (SELECT count(*) FROM pg_stat_activity, f
+         WHERE pid <> pg_backend_pid()
+           AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
+     + (SELECT count(*) FROM pg_prepared_xacts, f WHERE age(transaction) >= f.a)
+     + (SELECT count(*) FROM pg_replication_slots, f WHERE age(xmin) >= f.a)
+"""
+
+
+def freed_range_blockers(conn, table):
+    """How many sessions, prepared transactions and replication slots hold the horizon
+    at or before the newest range compact freed in `table`. truncate removes a freed
+    range only when the horizon has passed the transaction that freed it."""
+    with conn.cursor() as cur:
+        cur.execute(FREED_RANGE_BLOCKERS, (table,))
+        return cur.fetchone()[0]
+
+
+def wait_freed_range_past_horizon(conn, table, calls=CALLS, pause=PAUSE):
+    """Wait until nothing holds the horizon at or before the newest range compact
+    freed in `table` (#1988). For a check that a truncate does NOT shrink the file:
+    while the horizon holds, truncate leaves the file alone for that reason alone.
+
+    -> (blockers, calls made). When blockers is not 0, what holds the horizon is
+    printed.
+    """
+    n = made = 0
+    while made < calls:
+        if made:
+            time.sleep(pause)
+        n = freed_range_blockers(conn, table)
+        made += 1
+        if n == 0:
+            break
+    if n != 0:
+        print(f"-- the newest range freed in {table} is still held after {made} calls "
+              f"({n}). What holds the horizon back:")
+        for line in horizon_holders(conn):
+            print(f"--   {line}")
+    return n, made

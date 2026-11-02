@@ -90,6 +90,14 @@ retired="$(pgc_retry_past_horizon 5 "SELECT pgcolumnar.compact('n');")"
 echo "  (compact retired/calls: $retired)"
 check_num "compact retired the 5 groups above id 35000" "${retired%/*}" "5"
 size_guard="$(size)"
+# WAIT FOR THE HORIZON FIRST (#1988). truncate also leaves the file alone while
+# any transaction older than the compact above is open. Then this arm passed
+# whatever the setting said, and a build that ignored the setting stayed green.
+# So the call waits until nothing holds the horizon at the freed range, and the
+# count of what still holds it is checked.
+blockers="$(pgc_wait_freed_range_past_horizon n)"
+echo "  (horizon blockers/calls before the GUC-off call: $blockers)"
+check_num "GUC off: no transaction older than the compact was open" "${blockers%/*}" "0"
 # Two -c statements in one session, and the call's own answer checked. As one string,
 # "SET ...; SELECT pgcolumnar.truncate('n')" is an implicit transaction block, which
 # truncate refuses: the arm passed on an unchanged file whatever the GUC did, and

@@ -8080,11 +8080,13 @@ The pytest twin of `test/replication.sh` (ported for #1341), every check by the 
 
 Each replay arm is about a write the primary made. Vacuum must have rewritten the table into a new relfilenode. Compact must have retired a row group; after vacuum it had none to retire until the fixture gave it one. The truncate must have shrunk the primary.
 
+A session that holds a snapshot across `compact` or `truncate` makes the call do nothing (#1987). Both harnesses call `compact('r')`, `compact('t')` and `truncate('t')` through the shared helper, which retries every 0.5 s for up to 30 s, and `r` and `t` have autovacuum off from the compact arm on. `compact retired the 15 trailing row groups of t on the primary` checks the count before `truncate` runs.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically, and a module-less standby replays |
+| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically (`compact retired the 15 trailing row groups of t on the primary` before the truncate), and a module-less standby replays |
 
 ## 153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock
 
@@ -8410,12 +8412,14 @@ The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by 
 
 `compact` retires a dead group only when no transaction in the database is older than the `DELETE` (#1979). `truncate` removes a freed range only when no transaction is older than the `compact` that freed it. With one call each, a session that held a snapshot across them left nothing to truncate. Both harnesses now call each one through the shared helper, which retries every 0.5 s for up to 30 s. They check how many groups each `compact` retired. The fixture tables have autovacuum off.
 
+The setting-off arm has the opposite problem (#1988). While a transaction older than the `compact` is open, `truncate` returns 0 and leaves the file alone whatever the setting says, so the arm passed with the setting ignored. It now waits until nothing holds the horizon at the freed range. `GUC off: no transaction older than the compact was open` checks the count of what still holds it, which must be 0.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; `compact retired the 15 trailing groups`; then truncate returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
-| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
+| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; `GUC off: no transaction older than the compact was open`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks |
 | `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | `compact retired the 3 groups from id 30001 to 33000`; refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
 
 ## 177. test_native_gap.py: a write beyond EOF fills the gap and loses no row
@@ -11699,6 +11703,8 @@ Every test makes one check under the shell's name, over counts the module fixtur
 ## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
 
 The twin of `test/native_compact.sh`. Two fully deleted row groups are retired and a half-deleted one is kept, against a heap mirror built from the same generator; a group deleted under an open REPEATABLE READ snapshot is kept until that snapshot ends; and compact holds ShareUpdateExclusiveLock, never AccessExclusiveLock.
+
+Another session that holds a snapshot across a `compact` makes it retire nothing (#1987). So the two compacts that must retire groups, `compact retired the two fully-deleted groups` and `once that snapshot ends, compact retires the group`, go through the shared helper, which retries every 0.5 s for up to 30 s. The fixture tables have autovacuum off.
 
 ### Every test
 

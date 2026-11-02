@@ -534,6 +534,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- `native_compact`, `replication` and their pytest twins no longer fail when
+  another session holds an old snapshot during `compact` or `truncate` (#1987).
+  They called each one once, and a held snapshot made the call do nothing. Now
+  they call it through the shared helper `pgc_retry_past_horizon` (Python:
+  `retry_past_horizon`), which retries for up to 30 s. The fixture tables have
+  autovacuum turned off. `replication` gains a check that `compact` retired the
+  15 trailing row groups of `t` before `truncate` runs.
+- `native_truncate`'s check `GUC off: truncate does nothing` now tests the
+  setting (#1988). Before, it passed while a transaction older than the
+  `compact` was open, because `truncate` then does nothing whatever the setting
+  says. The arm now waits until nothing holds the horizon at the freed range,
+  and a new check, `GUC off: no transaction older than the compact was open`,
+  counts what still holds it. The new helper is
+  `pgc_wait_freed_range_past_horizon` in `test/lib.sh` and
+  `wait_freed_range_past_horizon` in `test/pytest/pgc_horizon.py`.
+  docs/testing.md describes it.
 - `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
   pytest twins no longer fail when another session holds an old snapshot during
   `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did

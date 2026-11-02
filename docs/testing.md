@@ -323,6 +323,32 @@ a prepared transaction or replication slot. For example:
 An error from the statement stops the wait at once. The shell helper prints it,
 and the Python helper raises it, so an error does not read as a held horizon.
 
+### A check that truncate does nothing must wait too
+
+A check that `truncate` leaves the file alone, for example with
+`pgcolumnar.enable_end_truncation` off, has the opposite problem. While a
+transaction older than the `compact` is open, `truncate` leaves the file alone
+anyway. The check then passes whatever it means to test (#1988).
+
+So wait until nothing holds the horizon at the freed range, then call
+`truncate`, and check the count of what still holds it:
+
+```sh
+blockers="$(pgc_wait_freed_range_past_horizon n)"
+check_num "GUC off: no transaction older than the compact was open" "${blockers%/*}" "0"
+```
+
+```python
+from pgc_horizon import wait_freed_range_past_horizon
+blockers, calls = wait_freed_range_past_horizon(conn, "n")
+```
+
+The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
+table. It counts each session, prepared transaction and replication slot whose
+transaction ID or `xmin` is not newer than that. It asks every 0.5 s, up to 60
+times. The shell helper prints `<count>/<calls>`. When the count is not 0 after
+the last call, it prints what holds the horizon back, as above.
+
 ## Before merging: build every major
 
 ```sh

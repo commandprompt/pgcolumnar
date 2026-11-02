@@ -473,10 +473,20 @@ check "vacuum replays identically" "$(hash_standby r)" "$(hash_primary r)"
 
 # A row group of its own (one INSERT is one flush), then every row of it deleted,
 # so compact has exactly one group to retire.
+#
+# WAIT FOR THE HORIZON (#1987). compact retires a dead group only when no
+# transaction is older than the DELETE, and truncate below removes a freed range
+# only when no transaction is older than the compact. With one call each, a
+# snapshot held by another session made them do nothing. pgc_retry_past_horizon
+# calls each one again, for up to 30 s. No autovacuum on r or t from here: it
+# would retire the dead groups itself, and compact would find none.
+psql_run "ALTER TABLE r SET (autovacuum_enabled = false);" >/dev/null 2>&1
 psql_run "INSERT INTO r SELECT g, 'doomed' || g FROM generate_series(50001,51000) g;" >/dev/null 2>&1
 psql_run "DELETE FROM r WHERE v LIKE 'doomed%';" >/dev/null 2>&1
 rg_before="$(q "$rg_sql")"
-retired="$(q "SELECT pgcolumnar.compact('r');")"
+retired="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.compact('r');")"
+echo "  (compact('r') retired/calls: $retired)"
+retired="${retired%/*}"
 check "compact retired the fully deleted row group on the primary" \
 	"$retired|$(( ${rg_before:-0} - $(q "$rg_sql") ))" "1|1"
 sync_or_fail "sync 6"
@@ -505,15 +515,19 @@ check "compact replays identically" "$(hash_standby r)" "$(hash_primary r)"
 # first version of this scenario silently reclaimed nothing.
 psql_run "ALTER DATABASE $PGC_DB SET pgcolumnar.enable_end_truncation = on;" >/dev/null 2>&1
 psql_run "DROP TABLE IF EXISTS t;" >/dev/null 2>&1
-psql_run "CREATE TABLE t (id int, v text) USING pgcolumnar;" >/dev/null 2>&1
+psql_run "CREATE TABLE t (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false);" >/dev/null 2>&1
 psql_run "SELECT pgcolumnar.set_options('t', stripe_row_limit => 1000, chunk_group_row_limit => 1000);" >/dev/null 2>&1
 psql_run "INSERT INTO t SELECT g, md5(g::text) FROM generate_series(1,30000) g;" >/dev/null 2>&1
 sync_or_fail "sync 7"
 
 psql_run "DELETE FROM t WHERE id > 15000;" >/dev/null 2>&1
-psql_run "SELECT pgcolumnar.compact('t');" >/dev/null 2>&1
+retired_t="$(pgc_retry_past_horizon 15 "SELECT pgcolumnar.compact('t');")"
+echo "  (compact('t') retired/calls: $retired_t)"
+check_num "compact retired the 15 trailing row groups of t on the primary" "${retired_t%/*}" "15"
 pri_before="$(q "SELECT pg_relation_size('t')")"
-trunc="$(q "SELECT pgcolumnar.truncate('t');")"
+trunc="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.truncate('t');")"
+echo "  (truncate('t') returned/calls: $trunc)"
+trunc="${trunc%/*}"
 
 # Precondition, not decoration: if this is 0 the record was never emitted and
 # every standby assertion below would pass vacuously.

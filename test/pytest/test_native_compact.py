@@ -16,6 +16,7 @@ asserts one reading (#1339). A reading that fails is a failed reading, never a v
 import psycopg
 import pytest
 
+from pgc_horizon import retry_past_horizon
 from pgc_vacuity import query_error
 
 DB = "pgc_native_compact"
@@ -47,6 +48,19 @@ def _value(dsn, sql, options=""):
     except psycopg.Error as exc:
         return query_error(_message(exc))
     return query_error(f"no value from {sql}") if row is None or row[0] is None else row[0]
+
+
+def _retired(dsn, want):
+    """-> groups compact retired, waiting for the horizon (#1987): compact retires a
+    dead group only when no transaction is older than the DELETE. With one call, a
+    snapshot held by another session made it retire nothing."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            retired, calls = retry_past_horizon(conn, COMPACT, want)
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    print(f"-- compact retired {retired} of {want} groups in {calls} calls")
+    return retired
 
 
 def _set_hash(dsn, query):
@@ -81,8 +95,10 @@ def nc(pgc_cluster):
     try:
         dsn = pgc_cluster.dsn(dbname=DB)
         _run(dsn, "CREATE EXTENSION IF NOT EXISTS pgcolumnar")
-        _run(dsn, "CREATE TABLE h (id int, v int, payload text)")
-        _run(dsn, "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar")
+        # no autovacuum on the fixture (#1987): it would retire the dead groups itself
+        _run(dsn, "CREATE TABLE h (id int, v int, payload text) WITH (autovacuum_enabled = false)")
+        _run(dsn, "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar "
+                  "WITH (autovacuum_enabled = false)")
         _run(dsn, "SELECT pgcolumnar.set_options('n', stripe_row_limit => 1024, chunk_group_row_limit => 1024)")
         _run(dsn, f"INSERT INTO h {GEN}")
         _run(dsn, f"INSERT INTO n {GEN}")
@@ -95,7 +111,7 @@ def nc(pgc_cluster):
         r["parity deletes"] = (_set_hash(dsn, "SELECT id, v, payload FROM n ORDER BY id"),
                                _set_hash(dsn, "SELECT id, v, payload FROM h ORDER BY id"))
 
-        r["retired"] = _value(dsn, COMPACT)
+        r["retired"] = _retired(dsn, 2)
         r["groups1"] = _value(dsn, GROUPS)
         r["parity compact"] = (_set_hash(dsn, "SELECT id, v, payload FROM n ORDER BY id"),
                                _set_hash(dsn, "SELECT id, v, payload FROM h ORDER BY id"))
@@ -129,7 +145,7 @@ def nc(pgc_cluster):
         finally:
             if holder is not None:
                 holder.close()
-        r["released compact"] = _value(dsn, COMPACT)
+        r["released compact"] = _retired(dsn, 1)
         r["released groups"] = _value(dsn, GROUPS)
         r["parity held"] = (_set_hash(dsn, "SELECT id, v, payload FROM n ORDER BY id"),
                             _set_hash(dsn, "SELECT id, v, payload FROM h ORDER BY id"))

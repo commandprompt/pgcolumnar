@@ -2108,6 +2108,49 @@ pgc_retry_past_horizon() {
 	echo "$total/$calls"
 }
 
+# pgc_freed_range_blockers TABLE -- how many things still hold the horizon at or
+# before the newest range compact freed in TABLE (#1988).
+#
+# truncate removes a freed range only when the oldest-xmin horizon has passed the
+# transaction that freed it (free_space.freed_xid). Each session whose
+# backend_xmin or backend_xid is not newer than that transaction counts, and so
+# does each prepared transaction and each replication slot with such an xmin.
+# xid has no ordering operator, so age() compares them: the older xid has the
+# larger age. 0 means a truncate now is not held back by the horizon.
+pgc_freed_range_blockers() {
+	q "WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+	              WHERE storage_id = pgcolumnar.get_storage_id('$1') AND freed_xid >= 3)
+	   SELECT (SELECT count(*) FROM pg_stat_activity, f
+	            WHERE pid <> pg_backend_pid()
+	              AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
+	        + (SELECT count(*) FROM pg_prepared_xacts, f WHERE age(transaction) >= f.a)
+	        + (SELECT count(*) FROM pg_replication_slots, f WHERE age(xmin) >= f.a);"
+}
+
+# pgc_wait_freed_range_past_horizon TABLE [CALLS] -- wait until nothing holds the
+# horizon at or before the newest range compact freed in TABLE, and print
+# "<blockers>/<calls>" (#1988).
+#
+# For a check that a truncate does NOT shrink the file. While the horizon holds,
+# truncate leaves the file as it is for that reason alone, and such a check passes
+# whatever it means to test. So it asks every 0.5 s, up to CALLS times (default
+# 60, so 30 s). When something still holds the horizon after the last call, what
+# holds it is printed to stderr. The caller's check prints the count itself.
+pgc_wait_freed_range_past_horizon() {
+	local table="$1" max="${2:-60}" n="" calls=0
+	while [ "$calls" -lt "$max" ]; do
+		[ "$calls" -gt 0 ] && sleep 0.5
+		n="$(pgc_freed_range_blockers "$table")"
+		calls=$((calls + 1))
+		[ "$n" = 0 ] && break
+	done
+	if [ "$n" != 0 ]; then
+		echo "  the newest range freed in $table is still held after $calls calls (${n:-no count}). What holds the horizon back:" >&2
+		pgc_horizon_holders | sed 's/^/    /' >&2
+	fi
+	echo "${n:-none}/$calls"
+}
+
 # ---- summary ---------------------------------------------------------------
 
 # A dependency this suite needs is not installed.
