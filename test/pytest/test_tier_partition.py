@@ -387,6 +387,8 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P01", "a local path that only starts with an Iceberg location's name is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sicex.parquet")),
                 "28000", "an s3:// path beside an Iceberg foreign table's location is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ice, s_dup_rice")
     # The location is cut from metadata_path as the reader cuts it: a metadata
     # file at the root gives '/', a relative one gives '.' (#1955 review).
     with conn.cursor() as cur:
@@ -428,8 +430,10 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
-    # pgcolumnar does not know (here the Iceberg reader declared under another
-    # function name) is another wrapper (#1955 review).
+    # pgcolumnar does not know is another wrapper. pgcolumnar knows a reader
+    # only by the SQL function pgcolumnar.parquet_fdw_handler or
+    # pgcolumnar.iceberg_fdw_handler; here the unknown handler is the Iceberg
+    # reader's C function declared under another SQL name (#1955 review).
     with conn.cursor() as cur:
         cur.execute("CREATE FOREIGN DATA WRAPPER s_ice2 HANDLER pgcolumnar.iceberg_fdw_handler"
                     " VALIDATOR pgcolumnar.iceberg_fdw_validator")
@@ -448,12 +452,16 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                     f" OPTIONS (path '{server_dir}/supath/y.parquet')")
     expect.text(rolled(tier.format(f"{server_dir}/sice2/data/y.parquet")),
                 "58P02", "a path under the location of a table on a wrapper with the Iceberg handler under another name is refused")
+    # s_dup_oroot (path '/' under s_other_fdw) is still here, so the SQLSTATE
+    # alone cannot tell which table refused; the detail names s_dup_ice2.
+    expect.text(rolled_detail(tier.format(f"{server_dir}/sice2/data/y.parquet")),
+                f"Foreign table public.s_dup_ice2 reads Iceberg files under '{server_dir}/sice2/'.",
+                "the refusal under a wrapper with the Iceberg handler under another name names that table and its location")
     expect.text(rolled(tier.format(f"{server_dir}/sipath/y.parquet")),
                 "58P01", "a path option under a wrapper with the Iceberg handler does not refuse the same path")
     expect.text(rolled(tier.format(f"{server_dir}/supath/y.parquet")),
                 "58P01", "a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path")
     with conn.cursor() as cur:
-        cur.execute("DROP FOREIGN TABLE s_dup_ice, s_dup_rice")
         cur.execute("DROP FOREIGN DATA WRAPPER s_other_fdw, s_pq2, s_ice2, s_ice3, s_unk CASCADE")
         cur.execute("DROP FUNCTION public.s_unknown_handler()")
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")

@@ -375,8 +375,10 @@ check "a path a wrapper with the Parquet handler under another name reads is ref
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar
-# does not know (here the Iceberg reader declared under another function name)
-# is another wrapper (#1955 review).
+# does not know is another wrapper. pgcolumnar knows a reader only by the SQL
+# function pgcolumnar.parquet_fdw_handler or pgcolumnar.iceberg_fdw_handler;
+# here the unknown handler is the Iceberg reader's C function declared under
+# another SQL name (#1955 review).
 psql_run "CREATE FOREIGN DATA WRAPPER tier_ice2 HANDLER pgcolumnar.iceberg_fdw_handler
             VALIDATOR pgcolumnar.iceberg_fdw_validator;
           CREATE SERVER tier_ice2s FOREIGN DATA WRAPPER tier_ice2;
@@ -392,6 +394,11 @@ psql_run "CREATE FOREIGN DATA WRAPPER tier_ice2 HANDLER pgcolumnar.iceberg_fdw_h
           CREATE FOREIGN TABLE dup_upath (x int) SERVER tier_unks OPTIONS (path '$W/upath/x.parquet');"
 check "a path under the location of a table on a wrapper with the Iceberg handler under another name is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice2/data/x.parquet');")" "58P02"
+# dup_oroot (path '/' under tier_other_fdw) is still here, so the SQLSTATE
+# alone cannot tell which table refused; the detail names dup_ice2 (#1955 review).
+check "the refusal under a wrapper with the Iceberg handler under another name names that table and its location" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice2/data/x.parquet');")" \
+	"Foreign table public.dup_ice2 reads Iceberg files under '$W/ice2/'."
 check "a path option under a wrapper with the Iceberg handler does not refuse the same path" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ipath/x.parquet');")" "58P01"
 check "a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path" \

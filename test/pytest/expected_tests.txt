@@ -1774,4 +1774,7 @@ guard_tests 863
 # under the location of a table on a wrapper with the Iceberg handler under another name is refused; a path option
 # under a wrapper with the Iceberg handler, or with a handler pgcolumnar does not know, refuses nothing), added to
 # an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's third review (PR #1955): one check in test_tier_partition.py (the refusal
+# under a wrapper with the Iceberg handler under another name names that table and its location), added to an
+# existing test, by collection: 6197 tests collected, less guard_tests 863.
 cluster_tests 5334
