@@ -471,9 +471,6 @@ check "path_glob_matches matches a path of 4095 bytes but not one of 4096, which
 check "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout" \
 	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-X -At -c "SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))::text;" 2>&1 | head -1)" "false"
-check "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up" \
-	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', repeat('a/', 4000) || 'x')::text;")|$(qerr "SELECT 1;")" \
-	"54000|1"
 # An interrupt that raises no error, such as a request to log memory
 # contexts, must not turn a match into no match: a false answer lets a move
 # overwrite a file a table reads (#1964 review). The request is sent in the
@@ -1049,5 +1046,14 @@ check "a key that can write but not read refuses the move (28000)" \
 rm -f "$PGC_WORKDIR/s3b/__deny_reads__"
 check "and the move refused at the read-back leaves the rows local and attached, every row once" \
 	"$(mdigest sr)|$(jan_shape sr)" "$srb|r:pgcolumnar:$JAN_BOUND"
+
+# ---- a pattern too deep for glob(3) is an error, not a crash (#1964 review) --
+#
+# Last in the suite: before the fix this call crashed the server, and the
+# crash recovery failed every check after it. Here a regression fails this
+# check alone.
+check "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')::text;")|$(qerr "SELECT 1;")" \
+	"54000|1"
 
 pgc_summary

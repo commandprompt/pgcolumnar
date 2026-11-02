@@ -537,7 +537,7 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     expect.text(ansst("SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))",
                       opts="-c statement_timeout=1s"),
                 "false", "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout")
-    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', repeat('a/', 4000) || 'x')")
+    expect.text(ansst("SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', 'a/x')")
                 + "|" + ansst("SELECT 1"),
                 "54000|1", "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up")
     # An interrupt that raises no error, such as a request to log memory
