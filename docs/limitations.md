@@ -1004,6 +1004,9 @@ would lose the inner lists. The readers bind every Parquet column by position,
 so you cannot leave the column out, and declaring it as a scalar fails too
 (#1917). To read the other columns, rewrite the file without that column, for
 example with pyarrow.
+`import_arrow` refuses a list of lists or a list of maps for an array column
+too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
+a large list, which it does not read.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |
@@ -1163,6 +1166,16 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   later, when its values are missing. An uncompressed page is not refused when its two header
   sizes differ, in a v1 or a v2 page. The reader reads the bytes the page holds,
   as pyarrow does.
+- The reader checks the Thrift type of each required i32 field of a page header,
+  and of the page's own header struct (#1935). A field of the wrong type is
+  refused with SQLSTATE XX001, as pyarrow refuses it. Optional fields follow
+  Thrift's rule instead: one of the wrong type is skipped. So a v2 page's
+  `is_compressed` field of the wrong type is skipped, and the page is read as
+  compressed, as pyarrow does. pgColumnar refuses a wrong-typed header struct
+  even where pyarrow skips it. That differs from pyarrow only for a page that
+  carries a second, wrong-typed header struct as well as its own. Then pgColumnar
+  refuses a page that pyarrow might read. The footer is not checked this way: the
+  reader still reads a footer field by its id alone.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

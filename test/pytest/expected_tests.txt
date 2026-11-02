@@ -341,7 +341,12 @@
 # test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
 # guard_tests 858 -> 860 for #1914's two tests in test_layer.py: a listed test that fails, and one lost to
 # a crashed xdist worker, is not a stale row, by collection over NO_CLUSTER.
-guard_tests 860
+# guard_tests 860 -> 862 for #1933's test_the_default_pg_config_is_one_this_box_has and
+# test_the_default_pg_config_takes_the_first_candidate_that_exists in
+# test_harness_deps_classifier.py, by collection over NO_CLUSTER.
+# guard_tests 862 -> 863 for #1933's test_the_run_reports_which_pg_config_it_used_and_why in
+# test_harness_deps_classifier.py (review of PR #1938), by collection over NO_CLUSTER.
+guard_tests 863
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1712,10 +1717,23 @@ guard_tests 860
 # cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
 # test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
 # own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
-# cluster_tests 5281 -> 5282 for #1939's test in test_iceberg_rest_scan.py (iceberg_rest_namespace_levels
+# cluster_tests 5281 -> 5287 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
+# lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
+# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6147
+# tests collected, less guard_tests 860.
+# cluster_tests 5287 -> 5292 for #1935's five tests: in test_native_parquet_hardening.py a data page
+# encoding field of Thrift type BOOL_TRUE and of type UUID each refused, every i32 or struct page header
+# field of another Thrift type refused, no v2 is_compressed field of another type reads a wrong answer,
+# and one of type LIST is skipped and reads, by collection: 6077 tests collected, less guard_tests 858.
+# cluster_tests 5292 -> 5296 for #1935's four review tests: in test_native_parquet_hardening.py a v1
+# definition_level_encoding field of type BOOL_TRUE with a changed value byte refused, every required i32
+# page header field the reader skips of another Thrift type refused, the unpatched dictionary page file
+# reads, and every dictionary page header field of another Thrift type refused, by collection: 6081 tests
+# collected, less guard_tests 858.
+# cluster_tests 5296 -> 5297 for #1939's test in test_iceberg_rest_scan.py (iceberg_rest_namespace_levels
 # lists the child db, '', x of db, ''), by collection: 5282 tests collected for the cluster half,
 # guard_tests 860 unchanged.
-# cluster_tests 5282 -> 5284 for #1939's review fixes in test_iceberg_rest_scan.py (the child
+# cluster_tests 5297 -> 5299 for #1939's review fixes in test_iceberg_rest_scan.py (the child
 # db, '', x, y of db, '', x, and the text form iceberg_rest_namespaces), by collection: 6144 tests
 # collected, less guard_tests 860.
-cluster_tests 5284
+cluster_tests 5299

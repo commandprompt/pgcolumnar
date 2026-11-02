@@ -1734,8 +1734,160 @@ imp_field_mismatch(const char *arrowtype, Oid typid)
 					arrowtype, format_type_be(typid))));
 }
 
+/* Arrow Type union tags this reader names but never reads (Schema.fbs) */
+#define ARROW_TYPE_Null			1
+#define ARROW_TYPE_Interval		11
+#define ARROW_TYPE_Union		14
+#define ARROW_TYPE_FixedSizeList 16
+#define ARROW_TYPE_Map			17
+#define ARROW_TYPE_Duration		18
+#define ARROW_TYPE_LargeBinary	19
+#define ARROW_TYPE_LargeUtf8	20
+#define ARROW_TYPE_LargeList	21
+#define ARROW_TYPE_RunEndEncoded 22
+#define ARROW_TYPE_BinaryView	23
+#define ARROW_TYPE_Utf8View		24
+#define ARROW_TYPE_ListView		25
+#define ARROW_TYPE_LargeListView 26
+
+/* "a struct", "a large list", ... for an Arrow Type union tag */
+static const char *
+arrow_type_tag_desc(uint8 typetag)
+{
+	switch (typetag)
+	{
+		case ARROW_TYPE_Null:
+			return "a null";
+		case ARROW_TYPE_Int:
+			return "an integer";
+		case ARROW_TYPE_FloatingPoint:
+			return "a float";
+		case ARROW_TYPE_Binary:
+			return "a binary";
+		case ARROW_TYPE_Utf8:
+			return "a string";
+		case ARROW_TYPE_Bool:
+			return "a boolean";
+		case ARROW_TYPE_Decimal:
+			return "a decimal";
+		case ARROW_TYPE_Date:
+			return "a date";
+		case ARROW_TYPE_Time:
+			return "a time";
+		case ARROW_TYPE_Timestamp:
+			return "a timestamp";
+		case ARROW_TYPE_Interval:
+			return "an interval";
+		case ARROW_TYPE_List:
+			return "a list";
+		case ARROW_TYPE_Struct:
+			return "a struct";
+		case ARROW_TYPE_Union:
+			return "a union";
+		case ARROW_TYPE_FixedSizeBinary:
+			return "a fixed-size binary";
+		case ARROW_TYPE_FixedSizeList:
+			return "a fixed-size list";
+		case ARROW_TYPE_Map:
+			return "a map";
+		case ARROW_TYPE_Duration:
+			return "a duration";
+		case ARROW_TYPE_LargeBinary:
+			return "a large binary";
+		case ARROW_TYPE_LargeUtf8:
+			return "a large string";
+		case ARROW_TYPE_LargeList:
+			return "a large list";
+		case ARROW_TYPE_RunEndEncoded:
+			return "a run-end encoded array";
+		case ARROW_TYPE_BinaryView:
+			return "a binary view";
+		case ARROW_TYPE_Utf8View:
+			return "a string view";
+		case ARROW_TYPE_ListView:
+			return "a list view";
+		case ARROW_TYPE_LargeListView:
+			return "a large list view";
+		default:
+			return "an unknown Arrow type";
+	}
+}
+
+/* how many List levels start at `field`: 1 for list<int64>, 2 for list<list<..>> */
+static int
+arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
+{
+	int			depth = 0;
+
+	/* bounded: a crafted file's offsets can wrap, so do not trust them to end */
+	while (field != 0 && depth < 1000)
+	{
+		uint32		pos = pgc_fb_field(meta, metaLen, field, 2);
+		uint32		vec;
+
+		if (pos == 0 || fbr_u8(meta, metaLen, pos) != ARROW_TYPE_List)
+			break;
+		depth++;
+		pos = pgc_fb_field(meta, metaLen, field, 5);	/* children */
+		if (pos == 0)
+			break;
+		vec = pgc_fb_indirect(meta, metaLen, pos);
+		if (fbr_u32(meta, metaLen, vec) < 1)
+			break;
+		field = pgc_fb_indirect(meta, metaLen, vec + 4);
+	}
+	return depth;
+}
+
+/*
+ * A nested Arrow type must have the shape of the node the target type gave it
+ * (#1932). Buffer indices are assigned from the TARGET's tree, so a List, Map or
+ * Struct where the target has a scalar -- or a scalar where it has an array or a
+ * composite -- is read with the wrong buffer layout. That ended in XX001 "value
+ * buffer too small for the row count", calling a valid list<list<int64>> file
+ * damaged, and a large list's 64-bit offsets read as 32-bit ones imported wrong
+ * arrays with no error at all. A Map is a list of key/value structs with the
+ * List layout, so it reads into an array of a two-field composite. Tags no
+ * target has the layout of (large and fixed-size lists, list views, unions,
+ * run-end encoding) are refused under every node. The wording follows
+ * import_parquet's for the same shape (#1917).
+ */
 static void
-imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
+imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
+				uint32 field, const char *colname, const char *path,
+				int listDepth)
+{
+	bool		fileList = (typetag == ARROW_TYPE_List || typetag == ARROW_TYPE_Map);
+	bool		fileStruct = (typetag == ARROW_TYPE_Struct);
+	bool		fileOther = (typetag == ARROW_TYPE_Union ||
+							 typetag == ARROW_TYPE_FixedSizeList ||
+							 typetag == ARROW_TYPE_LargeList ||
+							 typetag == ARROW_TYPE_RunEndEncoded ||
+							 typetag == ARROW_TYPE_ListView ||
+							 typetag == ARROW_TYPE_LargeListView);
+
+	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
+		!fileOther)
+		return;
+
+	if (typetag == ARROW_TYPE_List && listDepth > 0 && n->kind != A_LIST)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("Arrow column for array \"%s\" is nested %d lists deep, but pgcolumnar.import_arrow reads one list level into an array",
+						colname,
+						listDepth + arrow_field_list_depth(meta, metaLen, field)),
+				 errdetail("The mismatched file is \"%s\".", path)));
+	ereport(ERROR,
+			(errcode(ERRCODE_DATATYPE_MISMATCH),
+			 errmsg("Arrow column \"%s\" holds %s, which pgcolumnar.import_arrow cannot read into type %s",
+					colname, arrow_type_tag_desc(typetag),
+					format_type_be(n->typid)),
+			 errdetail("The mismatched file is \"%s\".", path)));
+}
+
+static void
+imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
+				const char *colname, const char *path, int listDepth)
 {
 	uint32		pos;
 	uint32		tt;
@@ -1751,6 +1903,8 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 
 	if (tt != 0)
 	{
+		imp_check_shape(n, typetag, meta, metaLen, field, colname, path,
+						listDepth);
 		/*
 		 * Stamp a node ONLY when the file's tag matches the kind the target type
 		 * gave it. n->width is both the stride and the divisor in
@@ -1924,7 +2078,9 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 		for (i = 0; i < n->nchildren; i++)
 			imp_apply_field(&n->children[i], meta, metaLen,
 							pgc_fb_indirect(meta, metaLen,
-											vec + 4 + (uint32) i * 4));
+											vec + 4 + (uint32) i * 4),
+							colname, path,
+							listDepth + (n->kind == A_LIST ? 1 : 0));
 	}
 }
 
@@ -2545,7 +2701,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 			for (i = 0; i < ncols; i++)
 				imp_apply_field(&tops[i], meta, metaLen,
 								pgc_fb_indirect(meta, metaLen,
-												fieldsVec + 4 + (uint32) i * 4));
+												fieldsVec + 4 + (uint32) i * 4),
+								NameStr(TupleDescAttr(tupdesc, i)->attname),
+								path, 0);
 			sawSchema = true;
 		}
 		else if (headerType == ARROW_MSG_RecordBatch)

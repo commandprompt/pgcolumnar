@@ -335,18 +335,19 @@ arrow_import	arrow_import	a date64 instant mid-day reports the day it falls in	1
 arrow_import	arrow_import	a date64 past PostgreSQL's last date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a decimal at another scale is refused (#881)	15;16;17;18;19	never	-
 arrow_import	arrow_import	a float32 file is refused for float8 (#881)	15;16;17;18;19	never	-
-arrow_import	arrow_import	a list element's nanosecond unit is honoured, not just the top level	15;16;17;18;19	never	-
+arrow_import	arrow_import	a list element's nanosecond unit is honoured, not just the top level	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)	15;16;17;18;19	2026-11-01	imp_check_bounds without its value-buffer row-count check (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a lossy nanosecond file imports every row	15;16;17;18;19	never	-
 arrow_import	arrow_import	a metadata length larger than the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	a nanosecond timestamp before the epoch floors rather than truncating	15;16;17;18;19	never	-
 arrow_import	arrow_import	a nanosecond timestamp truncates to microseconds	15;16;17;18;19	never	-
 arrow_import	arrow_import	a negative nanosecond time is refused, not narrowed into midnight	15;16;17;18;19	never	-
 arrow_import	arrow_import	a second count that overflows on scaling is refused, not wrapped	15;16;17;18;19	never	-
-arrow_import	arrow_import	a struct field's nanosecond unit is honoured at child index 1	15;16;17;18;19	never	-
+arrow_import	arrow_import	a struct field's nanosecond unit is honoured at child index 1	15;16;17;18;19	2026-11-01	imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a time past midnight is refused	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time32 in milliseconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time32 in seconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
-arrow_import	arrow_import	a time64 column and a nested list are counted too, not just a top-level timestamp	15;16;17;18;19	never	-
+arrow_import	arrow_import	a time64 column and a nested list are counted too, not just a top-level timestamp	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a time64 file is refused for a date column, not stored as year 687342	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time64 in nanoseconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
 arrow_import	arrow_import	a timestamp before PostgreSQL's range is refused	15;16;17;18;19	never	-
@@ -365,9 +366,11 @@ arrow_import	arrow_import	an int64 file is refused for a 4-byte int (#881)	15;16
 arrow_import	arrow_import	and a microsecond file	15;16;17;18;19	never	-
 arrow_import	arrow_import	and a refused import leaves the target empty	15;16;17;18;19	never	-
 arrow_import	arrow_import	and does not report the row count instead	15;16;17;18;19	never	-
-arrow_import	arrow_import	and that file imports every row as well	15;16;17;18;19	never	-
+arrow_import	arrow_import	and that file imports every row as well	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	backend still up after the import_arrow FIFO refusal	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a 16-byte fixed-size binary imports into uuid	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	control: a map file still imports into an array of a composite (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a matching decimal imports	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a matching float32 file imports into float4	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a matching float64 file imports into float8	15;16;17;18;19	never	-
@@ -387,6 +390,10 @@ arrow_import	arrow_import	import into an indexed table: the rows are there	15;16
 arrow_import	arrow_import	import rows	15;16;17;18;19	never	-
 arrow_import	arrow_import	import_arrow on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	never	-
 arrow_import	arrow_import	import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath matches s3a:// and s3n:// case-sensitively (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3a:// match (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3n:// match (#1918)
+arrow_import	arrow_import	import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: large and fixed-size lists, list views, unions and run-end encoding accepted (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)	15;16;17;18;19	2026-11-01	imp_apply_field: list depth not carried into a list's child (src/columnar_arrow.c, #1932);imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932);imp_check_shape: the lists-deep message dropped for the generic one (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: a scalar tag accepted under an array or composite node (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	import_arrow refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow refuses a remote URL only after the target checks, just before the open (#1886);columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
 arrow_import	arrow_import	import_arrow refuses an http:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
 arrow_import	arrow_import	import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
@@ -419,11 +426,11 @@ arrow_nested	arrow_nested	nested field types	15;16;17;18;19	2026-10-20	export: a
 arrow_nested	arrow_nested	nested values match expectation	15;16;17;18;19	2026-10-20	export: a NULL array element written as a value;export: a NULL composite written as a valid struct;export: a struct's fields lose their names;export: the final partial record batch never written
 arrow_nested	arrow_nested	reject multi-dim array	15;16;17;18;19	2026-10-20	export: a multi-dimensional array flattened, not refused
 arrow_nested_import	arrow_nested_import	export rows	15;16;17;18;19	never	-
-arrow_nested_import	arrow_nested_import	import count matches	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
-arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-10-20	export: the final partial record batch never written
-arrow_nested_import	arrow_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-20	export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
+arrow_nested_import	arrow_nested_import	import count matches	15;16;17;18;19	2026-11-01	export: the final partial record batch never written;imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_nested_import	arrow_nested_import	import rows	15;16;17;18;19	2026-11-01	export: the final partial record batch never written;imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_nested_import	arrow_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-11-01	export: the final partial record batch never written;imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932);import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
 arrow_nested_import	arrow_nested_import	premise: the delete left 3999 live rows in the source	15;16;17;18;19	never	-
-arrow_nested_import	arrow_nested_import	round-trips after delete	15;16;17;18;19	2026-10-20	export: deleted rows exported too;export: the final partial record batch never written;import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
+arrow_nested_import	arrow_nested_import	round-trips after delete	15;16;17;18;19	2026-11-01	export: deleted rows exported too;export: the final partial record batch never written;imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932);import: a NULL List element read as a value;import: a NULL Struct's validity bit ignored;import: an empty List read as a NULL array
 audit	audit	add-column aggregate	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
 audit	audit	add-column const default	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
 audit	audit	add-column index scan	15;16;17;18;19	2026-10-22	columnar_reader.c: a column added after the data reads NULL instead of its missing value
@@ -5061,11 +5068,20 @@ native_parquet_hardening	native_parquet_hardening	no wrapped -25536 appears	15;1
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v1 page longer than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v1 page shorter than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
 native_parquet_hardening	native_parquet_hardening	page: a SNAPPY v2 page whose values are shorter than its header's size is refused	15;16;17;18;19	2026-11-01	the Snappy page size check and the negative num_children refusal reverted (#1910, #1921)
+native_parquet_hardening	native_parquet_hardening	page: a data page encoding field of Thrift type BOOL_TRUE is refused	15;16;17;18;19	2026-11-01	page header Thrift type checks reverted (#1935)
+native_parquet_hardening	native_parquet_hardening	page: a data page encoding field of Thrift type UUID is refused	15;16;17;18;19	2026-11-01	page header Thrift type checks reverted (#1935)
+native_parquet_hardening	native_parquet_hardening	page: a v1 definition_level_encoding field of type BOOL_TRUE, with a changed value byte, is refused	15;16;17;18;19	2026-11-01	unused required page header fields skipped by Thrift type, not checked as i32 (#1935)
+native_parquet_hardening	native_parquet_hardening	page: a v2 is_compressed field of type LIST is skipped and reads, as in pyarrow	15;16;17;18;19	2026-11-01	page header Thrift type checks reverted (#1935)
 native_parquet_hardening	native_parquet_hardening	page: an UNCOMPRESSED v2 page marked compressed reads	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow	15;16;17;18;19	2026-11-01	kept the v2 refusal of a header size below the level bytes in decode_leaf_entries (#1910)
 native_parquet_hardening	native_parquet_hardening	page: an uncompressed page whose header size differs still reads, as in pyarrow	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	page: every dictionary page header field of another Thrift type is refused	15;16;17;18;19	2026-11-01	the four page type sweep .count files emptied or set to 0 (#1935);unused required page header fields skipped by Thrift type, not checked as i32 (#1935)
+native_parquet_hardening	native_parquet_hardening	page: every i32 or struct page header field the reader stores, of another Thrift type, is refused	15;16;17;18;19	2026-11-01	page header Thrift type checks reverted (#1935);the four page type sweep .count files emptied or set to 0 (#1935)
+native_parquet_hardening	native_parquet_hardening	page: every required i32 page header field the reader skips, of another Thrift type, is refused	15;16;17;18;19	2026-11-01	the four page type sweep .count files emptied or set to 0 (#1935);unused required page header fields skipped by Thrift type, not checked as i32 (#1935)
+native_parquet_hardening	native_parquet_hardening	page: no v2 is_compressed field of another Thrift type reads a wrong answer	15;16;17;18;19	2026-11-01	the four page type sweep .count files emptied or set to 0 (#1935)
 native_parquet_hardening	native_parquet_hardening	page: the unpatched SNAPPY v1 file reads	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	page: the unpatched SNAPPY v2 file reads	15;16;17;18;19	never	-
+native_parquet_hardening	native_parquet_hardening	page: the unpatched dictionary page file reads	15;16;17;18;19	never	-
 native_parquet_hardening	native_parquet_hardening	parquet foreign table string not UTF-8 -> 22021	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: a Parquet string cell becomes text without the encoding check (mutation, #1821);columnar_parquet_reader.c: the encoding refusal does not name the column (mutation, #1821);defhist_plus2: the definition-level histogram check compares with max_def + 2, not max_def + 1, which refuses every file with a definition histogram (#1855)
 native_parquet_hardening	native_parquet_hardening	parquet_schema advises a type that holds every unsigned value	15;16;17;18;19	2026-10-30	columnar_parquet_reader.c: parquet_schema advises bigint for UINT_64 (mutation, #1814);columnar_parquet_reader.c: parquet_schema advises bigint for every unsigned INT32, UINT_8 and UINT_16 included (mutation, #1814);columnar_parquet_reader.c: parquet_schema advises integer for UINT_32 (mutation, #1814);columnar_parquet_reader.c: the reader ignores both unsigned marks, ConvertedType UINT_* and LogicalType INTEGER(isSigned=false) (mutation, #1814)
 native_parquet_hardening	native_parquet_hardening	parquet_schema still describes a bad chunk list	15;16;17;18;19	never	-
@@ -8516,6 +8532,7 @@ tid_range_scan	tid_range_scan	premise: the table has many row groups, so skippin
 tid_range_scan	tid_range_scan	premise: the table holds every row	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	rows inserted earlier in the same transaction are in the range, as the filter sees them	15;16;17;18;19	never	-
 tier_partition	tier_partition	a DEFAULT partition is refused	15;16;17;18;19	2026-10-13	tier_partition without the DEFAULT refusal
+tier_partition	tier_partition	a NULL path is refused as null, not as a file a foreign table reads	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the paths with count(DISTINCT), so a NULL path counts as a match (#1937)
 tier_partition	tier_partition	a column with its own collation moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition naming the foreign table with a suffix;tier_partition returning 0 rows moved;tier_partition's foreign table without the columns' collations
 tier_partition	tier_partition	a failure after attach leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
 tier_partition	tier_partition	a failure after create leaves the rows exactly once, still local	15;16;17;18;19	2026-10-16	tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
@@ -8540,6 +8557,13 @@ tier_partition	tier_partition	a partition that is not columnar is refused	15;16;
 tier_partition	tier_partition	a partition with a foreign key of its own is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
 tier_partition	tier_partition	a partition with a row-level policy is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
 tier_partition	tier_partition	a partition with a trigger of its own is refused before anything moves	15;16;17;18;19	2026-10-13	tier_partition without the dependents check
+tier_partition	tier_partition	a path a foreign table reads as Az:// is refused like the identical az:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as GS:// is refused like the identical gs:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as HTTP:// is refused like the identical http:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as HTTPS:// is refused like the identical https:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's gs/az/http(s) scheme-case branch removed (#1937)
+tier_partition	tier_partition	a path a foreign table reads as S3:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the path= option as text, before the scheme normalisation (#1936)
+tier_partition	tier_partition	a path a foreign table reads as s3a:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the path= option as text, before the scheme normalisation (#1936)
+tier_partition	tier_partition	a path a foreign table reads as s3n:// is refused like the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition's s3[an]? alias pattern narrowed to s3a? (#1937)
 tier_partition	tier_partition	a query on the other range scans only the local partition, beside a foreign one	15;16;17;18;19	never	-
 tier_partition	tier_partition	a query on the tiered range scans only the foreign partition	15;16;17;18;19	never	-
 tier_partition	tier_partition	a retry over the failed attempt's file moves the partition, exactly once	15;16;17;18;19	2026-10-16	tier_partition naming the foreign table with a suffix;tier_partition refusing every existing path (the first version's rule);tier_partition returning 0 rows moved;tier_partition's five injected-fault RAISEs removed, so the call succeeds (mutation, #1339)
@@ -8552,6 +8576,7 @@ tier_partition	tier_partition	a table that is not a partition is refused	15;16;1
 tier_partition	tier_partition	a virtual generated column moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition's foreign table without generation expressions (PG18, where the virtual arm runs)
 tier_partition	tier_partition	a write in flight when the move starts is in the exported rows	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	after the move the caller's lock_timeout is the caller's again	15;16;17;18;19	2026-10-13	tier_partition leaving lock_wait as the caller's lock_timeout
+tier_partition	tier_partition	an S3:// path is refused when a foreign table reads the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the target path as written, without the scheme normalisation (#1937)
 tier_partition	tier_partition	an existing path is refused, so no file a table reads is overwritten	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	an insert racing the move leaves every row exactly once, whichever side gives way	15;16;17;18;19	2026-10-13	tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	an insert routed to the tiered range is refused	15;16;17;18;19	never	-

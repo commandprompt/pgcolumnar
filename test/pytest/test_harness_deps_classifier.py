@@ -17,6 +17,11 @@ the classifier as a LIBRARY, which does not make it cluster-bound: the propagati
 rule reads string constants naming corpus files, not imports.
 """
 
+import os
+import pathlib
+import re
+import shutil
+
 from test_harness_deps import (
     _fake_corpus,
     cluster_fixtures,
@@ -418,3 +423,205 @@ def test_prose_naming_the_driver_is_not_a_driver_dependency(tmp_path, expect):
     })
     expect.num(len(driver_dependent(d)), 0,
                "prose naming the driver is not a dependency on it")
+
+
+# ---- the default pg_config (#1933) -------------------------------------------
+#
+# conftest's default for `--pg-config` was a fixed path, /usr/local/pg18a, which one
+# audit box has and the dev container does not. With PGC_PG_CONFIG unset, every
+# cluster fixture then failed at setup on the missing file, and the driver control in
+# test_harness_deps.py reported a missing shim name instead. These arms live here, in
+# the database-free half, because they read files and run nothing.
+
+
+def _executable_pg_configs(candidates):
+    """The pg_configs the resolver can pick on this box: its candidates and the one
+    on PATH, read without calling the resolver. A pg_config at some other prefix is
+    not one the resolver looks at, so it is not counted here either."""
+    found = list(candidates)
+    on_path = shutil.which("pg_config")
+    if on_path:
+        found.append(on_path)
+    return [p for p in found if os.access(p, os.X_OK)]
+
+
+# The prefixes the project installs into. The audit box builds bench/provision.sh's
+# WANT_PG_MATRIX; the dev container builds these five (pgsql is PG18 there).
+DEV_CONTAINER_PREFIXES = ("pgsql", "pg15", "pg16", "pg17", "pg19")
+
+
+def _provisioned_prefixes():
+    src = (pathlib.Path(__file__).resolve().parents[2] / "bench" / "provision.sh").read_text()
+    matrix = re.search(r'^WANT_PG_MATRIX="([^"]*)"', src, re.M)
+    return (matrix.group(1).split() if matrix else []) + list(DEV_CONTAINER_PREFIXES)
+
+
+def test_the_default_pg_config_is_one_this_box_has(expect):
+    """With PGC_PG_CONFIG unset, the default must name a pg_config that exists,
+    whenever this box has one the resolver looks for (#1933). On a box with none,
+    the default cannot exist either, and the arm says so rather than skipping."""
+    import conftest
+    candidates = conftest.PG_CONFIG_CANDIDATES
+    provisioned = _provisioned_prefixes()
+    # PREMISE: the matrix line was found, or the coverage arm below checks only
+    # the dev container's five.
+    expect.at_least(len(provisioned), len(DEV_CONTAINER_PREFIXES) + 1,
+                    f"premise: bench/provision.sh names a WANT_PG_MATRIX: {provisioned}")
+    missing = [p for p in provisioned
+               if f"/usr/local/{p}/bin/pg_config" not in candidates]
+    expect.num(len(missing), 0,
+               f"every prefix the project installs into is a candidate; "
+               f"missing {missing} from {list(candidates)}")
+    default = conftest.DEFAULT_PG_CONFIG
+    present = _executable_pg_configs(candidates)
+    expect.text(repr(os.access(default, os.X_OK)), repr(bool(present)),
+                f"the default pg_config {default!r} is executable whenever this box "
+                f"has one; it has {len(present)}: {present}")
+
+
+def test_the_default_pg_config_takes_the_first_candidate_that_exists(tmp_path, expect):
+    """The resolver's order, over files this test writes, so it holds on any box
+    (#1933). The arm above only sees the branch this box takes."""
+    import conftest
+
+    def exe(name, mode=0o755):
+        p = tmp_path / name
+        p.write_text("#!/bin/sh\n")
+        p.chmod(mode)
+        return str(p)
+
+    missing = str(tmp_path / "missing")
+    first, second = exe("first"), exe("second")
+    plain = exe("plain", 0o644)
+    on_path = exe("on_path")
+    pick = conftest.default_pg_config
+    expect.text(pick((missing, first, second), lambda _: on_path), first,
+                "a missing candidate is passed over for the first one that exists")
+    expect.text(pick((plain, second), lambda _: on_path), second,
+                "a candidate that is not executable is passed over too")
+    expect.text(pick((missing,), lambda _: on_path), on_path,
+                "with no candidate present, the pg_config on PATH is the default")
+    expect.text(pick((missing, plain), lambda _: None), missing,
+                "with nothing at all, the first candidate stays named")
+
+
+def test_the_run_reports_which_pg_config_it_used_and_why(tmp_path, expect):
+    """A run must say which build it tested (#1933, review of PR #1938). The
+    default is chosen from ten prefixes and then PATH, so a green run that names
+    no pg_config does not say which major it measured.
+
+    The child runs one database-free test of this file, so it starts no cluster.
+    Its pg_config is a script this test writes, so the version line it prints is
+    known. The header shows at default verbosity; CI runs with -q, which hides
+    the header, so the same line then goes in the closing summary. Either way it
+    must appear exactly once, and with -n 2 only the controller prints it."""
+    import subprocess
+    import sys
+    import conftest
+
+    fake = tmp_path / "bin" / "pg_config"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\necho 'PostgreSQL 99.7 (fake for #1933)'\n")
+    fake.chmod(0o755)
+    here = pathlib.Path(__file__).resolve().parent
+    # A plugin for the child that hides /usr/local from os.access. pytest loads
+    # a -p plugin before conftest, so the child's resolver then finds no
+    # candidate on any box, this one included.
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    (plugins / "pgc_hide_usr_local.py").write_text(
+        "import os\n"
+        "_access = os.access\n"
+        "def _hidden(path, mode, *a, **k):\n"
+        "    if str(path).startswith('/usr/local/'):\n"
+        "        return False\n"
+        "    return _access(path, mode, *a, **k)\n"
+        "os.access = _hidden\n")
+    target = ("test_harness_deps_classifier.py::"
+              "test_prose_naming_the_driver_is_not_a_driver_dependency")
+
+    def run(flags, env_value=None, path=None):
+        env = dict(os.environ)
+        env.pop("PGC_PG_CONFIG", None)
+        if env_value:
+            env["PGC_PG_CONFIG"] = env_value
+        if path is not None:
+            env["PATH"] = path
+        env["PYTHONPATH"] = f"{plugins}{os.pathsep}{here}"
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-p", "no:cacheprovider",
+             *flags, target],
+            cwd=str(here), env=env, capture_output=True, text=True)
+        return proc.returncode, proc.stdout + proc.stderr
+
+    cases = (
+        ("PGC_PG_CONFIG, default verbosity", [], str(fake), "PGC_PG_CONFIG"),
+        ("--pg-config, -q", ["-q", "--pg-config", str(fake)], None, "--pg-config"),
+        ("--pg-config, --no-header", ["--no-header", "--pg-config", str(fake)], None,
+         "--pg-config"),
+        ("--pg-config over PGC_PG_CONFIG, -q -n 2",
+         ["-q", "-n", "2", "--pg-config", str(fake)], "/nonexistent/pg_config",
+         "--pg-config"),
+    )
+    for label, flags, env_value, source in cases:
+        rc, out = run(flags, env_value)
+        expect.num(rc, 0, f"{label}: the child run passes; tail {out[-300:]!r}")
+        want = f"pg_config: {fake} (from {source}) -- PostgreSQL 99.7 (fake for #1933)"
+        lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+        expect.num(lines.count(want), 1,
+                   f"{label}: the run prints {want!r} once; it printed {lines}")
+        expect.num(len(lines), 1,
+                   f"{label}: exactly one pg_config line; it printed {lines}")
+
+    # A pg_config that runs but exits non-zero is named with the failure, not
+    # with whatever it printed: its stdout is not a version this run can trust.
+    broken = tmp_path / "broken" / "pg_config"
+    broken.parent.mkdir()
+    broken.write_text("#!/bin/sh\necho 'PostgreSQL 99.8 (exits 3)'\nexit 3\n")
+    broken.chmod(0o755)
+    rc, out = run(["--pg-config", str(broken)])
+    lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+    want = f"pg_config: {broken} (from --pg-config) -- pg_config --version failed: "
+    expect.num(rc, 0, f"--pg-config exits 3: the child run passes; tail {out[-300:]!r}")
+    expect.num(sum(ln.startswith(want) for ln in lines), 1,
+               f"--pg-config exits 3: the run prints {want!r}...; it printed {lines}")
+
+    # With neither the option nor PGC_PG_CONFIG, the child resolves the default
+    # itself. The first child inherits this run's PATH, so it must pick what
+    # this run's conftest picked, from the same source. The second hides
+    # /usr/local and keeps only this interpreter's directory on PATH, so it
+    # cannot take the 'candidate' branch on any box: it must report 'PATH' or
+    # 'first candidate, none found'. Between them, a default labelled with a
+    # fixed source reddens on every box.
+    venv_bin = os.path.dirname(sys.executable)
+    on_venv_path = shutil.which("pg_config", path=venv_bin)
+    hidden_want = ((on_venv_path, "PATH") if on_venv_path else
+                   (conftest.PG_CONFIG_CANDIDATES[0], "first candidate, none found"))
+    for label, flags, path, (want_path, want_source) in (
+        ("resolver default", [], None,
+         (conftest.DEFAULT_PG_CONFIG, conftest.DEFAULT_PG_CONFIG_SOURCE)),
+        ("resolver default, /usr/local hidden", ["-p", "pgc_hide_usr_local"],
+         venv_bin, hidden_want),
+    ):
+        rc, out = run(flags, path=path)
+        lines = [ln for ln in out.splitlines() if ln.startswith("pg_config: ")]
+        want = f"pg_config: {want_path} (from {want_source}) -- "
+        expect.num(rc, 0, f"{label}: the child run passes; tail {out[-300:]!r}")
+        expect.num(sum(ln.startswith(want) for ln in lines), 1,
+                   f"{label}: the run prints {want!r}...; it printed {lines}")
+
+    # The resolver's three labels, over files this test writes, so each label is
+    # checked on any box. The two child runs above reach only the branches this
+    # box takes.
+    missing = str(tmp_path / "missing")
+    on_path = str(fake)
+    resolve = conftest.resolve_pg_config
+    for label, cands, which, want in (
+        ("a candidate exists", (missing, str(fake)), lambda _: None,
+         (str(fake), "candidate")),
+        ("only PATH has one", (missing,), lambda _: on_path, (on_path, "PATH")),
+        ("nothing anywhere", (missing,), lambda _: None,
+         (missing, "first candidate, none found")),
+    ):
+        got = resolve(cands, which)
+        expect.text(repr(got), repr(want), f"{label}: the resolver reports {got}")

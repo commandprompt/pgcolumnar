@@ -160,8 +160,8 @@ jobs:
   # neighbours. The ends of the range -- 15, 16 and 19, which is where the gap was --
   # are covered by the nightly matrix rather than on every PR.
   #
-  # conftest.py's default is an assert build that exists on the audit container and not
-  # here, so the pg_config is passed explicitly.
+  # The pg_config is passed explicitly, so each matrix job tests the major it names.
+  # conftest.py's default would take the first /usr/local candidate or PATH (#1933).
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest

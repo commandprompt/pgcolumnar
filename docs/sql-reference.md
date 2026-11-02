@@ -769,7 +769,10 @@ commit. Every lock waits at most `lock_wait` (`55P03`).
 
 The function refuses these:
 
-- a `path` that a foreign table in this database reads (`58P02`);
+- a `path` that a foreign table in this database reads (`58P02`), with the
+  scheme matched in any case and `s3a://` or `s3n://` matched as `s3://`. A
+  foreign table on a directory or a glob that covers the path is not seen
+  (#1941);
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
@@ -810,6 +813,15 @@ falls in. Sub-microsecond precision is lost; nothing else is.
 A temporal Arrow type the target column cannot hold is refused with `42804`
 rather than read. A `time64` file does not import into a `date` column. A file
 whose type is not temporal is unaffected.
+
+A nested Arrow type the target column cannot hold is refused with `42804`, and
+the message names the column (#1932). An array column reads one `List` level.
+A `Map` reads into an array of a two-field composite. A list of lists, or a
+plain column, is refused for an array column. A list, map or struct is refused
+where the column, or an array's element type, is a scalar. A large list,
+fixed-size list, list view, union or run-end encoded column is refused for every
+column type. A file whose offsets run past
+its buffers is still refused with `XX001`.
 
 ### pgcolumnar.import_parquet(rel regclass, path text) returns bigint
 

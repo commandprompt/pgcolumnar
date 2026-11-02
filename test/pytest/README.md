@@ -32,6 +32,18 @@ PYTHONPATH=. /root/pyenv/bin/pytest --pgc-expect-tests N  # assert the run's sha
 PGC_PG_CONFIG=/usr/local/pg19a/bin/pg_config PYTHONPATH=. /root/pyenv/bin/pytest
 ```
 
+Without `--pg-config` or `PGC_PG_CONFIG`, the run uses the first `pg_config` it finds
+in `PG_CONFIG_CANDIDATES` in `conftest.py`, then the one on `PATH` (#1933). Set
+`PGC_PG_CONFIG` to choose the build yourself.
+
+Every run names the build it tested, in one line such as
+`pg_config: /usr/local/pgsql/bin/pg_config (from candidate) -- PostgreSQL 18.6`.
+The part in brackets says how the run chose it: `--pg-config`, `PGC_PG_CONFIG`,
+`candidate`, `PATH`, or `first candidate, none found`. The line is in the header,
+or at the end of the run when `-q` or `--no-header` hides the header. When that
+`pg_config` does not run or exits non-zero, the line gives the error in place of the
+version.
+
 `--pgc-expect-tests` takes the number of **collected tests**, not files. `N` above
 is whatever the set you ran collects; the two numbers the gate uses are in
 `expected_tests.txt`. A literal here would name the wrong quantity and go stale,

@@ -534,6 +534,51 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
+  unset (#1933). That fixed default does not exist in the dev container, so
+  every cluster fixture failed at setup, and
+  `test_a_cluster_test_still_needs_the_driver` reported a missing shim name.
+  conftest now takes the first executable `pg_config` from a list of the
+  prefixes the project installs into, PG18 first, then the one on `PATH`. The
+  control now checks that the `pg_config` it hands its child resolves to an
+  executable, and names the value if not. A bare name such as `pg_config` is
+  looked up on `PATH`, as the harness itself does. `test/pytest/README.md`
+  describes the default. Every run now prints which `pg_config` it used, how it
+  chose it, and the version it reports: in the header, or at the end under `-q`.
+  Three new tests in `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
+- The Parquet reader now refuses a page header whose required i32 fields, or
+  whose own header struct, have the wrong Thrift type (#1935). It raises SQLSTATE
+  XX001, as pyarrow refuses such a header. This covers the fields the reader uses
+  and the required fields it does not use: the level encodings of a v1 page,
+  `num_nulls` and `num_rows` of a v2 page, and a dictionary page's `encoding`.
+  Before, it read each field by its id alone. A fuzz run found two corrupt files
+  whose encoding field had type BOOL_TRUE or UUID instead of i32. Both read
+  without an error and with wrong values. Optional fields keep Thrift's rule: a
+  v2 page's `is_compressed` field of another type is skipped, and the page is
+  read as compressed, as in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- `import_arrow` now refuses a nested Arrow type that the target column cannot
+  hold with SQLSTATE 42804, naming the column (#1932). Before, a list of
+  lists, of structs or of maps for a `bigint[]` column was refused with XX001.
+  The message, "value buffer too small for the row count", said the file was
+  damaged. A large list was worse: it imported into `bigint[]` or `bigint` as
+  wrong values, with no error. A list of lists now fails as `import_parquet`
+  fails for the same shape (#1917), and the message gives its depth. A plain
+  column for an array column, and a list, map or struct for a scalar column,
+  are refused the same way. A file whose offsets run past its buffers is still
+  refused with XX001. docs/sql-reference.md and docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now refuses a path that a foreign table reads under another
+  spelling of the same object (#1936). Before this it compared the `path`
+  option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
+  move to `s3://b/k`, and the move overwrote the object that table reads. The
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
 - Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
   server that it starts no longer holds the lock, and a run fails when the
   installed library changes during it (#1915). Before, the suite passed the

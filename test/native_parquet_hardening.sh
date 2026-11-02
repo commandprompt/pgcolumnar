@@ -484,6 +484,56 @@ check "page: an UNCOMPRESSED v2 page marked compressed reads" \
 check "page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow" \
 	"$(page_read page_none_v2_c_short)" "NO ERROR: 100/5050"
 
+# ---- a page header field of the wrong Thrift type (#1935) -------------------
+# The page reader read each page header field by its id and never looked at its
+# Thrift type, so a corrupt type nibble read without an error. The fuzzer found a
+# DataPageHeader encoding field (i32) retyped to BOOL_TRUE and to UUID; a change
+# to the page's values then read as a wrong answer, where pyarrow refuses the
+# header. pyarrow refuses every copy in the first three checks.
+check "page: a data page encoding field of Thrift type BOOL_TRUE is refused" \
+	"$(page_read page_enc_bool)" "$PAGE_REFUSED"
+check "page: a data page encoding field of Thrift type UUID is refused" \
+	"$(page_read page_enc_uuid)" "$PAGE_REFUSED"
+# page_sweep PREFIX COUNT FILTER -> "N of COUNT <what>", then each copy's answer
+page_sweep() {
+	qw "SELECT count(*) || ' of $2 $4' || coalesce(': ' || string_agg(i || '=' || v, ' ' ORDER BY i), '')
+	       FROM (SELECT i, pgc_err(format(\$f\$SELECT count(*) || '/' || coalesce(sum(id), 0) FROM pgcolumnar.read_parquet(%L) AS t(id bigint)\$f\$,
+	                                     '$W/$1' || lpad(i::text, $5, '0') || '.parquet')) AS v
+	             FROM generate_series(0, ${2:-0} - 1) AS i) s
+	      WHERE $3;"
+}
+# Each sweep's expected text names its number of copies, so a missing or empty
+# .count file fails the check and does not pass with "0 of 0".
+PTSWEEP="$(cat "$W/page_type_sweep.count" 2>/dev/null)"
+check "page: every i32 or struct page header field the reader stores, of another Thrift type, is refused" \
+	"$(page_sweep page_type_sweep_ "$PTSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 4)" \
+	"0 of 168 read without an error"
+# is_compressed is optional, so pyarrow skips it when its type is not bool and
+# keeps the default, true. A copy may read, but only with the right answer.
+PBSWEEP="$(cat "$W/page_bool_sweep.count" 2>/dev/null)"
+check "page: no v2 is_compressed field of another Thrift type reads a wrong answer" \
+	"$(page_sweep page_bool_sweep_ "$PBSWEEP" "v LIKE 'NO ERROR%' AND v <> 'NO ERROR: 100/5050'" "read a wrong answer" 2)" \
+	"0 of 11 read a wrong answer"
+# The required i32 fields the reader skips: a v1 page's definition_level_encoding
+# and repetition_level_encoding, and a v2 page's num_nulls and num_rows. The
+# reader skipped each by the type its header claimed, so a wrong type read
+# without an error, and a changed value byte then read a wrong answer. pyarrow
+# refuses every copy in these three checks.
+check "page: a v1 definition_level_encoding field of type BOOL_TRUE, with a changed value byte, is refused" \
+	"$(page_read page_sib_wrong)" "$PAGE_REFUSED"
+PSSWEEP="$(cat "$W/page_sib_sweep.count" 2>/dev/null)"
+check "page: every required i32 page header field the reader skips, of another Thrift type, is refused" \
+	"$(page_sweep page_sib_sweep_ "$PSSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 2)" \
+	"0 of 48 read without an error"
+# A dictionary page header: its struct, num_values and encoding fields.
+check "page: the unpatched dictionary page file reads" "$(page_read dict_base)" "NO ERROR: 4/10"
+PDSWEEP="$(cat "$W/dict_type_sweep.count" 2>/dev/null)"
+check "page: every dictionary page header field of another Thrift type is refused" \
+	"$(page_sweep dict_type_sweep_ "$PDSWEEP" "v LIKE 'NO ERROR%'" "read without an error" 2)" \
+	"0 of 36 read without an error"
+check "page: a v2 is_compressed field of type LIST is skipped and reads, as in pyarrow" \
+	"$(page_read page_bool_sweep_06)" "NO ERROR: 100/5050"
+
 # ---- string cells that are not valid in the server encoding (#1821) --------
 # A database created as UTF8 whatever the cluster's encoding (see the header).
 psql_admin "CREATE DATABASE pqh_utf8 TEMPLATE template0 ENCODING 'UTF8' LOCALE 'C';"
