@@ -804,9 +804,13 @@ foreign table reads. It matches with the Parquet reader's own code:
   `path` need not exist. A `path` that ends in `/` is a directory; otherwise
   its last name is a file.
 
-It returns false for a pattern that the reader does not read as a glob: a
-local path without `*`, `?` or `[`, an `s3://` URL with none of them in its
-key, and any other remote URL. A local pattern does not match a remote `path`.
+It returns false for a pattern that the reader does not read as a glob:
+
+- a local path without `*`, `?` or `[`;
+- an `s3://` URL with none of them in its key;
+- any other remote URL.
+
+A local pattern does not match a remote `path`.
 The function compares spellings: `path` must be spelled as `glob(3)` would
 return it, so `/w//x` does not match `/w/x*`.
 
@@ -818,9 +822,10 @@ SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
 In an `s3://` key a class can match `/`. A local glob is split at every `/`
 first, so there `[a` and `b]` are two names. The function is `IMMUTABLE`,
 `STRICT` and `PARALLEL SAFE`. It reads no file, so any role may call it. A
-range such as `[a-c]` follows the database's collation, as in the reader. In
-a UTF-8 locale such as `en_US.UTF-8`, glibc can answer a range that ends in a
-collating symbol, such as `[!-[.a.]]`, differently from one call to the next.
+range such as `[a-c]` follows the database's collation, as in the reader. Take a
+range that ends in a collating symbol, such as `[!-[.a.]]`. In a UTF-8 locale
+such as `en_US.UTF-8`, glibc can answer it differently from one call to the
+next.
 The reader has the same limit, because it calls the same `fnmatch`.
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint

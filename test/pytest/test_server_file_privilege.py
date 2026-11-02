@@ -22,6 +22,8 @@ import pathlib
 import re
 
 import psycopg
+
+from pgc_vacuity import query_error
 import pytest
 
 DB = "pgc_server_file_privilege"
@@ -235,7 +237,7 @@ def sf(pgc_cluster, server_dir):
             try:
                 got = conn.execute("SELECT 'r=' || pgcolumnar.path_glob_matches('/x/*', '/x/a')").fetchone()[0]
             except psycopg.Error as exc:
-                got = f"ERROR:  {exc.diag.message_primary}"
+                got = query_error(f"{exc.sqlstate}: {exc.diag.message_primary}")
             r["path_glob_matches"] = got
         yield r
     finally:
