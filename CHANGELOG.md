@@ -683,6 +683,33 @@ true until the next version shipped.
   calls in the same session. The reader's own walk on the real filesystem is
   bounded too since #1984. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a name that matches `.` or `..` (#1982). `glob(3)` lists `.` and
+  `..` in each directory, and `.*`, `.?`, `.[.]` and `\.*` match them, so a
+  table on `/w/x/.*/a.parquet` reads `/w/x/./a.parquet`, which is
+  `/w/x/a.parquet`. `path_glob_matches` compared the names `glob(3)` returned
+  with the target as spelled, so it answered false, and the move overwrote
+  the file. It now also compares each name in its folded form with the
+  target's: a run of `/` as one, without a `.` name, and without a name
+  followed by `..`, as `tier_partition` folds paths since #1965. It also takes
+  the directories a glob names before its first `*`, `?`, `[` or `\` to
+  exist, so `/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`. Both only add
+  matches. A `*` alone still does not match `.` or `..`. An `s3://` key is not
+  folded. docs/sql-reference.md. `test/tier_partition.sh` and its pytest
+  twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a wildcard directory and then a name that matches `..` (#1991). A
+  table on `/w/x/*/.?/a.parquet` reads `/w/x/a.parquet` whenever `/w/x` holds
+  any directory: `*` matches it and `.?` matches `..`. `path_glob_matches`
+  walks a tree that holds only the target, so `*` had nothing to match, and it
+  answered false. When a wildcard name comes before a name that can match
+  `..`, and the first walk finds no match, a second walk now assumes a
+  directory each wildcard there matches, and each name the pattern spells
+  there, to exist. Measured against glibc `glob(3)` on a real tree, over
+  317,454 patterns: no file the reader reads gets false. A name such as `??`
+  cannot match `..`, so `/w/x/*/??/a.parquet` still does not match
+  `/w/x/a.parquet`. docs/sql-reference.md. `test/tier_partition.sh` and its
+  pytest twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`

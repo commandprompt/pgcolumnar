@@ -878,11 +878,30 @@ is refused after about 60 ms. The function never answers false for a walk it
 stopped. The step count starts again at zero for each call, so a refused
 pattern does not affect later calls in the same session.
 
-The function compares spellings: `path` must be spelled as `glob(3)` would
-return it, so `/w//x` does not match `/w/x*`. `tier_partition` also compares
-a folded form, without `//`, `.` names or a name followed by `..`. So it
-refuses what the reader opens under either spelling, unless a symbolic link
-comes before a `..` (#1965).
+For a local pattern, the function compares each path `glob(3)` returns with
+`path`, first as spelled and then in a folded form (#1982). The folded form
+reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
+`/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
+name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
+`\.*`. So `/w/x/.*/a.parquet` matches `/w/x/a.parquet`, through
+`/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
+`/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
+pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
+`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
+function cannot know which directory a wildcard matched. So when a wildcard
+name comes before a name that can match `..`, it also assumes that a
+directory the wildcard matches exists (#1991). It assumes as well that each
+name the pattern spells there exists as a directory. So
+`/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
+`/w/x` holds any directory. Without such a directory, `tier_partition` then
+refuses more than it must. A name such as `??` cannot match `..`, so
+`/w/x/*/??/a.parquet` does not match `/w/x/a.parquet`. If the walk with
+these assumptions passes 1,000,000 steps, the function answers true. The
+folded form does not resolve a symbolic link before a `..`. So it can match a
+file the reader does not open, and `tier_partition` then refuses more than it
+must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
+table's path and the target. So it refuses what the reader opens under either
+spelling, unless a symbolic link comes before a `..` (#1965).
 
 ```sql
 SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true

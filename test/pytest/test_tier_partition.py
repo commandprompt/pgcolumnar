@@ -890,6 +890,81 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a path a local glob spelled with an escaped .. reads is refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_lesc, s_dup_lesc2")
+    # glob(3) lists . and .. in each directory, and a glob name that spells the
+    # leading dot, such as .* or .?, matches them. So a table on
+    # ssd/.*/a.parquet reads ssd/./a.parquet, and one on ssd/sub/.?/a.parquet
+    # reads ssd/sub/../a.parquet: both are ssd/a.parquet. path_glob_matches
+    # compares the lexical form of each path glob(3) returns with that of the
+    # target (#1982). A * does not match a leading dot (FNM_PERIOD), so a table
+    # on snd/*/a.parquet never reads snd/a.parquet. Each reader check first
+    # proves what the reader reads.
+    for d in (server_dir / "ssd", server_dir / "ssd" / "sub"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    dstar = f"{server_dir}/ssd/.*/a.parquet"
+    dq = f"{server_dir}/ssd/sub/.?/a.parquet"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT pgcolumnar.export_parquet('s_apr', '{server_dir}/ssd/a.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_dstar {cols} SERVER tq OPTIONS (path '{dstar}')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_dq {cols} SERVER tq OPTIONS (path '{dq}')")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_dstar"), apr,
+               "premise: a local glob through a .* name reads the file spelled plainly")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_dq"), apr,
+               "premise: a local glob through a .? name reads the file one .. above")
+    ssd = tier.format(f"{server_dir}/ssd/a.parquet")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_dq")
+    expect.text(f"{rolled(ssd)}|{rolled_detail(ssd)}",
+                f"58P02|Foreign table public.s_dup_dstar reads path '{dstar}'.",
+                "a path a local glob reads through a .* name is refused, and the detail names that table")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_dstar")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_dq {cols} SERVER tq OPTIONS (path '{dq}')")
+    expect.text(f"{rolled(ssd)}|{rolled_detail(ssd)}",
+                f"58P02|Foreign table public.s_dup_dq reads path '{dq}'.",
+                "a path a local glob reads through a .? name that matches .. is refused, and the detail names that table")
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_dstar {cols} SERVER tq OPTIONS (path '{dstar}')")
+    expect.text(rolled(tier.format(f"{server_dir}/snd/b.parquet")), "58P01",
+                "a path no table reads is not refused beside globs through .* and .? names")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_dstar, s_dup_dq")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_dplain {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/snd/*/a.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/snd/a.parquet")), "58P01",
+                "a path a local glob * reaches only through . or .. is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_dplain")
+    # A wildcard name, then a later name that matches .., lets a glob climb
+    # out of a directory it never names: a table on ssw/*/.?/a.parquet reads
+    # ssw/a.parquet whenever ssw holds any directory, as * matches it and .?
+    # matches .. (#1991). path_glob_matches does not know which directory *
+    # matched, so it walks a stand-in for it. A table on snw/*/a.parquet still
+    # refuses nothing above *. The directory snw does not exist, so a move
+    # that is not refused fails 58P01.
+    for d in (server_dir / "ssw", server_dir / "ssw" / "d"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    wdq = f"{server_dir}/ssw/*/.?/a.parquet"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT pgcolumnar.export_parquet('s_apr', '{server_dir}/ssw/a.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_wdq {cols} SERVER tq OPTIONS (path '{wdq}')")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_wdq"), apr,
+               "premise: a local glob through a * name and then a .? name reads the file one .. above")
+    ssw = tier.format(f"{server_dir}/ssw/a.parquet")
+    expect.text(f"{rolled(ssw)}|{rolled_detail(ssw)}",
+                f"58P02|Foreign table public.s_dup_wdq reads path '{wdq}'.",
+                "a path a local glob reads through a * name and then a .? name is refused, and the detail names that table")
+    expect.text(rolled(tier.format(f"{server_dir}/snw/a.parquet")), "58P01",
+                "a path no table reads is not refused beside a glob through a * name and then a .? name")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_wdq")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_wplain {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/snw/*/a.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/snw/a.parquet")), "58P01",
+                "a path above a local glob * with no later name that matches .. is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_wplain")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
@@ -1688,3 +1763,53 @@ def test_tier_partition_path_glob_matches_errors_where_glibc_would_crash(pgc_own
                     "54000|1", "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up")
     finally:
         run(f"DROP DATABASE IF EXISTS {db}")
+    # glob(3) lists . and .. in each directory, and a glob name that spells
+    # the leading dot matches them, so it returns names such as
+    # /v/y/./a.parquet. The helper compares the lexical form of each one with
+    # that of the target (#1982). A directory the glob names before its first
+    # *, ? or [ is taken to exist, so /v/y/sub/.?/a.parquet reaches
+    # /v/y/a.parquet through sub. An s3:// key is not a path, so it is never
+    # folded. Last in the file, as new C code: a crash here fails these alone.
+    wait_up()
+
+    def pair(*sqls):
+        return "|".join(_ansst(dsn, s) for s in sqls)
+
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/sd/.*/a.parquet', '/v/sd/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/sd/sub/.?/a.parquet', '/v/sd/a.parquet')"),
+                "true|true", "path_glob_matches answers true for a path a local glob reaches through a .* or a .? name")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/sub/.[.]/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/\\.*/a.parquet', '/v/y/a.parquet')"),
+                "true|true", "path_glob_matches answers true for a path a local glob reaches through a .[.] or an escaped .* name")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/.*/a.parquet', '/v/y/./a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/.*/a.parquet', '/v/y/sub/../a.parquet')"),
+                "true|true", "path_glob_matches answers true for a target spelled with . or a name and .. that a .* glob reaches")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/*/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/sub/??/a.parquet', '/v/y/a.parquet')"),
+                "false|false",
+                "a local glob * or ?? does not match . or .., so path_glob_matches answers false for a path reached only through them")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('s3://c/y/*.parquet', 's3://c/y/./a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('s3://c/y/*.parquet', 's3://c/y/a.parquet')"),
+                "false|true",
+                "path_glob_matches does not fold an s3:// key, so s3://b/x/*.parquet does not match s3://b/x/./a.parquet")
+    # A wildcard name, then a later name that matches .., climbs back out of
+    # the directory the wildcard matched (#1991). The helper cannot know that
+    # directory, so it walks a stand-in for it, and takes a name the glob
+    # spells below it to exist. A name that cannot match .., such as ?? (a
+    # leading dot must be spelled), climbs nothing, and the last name must
+    # still match.
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/sw/*/.?/a.parquet', '/v/sw/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/*/.?/.?/a.parquet', '/v/y/a.parquet')"),
+                "true|true", "path_glob_matches answers true for a path a local glob reaches through a * name and then a .? name")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/?/../a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/[d]/.*/a.parquet', '/v/y/a.parquet')"),
+                "true|true",
+                "path_glob_matches answers true for a path a local glob reaches through a ? name and then .., or a [class] name and then .*")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/*/.?/sub/../a.parquet', '/v/y/a.parquet')::text"),
+                "true",
+                "path_glob_matches answers true for a path a local glob reaches through a * name, a .? name and a directory it names after them")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('/v/y/*/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/??/a.parquet', '/v/y/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('/v/y/*/.?/a.parquet', '/v/y/b.parquet')"),
+                "false|false|false",
+                "path_glob_matches answers false for a path above a * name that no later name climbs back from, or that the last name does not match")
