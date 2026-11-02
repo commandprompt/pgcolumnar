@@ -139,6 +139,11 @@ COVERED = [  # name, function
     ("server-file function is covered by the boundary test: tier_partition", "tier_partition"),
 ]
 KNOWN_FILE_FUNCTIONS = "export_arrow export_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan import_arrow import_parquet parallel_copy parallel_export_parquet parquet_schema read_avro_manifest read_manifest_list read_parquet tier_partition".split()
+# Functions that take a path as text but read and write no file, so they have no
+# gate. Each is named with its reason, and a test below asserts it.
+#   path_glob_matches  compares a glob with a path as strings, over a tree in
+#                      memory; it opens no file and lists no object (#1957).
+NOT_FILE_FUNCTIONS = ["path_glob_matches"]
 
 
 def _discovered():
@@ -225,6 +230,13 @@ def sf(pgc_cluster, server_dir):
             for p in (out + ".parquet", out + ".arrow"):
                 pathlib.Path(p).unlink(missing_ok=True)
             r[("priv", label)] = _gate(dsn, "t_priv", gate, call, PAST.get(label, NOFILE))
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute("SET ROLE t_none")
+            try:
+                got = conn.execute("SELECT 'r=' || pgcolumnar.path_glob_matches('/x/*', '/x/a')").fetchone()[0]
+            except psycopg.Error as exc:
+                got = f"ERROR:  {exc.diag.message_primary}"
+            r["path_glob_matches"] = got
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -252,7 +264,7 @@ def test_a_file_function_is_covered_by_the_boundary_test(name, fn, expect):
 
 
 def test_the_install_script_defines_no_unnamed_file_function(expect):
-    extra = sorted(_discovered() - set(KNOWN_FILE_FUNCTIONS))
+    extra = sorted(_discovered() - set(KNOWN_FILE_FUNCTIONS) - set(NOT_FILE_FUNCTIONS))
     expect.text(" ".join(extra) or "none", "none",
                 "the install script defines no file function this suite does not name")
 
@@ -261,3 +273,8 @@ def test_the_coverage_check_found_the_file_functions(expect):
     n = len(_discovered())
     expect.text("yes" if n >= 7 else f"no ({n} found)", "yes",
                 "coverage check found the file functions (not an empty scan)")
+
+
+def test_path_glob_matches_needs_no_server_file_role(sf, expect):
+    expect.text(sf["path_glob_matches"], "r=true",
+                "path_glob_matches reads no file, so a role with no server-file role may call it")

@@ -1784,13 +1784,26 @@ CREATE FUNCTION pgcolumnar.export_parquet(rel regclass, path text, server name)
 COMMENT ON FUNCTION pgcolumnar.export_parquet(regclass, text, name)
 	IS 'export a columnar table to a Parquet file, writing a remote path with the named pgcolumnar_parquet server and the caller''s user mapping (#1795); returns rows written';
 
+-- #1957: does a foreign table whose path is `pattern` read `path`, as one of
+-- the names the glob expands to? It matches with the reader's own code:
+-- fnmatch for an s3:// key, glob(3) for a local path, over a tree in memory.
+-- tier_partition's check calls it, so the check agrees with the reader. It
+-- reads no file and takes no relation, so it needs no privilege, as row_tid.
+CREATE FUNCTION pgcolumnar.path_glob_matches(pattern text, path text)
+	RETURNS boolean
+	LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_path_glob_matches';
+
+COMMENT ON FUNCTION pgcolumnar.path_glob_matches(text, text)
+	IS 'true when a foreign table whose path is pattern expands it, as a glob, to path: the reader''s fnmatch for an s3:// key, its glob(3) for a local path; reads no file (#1957)';
+
 -- #1295: move a cold columnar partition to Parquet in one transaction.
 CREATE FUNCTION pgcolumnar.tier_partition(partition regclass, server name, path text,
 										  lock_wait interval DEFAULT '10 seconds')
 	RETURNS bigint
 	LANGUAGE plpgsql
 	SET search_path = pg_catalog, pg_temp
-	-- the path check's patterns hold backslashes (#1946 review)
+	-- the detail's escape pattern holds backslashes (#1946 review, #1960)
 	SET standard_conforming_strings = on
 AS $tier$
 DECLARE
@@ -1891,32 +1904,10 @@ BEGIN
 	--   - a remote directory (it ends in '/'), or any local path, and the path
 	--     lies below it at any depth. Nothing lies below a local file, so a
 	--     local path that is not a directory refuses nothing more;
-	--   - a glob that the path matches: a local path, or an s3:// key, holding
-	--     *, ? or [. A * or ? does not match '/', a backslash escapes the next
-	--     character, and a [class] matches any one character but '/', which
-	--     refuses at least what the class matches. A class is read as fnmatch
-	--     reads it: '[^' negates like '[!', a ']' right after '[', '[!' or '[^'
-	--     is a member, a backslash inside it escapes the next character, a
-	--     POSIX class such as [:digit:] (or [=a=], [.a.]) is one member, and a
-	--     '[' with no closing ']' is a literal '['. As in glibc, a class name is
-	--     letters a to y, so '[:z:]' is three members and a '['; and a '[' that
-	--     starts a POSIX class is never a plain member, so '[[:digit:]' is a
-	--     literal '[' and a class, not one class. An empty '[::]' and a '[.ab.]'
-	--     are one unit, as glibc skips them. A '-' after a plain member and
-	--     before anything but ']' makes a range, whose end may be a plain '['.
-	--     A '-' after a POSIX class, an equivalence class or a range is a plain
-	--     member. After a member matches, glibc skips to the ']' with code that
-	--     knows no ranges: when a bracket is not negated, a member comes before
-	--     a range, and the range ends in a plain '[' that a POSIX or an
-	--     equivalence class seems to follow, the class can close at a later
-	--     ']'. Such a bracket matches one character but '/' and then anything
-	--     (#1951). A '!' or '^' right after '[' always negates and is never
-	--     read as a member, even where that would make a longer token (#1953
-	--     review). The longest token wins, so a token of just '[]', '[!]' or
-	--     '[^]' is such an unclosed '['. A local
-	--     glob is split at each '/' before it is matched, so there a class may
-	--     not span a '/', and a '[' whose ']' lies past one is literal; in an
-	--     s3:// key fnmatch reads it as one class (#1946 review).
+	--   - a glob that the path matches. pgcolumnar.path_glob_matches answers
+	--     with the reader's own code: fnmatch for an s3:// key, and glob(3)
+	--     for a local path, over a tree in memory that holds only the path.
+	--     So the check agrees with the reader by construction (#1957, #1962).
 	-- Both paths are normalised first (#1936): a remote scheme matches in any
 	-- case, s3a:// and s3n:// match s3:// (#1930), and so does the host of an
 	-- http(s) URL. The bucket and key keep their case. A local path is compared
@@ -1941,28 +1932,22 @@ BEGIN
 		OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
 		OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
 			AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
-		OR (c.fp !~ '^(gs|az|https?)://' AND c.fp ~ '[*?[]'
-			AND c.tp ~ ('^' || (SELECT string_agg(
-								CASE WHEN m[2] IS NOT NULL THEN '[^/].*'
-									 WHEN m[1] = '*' THEN '[^/]*'
-									 WHEN m[1] IN ('[]', '[!]', '[^]')
-									 THEN regexp_replace(m[1], '([].[^$|()*+?{}\\])', '\\\1', 'g')
-									 WHEN m[1] = '?' OR m[1] ~ '^\[.+\]$' THEN '[^/]'
-									 ELSE regexp_replace(right(m[1], 1), '([].[^$|()*+?{}\\])', '\\\1', 'g')
-								END, '' ORDER BY k)
-							FROM regexp_matches(c.fp, CASE WHEN c.fp ~ '^s3://'
-								 THEN '(\\.|(\[(?![!^])(?:\[:[a-y]*:\]|\[=.=\]|(?:\]|\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=.=\]|\.)|[^][\\])(?:-(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\])|(?!-[^]])))(?:\[:[a-y]*:\]|\[=.=\]|(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=.=\]|\.)|[^][\\])(?:-(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\])|(?!-[^]])))*(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=.=\]|\.)|[^][\\])-\[(?=:[a-y]*:\]|=.=\]).*)|\[(?:[!^]|(?![!^]))(?:(?:\[:[a-y]*:\]|\[=.=\]|(?:\]|\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=.=\]|\.)|[^][\\])(?:-(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\])|(?!-[^]])))(?:\[:[a-y]*:\]|\[=.=\]|(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=.=\]|\.)|[^][\\])(?:-(?:\\.|\[\.(?:[^.]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\])|(?!-[^]])))*)?\]|.)'
-								 ELSE '(\\.|(\[(?![!^])(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\]|\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))*(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])-\[(?=:[a-y]*:\]|=[^/]=\]).*)|\[(?:[!^]|(?![!^]))(?:(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\]|\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))(?:\[:[a-y]*:\]|\[=[^/]=\]|(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!:[a-y]*:\]|=[^/]=\]|\.)|[^][\\/])(?:-(?:\\.|\[\.(?:[^./]|\.(?!\]))*\.\]|\[(?!\.)|[^][\\/])|(?!-[^]/])))*)?\]|.)' END, 'g')
-								 WITH ORDINALITY AS r(m, k)) || '$'))
+		OR pgcolumnar.path_glob_matches(c.fp, c.tp)
 	 LIMIT 1;
 	-- The detail quotes the path by hand, not with %L, so a backslash prints as
-	-- written. It doubles a ', so the path cannot close the quote and append a
-	-- line that reads like a server HINT (#1953 review).
+	-- written. It doubles a ', so the path cannot close the quote (#1953
+	-- review), and prints a control character as \xHH, so the path cannot
+	-- add a line that reads like a server HINT (#1960).
 	IF FOUND THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
 			USING ERRCODE = 'duplicate_file',
 				  DETAIL = format('Foreign table %s reads path ''%s''.', covered.relid,
-								   replace(covered.opath, '''', ''''''));
+								   (SELECT coalesce(string_agg(
+										CASE WHEN ch ~ '[\x01-\x1f\x7f-\x9f]'
+											 THEN '\x' || lpad(upper(to_hex(ascii(ch))), 2, '0')
+											 ELSE ch END, '' ORDER BY n), '')
+									  FROM regexp_split_to_table(replace(covered.opath, '''', ''''''), '')
+										   WITH ORDINALITY AS s(ch, n)));
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not

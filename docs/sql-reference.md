@@ -771,10 +771,15 @@ The function refuses these:
 
 - a `path` that a foreign table in this database reads (`58P02`). That is
   the same path, a path under the table's directory, or a path that matches
-  the table's glob (#1941). The scheme and the host of an http(s) URL match in any case,
+  the table's glob (#1941). A glob is matched by
+  [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
+  as the reader matches it (#1957). The scheme and the host of an http(s) URL match in any case,
   and `s3a://` or `s3n://` match `s3://`. A local path is compared as written,
   so a symbolic link or `..` is not resolved. A new file under a directory a
-  foreign table reads is refused too; docs/how-to.md shows ways around it;
+  foreign table reads is refused too; docs/how-to.md shows ways around it.
+  The error detail names the foreign table and its path. A control character
+  in that path prints as `\xHH`, such as `\x0A` for a newline, so the detail
+  stays on one line (#1960);
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
@@ -784,6 +789,39 @@ The function refuses these:
 
 See
 [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
+
+### pgcolumnar.path_glob_matches(pattern text, path text) returns boolean
+
+Returns true when a foreign table whose `path` is `pattern` expands it, as a
+glob, to `path` (#1957). `tier_partition` uses it to find a file that a
+foreign table reads. It matches with the Parquet reader's own code:
+
+- For an `s3://` key, the reader's `fnmatch`, with `FNM_PATHNAME` and
+  `FNM_PERIOD`. The scheme matches in any case, and `s3a://` and `s3n://`
+  match `s3://`.
+- For a local path, `glob(3)`, as the reader calls it. The function runs it
+  over a tree in memory that holds only `path`, so it reads no directory and
+  `path` need not exist. A `path` that ends in `/` is a directory; otherwise
+  its last name is a file.
+
+It returns false for a pattern that the reader does not read as a glob: a
+local path without `*`, `?` or `[`, an `s3://` URL with none of them in its
+key, and any other remote URL. A local pattern does not match a remote `path`.
+The function compares spellings: `path` must be spelled as `glob(3)` would
+return it, so `/w//x` does not match `/w/x*`.
+
+```sql
+SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
+SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
+```
+
+In an `s3://` key a class can match `/`. A local glob is split at every `/`
+first, so there `[a` and `b]` are two names. The function is `IMMUTABLE`,
+`STRICT` and `PARALLEL SAFE`. It reads no file, so any role may call it. A
+range such as `[a-c]` follows the database's collation, as in the reader. In
+a UTF-8 locale such as `en_US.UTF-8`, glibc can answer a range that ends in a
+collating symbol, such as `[!-[.a.]]`, differently from one call to the next.
+The reader has the same limit, because it calls the same `fnmatch`.
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 

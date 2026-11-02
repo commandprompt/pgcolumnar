@@ -243,7 +243,14 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rquote": "s3://tierb/sq/it''s.parquet",
               "s_dup_rdslash": "s3://tierb/sdp/[1a-[:alpha:]]x/*.parquet",
               "s_dup_rndash": "s3://tierb/snd/[^[:alpha:]-[-[=a=]]x.parquet",
-              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet"}
+              "s_dup_lndash": f"{server_dir}/slnd/[![:alpha:]-[-[=a=]]x.parquet",
+              "s_dup_rnskip": "s3://tierb/snsk/[![-x[!-[=a=]",
+              "s_dup_lnskip": f"{server_dir}/slnsk/[![-x[!-[=a=]",
+              "s_dup_lbslash": f"{server_dir}/slbs/[\\/]",
+              "s_dup_ltrail": f"{server_dir}/slts/*//",
+              "s_dup_lhide": f"{server_dir}/slgh/*.parquet",
+              "s_dup_rnl": "s3://tierb/snl/a.parquet\nHINT:  x",
+              "s_dup_rnlg": "s3://tierb/snlg/[a\nHINT:  x]x.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -418,6 +425,56 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     # the table reads no file named a.parquet in that directory.
     expect.text(rolled(tier.format(f"{server_dir}/sle/a.parquet")),
                 "58P01", "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused")
+    # The check matches with the reader's own fnmatch and glob(3), through
+    # pgcolumnar.path_glob_matches, so it agrees with them where a reading of
+    # the glob in SQL did not (#1957, #1962). A negated class that glibc cannot
+    # close after a member matched is a literal [ to glibc.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snsk/[!a")),
+                "58P02", "a negated glob class that glibc cannot close is a literal [, so a path holding it is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slnsk/[!a")),
+                "58P02", "a negated local glob class that glibc cannot close is a literal [, so a path holding it is refused")
+    # glob(3) splits a local pattern at every slash first, an escaped one too,
+    # so [\/] is a directory [ holding a file ]. And a pattern that ends in //
+    # names the directories it matches, as one that ends in / does.
+    expect.text(rolled(tier.format(f"{server_dir}/slbs/[/]")),
+                "58P02", "a local glob splits at a backslash-escaped slash in a bracket, so a path of [ and ] is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slts/d/")),
+                "58P02", "a local glob that ends in // matches the directory with one slash, so that path is refused")
+    # glibc skips a name that starts with '.' unless the pattern spells the dot
+    # (FNM_PERIOD), in an s3:// key as in a local glob, so the check refuses no
+    # more than the table reads.
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/.x.parquet")),
+                "28000", "a glob * does not match a leading dot in an s3:// key, so a hidden key is not refused")
+    expect.text(rolled(tier.format(f"{server_dir}/slgh/.x.parquet")),
+                "58P01", "a local glob * does not match a leading dot, so a hidden file is not refused")
+    # The detail prints a control character in the path as \xHH, so a table
+    # owner's path cannot add a line, such as a fake HINT, under the refusal
+    # (#1960).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/snl/a.parquet\nHINT:  x")),
+                "Foreign table public.s_dup_rnl reads path 's3://tierb/snl/a.parquet\\x0AHINT:  x'.",
+                "the refusal's detail prints a newline in the path as an escape, on one line")
+    # The class [a\n...] matches ax.parquet, so only the foreign table's path
+    # holds the newline: the reading is the refusal's SQLSTATE and the count of
+    # detail lines that start with HINT:.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(tier.format("s3://tierb/snlg/ax.parquet"))
+        nl = "ok with 0 HINT lines"
+    except psycopg.Error as e:
+        hints = sum(1 for ln in (e.diag.message_detail or "").splitlines() if ln.startswith("HINT:"))
+        nl = f"{e.sqlstate} with {hints} HINT lines"
+    expect.text(nl, "58P02 with 0 HINT lines",
+                "a newline in a foreign table's path adds no HINT line under the refusal")
+    # The helper itself: it reads no file, so the planner may fold and share it.
+    expect.text(_sqlstate(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure") == "ok"
+                and _one(conn, "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc"
+                               " WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure")
+                or _errtext(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure"),
+                "itrues", "path_glob_matches is IMMUTABLE, STRICT and PARALLEL SAFE")
+    pgm = ("SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|'"
+           " || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa')")
+    expect.text(_sqlstate(conn, pgm) == "ok" and _one(conn, pgm) or _errtext(conn, pgm),
+                "true|false", "path_glob_matches lets an s3:// class span a slash but splits a local glob there")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")

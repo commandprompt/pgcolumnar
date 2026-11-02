@@ -235,8 +235,15 @@ check "server-file function is covered by the boundary test: read_manifest_list"
 check "server-file function is covered by the boundary test: read_parquet" "$(covered read_parquet)" "yes"
 check "server-file function is covered by the boundary test: tier_partition" "$(covered tier_partition)" "yes"
 KNOWN_FILE_FUNCTIONS="export_arrow export_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan import_arrow import_parquet parallel_copy parallel_export_parquet parquet_schema read_avro_manifest read_manifest_list read_parquet tier_partition"
+# Functions that take a path as text but read and write no file, so they have no
+# gate. Each is named with its reason, and the check after the list asserts it.
+#   path_glob_matches  compares a glob with a path as strings, over a tree in
+#                      memory; it opens no file and lists no object (#1957).
+NOT_FILE_FUNCTIONS="path_glob_matches"
 check "the install script defines no file function this suite does not name" \
-	"$(x=""; for fn in $discovered; do case " $KNOWN_FILE_FUNCTIONS " in *" $fn "*) ;; *) x="$x $fn" ;; esac; done; echo "${x:-none}")" "none"
+	"$(x=""; for fn in $discovered; do case " $KNOWN_FILE_FUNCTIONS $NOT_FILE_FUNCTIONS " in *" $fn "*) ;; *) x="$x $fn" ;; esac; done; echo "${x:-none}")" "none"
+check "path_glob_matches reads no file, so a role with no server-file role may call it" \
+	"$(run_as t_none "SELECT 'r=' || pgcolumnar.path_glob_matches('/x/*', '/x/a')" | grep -m1 -oE 'r=[a-z]+|ERROR:.*')" "r=true"
 n_found="$(printf '%s\n' "$discovered" | grep -c .)"
 check "coverage check found the file functions (not an empty scan)" \
 	"$([ "$n_found" -ge 7 ] && echo yes || echo "no ($n_found found)")" "yes"

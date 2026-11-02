@@ -222,7 +222,14 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_rcunt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nc/a[^]x*');
           CREATE FOREIGN TABLE dup_rspan (x int) SERVER tier_pq OPTIONS (path 's3://tierb/sp/x[a/b].parquet');
           CREATE FOREIGN TABLE dup_rcoll (x int) SERVER tier_pq OPTIONS (path 's3://tierb/co/[[.].]].parquet');
-          CREATE FOREIGN TABLE dup_lequiv (x int) SERVER tier_pq OPTIONS (path '$W/le/[[=/=]a].parquet');"
+          CREATE FOREIGN TABLE dup_lequiv (x int) SERVER tier_pq OPTIONS (path '$W/le/[[=/=]a].parquet');
+          CREATE FOREIGN TABLE dup_rnskip (x int) SERVER tier_pq OPTIONS (path 's3://tierb/nsk/[![-x[!-[=a=]');
+          CREATE FOREIGN TABLE dup_lnskip (x int) SERVER tier_pq OPTIONS (path '$W/lnsk/[![-x[!-[=a=]');
+          CREATE FOREIGN TABLE dup_lbslash (x int) SERVER tier_pq OPTIONS (path '$W/lbs/[\\/]');
+          CREATE FOREIGN TABLE dup_ltrail (x int) SERVER tier_pq OPTIONS (path '$W/lts/*//');
+          CREATE FOREIGN TABLE dup_lhide (x int) SERVER tier_pq OPTIONS (path '$W/lgh/*.parquet');
+          CREATE FOREIGN TABLE dup_rnl (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nl/a.parquet\\nHINT:  x');
+          CREATE FOREIGN TABLE dup_rnlg (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nlg/[a\\nHINT:  x]x.parquet');"
 # The directories exist, so a local target the check let through would be written.
 mkdir -p "$W/ldir/sub" "$W/lg" && chmod 777 "$W/ldir" "$W/ldir/sub" "$W/lg"
 # rolled SQL -> the SQLSTATE of SQL run inside a transaction that rolls back
@@ -375,6 +382,51 @@ check "a gs:// path holding * is one object, not a glob, so another name is not 
 # table reads no file named a.parquet in that directory.
 check "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/le/a.parquet');")" "58P01"
+# The check matches with the reader's own fnmatch and glob(3), through
+# pgcolumnar.path_glob_matches, so it agrees with them where a reading of the
+# glob in SQL did not (#1957, #1962). A negated class that glibc cannot close
+# after a member matched is a literal [ to glibc.
+check "a negated glob class that glibc cannot close is a literal [, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/nsk/[!a');")" "58P02"
+check "a negated local glob class that glibc cannot close is a literal [, so a path holding it is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lnsk/[!a');")" "58P02"
+# glob(3) splits a local pattern at every slash first, an escaped one too, so
+# [\/] is a directory [ holding a file ]. And a pattern that ends in // names
+# the directories it matches, as one that ends in / does.
+check "a local glob splits at a backslash-escaped slash in a bracket, so a path of [ and ] is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lbs/[/]');")" "58P02"
+check "a local glob that ends in // matches the directory with one slash, so that path is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lts/d/');")" "58P02"
+# glibc skips a name that starts with '.' unless the pattern spells the dot
+# (FNM_PERIOD), in an s3:// key as in a local glob, so the check refuses no
+# more than the table reads.
+check "a glob * does not match a leading dot in an s3:// key, so a hidden key is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/.x.parquet');")" "28000"
+check "a local glob * does not match a leading dot, so a hidden file is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/lgh/.x.parquet');")" "58P01"
+# The detail prints a control character in the path as \xHH, so a table
+# owner's path cannot add a line, such as a fake HINT, under the refusal (#1960).
+check "the refusal's detail prints a newline in the path as an escape, on one line" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', E's3://tierb/nl/a.parquet\\nHINT:  x');")" \
+	"Foreign table public.dup_rnl reads path 's3://tierb/nl/a.parquet\\x0AHINT:  x'."
+# The class [a\n...] matches ax.parquet, so only the foreign table's path holds
+# the newline: the reading is the refusal's SQLSTATE and its HINT line count.
+nl_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At \
+	-v VERBOSITY=verbose -c "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/nlg/ax.parquet');" 2>&1 >/dev/null)"
+check "a newline in a foreign table's path adds no HINT line under the refusal" \
+	"$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$nl_out" | head -1) with $(grep -c '^HINT:' <<<"$nl_out") HINT lines" \
+	"58P02 with 0 HINT lines"
+# The helper itself: it reads no file, so the planner may fold and share it.
+# qerr SQL -> the result, or the error when the query fails
+qerr() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -c "$1" 2>&1 | head -1
+}
+check "path_glob_matches is IMMUTABLE, STRICT and PARALLEL SAFE" \
+	"$(qerr "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure;")" "itrues"
+check "path_glob_matches lets an s3:// class span a slash but splits a local glob there" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|' || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');")" "true|false"
+psql_run "DROP FOREIGN TABLE dup_rnskip, dup_lnskip, dup_lbslash, dup_ltrail, dup_lhide, dup_rnl, dup_rnlg;"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
           dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote, dup_rdslash, dup_rndash, dup_lndash;"

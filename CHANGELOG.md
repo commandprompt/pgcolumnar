@@ -569,6 +569,27 @@ true until the next version shipped.
   are refused the same way. A file whose offsets run past its buffers is still
   refused with XX001. docs/sql-reference.md and docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now matches a foreign table's glob with the reader's own
+  code, through the new function `pgcolumnar.path_glob_matches(pattern,
+  path)` (#1957, #1962). Before, the check read the glob with SQL regular
+  expressions, and these disagreed with glibc. Three families of path got
+  past the check, so a move could overwrite a file that a foreign table
+  reads: a negated bracket that glibc cannot close after a member matched,
+  as in `[![-x[!-[=a=]` (#1957); a local `[\/]`, which `glob(3)` splits into
+  the names `[` and `]`; and a local glob that ends in `//` (#1962). The
+  check also refused paths that the table does not read, such as a name
+  that starts with `.` under `*`, and any path in a bracket's place. Now an
+  `s3://` key is matched by the reader's `fnmatch` call, and a local path by
+  `glob(3)` over a tree in memory that holds only that path. A fuzz run in
+  the C locale compared 131 million pattern and path pairs with glibc
+  `fnmatch` and a real `glob(3)`: of 256,691 matches it missed none, and it
+  refused no pair glibc does not match. The error detail
+  now prints a control character in the foreign table's path as `\xHH`, such
+  as `\x0A` for a newline, so the path cannot add a line under the refusal
+  that reads like a server `HINT` (#1960). docs/sql-reference.md and
+  docs/how-to.md. `test/tier_partition.sh`, `test/entry_point_privilege.sh`,
+  `test/server_file_privilege.sh` and their pytest twins. Reported by
+  @OffgridwithJD.
 - `tier_partition` now refuses a path that a foreign table's glob matches when
   the glob holds a rare bracket (#1951). Before this the check could read such
   a bracket as ending at another `]` than glibc's `fnmatch` does, so a move

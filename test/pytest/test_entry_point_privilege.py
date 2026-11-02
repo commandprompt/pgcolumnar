@@ -32,6 +32,8 @@ EXEMPT = {"columnar_handler", "parquet_fdw_handler", "parquet_fdw_validator", "i
           "file_split_offsets", "iceberg_current_snapshot", "iceberg_data_files", "iceberg_scan",
           "iceberg_rest_table_location", "iceberg_rest_scan", "iceberg_rest_namespaces", "iceberg_rest_namespace_levels",
           "iceberg_rest_tables", "read_avro_manifest", "read_manifest_list", "row_tid",
+          # Compares a glob with a path as strings (#1957): no relation, reads nothing.
+          "path_glob_matches",
           # A trigger function (#1376): never called directly, it runs on writes to
           # pgcolumnar.rollup and checks SELECT on the source itself (test_rollup.py).
           "rollup_record_dependencies",

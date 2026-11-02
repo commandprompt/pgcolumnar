@@ -100,6 +100,7 @@ PG_FUNCTION_INFO_V1(pgcolumnar_parquet_schema);
 PG_FUNCTION_INFO_V1(pgcolumnar_read_parquet);
 PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_handler);
 PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_validator);
+PG_FUNCTION_INFO_V1(pgcolumnar_path_glob_matches);
 
 #define PG_TO_UNIX_DAYS		((int64) (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE))
 #define PG_TO_UNIX_USECS	(PG_TO_UNIX_DAYS * USECS_PER_DAY)
@@ -3636,7 +3637,9 @@ pq_remote_key_hidden(const char *key, const char *listUrl)
  * Does a listed key match the remote pattern the user wrote? The scheme is
  * compared without case, as pq_remote_key_hidden does, because the module
  * accepts S3:// and returns keys as s3://. The rest is matched by fnmatch()
- * segment by segment, as the local glob() matches (#1784).
+ * segment by segment, as the local glob() matches (#1784). The reader and
+ * pgcolumnar.path_glob_matches both call this, so tier_partition's check
+ * matches an s3:// key exactly as the reader does (#1957).
  */
 static bool
 pq_remote_glob_match(const char *pattern, const char *key)
@@ -3678,6 +3681,269 @@ static bool
 pq_remote_key_is_literal(const char *url, const char *key)
 {
 	return pg_strncasecmp(url, key, 5) == 0 && strcmp(url + 5, key + 5) == 0;
+}
+
+/*
+ * A local pattern is expanded by glob(3), which reads directories. To ask
+ * whether glob(3) would return one path, without touching the filesystem,
+ * path_glob_matches runs glob(3) itself over a tree in memory that holds only
+ * that path (#1962). glob(3) then splits the pattern, unescapes it and calls
+ * fnmatch with the reader's flags, so the answer is the reader's by
+ * construction. Every name before the last is a directory; the last is a file,
+ * or a directory when the path ends in '/'. A directory lists "." and "..", as
+ * a real one does. The callbacks get no argument of their own, so the tree is
+ * a static, set only while glob(3) runs. They neither allocate in a memory
+ * context nor raise an error, so nothing jumps out of glob(3) and leaks its
+ * memory; when a cancel is pending they report every directory empty, and the
+ * caller handles the cancel once glob(3) has returned.
+ */
+typedef struct PqVNode
+{
+	const char *name;			/* a component of the path; "" for the root */
+	int			parent;			/* index of the parent; the root is its own */
+	bool		isdir;
+} PqVNode;
+
+typedef struct PqVTree
+{
+	PqVNode    *nodes;
+	int			n;
+} PqVTree;
+
+typedef struct PqVDir
+{
+	int			node;			/* the directory being listed */
+	int			next;			/* -2 for ".", -1 for "..", then a node index */
+	struct dirent ent;
+} PqVDir;
+
+static const PqVTree *pq_vtree = NULL;
+
+/* the child of `dir` called name[0..len), or -1 */
+static int
+pq_vchild(const PqVTree *t, int dir, const char *name, size_t len)
+{
+	int			i;
+
+	for (i = 1; i < t->n; i++)
+		if (t->nodes[i].parent == dir && strlen(t->nodes[i].name) == len &&
+			memcmp(t->nodes[i].name, name, len) == 0)
+			return i;
+	return -1;
+}
+
+/*
+ * The node a path names, resolving "." and ".." as the kernel does; a path
+ * with or without a leading '/' starts at the root. -> -1 with errno set.
+ */
+static int
+pq_vresolve(const char *p)
+{
+	const PqVTree *t = pq_vtree;
+	int			cur = 0;
+
+	if (t == NULL || InterruptPending)
+	{
+		errno = EINTR;
+		return -1;
+	}
+	while (*p != '\0')
+	{
+		const char *e = strchrnul(p, '/');
+		size_t		len = e - p;
+
+		if (len == 0 || (len == 1 && p[0] == '.'))
+			;
+		else if (!t->nodes[cur].isdir)
+		{
+			errno = ENOTDIR;
+			return -1;
+		}
+		else if (len == 2 && p[0] == '.' && p[1] == '.')
+			cur = t->nodes[cur].parent;
+		else if ((cur = pq_vchild(t, cur, p, len)) < 0)
+		{
+			errno = ENOENT;
+			return -1;
+		}
+		p = (*e == '/') ? e + 1 : e;
+	}
+	return cur;
+}
+
+static void *
+pq_vopendir(const char *path)
+{
+	int			node = pq_vresolve(path);
+	PqVDir	   *d;
+
+	if (node < 0)
+		return NULL;
+	if (!pq_vtree->nodes[node].isdir)
+	{
+		errno = ENOTDIR;
+		return NULL;
+	}
+	d = malloc(sizeof(PqVDir));
+	if (d == NULL)
+		return NULL;
+	d->node = node;
+	d->next = -2;
+	return d;
+}
+
+static struct dirent *
+pq_vreaddir(void *dirp)
+{
+	PqVDir	   *d = (PqVDir *) dirp;
+	const PqVTree *t = pq_vtree;
+	const char *name;
+	int			node;
+
+	if (t == NULL || InterruptPending)
+		return NULL;
+	if (d->next == -2 || d->next == -1)
+	{
+		name = (d->next == -2) ? "." : "..";
+		node = (d->next == -2) ? d->node : t->nodes[d->node].parent;
+		d->next++;
+		if (d->next == 0)
+			d->next = 1;
+	}
+	else
+	{
+		while (d->next < t->n && t->nodes[d->next].parent != d->node)
+			d->next++;
+		if (d->next >= t->n)
+			return NULL;
+		node = d->next++;
+		name = t->nodes[node].name;
+	}
+	memset(&d->ent, 0, sizeof(d->ent));
+	d->ent.d_ino = node + 1;
+	d->ent.d_type = t->nodes[node].isdir ? DT_DIR : DT_REG;
+	strlcpy(d->ent.d_name, name, sizeof(d->ent.d_name));
+	return &d->ent;
+}
+
+static void
+pq_vclosedir(void *dirp)
+{
+	free(dirp);
+}
+
+static int
+pq_vstat(const char *path, struct stat *st)
+{
+	int			node = pq_vresolve(path);
+
+	if (node < 0)
+		return -1;
+	memset(st, 0, sizeof(*st));
+	st->st_ino = node + 1;
+	st->st_nlink = 1;
+	st->st_mode = pq_vtree->nodes[node].isdir ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+	return 0;
+}
+
+/*
+ * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
+ * if `path` existed? A name longer than a directory entry holds cannot exist,
+ * so it matches nothing.
+ */
+static bool
+pq_local_glob_match(const char *pattern, const char *path)
+{
+	char	   *copy = pstrdup(path);
+	PqVTree		tree;
+	glob_t		g;
+	int			rc;
+	int			cur = 0;
+	char	   *p = copy;
+	bool		found = false;
+	size_t		i;
+
+	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + 2));
+	tree.nodes[0].name = "";
+	tree.nodes[0].parent = 0;
+	tree.nodes[0].isdir = true;
+	tree.n = 1;
+	while (*p != '\0')
+	{
+		char	   *e = strchrnul(p, '/');
+		size_t		len = e - p;
+		bool		last = (*e == '\0');
+		int			next;
+
+		*e = '\0';
+		if (len >= sizeof(((struct dirent *) NULL)->d_name))
+			return false;
+		if (len > 0)
+		{
+			/* anything below a name makes it a directory */
+			tree.nodes[cur].isdir = true;
+			if (len == 1 && p[0] == '.')
+				next = cur;
+			else if (len == 2 && p[0] == '.' && p[1] == '.')
+				next = tree.nodes[cur].parent;
+			else
+			{
+				next = pq_vchild(&tree, cur, p, len);
+				if (next < 0)
+				{
+					next = tree.n++;
+					tree.nodes[next].name = p;
+					tree.nodes[next].parent = cur;
+					tree.nodes[next].isdir = false;
+				}
+			}
+			cur = next;
+		}
+		if (last)
+			break;
+		p = e + 1;
+	}
+	if (path[0] != '\0' && path[strlen(path) - 1] == '/')
+		tree.nodes[cur].isdir = true;
+
+	memset(&g, 0, sizeof(g));
+	g.gl_opendir = pq_vopendir;
+	g.gl_readdir = pq_vreaddir;
+	g.gl_closedir = pq_vclosedir;
+	g.gl_stat = pq_vstat;
+	g.gl_lstat = pq_vstat;
+	pq_vtree = &tree;
+	rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
+	pq_vtree = NULL;
+	if (rc == 0)
+		for (i = 0; i < g.gl_pathc && !found; i++)
+			found = (strcmp(g.gl_pathv[i], path) == 0);
+	globfree(&g);
+	CHECK_FOR_INTERRUPTS();
+	return found;
+}
+
+/*
+ * pgcolumnar.path_glob_matches(pattern text, path text) -> would a foreign
+ * table whose path is `pattern` expand it, as a glob, to `path`? An s3:// key
+ * is matched by pq_remote_glob_match, the reader's own matcher; a local
+ * pattern by glob(3), over the path alone (pq_local_glob_match). A pattern the
+ * reader does not read as a glob matches nothing: a local path without *, ?
+ * or [, an s3:// URL with none in its key, and any other remote URL. So does a
+ * local pattern against a remote path. s3a:// and s3n:// read as s3://
+ * (#1930). It reads no file and no object, so it needs no privilege (#1957).
+ */
+Datum
+pgcolumnar_path_glob_matches(PG_FUNCTION_ARGS)
+{
+	const char *pattern = PgColumnarS3Alias(text_to_cstring(PG_GETARG_TEXT_PP(0)));
+	const char *path = PgColumnarS3Alias(text_to_cstring(PG_GETARG_TEXT_PP(1)));
+
+	if (PgColumnarPathIsRemote(pattern))
+		PG_RETURN_BOOL(pq_remote_glob_start(pattern) != NULL &&
+					   pq_remote_glob_match(pattern, path));
+	PG_RETURN_BOOL(!PgColumnarPathIsRemote(path) && pq_has_glob_meta(pattern) &&
+				   pq_local_glob_match(pattern, path));
 }
 
 /*
