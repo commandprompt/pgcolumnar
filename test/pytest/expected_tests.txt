@@ -1839,4 +1839,7 @@ guard_tests 863
 # cluster_tests stays 5343 for #1991's checks (a wildcard directory, then a name that matches .., walked with
 # stand-ins in path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6206 tests
 # collected, less guard_tests 863.
+# cluster_tests stays 5343 for #2001's checks (a relative glob or path resolved against the data directory in
+# path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6206 tests collected,
+# less guard_tests 863.
 cluster_tests 5343
