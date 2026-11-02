@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now finds more check arms that print only `no` when
+  they fail (#1980). It missed an arm with a redirect after the test, such as
+  `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.
+  A redirect into a variable also hid an arm in the `if/then/else` form. It
+  excused `-gt 1`, which fails on 0 and on 1, so `no` does not say which. It
+  also excused `-ge 0`, which a count always passes. Of the `-gt` and `-ge`
+  forms, it now excuses only `-gt 0` and `-ge 1`, as its awk rule already did.
+  The `-eq`, `-ne`, `=` and file-test excuses are unchanged. The wider sweep
+  found 13 such arms in 9 suites. Each now prints its measurement when it
+  fails, for example `no (groups=1)`. No check changed its name or what it
+  passes on.
 - `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
   pytest twins no longer fail when another session holds an old snapshot during
   `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did

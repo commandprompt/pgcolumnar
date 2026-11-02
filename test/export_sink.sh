@@ -83,7 +83,7 @@ ARROW_SIZE="$(stat -c %s "$ARF" 2>/dev/null || echo 0)"
 PQ_BEFORE="$(md5sum < "$PQF" 2>/dev/null | cut -d' ' -f1)"
 [ -n "$PQ_BEFORE" ] || PQ_BEFORE="unread before the failed export"
 check "measured arrow size supports a mid-batch injection point" \
-	"$([ "${ARROW_SIZE:-0}" -gt 4200 ] 2>/dev/null && echo yes)" "yes"
+	"$([ "${ARROW_SIZE:-0}" -gt 4200 ] 2>/dev/null && echo yes || echo "no (arrow size=${ARROW_SIZE:-unset})")" "yes"
 
 # ---- injection: parquet, mid page body -------------------------------------
 FAILP="$PGC_WORKDIR/es_fail.parquet"

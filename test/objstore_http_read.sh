@@ -295,8 +295,8 @@ check "premise: unbuffered run logged requests" "$([ "${FULL_UNBUF:-0}" -gt 0 ] 
 # catches over-coalescing as well as under.
 check_num "B: buffered full-width requests (K = 4 + G*NCOLS)" "$FULL_BUF" "$K_FULL"
 check_num "B: buffered 2-col requests (K = 4 + G*2)" "$PROJ_BUF" "$K_PROJ"
-check_num "B: unbuffered >= 10x K" \
-	"$([ "${FULL_UNBUF:-0}" -ge $((10 * K_FULL)) ] 2>/dev/null && echo 1 || echo 0)" "1"
+check "B: unbuffered >= 10x K" \
+	"$([ "${FULL_UNBUF:-0}" -ge $((10 * K_FULL)) ] 2>/dev/null && echo yes || echo "no (unbuffered=${FULL_UNBUF:-unset} K=$K_FULL)")" "yes"
 check_ratio "B: buffered/unbuffered request ratio" "$FULL_BUF" "$FULL_UNBUF" "0.1"
 
 # Every data-phase request carried a Range header (the HEAD is the one allowed
@@ -691,8 +691,8 @@ SQLEOF
 )"
 D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled transfer cancelled with query_canceled" "$D_STATE" "57014"
-check_num "D: cancel latency bounded (<=10s)" \
-	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+check "D: cancel latency bounded (<=10s)" \
+	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo yes || echo "no (elapsed=${D_ELAPSED}s)")" "yes"
 
 # ---- arm E: only an s3:// key is a pattern (#1785) -------------------------
 # Listing exists only for s3://, so a `?` in an http(s) URL is a query string,

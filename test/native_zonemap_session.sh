@@ -70,7 +70,7 @@ psql_run "DROP TABLE IF EXISTS zs;
 groups=$(q "SELECT count(*) FROM pgcolumnar.row_group
             WHERE storage_id = pgcolumnar.get_storage_id('zs');")
 check "the fixture has more than one chunk group" \
-	"$([ "${groups:-0}" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "${groups:-0}" -gt 1 ] && echo yes || echo "no (groups=${groups:-unset})")" "yes"
 
 witness() {	# witness "<where clause>" -> "probes=N opens=M"
 	psql_run "SET client_min_messages=debug1; SET max_parallel_workers_per_gather=0;
@@ -110,7 +110,7 @@ psql_run "DROP TABLE IF EXISTS zs2;
 groups2=$(q "SELECT count(*) FROM pgcolumnar.row_group
              WHERE storage_id = pgcolumnar.get_storage_id('zs2');")
 check "zs2 has more than one chunk group" \
-	"$([ "${groups2:-0}" -gt 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+	"$([ "${groups2:-0}" -gt 1 ] 2>/dev/null && echo yes || echo "no (groups=${groups2:-unset})")" "yes"
 
 # Both scans of a join stay open until ExecutorEnd, so a session shared between
 # them (the static the first implementation used) adds one scan's probes to the
