@@ -1196,9 +1196,9 @@ The reader counts each directory it opens, each name it reads and each
 `stat` as one step. It stops after 1,000,000 steps with error 54000, the
 error of `path_glob_matches`, and reads no file. So a directory of more than
 about 1,000,000 names cannot be read through a glob; read it as a directory
-instead. Measured on PostgreSQL 18 with glibc 2.43, a pattern of 18 levels of
-`.*/` is refused after about 0.25 s, and a glob that matches 2000 files among
-12,000 names reads every match.
+instead. We measured on PostgreSQL 18 with glibc 2.43. A pattern of 18
+levels of `.*/` is refused after about 0.25 s. A glob that matches 2000
+files among 12,000 names reads every match.
 
 A cancel or a `statement_timeout` stops the walk. Before, the walk did not
 stop for either: with 15 levels of `.*/` it ran for minutes, and only
