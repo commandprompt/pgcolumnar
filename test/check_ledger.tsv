@@ -824,7 +824,7 @@ catalog_scan_index	catalog_scan_index	a sorted rewrite reached pgcolumnar.storag
 catalog_scan_index	catalog_scan_index	a sorted rewrite took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an end truncation does not read pgcolumnar.free_space whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	an end truncation reached pgcolumnar.free_space	15;16;17;18;19	never	-
-catalog_scan_index	catalog_scan_index	an end truncation took effect	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	an end truncation took effect	15;16;17;18;19	2026-11-02	the end-truncation arm run once, without its retry, while a session that started after the DELETE holds a snapshot (#1979)
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction does not read pgcolumnar.storage whole	15;16;17;18;19	2026-10-12	the twelve converted sites reverted to InvalidOid, so each reads its catalog whole
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction reached pgcolumnar.storage	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	an insert into a table created in the same transaction took effect	15;16;17;18;19	never	-
@@ -841,6 +841,7 @@ catalog_scan_index	catalog_scan_index	dropping a projection does not read pgcolu
 catalog_scan_index	catalog_scan_index	dropping a projection reached pgcolumnar.projection_declaration	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	dropping a projection took effect	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: eleven operations are measured	15;16;17;18;19	never	-
+catalog_scan_index	catalog_scan_index	premise: every noise table holds two free ranges	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.free_space is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.projection_declaration is at least index_min_blocks pages	15;16;17;18;19	never	-
 catalog_scan_index	catalog_scan_index	premise: pgcolumnar.row_group is at least index_min_blocks pages	15;16;17;18;19	never	-
@@ -5523,7 +5524,7 @@ native_reclaim_frag	native_reclaim_frag	coalesce off: parity with heap	15;16;17;
 native_reclaim_frag	native_reclaim_frag	coalesce on: compact retired every dead group	15;16;17;18;19	2026-11-02	PgColumnarRetireFullyDeletedGroups retires no group (#1975)
 native_reclaim_frag	native_reclaim_frag	coalesce on: parity with heap	15;16;17;18;19	never	-
 native_reclaim_frag	native_reclaim_frag	coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost	15;16;17;18;19	never	-
-native_reclaim_frag	native_reclaim_frag	the horizon report names a session that holds a snapshot	15;16;17;18;19	2026-11-02	pgc_horizon_holders removed, the code before #1981 (#1981)
+native_reclaim_frag	native_reclaim_frag	the horizon report names a session that holds a snapshot	15;16;17;18;19	2026-11-02	pgc_horizon_holders removed, the code before #1981 (#1981);the holder report removed from pgc_retry_past_horizon and retry_past_horizon (#1981)
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite reconciled the stale row	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarReconcileFreeList never drops a free row, overlapping or not
 native_reclaim_reconcile	native_reclaim_reconcile	compact_rewrite recorded the free ranges it left	15;16;17;18;19	2026-10-22	columnar_metadata.c: record_free_space drops its insert, so every freed range leaks
 native_reclaim_reconcile	native_reclaim_reconcile	data intact after compact reconcile	15;16;17;18;19	never	-
