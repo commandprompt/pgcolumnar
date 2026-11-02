@@ -1742,6 +1742,9 @@ guard_tests 863
 # across a slash; a session with standard_conforming_strings off; and seven paths the table does not read
 # that it does not refuse), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
+# cluster_tests 5296 -> 5296 for #1946's third review: four checks in test_tier_partition.py (an unclosed
+# [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
+# the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
 # cluster_tests 5296 -> 5296 for #1951's nine checks in test_tier_partition.py (seven glob brackets
 # fnmatch closes at another ] than the check did, among them a range that ends in [ before a POSIX
 # class; the refusal's detail printing a backslash path as written; and a slash in such a bracket's
