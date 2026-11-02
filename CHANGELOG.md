@@ -534,6 +534,33 @@ true until the next version shipped.
 
 ### Fixed
 
+- `tier_partition` now refuses a local path that a foreign table reads under
+  another spelling of the same file (#1965, #1959). It compares each local
+  path as written and again in a folded form: a run of `/` as one, without a
+  `.` name, and without a name followed by `..`. In a glob, `\.` counts as
+  `.`, as `glob(3)` reads it. Before, a foreign table on `/w//*.parquet`,
+  `/w/./*.parquet` or `/w/\./*.parquet` did not block a move to
+  `/w/a.parquet`, although the reader reads that file, so the move overwrote
+  it. An Iceberg location that holds `..` now refuses the directory the reader
+  reads. A symbolic link is still not resolved. The folded form is the file
+  the kernel opens only when no symbolic link comes before a `..`; when one
+  does, the check can refuse the wrong file and allow the file the reader
+  reads. The docs state this limit.
+- `tier_partition` and `export_parquet(rel, path, server)` now accept a
+  server whose wrapper has pgcolumnar's Parquet handler under another name
+  (#1963). Before, they refused it with `42809`, while the path check already
+  read that wrapper's foreign tables as Parquet tables (#1955).
+- When a foreign table's glob is too large to match, `tier_partition` still
+  refuses the move with `54000`, and the error detail now names that foreign
+  table and its glob (#1974). This holds for a local glob and a local path,
+  and for an `s3://` glob with more than 128 `*` and an `s3://` path. Before,
+  the error named neither, and a table that really read the path could be
+  reported as `54000` instead of `58P02`. A glob too large only as written,
+  and not once folded, is now matched in its folded form.
+
+  All three change the install script and the alpha4 to alpha5 upgrade
+  script. docs/sql-reference.md, docs/how-to.md. `test/tier_partition.sh` and
+  `test_tier_partition.py`.
 - `native_reclaim_frag` and its pytest twin no longer fail when another session
   holds an old snapshot during `compact` (#1975). `compact` retires a dead group
   only after every transaction older than the `DELETE` is gone. While one remains,
