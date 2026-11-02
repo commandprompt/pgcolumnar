@@ -221,6 +221,11 @@ Retires row groups that are fully deleted, dropping their metadata so scans skip
 them. Holds only `ShareUpdateExclusiveLock`, so it runs against a live table.
 Returns the number of groups retired.
 
+A group counts as fully deleted only when no snapshot can still see its rows.
+While a session that took its snapshot before the `DELETE` is still running,
+`compact` retires none of those groups and can return 0. Call it again after
+that session's transaction ends.
+
 ```sql
 SELECT pgcolumnar.compact('events');
 ```

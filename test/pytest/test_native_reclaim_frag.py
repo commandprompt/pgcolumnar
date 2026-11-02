@@ -30,10 +30,13 @@ and no `free_space` row covers it. So the live groups, rounded up to whole pages
 the allocator reserves them, and the free ranges are laid out in offset order, and
 each must end where the next one starts.
 """
+import time
+
 ROWS = 30_000
 GROUP = 1_000
 DEL_LO, DEL_HI = 6001, 24000
 LIVE = ROWS - (DEL_HI - DEL_LO + 1)
+DEAD_GROUPS = (DEL_HI - DEL_LO + 1) // GROUP   # 18 whole groups of 1000 rows
 
 GEN = (f"SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload "
        f"FROM generate_series(1, {ROWS}) g")
@@ -63,14 +66,19 @@ def _rows(conn, table):
 def _run(conn, expect, mode):
     """One whole cycle in one coalesce mode.
 
-    -> (free rows after compact, final size, (gaps, unowned bytes) after recluster)
+    -> (free rows after compact, final size, (gaps, unowned bytes) after recluster,
+        (groups compact retired, compact calls))
     """
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS n")
         cur.execute("DROP TABLE IF EXISTS h")
         cur.execute(f"SET pgcolumnar.reclaim_coalesce = {mode}")
-        cur.execute("CREATE TABLE h (id int, payload text)")
-        cur.execute("CREATE TABLE n (id int, payload text) USING pgcolumnar")
+        # NO AUTOVACUUM ON THE FIXTURE (#1975). An autovacuum of n would retire the
+        # dead groups itself, in the server's coalesce mode rather than this one. An
+        # autoanalyze holds a snapshot, and while it does, compact retires nothing.
+        cur.execute("CREATE TABLE h (id int, payload text) WITH (autovacuum_enabled = false)")
+        cur.execute("CREATE TABLE n (id int, payload text) USING pgcolumnar "
+                    "WITH (autovacuum_enabled = false)")
         cur.execute(
             f"SELECT pgcolumnar.set_options('n', stripe_row_limit => {GROUP}, "
             f"chunk_group_row_limit => {GROUP})"
@@ -85,7 +93,18 @@ def _run(conn, expect, mode):
         # one transaction -- which is the only shape coalescing can merge.
         cur.execute(f"DELETE FROM h WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
         cur.execute(f"DELETE FROM n WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
-        cur.execute("SELECT pgcolumnar.compact('n')")
+        # WAIT FOR THE HORIZON (#1975). compact retires a group only once no
+        # snapshot can still see its rows. Any other session in this database that
+        # took a snapshot before the DELETE (another test, an autoanalyze of some
+        # other table) holds that back, and compact then retires 0 groups and frees
+        # nothing. So retry, for up to 30 s, until all the dead groups are retired.
+        retired = tries = 0
+        while retired < DEAD_GROUPS and tries < 60:
+            if tries:
+                time.sleep(0.5)
+            cur.execute("SELECT pgcolumnar.compact('n')")
+            retired += cur.fetchone()[0]
+            tries += 1
         cur.execute("SELECT count(*) FROM n")
         expect.num(cur.fetchone()[0], LIVE,
                    f"premise: coalesce {mode} -- {LIVE} rows survive the delete")
@@ -107,22 +126,33 @@ def _run(conn, expect, mode):
         size = cur.fetchone()[0]
         cur.execute(GAPS)
         gaps, unowned = cur.fetchone()
-    return free_rows, size, (gaps, int(unowned))
+    return free_rows, size, (gaps, int(unowned)), (retired, tries)
 
 
 def test_native_reclaim_frag(pgc_conn, expect):
-    on_free, on_size, on_gap = _run(pgc_conn, expect, "on")
+    on_free, on_size, on_gap, on_ret = _run(pgc_conn, expect, "on")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce on: parity with heap")
 
-    off_free, off_size, off_gap = _run(pgc_conn, expect, "off")
+    off_free, off_size, off_gap, off_ret = _run(pgc_conn, expect, "off")
     expect.rows(_rows(pgc_conn, "n"), _rows(pgc_conn, "h"),
                 "coalesce off: parity with heap")
 
+    print(f"-- (groups compact retired, compact calls): on={on_ret} off={off_ret}, "
+          f"of {DEAD_GROUPS}")
     print(f"-- free_space rows after compact: on={on_free} off={off_free}")
     print(f"-- final file size: on={on_size} off={off_size}")
     print(f"-- (gaps, unowned bytes) after recluster: on={on_gap} off={off_gap}")
 
+    # THE COMPARISON NEEDS SOMETHING TO MERGE (#1975). With coalescing off, compact
+    # must leave many separate free ranges. CI once counted 0 here, and "fewer rows
+    # with coalescing on" then failed as a verdict on coalescing it could not give.
+    # An arm, not a premise: a snapshot held past the wait above reddens it.
+    expect.text(
+        "yes" if off_free > 1 else f"no (off={off_free})",
+        "yes",
+        "coalesce off: compact leaves more than one free_space row",
+    )
     expect.text(
         "yes" if on_free < off_free else f"no (on={on_free} off={off_free})",
         "yes",
