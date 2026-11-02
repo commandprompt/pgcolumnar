@@ -750,9 +750,16 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   The function treats a `[...]` class as any one character other than `/`, so
   it can refuse a path that the class would not match. A `[` with no closing
   `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
-  class, and `[^...]` counts like `[!...]`. One rare form still gets past the
-  function (#1951). It is a class with a range that ends in `[` and also a
-  `[:name:]`, `[=c=]` or `[.c.]`, such as `[z1-[:alpha:]]`.
+  class, and `[^...]` counts like `[!...]`. A rare bracket can close at a
+  later `]` in glibc. That bracket is not negated and starts with a member.
+  Then a range in it ends in a plain `[` before a POSIX or an equivalence
+  class, as in `[1a-[:alpha:]]`. For such a bracket the function refuses every path
+  that has one character other than `/` in the bracket's place, whatever
+  follows (#1951). A bracket that starts with the range, as in
+  `[a-[:alpha:]]`, or a negated one, as in `[!1a-[:alpha:]]`, closes at the
+  first `]`.
+  One rare negated form still gets past the function (#1957). In it glibc
+  looks for the closing `]` past the end of the pattern, as in `[^[*-[::]`.
 
 The function reads the `path` option only of foreign tables whose wrapper uses
 pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
