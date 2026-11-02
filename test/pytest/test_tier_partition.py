@@ -21,10 +21,15 @@ path stands in for object storage. Independent of `test/tier_partition.sh`: its
 own columns, months, row counts, paths and in-flight row.
 """
 
+import os
+import pathlib
+import shutil
 import threading
 import time
 
 import psycopg
+
+ICEBERG_FIXTURES = pathlib.Path(__file__).resolve().parents[2] / "test" / "fixtures" / "iceberg"
 
 BOUND = "FOR VALUES FROM ('2026-03-01 00:00:00+00') TO ('2026-04-01 00:00:00+00')"
 
@@ -638,6 +643,103 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "an Iceberg table with a relative metadata_path refuses a path under '.'")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_irel")
+    # The kernel reads // as / and drops a . component, so a local glob or path
+    # spelled with them names the plainly spelled file (#1965). It also takes a
+    # name and the .. after it away; the Iceberg reader resolves the location
+    # with realpath, so a metadata_path that holds .. reads the directory it
+    # leads to (#1959). Each reader check first proves that the reader reads
+    # the plain file.
+    for d in (server_dir / "ssp", server_dir / "ssq", server_dir / "ssq" / "sub"):
+        d.mkdir(exist_ok=True)
+        d.chmod(0o777)
+    cols = "(at timestamptz, sensor int, reading float8, label text)"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT pgcolumnar.export_parquet('s_apr', '{server_dir}/ssp/a.parquet')")
+        cur.execute(f"SELECT pgcolumnar.export_parquet('s_apr', '{server_dir}/ssq/a.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_ldbl {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssp//*.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_ldot {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssp/./*.parquet')")
+    apr = _one(conn, "SELECT count(*) FROM s_apr")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_ldbl"), apr,
+               "a local glob spelled with // reads the file spelled plainly")
+    expect.num(_one(conn, "SELECT count(*) FROM s_dup_ldot"), apr,
+               "a local glob spelled with /./ reads the file spelled plainly")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ldot")
+    expect.text(rolled(tier.format(f"{server_dir}/ssp/a.parquet")),
+                "58P02", "a path a local glob spelled with // reads is refused")
+    expect.text(rolled_detail(tier.format(f"{server_dir}/ssp/a.parquet")),
+                f"Foreign table public.s_dup_ldbl reads path '{server_dir}/ssp//*.parquet'.",
+                "the refusal under a glob spelled with // names the glob as written")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ldbl")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_ldot {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssp/./*.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/ssp/a.parquet")),
+                "58P02", "a path a local glob spelled with /./ reads is refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ldot")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_lplain {cols} SERVER tq"
+                    f" OPTIONS (path '{server_dir}/ssq/a.parquet')")
+    expect.text(rolled(tier.format(f"{server_dir}/ssq//a.parquet")),
+                "58P02", "a target spelled with // is refused when a foreign table reads the plain spelling")
+    expect.text(rolled(tier.format(f"{server_dir}/ssq/./a.parquet")),
+                "58P02", "a target spelled with /./ is refused when a foreign table reads the plain spelling")
+    expect.text(rolled(tier.format(f"{server_dir}/ssq/sub/../a.parquet")),
+                "58P02", "a target spelled with a name and .. is refused when a foreign table reads the plain spelling")
+    # An s3:// key is not a path: // in it is part of the key, so it is not folded.
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_lplain")
+        cur.execute("CREATE FOREIGN TABLE s_dup_rdbl (x int) SERVER tq"
+                    " OPTIONS (path 's3://tierb/skd//a.parquet')")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/skd/a.parquet")),
+                "28000", "an s3:// key with // is another key, so the key with one / is not refused")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_rdbl")
+    # A real Iceberg table, the fixture of test_iceberg_fdw.py, read through a
+    # metadata_path that holds .. and one that holds a symbolic link (#1959).
+    iwh = server_dir / "siwh"
+    shutil.rmtree(iwh, ignore_errors=True)
+    (iwh / "x").mkdir(parents=True)
+    shutil.copytree(ICEBERG_FIXTURES / "warehouse" / "db", iwh / "db")
+    for root, _dirs, files in os.walk(iwh):
+        os.chmod(root, 0o777)
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o666)
+    link = server_dir / "siwlink"
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(iwh / "db" / "events")
+    imd = sorted(m.name for m in (iwh / "db" / "events" / "metadata").glob("*.metadata.json"))[-1]
+    icols = "(id bigint, region text, amount int)"
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_iup {icols} SERVER ti"
+                    f" OPTIONS (metadata_path '{iwh}/x/../db/events/metadata/{imd}')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_ilink {icols} SERVER ti"
+                    f" OPTIONS (metadata_path '{link}/metadata/{imd}')")
+    ids = "SELECT count(*) || ' rows, ids ' || string_agg(id::text, ',' ORDER BY id) FROM {}"
+    expect.text(_one(conn, ids.format("s_dup_iup")), "5 rows, ids 1,2,3,4,5",
+                "the Iceberg reader reads a table whose metadata_path holds a name and ..")
+    expect.text(_one(conn, ids.format("s_dup_ilink")), "5 rows, ids 1,2,3,4,5",
+                "the Iceberg reader reads a table whose metadata_path goes through a symbolic link")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ilink")
+    expect.text(rolled(tier.format(f"{iwh}/db/events/data/s_apr.parquet")),
+                "58P02", "a path under an Iceberg location reached through a name and .. is refused")
+    expect.text(rolled_detail(tier.format(f"{iwh}/db/events/data/s_apr.parquet")),
+                f"Foreign table public.s_dup_iup reads Iceberg files under '{iwh}/x/../db/events/'.",
+                "the refusal under an Iceberg location with .. names the location as written")
+    # A symbolic link is not resolved: docs/sql-reference.md states the limit,
+    # and this check holds it.
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_iup")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_ilink {icols} SERVER ti"
+                    f" OPTIONS (metadata_path '{link}/metadata/{imd}')")
+    expect.text(rolled(tier.format(f"{iwh}/db/events/data/s_apr.parquet")),
+                "ok", "a path under an Iceberg location reached through a symbolic link is not refused, as documented")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_ilink")
     # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
     # (#1949); a wrapper made with the Parquet handler under another name does.
     with conn.cursor() as cur:
@@ -657,6 +759,45 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P01", "a path option under another wrapper does not refuse the same path")
     expect.text(rolled(tier.format(f"{server_dir}/spq2/y.parquet")),
                 "58P02", "a path a wrapper with the Parquet handler under another name reads is refused")
+    # The target server is also chosen by its wrapper's handler, as the path
+    # check chooses the Parquet reader (#1963).
+    (server_dir / "spq2t").mkdir(exist_ok=True)
+    (server_dir / "spq2t").chmod(0o777)
+
+    def rolled_one(sql):
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+        try:
+            return str(_one(conn, sql))
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK")
+    pq2t = f"SELECT pgcolumnar.tier_partition('s_apr', 's_pq2s', '{server_dir}/spq2t/s_apr.parquet')"
+    expect.text(rolled_one(pq2t), str(apr),
+                "a server on a wrapper with the Parquet handler under another name is accepted as the target")
+    other = server_dir / "spq2t" / "o.parquet"
+    other_sql = f"SELECT pgcolumnar.tier_partition('s_apr', 's_other', '{other}')"
+    expect.text(f"{_sqlstate(conn, other_sql)}|{'file' if other.exists() else 'nofile'}",
+                "42809|nofile", "a server on a wrapper without the Parquet handler is refused as the target")
+    # A glob too large for glibc raises 54000 in path_glob_matches. The move
+    # still fails closed, and the error names the table that blocks it (#1974).
+    deep = "/elsewhere/" + "*/" * 200 + "x"
+    with conn.cursor() as cur:
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_deep (x int) SERVER tq OPTIONS (path '{deep}')")
+    nodir = tier.format(f"{server_dir}/snodir/y.parquet")
+    expect.text(f"{_sqlstate(conn, nodir)}|{_errtext(conn, nodir)}|{_errdetail(conn, nodir)}",
+                "54000|glob pattern has too many levels to match: 200|A glob pattern may have at most 128"
+                f" levels after the first *, ? or [. Foreign table public.s_dup_deep reads path '{deep}',"
+                " so tier_partition cannot tell whether it reads the target.",
+                "a foreign table whose glob is too large to match blocks the move with an error that names it")
+    expect.text(rolled(tier.format(f"{server_dir}/spq2/y.parquet")),
+                "58P02", "a path another foreign table reads is still refused as read beside a glob too large to match")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sdeep/y.parquet")),
+                "28000", "a foreign table whose glob is too large to match does not block a remote target")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_deep")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler

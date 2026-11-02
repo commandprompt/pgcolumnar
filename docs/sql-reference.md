@@ -660,7 +660,9 @@ The function refuses these before it writes anything:
 
 - a null `server` (`22004`);
 - a `server` that does not exist (`42704`);
-- a `server` that does not use the `pgcolumnar_parquet` wrapper (`42809`);
+- a `server` whose wrapper does not have pgcolumnar's Parquet handler,
+  `pgcolumnar.parquet_fdw_handler` (`42809`). A wrapper made with that
+  handler under another name is accepted, as `tier_partition` accepts it (#1963);
 - a caller without `USAGE` on `server` (`42501`).
 
 A local `path` writes no object and uses no endpoint, region or key. The
@@ -741,8 +743,10 @@ rollup is right as it stands.
 ### pgcolumnar.tier_partition(partition regclass, server name, path text, lock_wait interval DEFAULT '10 seconds') returns bigint
 
 Moves the columnar partition `partition` to a Parquet file at `path`. Then
-attaches the file as a foreign table of `server`, which must use the
-`pgcolumnar_parquet` wrapper. The foreign table takes the partition's name,
+attaches the file as a foreign table of `server`. The server's wrapper must
+have pgcolumnar's Parquet handler, `pgcolumnar.parquet_fdw_handler`. That is
+the `pgcolumnar_parquet` wrapper, or a wrapper you made with that handler
+under another name (#1963). The foreign table takes the partition's name,
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
 
@@ -774,21 +778,37 @@ The function refuses these:
   the table's glob (#1941). A glob is matched by
   [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
   as the reader matches it (#1957). The scheme and the host of an http(s) URL match in any case,
-  and `s3a://` or `s3n://` match `s3://`. A local path is compared as written,
-  so a symbolic link or `..` is not resolved. A new file under a directory a
-  foreign table reads is refused too; docs/how-to.md shows ways around it.
+  and `s3a://` or `s3n://` match `s3://`. A local path is compared as
+  written, and again in the form the kernel reads it (#1965, #1959). That
+  form reads `//` as `/`, drops a `.` name, and drops a name followed by
+  `..`. So
+  `/w//*.parquet` and `/w/x/../*.parquet` refuse `/w/a.parquet`. A symbolic
+  link is not resolved, and a relative path is not resolved against the data
+  directory. A remote key is compared as written, because `//` is part of a
+  key. A new file under a directory a foreign table reads is refused too;
+  docs/how-to.md shows ways around it.
   Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
   For a `pgcolumnar_iceberg` foreign table, a path under the table location is
   refused: the parent of the directory that holds `metadata_path` (#1949).
+  The same two comparisons apply to that location. The Iceberg reader resolves
+  a symbolic link in it, but this check does not. So a path in the directory
+  the link leads to is not refused.
   The error detail names the foreign table and its path. A control character
   in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
   stays on one line (#1960). A backslash before an `x` prints as `\x5C`, so a
   path that holds the characters `\x0A` does not print like a newline. In a
   `WIN1252` database the euro sign, byte `0x80`, prints as written;
+- a local `path` when a foreign table's glob is too large to match
+  (`54000`, see `path_glob_matches` below). The function cannot tell whether
+  that table reads `path`, so it refuses. The error detail names the foreign
+  table and its glob, escaped as above (#1974). A table that does read
+  `path` is reported as `58P02` first;
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
-- a relation that is not a columnar partition (`42809`).
+- a relation that is not a columnar partition (`42809`);
+- a `server` whose wrapper does not have pgcolumnar's Parquet handler
+  (`42809`).
 - a caller that is not a member of both `pg_write_server_files` and
   `pg_read_server_files` (`42501`), before anything is written.
 
@@ -830,7 +850,9 @@ A pattern that is too large for glibc to match safely raises error 54000
 `fnmatch` uses stack space for each `*`. A larger pattern could crash the
 server.
 The function compares spellings: `path` must be spelled as `glob(3)` would
-return it, so `/w//x` does not match `/w/x*`.
+return it, so `/w//x` does not match `/w/x*`. `tier_partition` also compares
+the form the kernel reads, without `//`, `.` names or a name followed by
+`..`. So it refuses what the reader opens under either spelling (#1965).
 
 ```sql
 SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true

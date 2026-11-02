@@ -768,7 +768,11 @@ table location and does not read it. So the location covers every file the
 table can read. A `metadata_path` with no directory above `metadata/` is cut
 as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
 refused. A relative `metadata/v1.metadata.json` gives `./`, which matches
-only a path written as `./...`, because a local path is compared as written.
+only a path written as `./...`, because a relative path is not resolved
+against the data directory. A location that holds `..`, such as
+`/w/x/../t/`, refuses paths under `/w/t/`, as the reader reads it (#1959).
+A location reached through a symbolic link does not refuse paths in the
+directory the link leads to, although the reader reads that directory.
 
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,
@@ -797,14 +801,24 @@ another tool, do one of these:
 - Drop that table before the move and create it again after.
 
 The bucket and the key must match in case. A local path is compared as
-written. The function does not resolve a symbolic link, `..` or a relative
-path, so a local file spelled another way is not seen. SQL has no way to
-resolve a path to the file it names. A `file://` URL is not another spelling
+written, and again in the form the kernel reads it (#1965, #1959). That form
+reads a run of `/` as one `/`, drops a `.` name, and drops a name followed by
+`..`. So a foreign table on `/w//*.parquet` blocks a move to `/w/a.parquet`. The
+function does not resolve a symbolic link or a relative path. So it does not
+see a local file reached through a link, or spelled relative to the data
+directory. It does not follow a link because a link can change after the check,
+and the reader follows it at each query. A `file://` URL is not another spelling
 of a local path. The Parquet reader opens `file://...` as a file of that
 name, which does not exist. So a foreign table on it reads nothing and blocks
 nothing. The function also cannot see readers outside the database. So do not
 reuse a path that another system reads, or a local file that a foreign table
 reads under another spelling.
+
+Some globs are too large for glibc to match: see `path_glob_matches` in
+docs/sql-reference.md. A foreign table with such a glob blocks every move to a
+local path, with error `54000`. The function cannot tell whether that table reads
+the path, so it refuses. The error detail names the table and its glob
+(#1974). Change that table's path, or drop the table, to move again.
 
 The function refuses these partitions before it moves anything:
 

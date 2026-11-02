@@ -534,6 +534,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- `tier_partition` now refuses a local path that a foreign table reads under
+  another spelling of the same file (#1965, #1959). It compares each local
+  path as written and again in the form the kernel reads it: a run of `/` as
+  one, without a `.` name, and without a name followed by `..`. Before, a
+  foreign table on `/w//*.parquet` or `/w/./*.parquet` did not block a move to
+  `/w/a.parquet`, although the reader reads that file, so the move overwrote
+  it. An Iceberg location that holds `..` now refuses the directory the reader
+  reads. A symbolic link is still not resolved; the docs state this limit.
+- `tier_partition` and `export_parquet(rel, path, server)` now accept a
+  server whose wrapper has pgcolumnar's Parquet handler under another name
+  (#1963). Before, they refused it with `42809`, while the path check already
+  read that wrapper's foreign tables as Parquet tables (#1955).
+- When a foreign table's glob is too large to match, `tier_partition` still
+  refuses a local move with `54000`, and the error detail now names that
+  foreign table and its glob (#1974). Before, the error named neither, and a
+  table that really read the path could be reported as `54000` instead of
+  `58P02`.
+
+  All three change the install script and the alpha4 to alpha5 upgrade
+  script. docs/sql-reference.md, docs/how-to.md. `test/tier_partition.sh` and
+  `test_tier_partition.py`.
+
 - The pytest harness now reads an exactly equal library install time and
   postmaster start time as unknown, not fresh, as the shell harness has since
   #1956 (#1969). `Cluster.server_binary_verdict` in

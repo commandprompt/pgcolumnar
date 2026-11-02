@@ -1813,4 +1813,9 @@ guard_tests 863
 # added to an existing test (one * and 129 levels; 129 ? or [ levels; 128/129 s3:// *; a 4095/4096-byte
 # s3:// pattern; a walk cut by an interrupt is never false, replacing the vacuous interrupt check), by
 # collection: 6161 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1963, #1965, #1974 and #1959's checks in test_tier_partition.py (a
+# server on a wrapper with the Parquet handler under another name is the target; a local glob or target
+# spelled with //, /./ or a name and .. is refused; an Iceberg location with .. is refused, one through a
+# symbolic link is not; a glob too large to match names its table), added to existing tests, by
+# collection: 6199 tests collected, less guard_tests 863.
 cluster_tests 5336

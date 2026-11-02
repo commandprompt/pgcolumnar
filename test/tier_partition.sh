@@ -567,6 +567,80 @@ check "an Iceberg table with a relative metadata_path refuses a path under '.'" 
 	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', './nodir/x.parquet');")" \
 	"Foreign table public.dup_irel reads Iceberg files under './'."
 psql_run "DROP FOREIGN TABLE dup_irel;"
+# The kernel reads // as / and drops a . component, so a local glob or path
+# spelled with them names the plainly spelled file (#1965). It also takes a
+# name and the .. after it away; the Iceberg reader resolves the location with
+# realpath, so a metadata_path that holds .. reads the directory it leads to
+# (#1959). The check compares each local path in that lexical form too. Each
+# reader check first proves that the reader reads the plain file.
+mkdir -p "$W/sp" "$W/sq/sub" && chmod 777 "$W/sp" "$W/sq" "$W/sq/sub"
+psql_run "SELECT pgcolumnar.export_parquet('m_feb', '$W/sp/a.parquet');
+          SELECT pgcolumnar.export_parquet('m_feb', '$W/sq/a.parquet');
+          CREATE FOREIGN TABLE dup_ldbl (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sp//*.parquet');
+          CREATE FOREIGN TABLE dup_ldot (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sp/./*.parquet');"
+feb_rows="$(q "SELECT count(*) FROM m_feb;")"
+check "a local glob spelled with // reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_ldbl;")" "$feb_rows"
+check "a local glob spelled with /./ reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_ldot;")" "$feb_rows"
+psql_run "DROP FOREIGN TABLE dup_ldot;"
+check "a path a local glob spelled with // reads is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" "58P02"
+check "the refusal under a glob spelled with // names the glob as written" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" \
+	"Foreign table public.dup_ldbl reads path '$W/sp//*.parquet'."
+psql_run "DROP FOREIGN TABLE dup_ldbl;
+          CREATE FOREIGN TABLE dup_ldot (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sp/./*.parquet');"
+check "a path a local glob spelled with /./ reads is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sp/a.parquet');")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_ldot;
+          CREATE FOREIGN TABLE dup_lplain (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sq/a.parquet');"
+check "a target spelled with // is refused when a foreign table reads the plain spelling" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq//a.parquet');")" "58P02"
+check "a target spelled with /./ is refused when a foreign table reads the plain spelling" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/./a.parquet');")" "58P02"
+check "a target spelled with a name and .. is refused when a foreign table reads the plain spelling" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/sub/../a.parquet');")" "58P02"
+# An s3:// key is not a path: // in it is part of the key, so it is not folded.
+psql_run "DROP FOREIGN TABLE dup_lplain;
+          CREATE FOREIGN TABLE dup_rdbl (x int) SERVER tier_pq OPTIONS (path 's3://tierb/kd//a.parquet');"
+check "an s3:// key with // is another key, so the key with one / is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/kd/a.parquet');")" "28000"
+psql_run "DROP FOREIGN TABLE dup_rdbl;"
+# A real Iceberg table, the fixture of test/iceberg_fdw.sh, read through a
+# metadata_path that holds .. and one that holds a symbolic link (#1959).
+IWH="$W/iwh"
+rm -rf "$IWH" && mkdir -p "$IWH/x" && cp -r "$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg/warehouse/db" "$IWH/db"
+chmod -R a+rwX "$IWH"
+ln -sfn "$IWH/db/events" "$W/iwlink"
+IMD="$(cd "$IWH/db/events/metadata" && ls *.metadata.json | sort | tail -1)"
+psql_run "CREATE FOREIGN TABLE dup_iup (id bigint, region text, amount int) SERVER tier_ice
+            OPTIONS (metadata_path '$IWH/x/../db/events/metadata/$IMD');
+          CREATE FOREIGN TABLE dup_ilink (id bigint, region text, amount int) SERVER tier_ice
+            OPTIONS (metadata_path '$W/iwlink/metadata/$IMD');"
+check "the Iceberg reader reads a table whose metadata_path holds a name and .." \
+	"$(q "SELECT count(*) || ' rows, ids ' || string_agg(id::text, ',' ORDER BY id) FROM dup_iup;")" "5 rows, ids 1,2,3,4,5"
+check "the Iceberg reader reads a table whose metadata_path goes through a symbolic link" \
+	"$(q "SELECT count(*) || ' rows, ids ' || string_agg(id::text, ',' ORDER BY id) FROM dup_ilink;")" "5 rows, ids 1,2,3,4,5"
+psql_run "DROP FOREIGN TABLE dup_ilink;"
+check "a path under an Iceberg location reached through a name and .. is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$IWH/db/events/data/m_feb.parquet');")" "58P02"
+check "the refusal under an Iceberg location with .. names the location as written" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$IWH/db/events/data/m_feb.parquet');")" \
+	"Foreign table public.dup_iup reads Iceberg files under '$IWH/x/../db/events/'."
+# A symbolic link is not resolved: that needs the file system at the time of
+# the call, and the link can change after it. docs/sql-reference.md states the
+# limit. This check holds it, so a change to it shows here and in the docs.
+psql_run "DROP FOREIGN TABLE dup_iup;
+          CREATE FOREIGN TABLE dup_ilink (id bigint, region text, amount int) SERVER tier_ice
+            OPTIONS (metadata_path '$W/iwlink/metadata/$IMD');"
+check "a path under an Iceberg location reached through a symbolic link is not refused, as documented" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$IWH/db/events/data/m_feb.parquet');")" "ok"
+psql_run "DROP FOREIGN TABLE dup_ilink;"
 # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
 # (#1949). The path option of a table under another wrapper means what that
 # wrapper says, so it refuses nothing. A wrapper made with the Parquet handler
@@ -585,6 +659,30 @@ check "a path option under another wrapper does not refuse the same path" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/oth/x.parquet');")" "58P01"
 check "a path a wrapper with the Parquet handler under another name reads is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/pq2/x.parquet');")" "58P02"
+# The target server is also chosen by its wrapper's handler, as the path
+# check chooses the Parquet reader (#1963). A move through tier_pq2s writes
+# and reads back its file; a wrapper without the handler is still refused.
+mkdir -p "$W/pq2t" && chmod 777 "$W/pq2t"
+check "a server on a wrapper with the Parquet handler under another name is accepted as the target" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q \
+		-v VERBOSITY=sqlstate -c "BEGIN" -c "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq2s', '$W/pq2t/m_feb.parquet');" \
+		-c "ROLLBACK" 2>&1 | head -1)" "$feb_rows"
+check "a server on a wrapper without the Parquet handler is refused as the target" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_other', '$W/pq2t/o.parquet');")|$([ -e "$W/pq2t/o.parquet" ] && echo file || echo nofile)" \
+	"42809|nofile"
+# A glob too large for glibc raises 54000 in path_glob_matches. The move
+# still fails closed, and the error names the table that blocks it (#1974).
+# A table that really reads the path is still reported as such.
+psql_run "CREATE FOREIGN TABLE dup_deep (x int) SERVER tier_pq
+            OPTIONS (path '/elsewhere/$(printf '*/%.0s' $(seq 200))x');"
+check "a foreign table whose glob is too large to match blocks the move with an error that names it" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")|$(errtext "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")|$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" \
+	"54000|glob pattern has too many levels to match: 200|A glob pattern may have at most 128 levels after the first *, ? or [. Foreign table public.dup_deep reads path '/elsewhere/$(printf '*/%.0s' $(seq 200))x', so tier_partition cannot tell whether it reads the target."
+check "a path another foreign table reads is still refused as read beside a glob too large to match" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/pq2/x.parquet');")" "58P02"
+check "a foreign table whose glob is too large to match does not block a remote target" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/deep/x.parquet');")" "28000"
+psql_run "DROP FOREIGN TABLE dup_deep;"
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar
