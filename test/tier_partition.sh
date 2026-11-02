@@ -759,6 +759,43 @@ check "a path a local glob spelled with an escaped . reads is refused" \
 check "a path a local glob spelled with an escaped .. reads is refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sq/a.parquet');")" "58P02"
 psql_run "DROP FOREIGN TABLE dup_lesc, dup_lesc2;"
+# glob(3) lists . and .. in each directory, and a glob name that spells the
+# leading dot, such as .* or .?, matches them. So a table on sd/.*/a.parquet
+# reads sd/./a.parquet, and one on sd/sub/.?/a.parquet reads
+# sd/sub/../a.parquet: both are sd/a.parquet. path_glob_matches compares the
+# lexical form of each path glob(3) returns with that of the target (#1982).
+# A * does not match a leading dot (FNM_PERIOD), so a table on nd/*/a.parquet
+# never reads nd/a.parquet. Each reader check first proves what the reader reads.
+mkdir -p "$W/sd/sub" && chmod 777 "$W/sd" "$W/sd/sub"
+psql_run "SELECT pgcolumnar.export_parquet('m_feb', '$W/sd/a.parquet');
+          CREATE FOREIGN TABLE dup_dstar (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sd/.*/a.parquet');
+          CREATE FOREIGN TABLE dup_dq (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sd/sub/.?/a.parquet');"
+check "premise: a local glob through a .* name reads the file spelled plainly" \
+	"$(q "SELECT count(*) FROM dup_dstar;")" "$feb_rows"
+check "premise: a local glob through a .? name reads the file one .. above" \
+	"$(q "SELECT count(*) FROM dup_dq;")" "$feb_rows"
+psql_run "DROP FOREIGN TABLE dup_dq;"
+check "a path a local glob reads through a .* name is refused, and the detail names that table" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sd/a.parquet');")|$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sd/a.parquet');")" \
+	"58P02|Foreign table public.dup_dstar reads path '$W/sd/.*/a.parquet'."
+psql_run "DROP FOREIGN TABLE dup_dstar;
+          CREATE FOREIGN TABLE dup_dq (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sd/sub/.?/a.parquet');"
+check "a path a local glob reads through a .? name that matches .. is refused, and the detail names that table" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sd/a.parquet');")|$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/sd/a.parquet');")" \
+	"58P02|Foreign table public.dup_dq reads path '$W/sd/sub/.?/a.parquet'."
+psql_run "CREATE FOREIGN TABLE dup_dstar (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/sd/.*/a.parquet');"
+check "a path no table reads is not refused beside globs through .* and .? names" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nd/b.parquet');")" "58P01"
+psql_run "DROP FOREIGN TABLE dup_dstar, dup_dq;
+          CREATE FOREIGN TABLE dup_dplain (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '$W/nd/*/a.parquet');"
+check "a path a local glob * reaches only through . or .. is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nd/a.parquet');")" "58P01"
+psql_run "DROP FOREIGN TABLE dup_dplain;"
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar
@@ -1362,5 +1399,31 @@ check "path_glob_matches refuses an s3:// pattern of 1000 */ levels with an erro
 	"54000|1"
 wait_up
 psql_run "DROP DATABASE tier_cutf8;"
+
+# ---- path_glob_matches reads .* and .? as glob(3) does (#1982) ---------------
+#
+# glob(3) lists . and .. in each directory, and a glob name that spells the
+# leading dot matches them, so it returns names such as /w/x/./a.parquet. The
+# helper compares the lexical form of each one with that of the target. A
+# directory the glob names before its first *, ? or [ is taken to exist, so
+# /w/x/sub/.?/a.parquet reaches /w/x/a.parquet through sub. An s3:// key is
+# not a path, so it is never folded. Last in the suite, as new C code: a
+# crash here fails these checks alone.
+wait_up
+check "path_glob_matches answers true for a path a local glob reaches through a .* or a .? name" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('$W/sd/.*/a.parquet', '$W/sd/a.parquet') || '|' || pgcolumnar.path_glob_matches('$W/sd/sub/.?/a.parquet', '$W/sd/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers true for a path a local glob reaches through a .[.] or an escaped .* name" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/sub/.[.]/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/\\.*/a.parquet', '/w/x/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers true for a target spelled with . or a name and .. that a .* glob reaches" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/.*/a.parquet', '/w/x/./a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/.*/a.parquet', '/w/x/sub/../a.parquet');")" \
+	"true|true"
+check "a local glob * or ?? does not match . or .., so path_glob_matches answers false for a path reached only through them" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/*/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/sub/??/a.parquet', '/w/x/a.parquet');")" \
+	"false|false"
+check "path_glob_matches does not fold an s3:// key, so s3://b/x/*.parquet does not match s3://b/x/./a.parquet" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('s3://b/x/*.parquet', 's3://b/x/./a.parquet') || '|' || pgcolumnar.path_glob_matches('s3://b/x/*.parquet', 's3://b/x/a.parquet');")" \
+	"false|true"
 
 pgc_summary
