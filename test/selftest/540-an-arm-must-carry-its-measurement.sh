@@ -225,17 +225,52 @@ PROBE
 
 _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 	awk '
+		# HIDE WHAT IS QUOTED OR SUBSTITUTED (#1986). Returns s with every
+		# character inside quotes, a `$(...)` or a backtick replaced by `_`,
+		# so the result has the same length and its positions match s. A
+		# substitution may hold quotes and parentheses of its own, and may
+		# nest, so a regular expression cannot find where it ends.
+		function mask(s,   n, i, ch, d, q, bt, out) {
+			n = length(s); out = ""; d = 0; q[0] = ""; bt = 0
+			for (i = 1; i <= n; i++) {
+				ch = substr(s, i, 1)
+				if (q[d] == "\047") {
+					if (ch == "\047") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\\" && i < n) {
+					if (d > 0 || q[d] != "" || bt) out = out "__"
+					else out = out substr(s, i, 2)
+					i++; continue
+				}
+				if (bt) { if (ch == "`") bt = 0; out = out "_"; continue }
+				if (ch == "`") { bt = 1; out = out "_"; continue }
+				if (ch == "$" && substr(s, i + 1, 1) == "(") {
+					d++; q[d] = ""; out = out "__"; i++; continue
+				}
+				if (q[d] == "\"") {
+					if (ch == "\"") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\"" || ch == "\047") { q[d] = ch; out = out "_"; continue }
+				if (d > 0 && ch == "(") { d++; q[d] = ""; out = out "_"; continue }
+				if (d > 0 && ch == ")") { d--; out = out "_"; continue }
+				out = out ((d > 0 || q[0] != "") ? "_" : ch)
+			}
+			return out
+		}
 		function determinate(t,   c) {
 			# A COMPOUND IS NEVER EXCUSED (#1989). `[ "$b" -le "$c" -a "$a"
 			# -gt 0 ]` ends in `-gt 0`, and an equality half matched from any
 			# position, so both read as determinate while `no` hid which half
 			# failed. The awk rule below refuses more than one comparison for
-			# the same reason. A command substitution inside the test is
-			# removed first: the `|| true` of `"$(grep -c x || true)"` and the
-			# `-o` of `grep -o` do not join two tests.
-			c = t
-			while (gsub(/\$\([^()]*\)/, "S", c)) ;
-			if (c ~ /(^|[[:space:]])(-a|-o|&&|\|\|)([[:space:]]|$)/) return 0
+			# the same reason. Quotes and command substitutions are hidden
+			# first: the `|| true` of `"$(grep -c "(x)" || true)"` and the
+			# `-o` of `grep -o` do not join two tests. `&&` and `||` need no
+			# spaces around them, because `[[ A&&B ]]` is a compound too.
+			c = mask(t)
+			if (c ~ /&&|\|\|/) return 0
+			if (c ~ /(^|[[:space:]])-[ao]([[:space:]]|$)/) return 0
 			# ANCHORED to the start of the test. Searching anywhere matched
 			# `grep -c .` inside a command substitution as a unary file test --
 			# `c` is in the class -- and silently excused five real offenders.
@@ -292,8 +327,10 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		}
 		# SPLIT ONE TEST FROM WHAT FOLLOWS IT (#1986). s starts at the test.
 		# Sets T to the text the test compares and REST to the text after it.
-		# `test` ends at `&`, `|`, `;`, `<` or `>`, and a trailing file
-		# descriptor such as the `2` of `2>x` goes back to REST.
+		# `test` ends at the first `&`, `|`, `;`, `<` or `>` that is not
+		# quoted or inside a substitution, so `test "$(wc -l < f)" -ge 20`
+		# is read whole. A trailing file descriptor such as the `2` of
+		# `2>x` goes back to REST.
 		function split_test(s) {
 			sub(/^[[:space:]]*/, "", s)
 			if (match(s, /^\[\[[^]]*\]\]/)) {
@@ -302,7 +339,7 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			if (match(s, /^\[[^]]*\]/)) {
 				T = substr(s, 2, RLENGTH - 2); REST = substr(s, RLENGTH + 1); return 1
 			}
-			if (match(s, /^test[[:space:]][^&|;<>]*/)) {
+			if (match(mask(s), /^test[[:space:]][^&|;<>]*/)) {
 				T = substr(s, 5, RLENGTH - 4); REST = substr(s, RLENGTH + 1)
 				if (REST ~ /^[<>]/ && match(T, /[[:space:]][0-9]+$/)) {
 					REST = substr(T, RSTART + 1) REST; T = substr(T, 1, RSTART)
@@ -558,6 +595,11 @@ check_text "control: the sweep sees an arm behind a redirect and a floor of two"
 # were refused. The mirror is excused only with exactly 0 or 1 on the left, so
 # `[ 10 -lt "$x" ]` and `[ 11 -le "$x" ]` stay refused.
 #
+# A `test` ends at the first `&`, `|`, `;`, `<` or `>` outside quotes and
+# substitutions. It used to end at the first one anywhere, so
+# `test "$(wc -l < "$f")" -ge 20 && echo yes || echo no` was never examined
+# (#1995 review).
+#
 # `-lt 1` and `-le 0` stay refused on purpose. They pass on 0 and fail on every
 # count above it, so `no` does not say which count. The pytest twin refuses
 # `r <= 0` for the same reason.
@@ -603,10 +645,16 @@ check "carried: a test-builtin branch names the number" \
 	"$(test "$n" -ge 5 && echo yes || echo "no (found $n)")" "yes"
 check "determinate: a test-builtin count against nothing behind a redirect" \
 	"$(test "$rows" -gt 0 2>/dev/null && echo yes || echo no)" "yes"
+check "a test-builtin floor over a count read through a redirect" \
+	"$(test "$(wc -l < "$f")" -ge 20 && echo yes || echo no)" "yes"
+check "a test-builtin threshold over a pipeline that may fail" \
+	"$(test "$(grep -c x "$f" || true)" -le 3 && echo yes || echo no)" "yes"
+check "determinate: a test-builtin count from a pipeline that may fail" \
+	"$(test "$(grep -c x "$f" || true)" -gt 0 && echo yes || echo no)" "yes"
 PROBE
 _lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
-	"$_lam_forms_names" "a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a mirrored count above one;a mirrored count above ten;a mirrored floor of eleven;a test-builtin threshold;a test-builtin threshold behind a redirect;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;at most zero;nothing expected and a count found;"
+	"$_lam_forms_names" "a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a mirrored count above one;a mirrored count above ten;a mirrored floor of eleven;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold behind a redirect;a test-builtin threshold over a pipeline that may fail;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;at most zero;nothing expected and a count found;"
 
 # A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
 #
@@ -625,10 +673,15 @@ check_text "control: the sweep reads double brackets, the test builtin and mirro
 # target stopped at the space and `&&` was never reached. In the if/then/else
 # form, the half after the space was read as a branch.
 #
-# THREE CONTROLS KEEP THE COMPOUND RULE HONEST. A command substitution inside
-# the test is not a compound: the `|| true` of `"$(grep -c x || true)"` and the
-# `-o` of `grep -o` belong to the substitution. Without that, three live arms in
-# native_vecskip were refused. A carrying compound is still not refused.
+# CONTROLS KEEP THE COMPOUND RULE HONEST. A command substitution inside the
+# test is not a compound: the `|| true` of `"$(grep -c x || true)"` and the `-o`
+# of `grep -o` belong to the substitution. Without that, three live arms in
+# native_vecskip were refused. The substitution may nest, hold a quoted `)` or a
+# subshell, or be written in backticks. An operand such as `-only` or `x-a` is
+# not `-o` or `-a`. A carrying compound is still not refused.
+#
+# `&&` AND `||` NEED NO SPACES. `[[ "$b" -le 3&&"$a" -gt 0 ]]` is a compound in
+# bash, so it is refused like the spaced form (#1995 review).
 _lam_probe_compound="$PGC_WORKDIR/lam_probe_compound.sh"
 cat > "$_lam_probe_compound" <<'PROBE'
 check "a compound whose first half is nothing versus something" \
@@ -655,10 +708,30 @@ check "determinate: a grep option inside the test is not a compound" \
 	"$([ "$(grep -o x "$f" | wc -l)" -gt 0 ] && echo yes || echo no)" "yes"
 check "carried: a compound whose branch names every operand" \
 	"$([ "$a" -gt 0 -a "$b" -le "$c" ] && echo yes || echo "no (a=$a b=$b c=$c)")" "yes"
+check "determinate: a nested substitution whose pipeline may fail is not a compound" \
+	"$([ "$(grep -c "$(cat "$f")" "$g" || true)" -gt 0 ] && echo yes || echo no)" "yes"
+check "a double-bracket compound joined by or" \
+	"$([[ "$a" -eq 1 || "$b" -le "$c" ]] && echo yes || echo no)" "yes"
+check "determinate: an operand that starts with -o is not a compound" \
+	"$([ "$arg" = -only ] && echo yes || echo no)" "yes"
+check "determinate: an operand that ends in -a is not a compound" \
+	"$([ "$arg" = x-a ] && echo yes || echo no)" "yes"
+check "a mirrored floor of zero" \
+	"$([ 0 -le "$x" ] && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a quoted path with a space and a suffix" \
+	"$([ "$a" -le "$b" ] 2>"$d/a b".log && echo yes || echo no)" "yes"
+check "a double-bracket compound joined by an unspaced and" \
+	"$([[ "$b" -le 3&&"$a" -gt 0 ]] && echo yes || echo no)" "yes"
+check "determinate: a substitution that holds a quoted parenthesis is not a compound" \
+	"$([ "$(grep -c "x)" "$f" || true)" -gt 0 ] && echo yes || echo no)" "yes"
+check "determinate: a substitution that holds a subshell is not a compound" \
+	"$([ $( (grep -c x "$f") || true) -gt 0 ] && echo yes || echo no)" "yes"
+check "determinate: a backtick substitution is not a compound" \
+	"$([ `grep -c x "$f" || true` -gt 0 ] && echo yes || echo no)" "yes"
 PROBE
 _lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
-	"$_lam_compound_names" "a compound whose first half is nothing versus something;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound whose last half is a floor of one;a floor of ten;a threshold behind a redirect into a quoted path with a space;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
+	"$_lam_compound_names" "a compound whose first half is nothing versus something;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a floor of ten;a mirrored floor of zero;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused

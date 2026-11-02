@@ -541,8 +541,12 @@ true until the next version shipped.
   it used to refuse. `-lt 1` and `-le 0` stay refused: they fail on every count
   above 0. It no longer excuses a compound test joined by `-a`, `-o`, `&&` or
   `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
-  so `no` hid which half failed. A redirect into a quoted path with a space,
-  such as `2>"a b"`, no longer hides an arm. New fixture arms pin the end
+  so `no` hid which half failed. `&&` and `||` count without spaces around
+  them. It ignores quotes, command substitutions and backticks when it looks
+  for a compound, so `"$(grep -c "x)" f || true)" -gt 0` is still excused. A
+  `test` no longer ends at a `<` or `|` inside a substitution, so
+  `test "$(wc -l < f)" -ge 20` is read whole. A redirect into a quoted path
+  with a space, such as `2>"a b"`, no longer hides an arm. New fixture arms pin the end
   anchors of the `-gt 0` and `-ge 1` excuses. The wider sweep finds no new
   arm in the test suites, so no suite changed.
 - Self-test part 540 now finds more check arms that print only `no` when
