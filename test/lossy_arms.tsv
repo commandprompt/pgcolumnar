@@ -129,8 +129,6 @@ native_reclaim	repeated recluster reuses space (file plateaus)
 native_recluster	reclustering increases 2D skipping
 native_recluster	reclustering skips most groups
 native_rewrite	group numbers issued after a rewrite are past every earlier one
-native_truncate	file shrank
-native_truncate	GUC on: file shrank
 native_upgrade_converge	fresh $TARGET install has objects to compare
 objstore_listing	the prefix listing paged (more than one list-type=2 request)
 objstore_module	premise: the real module was restored afterwards
