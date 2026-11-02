@@ -1775,4 +1775,10 @@ guard_tests 863
 # errors; a 4096-byte path is false; 400000 parts answer inside a 1 s timeout; a 4000-level pattern
 # errors and the server stays up), added to an existing test, by collection: 6160 tests collected,
 # less guard_tests 863.
-cluster_tests 5297
+# cluster_tests 5297 -> 5298 for #1964 review round three: test_tier_partition_path_glob_matches_errors_
+# where_glibc_would_crash in test_tier_partition.py (the 4000-level check moved there, last in the file;
+# one * and 2045 levels near max_stack_depth; 1000 s3:// */ levels in a UTF-8 database), and five checks
+# added to an existing test (one * and 129 levels; 129 ? or [ levels; 128/129 s3:// *; a 4095/4096-byte
+# s3:// pattern; a walk cut by an interrupt is never false, replacing the vacuous interrupt check), by
+# collection: 6161 tests collected, less guard_tests 863.
+cluster_tests 5298
