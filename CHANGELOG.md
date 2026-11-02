@@ -562,6 +562,20 @@ true until the next version shipped.
   script. docs/sql-reference.md, docs/how-to.md. `test/tier_partition.sh` and
   `test_tier_partition.py`.
 
+- `iceberg_rest_vended` now waits up to 30 seconds for its S3 fixture, and
+  says why when the fixture does not start (#1961). It waited 5 seconds. On a
+  busy CI runner that was too short, and 12 of 18 checks failed. The wait now
+  stops early when the fixture process has exited. When the fixture is not up,
+  the premise "the SigV4 S3 fixture is up" prints whether the process is still
+  running or exited, whether its port accepts a connection, and what `s3.out`
+  holds. When the fixture exited and another process answers on its port, the
+  premise says so: in CI run 41425423611 a REST catalog the suite started took
+  the port before the slow fixture bound it, and the arms got HTTP 501 from it.
+  The suite starts its REST catalogs only after the wait, so that collision
+  cannot recur. The 11 checks that read S3 are then unrunnable, not failed. The
+  premise itself still fails. A new environment variable,
+  `PGC_VENDED_S3_START_DELAY`, delays the fixture's start, to test the wait.
+  `test_iceberg_rest_vended.py` does the same.
 - The pytest harness now reads an exactly equal library install time and
   postmaster start time as unknown, not fresh, as the shell harness has since
   #1956 (#1969). `Cluster.server_binary_verdict` in
