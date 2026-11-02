@@ -330,6 +330,81 @@ def _up(cluster):
         return query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
 
 
+def test_a_local_glob_is_bounded_and_read_in_its_folded_form(pgc_conn, pgc_cluster, server_dir, expect):
+    """#1968 review. The reader bounds and globs a local pattern in a folded form:
+    a run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
+    The kernel reads both spellings as the same file, so the rows do not change.
+    A '.' at the end is kept, as it makes the pattern match only directories, and
+    so is a name followed by '..', as a symbolic link before it leads the kernel
+    somewhere else."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; multi-file suite needs it")
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow not available; multi-file suite needs it")
+    w = server_dir / "foldglob"
+    parts = w / "parts"
+    parts.mkdir(parents=True)
+
+    def tbl(lo, hi):
+        return pa.table({"id": pa.array(range(lo, hi), pa.int32()),
+                         "v": pa.array([i * 2 for i in range(lo, hi)], pa.int64())})
+
+    pq.write_table(tbl(0, 1000), str(parts / "part-0.parquet"), row_group_size=1000)
+    # fold/ln leads to fold/away/inner, so fold/ln/.. is fold/away to the kernel.
+    # fold/away/z-0.parquet holds ids 0..999; fold/z-0.parquet, the file a
+    # lexical fold of ln/.. would read, holds ids 1000..1999.
+    (w / "fold" / "away" / "inner").mkdir(parents=True)
+    pq.write_table(tbl(0, 1000), str(w / "fold" / "away" / "z-0.parquet"), row_group_size=1000)
+    pq.write_table(tbl(1000, 2000), str(w / "fold" / "z-0.parquet"), row_group_size=1000)
+    (w / "fold" / "ln").symlink_to(w / "fold" / "away" / "inner")
+    for p in (parts / "part-0.parquet", w / "fold" / "away" / "z-0.parquet", w / "fold" / "z-0.parquet"):
+        p.chmod(0o644)
+
+    def rp(expr):
+        return f"SELECT * FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    def cnt(expr):
+        return f"SELECT count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    with pgc_conn.cursor() as cur:
+        plain = _hash(cur, _rp(parts / "part-0.parquet"))
+        fold_dot = f"'{w}/par[t]s' || repeat('/.', 200) || '/part-0.parquet'"
+        expect.text(f"{_one(cur, cnt(fold_dot))}|{_hash(cur, rp(fold_dot))}", f"1000|{plain}",
+                    "read_parquet reads a local glob over 128 levels as written but not once its '.' names "
+                    "are dropped, the same rows as the plain path")
+        fold_slash = f"'{w}/par[t]s' || repeat('/', 201) || 'part-0.parquet'"
+        expect.text(f"{_one(cur, cnt(fold_slash))}|{_hash(cur, rp(fold_slash))}", f"1000|{plain}",
+                    "read_parquet reads a local glob over 128 levels as written but not once its runs of '/' "
+                    "are folded, the same rows as the plain path")
+        expect.text(_errcode(cur, cnt(f"'{w}/par[t]s/part-0.parquet/.'")), "58P01",
+                    "read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. "
+                    "matches nothing")
+        expect.text(_one(cur, f"SELECT sum(id) FROM pgcolumnar.read_parquet('{w}/fold/ln/../z-[0].parquet') "
+                              f"AS t({COLS})"), "499500",
+                    "read_parquet does not fold a name followed by '..' in a local glob, so it reads past a "
+                    "symbolic link as the kernel does")
+    # The pattern has 1991 levels as written and 1 once folded, so the bound lets
+    # it through. glob(3) of the form as written did not crash in a probe on glibc
+    # 2.43 (2022 levels, #1977 review), so this check does not tell which form
+    # glob(3) expands; it holds that the read is not refused.
+    deep = f"'{w}/par[t]s' || repeat('/.', 1990) || '/part-0.parquet'"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        got = _answer(c, cnt(deep))
+    expect.text(f"{got}|{_up(pgc_cluster)}", "1000|1",
+                "read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up")
+    _wait_up(pgc_cluster)
+
+
+def _errcode(cur, sql):
+    """-> the SQLSTATE `sql` fails with on `cur` (an autocommit connection), or "ok"."""
+    try:
+        cur.execute(sql)
+        cur.fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
 def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster, server_dir, expect):
     """#1968, #1973. glob(3) calls itself for every '/' after the first *, ? or [;
     the reader refuses more than 128 such levels, or 4096 bytes, with 54000. The

@@ -607,6 +607,12 @@ true until the next version shipped.
   `path_glob_matches` does since #1964: 4096 bytes or more, more than 128 `/`
   after the first `*`, `?` or `[` in a local pattern, or more than 128 `*` in an
   `s3://` pattern. The reader and `path_glob_matches` share one check.
+  The reader counts and expands a local pattern in a folded form, with each
+  run of `/` as one `/` and without a `.` name followed by `/`. The kernel
+  opens the same files by either spelling. So a table on
+  `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
+  `tier_partition` check reads, is read and not refused (#1977 review). A `.`
+  at the end and a name followed by `..` are kept as written.
   docs/sql-reference.md. `test/native_parquet_multifile.sh`,
   `test/objstore_listing.sh` and their pytest twins.
 - `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of
