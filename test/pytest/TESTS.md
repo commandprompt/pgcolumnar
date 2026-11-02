@@ -12963,7 +12963,7 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_an_s3_glob_of_more_than_128_stars_is_refused_before_the_listing` | read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists (#1972) |
 | `test_an_s3_glob_of_4096_bytes_is_refused` | read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000 (#1972) |
 | `test_a_foreign_table_over_an_s3_glob_of_129_stars_is_refused` | a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000 (#1972) |
-| `test_the_key_of_1000_levels_reads_through_a_glob_of_one_star` | premise: read_parquet reads the key of 1000 levels through a glob of one * |
+| `test_the_listing_returns_a_key_of_1000_levels_that_one_star_matches` | premise: the listing returns a key of 1000 levels, and a glob of one * matches it |
 | `test_an_s3_glob_of_1000_levels_is_refused_and_the_server_stays_up` | read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up (#1972) |
 | `test_integration_the_listing_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials |
 | `test_integration_a_real_s3_prefix_read_equals_the_local_directory` | opt-in: integration: real S3 prefix read == local directory (`lst/`, by set hash) |

@@ -353,7 +353,13 @@ def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster
         c.execute("CREATE SERVER IF NOT EXISTS pq_multi FOREIGN DATA WRAPPER pgcolumnar_parquet")
         c.execute(f"DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ({COLS}) SERVER pq_multi "
                   f"OPTIONS (path %L)', {deep}); END$$")
-    expect.text(f"{_sqlstate(pgc_cluster, 'SELECT count(*) FROM ftdeep')}|{_up(pgc_cluster)}", "54000|1",
-                "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, "
-                "and the server stays up")
-    _wait_up(pgc_cluster)
+    try:
+        expect.text(f"{_sqlstate(pgc_cluster, 'SELECT count(*) FROM ftdeep')}|{_up(pgc_cluster)}", "54000|1",
+                    "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, "
+                    "and the server stays up")
+    finally:
+        # the cluster is shared: tier_partition matches every foreign table's
+        # path, and this one's is past the bound, so it must not outlive the test
+        _wait_up(pgc_cluster)
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+            c.execute("DROP FOREIGN TABLE IF EXISTS ftdeep")

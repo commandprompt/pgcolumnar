@@ -304,5 +304,6 @@ check "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels ra
 	"$(st "SELECT count(*) FROM ftdeep")|$(q "SELECT 1;")" \
 	"54000|1"
 wait_up
+psql_run "DROP FOREIGN TABLE ftdeep;"
 
 pgc_summary

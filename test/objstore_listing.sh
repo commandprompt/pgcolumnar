@@ -477,21 +477,26 @@ check "read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 409
 psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE fdeep (id int8) SERVER s3srv OPTIONS (path %L)', 's3://$BUCKET/' || repeat('*/', 129) || 'x.parquet'); END\$\$;"
 check "a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000" \
 	"$(st "SELECT count(*) FROM fdeep")" "54000"
-# A key of 1000 levels, which the glob below would match. fnmatch keeps more
-# on the stack for each * in a UTF-8 locale than in C, so the read runs in a
-# database whose LC_CTYPE is C.UTF-8. Last of the fixture arms: before the fix
-# this read crashed the server.
-# mkdir -p makes the levels: Python's os.makedirs calls itself once per level
-# and stops at its recursion limit.
-DEEP_DIR="$PGC_WORKDIR/$BUCKET/deep/$(printf 'a/%.0s' $(seq 1000))"
-mkdir -p "$DEEP_DIR"
-python3 - "$DEEP_DIR" <<'PYEOF'
-import sys, os
-import pyarrow as pa, pyarrow.parquet as pq
-pq.write_table(pa.table({"id": pa.array([7], pa.int64())}), os.path.join(sys.argv[1], "x.parquet"))
-PYEOF
-check "premise: read_parquet reads the key of 1000 levels through a glob of one *" \
-	"$(qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8);" | tr '|' ' ')" "1 7"
+# A key of 1000 levels, which the glob below would match. The fixture lists it
+# from __listing_override__, so no tree 1000 directories deep is made on disk.
+# fnmatch keeps more on the stack for each * in a UTF-8 locale than in C, so
+# the read runs in a database whose LC_CTYPE is C.UTF-8. Last of the fixture
+# arms: before the fix this read crashed the server.
+DEEP_KEY="deep/$(printf 'a/%.0s' $(seq 1000))x.parquet"
+printf '<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>%s</Key></Contents></ListBucketResult>\n' \
+	"$DEEP_KEY" > "$PGC_WORKDIR/__listing_override__"
+# The key is listed but holds no object, so a glob that matches it fails on
+# the read, and the error names the key: that is the premise.
+deep_premise() {
+	local out s
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=verbose -c "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8)" 2>&1)"
+	s="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\):.*/\1/p' <<<"$out" | head -1)"
+	if grep -qF "a/a/x.parquet" <<<"$out"; then echo "${s:-no error} names the key"
+	else echo "${s:-no error}: $(head -1 <<<"$out" | cut -c1-200)"; fi
+}
+check "premise: the listing returns a key of 1000 levels, and a glob of one * matches it" \
+	"$(deep_premise)" "58P01 names the key"
 psql_run "DROP DATABASE IF EXISTS lst_cutf8;"
 psql_run "CREATE DATABASE lst_cutf8 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8';"
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d lst_cutf8 -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pgcolumnar;"
@@ -499,9 +504,9 @@ DEEP_CRASHES="$(crashes)"
 check "read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up" \
 	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('*/', 1000) || '*.parquet') AS t(id int8)" lst_cutf8)|$(survived "$DEEP_CRASHES")" \
 	"54000|1"
+rm -f "$PGC_WORKDIR/__listing_override__"
 wait_up
 psql_run "DROP DATABASE lst_cutf8;"
-rm -rf "$PGC_WORKDIR/$BUCKET/deep"
 
 # ---- optional: a real S3 implementation (Garage), as the sibling suites (#1798)
 # The fixture above answers ListObjectsV2 from one Python handler, two keys a page.
