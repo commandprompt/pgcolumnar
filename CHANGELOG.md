@@ -534,6 +534,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
+  unset (#1933). That fixed default does not exist in the dev container, so
+  every cluster fixture failed at setup, and
+  `test_a_cluster_test_still_needs_the_driver` reported a missing shim name.
+  conftest now takes the first executable `pg_config` from a list of the
+  prefixes the project installs into, PG18 first, then the one on `PATH`. The
+  control now checks that the `pg_config` it hands its child resolves to an
+  executable, and names the value if not. A bare name such as `pg_config` is
+  looked up on `PATH`, as the harness itself does. `test/pytest/README.md`
+  describes the default. Every run now prints which `pg_config` it used, how it
+  chose it, and the version it reports: in the header, or at the end under `-q`.
+  Three new tests in `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
 - The Parquet reader now refuses a page header whose required i32 fields, or
   whose own header struct, have the wrong Thrift type (#1935). It raises SQLSTATE
   XX001, as pyarrow refuses such a header. This covers the fields the reader uses
