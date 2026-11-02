@@ -958,3 +958,107 @@ for _gname, _gval in (("grp_neg_children", -1), ("grp_wide_children", 4294967297
     _gfoot = enc_struct(_gm)
     open(f"{W}/{_gname}.parquet", "wb").write(
         _grp[:_gstart] + _gfoot + len(_gfoot).to_bytes(4, "little") + b"PAR1")
+
+
+# ---- a page header field of the wrong Thrift type (#1935) ------------------------
+# The page reader read each page header field by its id and never looked at its
+# Thrift type. pyarrow refuses a field whose type is not the one parquet.thrift
+# gives it ("Couldn't deserialize thrift"). The fuzzer found two mutants that
+# changed only the type nibble of a DataPageHeader's encoding field (i32, header
+# byte 0x15): to 1 (BOOL_TRUE) and to 13 (UUID). pgColumnar read both without an
+# error, and a change to the page's values then gave a wrong answer.
+# The bases are page_snappy_v1 and page_snappy_v2 (above). From byte 4:
+#   v1  15 00 | 15 ce 0c | 15 ea 06 | 2c | 15 c8 01 | 15 00 | ...
+#       PageHeader type, uncompressed and compressed size (i32), data_page_header
+#       (struct, field 5), then its num_values and encoding (i32)
+#   v2  15 06 | 15 c6 0c | 15 c4 06 | 5c | 15 c8 01 | 15 00 | 15 c8 01 | 15 00 |
+#       15 06 | 15 00 | 11 | ...
+#       PageHeader as above but data_page_header_v2 (struct, field 8), then its
+#       num_values, num_nulls, num_rows, encoding, definition and repetition level
+#       lengths (i32), and is_compressed (bool, field 7)
+#   page_enc_bool.parquet    the v1 encoding field's type set to 1 (BOOL_TRUE)
+#   page_enc_uuid.parquet    the same field's type set to 13 (UUID)
+#   page_type_sweep_NNNN.parquet   each i32 or struct field the reader reads, at
+#                            each offset in _PT_FIELDS, set to every other
+#                            compact type 1..13. pyarrow refuses every copy: an
+#                            i32 field is required, and a struct field holds the
+#                            page's own header. page_type_sweep.count holds the
+#                            number of copies.
+#   page_bool_sweep_NN.parquet     the v2 is_compressed field (byte 27) set to every
+#                            type but 1 and 2, which are its value. The field is
+#                            optional, so pyarrow skips it and keeps its default,
+#                            true: it reads the LIST and SET copies (100 rows,
+#                            sum 5050) and refuses the rest. page_bool_sweep.count
+#                            holds the number of copies.
+_PT_FIELDS = {"v1": (4, 6, 9, 12, 13, 16), "v2": (4, 6, 9, 12, 13, 21, 23, 25)}
+_pt = {v: open(f"{W}/page_snappy_{v}.parquet", "rb").read() for v in ("v1", "v2")}
+assert _pt["v1"][4:18] == bytes.fromhex("1500 15ce0c 15ea06 2c 15c801 1500"), _pt["v1"][4:24].hex()
+assert _pt["v2"][4:28] == bytes.fromhex("1506 15c60c 15c406 5c 15c801 1500 15c801 1500 1506 1500 11"), \
+    _pt["v2"][4:32].hex()
+
+
+def _retype(buf, at, t):
+    return buf[:at] + bytes([(buf[at] & 0xF0) | t]) + buf[at + 1:]
+
+
+open(f"{W}/page_enc_bool.parquet", "wb").write(_retype(_pt["v1"], 16, 1))
+open(f"{W}/page_enc_uuid.parquet", "wb").write(_retype(_pt["v1"], 16, 13))
+_ptn = 0
+for _v, _offs in _PT_FIELDS.items():
+    for _at in _offs:
+        for _t in range(1, 14):
+            if _t != _pt[_v][_at] & 0x0F:
+                open(f"{W}/page_type_sweep_{_ptn:04d}.parquet", "wb").write(_retype(_pt[_v], _at, _t))
+                _ptn += 1
+open(f"{W}/page_type_sweep.count", "w").write(f"{_ptn}\n")
+_pbn = 0
+for _t in range(3, 14):
+    open(f"{W}/page_bool_sweep_{_pbn:02d}.parquet", "wb").write(_retype(_pt["v2"], 27, _t))
+    _pbn += 1
+open(f"{W}/page_bool_sweep.count", "w").write(f"{_pbn}\n")
+# The required i32 fields the reader skips, as the review of #1940 found: a v1
+# page's definition_level_encoding and repetition_level_encoding (bytes 18 and 20)
+# and a v2 page's num_nulls and num_rows (bytes 16 and 18). The reader skipped
+# each by the type its header claimed, so a wrong type read without an error.
+#   page_sib_sweep_NN.parquet  each of those four fields set to every other compact
+#                            type 1..13 (48 copies). pyarrow refuses every copy.
+#                            page_sib_sweep.count holds the number of copies.
+#   page_sib_wrong.parquet   the v1 definition_level_encoding set to 1 (BOOL_TRUE),
+#                            and bit 0 of byte 36 (a value byte of the first row)
+#                            cleared. The unfixed reader read 100 rows, sum 5049.
+#                            pyarrow refuses it.
+_PS_FIELDS = {"v1": (18, 20), "v2": (16, 18)}
+assert _pt["v1"][18:22] == bytes.fromhex("1506 1506"), _pt["v1"][18:22].hex()
+assert _pt["v1"][36] == 0x01, _pt["v1"][36]
+_psn = 0
+for _v, _offs in _PS_FIELDS.items():
+    for _at in _offs:
+        for _t in range(1, 14):
+            if _t != _pt[_v][_at] & 0x0F:
+                open(f"{W}/page_sib_sweep_{_psn:02d}.parquet", "wb").write(_retype(_pt[_v], _at, _t))
+                _psn += 1
+open(f"{W}/page_sib_sweep.count", "w").write(f"{_psn}\n")
+_psw = _retype(_pt["v1"], 18, 1)
+open(f"{W}/page_sib_wrong.parquet", "wb").write(_psw[:36] + bytes([_psw[36] ^ 1]) + _psw[37:])
+# A dictionary page header. dict_base.parquet holds one int64 column, ids 1..4,
+# dictionary encoded: 4 rows, sum 10. Its first page is the dictionary page.
+# From byte 4:
+#   15 04 | 15 40 | 15 38 | 4c | 15 08 | 15 00 | 12 | 00 | 00
+#   PageHeader type, uncompressed and compressed size (i32), dictionary_page_header
+#   (struct, field 7), then its num_values and encoding (i32) and is_sorted (bool)
+#   dict_type_sweep_NN.parquet the struct (byte 10), num_values (11) and encoding
+#                            (13) set to every other compact type 1..13 (36
+#                            copies). pyarrow refuses every copy.
+#                            dict_type_sweep.count holds the number of copies.
+pq.write_table(pa.table({"id": pa.array([1, 2, 3, 4], pa.int64())}), f"{W}/dict_base.parquet",
+               use_dictionary=True)
+assert pq.ParquetFile(f"{W}/dict_base.parquet").metadata.row_group(0).column(0).has_dictionary_page
+_pd = open(f"{W}/dict_base.parquet", "rb").read()
+assert _pd[4:18] == bytes.fromhex("1504 1540 1538 4c 1508 1500 12 00 00"), _pd[4:18].hex()
+_pdn = 0
+for _at in (10, 11, 13):
+    for _t in range(1, 14):
+        if _t != _pd[_at] & 0x0F:
+            open(f"{W}/dict_type_sweep_{_pdn:02d}.parquet", "wb").write(_retype(_pd, _at, _t))
+            _pdn += 1
+open(f"{W}/dict_type_sweep.count", "w").write(f"{_pdn}\n")

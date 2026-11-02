@@ -534,6 +534,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader now refuses a page header whose required i32 fields, or
+  whose own header struct, have the wrong Thrift type (#1935). It raises SQLSTATE
+  XX001, as pyarrow refuses such a header. This covers the fields the reader uses
+  and the required fields it does not use: the level encodings of a v1 page,
+  `num_nulls` and `num_rows` of a v2 page, and a dictionary page's `encoding`.
+  Before, it read each field by its id alone. A fuzz run found two corrupt files
+  whose encoding field had type BOOL_TRUE or UUID instead of i32. Both read
+  without an error and with wrong values. Optional fields keep Thrift's rule: a
+  v2 page's `is_compressed` field of another type is skipped, and the page is
+  read as compressed, as in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
 - `import_arrow` now refuses a nested Arrow type that the target column cannot
   hold with SQLSTATE 42804, naming the column (#1932). Before, a list of
   lists, of structs or of maps for a `bigint[]` column was refused with XX001.

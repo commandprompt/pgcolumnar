@@ -1716,4 +1716,13 @@ guard_tests 860
 # lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
 # list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6147
 # tests collected, less guard_tests 860.
-cluster_tests 5287
+# cluster_tests 5287 -> 5292 for #1935's five tests: in test_native_parquet_hardening.py a data page
+# encoding field of Thrift type BOOL_TRUE and of type UUID each refused, every i32 or struct page header
+# field of another Thrift type refused, no v2 is_compressed field of another type reads a wrong answer,
+# and one of type LIST is skipped and reads, by collection: 6077 tests collected, less guard_tests 858.
+# cluster_tests 5292 -> 5296 for #1935's four review tests: in test_native_parquet_hardening.py a v1
+# definition_level_encoding field of type BOOL_TRUE with a changed value byte refused, every required i32
+# page header field the reader skips of another Thrift type refused, the unpatched dictionary page file
+# reads, and every dictionary page header field of another Thrift type refused, by collection: 6081 tests
+# collected, less guard_tests 858.
+cluster_tests 5296
