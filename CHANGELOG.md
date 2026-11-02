@@ -534,6 +534,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest harness now reads an exactly equal library install time and
+  postmaster start time as unknown, not fresh, as the shell harness has since
+  #1956 (#1969). `Cluster.server_binary_verdict` in
+  `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
+  changes: an unknown verdict still lets the run go ahead, and only a server
+  that started before the install is refused.
 - A deep glob pattern no longer crashes the Parquet reader (#1968, #1972). The
   reader passed a local pattern to `glob(3)` and matched an `s3://` pattern with
   `fnmatch`, with no bound. Both use stack space for each level, so a pattern
@@ -554,12 +560,6 @@ true until the next version shipped.
   1,000,000 steps with error 54000, in about 60 ms, and never answers false.
   docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
-- The pytest harness now reads an exactly equal library install time and
-  postmaster start time as unknown, not fresh, as the shell harness has since
-  #1956 (#1969). `Cluster.server_binary_verdict` in
-  `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
-  changes: an unknown verdict still lets the run go ahead, and only a server
-  that started before the install is refused.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
