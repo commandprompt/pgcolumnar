@@ -1189,11 +1189,20 @@ pattern could crash the server. The limits are those of
 The reader checks the pattern before it looks for an object of that exact
 name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
 
-The reader does not yet bound the number of steps of a local walk (#1984).
-Each real directory lists `.` and `..`, so each level of `.*/` in a local
-pattern multiplies the walk. With 15 such levels the walk can run for minutes,
-and a cancel does not stop it until `glob(3)` returns. Avoid `.*` as a whole
-level of a local pattern.
+The reader also bounds the walk of a local pattern on the filesystem
+(#1984). Each real directory lists `.` and `..`, and a name such as `.*`
+matches both. So each level of `.*/` in a local pattern multiplies the walk.
+The reader counts each directory it opens, each name it reads and each
+`stat` as one step. It stops after 1,000,000 steps with error 54000, the
+error of `path_glob_matches`, and reads no file. So a directory of more than
+about 1,000,000 names cannot be read through a glob; read it as a directory
+instead. Measured on PostgreSQL 18 with glibc 2.43, a pattern of 18 levels of
+`.*/` is refused after about 0.25 s, and a glob that matches 2000 files among
+12,000 names reads every match.
+
+A cancel or a `statement_timeout` stops the walk. Before, the walk did not
+stop for either: with 15 levels of `.*/` it ran for minutes, and only
+SIGKILL stopped it.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 

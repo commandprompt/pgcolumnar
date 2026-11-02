@@ -4297,6 +4297,137 @@ pq_walk_dir(const char *path, int depth, List **files, int *skipped)
 }
 
 /*
+ * The reader expands a local pattern with glob(3) on the real filesystem
+ * (#1984). Each real directory lists . and .., and .* matches both, so each
+ * level of .* multiplies the walk, and glob(3) keeps what it finds in
+ * memory it mallocs outside any memory context. glob(3) does not check for
+ * interrupts either. So the reader passes it callbacks that wrap opendir,
+ * readdir, stat and lstat and count each call as a step of the walk, under the
+ * bound of path_glob_matches (PQ_GLOB_MAX_STEPS, #1973). Like that walk's
+ * callbacks, they neither allocate in a memory context nor raise an error, so
+ * nothing jumps out of glob(3) and leaks its memory. Past the bound they set
+ * pq_rover; when an interrupt is pending they set pq_rcut. From then on they
+ * report every directory empty and every path missing, so glob(3) returns
+ * soon. The caller then frees what glob(3) found and raises the error or
+ * processes the interrupt: it never reads a list from a walk that stopped.
+ * closedir is not a step, so every directory opened is closed.
+ */
+static int	pq_rsteps = 0;
+static bool pq_rover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
+static bool pq_rcut = false;	/* a callback stopped for an interrupt */
+
+/* count one step of the reader's walk -> false once the walk must stop */
+static bool
+pq_rstep(void)
+{
+	if (pq_rover || pq_rcut)
+		return false;
+	if (++pq_rsteps > PQ_GLOB_MAX_STEPS)
+	{
+		pq_rover = true;
+		return false;
+	}
+	if (InterruptPending)
+	{
+		pq_rcut = true;
+		return false;
+	}
+	return true;
+}
+
+static void *
+pq_ropendir(const char *path)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return NULL;
+	}
+	return opendir(path);
+}
+
+static struct dirent *
+pq_rreaddir(void *dirp)
+{
+	if (!pq_rstep())
+		return NULL;
+	return readdir((DIR *) dirp);
+}
+
+static void
+pq_rclosedir(void *dirp)
+{
+	closedir((DIR *) dirp);
+}
+
+static int
+pq_rstat(const char *path, struct stat *st)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return -1;
+	}
+	return stat(path, st);
+}
+
+static int
+pq_rlstat(const char *path, struct stat *st)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return -1;
+	}
+	return lstat(path, st);
+}
+
+/*
+ * glob(pattern, GLOB_NOSORT) on the real filesystem, bounded at
+ * PQ_GLOB_MAX_STEPS steps with error 54000 (#1984). A walk an interrupt cut
+ * short is never returned: the interrupt is processed, which raises the
+ * error of a cancel or a statement_timeout, and any other interrupt walks
+ * again. -> glob(3)'s return code, with `g` to be freed by the caller.
+ */
+static int
+pq_local_glob(const char *pattern, glob_t *g)
+{
+	int			rc;
+	int			attempt;
+
+	for (attempt = 1;; attempt++)
+	{
+		memset(g, 0, sizeof(*g));
+		g->gl_opendir = pq_ropendir;
+		g->gl_readdir = pq_rreaddir;
+		g->gl_closedir = pq_rclosedir;
+		g->gl_stat = pq_rstat;
+		g->gl_lstat = pq_rlstat;
+		pq_rsteps = 0;
+		pq_rover = false;
+		pq_rcut = false;
+		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, g);
+		if (!pq_rover && !pq_rcut)
+			return rc;
+		globfree(g);
+		if (pq_rover)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("glob pattern walks too many paths to match: more than %d steps",
+							PQ_GLOB_MAX_STEPS),
+					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
+		/* a cancel raises its error here; any other interrupt is processed */
+		CHECK_FOR_INTERRUPTS();
+		/* an interrupt that cannot be processed now cuts every walk short */
+		if (attempt >= 100)
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("could not expand pattern \"%s\": interrupted %d times",
+							pattern, attempt)));
+	}
+}
+
+/*
  * Resolve a path option into the concrete file(s) to read, in a stable sorted
  * order:
  *   - a regular file            -> just that file
@@ -4458,8 +4589,8 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		 * the folded form that glob(3) then expands (#1977 review)
 		 */
 		pq_local_glob_bound(folded);
-		memset(&g, 0, sizeof(g));
-		rc = glob(folded, GLOB_NOSORT, NULL, &g);
+		/* and bound the walk of the real filesystem (#1984) */
+		rc = pq_local_glob(folded, &g);
 		if (rc == GLOB_NOMATCH || g.gl_pathc == 0)
 		{
 			globfree(&g);
