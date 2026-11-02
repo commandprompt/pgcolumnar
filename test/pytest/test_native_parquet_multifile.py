@@ -13,6 +13,7 @@ orders files by full path.
 import os
 import shutil
 import threading
+import time
 
 import psycopg
 
@@ -288,3 +289,71 @@ def test_the_recursive_walk(pgc_conn, pgc_cluster, server_dir, expect):
         d.mkdir(parents=True)
         shutil.copy(w / "p0.parquet", d / "part-0.parquet")
         expect.text(_errs(cur, _count(w / "deep")), "OK", "a tree deeper than the bound is rejected, not truncated")
+
+
+def _sqlstate(cluster, sql, options=None):
+    """-> the SQLSTATE `sql` fails with on its own connection, "ok" when it succeeds,
+    or "no answer" when the connection is lost, as the shell's st reads it."""
+    try:
+        with psycopg.connect(cluster.dsn(), autocommit=True, options=options or "") as c:
+            c.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
+def _wait_up(cluster):
+    """Return once the server answers SELECT 1, or after 60 s."""
+    for _ in range(60):
+        try:
+            with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as c:
+                c.execute("SELECT 1")
+            return
+        except psycopg.Error:
+            time.sleep(1)
+
+
+def _up(cluster):
+    """-> "1" when the server answers SELECT 1 now, else why not."""
+    try:
+        with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as c:
+            return str(c.execute("SELECT 1").fetchone()[0])
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
+
+
+def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster, server_dir, expect):
+    """#1968, #1973. glob(3) calls itself for every '/' after the first *, ? or [;
+    the reader refuses more than 128 such levels, or 4096 bytes, with 54000. The
+    in-memory walk of path_glob_matches is bounded, so repeat('/.*', 40) fails
+    with 54000 rather than walking 2^40 paths. The crash probes run last and wait
+    for the server to answer first."""
+    d = server_dir / "deepglob"
+    d.mkdir()
+
+    def rp(expr):
+        return f"SELECT count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    levels = [_sqlstate(pgc_cluster, rp("'%s/' || repeat('*/', %d) || 'x.parquet'" % (d, n))) for n in (128, 129)]
+    expect.text("|".join(levels), "58P01|54000", "read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000")
+    expect.text(_sqlstate(pgc_cluster, rp(f"rpad('{d}/*', 4088, 'a') || '.parquet'")), "54000",
+                "read_parquet refuses a local glob of 4096 bytes with 54000")
+    expect.text(_sqlstate(pgc_cluster, "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', "
+                                       "repeat('/..', 40) || '/x')", options="-c statement_timeout=1s"),
+                "54000", "path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout")
+    expect.text(_one(pgc_conn.cursor(), "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', "
+                                        "repeat('/..', 10) || '/x')::text"),
+                "true", "path_glob_matches still matches repeat('/.*', 10) against its own path")
+
+    deep = f"'{d}/' || repeat('*/', 4000) || 'x.parquet'"
+    expect.text(f"{_sqlstate(pgc_cluster, rp(deep))}|{_up(pgc_cluster)}", "54000|1",
+                "read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up")
+    _wait_up(pgc_cluster)
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute("CREATE SERVER IF NOT EXISTS pq_multi FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        c.execute(f"DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ({COLS}) SERVER pq_multi "
+                  f"OPTIONS (path %L)', {deep}); END$$")
+    expect.text(f"{_sqlstate(pgc_cluster, 'SELECT count(*) FROM ftdeep')}|{_up(pgc_cluster)}", "54000|1",
+                "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, "
+                "and the server stays up")
+    _wait_up(pgc_cluster)

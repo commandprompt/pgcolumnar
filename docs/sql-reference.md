@@ -828,7 +828,16 @@ A pattern that is too large for glibc to match safely raises error 54000
 
 `glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
 `fnmatch` uses stack space for each `*`. A larger pattern could crash the
-server.
+server. The Parquet reader refuses the same patterns with the same error
+(#1968, #1972); see [Glob patterns too large to match](#glob-patterns-too-large-to-match).
+
+A local pattern that makes the walk too long also raises error 54000 (#1973).
+Each directory in the tree in memory lists `.` and `..`, as a real one does,
+and a name such as `.*` matches both. So each level of `/.*` doubles the
+walk. The function stops after 1,000,000 steps of the walk. Measured on
+PostgreSQL 18, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)` is
+refused after about 60 ms. The function never answers false for a walk it
+stopped.
 The function compares spellings: `path` must be spelled as `glob(3)` would
 return it, so `/w//x` does not match `/w/x*`.
 
@@ -1096,6 +1105,23 @@ unless the extra characters are spaces; those it drops. A `timestamp(p)` or
 elements and composite fields. So `CREATE TABLE AS` or `INSERT ... SELECT` from a
 reader never stores a value that breaks the declared type. A row that an Iceberg
 delete removes is not checked.
+
+### Glob patterns too large to match
+
+The readers refuse a glob pattern that is too large for glibc to match
+safely, with error 54000 (`program_limit_exceeded`), before they read
+anything (#1968, #1972):
+
+- a pattern of 4096 bytes (`PATH_MAX`) or more;
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`;
+- an `s3://` pattern with more than 128 `*`. The reader refuses it before it
+  lists the prefix.
+
+`glob(3)` and `fnmatch` use stack space for each such level, and a larger
+pattern could crash the server. The limits are those of
+[`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean).
+The reader checks the pattern before it looks for an object of that exact
+name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 

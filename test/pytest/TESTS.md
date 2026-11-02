@@ -8318,7 +8318,7 @@ The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check
 
 The pytest twin of `test/native_parquet_multifile.sh` (ported for #1341), every check by the shell's name. A directory reads every `*.parquet` file below it as one relation, and a glob expands the same way. The union must equal a single-file oracle through `read_parquet`, `import_parquet` and the FDW. Pushdown and the EXPLAIN counters aggregate across files.
 
-Several inputs must fail: an empty directory, a glob matching nothing, a schema-mismatched file, a dangling symlink, and a tree past the depth bound. A FIFO and a directory named `*.parquet` are skipped. The walk skips names that start with `_` or `.`, and it does not follow a symlinked directory, so a loop terminates. It still follows a symlinked file, and it orders files by full path. Reads that could block are bounded, as the shell's `timeout` bounds them.
+Several inputs must fail: an empty directory, a glob matching nothing, a schema-mismatched file, a dangling symlink, and a tree past the depth bound. A FIFO and a directory named `*.parquet` are skipped. The walk skips names that start with `_` or `.`, and it does not follow a symlinked directory, so a loop terminates. It still follows a symlinked file, and it orders files by full path. Reads that could block are bounded, as the shell's `timeout` bounds them. A local glob too deep or too long for `glob(3)` is refused with 54000 instead of crashing the server (#1968), and `path_glob_matches` stops a walk of repeated `/.*` with 54000 (#1973).
 
 ### Every test
 
@@ -8327,6 +8327,7 @@ Several inputs must fail: an empty directory, a glob matching nothing, a schema-
 | `test_directories_and_globs_read_as_one_relation` | a directory and a glob equal the oracle on every surface, pushdown and counters aggregate, and every error case fails |
 | `test_a_fifo_named_parquet_is_skipped_not_opened` | a FIFO named `*.parquet` is skipped rather than opened, within a bound; declined as "the FIFO case" where mkfifo is unavailable |
 | `test_the_recursive_walk` | a nested tree reads as one relation in sorted path order, `_`/`.` names and symlinked directories are not walked, a symlinked file is read, and the depth bound errors |
+| `test_a_glob_too_deep_or_too_long_for_glob3_is_an_error` | read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000; read_parquet refuses a local glob of 4096 bytes with 54000; path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout; path_glob_matches still matches repeat('/.*', 10) against its own path; read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up; a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, and the server stays up (#1968, #1973) |
 
 ## 172. test_native_index.py: index lookups and unique enforcement fetch by row number
 
@@ -12959,6 +12960,11 @@ Every test makes one check under the shell's name, on a private cluster restarte
 | `test_a_scheme_that_only_resembles_s3a_is_a_local_path` | two parameters, the controls: `control: an s3ax:// URL is a local path, not S3` and `control: an xs3a:// URL is a local path, not S3`, each 58P01 naming the URL as a local file |
 | `test_an_export_refuses_an_s3a_or_s3n_url` | three parameters, one check each: export_parquet refuses `s3a://`, export_arrow `s3n://` and parallel_export_parquet `S3A://`, each with 0A000, the export's own message for the URL and a hint naming the `s3://` URL |
 | `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |
+| `test_an_s3_glob_of_more_than_128_stars_is_refused_before_the_listing` | read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists (#1972) |
+| `test_an_s3_glob_of_4096_bytes_is_refused` | read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000 (#1972) |
+| `test_a_foreign_table_over_an_s3_glob_of_129_stars_is_refused` | a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000 (#1972) |
+| `test_the_key_of_1000_levels_reads_through_a_glob_of_one_star` | premise: read_parquet reads the key of 1000 levels through a glob of one * |
+| `test_an_s3_glob_of_1000_levels_is_refused_and_the_server_stays_up` | read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up (#1972) |
 | `test_integration_the_listing_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials |
 | `test_integration_a_real_s3_prefix_read_equals_the_local_directory` | opt-in: integration: real S3 prefix read == local directory (`lst/`, by set hash) |
 | `test_integration_a_real_s3_glob_equals_the_local_glob` | opt-in: integration: real S3 glob == local glob (`lst/*.parquet` and the three `glb/` globs) |

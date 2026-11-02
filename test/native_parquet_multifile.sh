@@ -258,4 +258,51 @@ cp "$DIR/part-0.parquet" "$d/"
 check "a tree deeper than the bound is rejected, not truncated" \
 	"$(errs "SELECT count(*) FROM pgcolumnar.read_parquet('$deep') AS t($cols)")" "OK"
 
+# ---- a glob too deep or too long for glob(3) is an error (#1968, #1973) -----
+#
+# glibc glob(3) calls itself once for every '/' after the first *, ? or [, and
+# each call keeps a copy of the pattern on the stack. The reader refuses a
+# pattern with more than 128 such levels, or of PATH_MAX (4096) bytes or more,
+# with error 54000 before glob(3) runs, as path_glob_matches does (#1964).
+# st SQL -> the SQLSTATE SQL fails with, "ok" when it succeeds, or "no answer"
+st() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
+	echo "${out:-no answer}"
+}
+# wait_up -> return once the server answers SELECT 1, or after 60 s
+wait_up() { local i; for i in $(seq 60); do [ "$(q "SELECT 1;")" = 1 ] && return; sleep 1; done; }
+check "read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 128) || 'x.parquet') AS t($cols)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 129) || 'x.parquet') AS t($cols)")" \
+	"58P01|54000"
+check "read_parquet refuses a local glob of 4096 bytes with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('$DIR/*', 4088, 'a') || '.parquet') AS t($cols)")" \
+	"54000"
+# glob(3) in path_glob_matches walks a tree in memory where every directory
+# lists . and .., and .* matches both. So repeat('/.*', n) walks 2^n paths in
+# memory that glibc allocates outside PostgreSQL. The walk is bounded, and a
+# pattern past the bound fails with 54000; it never answers false (#1973).
+check "path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=sqlstate -c "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 40) || '/x', repeat('/..', 40) || '/x')::text;" 2>&1 | head -1 | sed 's/^ERROR: *//')" \
+	"54000"
+check "path_glob_matches still matches repeat('/.*', 10) against its own path" \
+	"$(q "SELECT pgcolumnar.path_glob_matches(repeat('/.*', 10) || '/x', repeat('/..', 10) || '/x')::text;")" "true"
+
+# Last in the suite: before the fix these reads crashed the server, and the
+# crash recovery failed every check after them. Each check waits for the
+# server to answer first, so a regression fails its own check alone.
+check "read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/' || repeat('*/', 4000) || 'x.parquet') AS t($cols)")|$(q "SELECT 1;")" \
+	"54000|1"
+wait_up
+psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE ftdeep ($cols) SERVER pq OPTIONS (path %L)', '$DIR/' || repeat('*/', 4000) || 'x.parquet'); END\$\$;"
+check "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, and the server stays up" \
+	"$(st "SELECT count(*) FROM ftdeep")|$(q "SELECT 1;")" \
+	"54000|1"
+wait_up
+
 pgc_summary

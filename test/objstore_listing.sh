@@ -445,6 +445,64 @@ check "the FDW over a prefix names the object whose column type does not match" 
 
 check "backend still up after the listing refusals" "$(survived "$CRASHES_BEFORE")" "1"
 
+# ---- an s3:// glob too deep or too long for fnmatch is an error (#1972) -----
+#
+# glibc fnmatch calls itself for each * of a key, and keeps state on the stack
+# at each call. The reader refuses an s3:// pattern with more than 128 *, or of
+# PATH_MAX (4096) bytes or more, with error 54000 before it lists the prefix,
+# as path_glob_matches does (#1964).
+# st SQL [DB] -> the SQLSTATE SQL fails with, "ok" when it succeeds, or "no answer"
+st() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "${2:-$PGC_DB}" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
+	echo "${out:-no answer}"
+}
+# rst N -> the SQLSTATE of read_parquet over an s3:// glob of N */ levels under
+# glb/, and the number of LIST requests it sent: glb/ holds 3 keys, so a
+# listing in pages of 2 sends 2
+rst() {
+	local s
+	: > "$S3_LOG"
+	s=$(st "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/glb/' || repeat('*/', $1) || 'x.parquet') AS t(id int8)")
+	echo "$s lists=$(listn)"
+}
+check "read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists" \
+	"$(rst 128)|$(rst 129)" "58P01 lists=2|54000 lists=0"
+check "read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('s3://$BUCKET/*', 4087, 'a') || '.parquet') AS t(id int8)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('s3://$BUCKET/*', 4088, 'a') || '.parquet') AS t(id int8)")" \
+	"58P01|54000"
+psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE fdeep (id int8) SERVER s3srv OPTIONS (path %L)', 's3://$BUCKET/' || repeat('*/', 129) || 'x.parquet'); END\$\$;"
+check "a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000" \
+	"$(st "SELECT count(*) FROM fdeep")" "54000"
+# A key of 1000 levels, which the glob below would match. fnmatch keeps more
+# on the stack for each * in a UTF-8 locale than in C, so the read runs in a
+# database whose LC_CTYPE is C.UTF-8. Last of the fixture arms: before the fix
+# this read crashed the server.
+# mkdir -p makes the levels: Python's os.makedirs calls itself once per level
+# and stops at its recursion limit.
+DEEP_DIR="$PGC_WORKDIR/$BUCKET/deep/$(printf 'a/%.0s' $(seq 1000))"
+mkdir -p "$DEEP_DIR"
+python3 - "$DEEP_DIR" <<'PYEOF'
+import sys, os
+import pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.table({"id": pa.array([7], pa.int64())}), os.path.join(sys.argv[1], "x.parquet"))
+PYEOF
+check "premise: read_parquet reads the key of 1000 levels through a glob of one *" \
+	"$(qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8);" | tr '|' ' ')" "1 7"
+psql_run "DROP DATABASE IF EXISTS lst_cutf8;"
+psql_run "CREATE DATABASE lst_cutf8 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8';"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d lst_cutf8 -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pgcolumnar;"
+DEEP_CRASHES="$(crashes)"
+check "read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('*/', 1000) || '*.parquet') AS t(id int8)" lst_cutf8)|$(survived "$DEEP_CRASHES")" \
+	"54000|1"
+wait_up
+psql_run "DROP DATABASE lst_cutf8;"
+rm -rf "$PGC_WORKDIR/$BUCKET/deep"
+
 # ---- optional: a real S3 implementation (Garage), as the sibling suites (#1798)
 # The fixture above answers ListObjectsV2 from one Python handler, two keys a page.
 # These arms put a layout on a real S3 implementation under a per-run prefix and
