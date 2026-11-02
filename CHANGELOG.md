@@ -534,6 +534,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
+  session installs into the same prefix during the run (#1942). The check
+  "the installed library of the running major was never touched" now reads the
+  rebuild's own target. A change to the installed library that the rebuild did
+  not target skips the check, with the measurement as the reason. In GitHub
+  Actions the same change still fails the check. The check reads
+  `GITHUB_ACTIONS` itself, so no caller can drop it. A failure now prints both
+  modification times, both inodes, the owner and the target. docs/testing.md.
+
 - The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
   unset (#1933). That fixed default does not exist in the dev container, so
   every cluster fixture failed at setup, and
@@ -637,6 +646,39 @@ true until the next version shipped.
   digests. The pytest session's teardown does the same. docs/testing.md.
   `test/harness_isolation.sh` and `test_harness_isolation.py`.
   Reported by @OffgridwithJD.
+
+- `iceberg_rest_table_location` and `iceberg_rest_scan` now refuse an empty
+  table name, `''`, with SQLSTATE 22023 (#1931). Before, they sent
+  `GET /v1/namespaces/db/tables/`, a path that ends in an empty segment. A
+  proxy that strips the trailing slash would send it to listTables. The
+  client would then fail with a misleading error: the loadTable response is
+  missing the "metadata-location" field. The refusal comes before any
+  request, including a server's OAuth token request. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+  Reported by @OffgridwithJD.
+- The Iceberg REST functions now refuse a table name of `.` or `..`, and a
+  namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`,
+  with SQLSTATE 22023 (#1948). Before, `rest_pct_encode` kept the dots, so
+  `iceberg_rest_table_location(cat, 'db', '..')` sent
+  `GET /v1/namespaces/db/tables/..`. A server or proxy that removes dot
+  segments would have sent that to `/v1/namespaces/db`, and
+  `/v1/namespaces/../tables` to `/v1/tables`. The refusal comes before any
+  request, including a server's OAuth token request. On a catalog whose
+  separator is `%2E`, levels that join to `%2E` or `%2E%2E`, such as the
+  `text` forms `'.'` and `'..'`, are refused after `/v1/config`. Names that
+  only hold dots, such as `a.b` or `...`, are still sent. The namespace walk
+  still lists `{".."}` and asks for its children with `?parent=..`, a query
+  value. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
+- Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
+  of a namespace with an empty level among other levels, such as `{db,"",x}`
+  under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level
+  sits in the middle (#1939). A third check shows that the text form,
+  `iceberg_rest_namespaces`, lists `db`, `db.`, `db..x` and `db..x.y`. Before,
+  no check covered these, so a walk that stopped at `{db,""}` passed every
+  check. The code was already correct. The `emptylevel` fixture in
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py` now serves
+  `{db,"",x,y}`. docs/sql-reference.md.
 
 - The Iceberg REST functions now refuse a namespace whose only level is empty,
   `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an

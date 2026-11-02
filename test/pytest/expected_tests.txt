@@ -1730,33 +1730,51 @@ guard_tests 863
 # page header field the reader skips of another Thrift type refused, the unpatched dictionary page file
 # reads, and every dictionary page header field of another Thrift type refused, by collection: 6081 tests
 # collected, less guard_tests 858.
+# cluster_tests 5296 -> 5297 for #1939's test in test_iceberg_rest_scan.py (iceberg_rest_namespace_levels
+# lists the child db, '', x of db, ''), by collection: 5282 tests collected for the cluster half,
+# guard_tests 860 unchanged.
+# cluster_tests 5297 -> 5299 for #1939's review fixes in test_iceberg_rest_scan.py (the child
+# db, '', x, y of db, '', x, and the text form iceberg_rest_namespaces), by collection: 6144 tests
+# collected, less guard_tests 860.
+# cluster_tests 5299 -> 5308 for #1931's nine tests in test_iceberg_rest_scan.py: an empty table name is
+# refused (22023) by iceberg_rest_table_location and iceberg_rest_scan in the text and text[] forms, with
+# the catalog down, and in the OAuth server form before the token request; the same catalog still resolves
+# db.events, and no request ends in an empty table segment, by collection: test_iceberg_rest_scan.py
+# collects 99 tests, 6168 tests collected, less guard_tests 863.
+# cluster_tests 5308 -> 5334 for #1948's 26 tests in test_iceberg_rest_scan.py: a table name or a
+# namespace whose path segment is '.' or '..' is refused (22023, with its hint) by iceberg_rest_table_location,
+# iceberg_rest_scan and iceberg_rest_tables, in the text and text[] forms, with the catalog down, in the OAuth
+# server form before the token request, and when the separator %2E joins levels into a dot segment; the walk
+# lists ARRAY['..'] through a ?parent= query, names that only hold dots still reach the catalog, and no request
+# path holds a dot segment, by collection: test_iceberg_rest_scan.py collects 128 tests, 6197 tests collected,
+# less guard_tests 863.
 # cluster_tests 5296 unchanged for #1941's eleven checks in test_tier_partition.py (a directory, a glob
 # or a host in another case that a foreign table reads blocks a move to a path it covers, and four paths it
 # does not cover are not blocked), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1946's review: five checks in test_tier_partition.py (the refusal's detail,
+# cluster_tests 5334 -> 5334 for #1946's review: five checks in test_tier_partition.py (the refusal's detail,
 # three bracket spellings read as fnmatch reads them, and a [class] that does not match a slash), added to
 # an existing test, by collection: 6159 tests collected, less guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1946's second review: eighteen checks in test_tier_partition.py (ten
+# cluster_tests 5334 -> 5334 for #1946's second review: eighteen checks in test_tier_partition.py (ten
 # glob spellings fnmatch reads that the check now refuses, among them [[:digit:]], [^]x] and a local class
 # across a slash; a session with standard_conforming_strings off; and seven paths the table does not read
 # that it does not refuse), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1946's third review: four checks in test_tier_partition.py (an unclosed
+# cluster_tests 5334 -> 5334 for #1946's third review: four checks in test_tier_partition.py (an unclosed
 # [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
 # the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1951's nine checks in test_tier_partition.py (seven glob brackets
+# cluster_tests 5334 -> 5334 for #1951's nine checks in test_tier_partition.py (seven glob brackets
 # fnmatch closes at another ] than the check did, among them a range that ends in [ before a POSIX
 # class; the refusal's detail printing a backslash path as written; and a slash in such a bracket's
 # place that is not refused), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1953 review's two checks in test_tier_partition.py (a ! or ^ after [
+# cluster_tests 5334 -> 5334 for #1953 review's two checks in test_tier_partition.py (a ! or ^ after [
 # always negates, in an s3:// and a local glob), added to an existing test, by collection: 6159 tests
 # collected, less guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1953 review's quote check in test_tier_partition.py (the refusal's
+# cluster_tests 5334 -> 5334 for #1953 review's quote check in test_tier_partition.py (the refusal's
 # detail doubles a ' in the path), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
-# cluster_tests 5296 -> 5296 for #1953 review's third round: three checks in test_tier_partition.py (a
+# cluster_tests 5334 -> 5334 for #1953 review's third round: three checks in test_tier_partition.py (a
 # widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
 # added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
-cluster_tests 5296
+cluster_tests 5334

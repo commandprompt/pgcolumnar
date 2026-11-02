@@ -546,12 +546,32 @@ check "empty level: a missing namespace with no empty level gets no empty-level 
 # This catalog (separator %1F) keeps its table in the namespace db, '' (an
 # empty second level), as the Apache Iceberg REST catalog allows. The client
 # must reach it in every form, and a listed row must pass back unchanged.
-start_fx emptylevel --namespace-levels '["db",""]' --table events
+# The catalog also serves db, '', x, a child of db, '' (#1939), and
+# db, '', x, y below it, so the walk must name an empty level that sits
+# between two others in ?parent=.
+start_fx emptylevel --namespace-levels '["db",""]' --table events --extra-namespace 'db..x.y'
 ECAT="http://127.0.0.1:$FX_PORT"
 check "empty level: iceberg_rest_namespace_levels lists the namespace db, ''" \
 	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY array_to_json(ns)::text COLLATE \"C\")
 	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
-	'["db",""] ["db"]'
+	'["db","","x","y"] ["db","","x"] ["db",""] ["db"]'
+# The walk must go on below db, '': an empty level among other levels can be
+# named in ?parent=, so its children are listed (#1939).
+check "empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, ''" \
+	"$(rows_of "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x']) || ' of ' || count(*)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	"1 of 4"
+# The walk must go on below db, '', x too: its ?parent= holds two separators
+# in a row, for the empty level in the middle.
+check "empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x" \
+	"$(rows_of "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x','y']) || ' of ' || count(*)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	"1 of 4"
+# The text form shares the walk, and must list the same four namespaces.
+check "empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns COLLATE \"C\")
+	            FROM pgcolumnar.iceberg_rest_namespaces('$ECAT') AS ns")" \
+	"db,db.,db..x,db..x.y"
 check "empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables" \
 	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$ECAT', ARRAY['db','']) AS t")" \
 	"events"
@@ -667,6 +687,188 @@ check "empty only level: the OAuth server form of iceberg_rest_scan of '' is ref
 check "empty only level: no request reaches the catalog with an empty path segment" \
 	"$(cat "$OLOG" "$KLOG" | grep -c '^GET [^ ?]*//')" \
 	"0"
+# ---- #1931: an empty table name ---------------------------------------------
+# An empty table name makes the loadTable path /v1/namespaces/db/tables/, which
+# ends in an empty segment. A proxy that strips the trailing slash would reach
+# listTables instead. So the client refuses it (22023) before any request,
+# including a server's OAuth token request. This fixture would answer the path.
+start_fx emptytable --table events
+TCAT="http://127.0.0.1:$FX_PORT"
+TLOG="$PGC_WORKDIR/emptytable.log"
+check "empty table name: iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', ARRAY['db'], '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', ARRAY['db'], '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+# The control resolves db.events on the same fixture, so its log is known to
+# record requests; then no GET in it may end in an empty table segment.
+check "empty table name: the same catalog still resolves db.events" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', 'events')")" \
+	"$MDLOC"
+check "empty table name: no request reaches the catalog with an empty table segment" \
+	"loadTable events=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/events ') empty table segment=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/ ')" \
+	"loadTable events=1 empty table segment=0"
+# ---- #1948: a table name or namespace that is a dot segment -----------------
+# rest_pct_encode keeps '.', so a table named '..' made the path
+# /v1/namespaces/db/tables/.., and a server or proxy that removes dot segments
+# (RFC 3986) would send it to loadNamespace instead. The same goes for '.', and
+# for a namespace whose one path segment is '.' or '..'. The client refuses
+# them (22023) before any request, including a server's OAuth token request.
+# These fixtures do not normalise paths, so they would answer such a request:
+# dottable serves a table named '..', and dotns serves the namespace ARRAY['..'].
+start_fx dottable --table ..
+DTCAT="http://127.0.0.1:$FX_PORT"
+DTLOG="$PGC_WORKDIR/dottable.log"
+start_fx dotns --namespace-levels '[".."]' --table events
+DNCAT="http://127.0.0.1:$FX_PORT"
+DNLOG="$PGC_WORKDIR/dotns.log"
+DOT_TABLE_HINT='HINT:  A table named "." or ".." cannot be sent in a request path.'
+DOT_NS_HINT='HINT:  A namespace whose levels, joined with the catalog'"'"'s separator, read "." or ".." cannot be sent in a request path.'
+check "dot segment: iceberg_rest_table_location of table '..' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DTCAT', 'db', '..')" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: iceberg_rest_table_location of table '.' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DTCAT', 'db', '.')" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: iceberg_rest_scan of table '..' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DTCAT', 'db', '..') AS t(id bigint)" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: iceberg_rest_scan of table '.' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DTCAT', 'db', '.') AS t(id bigint)" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: the text[] form of iceberg_rest_table_location of table '..' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DTCAT', ARRAY['db'], '..')" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: the text[] form of iceberg_rest_scan of table '.' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DTCAT', ARRAY['db'], '.') AS t(id bigint)" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: iceberg_rest_table_location of table '..' is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '..')" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: the OAuth server form of iceberg_rest_table_location of table '..' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '..')" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+check "dot segment: the OAuth server form of iceberg_rest_scan of table '.' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '.') AS t(id bigint)" \
+	   "$DOT_TABLE_HINT" " hint table")" \
+	"22023 hint table"
+# A namespace array of one level '.' or '..' is the whole path segment. The
+# text form cannot give such a level: it splits on every dot.
+check "dot segment: iceberg_rest_tables of ARRAY['..'] is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DNCAT', ARRAY['..'])" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_tables of ARRAY['.'] is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DNCAT', ARRAY['.'])" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_table_location of ARRAY['.'] is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DNCAT', ARRAY['.'], 'events')" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_scan of ARRAY['..'] is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DNCAT', ARRAY['..'], 'events') AS t(id bigint)" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_tables of ARRAY['..'] is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY['..'])" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: the OAuth server form of iceberg_rest_tables of ARRAY['..'] is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('irs_down', ARRAY['..'])" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: the OAuth server form of iceberg_rest_table_location of ARRAY['.'] is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', ARRAY['.'], 'events')" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: the OAuth server form of iceberg_rest_scan of ARRAY['..'] is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', ARRAY['..'], 'events') AS t(id bigint)" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+# A catalog that lists the namespace ARRAY['..']: the walk asks for its
+# children with ?parent=.., a query value. RFC 3986 removes dot segments from
+# the path only, so the walk lists it and walks into it, as it does for an
+# empty ?parent= (#1922). Only a request PATH that names it is refused.
+check "dot segment: iceberg_rest_namespace_levels lists ARRAY['..'] and asks for its children in a query value" \
+	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ') FROM pgcolumnar.iceberg_rest_namespace_levels('$DNCAT') AS ns") parent requests=$(grep -c '?parent=\.\. ' "$DNLOG")" \
+	'[".."] parent requests=1'
+check "dot segment: iceberg_rest_namespaces lists '..' and asks for its children in a query value" \
+	"$(rows_of "SELECT string_agg(ns, ' ') FROM pgcolumnar.iceberg_rest_namespaces('$DNCAT') AS ns") parent requests=$(grep -c '?parent=\.\. ' "$DNLOG")" \
+	'.. parent requests=2'
+# With the separator %2E (the Apache Iceberg 1.12 REST catalog's), the levels
+# ['',''] make the segment %2E, and ['','',''] make %2E%2E. A normaliser that
+# decodes %2E first (RFC 3986 section 6.2.2.2) then sees a dot segment. The
+# separator comes from /v1/config, so this refusal follows that request. The
+# text form '.' gives ['',''], and '..' gives ['','','']. dotjoin serves ['',''].
+start_fx dotjoin --namespace-separator %2E --namespace-levels '["",""]' --table events
+DSCAT="http://127.0.0.1:$FX_PORT"
+DSLOG="$PGC_WORKDIR/dotjoin.log"
+check "dot segment: iceberg_rest_tables of '.' is refused when the catalog's separator is %2E" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DSCAT', '.')" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_table_location of '..' is refused when the catalog's separator is %2E" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$DSCAT', '..', 'events')" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+check "dot segment: iceberg_rest_scan of ARRAY['',''] is refused when the catalog's separator is %2E" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$DSCAT', ARRAY['',''], 'events') AS t(id bigint)" \
+	   "$DOT_NS_HINT" " hint namespace")" \
+	"22023 hint namespace"
+# Controls: a name that only contains dots is not a dot segment, so it still
+# reaches the catalog. dotok serves the table .hidden (and a.b) in ARRAY['...'].
+start_fx dotok --namespace-levels '["..."]' --table .hidden --extra-table a.b
+DOCAT="http://127.0.0.1:$FX_PORT"
+DOLOG="$PGC_WORKDIR/dotok.log"
+check "dot segment: iceberg_rest_tables of ARRAY['...'] reaches the catalog and lists .hidden and a.b" \
+	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t COLLATE \"C\") FROM pgcolumnar.iceberg_rest_tables('$DOCAT', ARRAY['...']) AS t")" \
+	".hidden,a.b"
+check "dot segment: iceberg_rest_table_location of .hidden in ARRAY['...'] resolves" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$DOCAT', ARRAY['...'], '.hidden')")" \
+	"$MDLOC"
+# A level '..' among other levels is not a whole segment (db%1F..), so it is
+# not refused: it reaches this catalog, which has no such namespace.
+check "dot segment: iceberg_rest_tables of ARRAY['db','..'] reaches the catalog's 404" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_tables('$DNCAT', ARRAY['db','..'])" \
+	   "the REST catalog has no such namespace" " by the catalog's 404")" \
+	"3F000 by the catalog's 404"
+# The control resolved .hidden, so these logs are known to record requests;
+# then no GET path in them may hold a dot segment, plain or percent-encoded.
+check "dot segment: no request reaches the catalog with a dot segment" \
+	"loadTable .hidden=$(grep -c '^GET [^ ?]*/tables/\.hidden ' "$DOLOG") dot segment=$(cat "$DTLOG" "$DNLOG" "$DSLOG" "$DOLOG" 2>/dev/null | grep -cE '^GET [^ ?]*/(\.|%2[Ee]){1,2}[/? ]')" \
+	"loadTable .hidden=1 dot segment=0"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \
