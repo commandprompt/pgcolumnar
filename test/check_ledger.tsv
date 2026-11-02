@@ -8341,7 +8341,7 @@ server_file_privilege	server_file_privilege	the pg_read_server_files role gets p
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: export_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: export_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: parallel_export_parquet	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: tier_partition	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: tier_partition	15;16;17;18;19	2026-11-02	Iceberg fixture metadata_path at /tmp/<file>, so its location is '/' and covers tier_partition's output (#1949)
 settings_reference	settings_reference	a role that is not a superuser cannot set enable_end_truncation (42501)	15;16;17;18;19	2026-10-15	enable_end_truncation defined PGC_POSTMASTER instead of PGC_SUSET (src/columnar_tableam.c);enable_end_truncation defined PGC_USERSET instead of PGC_SUSET (src/columnar_tableam.c)
 settings_reference	settings_reference	and a superuser can	15;16;17;18;19	2026-10-15	enable_end_truncation defined PGC_POSTMASTER instead of PGC_SUSET (src/columnar_tableam.c)
 settings_reference	settings_reference	compression_level reaches the zstd codec: level 19 stores less than level 1	15;16;17;18;19	2026-10-15	try_zstd passes level 1 to ZSTD_compress, not the setting (src/columnar_compression.c)

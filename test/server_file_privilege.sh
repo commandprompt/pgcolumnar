@@ -44,6 +44,11 @@ _ver=$(grep -oE "default_version = '[^']+'" "$_root/pgcolumnar.control" | sed "s
 SQLFILE="$_root/pgcolumnar--$_ver.sql"
 [ -f "$SQLFILE" ] || { echo "FAIL  install script $SQLFILE not found"; exit 1; }
 nope="/tmp/pgc_sfp_does_not_exist.parquet"
+# The Iceberg table's metadata_path sits in a metadata/ directory, as Iceberg lays
+# it out. tier_partition refuses a path under an Iceberg table's location, the
+# parent of that directory; with $nope the location is '/', which would refuse
+# tier_partition's own output and hide its gate (#1949).
+icenope="/tmp/pgc_sfp_does_not_exist/metadata/v1.metadata.json"
 out="$PGC_WORKDIR/sfp_out"
 outdir="$PGC_WORKDIR/sfp_dir"
 
@@ -72,7 +77,7 @@ psql_run "CREATE SERVER pqsrv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 psql_run "CREATE FOREIGN TABLE ft (id int, v text) SERVER pqsrv OPTIONS (path '$nope');"
 psql_run "GRANT SELECT ON ft TO t_none, t_priv;"
 psql_run "CREATE SERVER icesrv FOREIGN DATA WRAPPER pgcolumnar_iceberg;"
-psql_run "CREATE FOREIGN TABLE ift (id bigint) SERVER icesrv OPTIONS (metadata_path '$nope');"
+psql_run "CREATE FOREIGN TABLE ift (id bigint) SERVER icesrv OPTIONS (metadata_path '$icenope');"
 psql_run "GRANT SELECT ON ift TO t_none, t_priv;"
 
 # tier_partition (#1295) writes its file through export_parquet, so its gate is
