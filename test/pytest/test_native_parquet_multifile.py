@@ -540,8 +540,8 @@ def test_the_readers_local_glob_walk_is_bounded(pgc_cluster, server_dir, expect)
         return f"SELECT /* {tag} */ count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
 
     dots18 = f"'{w}/emptyglob/' || repeat('.*/', 18) || 'x.parquet'"
-    expect.text(_state_within(pgc_cluster, rp(dots18), 20, options="-c statement_timeout=1s"), "54000",
-                "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 1 s statement_timeout")
+    expect.text(_state_within(pgc_cluster, rp(dots18), 20, options="-c statement_timeout=10s"), "54000",
+                "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 10 s statement_timeout")
     # fan/ holds 8 links to itself: 5 levels take about 220,000 steps, under the
     # bound, and a 20 ms statement_timeout fires inside the walk.
     fan5 = f"'{fan}/' || repeat('.*/', 5) || 'x.parquet'"

@@ -399,10 +399,13 @@ st_in() {
 	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
 	echo "${out:-no answer}"
 }
+# The walk takes about 0.25 s on the test host but over 1 s on a loaded CI
+# runner, so the statement_timeout is 10 s. Before the fix no timeout stopped
+# the walk, and the client gave up after 20 s.
 mkdir -p "$W/emptyglob"
 dots18="'$W/emptyglob/' || repeat('.*/', 18) || 'x.parquet'"
-check "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 1 s statement_timeout" \
-	"$(st_in 20 '-c statement_timeout=1s' "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($dots18) AS t($cols)")" \
+check "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 10 s statement_timeout" \
+	"$(st_in 20 '-c statement_timeout=10s' "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($dots18) AS t($cols)")" \
 	"54000"
 # fan/ holds 8 symbolic links to itself, so each level of .*/ in fan/ matches
 # ., and the 8 links, and the walk grows ninefold per level. 5 levels take
