@@ -1763,4 +1763,18 @@ guard_tests 863
 # cluster_tests 5334 -> 5334 for #1946's third review: four checks in test_tier_partition.py (an unclosed
 # [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
 # the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1951's nine checks in test_tier_partition.py (seven glob brackets
+# fnmatch closes at another ] than the check did, among them a range that ends in [ before a POSIX
+# class; the refusal's detail printing a backslash path as written; and a slash in such a bracket's
+# place that is not refused), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's two checks in test_tier_partition.py (a ! or ^ after [
+# always negates, in an s3:// and a local glob), added to an existing test, by collection: 6159 tests
+# collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's quote check in test_tier_partition.py (the refusal's
+# detail doubles a ' in the path), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's third round: three checks in test_tier_partition.py (a
+# widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
+# added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
 cluster_tests 5334
