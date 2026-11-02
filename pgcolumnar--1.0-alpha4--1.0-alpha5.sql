@@ -1803,6 +1803,7 @@ DECLARE
 	acl		record;
 	moved	bigint;
 	seen	bigint;
+	covered	record;
 	callers_timeout text := current_setting('lock_timeout');
 BEGIN
 	-- A REPEATABLE READ or SERIALIZABLE snapshot predates the lock taken below, so
@@ -1882,23 +1883,53 @@ BEGIN
 	-- export_parquet overwrites an existing file without a word. A file another
 	-- foreign table in this database reads is refused; one only a failed earlier
 	-- attempt left behind is overwritten, so a retry can use the same path.
-	-- Both paths have their scheme normalised before they are compared (#1936):
-	-- a remote scheme matches in any case, and s3a:// or s3n:// match s3://
-	-- (#1930). The host, bucket and key keep their case, and a local path is
-	-- compared as written. Only one path is compared with another: a foreign
-	-- table on a directory or a glob that covers the path is not seen. A NULL
-	-- path compares as unknown, so it reaches the null refusal (#1937 review).
-	IF EXISTS (SELECT 1 FROM pg_foreign_table t, unnest(t.ftoptions) AS o(opt),
-				LATERAL (SELECT array_agg(
+	-- A foreign table reads every file its path expands to, as pq_resolve_paths
+	-- expands it (#1941). So the path is refused when a table's path is:
+	--   - the same path;
+	--   - a remote directory (it ends in '/'), or any local path, and the path
+	--     lies below it at any depth. Nothing lies below a local file, so a
+	--     local path that is not a directory refuses nothing more;
+	--   - a glob that the path matches: a local path, or an s3:// key, holding
+	--     *, ? or [. A * or ? does not match '/', a backslash escapes the next
+	--     character, and a [class] matches any one character but '/', which
+	--     refuses at least what the class matches.
+	-- Both paths are normalised first (#1936): a remote scheme matches in any
+	-- case, s3a:// and s3n:// match s3:// (#1930), and so does the host of an
+	-- http(s) URL. The bucket and key keep their case. A local path is compared
+	-- as written: a symbolic link, '..' or a relative spelling is not resolved.
+	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
+	SELECT c.relid, c.opath INTO covered
+	  FROM (SELECT t.ftrelid::regclass AS relid, substr(o.opt, 6) AS opath,
+				   v.np[1] AS tp, v.np[2] AS fp
+			  FROM pg_foreign_table t, unnest(t.ftoptions) AS o(opt),
+				   LATERAL (SELECT array_agg(
 							CASE WHEN p ~* '^s3[an]?://'
 								 THEN 's3://' || substr(p, strpos(p, '://') + 3)
-								 WHEN p ~* '^(gs|az|https?)://'
+								 WHEN p ~* '^https?://'
+								 THEN lower(substring(p FROM '^[^:]*://[^/]*'))
+									  || substr(p, length(substring(p FROM '^[^:]*://[^/]*')) + 1)
+								 WHEN p ~* '^(gs|az)://'
 								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
 								 ELSE p END ORDER BY n)
-						   FROM unnest(ARRAY[path, substr(opt, 6)]) WITH ORDINALITY AS s(p, n)) AS v(np)
-			   WHERE opt LIKE 'path=%' AND v.np[1] = v.np[2]) THEN
+						   FROM unnest(ARRAY[path, substr(o.opt, 6)]) WITH ORDINALITY AS s(p, n)) AS v(np)
+			 WHERE o.opt LIKE 'path=%') AS c
+	 WHERE c.tp = c.fp
+		OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
+		OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
+			AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
+		OR (c.fp !~ '^(gs|az|https?)://' AND c.fp ~ '[*?[]'
+			AND c.tp ~ ('^' || (SELECT string_agg(
+								CASE WHEN m[1] = '*' THEN '[^/]*'
+									 WHEN m[1] = '?' OR m[1] ~ '^\[.+\]$' THEN '[^/]'
+									 ELSE regexp_replace(right(m[1], 1), '([].[^$|()*+?{}\\])', '\\\1', 'g')
+								END, '' ORDER BY k)
+							FROM regexp_matches(c.fp, '(\\.|\[!?\]?[^]]*\]|.)', 'g')
+								 WITH ORDINALITY AS r(m, k)) || '$'))
+	 LIMIT 1;
+	IF FOUND THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
-			USING ERRCODE = 'duplicate_file';
+			USING ERRCODE = 'duplicate_file',
+				  DETAIL = format('Foreign table %s reads path %L.', covered.relid, covered.opath);
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not
