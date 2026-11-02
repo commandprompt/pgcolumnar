@@ -540,6 +540,7 @@ true until the next version shipped.
   `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
   changes: an unknown verdict still lets the run go ahead, and only a server
   that started before the install is refused.
+
 - The shell harness now refuses a server that started earlier in the same
   second as the library install (#1956). `pgc_check_running_binary` in
   `test/lib.sh` compared the library's modification time and the postmaster
