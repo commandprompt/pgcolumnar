@@ -3920,7 +3920,8 @@ pq_glob_bound(const char *pattern, int levels, const char *what)
 /*
  * Bound a local pattern before glob(3) runs: every '/' after the first *, ?
  * or [ is a call of glob(3) to itself. The reader and path_glob_matches both
- * call this (#1968).
+ * call this (#1968): the reader on the folded form it globs
+ * (pq_local_glob_fold), path_glob_matches on the pattern it is given.
  */
 static void
 pq_local_glob_bound(const char *pattern)
@@ -3931,6 +3932,44 @@ pq_local_glob_bound(const char *pattern)
 	for (c = strpbrk(pattern, "*?["); c != NULL && *c != '\0'; c++)
 		levels += (*c == '/') ? 1 : 0;
 	pq_glob_bound(pattern, levels, "levels after the first *, ? or [");
+}
+
+/*
+ * The folded form of a local pattern, which the reader bounds and globs: each
+ * run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
+ * open(2) and glob(3) read both spellings as the same file, so the files read
+ * do not change, but the folded form can have far fewer levels: #1978's
+ * tier_partition check reads a table on '<dir>/s[p]' || repeat('/.', 200) ||
+ * '/a.parquet'. A '.' at the end is kept, as it makes the pattern match only
+ * directories, and so is a name followed by '..', as a symbolic link before the
+ * '..' leads the kernel somewhere else. A '/' after a backslash is not folded.
+ */
+static char *
+pq_local_glob_fold(const char *pattern)
+{
+	char	   *out = palloc(strlen(pattern) + 1);
+	char	   *o = out;
+	const char *c = pattern;
+
+	while (*c != '\0')
+	{
+		bool		escaped = (o > out && o[-1] == '\\');
+
+		*o++ = *c;
+		if (*c++ != '/' || escaped)
+			continue;
+		for (;;)
+		{
+			if (c[0] == '/')
+				c++;
+			else if (c[0] == '.' && c[1] == '/')
+				c += 2;
+			else
+				break;
+		}
+	}
+	*o = '\0';
+	return out;
 }
 
 /*
@@ -4391,11 +4430,15 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		glob_t		g;
 		int			rc;
 		size_t		i;
+		char	   *folded = pq_local_glob_fold(path);
 
-		/* glob(3) calls itself for each level; bound them first (#1968) */
-		pq_local_glob_bound(path);
+		/*
+		 * glob(3) calls itself for each level; bound them first (#1968), in
+		 * the folded form that glob(3) then expands (#1977 review)
+		 */
+		pq_local_glob_bound(folded);
 		memset(&g, 0, sizeof(g));
-		rc = glob(path, GLOB_NOSORT, NULL, &g);
+		rc = glob(folded, GLOB_NOSORT, NULL, &g);
 		if (rc == GLOB_NOMATCH || g.gl_pathc == 0)
 		{
 			globfree(&g);

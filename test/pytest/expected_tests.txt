@@ -1829,4 +1829,8 @@ guard_tests 863
 # foreign table, last in the file), and five tests in test_objstore_listing.py (128/129 s3:// * with no LIST for
 # 129; a 4095/4096-byte s3:// glob; a foreign table over 129 *; the listing returns a 1000-level key that one * matches; 1000 s3://
 # */ levels in a UTF-8 database), by collection: 6205 tests collected, less guard_tests 863.
-cluster_tests 5342
+# cluster_tests 5342 -> 5343 for #1977 review's test_a_local_glob_is_bounded_and_read_in_its_folded_form in
+# test_native_parquet_multifile.py (a local glob over 128 levels as written but not once its '.' names or runs
+# of '/' are folded; a '.' at the end kept; a name followed by '..' kept past a symbolic link; 1990 '.' levels
+# read in the folded form), by collection: 6206 tests collected, less guard_tests 863.
+cluster_tests 5343

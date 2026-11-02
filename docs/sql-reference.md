@@ -815,7 +815,10 @@ The function refuses these:
   cannot tell whether that table reads `path`, so it refuses. The error
   detail names the foreign table and its glob, escaped as above (#1974). A
   table that does read `path` is reported as `58P02` instead. This holds
-  also when its glob is too large as written but not in the folded form;
+  also when its glob is too large as written but not in the folded form.
+  The reader bounds a local glob in its own folded form too, so it reads
+  such a table (see
+  [Glob patterns too large to match](#glob-patterns-too-large-to-match));
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
@@ -862,7 +865,8 @@ A pattern that is too large for glibc to match safely raises error 54000
 `glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
 `fnmatch` uses stack space for each `*`. A larger pattern could crash the
 server. The Parquet reader refuses the same patterns with the same error
-(#1968, #1972); see [Glob patterns too large to match](#glob-patterns-too-large-to-match).
+(#1968, #1972). It counts the levels of a local pattern in a folded form; see
+[Glob patterns too large to match](#glob-patterns-too-large-to-match).
 
 A local pattern that makes the walk too long also raises error 54000 (#1973).
 Each directory in the tree in memory lists `.` and `..`, as a real one does,
@@ -1152,9 +1156,27 @@ safely, with error 54000 (`program_limit_exceeded`), before they read
 anything (#1968, #1972):
 
 - a pattern of 4096 bytes (`PATH_MAX`) or more;
-- a local pattern with more than 128 `/` after its first `*`, `?` or `[`;
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`,
+  counted in its folded form (see below);
 - an `s3://` pattern with more than 128 `*`. The reader refuses it before it
   lists the prefix.
+
+The reader counts and expands a local pattern in a folded form. In that
+form, each run of `/` becomes one `/`, and a `.` name followed by `/` is
+dropped. The kernel
+opens the same file by either spelling, so the files read do not change. So
+`'/w/s[p]' || repeat('/.', 200) || '/a.parquet'` has 201 levels as written,
+but 1 in the folded form, and the reader reads `/w/sp/a.parquet`. Two names
+are kept as written:
+
+- a `.` at the end, because it makes the pattern match only directories;
+- a name followed by `..`, because when that name is a symbolic link, the
+  kernel goes up from the directory the link leads to.
+
+A backslash before a `/` keeps the `/` from being folded with what follows
+it, and a name such as `\.` is not dropped. So `tier_partition`, which folds
+these as well as a name followed by `..`, can find fewer levels than the
+reader does.
 
 `glob(3)` and `fnmatch` use stack space for each such level, and a larger
 pattern could crash the server. The limits are those of
