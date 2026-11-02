@@ -101,13 +101,20 @@ check_text "the shim redirects the install away from the real prefix" \
 # day the shim stops redirecting is the day this arm installs over the real .so
 # and the run still looks clean.
 #
-# MTIME, NOT DIGEST. The tree here is a copy of the tree under test and the build
-# is byte-reproducible, so an install that DID land on the live prefix would write
-# the same bytes and leave the digest identical: a control that cannot fail. The
-# mtime moves whether or not the content does, and that is the whole signal.
+# INODE, SIZE AND MTIME, NOT DIGEST. The tree here is a copy of the tree under
+# test and the build is byte-reproducible, so an install that DID land on the live
+# prefix would write the same bytes and leave the digest identical: a control that
+# cannot fail. The mtime moves whether or not the content does, and that is the
+# whole signal. It is read to the nanosecond (#1950): a whole-second mtime missed
+# a write in the same second as the first reading.
 _hr_live_so="$("$PGC_SELFTEST_PG_CONFIG" --pkglibdir)/pgcolumnar.so"
-_hr_live_before="$(stat -c %Y "$_hr_live_so" 2>/dev/null)"
-_hr_live_ino="$(stat -c %i "$_hr_live_so" 2>/dev/null)"
+_hr_live_reading() {	# FILE -> "inode N size N mtime <to the nanosecond>", or nothing if absent
+	# %y, not %.9Y: uutils stat rounds %.9Y through a float and loses the last
+	# digits, while %y prints the stored nanoseconds on GNU and uutils alike.
+	[ -e "${1:-}" ] || return 0
+	stat -c 'inode %i size %s mtime %y' "$1" 2>/dev/null
+}
+_hr_live_before="$(_hr_live_reading "$_hr_live_so")"
 
 _hr_stamp="$(pgc_source_stamp_path "$_hr_tmp/tree" "$_hr_tmp/pg_config")"
 check_text "no stamp for this prefix before the rebuild" \
@@ -140,13 +147,21 @@ _hr_diagnose() {	# _hr_diagnose LOGFILE -> the tail, or WHY there is no tail
 	tail -20 "$_f" | sed 's/^/      /'
 }
 
-_hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> untouched|overwritten|changed-elsewhere
-	# DID THE REBUILD WRITE IT (#1942). An unchanged mtime is untouched. A changed one is the
+_hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> missing|untouched|overwritten|changed-elsewhere
+	# DID THE REBUILD WRITE IT (#1942). An unchanged reading is untouched. A changed one is the
 	# rebuild's only if the rebuild targeted the live library, because PGXS
 	# installs into the same `pg_config --pkglibdir` that rebuild.sh prints as
 	# its target. A rebuild that printed no target cannot be cleared by it, so an
 	# empty target is blamed rather than excused.
-	if [ "${1:-}" = "${2:-}" ]; then
+	# AN EMPTY READING IS A MISSING LIBRARY (#1950), not a match: two empty
+	# readings compare equal, and used to read as untouched. The empty test
+	# comes before the target test on purpose. So a library that another
+	# session's rebuild.sh deletes during this part (it runs `rm -f` before its
+	# install) now fails as missing, where it used to skip as changed
+	# elsewhere. The per-major lock makes that window unlikely.
+	if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+		echo missing
+	elif [ "$1" = "$2" ]; then
 		echo untouched
 	elif [ -z "${3:-}" ] || [ "$3" = "${4:-}" ]; then
 		echo overwritten
@@ -335,6 +350,41 @@ check_text "the outcome reads GITHUB_ACTIONS from the environment, not from its 
 	"$(GITHUB_ACTIONS=true _hr_live_outcome changed-elsewhere)/$(GITHUB_ACTIONS= _hr_live_outcome changed-elsewhere)" \
 	"fail/skip"
 
+# ---- the reading must see every write, and a missing library (#1950) ---------
+#
+# The verdict above compares two readings of the live library. Whole-second
+# mtimes missed two cases. A rewrite in the same second as the first reading
+# left the mtime unchanged, so it read as untouched. A library absent before
+# and after gave two empty readings, which compare equal, so it also read as
+# untouched. These checks drive the real reading on a file of their own.
+_hr_rtmp="$(mktemp -d)"
+printf a > "$_hr_rtmp/pgcolumnar.so"
+touch -d '@1700000000.100000000' "$_hr_rtmp/pgcolumnar.so"
+_hr_r1="$(_hr_live_reading "$_hr_rtmp/pgcolumnar.so")"
+printf b > "$_hr_rtmp/pgcolumnar.so"
+touch -d '@1700000000.900000000' "$_hr_rtmp/pgcolumnar.so"
+_hr_r2="$(_hr_live_reading "$_hr_rtmp/pgcolumnar.so")"
+_hr_rv="$(_hr_live_verdict "$_hr_r1" "$_hr_r2" /tmp/t/lib/pgcolumnar.so "$_hr_rtmp/pgcolumnar.so")"
+check_text "a rewrite within the same second reads as a change" \
+	"$(if [ "$_hr_rv" = changed-elsewhere ]; then echo changed-elsewhere; else echo "$_hr_rv: [$_hr_r1] -> [$_hr_r2]"; fi)" \
+	"changed-elsewhere"
+_hr_r1="$(_hr_live_reading "$_hr_rtmp/absent.so")"
+_hr_rv="$(_hr_live_verdict "$_hr_r1" "$_hr_r1" /tmp/t/lib/pgcolumnar.so "$_hr_rtmp/absent.so")"
+check_text "a library missing before and after reads as missing, not untouched" \
+	"$(if [ "$_hr_rv" = missing ]; then echo missing; else echo "$_hr_rv: [$_hr_r1] -> [$_hr_r1]"; fi)" \
+	"missing"
+_hr_r1="$(_hr_live_reading "$_hr_rtmp/pgcolumnar.so")"
+rm -f "$_hr_rtmp/pgcolumnar.so"
+_hr_r2="$(_hr_live_reading "$_hr_rtmp/pgcolumnar.so")"
+_hr_rv="$(_hr_live_verdict "$_hr_r1" "$_hr_r2" /tmp/t/lib/pgcolumnar.so "$_hr_rtmp/pgcolumnar.so")"
+check_text "a library removed during the rebuild reads as missing" \
+	"$(if [ "$_hr_rv" = missing ]; then echo missing; else echo "$_hr_rv: [$_hr_r1] -> [$_hr_r2]"; fi)" \
+	"missing"
+check_text "a missing library fails the arm, on a shared box and in CI" \
+	"$(GITHUB_ACTIONS= _hr_live_outcome missing)/$(GITHUB_ACTIONS=true _hr_live_outcome missing)" \
+	"fail/fail"
+rm -rf "$_hr_rtmp"
+
 _hr_dtmp="$(mktemp -d)"
 printf 'rebuild: UNRESOLVED SYMBOLS against PostgreSQL 18\n__aarch64_ldadd4_acq_rel\n' \
 	> "$_hr_dtmp/full.log"
@@ -391,13 +441,22 @@ if [ "$(_hr_dependents "$_hr_rc")" = run ]; then
 	check_text "the rebuild names the temporary prefix as its target" \
 		"$_hr_target" "$_hr_tmp/prefix/lib/pgcolumnar.so"
 
-	# THE MEASUREMENT TRAVELS WITH THE VERDICT (#1942, part 540): both mtimes,
-	# both inodes, the owner now, and the rebuild's target, so a reader can judge
-	# when the write happened and who made it.
-	_hr_live_after="$(stat -c %Y "$_hr_live_so" 2>/dev/null)"
-	_hr_live_now="$(stat -c '%i %U' "$_hr_live_so" 2>/dev/null)"
+	# THE MEASUREMENT TRAVELS WITH THE VERDICT (#1942, part 540): both readings
+	# (inode, size, mtime), the owner now, and the rebuild's target, so a reader
+	# can judge when the write happened and who made it.
+	_hr_live_after="$(_hr_live_reading "$_hr_live_so")"
+	# THE LIVE CALL SITES USE THE READING (#1954 review). The checks above
+	# drive _hr_live_reading on a file of their own, so a call site put back
+	# to whole-second `stat -c %Y` left them all green. This check reads the
+	# two live readings themselves. It also fails when the library is absent.
+	_hr_live_form='^inode [0-9]+ size [0-9]+ mtime [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9} '
+	check_text "both live readings carry the inode, the size and the mtime to the nanosecond" \
+		"$(if [[ "$_hr_live_before" =~ $_hr_live_form ]] && [[ "$_hr_live_after" =~ $_hr_live_form ]];
+		then echo well-formed; else echo "before [$_hr_live_before] after [$_hr_live_after]"; fi)" \
+		"well-formed"
+	_hr_live_owner="$(stat -c %U "$_hr_live_so" 2>/dev/null)"
 	_hr_live_v="$(_hr_live_verdict "$_hr_live_before" "$_hr_live_after" "$_hr_target" "$_hr_live_so")"
-	_hr_live_m="$_hr_live_v: $_hr_live_so mtime $_hr_live_before -> $_hr_live_after, inode $_hr_live_ino -> ${_hr_live_now%% *}, owner ${_hr_live_now#* }, rebuild target ${_hr_target:-<none>}"
+	_hr_live_m="$_hr_live_v: $_hr_live_so [${_hr_live_before:-absent}] -> [${_hr_live_after:-absent}], owner ${_hr_live_owner:-<none>}, rebuild target ${_hr_target:-<none>}"
 	# The arm name stays literal on both branches, so part 470 can compare it.
 	if [ "$(_hr_live_outcome "$_hr_live_v")" = skip ]; then
 		check_skip "and the installed library of the running major was never touched" \
@@ -417,6 +476,7 @@ else
 		"and the freshness gate then reads the tree as built from this source" \
 		"and it reads a different source as stale rather than fresh" \
 		"the rebuild names the temporary prefix as its target" \
+		"both live readings carry the inode, the size and the mtime to the nanosecond" \
 		"and the installed library of the running major was never touched"; do
 		check_skip "$_hr_arm" \
 			"SKIP  $_hr_arm (the hand rebuild failed, so there is no stamp to read)" \

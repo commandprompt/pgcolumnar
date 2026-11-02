@@ -546,6 +546,17 @@ true until the next version shipped.
   other wrapper's foreign table blocked every local move. Both the install script and the
   alpha4 to alpha5 upgrade script change. docs/how-to.md,
   docs/sql-reference.md. Reported by @OffgridwithJD.
+- `harness_selftest` part 580 now sees every write to the installed library
+  and fails when the library is missing (#1950). The check "the installed
+  library of the running major was never touched" compared whole-second
+  modification times. A write in the same second as the first reading read as
+  untouched. A library missing before and after gave two empty readings, which
+  also read as untouched. The check now compares the inode, the size and the
+  modification time to the nanosecond. An empty reading on either side fails
+  the check as `missing`, with both readings printed. A new check confirms
+  that both live readings carry the inode, the size and the nanosecond time.
+  docs/testing.md.
+
 - `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
   session installs into the same prefix during the run (#1942). The check
   "the installed library of the running major was never touched" now reads the
