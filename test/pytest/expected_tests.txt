@@ -1813,6 +1813,16 @@ guard_tests 863
 # added to an existing test (one * and 129 levels; 129 ? or [ levels; 128/129 s3:// *; a 4095/4096-byte
 # s3:// pattern; a walk cut by an interrupt is never false, replacing the vacuous interrupt check), by
 # collection: 6161 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1963, #1965, #1974 and #1959's checks in test_tier_partition.py (a
+# server on a wrapper with the Parquet handler under another name is the target; a local glob or target
+# spelled with //, /./ or a name and .. is refused; an Iceberg location with .. is refused, one through a
+# symbolic link is not; a glob too large to match names its table), added to existing tests, by
+# collection: 6199 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1978 review's checks in test_tier_partition.py (a target with .. at the
+# root; export_parquet through a renamed Parquet wrapper; a glob reader after a glob too large to match;
+# a glob too large only as written; an s3:// glob over 128 *; no matcher call for a plain reader; a glob
+# spelled with an escaped . or ..), added to existing tests, by collection: 6199 tests collected, less
+# guard_tests 863.
 # cluster_tests 5336 -> 5342 for #1968's, #1972's and #1973's checks: test_a_glob_too_deep_or_too_long_for_glob3_
 # is_an_error in test_native_parquet_multifile.py (128/129 local levels; a 4096-byte local glob; repeat('/.*', 40)
 # refused inside a 1 s timeout; repeat('/.*', 10) still matches; a 4000-level glob through read_parquet and a

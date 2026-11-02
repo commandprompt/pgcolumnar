@@ -1814,13 +1814,23 @@ DECLARE
 	parent	regclass;
 	bound	text;
 	fdw		name;
+	isparquet boolean;
 	cols	text;
 	deps	text;
 	note	text;
 	acl		record;
 	moved	bigint;
 	seen	bigint;
-	covered	record;
+	cand	record;
+	said	text;
+	hit		boolean;
+	kind	text;
+	hrel	regclass;
+	hpath	text;
+	hice	boolean;
+	lim_msg	text;
+	lim_detail text;
+	pass	int;
 	callers_timeout text := current_setting('lock_timeout');
 BEGIN
 	-- A REPEATABLE READ or SERIALIZABLE snapshot predates the lock taken below, so
@@ -1847,12 +1857,18 @@ BEGIN
 			USING ERRCODE = 'feature_not_supported',
 				  DETAIL = 'A foreign partition cannot take the rows no other partition accepts.';
 	END IF;
-	SELECT w.fdwname INTO fdw FROM pg_foreign_server s
+	-- The server's wrapper is known by its handler, as the path check below
+	-- knows the Parquet reader (#1963): a wrapper made with
+	-- pgcolumnar.parquet_fdw_handler under another name is the Parquet writer
+	-- and reader too, and export_parquet takes it by the same rule.
+	SELECT w.fdwname, w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure
+	  INTO fdw, isparquet
+	  FROM pg_foreign_server s
 		JOIN pg_foreign_data_wrapper w ON w.oid = s.srvfdw WHERE s.srvname = server;
 	IF fdw IS NULL THEN
 		RAISE EXCEPTION 'server "%" does not exist', server USING ERRCODE = 'undefined_object';
-	ELSIF fdw <> 'pgcolumnar_parquet' THEN
-		RAISE EXCEPTION 'server "%" uses the % wrapper, not pgcolumnar_parquet', server, fdw
+	ELSIF NOT isparquet THEN
+		RAISE EXCEPTION 'server "%" uses the % wrapper, whose handler is not pgcolumnar.parquet_fdw_handler', server, fdw
 			USING ERRCODE = 'wrong_object_type';
 	END IF;
 
@@ -1912,8 +1928,18 @@ BEGIN
 	--     So the check agrees with the reader by construction (#1957, #1962).
 	-- Both paths are normalised first (#1936): a remote scheme matches in any
 	-- case, s3a:// and s3n:// match s3:// (#1930), and so does the host of an
-	-- http(s) URL. The bucket and key keep their case. A local path is compared
-	-- as written: a symbolic link, '..' or a relative spelling is not resolved.
+	-- http(s) URL. The bucket and key keep their case.
+	-- A local path is compared twice: as written, and in the lexical form the
+	-- kernel gives it when no symbolic link is involved (#1965, #1959). That
+	-- form folds a run of '/' into one, drops a '.' name, and drops a name with
+	-- the '..' after it; a '..' at the root stays at the root. A path is refused
+	-- when either comparison refuses it, so the second one only adds refusals.
+	-- glob(3) and open(2) read '//' and '/./' so, and the Iceberg reader
+	-- resolves its location with realpath. A symbolic link is not resolved: it
+	-- needs the file system at the time of the call, and the link can change
+	-- after it. A relative path is not resolved against the data directory.
+	-- An s3://, gs://, az:// or http(s) key is not folded: '//' and '.' are
+	-- part of a key.
 	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
 	-- Only a wrapper with pgcolumnar's Parquet handler reads path= as above.
 	-- Another wrapper's path option means what that wrapper says, so it is not
@@ -1926,9 +1952,25 @@ BEGIN
 	-- outside the location, so this covers every file it reads (#1949). The
 	-- location always ends in '/', so read as a glob it can match only a path
 	-- that ends in '/', which names no file (#1955 review).
-	SELECT c.relid, c.opath, c.ice INTO covered
+	-- path_glob_matches raises 54000 for a pattern too large to match safely.
+	-- The move then fails closed, and the error names the foreign table and
+	-- its path (#1974). A table that really reads the path is reported first.
+	-- Only a row whose pattern holds *, ? or [ calls the matcher, each in a
+	-- block of its own, so a table without a glob costs no subtransaction.
+	-- A row that reads the path without a glob comes first, so it costs no
+	-- call of the matcher; then the rows go in the order of their oid.
+	FOR cand IN
+		SELECT h.* FROM (
+		SELECT c.relid, c.opath, c.ice, c.tp, c.fp, c.ntp, c.nfp,
+			   (c.tp = c.fp
+				OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
+				OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
+					AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
+				OR c.ntp = c.nfp
+				OR (c.nfp !~ '^(s3|gs|az|https?)://' AND c.nfp <> ''
+					AND starts_with(c.ntp, rtrim(c.nfp, '/') || '/'))) AS hit
 	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
-				   v.np[1] AS tp, v.np[2] AS fp
+				   v.np[1] AS tp, v.np[2] AS fp, nz.nn[1] AS ntp, nz.nn[2] AS nfp
 			  FROM pg_foreign_table t
 			  JOIN pg_foreign_server fs ON fs.oid = t.ftserver
 			  JOIN pg_foreign_data_wrapper w ON w.oid = fs.srvfdw,
@@ -1953,15 +1995,69 @@ BEGIN
 								 WHEN p ~* '^(gs|az)://'
 								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
 								 ELSE p END ORDER BY n)
-						   FROM unnest(ARRAY[path, f.opath]) WITH ORDINALITY AS s(p, n)) AS v(np)
+						   FROM unnest(ARRAY[path, f.opath]) WITH ORDINALITY AS s(p, n)) AS v(np),
+				   -- the lexical form of each local path (#1965, #1959)
+				   LATERAL (SELECT array_agg(
+							CASE WHEN p IS NULL OR p = '' OR p ~ '^(s3|gs|az|https?)://' THEN p
+								 ELSE (WITH RECURSIVE
+										 pt(k, a) AS (SELECT row_number() OVER (ORDER BY ord), a COLLATE "C"
+														FROM unnest(string_to_array(p, '/')) WITH ORDINALITY AS u(w, ord),
+															 -- glob(3) unescapes a name without a glob
+															 -- character, so a glob's \. is . (#1978 review)
+															 LATERAL (SELECT CASE WHEN n = 2 AND p ~ '[*?[]'
+																				   AND regexp_replace(w, '\\(.)', '\1', 'g') IN ('.', '..')
+																				  THEN regexp_replace(w, '\\(.)', '\1', 'g')
+																				  ELSE w END) AS e(a)
+													   WHERE a NOT IN ('', '.')),
+										 st(k, s) AS (SELECT 0::bigint, ARRAY[]::text[] COLLATE "C"
+													  UNION ALL
+													  SELECT st.k + 1,
+															 CASE WHEN pt.a <> '..' THEN st.s || pt.a
+																  WHEN cardinality(st.s) > 0 AND st.s[cardinality(st.s)] <> '..'
+																  THEN st.s[1:cardinality(st.s) - 1]
+																  WHEN left(p, 1) = '/' THEN st.s
+																  ELSE st.s || pt.a END
+														FROM st JOIN pt ON pt.k = st.k + 1)
+									   SELECT r || CASE WHEN right(p, 1) = '/' AND right(r, 1) <> '/' THEN '/' ELSE '' END
+										 FROM (SELECT CASE WHEN q = '' THEN '.' ELSE q END
+												 FROM (SELECT CASE WHEN left(p, 1) = '/' THEN '/' ELSE '' END
+															  || array_to_string(st.s, '/')
+														 FROM st ORDER BY st.k DESC LIMIT 1) AS y(q)) AS z(r))
+								 END ORDER BY n)
+						   FROM unnest(v.np) WITH ORDINALITY AS s(p, n)) AS nz(nn)
 			 WHERE (w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure AND o.opt LIKE 'path=%')
-				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c
-	 WHERE c.tp = c.fp
-		OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
-		OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
-			AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
-		OR pgcolumnar.path_glob_matches(c.fp, c.tp)
-	 LIMIT 1;
+				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c) AS h
+		 WHERE h.hit OR h.fp ~ '[*?[]'
+		 ORDER BY h.hit IS TRUE DESC, h.relid
+	LOOP
+		hit := cand.hit IS TRUE;
+		-- The glob as written, then its folded form, each in a block of its
+		-- own: a glob over the limit as written can be within it once folded
+		-- (#1978 review).
+		FOR pass IN 1 .. CASE WHEN cand.nfp <> cand.fp OR cand.ntp <> cand.tp THEN 2 ELSE 1 END LOOP
+			EXIT WHEN hit;
+			BEGIN
+				hit := coalesce(CASE pass WHEN 1 THEN pgcolumnar.path_glob_matches(cand.fp, cand.tp)
+										  ELSE pgcolumnar.path_glob_matches(cand.nfp, cand.ntp) END, false);
+			EXCEPTION WHEN program_limit_exceeded THEN
+				IF kind IS NULL THEN
+					GET STACKED DIAGNOSTICS lim_msg = MESSAGE_TEXT, lim_detail = PG_EXCEPTION_DETAIL;
+					kind := 'limit';
+					hrel := cand.relid;
+					hpath := cand.opath;
+					hice := cand.ice;
+				END IF;
+				hit := false;
+			END;
+		END LOOP;
+		IF hit THEN
+			kind := 'read';
+			hrel := cand.relid;
+			hpath := cand.opath;
+			hice := cand.ice;
+			EXIT;
+		END IF;
+	END LOOP;
 	-- The detail quotes the path by hand, not with %L, so a backslash prints as
 	-- written. It doubles a ', so the path cannot close the quote (#1953
 	-- review). Another role chose both the table's name and its path, so the
@@ -1972,15 +2068,15 @@ BEGIN
 	-- has no meaning for such a byte, so it prints as written there. A
 	-- backslash before an x prints as \x5C, so a path that holds the four
 	-- characters \x0A does not print like a newline.
-	IF FOUND THEN
-		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
-			USING ERRCODE = 'duplicate_file',
-				  DETAIL = (SELECT format(CASE WHEN covered.ice
-											  THEN 'Foreign table %s reads Iceberg files under ''%s''.'
-											  ELSE 'Foreign table %s reads path ''%s''.' END, e[1], e[2])
+	-- A pattern too large to match keeps its own message and SQLSTATE; the
+	-- detail adds the table and its path after the matcher's own detail.
+	IF kind IS NOT NULL THEN
+		said := (SELECT format(CASE WHEN hice
+									THEN 'Foreign table %s reads Iceberg files under ''%s'''
+									ELSE 'Foreign table %s reads path ''%s''' END, e[1], e[2])
 							  FROM (SELECT array_agg(x.esc ORDER BY u.k)
-									  FROM unnest(ARRAY[covered.relid::text,
-														replace(covered.opath, '''', '''''')])
+									  FROM unnest(ARRAY[hrel::text,
+														replace(hpath, '''', '''''')])
 										   WITH ORDINALITY AS u(s, k),
 										   LATERAL (SELECT coalesce(string_agg(
 												CASE WHEN z.ch ~ '[\x01-\x1f\x7f]'
@@ -1995,6 +2091,15 @@ BEGIN
 													  FROM (SELECT c.ch, c.n, lead(c.ch) OVER (ORDER BY c.n) AS nx
 															  FROM regexp_split_to_table(u.s, '') WITH ORDINALITY AS c(ch, n)) AS z
 												   ) AS x(esc)) AS y(e));
+		IF kind = 'limit' THEN
+			RAISE EXCEPTION '%', lim_msg
+				USING ERRCODE = 'program_limit_exceeded',
+					  DETAIL = format('%s %s, so tier_partition cannot tell whether it reads the target.',
+									  lim_detail, said);
+		END IF;
+		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
+			USING ERRCODE = 'duplicate_file',
+				  DETAIL = said || '.';
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not
