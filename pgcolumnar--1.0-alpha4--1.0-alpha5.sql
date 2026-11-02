@@ -1937,7 +1937,8 @@ BEGIN
 	-- glob(3) and open(2) read '//' and '/./' so, and the Iceberg reader
 	-- resolves its location with realpath. A symbolic link is not resolved: it
 	-- needs the file system at the time of the call, and the link can change
-	-- after it. A relative path is not resolved against the data directory.
+	-- after it. A relative path is resolved against the data directory only by
+	-- path_glob_matches, for a glob (#2001).
 	-- An s3://, gs://, az:// or http(s) key is not folded: '//' and '.' are
 	-- part of a key.
 	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).

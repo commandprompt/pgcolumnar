@@ -688,6 +688,18 @@ true until the next version shipped.
   cannot match `..`, so `/w/x/*/??/a.parquet` still does not match
   `/w/x/a.parquet`. docs/sql-reference.md. `test/tier_partition.sh` and its
   pytest twin.
+- `tier_partition` now refuses a file that a foreign table's relative local
+  glob reads through a `..` above the glob's start (#2001). The server reads
+  a relative path from the data directory, so a table on
+  `../*/x/a.parquet` reads `x/a.parquet` there: `..` climbs to the data
+  directory's parent and `*` matches its name. `path_glob_matches` rooted a
+  relative path at `/`, so that `..` had nowhere to go, and it answered
+  false. It also missed a relative glob against the same file spelled in
+  full, and the other way round. It now resolves a relative pattern and a
+  relative path against the data directory before it walks. A relative
+  pattern matches every path when the data directory's name holds a glob
+  character, or is not the working directory as `getcwd(3)` spells it.
+  docs/sql-reference.md. `test/tier_partition.sh` and its pytest twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
