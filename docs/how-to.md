@@ -749,7 +749,8 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   and `?` do not match `/`, and a backslash makes the next character literal.
   The function treats a `[...]` class as any one character other than `/`, so
   it can refuse a path that the class would not match. A `[` with no closing
-  `]` is a literal `[`.
+  `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
+  class, and `[^...]` counts like `[!...]`.
 
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,

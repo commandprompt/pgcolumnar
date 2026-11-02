@@ -1737,4 +1737,9 @@ guard_tests 863
 # cluster_tests 5296 -> 5296 for #1946's review: five checks in test_tier_partition.py (the refusal's detail,
 # three bracket spellings read as fnmatch reads them, and a [class] that does not match a slash), added to
 # an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5296 -> 5296 for #1946's second review: eighteen checks in test_tier_partition.py (ten
+# glob spellings fnmatch reads that the check now refuses, among them [[:digit:]], [^]x] and a local class
+# across a slash; a session with standard_conforming_strings off; and seven paths the table does not read
+# that it does not refuse), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
 cluster_tests 5296

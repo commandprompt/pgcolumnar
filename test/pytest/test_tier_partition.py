@@ -215,7 +215,18 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_host": "http://H.Example/s_apr_k.parquet",
               "s_dup_ldir": f"{server_dir}/sldir", "s_dup_lglob": f"{server_dir}/slg/*.parquet",
               "s_dup_runt": "s3://tierb/su/?[]x.parquet", "s_dup_rbang": "s3://tierb/sn/a[!]x*",
-              "s_dup_rbesc": "s3://tierb/sb/m[\\]]x.parquet"}
+              "s_dup_rbesc": "s3://tierb/sb/m[\\]]x.parquet",
+              "s_dup_rdigit": "s3://tierb/spd/2026_[[:digit:]][[:digit:]].parquet",
+              "s_dup_rcaret": "s3://tierb/sca/[^]x].parquet",
+              "s_dup_lslash": f"{server_dir}/sls/*[a/b].parquet",
+              "s_dup_rlead": "s3://tierb/sla/[]a].parquet",
+              "s_dup_rbunt": "s3://tierb/sxb/x[\\].parquet",
+              "s_dup_ropen": "s3://tierb/spu/m[[:digit:].parquet",
+              "s_dup_requiv": "s3://tierb/seq/[[=]=]].parquet",
+              "s_dup_rzq": "s3://tierb/szq/[[:z:]].parquet",
+              "s_dup_rrange": "s3://tierb/srg/a[!:-[:digit:]].parquet",
+              "s_dup_hglob": "http://h.example/shg/*.parquet",
+              "s_dup_gglob": "gs://tierb/sgg/*.parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -259,6 +270,45 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a [!] with no closing bracket in a glob is literal, so a path holding it is refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sb/m]x.parquet")),
                 "58P02", "a backslash in a glob [class] escapes a ], so a path the class matches is refused")
+    # fnmatch also reads a POSIX class such as [:digit:] inside a class, and [^
+    # as [!. A local glob is split at each slash before it is matched, so a
+    # class that spans a slash is a literal [ there; in an s3:// key it is a
+    # class (#1946 review).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/spd/2026_01.parquet")),
+                "58P02", "a glob POSIX class such as [[:digit:]] is one class, so a path it matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sca/a.parquet")),
+                "58P02", "a [^ in a glob negates like [!, so a path the class [^]x] matches is refused")
+    expect.text(rolled(tier.format(f"{server_dir}/sls/foo[a/b].parquet")),
+                "58P02", "a local glob splits at a slash before a [class], so a path holding the [ literally is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/se/*.parquet")),
+                "58P02", "a backslash in a glob escapes a star, so a path holding a literal star is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sla/a.parquet")),
+                "58P02", "a ] right after [ in a glob is a class member, so a path the class []a] matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sxb/x[].parquet")),
+                "58P02", "a [ whose only ] is escaped in a glob is a literal [, so a path holding it is refused")
+    # glibc reads a [:name:] inside a class only when the name is letters a to
+    # y (a 'z' ends it), and an unclosed [ is a literal [ even when a POSIX
+    # class follows it (#1946 review, found by comparing with glibc fnmatch).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/spu/m[d.parquet")),
+                "58P02", "a [ left open before a POSIX class in a glob is a literal [, so a path holding it is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/seq/].parquet")),
+                "58P02", "an equivalence class [=]=] in a glob holds a ], so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/szq/z].parquet")),
+                "58P02", "a [:z:] in a glob is not a POSIX class to fnmatch, so a path that reads it as members is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/srg/ab].parquet")),
+                "58P02", "a [ that ends a range in a glob is a plain member, so a path the shorter class matches is refused")
+    # The function reads its own patterns with standard_conforming_strings on,
+    # so a session that turns it off gets the same refusal (#1946 review).
+    # PostgreSQL 19 refuses to turn it off (0A000), so there the session keeps
+    # it on. A new session, because this one has already planned the
+    # function's queries.
+    with psycopg.connect(_dsn(pgc_cluster, conn), autocommit=True) as fresh:
+        with fresh.cursor() as cur:
+            cur.execute("DO $$BEGIN SET standard_conforming_strings = off;"
+                        " EXCEPTION WHEN feature_not_supported THEN NULL; END$$")
+        scs_off = _sqlstate(fresh, tier.format("s3://tierb/sg/x.parquet"))
+    expect.text(scs_off, "58P02",
+                "a session that asks for standard_conforming_strings off still has a path a glob matches refused")
     # The rule follows the reader, so it refuses no more than the table reads.
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/sub/x.parquet")),
                 "28000", "a glob * does not cross a slash, so a path one level deeper is not refused")
@@ -270,6 +320,24 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "28000", "a remote key without a trailing slash is one object, so a path under it is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sdirx.parquet")),
                 "28000", "a path that only starts with a remote directory's name is not refused")
+    # A local target that passes the check fails opening its file, because the
+    # directory does not exist: 58P01, and nothing is written.
+    expect.text(rolled(tier.format(f"{server_dir}/sldirx/x.parquet")),
+                "58P01", "a path that only starts with a local directory's name is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sc/a_/7.parquet")),
+                "28000", "a glob ? does not match a slash, so a path with a slash in its place is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/x.parquet.tmp")),
+                "28000", "a glob matches the whole name, so a path with more after it is not refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sg/xXparquet")),
+                "28000", "a glob . is a literal dot, so a path with another character in its place is not refused")
+    # An http(s) target that passes the check is refused in the export with
+    # 42501, because its host is not on objstore_allowed_endpoints.
+    expect.text(_sqlstate(conn, tier.format("http://h.example/S_APR_K.parquet")),
+                "42501", "an http path is refused only for the same key, so a key in another case is not refused")
+    expect.text(_sqlstate(conn, tier.format("http://h.example/shg/x.parquet")),
+                "42501", "an http path holding * is one object, not a glob, so another name is not refused")
+    expect.text(_sqlstate(conn, tier.format("gs://tierb/sgg/x.parquet")),
+                "28000", "a gs:// path holding * is one object, not a glob, so another name is not refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")

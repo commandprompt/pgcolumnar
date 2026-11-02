@@ -578,7 +578,10 @@ true until the next version shipped.
   `/` or not, and a glob's `*` and `?` do not match `/`. It treats a `[...]`
   class as any one character other than `/`, so it can refuse more than the
   class matches. It reads a bracket as the reader does: a `[` with no closing
-  `]` is a literal `[`, and a backslash in a class escapes the next character.
+  `]` is a literal `[`, a backslash in a class escapes the next character,
+  `[^` negates like `[!`, and a POSIX class such as `[[:digit:]]` is one class.
+  In a local glob a class does not span a `/`. The check gives the same answer
+  when the session turns `standard_conforming_strings` off.
   The host of an http(s) URL now matches in any case. The error detail names
   the foreign table and its path. This also refuses a new file under a
   directory that a foreign table reads, so one foreign table on the whole

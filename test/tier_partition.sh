@@ -194,7 +194,18 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_lglob (x int) SERVER tier_pq OPTIONS (path '$W/lg/*.parquet');
           CREATE FOREIGN TABLE dup_runt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/u/?[]x.parquet');
           CREATE FOREIGN TABLE dup_rbang (x int) SERVER tier_pq OPTIONS (path 's3://tierb/n/a[!]x*');
-          CREATE FOREIGN TABLE dup_rbesc (x int) SERVER tier_pq OPTIONS (path 's3://tierb/b/m[\\]]x.parquet');"
+          CREATE FOREIGN TABLE dup_rbesc (x int) SERVER tier_pq OPTIONS (path 's3://tierb/b/m[\\]]x.parquet');
+          CREATE FOREIGN TABLE dup_rdigit (x int) SERVER tier_pq OPTIONS (path 's3://tierb/pd/2026_[[:digit:]][[:digit:]].parquet');
+          CREATE FOREIGN TABLE dup_rcaret (x int) SERVER tier_pq OPTIONS (path 's3://tierb/ca/[^]x].parquet');
+          CREATE FOREIGN TABLE dup_lslash (x int) SERVER tier_pq OPTIONS (path '$W/ls/*[a/b].parquet');
+          CREATE FOREIGN TABLE dup_rlead (x int) SERVER tier_pq OPTIONS (path 's3://tierb/la/[]a].parquet');
+          CREATE FOREIGN TABLE dup_rbunt (x int) SERVER tier_pq OPTIONS (path 's3://tierb/xb/x[\\].parquet');
+          CREATE FOREIGN TABLE dup_ropen (x int) SERVER tier_pq OPTIONS (path 's3://tierb/pu/m[[:digit:].parquet');
+          CREATE FOREIGN TABLE dup_requiv (x int) SERVER tier_pq OPTIONS (path 's3://tierb/eq/[[=]=]].parquet');
+          CREATE FOREIGN TABLE dup_rzq (x int) SERVER tier_pq OPTIONS (path 's3://tierb/zq/[[:z:]].parquet');
+          CREATE FOREIGN TABLE dup_rrange (x int) SERVER tier_pq OPTIONS (path 's3://tierb/rg/a[!:-[:digit:]].parquet');
+          CREATE FOREIGN TABLE dup_hglob (x int) SERVER tier_pq OPTIONS (path 'http://h.example/hg/*.parquet');
+          CREATE FOREIGN TABLE dup_gglob (x int) SERVER tier_pq OPTIONS (path 'gs://tierb/gg/*.parquet');"
 # The directories exist, so a local target the check let through would be written.
 mkdir -p "$W/ldir/sub" "$W/lg" && chmod 777 "$W/ldir" "$W/ldir/sub" "$W/lg"
 # rolled SQL -> the SQLSTATE of SQL run inside a transaction that rolls back
@@ -224,6 +235,39 @@ check "a [!] with no closing bracket in a glob is literal, so a path holding it 
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/n/a[!]xfoo.parquet');")" "58P02"
 check "a backslash in a glob [class] escapes a ], so a path the class matches is refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/b/m]x.parquet');")" "58P02"
+# fnmatch also reads a POSIX class such as [:digit:] inside a class, and [^ as
+# [!. A local glob is split at each slash before it is matched, so a class that
+# spans a slash is a literal [ there; in an s3:// key it is a class (#1946 review).
+check "a glob POSIX class such as [[:digit:]] is one class, so a path it matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/pd/2026_01.parquet');")" "58P02"
+check "a [^ in a glob negates like [!, so a path the class [^]x] matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/ca/a.parquet');")" "58P02"
+check "a local glob splits at a slash before a [class], so a path holding the [ literally is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ls/foo[a/b].parquet');")" "58P02"
+check "a backslash in a glob escapes a star, so a path holding a literal star is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/e/*.parquet');")" "58P02"
+check "a ] right after [ in a glob is a class member, so a path the class []a] matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/la/a.parquet');")" "58P02"
+check "a [ whose only ] is escaped in a glob is a literal [, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/xb/x[].parquet');")" "58P02"
+# glibc reads a [:name:] inside a class only when the name is letters a to y
+# (a 'z' ends it), and an unclosed [ is a literal [ even when a POSIX class
+# follows it (#1946 review, found by comparing with glibc fnmatch).
+check "a [ left open before a POSIX class in a glob is a literal [, so a path holding it is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/pu/m[d.parquet');")" "58P02"
+check "an equivalence class [=]=] in a glob holds a ], so a path the class matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/eq/].parquet');")" "58P02"
+check "a [:z:] in a glob is not a POSIX class to fnmatch, so a path that reads it as members is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/zq/z].parquet');")" "58P02"
+check "a [ that ends a range in a glob is a plain member, so a path the shorter class matches is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/rg/ab].parquet');")" "58P02"
+# The function reads its own patterns with standard_conforming_strings on, so a
+# session that turns it off gets the same refusal (#1946 review). PostgreSQL 19
+# refuses to turn it off (0A000), so there the session keeps it on.
+scs_off="DO \$\$BEGIN SET standard_conforming_strings = off;
+         EXCEPTION WHEN feature_not_supported THEN NULL; END\$\$"
+check "a session that asks for standard_conforming_strings off still has a path a glob matches refused" \
+	"$(sqlstate "$scs_off" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/x.parquet');")" "58P02"
 # The rule follows the reader, so it refuses no more than the table reads.
 check "a glob * does not cross a slash, so a path one level deeper is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/sub/x.parquet');")" "28000"
@@ -235,8 +279,26 @@ check "a remote key without a trailing slash is one object, so a path under it i
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/key/x.parquet');")" "28000"
 check "a path that only starts with a remote directory's name is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/dirx.parquet');")" "28000"
+# A local target that passes the check fails opening its file, because the
+# directory does not exist: 58P01, and nothing is written.
+check "a path that only starts with a local directory's name is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ldirx/x.parquet');")" "58P01"
+check "a glob ? does not match a slash, so a path with a slash in its place is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/c/m_/7.parquet');")" "28000"
+check "a glob matches the whole name, so a path with more after it is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/x.parquet.tmp');")" "28000"
+check "a glob . is a literal dot, so a path with another character in its place is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/g/xXparquet');")" "28000"
+# An http(s) target that passes the check is refused in the export with 42501,
+# because its host is not on objstore_allowed_endpoints, so nothing is written.
+check "an http path is refused only for the same key, so a key in another case is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'http://h.example/M_FEB_K.parquet');")" "42501"
+check "an http path holding * is one object, not a glob, so another name is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'http://h.example/hg/x.parquet');")" "42501"
+check "a gs:// path holding * is one object, not a glob, so another name is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'gs://tierb/gg/x.parquet');")" "28000"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
-          dup_runt, dup_rbang, dup_rbesc;"
+          dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob;"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"
