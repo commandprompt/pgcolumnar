@@ -226,7 +226,11 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
               "s_dup_rzq": "s3://tierb/szq/[[:z:]].parquet",
               "s_dup_rrange": "s3://tierb/srg/a[!:-[:digit:]].parquet",
               "s_dup_hglob": "http://h.example/shg/*.parquet",
-              "s_dup_gglob": "gs://tierb/sgg/*.parquet"}
+              "s_dup_gglob": "gs://tierb/sgg/*.parquet",
+              "s_dup_rcunt": "s3://tierb/snc/a[^]x*",
+              "s_dup_rspan": "s3://tierb/ssp/x[a/b].parquet",
+              "s_dup_rcoll": "s3://tierb/sco/[[.].]].parquet",
+              "s_dup_lequiv": f"{server_dir}/sle/[[=/=]a].parquet"}
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
@@ -297,6 +301,15 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P02", "a [:z:] in a glob is not a POSIX class to fnmatch, so a path that reads it as members is refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/srg/ab].parquet")),
                 "58P02", "a [ that ends a range in a glob is a plain member, so a path the shorter class matches is refused")
+    # An unclosed [^] is a literal [ as [!] is; an s3:// key is matched whole,
+    # so a class there may span a slash; and a collating symbol may hold a ],
+    # as an equivalence class may (#1946 review, third round).
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/snc/a[^]xfoo.parquet")),
+                "58P02", "a [^] with no closing bracket in a glob is literal, so a path holding it is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/ssp/xa.parquet")),
+                "58P02", "an s3:// glob [class] may span a slash, so a path the class matches is refused")
+    expect.text(_sqlstate(conn, tier.format("s3://tierb/sco/].parquet")),
+                "58P02", "a collating symbol [.].] in a glob holds a ], so a path the class matches is refused")
     # The function reads its own patterns with standard_conforming_strings on,
     # so a session that turns it off gets the same refusal (#1946 review).
     # PostgreSQL 19 refuses to turn it off (0A000), so there the session keeps
@@ -338,6 +351,10 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "42501", "an http path holding * is one object, not a glob, so another name is not refused")
     expect.text(_sqlstate(conn, tier.format("gs://tierb/sgg/x.parquet")),
                 "28000", "a gs:// path holding * is one object, not a glob, so another name is not refused")
+    # glob(3) splits a local pattern at each slash, even one inside [=/=], so
+    # the table reads no file named a.parquet in that directory.
+    expect.text(rolled(tier.format(f"{server_dir}/sle/a.parquet")),
+                "58P01", "a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")

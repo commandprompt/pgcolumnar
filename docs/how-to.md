@@ -750,7 +750,9 @@ file its `path` names, so the function refuses a `path` when a foreign table's
   The function treats a `[...]` class as any one character other than `/`, so
   it can refuse a path that the class would not match. A `[` with no closing
   `]` is a literal `[`. A POSIX class such as `[[:digit:]]` counts as one
-  class, and `[^...]` counts like `[!...]`.
+  class, and `[^...]` counts like `[!...]`. One rare form still gets past the
+  function (#1951). It is a class with a range that ends in `[` and also a
+  `[:name:]`, `[=c=]` or `[.c.]`, such as `[z1-[:alpha:]]`.
 
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,
