@@ -8686,6 +8686,7 @@ tier_partition	tier_partition	the foreign partition reads the exported file	15;1
 tier_partition	tier_partition	the local partition leaves no pgcolumnar storage row behind	15;16;17;18;19	2026-10-13	tier_partition renaming the partition aside instead of dropping it
 tier_partition	tier_partition	the move ran inside the caller's transaction	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	the other partition is still local after the refusals	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
+tier_partition	tier_partition	the refusal's detail doubles a quote in the path, so the path cannot close its quotes early	15;16;17;18;19	2026-11-02	refusal DETAIL quoting the path by hand without doubling a ', as e11e34d8 had it (#1953 review)
 tier_partition	tier_partition	the refusal's detail names the foreign table and the path it reads	15;16;17;18;19	2026-11-02	DETAIL dropped from the refusal, and a glob ? and [class] mapped to . instead of [^/] (#1941)
 tier_partition	tier_partition	the refusal's detail prints a path holding a backslash as written, not as an E'' string	15;16;17;18;19	2026-11-02	refusal DETAIL reverted to %L (#1951);the #1951 bracket grammar and DETAIL fix reverted: the clause as #1946 left it (#1951)
 tier_partition	tier_partition	tier_partition moves the cold partition and returns the rows it moved	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
