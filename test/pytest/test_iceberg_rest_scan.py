@@ -97,6 +97,21 @@ def _detail_refusal(dsn, sql, phrase, label):
     return "no error"
 
 
+def _hint_refusal(dsn, sql, phrase, label):
+    """-> "<SQLSTATE><label>" when `sql` raised with `phrase` in its HINT, else
+    "<SQLSTATE> (hint: ...)" so a failure shows what the hint held."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        hint = exc.diag.message_hint or ""
+        return exc.sqlstate + (label if phrase in hint else f" (hint: {hint!r})")
+    return "no error"
+
+
 def _crashes(log):
     try:
         return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
@@ -429,10 +444,20 @@ def irs(pgc_cluster):
         ):
             r[key] = _refusal(dsn, sql, phrase, label)
         # This catalog keeps its table in the namespace db, '' (an empty level).
-        ecat = start_fx("emptylevel", "--namespace-levels", '["db",""]', "--table", "events")
+        # It also serves db, '', x, a child of db, '' (#1939), and db, '', x, y
+        # below it, so the walk must name an empty level between two others.
+        ecat = start_fx("emptylevel", "--namespace-levels", '["db",""]', "--table", "events",
+                        "--extra-namespace", "db..x.y")
         r["empty listed"] = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ' "
                                        "ORDER BY array_to_json(ns)::text COLLATE \"C\") "
                                        f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty child"] = _rows(dsn, "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x']) || ' of ' || count(*) "
+                                      f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty grandchild"] = _rows(dsn, "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x','y']) "
+                                           "|| ' of ' || count(*) "
+                                           f"FROM pgcolumnar.iceberg_rest_namespace_levels('{ecat}') AS ns")
+        r["empty text listed"] = _rows(dsn, "SELECT string_agg(ns, ',' ORDER BY ns COLLATE \"C\") "
+                                            f"FROM pgcolumnar.iceberg_rest_namespaces('{ecat}') AS ns")
         r["empty tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
                                        f"FROM pgcolumnar.iceberg_rest_tables('{ecat}', ARRAY['db','']) AS t")
         r["empty text tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t) "
@@ -506,6 +531,89 @@ def irs(pgc_cluster):
                                              "Level 1 of 1 of the namespace is empty", " hint level 1")
         r["only empty segment"] = str(sum(1 for ln in (olog.read_text() + klog.read_text()).splitlines()
                                           if re.match(r"GET [^ ?]*//", ln)))
+        # #1931: an empty table name makes the path /v1/namespaces/db/tables/.
+        # It is refused (22023) before any request, including the token request.
+        tcat = start_fx("emptytable", "--table", "events")
+        tlog = work / "emptytable.log"
+        for key, sql in (
+            ("table empty location", f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', 'db', '')"),
+            ("table empty scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{tcat}', 'db', '') AS t(id bigint)"),
+            ("table empty array location", f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', ARRAY['db'], '')"),
+            ("table empty array scan", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{tcat}', ARRAY['db'], '') AS t(id bigint)"),
+            ("table empty down location", "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '')"),
+            ("table empty oauth location", "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '')"),
+            ("table empty oauth scan", "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '') AS t(id bigint)"),
+        ):
+            r[key] = _refusal(dsn, sql, "the table name is empty", " as empty")
+        # The control proves the fixture's log records requests.
+        r["table empty control"] = _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{tcat}', 'db', 'events')")
+        tlines = tlog.read_text().splitlines() if tlog.is_file() else []
+        r["table empty segment"] = (
+            f"loadTable events={sum(1 for ln in tlines if re.match(r'GET [^ ?]*/tables/events ', ln))} "
+            f"empty table segment={sum(1 for ln in tlines if re.match(r'GET [^ ?]*/tables/ ', ln))}")
+        # #1948: a table name, or a namespace whose path segment is '.' or '..',
+        # makes a dot segment, which a normalising server or proxy removes. It is
+        # refused (22023) before any request, including the token request.
+        # dottable serves a table named '..', dotns the namespace ARRAY['..'].
+        dot_hint = {"T": ('A table named "." or ".." cannot be sent in a request path.', " hint table"),
+                    "N": ('A namespace whose levels, joined with the catalog\'s separator, read "." or ".." cannot be sent in a request path.', " hint namespace")}
+        dtcat = start_fx("dottable", "--table", "..")
+        dtlog = work / "dottable.log"
+        dncat = start_fx("dotns", "--namespace-levels", '[".."]', "--table", "events")
+        dnlog = work / "dotns.log"
+        for key, kind, sql in (
+            ('dot table location dd', "T", f"SELECT pgcolumnar.iceberg_rest_table_location('{dtcat}', 'db', '..')"),
+            ('dot table location d', "T", f"SELECT pgcolumnar.iceberg_rest_table_location('{dtcat}', 'db', '.')"),
+            ('dot table scan dd', "T", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dtcat}', 'db', '..') AS t(id bigint)"),
+            ('dot table scan d', "T", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dtcat}', 'db', '.') AS t(id bigint)"),
+            ('dot table array location', "T", f"SELECT pgcolumnar.iceberg_rest_table_location('{dtcat}', ARRAY['db'], '..')"),
+            ('dot table array scan', "T", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dtcat}', ARRAY['db'], '.') AS t(id bigint)"),
+            ('dot table down location', "T", "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '..')"),
+            ('dot table oauth location', "T", "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '..')"),
+            ('dot table oauth scan', "T", "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '.') AS t(id bigint)"),
+            ('dot ns tables dd', "N", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dncat}', ARRAY['..'])"),
+            ('dot ns tables d', "N", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dncat}', ARRAY['.'])"),
+            ('dot ns location d', "N", f"SELECT pgcolumnar.iceberg_rest_table_location('{dncat}', ARRAY['.'], 'events')"),
+            ('dot ns scan dd', "N", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dncat}', ARRAY['..'], 'events') AS t(id bigint)"),
+            ('dot ns down tables', "N", "SELECT * FROM pgcolumnar.iceberg_rest_tables('http://127.0.0.1:1', ARRAY['..'])"),
+            ('dot ns oauth tables', "N", "SELECT * FROM pgcolumnar.iceberg_rest_tables('irs_down', ARRAY['..'])"),
+            ('dot ns oauth location', "N", "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', ARRAY['.'], 'events')"),
+            ('dot ns oauth scan', "N", "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', ARRAY['..'], 'events') AS t(id bigint)"),
+        ):
+            r[key] = _hint_refusal(dsn, sql, *dot_hint[kind])
+        # The walk asks for the children of ARRAY['..'] with ?parent=.., a query
+        # value, which RFC 3986 dot-segment removal does not touch: it walks on.
+        dlisted = _rows(dsn, "SELECT string_agg(array_to_json(ns)::text, ' ') "
+                             f"FROM pgcolumnar.iceberg_rest_namespace_levels('{dncat}') AS ns")
+        r["dot walk levels"] = f"{dlisted} parent requests={dnlog.read_text().count('?parent=.. ')}"
+        dtext = _rows(dsn, f"SELECT string_agg(ns, ' ') FROM pgcolumnar.iceberg_rest_namespaces('{dncat}') AS ns")
+        r["dot walk text"] = f"{dtext} parent requests={dnlog.read_text().count('?parent=.. ')}"
+        # With the separator %2E, ['',''] makes the segment %2E, which a
+        # normaliser may decode to '.'. Refused after /v1/config names the separator.
+        dscat = start_fx("dotjoin", "--namespace-separator", "%2E", "--namespace-levels", '["",""]',
+                         "--table", "events")
+        dslog = work / "dotjoin.log"
+        for key, kind, sql in (
+            ('dot sep tables', "N", f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dscat}', '.')"),
+            ('dot sep location', "N", f"SELECT pgcolumnar.iceberg_rest_table_location('{dscat}', '..', 'events')"),
+            ('dot sep scan', "N", f"SELECT * FROM pgcolumnar.iceberg_rest_scan('{dscat}', ARRAY['',''], 'events') AS t(id bigint)"),
+        ):
+            r[key] = _hint_refusal(dsn, sql, *dot_hint[kind])
+        # Controls: a name that only contains dots is not a dot segment.
+        docat = start_fx("dotok", "--namespace-levels", '["..."]', "--table", ".hidden",
+                         "--extra-table", "a.b")
+        dolog = work / "dotok.log"
+        r["dot ok tables"] = _rows(dsn, "SELECT string_agg(t, ',' ORDER BY t COLLATE \"C\") "
+                                        f"FROM pgcolumnar.iceberg_rest_tables('{docat}', ARRAY['...']) AS t")
+        r["dot ok location"] = _rows(dsn, f"SELECT pgcolumnar.iceberg_rest_table_location('{docat}', ARRAY['...'], '.hidden')")
+        r["dot ok multi"] = _refusal(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{dncat}', ARRAY['db','..'])",
+                                     "the REST catalog has no such namespace", " by the catalog's 404")
+        dlines = []
+        for lg in (dtlog, dnlog, dslog, dolog):
+            dlines += lg.read_text().splitlines() if lg.is_file() else []
+        hidden_loads = sum(1 for ln in dlines if re.match(r"GET [^ ?]*/tables/\.hidden ", ln))
+        dot_segments = sum(1 for ln in dlines if re.match(r"GET [^ ?]*/(\.|%2[Ee]){1,2}[/? ]", ln))
+        r["dot segment requests"] = f"loadTable .hidden={hidden_loads} dot segment={dot_segments}"
         r["array strict"] = _rows(dsn, f"SELECT count(*) FROM pgcolumnar.iceberg_rest_tables('{dcat2}', NULL::text[])")
 
         r["survived"] = _survived(dsn, log, before)
@@ -1029,8 +1137,29 @@ def test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint(irs, e
 def test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level(irs, expect):
     if _declined(irs, expect):
         return
-    expect.text(irs["empty listed"], '["db",""] ["db"]',
+    expect.text(irs["empty listed"], '["db","","x","y"] ["db","","x"] ["db",""] ["db"]',
                 "empty level: iceberg_rest_namespace_levels lists the namespace db, ''")
+
+
+def test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_empty_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty child"], "1 of 4",
+                "empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, ''")
+
+
+def test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_middle_empty_level(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty grandchild"], "1 of 4",
+                "empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x")
+
+
+def test_empty_level_iceberg_rest_namespaces_lists_the_text_form_of_each_namespace(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["empty text listed"], "db,db.,db..x,db..x.y",
+                "empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y")
 
 
 def test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables(irs, expect):
@@ -1171,3 +1300,248 @@ def test_empty_only_level_no_request_has_an_empty_path_segment(irs, expect):
         return
     expect.text(irs["only empty segment"], "0",
                 "empty only level: no request reaches the catalog with an empty path segment")
+
+
+def test_empty_table_name_location_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty location"], "22023 as empty",
+                "empty table name: iceberg_rest_table_location of '' is refused")
+
+
+def test_empty_table_name_scan_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty scan"], "22023 as empty",
+                "empty table name: iceberg_rest_scan of '' is refused")
+
+
+def test_empty_table_name_array_form_location_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty array location"], "22023 as empty",
+                "empty table name: the text[] form of iceberg_rest_table_location of '' is refused")
+
+
+def test_empty_table_name_array_form_scan_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty array scan"], "22023 as empty",
+                "empty table name: the text[] form of iceberg_rest_scan of '' is refused")
+
+
+def test_empty_table_name_location_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty down location"], "22023 as empty",
+                "empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached")
+
+
+def test_empty_table_name_oauth_server_location_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty oauth location"], "22023 as empty",
+                "empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request")
+
+
+def test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty oauth scan"], "22023 as empty",
+                "empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request")
+
+
+def test_empty_table_name_the_same_catalog_still_resolves_the_table(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty control"], irs["mdloc"],
+                "empty table name: the same catalog still resolves db.events")
+
+
+def test_empty_table_name_no_request_has_an_empty_table_segment(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["table empty segment"], "loadTable events=1 empty table segment=0",
+                "empty table name: no request reaches the catalog with an empty table segment")
+
+
+def test_dot_segment_location_of_table_dotdot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table location dd'], "22023 hint table",
+                "dot segment: iceberg_rest_table_location of table '..' is refused")
+
+
+def test_dot_segment_location_of_table_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table location d'], "22023 hint table",
+                "dot segment: iceberg_rest_table_location of table '.' is refused")
+
+
+def test_dot_segment_scan_of_table_dotdot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table scan dd'], "22023 hint table",
+                "dot segment: iceberg_rest_scan of table '..' is refused")
+
+
+def test_dot_segment_scan_of_table_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table scan d'], "22023 hint table",
+                "dot segment: iceberg_rest_scan of table '.' is refused")
+
+
+def test_dot_segment_array_form_location_of_table_dotdot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table array location'], "22023 hint table",
+                "dot segment: the text[] form of iceberg_rest_table_location of table '..' is refused")
+
+
+def test_dot_segment_array_form_scan_of_table_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table array scan'], "22023 hint table",
+                "dot segment: the text[] form of iceberg_rest_scan of table '.' is refused")
+
+
+def test_dot_segment_location_of_table_dotdot_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table down location'], "22023 hint table",
+                "dot segment: iceberg_rest_table_location of table '..' is refused when the catalog cannot be reached")
+
+
+def test_dot_segment_oauth_server_location_of_table_dotdot_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table oauth location'], "22023 hint table",
+                "dot segment: the OAuth server form of iceberg_rest_table_location of table '..' is refused before the token request")
+
+
+def test_dot_segment_oauth_server_scan_of_table_dot_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot table oauth scan'], "22023 hint table",
+                "dot segment: the OAuth server form of iceberg_rest_scan of table '.' is refused before the token request")
+
+
+def test_dot_segment_tables_of_namespace_dotdot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns tables dd'], "22023 hint namespace",
+                "dot segment: iceberg_rest_tables of ARRAY['..'] is refused")
+
+
+def test_dot_segment_tables_of_namespace_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns tables d'], "22023 hint namespace",
+                "dot segment: iceberg_rest_tables of ARRAY['.'] is refused")
+
+
+def test_dot_segment_location_in_namespace_dot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns location d'], "22023 hint namespace",
+                "dot segment: iceberg_rest_table_location of ARRAY['.'] is refused")
+
+
+def test_dot_segment_scan_in_namespace_dotdot_is_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns scan dd'], "22023 hint namespace",
+                "dot segment: iceberg_rest_scan of ARRAY['..'] is refused")
+
+
+def test_dot_segment_tables_of_namespace_dotdot_is_refused_when_the_catalog_cannot_be_reached(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns down tables'], "22023 hint namespace",
+                "dot segment: iceberg_rest_tables of ARRAY['..'] is refused when the catalog cannot be reached")
+
+
+def test_dot_segment_oauth_server_tables_of_namespace_dotdot_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns oauth tables'], "22023 hint namespace",
+                "dot segment: the OAuth server form of iceberg_rest_tables of ARRAY['..'] is refused before the token request")
+
+
+def test_dot_segment_oauth_server_location_in_namespace_dot_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns oauth location'], "22023 hint namespace",
+                "dot segment: the OAuth server form of iceberg_rest_table_location of ARRAY['.'] is refused before the token request")
+
+
+def test_dot_segment_oauth_server_scan_in_namespace_dotdot_is_refused_before_the_token_request(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ns oauth scan'], "22023 hint namespace",
+                "dot segment: the OAuth server form of iceberg_rest_scan of ARRAY['..'] is refused before the token request")
+
+
+def test_dot_segment_tables_of_text_dot_is_refused_when_the_separator_is_2e(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot sep tables'], "22023 hint namespace",
+                "dot segment: iceberg_rest_tables of '.' is refused when the catalog's separator is %2E")
+
+
+def test_dot_segment_location_in_text_dotdot_is_refused_when_the_separator_is_2e(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot sep location'], "22023 hint namespace",
+                "dot segment: iceberg_rest_table_location of '..' is refused when the catalog's separator is %2E")
+
+
+def test_dot_segment_scan_in_two_empty_levels_is_refused_when_the_separator_is_2e(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot sep scan'], "22023 hint namespace",
+                "dot segment: iceberg_rest_scan of ARRAY['',''] is refused when the catalog's separator is %2E")
+
+
+def test_dot_segment_namespace_levels_walks_into_dotdot_by_query_value(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot walk levels'], '[".."] parent requests=1',
+                "dot segment: iceberg_rest_namespace_levels lists ARRAY['..'] and asks for its children in a query value")
+
+
+def test_dot_segment_namespaces_walks_into_dotdot_by_query_value(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot walk text'], ".. parent requests=2",
+                "dot segment: iceberg_rest_namespaces lists '..' and asks for its children in a query value")
+
+
+def test_dot_segment_tables_of_a_dotted_namespace_reaches_the_catalog(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ok tables'], ".hidden,a.b",
+                "dot segment: iceberg_rest_tables of ARRAY['...'] reaches the catalog and lists .hidden and a.b")
+
+
+def test_dot_segment_location_of_a_dotted_table_resolves(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ok location'], irs["mdloc"],
+                "dot segment: iceberg_rest_table_location of .hidden in ARRAY['...'] resolves")
+
+
+def test_dot_segment_a_dotdot_level_among_others_reaches_the_catalogs_404(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot ok multi'], "3F000 by the catalog's 404",
+                "dot segment: iceberg_rest_tables of ARRAY['db','..'] reaches the catalog's 404")
+
+
+def test_dot_segment_no_request_has_a_dot_segment(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs['dot segment requests'], "loadTable .hidden=1 dot segment=0",
+                "dot segment: no request reaches the catalog with a dot segment")
