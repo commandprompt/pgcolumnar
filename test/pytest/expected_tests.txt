@@ -1756,4 +1756,7 @@ guard_tests 863
 # cluster_tests 5296 -> 5296 for #1953 review's quote check in test_tier_partition.py (the refusal's
 # detail doubles a ' in the path), added to an existing test, by collection: 6159 tests collected, less
 # guard_tests 863.
+# cluster_tests 5296 -> 5296 for #1953 review's third round: three checks in test_tier_partition.py (a
+# widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
+# added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
 cluster_tests 5296
