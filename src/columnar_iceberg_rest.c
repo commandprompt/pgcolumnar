@@ -409,6 +409,23 @@ rest_refuse_only_empty_level(List *levels)
 }
 
 /*
+ * Refuse an empty table name. Its loadTable path would end in an empty segment,
+ * as in /v1/namespaces/db/tables/. A proxy that strips the trailing slash would
+ * reach listTables instead (#1931). The check needs no catalog config, so
+ * callers run it before any request, including a server's OAuth token request.
+ */
+static void
+rest_refuse_empty_table(const char *table)
+{
+	if (table[0] == '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the table name is empty"),
+				 errdetail("Its request path would end in an empty segment (\"/tables/\"). "
+						   "A proxy that strips the trailing slash would reach the table list instead.")));
+}
+
+/*
  * Append a namespace, given as a List of level strings, to a resource path or
  * to a ?parent= query value. The levels are joined with the catalog's
  * separator (already encoded). Each level is percent-encoded, so a level
@@ -992,6 +1009,7 @@ rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 	StringInfoData rp;
 
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_empty_table(table);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
 	appendStringInfoString(&rp, cc.base);
@@ -1164,6 +1182,7 @@ rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	/* before rest_resolve: a server's OAuth token POST is a request too */
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_empty_table(table);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
 	PG_RETURN_TEXT_P(cstring_to_text(loc));
@@ -1229,6 +1248,7 @@ rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	/* before rest_resolve: a server's OAuth token POST is a request too */
 	rest_refuse_only_empty_level(levels);
+	rest_refuse_empty_table(table);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
 	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
