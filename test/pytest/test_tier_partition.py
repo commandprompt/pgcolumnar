@@ -254,6 +254,10 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
     with conn.cursor() as cur:
         for name, p in covers.items():
             cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{p}')")
+        cur.execute("CREATE FOREIGN TABLE \"s_dup_tnl\nHINT:  trust me\" (x int) SERVER tq"
+                    " OPTIONS (path 's3://tierb/stnl/a.parquet')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_rlitx (x int) SERVER tq"
+                    " OPTIONS (path 's3://tierb/slitx/a\\x0A.parquet')")
     # The directories exist, so a local target the check let through would be written.
     for d in (server_dir / "sldir", server_dir / "sldir" / "sub", server_dir / "slg"):
         d.mkdir(exist_ok=True)
@@ -465,18 +469,82 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
         nl = f"{e.sqlstate} with {hints} HINT lines"
     expect.text(nl, "58P02 with 0 HINT lines",
                 "a newline in a foreign table's path adds no HINT line under the refusal")
-    # The helper itself: it reads no file, so the planner may fold and share it.
+    # The foreign table's name is another role's text too, and regclass output
+    # keeps a newline inside its quotes. The detail escapes the name as it
+    # escapes the path (#1964 review).
+    expect.text(_errdetail(conn, tier.format("s3://tierb/stnl/a.parquet")),
+                "Foreign table public.\"s_dup_tnl\\x0AHINT:  trust me\" reads path 's3://tierb/stnl/a.parquet'.",
+                "the refusal's detail prints a newline in the foreign table's name as an escape, on one line")
+    # A path may hold the four characters \x0A. The detail prints a backslash
+    # that comes before an x as \x5C, so that path does not print as a newline.
+    expect.text(_errdetail(conn, tier.format("s3://tierb/slitx/a\\x0A.parquet")),
+                "Foreign table public.s_dup_rlitx reads path 's3://tierb/slitx/a\\x5Cx0A.parquet'.",
+                "the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline")
+    # The helper itself. Its answer follows LC_COLLATE and glibc, which can
+    # answer a rare range differently from one call to the next, so it is
+    # VOLATILE (#1964 review).
     expect.text(_sqlstate(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure") == "ok"
                 and _one(conn, "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc"
                                " WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure")
                 or _errtext(conn, "SELECT 'pgcolumnar.path_glob_matches(text, text)'::regprocedure"),
-                "itrues", "path_glob_matches is IMMUTABLE, STRICT and PARALLEL SAFE")
+                "vtrues", "path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE")
     pgm = ("SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|'"
            " || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa')")
     expect.text(_sqlstate(conn, pgm) == "ok" and _one(conn, pgm) or _errtext(conn, pgm),
                 "true|false", "path_glob_matches lets an s3:// class span a slash but splits a local glob there")
+    # glob(3) lists . and .. in each directory, and a pattern that spells the
+    # leading dot matches them, so the tree in memory lists them too.
+    dots = ("SELECT pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/./a.parquet') || '|'"
+            " || pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/../a.parquet')")
+    expect.text(_sqlstate(conn, dots) == "ok" and _one(conn, dots) or _errtext(conn, dots),
+                "true|true", "path_glob_matches lists . and .. in a local directory, so .* matches both")
+    # An interrupt that raises no error, such as a request to log memory
+    # contexts, must not turn a match into no match: a false answer lets a move
+    # overwrite a file a table reads (#1964 review). The request is sent in the
+    # same row, just before the call. Each row prints pattern=answer.
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE pgm_pp (pat text, p text)")
+        cur.execute("INSERT INTO pgm_pp VALUES ('/w/*.parquet', '/w/a.parquet'),"
+                    " ('s3://b/*.parquet', 's3://b/a.parquet')")
+    intr = ("SELECT string_agg(pat || '=' || m::text, ',' ORDER BY pat COLLATE \"C\") FROM"
+            " (SELECT pat, pg_log_backend_memory_contexts(pg_backend_pid()) AS l,"
+            " pgcolumnar.path_glob_matches(pat, p) AS m FROM pgm_pp) s")
+    expect.text(_sqlstate(conn, intr) == "ok" and _one(conn, intr) or _errtext(conn, intr),
+                "/w/*.parquet=true,s3://b/*.parquet=true",
+                "path_glob_matches gives the same answer when an interrupt that raises no error arrives during the call")
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE pgm_pp")
+
+    # The detail escapes a C1 control character, U+0080 to U+009F, by what the
+    # character means, not by its byte. In LATIN1 the byte 0x85 is the control
+    # NEL, so it prints as \x85. In WIN1252 the byte 0x80 is the euro sign, a
+    # printable character, so it prints as written (#1964 review).
+    own = _one(conn, "SELECT current_database()")
+
+    def encdetail(enc, code):
+        db = f"tier_enc_{enc.lower()}"
+        with psycopg.connect(pgc_cluster.dsn(dbname=own), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {db}")
+            a.execute(f"CREATE DATABASE {db} TEMPLATE template0 ENCODING '{enc}' LC_COLLATE 'C' LC_CTYPE 'C'")
+        try:
+            with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True, client_encoding="UTF8") as e:
+                e.execute("CREATE EXTENSION pgcolumnar")
+                e.execute("CREATE SERVER s FOREIGN DATA WRAPPER pgcolumnar_parquet")
+                e.execute("CREATE TABLE p (d int) PARTITION BY RANGE (d)")
+                e.execute("CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10) USING pgcolumnar")
+                e.execute("DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE e (x int) SERVER s"
+                          f" OPTIONS (path %L)', 's3://b/n' || chr({code}) || '.parquet'); END$$")
+                return _errdetail(e, f"SELECT pgcolumnar.tier_partition('p1', 's', 's3://b/n' || chr({code}) || '.parquet')")
+        finally:
+            with psycopg.connect(pgc_cluster.dsn(dbname=own), autocommit=True) as a:
+                a.execute(f"DROP DATABASE IF EXISTS {db}")
+    expect.text(encdetail("LATIN1", 133), "Foreign table public.e reads path 's3://b/n\\x85.parquet'.",
+                "the refusal's detail escapes the LATIN1 control NEL in a path")
+    expect.text(encdetail("WIN1252", 128), "Foreign table public.e reads path 's3://b/n\u20ac.parquet'.",
+                "the refusal's detail prints the WIN1252 euro sign in a path as written")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE " + ", ".join(covers))
+        cur.execute("DROP FOREIGN TABLE \"s_dup_tnl\nHINT:  trust me\", s_dup_rlitx")
     expect.text(_digest(conn, "s"), rb, "and the refusals moved nothing")
     expect.text(_one(conn, "SELECT relkind::text FROM pg_class WHERE oid = 's_apr'::regclass"), "r",
                 "the other partition is still local after the refusals")

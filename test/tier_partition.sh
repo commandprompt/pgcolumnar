@@ -229,7 +229,10 @@ psql_run "CREATE FOREIGN TABLE dup_rdir (x int) SERVER tier_pq OPTIONS (path 's3
           CREATE FOREIGN TABLE dup_ltrail (x int) SERVER tier_pq OPTIONS (path '$W/lts/*//');
           CREATE FOREIGN TABLE dup_lhide (x int) SERVER tier_pq OPTIONS (path '$W/lgh/*.parquet');
           CREATE FOREIGN TABLE dup_rnl (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nl/a.parquet\\nHINT:  x');
-          CREATE FOREIGN TABLE dup_rnlg (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nlg/[a\\nHINT:  x]x.parquet');"
+          CREATE FOREIGN TABLE dup_rnlg (x int) SERVER tier_pq OPTIONS (path E's3://tierb/nlg/[a\\nHINT:  x]x.parquet');
+          CREATE FOREIGN TABLE \"dup_tnl
+HINT:  trust me\" (x int) SERVER tier_pq OPTIONS (path 's3://tierb/tnl/a.parquet');
+          CREATE FOREIGN TABLE dup_rlitx (x int) SERVER tier_pq OPTIONS (path 's3://tierb/litx/a\\x0A.parquet');"
 # The directories exist, so a local target the check let through would be written.
 mkdir -p "$W/ldir/sub" "$W/lg" && chmod 777 "$W/ldir" "$W/ldir/sub" "$W/lg"
 # rolled SQL -> the SQLSTATE of SQL run inside a transaction that rolls back
@@ -416,17 +419,72 @@ nl_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postg
 check "a newline in a foreign table's path adds no HINT line under the refusal" \
 	"$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$nl_out" | head -1) with $(grep -c '^HINT:' <<<"$nl_out") HINT lines" \
 	"58P02 with 0 HINT lines"
+# The foreign table's name is another role's text too, and regclass output
+# keeps a newline inside its quotes. The detail escapes the name as it
+# escapes the path (#1964 review).
+check "the refusal's detail prints a newline in the foreign table's name as an escape, on one line" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/tnl/a.parquet');")" \
+	"Foreign table public.\"dup_tnl\\x0AHINT:  trust me\" reads path 's3://tierb/tnl/a.parquet'."
+# A path may hold the four characters \x0A. The detail prints a backslash
+# that comes before an x as \x5C, so that path does not print as a newline.
+check "the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/litx/a\\x0A.parquet');")" \
+	"Foreign table public.dup_rlitx reads path 's3://tierb/litx/a\\x5Cx0A.parquet'."
 # The helper itself: it reads no file, so the planner may fold and share it.
 # qerr SQL -> the result, or the error when the query fails
 qerr() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-X -At -c "$1" 2>&1 | head -1
 }
-check "path_glob_matches is IMMUTABLE, STRICT and PARALLEL SAFE" \
-	"$(qerr "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure;")" "itrues"
+# Its answer follows LC_COLLATE and glibc, which can answer a rare range
+# differently from one call to the next, so it is VOLATILE (#1964 review).
+check "path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE" \
+	"$(qerr "SELECT provolatile::text || proisstrict::text || proparallel::text FROM pg_proc WHERE oid = 'pgcolumnar.path_glob_matches(text, text)'::regprocedure;")" "vtrues"
 check "path_glob_matches lets an s3:// class span a slash but splits a local glob there" \
 	"$(qerr "SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa') || '|' || pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');")" "true|false"
-psql_run "DROP FOREIGN TABLE dup_rnskip, dup_lnskip, dup_lbslash, dup_ltrail, dup_lhide, dup_rnl, dup_rnlg;"
+# glob(3) lists . and .. in each directory, and a pattern that spells the
+# leading dot matches them, so the tree in memory lists them too.
+check "path_glob_matches lists . and .. in a local directory, so .* matches both" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/./a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/../a.parquet');")" "true|true"
+# An interrupt that raises no error, such as a request to log memory
+# contexts, must not turn a match into no match: a false answer lets a move
+# overwrite a file a table reads (#1964 review). The request is sent in the
+# same row, just before the call. Each row prints pattern=answer.
+psql_run "CREATE TABLE pgm_pp (pat text, p text);
+          INSERT INTO pgm_pp VALUES ('/w/*.parquet', '/w/a.parquet'), ('s3://b/*.parquet', 's3://b/a.parquet');"
+check "path_glob_matches gives the same answer when an interrupt that raises no error arrives during the call" \
+	"$(qerr "SELECT string_agg(pat || '=' || m::text, ',' ORDER BY pat COLLATE \"C\") FROM (SELECT pat, pg_log_backend_memory_contexts(pg_backend_pid()) AS l, pgcolumnar.path_glob_matches(pat, p) AS m FROM pgm_pp) s;")" \
+	"/w/*.parquet=true,s3://b/*.parquet=true"
+psql_run "DROP TABLE pgm_pp;"
+# The detail escapes a C1 control character, U+0080 to U+009F, by what the
+# character means, not by its byte. In LATIN1 the byte 0x85 is the control
+# NEL, so it prints as \x85. In WIN1252 the byte 0x80 is the euro sign, a
+# printable character, so it prints as written (#1964 review).
+# encdetail ENCODING CODE -> the refusal's DETAIL in a database of ENCODING,
+# for a foreign table whose path holds chr(CODE), read as UTF-8
+encdetail() {
+	local db="tier_$(tr 'A-Z' 'a-z' <<<"$1")" out
+	psql_run "DROP DATABASE IF EXISTS $db;"
+	psql_run "CREATE DATABASE $db TEMPLATE template0 ENCODING '$1' LC_COLLATE 'C' LC_CTYPE 'C';"
+	out=$(env PATH="$PGC_BINDIR:$PATH" PGCLIENTENCODING=UTF8 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$db" \
+		-X -At -v ON_ERROR_STOP=1 \
+		-c "CREATE EXTENSION pgcolumnar;" \
+		-c "CREATE SERVER s FOREIGN DATA WRAPPER pgcolumnar_parquet;" \
+		-c "CREATE TABLE p (d int) PARTITION BY RANGE (d);" \
+		-c "CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (10) USING pgcolumnar;" \
+		-c "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE e (x int) SERVER s OPTIONS (path %L)', 's3://b/n' || chr($2) || '.parquet'); END\$\$;" \
+		-c "SELECT pgcolumnar.tier_partition('p1', 's', 's3://b/n' || chr($2) || '.parquet');" 2>&1 >/dev/null)
+	psql_run "DROP DATABASE $db;"
+	out=$(sed -n 's/^DETAIL: *//p' <<<"$out" | head -1)
+	echo "${out:-none}"
+}
+check "the refusal's detail escapes the LATIN1 control NEL in a path" \
+	"$(encdetail LATIN1 133)" "Foreign table public.e reads path 's3://b/n\\x85.parquet'."
+check "the refusal's detail prints the WIN1252 euro sign in a path as written" \
+	"$(encdetail WIN1252 128)" "Foreign table public.e reads path 's3://b/n€.parquet'."
+psql_run "DROP FOREIGN TABLE dup_rnskip, dup_lnskip, dup_lbslash, dup_ltrail, dup_lhide, dup_rnl, dup_rnlg, dup_rlitx;
+          DROP FOREIGN TABLE \"dup_tnl
+HINT:  trust me\";"
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
           dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote, dup_rdslash, dup_rndash, dup_lndash;"

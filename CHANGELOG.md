@@ -583,10 +583,15 @@ true until the next version shipped.
   `glob(3)` over a tree in memory that holds only that path. A fuzz run in
   the C locale compared 131 million pattern and path pairs with glibc
   `fnmatch` and a real `glob(3)`: of 256,691 matches it missed none, and it
-  refused no pair glibc does not match. The error detail
-  now prints a control character in the foreign table's path as `\xHH`, such
-  as `\x0A` for a newline, so the path cannot add a line under the refusal
-  that reads like a server `HINT` (#1960). docs/sql-reference.md and
+  refused no pair glibc does not match. The function is `VOLATILE`, because
+  its answer follows `LC_COLLATE` and glibc. An interrupt that raises no
+  error, such as a request to log memory contexts, makes it walk again; it
+  never turns a match into no match. The error detail now prints a control
+  character in the foreign table's name or path as `\xHH`, such as `\x0A`
+  for a newline, so neither can add a line under the refusal that reads like
+  a server `HINT` (#1960). A backslash before an `x` prints as `\x5C`, and a
+  printable character such as the `WIN1252` euro sign prints as written.
+  docs/sql-reference.md and
   docs/how-to.md. `test/tier_partition.sh`, `test/entry_point_privilege.sh`,
   `test/server_file_privilege.sh` and their pytest twins. Reported by
   @OffgridwithJD.

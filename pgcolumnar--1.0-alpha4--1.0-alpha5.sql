@@ -1789,9 +1789,11 @@ COMMENT ON FUNCTION pgcolumnar.export_parquet(regclass, text, name)
 -- fnmatch for an s3:// key, glob(3) for a local path, over a tree in memory.
 -- tier_partition's check calls it, so the check agrees with the reader. It
 -- reads no file and takes no relation, so it needs no privilege, as row_tid.
+-- It is VOLATILE: its answer follows LC_COLLATE, and glibc can answer a rare
+-- range differently from one call to the next (#1964 review).
 CREATE FUNCTION pgcolumnar.path_glob_matches(pattern text, path text)
 	RETURNS boolean
-	LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE
+	LANGUAGE C VOLATILE STRICT PARALLEL SAFE
 	AS 'MODULE_PATHNAME', 'pgcolumnar_path_glob_matches';
 
 COMMENT ON FUNCTION pgcolumnar.path_glob_matches(text, text)
@@ -1936,18 +1938,35 @@ BEGIN
 	 LIMIT 1;
 	-- The detail quotes the path by hand, not with %L, so a backslash prints as
 	-- written. It doubles a ', so the path cannot close the quote (#1953
-	-- review), and prints a control character as \xHH, so the path cannot
-	-- add a line that reads like a server HINT (#1960).
+	-- review). Another role chose both the table's name and its path, so the
+	-- detail prints a control character in either as \xHH, and the text
+	-- cannot add a line that reads like a server HINT (#1960, #1964 review).
+	-- A C1 control (U+0080 to U+009F) is found by its meaning, through
+	-- UTF-8, so the euro sign, 0x80 in WIN1252, prints as written. SQL_ASCII
+	-- has no meaning for such a byte, so it prints as written there. A
+	-- backslash before an x prints as \x5C, so a path that holds the four
+	-- characters \x0A does not print like a newline.
 	IF FOUND THEN
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
 			USING ERRCODE = 'duplicate_file',
-				  DETAIL = format('Foreign table %s reads path ''%s''.', covered.relid,
-								   (SELECT coalesce(string_agg(
-										CASE WHEN ch ~ '[\x01-\x1f\x7f-\x9f]'
-											 THEN '\x' || lpad(upper(to_hex(ascii(ch))), 2, '0')
-											 ELSE ch END, '' ORDER BY n), '')
-									  FROM regexp_split_to_table(replace(covered.opath, '''', ''''''), '')
-										   WITH ORDINALITY AS s(ch, n)));
+				  DETAIL = (SELECT format('Foreign table %s reads path ''%s''.', e[1], e[2])
+							  FROM (SELECT array_agg(x.esc ORDER BY u.k)
+									  FROM unnest(ARRAY[covered.relid::text,
+														replace(covered.opath, '''', '''''')])
+										   WITH ORDINALITY AS u(s, k),
+										   LATERAL (SELECT coalesce(string_agg(
+												CASE WHEN z.ch ~ '[\x01-\x1f\x7f]'
+														  OR (z.ch = '\' AND z.nx = 'x')
+														  OR CASE WHEN z.ch ~ '[\x80-\x9f]'
+																   AND getdatabaseencoding() <> 'SQL_ASCII'
+																  THEN convert_to(z.ch, 'UTF8')
+																	   BETWEEN '\xc280'::bytea AND '\xc29f'::bytea
+																  ELSE false END
+													 THEN '\x' || lpad(upper(to_hex(ascii(z.ch))), 2, '0')
+													 ELSE z.ch END, '' ORDER BY z.n), '')
+													  FROM (SELECT c.ch, c.n, lead(c.ch) OVER (ORDER BY c.n) AS nx
+															  FROM regexp_split_to_table(u.s, '') WITH ORDINALITY AS c(ch, n)) AS z
+												   ) AS x(esc)) AS y(e));
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not

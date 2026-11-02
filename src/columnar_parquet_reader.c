@@ -3694,8 +3694,12 @@ pq_remote_key_is_literal(const char *url, const char *key)
  * a real one does. The callbacks get no argument of their own, so the tree is
  * a static, set only while glob(3) runs. They neither allocate in a memory
  * context nor raise an error, so nothing jumps out of glob(3) and leaks its
- * memory; when a cancel is pending they report every directory empty, and the
- * caller handles the cancel once glob(3) has returned.
+ * memory. When any interrupt is pending they report every directory empty and
+ * set pq_vcut, so a long walk stops soon. An answer from a walk cut short is
+ * no answer: the caller then processes the interrupt and walks again. Most
+ * interrupts raise no error, such as a request to log memory contexts, and a
+ * false answer would let tier_partition overwrite a file a table reads (#1964
+ * review).
  */
 typedef struct PqVNode
 {
@@ -3718,6 +3722,7 @@ typedef struct PqVDir
 } PqVDir;
 
 static const PqVTree *pq_vtree = NULL;
+static bool pq_vcut = false;	/* a callback stopped for an interrupt */
 
 /* the child of `dir` called name[0..len), or -1 */
 static int
@@ -3744,6 +3749,7 @@ pq_vresolve(const char *p)
 
 	if (t == NULL || InterruptPending)
 	{
+		pq_vcut = true;
 		errno = EINTR;
 		return -1;
 	}
@@ -3801,7 +3807,10 @@ pq_vreaddir(void *dirp)
 	int			node;
 
 	if (t == NULL || InterruptPending)
+	{
+		pq_vcut = true;
 		return NULL;
+	}
 	if (d->next == -2 || d->next == -1)
 	{
 		name = (d->next == -2) ? "." : "..";
@@ -3849,7 +3858,9 @@ pq_vstat(const char *path, struct stat *st)
 /*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
  * if `path` existed? A name longer than a directory entry holds cannot exist,
- * so it matches nothing.
+ * so it matches nothing. It never answers false for a walk an interrupt cut
+ * short, nor for a glob(3) error: it processes the interrupt and walks again,
+ * or raises an error.
  */
 static bool
 pq_local_glob_match(const char *pattern, const char *path)
@@ -3862,6 +3873,7 @@ pq_local_glob_match(const char *pattern, const char *path)
 	char	   *p = copy;
 	bool		found = false;
 	size_t		i;
+	int			attempt;
 
 	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + 2));
 	tree.nodes[0].name = "";
@@ -3906,20 +3918,39 @@ pq_local_glob_match(const char *pattern, const char *path)
 	if (path[0] != '\0' && path[strlen(path) - 1] == '/')
 		tree.nodes[cur].isdir = true;
 
-	memset(&g, 0, sizeof(g));
-	g.gl_opendir = pq_vopendir;
-	g.gl_readdir = pq_vreaddir;
-	g.gl_closedir = pq_vclosedir;
-	g.gl_stat = pq_vstat;
-	g.gl_lstat = pq_vstat;
-	pq_vtree = &tree;
-	rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
-	pq_vtree = NULL;
+	for (attempt = 1;; attempt++)
+	{
+		memset(&g, 0, sizeof(g));
+		g.gl_opendir = pq_vopendir;
+		g.gl_readdir = pq_vreaddir;
+		g.gl_closedir = pq_vclosedir;
+		g.gl_stat = pq_vstat;
+		g.gl_lstat = pq_vstat;
+		pq_vcut = false;
+		pq_vtree = &tree;
+		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
+		pq_vtree = NULL;
+		if (!pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
+			break;
+		globfree(&g);
+		if (!pq_vcut)
+			ereport(ERROR,
+					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not match glob \"%s\" against path \"%s\": glob(3) returned %d",
+							pattern, path, rc)));
+		/* a cancel raises its error here; any other interrupt is processed */
+		CHECK_FOR_INTERRUPTS();
+		/* an interrupt that cannot be processed now cuts every walk short */
+		if (attempt >= 100)
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("could not match glob \"%s\" against path \"%s\": interrupted %d times",
+							pattern, path, attempt)));
+	}
 	if (rc == 0)
 		for (i = 0; i < g.gl_pathc && !found; i++)
 			found = (strcmp(g.gl_pathv[i], path) == 0);
 	globfree(&g);
-	CHECK_FOR_INTERRUPTS();
 	return found;
 }
 

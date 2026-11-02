@@ -778,8 +778,10 @@ The function refuses these:
   so a symbolic link or `..` is not resolved. A new file under a directory a
   foreign table reads is refused too; docs/how-to.md shows ways around it.
   The error detail names the foreign table and its path. A control character
-  in that path prints as `\xHH`, such as `\x0A` for a newline, so the detail
-  stays on one line (#1960);
+  in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
+  stays on one line (#1960). A backslash before an `x` prints as `\x5C`, so a
+  path that holds the characters `\x0A` does not print like a newline. In a
+  `WIN1252` database the euro sign, byte `0x80`, prints as written;
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
@@ -820,13 +822,18 @@ SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
 ```
 
 In an `s3://` key a class can match `/`. A local glob is split at every `/`
-first, so there `[a` and `b]` are two names. The function is `IMMUTABLE`,
-`STRICT` and `PARALLEL SAFE`. It reads no file, so any role may call it. A
-range such as `[a-c]` follows the database's collation, as in the reader. Take a
-range that ends in a collating symbol, such as `[!-[.a.]]`. In a UTF-8 locale
-such as `en_US.UTF-8`, glibc can answer it differently from one call to the
-next.
-The reader has the same limit, because it calls the same `fnmatch`.
+first, so there `[a` and `b]` are two names. It reads no file, so any role may
+call it.
+
+A range such as `[a-c]` follows the database's `LC_COLLATE` setting
+(`datcollate`), as in the reader. In `en_US.UTF-8`, `[a-c]` matches `á`; in
+`C` it does not. A database with the ICU provider still uses its
+`LC_COLLATE`, not its ICU locale. Take a range that ends in a collating
+symbol, such as `[!-[.a.]]`. In a UTF-8 locale such as `en_US.UTF-8`, glibc
+can answer it differently from one call to the next. The reader has the same
+limit, because it calls the same `fnmatch`. So the function is `VOLATILE`,
+not `IMMUTABLE`: do not use it in an index or a generated column. It is
+`STRICT` and `PARALLEL SAFE`.
 
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
