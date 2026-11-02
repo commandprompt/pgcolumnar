@@ -633,11 +633,15 @@ The harness also protects a run (#1915):
   `pgc_setup`. It prints both digests, for example
   `FAIL  the installed library changed during this run: 44d276203348 at setup, 8777edbdfec1 now (/usr/local/pgsql/lib/pgcolumnar.so)`.
 - `harness_selftest` part 580 checks that `test/rebuild.sh` did not touch the
-  installed library. When another session installs into the same prefix during
-  the run, the part skips that check and names the other writer (#1942). The
-  skip line prints both modification times, both inodes, the owner and the
-  rebuild's target. In GitHub Actions no other session installs, so the same
-  change fails the check there.
+  installed library. It compares the library's modification time before and
+  after the rebuild, and reads the target that the rebuild printed. When the
+  library changed and the rebuild did not target it, the part skips that check
+  and prints what it measured (#1942). Usually another session's install into
+  the same prefix causes this. A write by the rebuild outside its target would
+  look the same. The part cannot tell who wrote the library, because root owns
+  every install. The skip line prints both modification times, both
+  inodes, the owner and the rebuild's target. In GitHub Actions no other
+  session installs, so the same change fails the check there.
 - The pytest corpus starts servers through `subprocess`, which closes inherited
   descriptors. Its session teardown raises when the library changed during the
   session.

@@ -141,7 +141,7 @@ _hr_diagnose() {	# _hr_diagnose LOGFILE -> the tail, or WHY there is no tail
 }
 
 _hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> untouched|overwritten|changed-elsewhere
-	# WHO WROTE IT (#1942). An unchanged mtime is untouched. A changed one is the
+	# DID THE REBUILD WRITE IT (#1942). An unchanged mtime is untouched. A changed one is the
 	# rebuild's only if the rebuild targeted the live library, because PGXS
 	# installs into the same `pg_config --pkglibdir` that rebuild.sh prints as
 	# its target. A rebuild that printed no target cannot be cleared by it, so an
@@ -154,15 +154,16 @@ _hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> untouched|overwritten|chan
 		echo changed-elsewhere
 	fi
 }
-_hr_live_outcome() {	# VERDICT IN_CI -> pass|fail|skip
+_hr_live_outcome() {	# VERDICT -> pass|fail|skip, reading GITHUB_ACTIONS
 	# A SHARED BOX SKIPS, CI DOES NOT (#1942). Off CI, other worktrees install
-	# into the same prefix, so another writer is an environment fact and the arm
-	# skips with the measurement as its reason. A CI runner has no other writer,
-	# so there the same change still fails: the arm proves as much in CI as it
-	# did before this function existed.
+	# into the same prefix, so a change the rebuild did not target is most likely
+	# theirs, and the arm skips with the measurement as its reason. A CI runner
+	# has no other writer, so there the same change still fails: the arm proves
+	# as much in CI as it did before this function existed. The function reads
+	# GITHUB_ACTIONS itself, so no caller can forget to pass it (#1947 review).
 	case "${1:-}" in
 		untouched) echo pass ;;
-		changed-elsewhere) [ "${2:-}" = true ] && echo fail || echo skip ;;
+		changed-elsewhere) [ "${GITHUB_ACTIONS:-}" = true ] && echo fail || echo skip ;;
 		*) echo fail ;;
 	esac
 }
@@ -304,8 +305,9 @@ check_text "and any other status skips too, rather than being read as success" \
 # other sessions ran pgsql suites. The rebuild cannot have written the live
 # library unless it TARGETED it: rebuild.sh prints `== target: <pkglibdir>/
 # pgcolumnar.so`, and PGXS installs into the same `pg_config --pkglibdir`. So the
-# verdict reads the rebuild's own target, and a change it did not target is named
-# as another writer's. Both decisions are functions, driven here with literals.
+# verdict reads the rebuild's own target, and a change it did not target reads as
+# changed elsewhere. The verdict cannot say WHO wrote: the owner is root for every
+# install on a shared box, so the arm prints what it measured instead. Both decisions are functions, driven here with literals.
 check_text "premise: the live-library verdict is exposed to be judged" \
 	"$(type -t _hr_live_verdict)" "function"
 check_text "premise: and so is what that verdict does to the arm" \
@@ -319,12 +321,19 @@ check_text "a changed live library the rebuild did not target names another writ
 check_text "a rebuild that printed no target is blamed, not excused" \
 	"$(_hr_live_verdict 100 200 "" /usr/local/x/lib/pgcolumnar.so)" "overwritten"
 check_text "untouched passes and overwritten fails, on a shared box and in CI" \
-	"$(_hr_live_outcome untouched "")/$(_hr_live_outcome untouched true)/$(_hr_live_outcome overwritten "")/$(_hr_live_outcome overwritten true)" \
+	"$(GITHUB_ACTIONS= _hr_live_outcome untouched)/$(GITHUB_ACTIONS=true _hr_live_outcome untouched)/$(GITHUB_ACTIONS= _hr_live_outcome overwritten)/$(GITHUB_ACTIONS=true _hr_live_outcome overwritten)" \
 	"pass/pass/fail/fail"
 check_text "another writer on a shared box skips the arm with a reason" \
-	"$(_hr_live_outcome changed-elsewhere "")" "skip"
+	"$(GITHUB_ACTIONS= _hr_live_outcome changed-elsewhere)" "skip"
 check_text "another writer in CI still fails, because nothing else installs there" \
-	"$(_hr_live_outcome changed-elsewhere true)" "fail"
+	"$(GITHUB_ACTIONS=true _hr_live_outcome changed-elsewhere)" "fail"
+# WHO READS GITHUB_ACTIONS (#1947 review). The arm used to pass the variable in
+# as an argument, and no check covered that call: dropping the argument made CI
+# skip instead of fail with every check green. The outcome now reads the
+# environment itself, so this check sets the environment, not an argument.
+check_text "the outcome reads GITHUB_ACTIONS from the environment, not from its caller" \
+	"$(GITHUB_ACTIONS=true _hr_live_outcome changed-elsewhere)/$(GITHUB_ACTIONS= _hr_live_outcome changed-elsewhere)" \
+	"fail/skip"
 
 _hr_dtmp="$(mktemp -d)"
 printf 'rebuild: UNRESOLVED SYMBOLS against PostgreSQL 18\n__aarch64_ldadd4_acq_rel\n' \
@@ -390,10 +399,10 @@ if [ "$(_hr_dependents "$_hr_rc")" = run ]; then
 	_hr_live_v="$(_hr_live_verdict "$_hr_live_before" "$_hr_live_after" "$_hr_target" "$_hr_live_so")"
 	_hr_live_m="$_hr_live_v: $_hr_live_so mtime $_hr_live_before -> $_hr_live_after, inode $_hr_live_ino -> ${_hr_live_now%% *}, owner ${_hr_live_now#* }, rebuild target ${_hr_target:-<none>}"
 	# The arm name stays literal on both branches, so part 470 can compare it.
-	if [ "$(_hr_live_outcome "$_hr_live_v" "${GITHUB_ACTIONS:-}")" = skip ]; then
+	if [ "$(_hr_live_outcome "$_hr_live_v")" = skip ]; then
 		check_skip "and the installed library of the running major was never touched" \
-			"SKIP  and the installed library of the running major was never touched (another writer installed into the shared prefix during the run; $_hr_live_m)" \
-			"another writer installed into the shared prefix"
+			"SKIP  and the installed library of the running major was never touched (the live library changed and the rebuild did not target it; $_hr_live_m)" \
+			"the live library changed and the rebuild did not target it"
 	else
 		check_text "and the installed library of the running major was never touched" \
 			"$(if [ "$_hr_live_v" = untouched ]; then echo untouched; else echo "$_hr_live_m"; fi)" "untouched"
