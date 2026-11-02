@@ -763,9 +763,12 @@ A `pgcolumnar_iceberg` foreign table has no `path` option. It reads data files
 under its table location. The function takes that location as the reader
 does: the parent of the directory that holds `metadata_path`. So with
 `metadata_path` `s3://wh/db/t/metadata/v3.metadata.json`, the function refuses
-any path under `s3://wh/db/t/` (#1949). The function does not read the table's
-manifests. So it does not see a data file that the table keeps outside its
-location, for example under a separate `write.data.path`.
+any path under `s3://wh/db/t/` (#1949). The reader refuses a file outside the
+table location and does not read it. So the location covers every file the
+table can read. A `metadata_path` with no directory above `metadata/` is cut
+as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
+refused. A relative `metadata/v1.metadata.json` gives `./`, which matches
+only a path written as `./...`, because a local path is compared as written.
 
 **A new file under a directory that a foreign table reads is refused too.**
 The function cannot tell a new file from an old one. Once the move is done,

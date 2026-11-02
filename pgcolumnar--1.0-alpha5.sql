@@ -3218,10 +3218,13 @@ BEGIN
 	-- Another wrapper's path option means what that wrapper says, so it is not
 	-- read (#1949). An Iceberg foreign table (pgcolumnar's Iceberg handler) has
 	-- no path option: it reads data files under its table location, which is
-	-- the parent of the directory holding metadata_path, as the reader takes
-	-- it. A path under that location is refused, as under a directory. Data
-	-- files an Iceberg table keeps outside its location are not seen: the
-	-- manifests that name them are not read here (#1949).
+	-- the parent of the directory holding metadata_path. The location is cut
+	-- as the reader cuts it: the part before the last '/', taken twice, where
+	-- a path with no '/' gives '.' and '/x' gives '/'. A path under that
+	-- location is refused, as under a directory. The reader refuses any file
+	-- outside the location, so this covers every file it reads (#1949). The
+	-- location always ends in '/', so read as a glob it can match only a path
+	-- that ends in '/', which names no file (#1955 review).
 	SELECT c.relid, c.opath, c.ice INTO covered
 	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
 				   v.np[1] AS tp, v.np[2] AS fp
@@ -3231,7 +3234,14 @@ BEGIN
 				   unnest(t.ftoptions) AS o(opt),
 				   LATERAL (SELECT w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure,
 								   CASE WHEN w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure
-										THEN regexp_replace(substr(o.opt, 15), '[^/]*/[^/]*$', '')
+										THEN (SELECT CASE WHEN right(d, 1) = '/' THEN d ELSE d || '/' END
+												FROM (SELECT CASE WHEN strpos(d1, '/') = 0 THEN '.'
+																  WHEN d1 ~ '^/[^/]*$' THEN '/'
+																  ELSE regexp_replace(d1, '/[^/]*$', '') END
+														FROM (SELECT CASE WHEN strpos(m, '/') = 0 THEN '.'
+																		  WHEN m ~ '^/[^/]*$' THEN '/'
+																		  ELSE regexp_replace(m, '/[^/]*$', '') END
+																FROM (SELECT substr(o.opt, 15)) AS x(m)) AS y(d1)) AS z(d))
 										ELSE substr(o.opt, 6) END) AS f(ice, opath),
 				   LATERAL (SELECT array_agg(
 							CASE WHEN p ~* '^s3[an]?://'
@@ -3249,7 +3259,7 @@ BEGIN
 		OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
 		OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
 			AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
-		OR (NOT c.ice AND c.fp !~ '^(gs|az|https?)://' AND c.fp ~ '[*?[]'
+		OR (c.fp !~ '^(gs|az|https?)://' AND c.fp ~ '[*?[]'
 			AND c.tp ~ ('^' || (SELECT string_agg(
 								CASE WHEN m[1] = '*' THEN '[^/]*'
 									 WHEN m[1] IN ('[]', '[!]', '[^]')

@@ -337,6 +337,23 @@ check "a local path that only starts with an Iceberg location's name is not refu
 check "an s3:// path beside an Iceberg foreign table's location is not refused" \
 	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/wh/icex.parquet');")" "28000"
 psql_run "DROP FOREIGN TABLE dup_ice, dup_rice;"
+# The location is cut from metadata_path as the reader cuts it: a metadata file
+# at the root of the file system gives the location '/', and a relative
+# metadata_path with no directory above metadata/ gives '.' (#1955 review).
+psql_run "CREATE FOREIGN TABLE dup_iroot (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path '/v1.metadata.json');"
+check "an Iceberg table whose metadata file sits at the root refuses a local path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" "58P02"
+check "the root Iceberg refusal's detail names the location '/'" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" \
+	"Foreign table public.dup_iroot reads Iceberg files under '/'."
+psql_run "DROP FOREIGN TABLE dup_iroot;
+          CREATE FOREIGN TABLE dup_irel (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path 'metadata/v1.metadata.json');"
+check "an Iceberg table with a relative metadata_path refuses a path under '.'" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', './nodir/x.parquet');")" \
+	"Foreign table public.dup_irel reads Iceberg files under './'."
+psql_run "DROP FOREIGN TABLE dup_irel;"
 # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
 # (#1949). The path option of a table under another wrapper means what that
 # wrapper says, so it refuses nothing. A wrapper made with the Parquet handler

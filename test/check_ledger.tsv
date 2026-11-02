@@ -8657,6 +8657,8 @@ tier_partition	tier_partition	a table that is not a partition is refused	15;16;1
 tier_partition	tier_partition	a virtual generated column moves and reads back the same	15;16;17;18;19	2026-10-13	tier_partition's foreign table without generation expressions (PG18, where the virtual arm runs)
 tier_partition	tier_partition	a write in flight when the move starts is in the exported rows	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the SHARE lock on the partition
 tier_partition	tier_partition	after the move the caller's lock_timeout is the caller's again	15;16;17;18;19	2026-10-13	tier_partition leaving lock_wait as the caller's lock_timeout
+tier_partition	tier_partition	an Iceberg table whose metadata file sits at the root refuses a local path	15;16;17;18;19	2026-11-02	Iceberg location cut by the old regexp, not as the reader cuts it (#1949)
+tier_partition	tier_partition	an Iceberg table with a relative metadata_path refuses a path under '.'	15;16;17;18;19	2026-11-02	Iceberg location cut by the old regexp, not as the reader cuts it (#1949)
 tier_partition	tier_partition	an S3:// path is refused when a foreign table reads the identical s3:// spelling	15;16;17;18;19	2026-11-01	pgcolumnar--1.0-alpha5.sql: tier_partition compares the target path as written, without the scheme normalisation (#1937)
 tier_partition	tier_partition	an equivalence class [=]=] in a glob holds a ], so a path the class matches is refused	15;16;17;18;19	2026-11-02	tier_partition's glob tokenizer as the review proposed it: class names a to z, and a [ that starts a POSIX class read as a plain member (#1946 review)
 tier_partition	tier_partition	an escaped star in a glob matches only a literal star, so another name is not refused	15;16;17;18;19	2026-11-02	the #1941 rule made to over-refuse: * crosses a slash, an escape matches any character, a remote path without a trailing slash is a directory prefix with no slash boundary (#1941)
@@ -8734,6 +8736,7 @@ tier_partition	tier_partition	the local partition leaves no pgcolumnar storage r
 tier_partition	tier_partition	the move ran inside the caller's transaction	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	the other partition is still local after the refusals	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	the refusal's detail names the foreign table and the path it reads	15;16;17;18;19	2026-11-02	DETAIL dropped from the refusal, and a glob ? and [class] mapped to . instead of [^/] (#1941)
+tier_partition	tier_partition	the root Iceberg refusal's detail names the location '/'	15;16;17;18;19	2026-11-02	Iceberg location cut by the old regexp, not as the reader cuts it (#1949)
 tier_partition	tier_partition	tier_partition moves the cold partition and returns the rows it moved	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	with no foreign table behind it	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	with the dependents gone, the same partition moves	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the dependents check

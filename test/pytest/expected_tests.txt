@@ -1767,4 +1767,7 @@ guard_tests 863
 # foreign table's location is refused, local and s3://, with its detail; two paths beside it are not; another
 # wrapper's path option refuses nothing; a wrapper with the Parquet handler under another name still does),
 # added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's review (PR #1955): three checks in test_tier_partition.py (an Iceberg
+# table whose metadata file sits at the root refuses a local path, with its detail; a relative metadata_path
+# refuses a path under '.'), added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
 cluster_tests 5334

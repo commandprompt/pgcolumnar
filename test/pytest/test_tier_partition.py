@@ -248,6 +248,15 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
             with conn.cursor() as cur:
                 cur.execute("ROLLBACK")
 
+    def rolled_detail(sql):
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+        try:
+            return _errdetail(conn, sql)
+        finally:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK")
+
     tier = "SELECT pgcolumnar.tier_partition('s_apr', 'tq', '{}')"
     expect.text(_sqlstate(conn, tier.format("s3://tierb/sdir/x.parquet")),
                 "58P02", "a path under a directory a foreign table reads as s3://b/dir/ is refused")
@@ -378,6 +387,25 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "58P01", "a local path that only starts with an Iceberg location's name is not refused")
     expect.text(_sqlstate(conn, tier.format("s3://tierb/swh/sicex.parquet")),
                 "28000", "an s3:// path beside an Iceberg foreign table's location is not refused")
+    # The location is cut from metadata_path as the reader cuts it: a metadata
+    # file at the root gives '/', a relative one gives '.' (#1955 review).
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE s_dup_iroot (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path '/v4.metadata.json')")
+    expect.text(rolled(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "58P02", "an Iceberg table whose metadata file sits at the root refuses a local path")
+    expect.text(rolled_detail(tier.format(f"{server_dir}/snodir/y.parquet")),
+                "Foreign table public.s_dup_iroot reads Iceberg files under '/'.",
+                "the root Iceberg refusal's detail names the location '/'")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_iroot")
+        cur.execute("CREATE FOREIGN TABLE s_dup_irel (at timestamptz, r int) SERVER ti"
+                    " OPTIONS (metadata_path 'metadata/v4.metadata.json')")
+    expect.text(rolled_detail(tier.format("./snodir/y.parquet")),
+                "Foreign table public.s_dup_irel reads Iceberg files under './'.",
+                "an Iceberg table with a relative metadata_path refuses a path under '.'")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_irel")
     # Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
     # (#1949); a wrapper made with the Parquet handler under another name does.
     with conn.cursor() as cur:
