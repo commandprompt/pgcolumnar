@@ -553,7 +553,7 @@ check_text "control: the carve-outs hold and the innocent arm above the helper i
 # EVERY PIECE OF THE REDIRECT PATTERN IS PINNED (#1995 review round 3). A
 # mechanical sweep weakened and over-applied each quantifier, anchor,
 # alternation branch and class member of the regular expressions in this part.
-# The arms from `joined to an unspaced and` down to `two spaces after the if`
+# The arms from `joined to an unspaced and` down to `an unspaced redirect`
 # are the ones that sweep found missing: without each, one change to the
 # pattern stayed green. The three `innocent:` arms are a test piped into
 # `cat`, whose `&&` reads cat's status and not the test's.
@@ -619,13 +619,17 @@ check_num "an if/then/else threshold with a space before the if" \
 	"$( if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
 check_num "an if/then/else threshold with two spaces after the if" \
 	"$(if  [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind a doubly spaced redirect into a variable" \
+	"$(if [ "$a" -le "$b" ]  2>"$LOG"; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else test-builtin threshold behind an unspaced redirect into a variable" \
+	"$(if test "$a" -le "$b">"$LOG"; then echo 1; else echo 0; fi)" "1"
 PROBE
 # SORTED IN THE C LOCALE. A locale-aware sort ignores spaces, so it puts
 # `an if/then/else ...` before `a threshold ...` and the order would depend on
 # the runner. Measured: as root on PG15 the names came out in the other order.
 _lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
-	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a quoted redirect joined to an unspaced and;a threshold behind a redirect into a variable;a threshold behind a redirect joined to an unspaced and;a threshold behind a spaced appending redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind an input redirect;a threshold behind two redirects;a threshold joined to an unspaced echo;a threshold with two spaces before the bracket;an if/then/else threshold behind a quoted redirect joined to an unspaced then;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a redirect joined to an unspaced then;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;an if/then/else threshold with a space before the if;an if/then/else threshold with two spaces after the if;"
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a quoted redirect joined to an unspaced and;a threshold behind a redirect into a variable;a threshold behind a redirect joined to an unspaced and;a threshold behind a spaced appending redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind an input redirect;a threshold behind two redirects;a threshold joined to an unspaced echo;a threshold with two spaces before the bracket;an if/then/else test-builtin threshold behind an unspaced redirect into a variable;an if/then/else threshold behind a doubly spaced redirect into a variable;an if/then/else threshold behind a quoted redirect joined to an unspaced then;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a redirect joined to an unspaced then;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;an if/then/else threshold with a space before the if;an if/then/else threshold with two spaces after the if;"
 
 # THREE MORE SPELLINGS OF A TEST (#1986). The rules read only `[ ... ]`, so a
 # lossy arm written as `[[ ... ]]` or with the `test` builtin was never seen.
