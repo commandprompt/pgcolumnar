@@ -687,6 +687,50 @@ check "empty only level: the OAuth server form of iceberg_rest_scan of '' is ref
 check "empty only level: no request reaches the catalog with an empty path segment" \
 	"$(cat "$OLOG" "$KLOG" | grep -c '^GET [^ ?]*//')" \
 	"0"
+# ---- #1931: an empty table name ---------------------------------------------
+# An empty table name makes the loadTable path /v1/namespaces/db/tables/, which
+# ends in an empty segment. A proxy that strips the trailing slash would reach
+# listTables instead. So the client refuses it (22023) before any request,
+# including a server's OAuth token request. This fixture would answer the path.
+start_fx emptytable --table events
+TCAT="http://127.0.0.1:$FX_PORT"
+TLOG="$PGC_WORKDIR/emptytable.log"
+check "empty table name: iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', ARRAY['db'], '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', ARRAY['db'], '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+# The control resolves db.events on the same fixture, so its log is known to
+# record requests; then no GET in it may end in an empty table segment.
+check "empty table name: the same catalog still resolves db.events" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', 'events')")" \
+	"$MDLOC"
+check "empty table name: no request reaches the catalog with an empty table segment" \
+	"loadTable events=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/events ') empty table segment=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/ ')" \
+	"loadTable events=1 empty table segment=0"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \
