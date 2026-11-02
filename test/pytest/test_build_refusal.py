@@ -485,11 +485,14 @@ def test_a_server_started_after_the_library_is_fresh(expect):
                 "fresh", "the server started after the .so was installed")
 
 
-def test_equal_timestamps_are_fresh_not_predates(expect):
-    """The exact boundary. A one-second-resolution mtime and a start time in the
-    same second must not read as stale, or every fast run refuses itself."""
+def test_equal_timestamps_are_unknown_not_fresh_or_predates(expect):
+    """The exact boundary. Both sides are read below the second, so an equal pair
+    cannot say which came first: it is unknown, as in test/lib.sh since #1956.
+    It must not read as stale either, or a fast run would refuse itself."""
     expect.text(_C().server_binary_verdict(so_mtime=100, postmaster_epoch=100),
-                "fresh", "same second is not stale")
+                "unknown", "an equal pair does not say which came first")
+    expect.text(_C().server_binary_verdict(so_mtime=100.5, postmaster_epoch=100.5),
+                "unknown", "an equal pair below the second does not either")
 
 
 def test_an_unreadable_side_is_unknown_not_fresh(expect):

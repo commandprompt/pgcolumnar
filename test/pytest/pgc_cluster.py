@@ -170,6 +170,8 @@ class Cluster:
             so, pm = float(so_mtime), float(postmaster_epoch)
         except (TypeError, ValueError):
             return "unknown"
+        if so == pm:
+            return "unknown"  # an equal pair says nothing about order (#1969)
         return "predates" if so > pm else "fresh"
 
     def require_server_loaded_this_binary(self):

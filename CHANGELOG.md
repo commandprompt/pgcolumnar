@@ -534,6 +534,13 @@ true until the next version shipped.
 
 ### Fixed
 
+- The pytest harness now reads an exactly equal library install time and
+  postmaster start time as unknown, not fresh, as the shell harness has since
+  #1956 (#1969). `Cluster.server_binary_verdict` in
+  `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
+  changes: an unknown verdict still lets the run go ahead, and only a server
+  that started before the install is refused.
+
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
   options, and an Iceberg foreign table has none, so a move could overwrite a

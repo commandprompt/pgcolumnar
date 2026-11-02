@@ -942,7 +942,7 @@ is where a wrong quote would hide.
 | `test_an_unfingerprintable_tree_always_rebuilds` | no fingerprint means no key, and no key must mean rebuild |
 | `test_a_server_older_than_the_library_is_refused` | `predates` |
 | `test_a_server_started_after_the_library_is_fresh` | `fresh` |
-| `test_equal_timestamps_are_fresh_not_predates` | the exact boundary: the same second is not stale |
+| `test_equal_timestamps_are_unknown_not_fresh_or_predates` | the exact boundary: an equal pair, whole or below the second, is `unknown`, not `fresh` and not stale |
 | `test_an_unreadable_side_is_unknown_not_fresh` | three unreadable shapes all give `unknown` |
 | `test_the_fingerprint_covers_a_separately_built_module` | an `objstore/` edit moves the hash |
 | `test_an_objstore_edit_forces_a_second_build` | and forces a rebuild, end to end |
@@ -1072,8 +1072,9 @@ happens to be complete today.
 Three of the verdict arms exist to keep that true. `server_binary_verdict` returns
 one of `fresh`, `predates` or `unknown`, and `unknown` is what an unreadable mtime,
 an unreadable postmaster start time, or a non-numeric epoch all produce. The
-boundary arm is separate on purpose: mtime resolution is one second, so a run fast
-enough to install and start within the same second must not refuse itself.
+boundary arm is separate on purpose. Both times are read below the second, so an
+exactly equal pair cannot say which came first: it is `unknown`, as in `test/lib.sh`
+(#1956, #1969). It must not read as stale either, or a fast run would refuse itself.
 
 ### The fingerprint's own integrity, and why it needed six more arms
 
