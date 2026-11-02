@@ -21,8 +21,10 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 GEN="SELECT g, (g % 100) AS v, 'p' || (g % 50) AS payload
   FROM generate_series(1, 8192) g"
 
-psql_run "CREATE TABLE h (id int, v int, payload text);"
-psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar;"
+# NO AUTOVACUUM ON THE FIXTURE (#1987): an autovacuum would retire the dead groups
+# itself, and the compact calls below would then find none to retire.
+psql_run "CREATE TABLE h (id int, v int, payload text) WITH (autovacuum_enabled = false);"
+psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar WITH (autovacuum_enabled = false);"
 psql_run "SELECT pgcolumnar.set_options('n', stripe_row_limit => 1024, chunk_group_row_limit => 1024);"
 psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
@@ -45,8 +47,14 @@ check "parity after deletes" \
 
 # Online compaction: the two fully-deleted groups are retired, the partially
 # deleted one is kept. Returns the number retired.
-retired="$(q "SELECT pgcolumnar.compact('n');")"
-echo "  (compact retired $retired groups; group count now $(groups))"
+#
+# WAIT FOR THE HORIZON (#1987). compact retires a dead group only when no
+# transaction in the database is older than the DELETE. With one call, a snapshot
+# held by another session made it retire nothing. pgc_retry_past_horizon calls it
+# again, for up to 30 s, and prints what holds the horizon if that runs out.
+retired="$(pgc_retry_past_horizon 2 "SELECT pgcolumnar.compact('n');")"
+echo "  (compact retired/calls: $retired; group count now $(groups))"
+retired="${retired%/*}"
 check "compact retired the two fully-deleted groups" "$retired" "2"
 check "group count dropped by two" "$(groups)" "6"
 
@@ -115,8 +123,11 @@ check "the older snapshot read the group's rows before the delete" \
 	"$(grep -m1 '^before:' "$holder_out")" "before:1024"
 check "and still reads all of them after the delete and the compact" \
 	"$(grep -m1 '^after:' "$holder_out")" "after:1024"
-check_num "once that snapshot ends, compact retires the group" \
-	"$(q "SELECT pgcolumnar.compact('n');")" "1"
+# The suite's own holder has gone, but another session can still hold the horizon
+# (#1987), so this compact waits for it too.
+released="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.compact('n');")"
+echo "  (compact retired/calls once the snapshot ended: $released)"
+check_num "once that snapshot ends, compact retires the group" "${released%/*}" "1"
 check_num "and the group count drops to five" "$(groups)" "5"
 check "parity after the held-snapshot compact" \
 	"$(pgc_set_hash 'SELECT id, v, payload FROM n ORDER BY id')" \

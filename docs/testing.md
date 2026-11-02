@@ -323,6 +323,50 @@ a prepared transaction or replication slot. For example:
 An error from the statement stops the wait at once. The shell helper prints it,
 and the Python helper raises it, so an error does not read as a held horizon.
 
+### A check that truncate does nothing must wait too
+
+A check that `truncate` leaves the file alone, for example with
+`pgcolumnar.enable_end_truncation` off, has the opposite problem. While a
+transaction older than the `compact` is open, `truncate` leaves the file alone
+anyway. The check then passes whatever it means to test (#1988).
+
+So wait until nothing holds the horizon at the freed range, then call
+`truncate`, and check the count of what still holds it:
+
+```sh
+blockers="$(pgc_wait_freed_range_past_horizon n)"
+check_num "GUC off: no transaction older than the compact was open" "${blockers%/*}" "0"
+```
+
+```python
+from pgc_horizon import wait_freed_range_past_horizon
+blockers, calls = wait_freed_range_past_horizon(conn, "n")
+```
+
+The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
+table. It counts what has a transaction ID or `xmin` not newer than that:
+
+- each session with a transaction ID, in any database;
+- each session with a snapshot (`backend_xmin`) in the current database, and
+  each session with no database, such as a walsender;
+- each prepared transaction, in any database;
+- each replication slot.
+
+A snapshot with no transaction ID in another database does not hold truncate
+back. A transaction ID in another database does (#1992). truncate's own snapshot
+takes as its `xmin` the oldest transaction ID running in any database, and that
+`xmin` is part of the horizon. An ID equal to `freed_xid` counts too: a snapshot
+taken just before the `compact` has the `compact`'s own ID as its `xmin`. The
+helper counts one thing the horizon skips: a backend running `VACUUM`. That only
+makes the wait longer.
+
+It asks every 0.5 s, up to 60 times. The shell helper prints `<count>/<calls>`.
+When the count is not 0 after the last call, it prints what holds the horizon
+back, as above. When the table has no freed range, there is nothing to compare
+against. The helper then stops after one call and gives no count: the shell
+helper prints `none/1`, and the Python helper returns `None`. A check that wants
+0 then fails.
+
 ## Before merging: build every major
 
 ```sh
