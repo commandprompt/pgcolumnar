@@ -534,6 +534,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now reads three more spellings of a check arm that
+  prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
+  `test` builtin, as well as `[ ... ]`. It excuses the mirrored
+  nothing-versus-something tests `[ 0 -lt "$x" ]` and `[ 1 -le "$x" ]`, which
+  it used to refuse. `-lt 1` and `-le 0` stay refused: they fail on every count
+  above 0. It no longer excuses a compound test joined by `-a`, `-o`, `&&` or
+  `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
+  so `no` hid which half failed. A redirect into a quoted path with a space,
+  such as `2>"a b"`, no longer hides an arm. New fixture arms pin the end
+  anchors of the `-gt 0` and `-ge 1` excuses. The wider sweep finds no new
+  arm in the test suites, so no suite changed.
 - Self-test part 540 now finds more check arms that print only `no` when
   they fail (#1980). It missed an arm with a redirect after the test, such as
   `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.

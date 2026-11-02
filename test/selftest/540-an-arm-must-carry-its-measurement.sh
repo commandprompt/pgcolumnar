@@ -45,7 +45,9 @@
 #
 # Determinate, and deliberately out of scope: unary file and string tests
 # (`-f`, `-n`, `-z` and the rest), equality (`=`, `!=`, `-eq`, `-ne`), and
-# nothing-versus-something (`-gt 0`, `-ge 1`) where exactly one value fails.
+# nothing-versus-something (`-gt 0`, `-ge 1`, and the mirrored `0 -lt`, `1 -le`)
+# where exactly one value fails. A compound test, joined by `-a`, `-o`, `&&` or
+# `||`, is never excused (#1989).
 #
 # THOSE CARVE-OUTS ARE NOT TIDINESS, THEY WERE MEASURED. Three drafts of this
 # sweep over-reported, each caught by reading what it SELECTED rather than by
@@ -59,7 +61,8 @@
 # THE SCOPE IS A SHAPE, NOT A DIRECTORY, and saying only the directory once cost
 # 26 arms (#1174). The selector below reads two spellings of a verdict:
 #
-#   $( [ TEST ] && echo A || echo B )        a test built into the shell
+#   $( [ TEST ] && echo A || echo B )        a test built into the shell,
+#                                            also as [[ TEST ]] or test TEST
 #   $( awk ... print (COND) ? A : B ... )    a verdict computed by awk
 #
 # The second was invisible until #1174, so `lossy_arms.tsv` read as the debt of
@@ -222,7 +225,17 @@ PROBE
 
 _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 	awk '
-		function determinate(t) {
+		function determinate(t,   c) {
+			# A COMPOUND IS NEVER EXCUSED (#1989). `[ "$b" -le "$c" -a "$a"
+			# -gt 0 ]` ends in `-gt 0`, and an equality half matched from any
+			# position, so both read as determinate while `no` hid which half
+			# failed. The awk rule below refuses more than one comparison for
+			# the same reason. A command substitution inside the test is
+			# removed first: the `|| true` of `"$(grep -c x || true)"` and the
+			# `-o` of `grep -o` do not join two tests.
+			c = t
+			while (gsub(/\$\([^()]*\)/, "S", c)) ;
+			if (c ~ /(^|[[:space:]])(-a|-o|&&|\|\|)([[:space:]]|$)/) return 0
 			# ANCHORED to the start of the test. Searching anywhere matched
 			# `grep -c .` inside a command substitution as a unary file test --
 			# `c` is in the class -- and silently excused five real offenders.
@@ -232,11 +245,17 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			# class used to be `-(gt|ge) [01]`. That also excused `-gt 1`, which
 			# fails on 0 AND on 1, so its `no` does not say which, and `-ge 0`,
 			# which a count always passes. The awk carve-out reads `> 0` and
-			# `>= 1` only, and now the two agree. `-lt 1` and `-le 0` are also
-			# nothing-versus-something, but this rule does not excuse them, and
-			# it does not read a mirrored test such as `[ 0 -lt "$x" ]`.
+			# `>= 1` only, and now the two agree. The end anchor keeps `-gt 05`
+			# and `-ge 10` out (#1989).
 			if (t ~ /-gt[[:space:]]+"?0"?[[:space:]]*$/) return 1
 			if (t ~ /-ge[[:space:]]+"?1"?[[:space:]]*$/) return 1
+			# THE SAME TWO, MIRRORED (#1986). `[ 0 -lt "$x" ]` is `-gt 0` and
+			# `[ 1 -le "$x" ]` is `-ge 1`. The start anchor keeps `[ 10 -lt
+			# "$x" ]` out. `-lt 1` and `-le 0` stay refused: they fail on every
+			# count above 0, so `no` does not say which. The pytest twin refuses
+			# `r <= 0` for the same reason.
+			if (t ~ /^[[:space:]]*"?0"?[[:space:]]+-lt[[:space:]]/) return 1
+			if (t ~ /^[[:space:]]*"?1"?[[:space:]]+-le[[:space:]]/) return 1
 			return 0
 		}
 		# The same carve-outs the `[` rule uses, written in awk syntax.
@@ -252,6 +271,44 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			if (c ~ /(==|!=)/) return 1
 			if (c ~ />[[:space:]]*0$/) return 1
 			if (c ~ />=[[:space:]]*1$/) return 1
+			return 0
+		}
+		# ONE REDIRECT PATTERN, used by every rule that strips one (#1980,
+		# #1989). A target is a quoted string, which may hold a space, or a
+		# word that stops at a space, `&`, `|`, `;` or `)`.
+		BEGIN {
+			RD = "((&|[0-9]*)[<>]+&?[[:space:]]*(\"[^\"]*\"[^[:space:]&|;)]*|[^[:space:]&|;)]*)[[:space:]]*)*"
+		}
+		# WHERE THE LAST MATCH OF re STARTS IN s, or 0. The rules take the LAST
+		# `$([`, so `$([ "$(wc -l < f)" -ge 20 ] ...)` reads the outer test.
+		function last_at(s, re,   p, off) {
+			p = 0; off = 0
+			while (match(s, re)) {
+				p = off + RSTART
+				off = p
+				s = substr(s, RSTART + 1)
+			}
+			return p
+		}
+		# SPLIT ONE TEST FROM WHAT FOLLOWS IT (#1986). s starts at the test.
+		# Sets T to the text the test compares and REST to the text after it.
+		# `test` ends at `&`, `|`, `;`, `<` or `>`, and a trailing file
+		# descriptor such as the `2` of `2>x` goes back to REST.
+		function split_test(s) {
+			sub(/^[[:space:]]*/, "", s)
+			if (match(s, /^\[\[[^]]*\]\]/)) {
+				T = substr(s, 3, RLENGTH - 4); REST = substr(s, RLENGTH + 1); return 1
+			}
+			if (match(s, /^\[[^]]*\]/)) {
+				T = substr(s, 2, RLENGTH - 2); REST = substr(s, RLENGTH + 1); return 1
+			}
+			if (match(s, /^test[[:space:]][^&|;<>]*/)) {
+				T = substr(s, 5, RLENGTH - 4); REST = substr(s, RLENGTH + 1)
+				if (REST ~ /^[<>]/ && match(T, /[[:space:]][0-9]+$/)) {
+					REST = substr(T, RSTART + 1) REST; T = substr(T, 1, RSTART)
+				}
+				return 1
+			}
 			return 0
 		}
 		# CONTINUATIONS ARE FOLDED FIRST. The corpus wraps these arms across
@@ -327,21 +384,26 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# the corpus -- 101 before, 101 after, both comm directions empty -- so
 		# it closes a shape rather than removing a live wrong name.
 		line ~ /(^|[[:space:]])(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/ &&
-		# A REDIRECT MAY SIT BETWEEN THE `]` AND THE `&&` (#1980). The rule
+		# A REDIRECT MAY SIT BETWEEN THE TEST AND THE `&&` (#1980). The rule
 		# required `&&` straight after the `]`, so `[ ... ] 2>/dev/null && echo
 		# yes || echo no` was never examined. The redirect may be `2>x`, `2> x`,
-		# `2>&1`, `>&2` or `&>x`. It is stripped from the arms too, so a
-		# `2>"$LOG"` is not read as a branch that carries a value.
-		line ~ /\$\([[:space:]]*\[[^]]*\][[:space:]]*((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*&&[[:space:]]*echo/ {
-			body = line
-			sub(/^.*\$\([[:space:]]*\[/, "", body)
-			test = body; sub(/\].*$/, "", test)
-			arms = body; sub(/^[^]]*\][[:space:]]*/, "", arms)
-			sub(/^((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*/, "", arms)
-			# (b) a branch that interpolates carries the value already.
-			if (arms ~ /\$/) next
-			if (determinate(test)) next
-			if (name != "") print suite "\t" name
+		# `2>&1`, `>&2`, `&>x` or `2>"a b"`. It is stripped from the arms too, so
+		# a `2>"$LOG"` is not read as a branch that carries a value.
+		#
+		# THREE SPELLINGS OF THE TEST (#1986): `[ ... ]`, `[[ ... ]]` and
+		# `test ...`. Only the first was read, so the other two hid a lossy arm.
+		(p = last_at(line, "\\$\\([[:space:]]*(\\[|test[[:space:]])")) {
+			arms = ""
+			if (split_test(substr(line, p + 2))) {
+				arms = REST
+				sub("^[[:space:]]*" RD, "", arms)
+			}
+			if (arms ~ /^&&[[:space:]]*echo/) {
+				# (b) a branch that interpolates carries the value already.
+				if (arms ~ /\$/) next
+				if (determinate(T)) next
+				if (name != "") print suite "\t" name
+			}
 		}
 		# THE SHELL if/then/else SPELLING (#1255). The two rules above both
 		# require `&&`, so `$(if [ COND ]; then echo 1; else echo 0; fi)` passed
@@ -357,23 +419,23 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		#
 		# THE SAME TWO CARVE-OUTS as the `[` rule, for the same reasons: a
 		# branch that interpolates carries its value already, and a determinate
-		# test names its own subject.
+		# test names its own subject. THE SAME THREE SPELLINGS too (#1986).
 		line ~ /(^|[[:space:]])(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/ &&
-		line ~ /\$\([[:space:]]*if[[:space:]]*\[/ {
-			ib = line
-			sub(/^.*\$\([[:space:]]*if[[:space:]]*\[/, "", ib)
-			itest = ib; sub(/\].*$/, "", itest)
+		(p = last_at(line, "\\$\\([[:space:]]*if[[:space:]]+(\\[|test[[:space:]])")) {
+			ib = substr(line, p + 2)
+			sub(/^[[:space:]]*if[[:space:]]+/, "", ib)
+			if (!split_test(ib)) next
 			# THE REDIRECT IS STRIPPED HERE TOO (#1980), by the same pattern as
 			# the `[` rule. Without it, `if [ ... ] 2>"$LOG"; then echo 1; else
 			# echo 0; fi` reads as carrying its value, because of the `$`.
-			iarms = ib; sub(/^[^]]*\][[:space:]]*/, "", iarms)
-			sub(/^((&|[0-9]*)[<>]+&?[[:space:]]*[^[:space:]&|;)]*[[:space:]]*)*/, "", iarms)
+			iarms = REST
+			sub("^[[:space:]]*" RD, "", iarms)
 			sub(/^;?[[:space:]]*/, "", iarms)
 			sub(/[[:space:]]*fi[[:space:]]*\).*$/, "", iarms)
 			if (iarms !~ /then[[:space:]]*echo/) next
 			if (iarms !~ /else[[:space:]]*echo/) next
 			if (iarms ~ /\$/) next
-			if (determinate(itest)) next
+			if (determinate(T)) next
 			if (name != "") print suite "\t" name
 		}
 	' suite="$(basename "${1%.sh}")" "$1"
@@ -488,6 +550,115 @@ PROBE
 _lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
 	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind two redirects;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;"
+
+# THREE MORE SPELLINGS OF A TEST (#1986). The rules read only `[ ... ]`, so a
+# lossy arm written as `[[ ... ]]` or with the `test` builtin was never seen.
+# A mirrored test was not read either: `[ 0 -lt "$x" ]` says the same as
+# `[ "$x" -gt 0 ]`, and `[ 1 -le "$x" ]` the same as `[ "$x" -ge 1 ]`, but both
+# were refused. The mirror is excused only with exactly 0 or 1 on the left, so
+# `[ 10 -lt "$x" ]` and `[ 11 -le "$x" ]` stay refused.
+#
+# `-lt 1` and `-le 0` stay refused on purpose. They pass on 0 and fail on every
+# count above it, so `no` does not say which count. The pytest twin refuses
+# `r <= 0` for the same reason.
+_lam_probe_forms="$PGC_WORKDIR/lam_probe_forms.sh"
+cat > "$_lam_probe_forms" <<'PROBE'
+check "a double-bracket threshold" \
+	"$([[ "$a" -le "$b" ]] && echo yes || echo no)" "yes"
+check "a double-bracket threshold behind a redirect into a variable" \
+	"$([[ "$a" -le "$b" ]] 2>"$LOG" && echo yes || echo no)" "yes"
+check "a test-builtin threshold" \
+	"$(test "$a" -le "$b" && echo yes || echo no)" "yes"
+check "a test-builtin threshold behind a redirect" \
+	"$(test "$a" -le "$b" 2>/dev/null && echo yes || echo no)" "yes"
+check_num "an if/then/else double-bracket threshold" \
+	"$(if [[ "$a" -le "$b" ]]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else test-builtin threshold" \
+	"$(if test "$a" -le "$b"; then echo 1; else echo 0; fi)" "1"
+check "nothing expected and a count found" \
+	"$([ "$x" -lt 1 ] && echo yes || echo no)" "yes"
+check "at most zero" \
+	"$([ "$x" -le 0 ] && echo yes || echo no)" "yes"
+check "a mirrored count above one" \
+	"$([ 1 -lt "$x" ] && echo yes || echo no)" "yes"
+check "a mirrored count above ten" \
+	"$([ 10 -lt "$x" ] && echo yes || echo no)" "yes"
+check "a mirrored floor of eleven" \
+	"$([ 11 -le "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a double-bracket count against nothing" \
+	"$([[ "$rows" -gt 0 ]] && echo yes || echo no)" "yes"
+check "determinate: a test-builtin file test" \
+	"$(test -f "$CB" && echo yes || echo no)" "yes"
+check "determinate: a mirrored nothing versus something" \
+	"$([ 0 -lt "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a mirrored floor of one" \
+	"$([ 1 -le "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a mirrored double-bracket nothing versus something" \
+	"$([[ 0 -lt $x ]] && echo yes || echo no)" "yes"
+check_num "determinate: an if/then/else test-builtin floor of one" \
+	"$(if test "$rows" -ge 1; then echo 1; else echo 0; fi)" "1"
+check "carried: a double-bracket branch names the number" \
+	"$([[ "$n" -ge 5 ]] && echo yes || echo "no (found $n)")" "yes"
+check "carried: a test-builtin branch names the number" \
+	"$(test "$n" -ge 5 && echo yes || echo "no (found $n)")" "yes"
+check "determinate: a test-builtin count against nothing behind a redirect" \
+	"$(test "$rows" -gt 0 2>/dev/null && echo yes || echo no)" "yes"
+PROBE
+_lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
+check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
+	"$_lam_forms_names" "a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a mirrored count above one;a mirrored count above ten;a mirrored floor of eleven;a test-builtin threshold;a test-builtin threshold behind a redirect;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;at most zero;nothing expected and a count found;"
+
+# A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
+#
+# `[ "$a" -gt 0 -a "$b" -le "$c" ]` fails in more than one way, and `no` does
+# not say which half failed. The `-gt 0` excuse was anchored to the end of the
+# test, which kept this one out, but nothing pinned the anchor. And the anchor
+# alone was not enough: `[ "$b" -le "$c" -a "$a" -gt 0 ]` ends in `-gt 0` and
+# was excused. An equality half excused a compound from any position. So a test
+# that joins two tests with `-a`, `-o`, `&&` or `||` is now never excused, as the
+# awk rule already refuses a condition with more than one comparison.
+#
+# THE ANCHORS STILL MATTER, and two arms pin them. Without the end anchor,
+# `-gt 05` reads as `-gt 0` and `-ge 10` reads as `-ge 1`.
+#
+# A REDIRECT TARGET IN QUOTES MAY HOLD A SPACE. `2>"$d/a b"` hid the arm: the
+# target stopped at the space and `&&` was never reached. In the if/then/else
+# form, the half after the space was read as a branch.
+#
+# THREE CONTROLS KEEP THE COMPOUND RULE HONEST. A command substitution inside
+# the test is not a compound: the `|| true` of `"$(grep -c x || true)"` and the
+# `-o` of `grep -o` belong to the substitution. Without that, three live arms in
+# native_vecskip were refused. A carrying compound is still not refused.
+_lam_probe_compound="$PGC_WORKDIR/lam_probe_compound.sh"
+cat > "$_lam_probe_compound" <<'PROBE'
+check "a compound whose first half is nothing versus something" \
+	"$([ "$a" -gt 0 -a "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a compound whose last half is nothing versus something" \
+	"$([ "$b" -le "$c" -a "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check "a compound with an equality half" \
+	"$([ "$a" -eq 1 -o "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a double-bracket compound whose last half is a floor of one" \
+	"$([[ "$b" -le "$c" && "$a" -ge 1 ]] && echo yes || echo no)" "yes"
+check "a threshold with a leading zero" \
+	"$([ "$x" -gt 05 ] && echo yes || echo no)" "yes"
+check "a floor of ten" \
+	"$([ "$x" -ge 10 ] && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a quoted path with a space" \
+	"$([ "$a" -le "$b" ] 2>"$d/a b" && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold behind a redirect into a quoted path with a space" \
+	"$(if [ "$a" -le "$b" ] 2>"/tmp/a $d"; then echo 1; else echo 0; fi)" "1"
+check "determinate: nothing versus something behind a redirect into a quoted path with a space" \
+	"$([ "$rows" -gt 0 ] 2>"$d/a b" && echo yes || echo no)" "yes"
+check "determinate: a count from a pipeline that may fail is not a compound" \
+	"$([ "$(grep -c x "$f" || true)" != 0 ] && echo yes || echo no)" "yes"
+check "determinate: a grep option inside the test is not a compound" \
+	"$([ "$(grep -o x "$f" | wc -l)" -gt 0 ] && echo yes || echo no)" "yes"
+check "carried: a compound whose branch names every operand" \
+	"$([ "$a" -gt 0 -a "$b" -le "$c" ] && echo yes || echo "no (a=$a b=$b c=$c)")" "yes"
+PROBE
+_lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
+check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
+	"$_lam_compound_names" "a compound whose first half is nothing versus something;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound whose last half is a floor of one;a floor of ten;a threshold behind a redirect into a quoted path with a space;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused
