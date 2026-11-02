@@ -63,8 +63,8 @@ GROUP=1000
 DEL_LO=6001
 DEL_HI=24000
 GEN="SELECT g AS id, (g % 100) AS v, md5(g::text) AS payload FROM generate_series(1, $ROWS) g"
-psql_run "CREATE TABLE h (id int, v int, payload text);"
-psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar;"
+psql_run "CREATE TABLE h (id int, v int, payload text) WITH (autovacuum_enabled = false);"
+psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar WITH (autovacuum_enabled = false);"
 psql_run "SELECT pgcolumnar.set_options('n', stripe_row_limit => $GROUP, chunk_group_row_limit => $GROUP);"
 psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
@@ -87,10 +87,20 @@ check "premise: the table has several row groups to rewrite" \
 
 # Free a large CONTIGUOUS block of whole groups and compact, which is what puts
 # many separate reusable ranges on the free list.
+#
+# WAIT FOR THE HORIZON (#1979). compact retires a dead group only when no
+# transaction in the database is older than the DELETE. With one call, a snapshot
+# held by another session left the free list empty, and the cycles below then
+# started from no reusable space. So compact runs again until it has retired all
+# 18 groups, for up to 30 s, and the count is checked. The fixture tables have
+# autovacuum off, because an autovacuum would retire the groups itself.
 psql_run "DELETE FROM h WHERE id BETWEEN $DEL_LO AND $DEL_HI;"
 psql_run "DELETE FROM n WHERE id BETWEEN $DEL_LO AND $DEL_HI;"
-psql_run "SELECT pgcolumnar.compact('n');"
+_dead=$(( (DEL_HI - DEL_LO + 1) / GROUP ))
+_retired="$(pgc_retry_past_horizon "$_dead" "SELECT pgcolumnar.compact('n');")"
 _free="$(free_rows)"
+echo "  (compact retired/calls: $_retired, of $_dead)"
+check_num "compact retired every dead group" "${_retired%/*}" "$_dead"
 
 # THE PRECONDITION FOR #84, ASSERTED RATHER THAN HOPED FOR, AND IT IS THE GUC.
 # Read back from the SERVER, because the value is set in the cluster config: a

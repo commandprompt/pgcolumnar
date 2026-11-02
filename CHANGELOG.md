@@ -534,6 +534,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
+  pytest twins no longer fail when another session holds an old snapshot during
+  `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
+  before #1975. A held snapshot made `compact` retire nothing, and the checks
+  after it measured an empty free list. Now each suite calls `compact`, and
+  `native_truncate` also calls `truncate`, through one shared helper that
+  retries for up to 30 s: `pgc_retry_past_horizon` in `test/lib.sh` and
+  `retry_past_horizon` in `test/pytest/pgc_horizon.py`. `native_reclaim_frag`
+  uses it too. New checks print how many groups each `compact` retired. The
+  fixture tables have autovacuum turned off. `native_reclaim_reconcile` needs no
+  change: no `compact` in it has a whole group to retire, and it stays green
+  with a snapshot held through the whole suite.
+- When the retry runs out, the helper now prints what holds the horizon back
+  (#1981): each session with a snapshot or a transaction ID, with its pid,
+  backend type, state, `backend_xmin`, `backend_xid`, transaction start and
+  query, and any prepared transaction or replication slot. A CI red then names
+  the holder. `native_reclaim_frag` and its twin check that the report names a
+  session that holds a snapshot. docs/testing.md describes the helper.
+
 - `native_reclaim_frag` and its pytest twin no longer fail when another session
   holds an old snapshot during `compact` (#1975). `compact` retires a dead group
   only after every transaction older than the `DELETE` is gone. While one remains,

@@ -89,7 +89,9 @@ echo "-- pgcolumnar.index_min_blocks=$(q "SHOW pgcolumnar.index_min_blocks;")  (
 # ranges stay; without it, 3 blocks and one.
 TARGET_PROJ=1
 make_target() {
-	q "CREATE TABLE $1 (a int, b text) USING pgcolumnar;
+	# NO AUTOVACUUM ON THE TARGET (#1979): an autovacuum would retire the dead
+	# groups itself, and compact below would then find none to retire.
+	q "CREATE TABLE $1 (a int, b text) USING pgcolumnar WITH (autovacuum_enabled = false);
 	   SELECT pgcolumnar.set_options('$1', stripe_row_limit => 1000);
 	   INSERT INTO $1 SELECT g, md5(g::text) FROM generate_series(1,7000) g;
 	   DELETE FROM $1 WHERE a <= 1000 OR a > 6000;" >/dev/null
@@ -100,8 +102,17 @@ make_target() {
 	# were deleted by a transaction that has not committed. In one q with the
 	# DELETE it retired nothing and every free_space arm measured an empty
 	# table's free list: the premises below are what caught it.
-	q "SELECT pgcolumnar.compact('$1');" >/dev/null
+	#
+	# AND IT WAITS FOR THE HORIZON (#1979). compact retires a dead group only when
+	# no transaction in the database is older than the DELETE. With one call, a
+	# snapshot held by another session left both ranges unretired, and every
+	# free_space arm then measured an empty free list. pgc_retry_past_horizon calls
+	# compact again until it has retired both groups, for up to 30 s.
+	local retired
+	retired="$(pgc_retry_past_horizon 2 "SELECT pgcolumnar.compact('$1');")"
+	echo "-- $2 target: compact retired/calls=$retired"
 	q "DELETE FROM $1 WHERE a BETWEEN 5001 AND 6000 AND a % 2 = 0;" >/dev/null
+	check_num "the $2 target: compact retired both dead groups" "${retired%/*}" "2"
 	check_num "premise: the $2 target holds two free ranges, one of them trailing" \
 		"$(q "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('$1');")" "2"
 }

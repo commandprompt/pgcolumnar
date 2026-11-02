@@ -12,6 +12,7 @@ isolation specs' (specs/truncate_vs_*.spec).
 import psycopg
 import pytest
 
+from pgc_horizon import retry_past_horizon
 from pgc_vacuity import query_error
 
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
@@ -44,7 +45,18 @@ def _both(c, *sqls):
 
 
 def _truncated(c):
-    return int(c.execute("SELECT pgcolumnar.truncate('n')").fetchone()[0])
+    """Blocks truncate returned, waiting for the horizon (#1979): truncate removes a
+    freed range only when no transaction is older than the compact that freed it."""
+    return retry_past_horizon(c, "SELECT pgcolumnar.truncate('n')", 1)[0]
+
+
+def _compacted(c, want):
+    """Groups compact retired, waiting for the horizon (#1979): compact retires a
+    dead group only when no transaction is older than the DELETE. With one call, a
+    snapshot held by another session left nothing to truncate."""
+    retired, calls = retry_past_horizon(c, "SELECT pgcolumnar.compact('n')", want)
+    print(f"-- compact retired {retired} of {want} groups in {calls} calls")
+    return retired
 
 
 @pytest.fixture(scope="module")
@@ -58,8 +70,9 @@ def nt(pgc_cluster):
     try:
         with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as c:
             c.execute("CREATE EXTENSION pgcolumnar")
-            c.execute("CREATE TABLE h (id int, v text)")
-            c.execute("CREATE TABLE n (id int, v text) USING pgcolumnar")
+            # no autovacuum on the fixture (#1979): it would retire the dead groups itself
+            c.execute("CREATE TABLE h (id int, v text) WITH (autovacuum_enabled = false)")
+            c.execute("CREATE TABLE n (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false)")
             c.execute("SELECT pgcolumnar.set_options('n', stripe_row_limit => 1000, chunk_group_row_limit => 1000)")
             _both(c, "INSERT INTO {t} SELECT g, md5(g::text) FROM generate_series(1, 30000) g")
             yield c
@@ -76,7 +89,7 @@ def test_truncate_shrinks_the_file_and_keeps_every_row(nt, expect):
 
     # the trailing half deleted whole (groups 16..30), and compacted to free it
     _both(c, "DELETE FROM {t} WHERE id > 15000")
-    c.execute("SELECT pgcolumnar.compact('n')")
+    expect.num(_compacted(c, 15), 15, "compact retired the 15 trailing groups")
     before = _size(c)
     trunc = _truncated(c)
     print(f"-- truncate returned {trunc} blocks; before-trunc={before} after={_size(c)}")
@@ -105,7 +118,7 @@ def test_the_table_stays_usable_and_the_guc_turns_it_off(nt, expect):
             c.execute(f"RESET {g}")
 
     _both(c, "DELETE FROM {t} WHERE id > 35000")
-    c.execute("SELECT pgcolumnar.compact('n')")
+    expect.num(_compacted(c, 5), 5, "compact retired the 5 groups above id 35000")
     guard = _size(c)
     # its own statement, and its answer checked: the shell once sent SET and the call
     # as one string, an implicit transaction block that truncate refuses
@@ -125,7 +138,7 @@ def test_truncate_refuses_a_transaction_block_and_reuse_stays_clean(nt, expect):
     # a ROLLBACK must never leave the metapage highwater lowered while the
     # transactional free_space deletes roll back
     _both(c, "DELETE FROM {t} WHERE id BETWEEN 30001 AND 33000")
-    c.execute("SELECT pgcolumnar.compact('n')")
+    expect.num(_compacted(c, 3), 3, "compact retired the 3 groups from id 30001 to 33000")
     before = _size(c)
     refused = "no"
     c.execute("BEGIN")

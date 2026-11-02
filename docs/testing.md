@@ -277,6 +277,51 @@ records happening, and check the observation reaches it. A marker that means two
 different things under two invocations is not a marker until the invocation is
 pinned.
 
+## A check after compact or truncate must wait for the horizon
+
+This section is for anyone who writes a suite that reads what `compact` retired
+or what `truncate` removed.
+
+`compact` retires a dead row group only when no transaction in the database is
+older than the `DELETE`. `truncate` removes a freed range only when no
+transaction is older than the `compact` that freed it. While such a transaction
+is open, the call returns 0. An autoanalyze or a session that another test left
+open is enough. A suite that calls `compact` once then measures an empty free
+list (#1975, #1979).
+
+Do these three things:
+
+1. Create the fixture tables `WITH (autovacuum_enabled = false)`. Otherwise an
+   autovacuum retires the groups itself, and `compact` finds none to retire.
+2. Call the statement through the shared helper, with the count you expect:
+
+   ```sh
+   retired="$(pgc_retry_past_horizon 18 "SELECT pgcolumnar.compact('n');")"
+   ```
+
+   ```python
+   from pgc_horizon import retry_past_horizon
+   retired, calls = retry_past_horizon(conn, "SELECT pgcolumnar.compact('n')", 18)
+   ```
+
+   The helper runs the statement again every 0.5 s, up to 60 calls, until the
+   counts add up. The shell helper prints `<total>/<calls>`.
+3. Check the total as a number, for example
+   `check_num "compact retired every dead group" "${retired%/*}" "18"`.
+
+When the total is still short after 60 calls, the helper prints what holds the
+horizon back (#1981). Each line names a session with its pid, backend type,
+state, `backend_xmin`, `backend_xid`, transaction start and query, or a prepared
+transaction or replication slot. For example:
+
+```
+  [SET pgcolumnar.reclaim_coalesce = on; SELECT pgcolumnar.compact('n');] returned 0 of 18 in 60 calls. What holds the horizon back:
+    session pid=3946121 backend_type=client backend database=regress state=active backend_xid=- backend_xmin=759 xact_start=2026-11-02 15:48:11.251063+00 query=SELECT pg_sleep(40)
+```
+
+An error from the statement stops the wait at once. The shell helper prints it,
+and the Python helper raises it, so an error does not read as a held horizon.
+
 ## Before merging: build every major
 
 ```sh

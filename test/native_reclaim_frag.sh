@@ -29,13 +29,6 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 GEN="SELECT g AS id, repeat('ab', 5 + ((g / 1000) % 16) * 8) AS payload
   FROM generate_series(1, 30000) g"
 
-# compact, as the session with the given coalesce mode, and print the groups it
-# retired. On an error it prints psql's message instead, so the caller can show it.
-compact_n() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qAt -c "SET pgcolumnar.reclaim_coalesce = $1; SELECT pgcolumnar.compact('n');" 2>&1
-}
-
 freerows() { q "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('n');"; }
 
 # THE SPLIT, MEASURED AS A GAP (#1339). Every live group (rounded up to whole pages,
@@ -84,18 +77,14 @@ run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MIS
 	# transaction in this database can still see its rows. A transaction whose
 	# snapshot or transaction ID is older than the DELETE holds that back: an
 	# autoanalyze of some other table, a prepared transaction, a replication
-	# slot. compact then retires 0 groups and frees nothing. So retry, for up to
-	# 30 s, until all the dead groups are retired. An error from compact stops
-	# the wait at once and is printed, so it does not read as a held snapshot.
-	local fr size ph hh gp r retired=0 tries=0
-	while [ "$retired" -lt "$DEAD_GROUPS" ] && [ "$tries" -lt 60 ]; do
-		[ "$tries" -gt 0 ] && sleep 0.5
-		r="$(compact_n "$1")"; tries=$((tries + 1))
-		case "$r" in
-			''|*[!0-9]*) echo "  compact errored (coalesce $1, call $tries): $r" >&2; break ;;
-		esac
-		retired=$((retired + r))
-	done
+	# slot. compact then retires 0 groups and frees nothing. So
+	# pgc_retry_past_horizon calls it again, for up to 30 s, until all the dead
+	# groups are retired. An error from compact stops the wait at once and is
+	# printed, so it does not read as a held snapshot. When the wait runs out, it
+	# prints what holds the horizon back (#1981).
+	local fr size ph hh gp ret
+	ret="$(pgc_retry_past_horizon "$DEAD_GROUPS" \
+		"SET pgcolumnar.reclaim_coalesce = $1; SELECT pgcolumnar.compact('n');")"
 
 	# free_space rows right after the compaction, before anything consumes them.
 	fr="$(freerows)"
@@ -110,7 +99,7 @@ run() {			# $1 = on|off ; echoes "<free_rows_after_compact>|<final_size>|<ok|MIS
 	gp="$(gaps)"
 	ph="$(pgc_set_hash 'SELECT id, payload FROM n')"
 	hh="$(pgc_set_hash 'SELECT id, payload FROM h')"
-	echo "${fr}|${size}|$([ "$ph" = "$hh" ] && echo ok || echo MISMATCH)|${gp}|${retired}/${tries}"
+	echo "${fr}|${size}|$([ "$ph" = "$hh" ] && echo ok || echo MISMATCH)|${gp}|${ret}"
 }
 
 on="$(run on)";  off="$(run off)"
@@ -141,5 +130,27 @@ check "coalesce never larger than whole-range reuse" \
 	"$([ "$on_size" -le "$off_size" ] && echo yes || echo no)" "yes"
 check "coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost" \
 	"$on_gap" "0 gaps of 0 bytes"
+
+# A RED NAMES WHAT HOLDS THE HORIZON (#1981). When compact still retires too few
+# groups after the wait, pgc_retry_past_horizon prints pgc_horizon_holders. CI
+# once went red here with no way to tell which session held the horizon. So a
+# second session holds a snapshot, and the report must name its pid.
+env PGAPPNAME=pgc_horizon_holder PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -qAt -c "SELECT pg_sleep(20);" >/dev/null 2>&1 &
+holder_job=$!
+holder_pid=""
+for _ in $(seq 1 50); do
+	holder_pid="$(q "SELECT pid FROM pg_stat_activity
+	                 WHERE application_name = 'pgc_horizon_holder' AND backend_xmin IS NOT NULL;")"
+	[ -n "$holder_pid" ] && break
+	sleep 0.1
+done
+holders="$(pgc_horizon_holders 2>&1)"
+echo "  (horizon report while pid ${holder_pid:-none} holds a snapshot:)"
+echo "${holders:-<empty>}" | sed 's/^/    /'
+check "the horizon report names a session that holds a snapshot" \
+	"$(grep -q "session pid=${holder_pid:-none} " <<<"$holders" && echo named || echo "not named (pid=${holder_pid:-none})")" "named"
+[ -n "$holder_pid" ] && q "SELECT pg_terminate_backend($holder_pid);" >/dev/null
+wait "$holder_job" 2>/dev/null
 
 pgc_summary

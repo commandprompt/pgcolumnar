@@ -29,6 +29,8 @@ database; this file must not run concurrently with another that reads
 statistics.
 """
 
+from pgc_horizon import retry_past_horizon
+
 NOISE = 350
 
 
@@ -51,16 +53,26 @@ def _make_target(conn, expect, t, name, projection=True):
 
     The compaction is its own statement on an autocommit connection: compact()
     cannot retire rows deleted by a transaction that has not committed.
+
+    And it waits for the horizon (#1979). compact retires a dead group only when no
+    transaction in the database is older than the DELETE. With one call, a snapshot
+    held by another session left both ranges unretired, and every free_space arm
+    then measured an empty free list. The target has autovacuum off, because an
+    autovacuum would retire the groups itself.
     """
     with conn.cursor() as cur:
-        cur.execute(f"CREATE TABLE {t} (a bigint, b text) USING pgcolumnar")
+        cur.execute(f"CREATE TABLE {t} (a bigint, b text) USING pgcolumnar "
+                    "WITH (autovacuum_enabled = false)")
         cur.execute("SELECT pgcolumnar.set_options(%s, stripe_row_limit => 1000)", (t,))
         cur.execute(f"INSERT INTO {t} SELECT g, 'r' || g FROM generate_series(1,7000) g")
         cur.execute(f"DELETE FROM {t} WHERE a <= 1000 OR a > 6000")
         if projection:
             cur.execute("SELECT pgcolumnar.add_projection(%s, 'p', '{a,b}', '{a}')", (t,))
-        cur.execute("SELECT pgcolumnar.compact(%s)", (t,))
+    retired, calls = retry_past_horizon(conn, f"SELECT pgcolumnar.compact('{t}')", 2)
+    print(f"-- {name} target: compact retired {retired} of 2 groups in {calls} calls")
+    with conn.cursor() as cur:
         cur.execute(f"DELETE FROM {t} WHERE a BETWEEN 5001 AND 6000 AND a % 2 = 1")
+    expect.num(retired, 2, f"the {name} target: compact retired both dead groups")
     expect.num(
         _q(conn, "SELECT count(*) FROM pgcolumnar.free_space "
                  f"WHERE storage_id = pgcolumnar.get_storage_id('{t}')"),
