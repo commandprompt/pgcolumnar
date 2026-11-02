@@ -5560,11 +5560,22 @@ state a successful one does, and the arms below would compare two empty tables a
 report parity. The port asserts the row count per mode before anything is compared, so
 "both modes agree" cannot be satisfied by both modes having done nothing.
 
+`compact` retires a dead group only after every transaction older than the `DELETE`
+in the same database is gone. CI once counted 0 `free_space` rows in the coalesce-off
+run (#1975), and a session that holds a snapshot across `compact` reproduces exactly
+that. So the fixture tables have autovacuum turned off, and both harnesses call
+`compact` again every 0.5 s, for up to 30 s, until it has retired all 18 groups. Then
+`coalesce on: compact retired every dead group` and `coalesce off: compact retired
+every dead group` must each read 18, and `coalesce off: compact leaves more than one
+free_space row` must hold, before the on/off comparison is read. Without the first
+check, a snapshot held across the coalesce-on run left the on side with 0 rows, and
+"fewer rows with coalescing on" passed as 0 < 18.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
-| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, parity with the heap mirror in both modes, that coalescing leaves fewer free_space rows, and that it never costs file size |
+| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, `coalesce on: parity with heap`, `coalesce off: parity with heap`, `coalesce on: compact retired every dead group`, `coalesce off: compact retired every dead group`, `coalesce off: compact leaves more than one free_space row`, `coalesce merges adjacent frees (fewer free_space rows)`, `coalesce never larger than whole-range reuse`, and `coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost` |
 
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
