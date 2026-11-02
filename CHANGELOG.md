@@ -534,6 +534,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- `native_reclaim_frag` and its pytest twin no longer fail when another session
+  holds an old snapshot during `compact` (#1975). `compact` retires a dead group
+  only after every transaction older than the `DELETE` is gone. While one remains,
+  it retires nothing, and the coalesce-off run counted 0 `free_space` rows in CI.
+  The fixture tables now have autovacuum turned off, and both harnesses call
+  `compact` again for up to 30 s until it has retired all 18 groups. Three new
+  arms run before the on/off comparison and print their counts when they fail:
+  `coalesce on: compact retired every dead group`, `coalesce off: compact
+  retired every dead group` and `coalesce off: compact leaves more than one
+  free_space row`. Before, a snapshot held through the coalesce-on run let every
+  coalescing arm pass with nothing measured. The shell suite now prints an error
+  from `compact` and stops waiting, as the pytest twin raises it. The product
+  does not change. docs/sql-reference.md now says that `compact` can return 0
+  while such a transaction is open.
+
 - `iceberg_rest_vended` now waits up to 30 seconds for its S3 fixture, and
   says why when the fixture does not start (#1961). It waited 5 seconds. On a
   busy CI runner that was too short, and 12 of 18 checks failed. The wait now
