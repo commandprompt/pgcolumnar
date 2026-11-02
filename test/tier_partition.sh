@@ -378,6 +378,94 @@ check "a local glob splits at a slash inside an equivalence class, so a path the
 psql_run "DROP FOREIGN TABLE dup_rdir, dup_rglob, dup_rclass, dup_resc, dup_rkey, dup_host, dup_ldir, dup_lglob,
           dup_runt, dup_rbang, dup_rbesc, dup_rdigit, dup_rcaret, dup_lslash, dup_rlead, dup_rbunt, dup_ropen, dup_requiv, dup_rzq, dup_rrange, dup_hglob, dup_gglob,
           dup_rcunt, dup_rspan, dup_rcoll, dup_lequiv, dup_rlate, dup_rlateq, dup_llate, dup_rcdash, dup_rrdash, dup_rnone, dup_rcollab, dup_rvneg, dup_lvneg, dup_rquote, dup_rdslash, dup_rndash, dup_lndash;"
+# An Iceberg foreign table has no path option. It reads data files under its
+# table location, which is the parent of the directory holding metadata_path
+# (#1949). A path under that location is refused; one beside it is not.
+psql_run "CREATE FOREIGN TABLE dup_ice (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path '$W/ice/metadata/v1.metadata.json');
+          CREATE FOREIGN TABLE dup_rice (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path 's3a://tierb/wh/ice/metadata/v3.metadata.json');"
+mkdir -p "$W/ice/data" && chmod 777 "$W/ice" "$W/ice/data"
+check "a local path under an Iceberg foreign table's location is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice/data/m_feb.parquet');")" "58P02"
+check "an s3:// path under an Iceberg foreign table's location is refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/wh/ice/data/x.parquet');")" "58P02"
+check "the Iceberg refusal's detail names the foreign table and its location" \
+	"$(errdetail "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/wh/ice/data/x.parquet');")" \
+	"Foreign table public.dup_rice reads Iceberg files under 's3a://tierb/wh/ice/'."
+check "a local path that only starts with an Iceberg location's name is not refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/icex/m_feb.parquet');")" "58P01"
+check "an s3:// path beside an Iceberg foreign table's location is not refused" \
+	"$(sqlstate "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 's3://tierb/wh/icex.parquet');")" "28000"
+psql_run "DROP FOREIGN TABLE dup_ice, dup_rice;"
+# The location is cut from metadata_path as the reader cuts it: a metadata file
+# at the root of the file system gives the location '/', and a relative
+# metadata_path with no directory above metadata/ gives '.' (#1955 review).
+psql_run "CREATE FOREIGN TABLE dup_iroot (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path '/v1.metadata.json');"
+check "an Iceberg table whose metadata file sits at the root refuses a local path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" "58P02"
+check "the root Iceberg refusal's detail names the location '/'" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" \
+	"Foreign table public.dup_iroot reads Iceberg files under '/'."
+psql_run "DROP FOREIGN TABLE dup_iroot;
+          CREATE FOREIGN TABLE dup_irel (ts timestamptz, v int) SERVER tier_ice
+            OPTIONS (metadata_path 'metadata/v1.metadata.json');"
+check "an Iceberg table with a relative metadata_path refuses a path under '.'" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', './nodir/x.parquet');")" \
+	"Foreign table public.dup_irel reads Iceberg files under './'."
+psql_run "DROP FOREIGN TABLE dup_irel;"
+# Only pgcolumnar's Parquet wrapper reads its path option as a Parquet path
+# (#1949). The path option of a table under another wrapper means what that
+# wrapper says, so it refuses nothing. A wrapper made with the Parquet handler
+# under another name is still the Parquet reader.
+psql_run "CREATE FOREIGN DATA WRAPPER tier_other_fdw;
+          CREATE SERVER tier_other FOREIGN DATA WRAPPER tier_other_fdw;
+          CREATE FOREIGN TABLE dup_oroot (x int) SERVER tier_other OPTIONS (path '/');
+          CREATE FOREIGN TABLE dup_osame (x int) SERVER tier_other OPTIONS (path '$W/oth/x.parquet');
+          CREATE FOREIGN DATA WRAPPER tier_pq2 HANDLER pgcolumnar.parquet_fdw_handler
+            VALIDATOR pgcolumnar.parquet_fdw_validator;
+          CREATE SERVER tier_pq2s FOREIGN DATA WRAPPER tier_pq2;
+          CREATE FOREIGN TABLE dup_pq2 (x int) SERVER tier_pq2s OPTIONS (path '$W/pq2/x.parquet');"
+check "a path option of '/' under another wrapper does not refuse a local path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nodir/x.parquet');")" "58P01"
+check "a path option under another wrapper does not refuse the same path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/oth/x.parquet');")" "58P01"
+check "a path a wrapper with the Parquet handler under another name reads is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/pq2/x.parquet');")" "58P02"
+# The Iceberg reader is also chosen by its handler, not by the wrapper's name.
+# A path option under a wrapper with any handler but the Parquet one refuses
+# nothing: the Iceberg handler does not read path, and a handler pgcolumnar
+# does not know is another wrapper. pgcolumnar knows a reader only by the SQL
+# function pgcolumnar.parquet_fdw_handler or pgcolumnar.iceberg_fdw_handler;
+# here the unknown handler is the Iceberg reader's C function declared under
+# another SQL name (#1955 review).
+psql_run "CREATE FOREIGN DATA WRAPPER tier_ice2 HANDLER pgcolumnar.iceberg_fdw_handler
+            VALIDATOR pgcolumnar.iceberg_fdw_validator;
+          CREATE SERVER tier_ice2s FOREIGN DATA WRAPPER tier_ice2;
+          CREATE FOREIGN TABLE dup_ice2 (ts timestamptz, v int) SERVER tier_ice2s
+            OPTIONS (metadata_path '$W/ice2/metadata/v1.metadata.json');
+          CREATE FOREIGN DATA WRAPPER tier_ice3 HANDLER pgcolumnar.iceberg_fdw_handler;
+          CREATE SERVER tier_ice3s FOREIGN DATA WRAPPER tier_ice3;
+          CREATE FOREIGN TABLE dup_ipath (x int) SERVER tier_ice3s OPTIONS (path '$W/ipath/x.parquet');
+          CREATE FUNCTION public.tier_unknown_handler() RETURNS fdw_handler
+            AS 'pgcolumnar', 'pgcolumnar_iceberg_fdw_handler' LANGUAGE C;
+          CREATE FOREIGN DATA WRAPPER tier_unk HANDLER public.tier_unknown_handler;
+          CREATE SERVER tier_unks FOREIGN DATA WRAPPER tier_unk;
+          CREATE FOREIGN TABLE dup_upath (x int) SERVER tier_unks OPTIONS (path '$W/upath/x.parquet');"
+check "a path under the location of a table on a wrapper with the Iceberg handler under another name is refused" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice2/data/x.parquet');")" "58P02"
+# dup_oroot (path '/' under tier_other_fdw) is still here, so the SQLSTATE
+# alone cannot tell which table refused; the detail names dup_ice2 (#1955 review).
+check "the refusal under a wrapper with the Iceberg handler under another name names that table and its location" \
+	"$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ice2/data/x.parquet');")" \
+	"Foreign table public.dup_ice2 reads Iceberg files under '$W/ice2/'."
+check "a path option under a wrapper with the Iceberg handler does not refuse the same path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/ipath/x.parquet');")" "58P01"
+check "a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/upath/x.parquet');")" "58P01"
+psql_run "DROP FOREIGN DATA WRAPPER tier_other_fdw, tier_pq2, tier_ice2, tier_ice3, tier_unk CASCADE;
+          DROP FUNCTION public.tier_unknown_handler();"
 check "and the refusals moved nothing" "$(digest m)" "$rb"
 check "the other partition is still local after the refusals" \
 	"$(q "SELECT relkind FROM pg_class WHERE oid = 'm_feb'::regclass;")" "r"
