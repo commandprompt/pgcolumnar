@@ -1823,4 +1823,8 @@ guard_tests 863
 # a glob too large only as written; an s3:// glob over 128 *; no matcher call for a plain reader; a glob
 # spelled with an escaped . or ..), added to existing tests, by collection: 6199 tests collected, less
 # guard_tests 863.
-cluster_tests 5336
+# cluster_tests 5336 -> 5337 for #1992 review's test_the_horizon_helper_counts_what_holds_truncate in
+# test_native_truncate.py (a writer, a prepared transaction in another database, and a snapshot from
+# just before the compact each hold truncate and the horizon helper counts each), by collection: 6200
+# tests collected, less guard_tests 863.
+cluster_tests 5337

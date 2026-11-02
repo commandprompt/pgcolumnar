@@ -5822,10 +5822,19 @@ native_truncate	native_truncate	parity after truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	parity after truncate + reinsert + compaction	15;16;17;18;19	never	-
 native_truncate	native_truncate	premise: a snapshot older than the compact is open in another database	15;16;17;18;19	never	-
 native_truncate	native_truncate	premise: the indexed lookup reads n_id	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a prepared transaction in another database is open	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a snapshot from just before the compact is open	15;16;17;18;19	never	-
+native_truncate	native_truncate	premise: truncate is held while a writer in another database is open	15;16;17;18;19	never	-
 native_truncate	native_truncate	row count after truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	second truncate is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	the horizon helper counts a prepared transaction in another database	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers at a451d173: leaves out a transaction ID in another database, from a session or a prepared transaction (#1992);pgc_freed_range_blockers counts a prepared transaction only in this database (#1992)
+native_truncate	native_truncate	the horizon helper counts a snapshot from just before the compact	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers compares age with > instead of >=, so an xid equal to freed_xid is not counted (#1992)
+native_truncate	native_truncate	the horizon helper counts a writer in another database	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers at a451d173: leaves out a transaction ID in another database, from a session or a prepared transaction (#1992)
 native_truncate	native_truncate	the other-database snapshot was still open after the GUC-on truncate	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate before any delete is a no-op	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the prepared transaction in another database ends	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the snapshot from just before the compact ends	15;16;17;18;19	never	-
+native_truncate	native_truncate	truncate reclaims once the writer in another database ends	15;16;17;18;19	never	-
 native_truncate	native_truncate	truncate refused inside a transaction block	15;16;17;18;19	2026-10-16	pgcolumnar.truncate() runs inside a transaction block, its IsTransactionBlock refusal removed (columnar_vacuum.c)
 native_truncate	native_truncate	truncate returned blocks	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
 native_varlena_bound	native_varlena_bound	a 4-byte header cut off by the buffer's end is refused (XX001)	15;16;17;18;19	2026-10-17	columnar.h: PgColumnarVarSizeAnyUnalignedBounded reads a 4-byte header with fewer than 4 bytes left

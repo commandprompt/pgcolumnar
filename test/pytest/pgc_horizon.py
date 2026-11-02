@@ -70,21 +70,24 @@ def retry_past_horizon(conn, sql, want, calls=CALLS, pause=PAUSE):
     return total, made
 
 
-# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988, #1992). For a user
-# table, PostgreSQL computes truncate's horizon from this database only, so the
-# sessions and prepared transactions counted are this database's (and sessions with
-# no database, such as walsenders). xid has no ordering operator, so age()
-# compares: the older xid has the larger age. With no freed range the query returns
+# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988, #1992). truncate's
+# own snapshot has as its xmin the oldest transaction ID running in any database.
+# So a session with an xid, or a prepared transaction, holds truncate back from any
+# database. A snapshot with no xid holds it only from this database, or from a
+# session with no database such as a walsender. Replication slots count too. xid
+# has no ordering operator, so age() compares: the older xid has the larger age, and
+# an xid equal to freed_xid holds it too. With no freed range the query returns
 # NULL, because a count would read 0 without measuring anything.
 FREED_RANGE_BLOCKERS = """
 WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
             WHERE storage_id = pgcolumnar.get_storage_id(%s) AND freed_xid >= 3)
 SELECT CASE WHEN f.a IS NOT NULL THEN
          (SELECT count(*) FROM pg_stat_activity
-           WHERE pid <> pg_backend_pid() AND (datname = current_database() OR datid IS NULL)
-             AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
-       + (SELECT count(*) FROM pg_prepared_xacts
-           WHERE database = current_database() AND age(transaction) >= f.a)
+           WHERE pid <> pg_backend_pid()
+             AND (age(backend_xid) >= f.a
+                  OR ((datname = current_database() OR datid IS NULL)
+                      AND age(backend_xmin) >= f.a)))
+       + (SELECT count(*) FROM pg_prepared_xacts WHERE age(transaction) >= f.a)
        + (SELECT count(*) FROM pg_replication_slots WHERE age(xmin) >= f.a)
        END
   FROM f
@@ -92,8 +95,8 @@ SELECT CASE WHEN f.a IS NOT NULL THEN
 
 
 def freed_range_blockers(conn, table):
-    """How many sessions and prepared transactions in this database, and replication
-    slots, hold the horizon at or before the newest range compact freed in `table`.
+    """How many sessions, prepared transactions and replication slots hold the
+    horizon at or before the newest range compact freed in `table` (see above).
     truncate removes a freed range only when the horizon has passed the transaction
     that freed it. None when `table` has no freed range. A backend running VACUUM is
     counted although PostgreSQL skips it; that only makes a wait longer."""

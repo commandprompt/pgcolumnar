@@ -346,13 +346,17 @@ blockers, calls = wait_freed_range_past_horizon(conn, "n")
 The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
 table. It counts what has a transaction ID or `xmin` not newer than that:
 
-- each session in the current database, and each session with no database,
-  such as a walsender;
-- each prepared transaction in the current database;
+- each session with a transaction ID, in any database;
+- each session with a snapshot (`backend_xmin`) in the current database, and
+  each session with no database, such as a walsender;
+- each prepared transaction, in any database;
 - each replication slot.
 
-For a user table, PostgreSQL computes the horizon from the current database
-only, so a session in another database does not hold truncate back (#1992). The
+A snapshot with no transaction ID in another database does not hold truncate
+back. A transaction ID in another database does (#1992). truncate's own snapshot
+takes as its `xmin` the oldest transaction ID running in any database, and that
+`xmin` is part of the horizon. An ID equal to `freed_xid` counts too: a snapshot
+taken just before the `compact` has the `compact`'s own ID as its `xmin`. The
 helper counts one thing the horizon skips: a backend running `VACUUM`. That only
 makes the wait longer.
 

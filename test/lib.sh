@@ -2114,12 +2114,19 @@ pgc_retry_past_horizon() {
 #
 # truncate removes a freed range only when the oldest-xmin horizon has passed the
 # transaction that freed it (free_space.freed_xid). For a user table, PostgreSQL
-# computes that horizon from this database only (#1992). So this counts each
-# session in this database, or with no database such as a walsender, whose
-# backend_xmin or backend_xid is not newer than that transaction. It also counts
-# each such prepared transaction in this database, and each replication slot with
-# such an xmin. xid has no ordering operator, so age() compares them: the older
-# xid has the larger age. 0 means a truncate now is not held back by the horizon.
+# computes that horizon from this database's sessions, but one of them is
+# truncate's own, and its snapshot's xmin is the oldest transaction ID running in
+# any database (#1992). So this counts, where the xid or xmin is not newer than
+# freed_xid:
+#   - each session, in any database, with a backend_xid;
+#   - each session in this database, or with no database such as a walsender,
+#     with a backend_xmin (a snapshot with no xid in another database does not
+#     hold truncate back);
+#   - each prepared transaction, in any database;
+#   - each replication slot with an xmin.
+# xid has no ordering operator, so age() compares them: the older xid has the
+# larger age, and an xid equal to freed_xid holds it too. 0 means a truncate now
+# is not held back by the horizon.
 #
 # It counts more than the horizon in one case: PostgreSQL skips a backend that
 # is running VACUUM, and pg_stat_activity cannot tell this apart. Such a count
@@ -2133,10 +2140,11 @@ pgc_freed_range_blockers() {
 	              WHERE storage_id = pgcolumnar.get_storage_id('$1') AND freed_xid >= 3)
 	   SELECT CASE WHEN f.a IS NOT NULL THEN
 	            (SELECT count(*) FROM pg_stat_activity
-	              WHERE pid <> pg_backend_pid() AND (datname = current_database() OR datid IS NULL)
-	                AND (age(backend_xmin) >= f.a OR age(backend_xid) >= f.a))
-	          + (SELECT count(*) FROM pg_prepared_xacts
-	              WHERE database = current_database() AND age(transaction) >= f.a)
+	              WHERE pid <> pg_backend_pid()
+	                AND (age(backend_xid) >= f.a
+	                     OR ((datname = current_database() OR datid IS NULL)
+	                         AND age(backend_xmin) >= f.a)))
+	          + (SELECT count(*) FROM pg_prepared_xacts WHERE age(transaction) >= f.a)
 	          + (SELECT count(*) FROM pg_replication_slots WHERE age(xmin) >= f.a)
 	          END
 	     FROM f;"

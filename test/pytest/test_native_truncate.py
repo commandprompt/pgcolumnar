@@ -12,7 +12,7 @@ isolation specs' (specs/truncate_vs_*.spec).
 import psycopg
 import pytest
 
-from pgc_horizon import retry_past_horizon, wait_freed_range_past_horizon
+from pgc_horizon import freed_range_blockers, retry_past_horizon, wait_freed_range_past_horizon
 from pgc_vacuity import query_error
 
 HASH = ("SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), $e$EMPTY$e$) "
@@ -128,7 +128,8 @@ def test_the_table_stays_usable_and_the_guc_turns_it_off(nt, pgc_cluster, expect
 
     _both(c, "DELETE FROM {t} WHERE id > 35000")
     # a snapshot in another database (#1992): truncate's horizon for a user table
-    # ignores it, so it must not count as holding the freed range. It stays open
+    # ignores a snapshot with no transaction ID there, so it must not count as
+    # holding the freed range (a writer there does hold it: see the last test). It stays open
     # until after the GUC-on truncate, which shows that truncate is not held.
     hold = psycopg.connect(pgc_cluster.dsn(), autocommit=True, application_name="nt_xdb_holder")
     try:
@@ -201,3 +202,78 @@ def test_truncate_refuses_a_transaction_block_and_reuse_stays_clean(nt, expect):
     c.execute("SELECT pgcolumnar.compact_rewrite('n', 0.0)")
     c.execute("SELECT pgcolumnar.compact('n')")
     expect.text(*_hashes(c), "parity after truncate + reinsert + compaction")
+
+
+def _xw_cycle(c, upto, hold, release):
+    """DELETE the rows of xw above `upto`, open a holder with `hold()`, compact, and
+    read truncate's answer and the helper's count while it is open. Then end it with
+    `release(holder)` and truncate again, waiting for the horizon.
+    -> (truncate while held, helper count while held, blocks truncated after)."""
+    c.execute(f"DELETE FROM xw WHERE id > {upto}")
+    holder = hold()
+    try:
+        retired, calls = retry_past_horizon(c, "SELECT pgcolumnar.compact('xw')", 3)
+        print(f"-- compact of xw retired/calls: {retired}/{calls}")
+        held = _one(c, "SELECT pgcolumnar.truncate('xw')")
+        n = freed_range_blockers(c, "xw")
+        print(f"-- horizon blockers of xw: {n}")
+    finally:
+        release(holder)
+    after, calls = retry_past_horizon(c, "SELECT pgcolumnar.truncate('xw')", 1)
+    print(f"-- truncate of xw returned/calls: {after}/{calls}")
+    return held, n, after
+
+
+def _counted(n):
+    return "yes" if n is not None and n >= 1 else f"no ({'none' if n is None else n})"
+
+
+def test_the_horizon_helper_counts_what_holds_truncate(nt, pgc_cluster, expect):
+    """truncate computes its horizon with its own snapshot, and that snapshot's xmin
+    is the oldest transaction ID running in ANY database (#1992). So a writer or a
+    prepared transaction in another database holds truncate back; only a snapshot
+    with no transaction ID there does not. A snapshot in this database taken just
+    before the compact holds it too: its xmin is the compact's own transaction ID."""
+    c = nt
+    c.execute("CREATE TABLE xw (id int) USING pgcolumnar WITH (autovacuum_enabled = false)")
+    c.execute("SELECT pgcolumnar.set_options('xw', stripe_row_limit => 1000, chunk_group_row_limit => 1000)")
+    c.execute("INSERT INTO xw SELECT g FROM generate_series(1, 12000) g")
+
+    def writer():
+        w = psycopg.connect(pgc_cluster.dsn(), autocommit=True, application_name="nt_xdb_writer")
+        w.execute("BEGIN")
+        w.execute("SELECT txid_current()")
+        return w
+
+    held, n, after = _xw_cycle(c, 9000, writer, lambda w: w.close())
+    expect.text(held, "0", "premise: truncate is held while a writer in another database is open")
+    expect.text(_counted(n), "yes", "the horizon helper counts a writer in another database")
+    expect.at_least(after, 1, "truncate reclaims once the writer in another database ends")
+
+    def prepared():
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as p:
+            p.execute("BEGIN")
+            p.execute("SELECT txid_current()")
+            p.execute("PREPARE TRANSACTION 'nt_xdb_prep'")
+        return "nt_xdb_prep"
+
+    def rollback_prepared(gid):
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as p:
+            p.execute(f"ROLLBACK PREPARED '{gid}'")
+
+    held, n, after = _xw_cycle(c, 6000, prepared, rollback_prepared)
+    expect.text(held, "0", "premise: truncate is held while a prepared transaction in another database is open")
+    expect.text(_counted(n), "yes", "the horizon helper counts a prepared transaction in another database")
+    expect.at_least(after, 1, "truncate reclaims once the prepared transaction in another database ends")
+
+    def reader():
+        r = psycopg.connect(pgc_cluster.dsn(dbname="pgc_ntrunc"), autocommit=True,
+                            application_name="nt_samedb_reader")
+        r.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        r.execute("SELECT 1")
+        return r
+
+    held, n, after = _xw_cycle(c, 3000, reader, lambda r: r.close())
+    expect.text(held, "0", "premise: truncate is held while a snapshot from just before the compact is open")
+    expect.text(_counted(n), "yes", "the horizon helper counts a snapshot from just before the compact")
+    expect.at_least(after, 1, "truncate reclaims once the snapshot from just before the compact ends")

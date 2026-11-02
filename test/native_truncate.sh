@@ -17,6 +17,9 @@
 # Written fresh for pgColumnar.
 
 set -uo pipefail
+# A prepared transaction in another database is one of the holders the last arm
+# opens, and max_prepared_transactions can only be set before the server starts.
+export PGC_EXTRA_CONF="max_prepared_transactions=4"
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
@@ -87,8 +90,9 @@ check "indexed lookup after truncate" \
 psql_run "DELETE FROM h WHERE id > 35000;"
 psql_run "DELETE FROM n WHERE id > 35000;"
 # A SNAPSHOT IN ANOTHER DATABASE (#1992). truncate's horizon for a user table
-# ignores sessions in other databases. So a snapshot taken in database postgres
-# before the compact below must not count as holding the freed range. It stays
+# ignores a snapshot with no transaction ID in another database. So a snapshot
+# taken in database postgres before the compact below must not count as holding
+# the freed range. (A writer there does hold it: see the last arm.) It stays
 # open until after the GUC-on truncate, which shows that truncate is not held.
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d postgres -Atq \
 	-c "SET application_name = 'nt_xdb_holder'" -c "SELECT pg_sleep(120)" >/dev/null 2>&1 &
@@ -128,7 +132,8 @@ check "GUC on: truncate reclaims" \
 	"$([ "$guc_on" -gt 0 ] 2>/dev/null && echo yes || echo "no ($guc_on)")" "yes"
 check "GUC on: file shrank" "$([ "$(size)" -lt "$size_guard" ] && echo yes || echo "no ($(size) >= $size_guard)")" "yes"
 check_num "the other-database snapshot was still open after the GUC-on truncate" \
-	"$(q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = 'nt_xdb_holder';")" "1"
+	"$(q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity
+	       WHERE application_name = 'nt_xdb_holder' AND backend_xmin IS NOT NULL;")" "1"
 wait "$xdb_pid" 2>/dev/null
 check "parity after guard cycle" "$(hash_n)" "$(hash_h)"
 
@@ -166,5 +171,81 @@ psql_run "DELETE FROM n WHERE id > 42000;"
 psql_run "SELECT pgcolumnar.compact_rewrite('n', 0.0);"
 psql_run "SELECT pgcolumnar.compact('n');"
 check "parity after truncate + reinsert + compaction" "$(hash_n)" "$(hash_h)"
+
+# WHAT HOLDS TRUNCATE BACK, THE HELPER COUNTS (#1992). truncate computes its
+# horizon with its own snapshot, and that snapshot's xmin is the oldest
+# transaction ID running in ANY database. So a session in another database holds
+# truncate back when it has a transaction ID: a writer, or a prepared
+# transaction. Only a snapshot with no transaction ID there does not. A snapshot
+# in this database taken just before the compact holds it too: its xmin is the
+# compact's own transaction ID, so the helper must count an xmin equal to
+# freed_xid. For each holder: open it after the DELETE, compact, check that
+# truncate is held and that the helper counts the holder, then end the holder
+# and check that truncate reclaims.
+psql_run "CREATE TABLE xw (id int) USING pgcolumnar WITH (autovacuum_enabled = false);"
+psql_run "SELECT pgcolumnar.set_options('xw', stripe_row_limit => 1000, chunk_group_row_limit => 1000);"
+psql_run "INSERT INTO xw SELECT g FROM generate_series(1, 12000) g;"
+# xw_hold APP DB SQL... -- run SQL in a background session named APP (its pid in
+# xw_pid), then wait until that session sleeps in its last statement.
+xw_hold() {
+	local app="$1" db="$2" s
+	local -a cmds=()
+	shift 2
+	for s in "$@"; do cmds+=(-c "$s"); done
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$db" -Atq \
+		-c "SET application_name = '$app'" "${cmds[@]}" >/dev/null 2>&1 &
+	xw_pid=$!
+	for _ in $(seq 1 40); do
+		[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE application_name = '$app' AND wait_event = 'PgSleep'")" = 1 ] && break
+		sleep 0.25
+	done
+}
+# xw_end APP -- end the background session named APP.
+xw_end() { q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = '$1';" >/dev/null; wait "$xw_pid" 2>/dev/null; }
+# xw_compact -- compact xw and print what it retired.
+xw_compact() { echo "  (compact of xw retired/calls: $(pgc_retry_past_horizon 3 "SELECT pgcolumnar.compact('xw');"))"; }
+# xw_counted -- "yes" when the helper counts at least one holder of xw's freed range.
+xw_counted() {
+	local n
+	n="$(pgc_freed_range_blockers xw)"
+	echo "  (horizon blockers of xw: ${n:-none})" >&2
+	[ "${n:-0}" -ge 1 ] 2>/dev/null && echo yes || echo "no (${n:-none})"
+}
+# xw_reclaims -- "yes" when truncate reclaims, waiting for the horizon.
+xw_reclaims() {
+	local r
+	r="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.truncate('xw');")"
+	echo "  (truncate of xw returned/calls: $r)" >&2
+	[ "${r%/*}" -gt 0 ] 2>/dev/null && echo yes || echo "no (${r%/*})"
+}
+
+psql_run "DELETE FROM xw WHERE id > 9000;"
+xw_hold nt_xdb_writer postgres "BEGIN" "SELECT txid_current()" "SELECT pg_sleep(120)"
+xw_compact
+check "premise: truncate is held while a writer in another database is open" \
+	"$(q "SELECT pgcolumnar.truncate('xw');")" "0"
+check "the horizon helper counts a writer in another database" "$(xw_counted)" "yes"
+xw_end nt_xdb_writer
+check "truncate reclaims once the writer in another database ends" "$(xw_reclaims)" "yes"
+
+psql_run "DELETE FROM xw WHERE id > 6000;"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d postgres -Atq \
+	-c "BEGIN" -c "SELECT txid_current()" -c "PREPARE TRANSACTION 'nt_xdb_prep'" >/dev/null 2>&1
+xw_compact
+check "premise: truncate is held while a prepared transaction in another database is open" \
+	"$(q "SELECT pgcolumnar.truncate('xw');")" "0"
+check "the horizon helper counts a prepared transaction in another database" "$(xw_counted)" "yes"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d postgres -Atq \
+	-c "ROLLBACK PREPARED 'nt_xdb_prep'" >/dev/null
+check "truncate reclaims once the prepared transaction in another database ends" "$(xw_reclaims)" "yes"
+
+psql_run "DELETE FROM xw WHERE id > 3000;"
+xw_hold nt_samedb_reader "$PGC_DB" "SELECT pg_sleep(120)"
+xw_compact
+check "premise: truncate is held while a snapshot from just before the compact is open" \
+	"$(q "SELECT pgcolumnar.truncate('xw');")" "0"
+check "the horizon helper counts a snapshot from just before the compact" "$(xw_counted)" "yes"
+xw_end nt_samedb_reader
+check "truncate reclaims once the snapshot from just before the compact ends" "$(xw_reclaims)" "yes"
 
 pgc_summary
