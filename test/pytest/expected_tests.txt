@@ -1748,4 +1748,19 @@ guard_tests 863
 # lists ARRAY['..'] through a ?parent= query, names that only hold dots still reach the catalog, and no request
 # path holds a dot segment, by collection: test_iceberg_rest_scan.py collects 128 tests, 6197 tests collected,
 # less guard_tests 863.
+# cluster_tests 5296 unchanged for #1941's eleven checks in test_tier_partition.py (a directory, a glob
+# or a host in another case that a foreign table reads blocks a move to a path it covers, and four paths it
+# does not cover are not blocked), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's review: five checks in test_tier_partition.py (the refusal's detail,
+# three bracket spellings read as fnmatch reads them, and a [class] that does not match a slash), added to
+# an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's second review: eighteen checks in test_tier_partition.py (ten
+# glob spellings fnmatch reads that the check now refuses, among them [[:digit:]], [^]x] and a local class
+# across a slash; a session with standard_conforming_strings off; and seven paths the table does not read
+# that it does not refuse), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's third review: four checks in test_tier_partition.py (an unclosed
+# [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
+# the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
 cluster_tests 5334
