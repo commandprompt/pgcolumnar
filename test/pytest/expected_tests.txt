@@ -1765,4 +1765,9 @@ guard_tests 863
 # escape, and no HINT line under the refusal; the helper's volatility and its slash rule), added to an
 # existing test, and test_path_glob_matches_needs_no_server_file_role in test_server_file_privilege.py,
 # by collection: 6160 tests collected, less guard_tests 863.
+# cluster_tests 5297 -> 5297 for #1964 review's seven checks in test_tier_partition.py (an interrupt
+# that raises no error leaves the answer alone; . and .. are listed; the helper is VOLATILE; the
+# detail escapes a newline in the table's name, a backslash before an x and the LATIN1 NEL, and prints
+# the WIN1252 euro sign as written), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
 cluster_tests 5297

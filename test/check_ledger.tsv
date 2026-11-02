@@ -8252,7 +8252,7 @@ server_file_privilege	server_file_privilege	no role is refused by the pg_write_s
 server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: export_parquet	15;16;17;18;19	2026-10-20	the parquet writer without its pg_write_server_files gate
 server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: parallel_export_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	no role is refused by the pg_write_server_files gate: tier_partition	15;16;17;18;19	2026-10-20	the parquet writer without its pg_write_server_files gate
-server_file_privilege	server_file_privilege	path_glob_matches reads no file, so a role with no server-file role may call it	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	path_glob_matches reads no file, so a role with no server-file role may call it	15;16;17;18;19	2026-11-02	REVOKE EXECUTE ON FUNCTION pgcolumnar.path_glob_matches(text, text) FROM PUBLIC appended to the alpha5 script (#1964)
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: export_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: export_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	server-file function is covered by the boundary test: file_split_offsets	15;16;17;18;19	never	-
@@ -8293,7 +8293,7 @@ server_file_privilege	server_file_privilege	the pg_read_server_files role gets p
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: export_arrow	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: export_parquet	15;16;17;18;19	never	-
 server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: parallel_export_parquet	15;16;17;18;19	never	-
-server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: tier_partition	15;16;17;18;19	never	-
+server_file_privilege	server_file_privilege	the pg_write_server_files role gets past the gate: tier_partition	15;16;17;18;19	2026-11-02	REVOKE EXECUTE ON FUNCTION pgcolumnar.path_glob_matches(text, text) FROM PUBLIC appended to the alpha5 script (#1964)
 settings_reference	settings_reference	a role that is not a superuser cannot set enable_end_truncation (42501)	15;16;17;18;19	2026-10-15	enable_end_truncation defined PGC_POSTMASTER instead of PGC_SUSET (src/columnar_tableam.c);enable_end_truncation defined PGC_USERSET instead of PGC_SUSET (src/columnar_tableam.c)
 settings_reference	settings_reference	and a superuser can	15;16;17;18;19	2026-10-15	enable_end_truncation defined PGC_POSTMASTER instead of PGC_SUSET (src/columnar_tableam.c)
 settings_reference	settings_reference	compression_level reaches the zstd codec: level 19 stores less than level 1	15;16;17;18;19	2026-10-15	try_zstd passes level 1 to ZSTD_compress, not the setting (src/columnar_compression.c)
@@ -8667,8 +8667,10 @@ tier_partition	tier_partition	export_parquet through a server that does not exis
 tier_partition	tier_partition	export_parquet to a local path through a server whose mapping holds half a credential is refused (28000)	15;16;17;18;19	2026-10-31	export_parquet(rel, path, server) resolves the server's credentials only for a remote path (#1795 review)
 tier_partition	tier_partition	inside the transaction the call moved the cold partition	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	nor any row-group row	15;16;17;18;19	2026-10-13	tier_partition renaming the partition aside instead of dropping it
-tier_partition	tier_partition	path_glob_matches is IMMUTABLE, STRICT and PARALLEL SAFE	15;16;17;18;19	2026-11-02	path_glob_matches reverted to the #1953 regex tokenizer, and the detail to replace() alone (#1957, #1960, #1962)
+tier_partition	tier_partition	path_glob_matches gives the same answer when an interrupt that raises no error arrives during the call	15;16;17;18;19	2026-11-02	the #1964 review fixes reverted to head d409f182: fail-open interrupt walk, IMMUTABLE, name not escaped, backslash-x and C1-by-byte escape (#1964)
+tier_partition	tier_partition	path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE	15;16;17;18;19	2026-11-02	the #1964 review fixes reverted to head d409f182: fail-open interrupt walk, IMMUTABLE, name not escaped, backslash-x and C1-by-byte escape (#1964)
 tier_partition	tier_partition	path_glob_matches lets an s3:// class span a slash but splits a local glob there	15;16;17;18;19	2026-11-02	path_glob_matches reverted to the #1953 regex tokenizer, and the detail to replace() alone (#1957, #1960, #1962)
+tier_partition	tier_partition	path_glob_matches lists . and .. in a local directory, so .* matches both	15;16;17;18;19	2026-11-02	pq_vopendir starts at d->next = 1, so the tree lists no . or .. (#1964)
 tier_partition	tier_partition	premise: at read committed the caller's snapshot was taken before the writer committed	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: at repeatable read the caller's snapshot was taken before the writer committed	15;16;17;18;19	never	-
 tier_partition	tier_partition	premise: at serializable the caller's snapshot was taken before the writer committed	15;16;17;18;19	never	-
@@ -8700,9 +8702,13 @@ tier_partition	tier_partition	the local partition leaves no pgcolumnar storage r
 tier_partition	tier_partition	the move ran inside the caller's transaction	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	the other partition is still local after the refusals	15;16;17;18;19	2026-10-13	tier_partition without the path refusal
 tier_partition	tier_partition	the refusal's detail doubles a quote in the path, so the path cannot close its quotes early	15;16;17;18;19	2026-11-02	refusal DETAIL quoting the path by hand without doubling a ', as e11e34d8 had it (#1953 review)
+tier_partition	tier_partition	the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline	15;16;17;18;19	2026-11-02	the #1964 review fixes reverted to head d409f182: fail-open interrupt walk, IMMUTABLE, name not escaped, backslash-x and C1-by-byte escape (#1964)
+tier_partition	tier_partition	the refusal's detail escapes the LATIN1 control NEL in a path	15;16;17;18;19	never	-
 tier_partition	tier_partition	the refusal's detail names the foreign table and the path it reads	15;16;17;18;19	2026-11-02	DETAIL dropped from the refusal, and a glob ? and [class] mapped to . instead of [^/] (#1941)
+tier_partition	tier_partition	the refusal's detail prints a newline in the foreign table's name as an escape, on one line	15;16;17;18;19	2026-11-02	the #1964 review fixes reverted to head d409f182: fail-open interrupt walk, IMMUTABLE, name not escaped, backslash-x and C1-by-byte escape (#1964)
 tier_partition	tier_partition	the refusal's detail prints a newline in the path as an escape, on one line	15;16;17;18;19	2026-11-02	path_glob_matches reverted to the #1953 regex tokenizer, and the detail to replace() alone (#1957, #1960, #1962)
 tier_partition	tier_partition	the refusal's detail prints a path holding a backslash as written, not as an E'' string	15;16;17;18;19	2026-11-02	refusal DETAIL reverted to %L (#1951);the #1951 bracket grammar and DETAIL fix reverted: the clause as #1946 left it (#1951)
+tier_partition	tier_partition	the refusal's detail prints the WIN1252 euro sign in a path as written	15;16;17;18;19	2026-11-02	the #1964 review fixes reverted to head d409f182: fail-open interrupt walk, IMMUTABLE, name not escaped, backslash-x and C1-by-byte escape (#1964)
 tier_partition	tier_partition	tier_partition moves the cold partition and returns the rows it moved	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved
 tier_partition	tier_partition	with no foreign table behind it	15;16;17;18;19	2026-10-14	tier_partition made SECURITY DEFINER
 tier_partition	tier_partition	with the dependents gone, the same partition moves	15;16;17;18;19	2026-10-13	tier_partition returning 0 rows moved;tier_partition without the dependents check
