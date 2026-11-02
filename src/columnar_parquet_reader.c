@@ -4111,9 +4111,9 @@ pq_local_glob_match(const char *pattern, const char *path)
 					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
 					 errmsg("could not match glob \"%s\" against path \"%s\": glob(3) returned %d",
 							pattern, path, rc)));
-		/* a cancel raises its error here; any other interrupt is processed */
+		/* a cancel raises its error here */
 		CHECK_FOR_INTERRUPTS();
-		/* an interrupt that cannot be processed now cuts every walk short */
+		/* a cancel that cannot be processed now cuts every walk short */
 		if (attempt >= 100)
 			ereport(ERROR,
 					(errcode(ERRCODE_QUERY_CANCELED),
@@ -4306,15 +4306,37 @@ pq_walk_dir(const char *path, int depth, List **files, int *skipped)
  * bound of path_glob_matches (PQ_GLOB_MAX_STEPS, #1973). Like that walk's
  * callbacks, they neither allocate in a memory context nor raise an error, so
  * nothing jumps out of glob(3) and leaks its memory. Past the bound they set
- * pq_rover; when an interrupt is pending they set pq_rcut. From then on they
- * report every directory empty and every path missing, so glob(3) returns
- * soon. The caller then frees what glob(3) found and raises the error or
+ * pq_rover; when an interrupt that raises an error is pending they set
+ * pq_rcut. From then on they report every directory empty and every path
+ * missing, so glob(3) returns soon. The caller then frees what glob(3) found and raises the error or
  * processes the interrupt: it never reads a list from a walk that stopped.
  * closedir is not a step, so every directory opened is closed.
  */
 static int	pq_rsteps = 0;
 static bool pq_rover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
 static bool pq_rcut = false;	/* a callback stopped for an interrupt */
+
+/*
+ * -> true when an interrupt is pending that raises an error once processed: a
+ * cancel, a statement_timeout or lock_timeout (both arrive as a cancel), a
+ * termination, or a transaction_timeout. Other interrupts, such as
+ * client_connection_check_interval, raise no error and recur. A walk cut for
+ * one of them would be cut again on every attempt, so the walk leaves them
+ * pending, and the first CHECK_FOR_INTERRUPTS after glob(3) processes them.
+ */
+static bool
+pq_rerror_pending(void)
+{
+	if (!InterruptPending)
+		return false;
+	if (QueryCancelPending || ProcDiePending)
+		return true;
+#if PG_VERSION_NUM >= 170000
+	if (TransactionTimeoutPending)
+		return true;
+#endif
+	return false;
+}
 
 /* count one step of the reader's walk -> false once the walk must stop */
 static bool
@@ -4327,7 +4349,7 @@ pq_rstep(void)
 		pq_rover = true;
 		return false;
 	}
-	if (InterruptPending)
+	if (pq_rerror_pending())
 	{
 		pq_rcut = true;
 		return false;
@@ -4386,8 +4408,10 @@ pq_rlstat(const char *path, struct stat *st)
  * glob(pattern, GLOB_NOSORT) on the real filesystem, bounded at
  * PQ_GLOB_MAX_STEPS steps with error 54000 (#1984). A walk an interrupt cut
  * short is never returned: the interrupt is processed, which raises the
- * error of a cancel or a statement_timeout, and any other interrupt walks
- * again. -> glob(3)'s return code, with `g` to be freed by the caller.
+ * error of a cancel or a statement_timeout. If it raises none, as when
+ * interrupts are held off, the reader walks again, and after 100 cut walks
+ * it fails with 57014. -> glob(3)'s return code, with `g` to be freed by the
+ * caller.
  */
 static int
 pq_local_glob(const char *pattern, glob_t *g)

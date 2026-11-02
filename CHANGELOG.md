@@ -543,12 +543,18 @@ true until the next version shipped.
   minutes, grew the backend to 2.2 GB, and ignored `statement_timeout`,
   `pg_cancel_backend` and `pg_terminate_backend`. Now the reader passes
   `glob(3)` callbacks that count each directory opened, name read and `stat`.
-  They use the bound and the error of `path_glob_matches` (#1973). When an
-  interrupt is pending they end the walk, and the reader then processes the
-  interrupt. The reader never reads the list of a walk that stopped. The
-  18-level pattern is refused after about 0.25 s on PostgreSQL 18. A glob
-  over a directory of more than about 1,000,000 names is refused too.
-  docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  They use the bound and the error of `path_glob_matches` (#1973). When a
+  cancel, a timeout or a termination is pending they end the walk, and the
+  reader then raises its error. An interrupt that raises no error, such as
+  `client_connection_check_interval`, does not end the walk. The reader
+  never reads the list of a walk that stopped. If a cancel cannot be
+  processed, because interrupts are held off, the reader walks again, and
+  after 100 attempts it fails with 57014 `could not expand pattern "...":
+  interrupted 100 times`. The 18-level pattern is refused after about
+  0.25 s on PostgreSQL 18. The bound counts every name the walk reads across
+  all the directories it reaches. So a glob over about 1,000,000 names in
+  all is refused too, even a partitioned tree whose directories are each
+  small; a directory read of the same tree works. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
 - Self-test part 540 now finds more check arms that print only `no` when
   they fail (#1980). It missed an arm with a redirect after the test, such as
