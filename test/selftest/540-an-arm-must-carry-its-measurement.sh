@@ -228,7 +228,12 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			# `c` is in the class -- and silently excused five real offenders.
 			if (t ~ /^[[:space:]]*!?[[:space:]]*-[fdersxwLhpSbcgkuGnz][[:space:]]/) return 1
 			if (t ~ /(^|[[:space:]])(-eq|-ne|!=|==|=)([[:space:]]|$)/) return 1
-			if (t ~ /-(gt|ge)[[:space:]]+"?[01]"?[[:space:]]*$/) return 1
+			# ONLY `-gt 0` AND `-ge 1` (#1980). The class used to be `-(gt|ge)
+			# [01]`, which also excused `-gt 1`: that fails on 0 AND on 1, so
+			# its `no` does not say which. The awk carve-out reads `> 0` and
+			# `>= 1` only, and now the two agree.
+			if (t ~ /-gt[[:space:]]+"?0"?[[:space:]]*$/) return 1
+			if (t ~ /-ge[[:space:]]+"?1"?[[:space:]]*$/) return 1
 			return 0
 		}
 		# The same carve-outs the `[` rule uses, written in awk syntax.
@@ -319,11 +324,16 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# the corpus -- 101 before, 101 after, both comm directions empty -- so
 		# it closes a shape rather than removing a live wrong name.
 		line ~ /(^|[[:space:]])(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/ &&
-		line ~ /\$\([[:space:]]*\[[^]]*\][[:space:]]*&&[[:space:]]*echo/ {
+		# A REDIRECT MAY SIT BETWEEN THE `]` AND THE `&&` (#1980). The rule
+		# required `&&` straight after the `]`, so `[ ... ] 2>/dev/null && echo
+		# yes || echo no` was never examined. A redirect is stripped from the
+		# arms too, so a `2>"$LOG"` is not read as a branch that carries a value.
+		line ~ /\$\([[:space:]]*\[[^]]*\][[:space:]]*([0-9]*[<>]+&?[^[:space:]&|;)]*[[:space:]]*)*&&[[:space:]]*echo/ {
 			body = line
 			sub(/^.*\$\([[:space:]]*\[/, "", body)
 			test = body; sub(/\].*$/, "", test)
 			arms = body; sub(/^[^]]*\][[:space:]]*/, "", arms)
+			sub(/^([0-9]*[<>]+&?[^[:space:]&|;)]*[[:space:]]*)*/, "", arms)
 			# (b) a branch that interpolates carries the value already.
 			if (arms ~ /\$/) next
 			if (determinate(test)) next
@@ -409,6 +419,39 @@ check "control: the sweep sees a shell if/then/else that discards its operand" \
 _lam_ifs_names="$(_lam_sweep "$_lam_probe_ifs" | cut -f2 | sort | tr '\n' ';')"
 check_text "control: the carve-outs hold and the innocent arm above the helper is not named" \
 	"$_lam_ifs_names" "an if/then/else verdict whose operand vanishes;"
+
+# A REDIRECT AFTER THE TEST, AND A FLOOR OF TWO (#1980). Two arms that print
+# only `no` on failure were not seen:
+#
+#   - `[ ... ] 2>/dev/null && echo yes || echo no`. The `[` rule required `&&`
+#     straight after the `]`, so any redirect in between hid the arm.
+#   - `[ "$x" -gt 1 ]`. The carve-out excused `-gt 0`, `-gt 1`, `-ge 0` and
+#     `-ge 1`. Only `-gt 0` and `-ge 1` are nothing-versus-something. `-gt 1`
+#     fails on 0 and on 1, so `no` does not say which. The awk carve-out
+#     already reads `> 0` and `>= 1` only.
+#
+# The determinate and carrying arms behind a redirect are the controls: a
+# redirect must not make the carve-outs stop working.
+_lam_probe_redir="$PGC_WORKDIR/lam_probe_redir.sh"
+cat > "$_lam_probe_redir" <<'PROBE'
+check "a threshold behind a stderr redirect" \
+	"$([ "$a" -le "$b" ] 2>/dev/null && echo yes || echo no)" "yes"
+check "a threshold behind two redirects" \
+	"$([ "$a" -le "$b" ] >/dev/null 2>&1 && echo yes || echo no)" "yes"
+check "a count above one" \
+	"$([ "$x" -gt 1 ] && echo yes || echo no)" "yes"
+check "a count above one behind a redirect" \
+	"$([ "$x" -gt 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "determinate: nothing versus something behind a redirect" \
+	"$([ "$rows" -gt 0 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "determinate: a floor of one behind a redirect" \
+	"$([ "$rows" -ge 1 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "carried: a branch behind a redirect names the number" \
+	"$([ "$n" -ge 5 ] 2>/dev/null && echo yes || echo "no (found $n)")" "yes"
+PROBE
+_lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | sort | tr '\n' ';')"
+check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a threshold behind a stderr redirect;a threshold behind two redirects;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused

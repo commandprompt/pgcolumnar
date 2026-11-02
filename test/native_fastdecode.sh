@@ -60,8 +60,9 @@ load_pair "SELECT g,
 
 check "row count matches" "$(q 'SELECT count(*) FROM t_col;')" "6000"
 check "scan is the columnar custom scan" "$(pgc_is_columnar_scan 'SELECT * FROM t_col')" "yes"
+FD_GROUPS="$(stripe_count)"
 check "many row groups written (widen runs per group)" \
-	"$([ "$(stripe_count)" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "$FD_GROUPS" -gt 1 ] && echo yes || echo "no (row groups=$FD_GROUPS)")" "yes"
 # the byval fixed columns must carry real descriptors, or the fast path is never
 # reached and this whole test would pass while exercising nothing.
 check "byval fixed columns carry non-baseline descriptors" \

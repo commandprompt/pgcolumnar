@@ -205,7 +205,7 @@ c_arm() {  # c_arm <label> <table> <server> <verification reason>
 	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
 	detail="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
 	check "premise: $label handshake was attempted" \
-		"$([ "$hs1" -gt "$hs0" ] 2>/dev/null && echo yes)" "yes"
+		"$([ "$hs1" -gt "$hs0" ] 2>/dev/null && echo yes || echo "no (handshakes before=$hs0 after=$hs1)")" "yes"
 	check "C: $label refused with 08006" "$state" "08006"
 	check "C: $label refusal is the TLS one" "$msg" \
 		"columnar: could not establish TLS to \"https://127.0.0.1:${PORT[$srv]}/$BUCKET/fixture.parquet\""
@@ -229,8 +229,8 @@ SQLEOF
 )"
 D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled TLS transfer cancelled with query_canceled" "$D_STATE" "57014"
-check_num "D: cancel latency bounded (<=10s)" \
-	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo 1 || echo 0)" "1"
+check "D: cancel latency bounded (<=10s)" \
+	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo yes || echo "no (elapsed=${D_ELAPSED}s)")" "yes"
 wait_up
 
 # ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------

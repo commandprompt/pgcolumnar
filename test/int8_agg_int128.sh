@@ -279,7 +279,7 @@ check_num "premise: the rescan shape still takes the vectorized node" \
 RSLOOPS="$(grep -oE 'loops=[0-9]+' <<<"$RSPLAN" | grep -oE '[0-9]+' | sort -rn | head -1)"
 echo "-- rescan loops observed: ${RSLOOPS:-none}"
 check "premise: the node really is re-executed, so a stale accumulator can show" \
-	"$([ "${RSLOOPS:-0}" -gt 1 ] && echo rescanned || echo "not rescanned")" "rescanned"
+	"$([ "${RSLOOPS:-0}" -gt 1 ] && echo rescanned || echo "not rescanned (loops=${RSLOOPS:-unset})")" "rescanned"
 
 # Premise before the comparisons: the rescan query returns one row per driver
 # row. Without it an error on BOTH sides compares equal and passes.
