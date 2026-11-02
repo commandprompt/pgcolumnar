@@ -813,6 +813,18 @@ It returns false for a pattern that the reader does not read as a glob:
 - any other remote URL.
 
 A local pattern does not match a remote `path`.
+A `path` of 4096 bytes (`PATH_MAX`) or more returns false, because no file
+can be opened by such a path.
+
+A local pattern that is too large for `glob(3)` raises error 54000
+(`program_limit_exceeded`) instead of an answer:
+
+- a pattern of 4096 bytes or more;
+- a pattern with more than 128 levels (names between `/`) that hold `*`,
+  `?` or `[`.
+
+`glob(3)` uses stack space for each such level, so a deeper pattern could
+crash the server.
 The function compares spellings: `path` must be spelled as `glob(3)` would
 return it, so `/w//x` does not match `/w/x*`.
 

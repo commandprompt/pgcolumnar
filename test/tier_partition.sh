@@ -446,6 +446,34 @@ check "path_glob_matches lets an s3:// class span a slash but splits a local glo
 # leading dot matches them, so the tree in memory lists them too.
 check "path_glob_matches lists . and .. in a local directory, so .* matches both" \
 	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/./a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/.*/a.parquet', '/w/../a.parquet');")" "true|true"
+# glob(3) only ever returns a path built from the tree, so a directory it
+# lists must hold the path asked about, not merely some path (#1964 review).
+check "path_glob_matches counts only the path asked about, not another path the glob returns" \
+	"$(qerr "SELECT pgcolumnar.path_glob_matches('/w/*', '/w/a/b.parquet')::text;")" "false"
+# glibc glob(3) calls itself once for each directory level that holds *, ? or
+# [, and each call keeps a copy of the pattern on the stack. So the helper
+# refuses a pattern of more than 128 such levels, or of PATH_MAX (4096) bytes
+# or more, with an error, before glob(3) runs. A crash here would restart the
+# server, and any role may call the helper (#1964 review).
+# ansst SQL -> the query's one value, or its SQLSTATE when it fails
+ansst() { local s; s=$(sqlstate "$1"); if [ "$s" = ok ]; then qerr "$1"; else echo "${s:-no answer}"; fi; }
+check "path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 128) || 'x', repeat('a/', 128) || 'x')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 129) || 'x', repeat('a/', 129) || 'x')::text;")" \
+	"true|54000"
+check "path_glob_matches refuses a pattern of 4096 bytes with an error" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/[' || repeat('a', 4092) || ']', '/w/a')::text;")" "54000"
+# No file has a path of PATH_MAX bytes or more: the reader could not open it.
+# So the helper answers false for such a path before it builds anything, and a
+# long path cannot keep a backend busy past a cancel (#1964 review).
+check "path_glob_matches matches a path of 4095 bytes but not one of 4096, which no file can have" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'b')::text;")|$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('a/', 2047) || '*', repeat('a/', 2047) || 'bc')::text;")" \
+	"true|false"
+check "path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=1s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -c "SELECT pgcolumnar.path_glob_matches('/w/*', repeat('a/', 400000))::text;" 2>&1 | head -1)" "false"
+check "path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches(repeat('*/', 4000) || 'x', repeat('a/', 4000) || 'x')::text;")|$(qerr "SELECT 1;")" \
+	"54000|1"
 # An interrupt that raises no error, such as a request to log memory
 # contexts, must not turn a match into no match: a false answer lets a move
 # overwrite a file a table reads (#1964 review). The request is sent in the

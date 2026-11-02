@@ -31,6 +31,7 @@
 #include <dirent.h>
 #include <fnmatch.h>
 #include <glob.h>
+#include <limits.h>
 
 #include "fmgr.h"
 #include "funcapi.h"
@@ -3856,25 +3857,69 @@ pq_vstat(const char *path, struct stat *st)
 }
 
 /*
+ * glibc glob(3) calls itself once for each directory level of the pattern
+ * that holds *, ? or [, and each call keeps a copy of the pattern on the
+ * stack. Measured with glibc 2.43, 128 such levels in a pattern of 4095 bytes
+ * use 0.7 MB of stack, and 4000 levels overflow an 8 MB stack (#1964 review).
+ */
+#define PQ_GLOB_MAX_LEVELS 128
+
+/*
  * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
- * if `path` existed? A name longer than a directory entry holds cannot exist,
- * so it matches nothing. It never answers false for a walk an interrupt cut
- * short, nor for a glob(3) error: it processes the interrupt and walks again,
- * or raises an error.
+ * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
+ * than a directory entry holds, cannot be opened, so it matches nothing. A
+ * pattern of PATH_MAX bytes or more, or of more than PQ_GLOB_MAX_LEVELS levels
+ * that hold *, ? or [, raises an error before glob(3) runs, as no answer can
+ * be given safely. It never answers false for a walk an interrupt cut short,
+ * nor for a glob(3) error: it processes the interrupt and walks again, or
+ * raises an error.
  */
 static bool
 pq_local_glob_match(const char *pattern, const char *path)
 {
-	char	   *copy = pstrdup(path);
+	char	   *copy;
 	PqVTree		tree;
 	glob_t		g;
 	int			rc;
 	int			cur = 0;
-	char	   *p = copy;
+	char	   *p;
 	bool		found = false;
 	size_t		i;
 	int			attempt;
+	int			levels = 0;
+	bool		meta = false;
+	const char *c;
 
+	if (strlen(pattern) >= PATH_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern is too long to match: %zu bytes",
+						strlen(pattern)),
+				 errdetail("A local glob pattern must be shorter than %d bytes.",
+						   PATH_MAX)));
+	for (c = pattern;; c++)
+	{
+		if (*c == '\0' || *c == '/')
+		{
+			levels += meta ? 1 : 0;
+			meta = false;
+			if (*c == '\0')
+				break;
+		}
+		else if (*c == '*' || *c == '?' || *c == '[')
+			meta = true;
+	}
+	if (levels > PQ_GLOB_MAX_LEVELS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern has too many levels to match: %d", levels),
+				 errdetail("A local glob pattern may have at most %d levels that hold *, ? or [.",
+						   PQ_GLOB_MAX_LEVELS)));
+	if (strlen(path) >= PATH_MAX)
+		return false;
+
+	copy = pstrdup(path);
+	p = copy;
 	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + 2));
 	tree.nodes[0].name = "";
 	tree.nodes[0].parent = 0;
@@ -3887,6 +3932,7 @@ pq_local_glob_match(const char *pattern, const char *path)
 		bool		last = (*e == '\0');
 		int			next;
 
+		CHECK_FOR_INTERRUPTS();
 		*e = '\0';
 		if (len >= sizeof(((struct dirent *) NULL)->d_name))
 			return false;

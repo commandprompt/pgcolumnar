@@ -591,6 +591,11 @@ true until the next version shipped.
   for a newline, so neither can add a line under the refusal that reads like
   a server `HINT` (#1960). A backslash before an `x` prints as `\x5C`, and a
   printable character such as the `WIN1252` euro sign prints as written.
+  A local pattern of 4096 bytes or more, or with more than 128 levels that
+  hold `*`, `?` or `[`, raises error 54000 before `glob(3)` runs; a deeper
+  pattern overflowed the stack and crashed the server. A `path` of 4096 bytes
+  or more returns false at once; before, a long one kept the backend busy for
+  minutes, past a cancel.
   docs/sql-reference.md and
   docs/how-to.md. `test/tier_partition.sh`, `test/entry_point_privilege.sh`,
   `test/server_file_privilege.sh` and their pytest twins. Reported by
