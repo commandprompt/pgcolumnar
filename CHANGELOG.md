@@ -543,13 +543,15 @@ true until the next version shipped.
   `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
   so `no` hid which half failed. `&&` and `||` count without spaces around
   them. A `-a` or `-o` with no test after it, as in `[ "$arg" = -a ]`, is an
-  operand and not a join. It ignores quotes, command substitutions and backticks when it looks
-  for a compound, so `"$(grep -c "x)" f || true)" -gt 0` is still excused. A
-  `test` no longer ends at a `<` or `|` inside a substitution, so
-  `test "$(wc -l < f)" -ge 20` is read whole. A redirect into a quoted path
-  with a space, such as `2>"a b"`, no longer hides an arm. New fixture arms pin the end
-  anchors of the `-gt 0` and `-ge 1` excuses. The wider sweep finds no new
-  arm in the test suites, so no suite changed.
+  operand and not a join. It ignores quotes, command substitutions and
+  backticks when it looks for a compound, so
+  `"$(grep -c "x)" f || true)" -gt 0` is still excused. A `test` no longer
+  ends at a `<` or `|` inside a substitution, so `test "$(wc -l < f)" -ge 20`
+  is read whole. A redirect into a quoted path with a space, such as
+  `2>"a b"`, no longer hides an arm. New fixture arms pin the end anchors of
+  the `-gt 0` and `-ge 1` excuses, and every regular expression this change
+  added is pinned by a fixture or recorded as unable to change a valid arm.
+  The wider sweep finds no new arm in the test suites, so no suite changed.
 - Self-test part 540 now finds more check arms that print only `no` when
   they fail (#1980). It missed an arm with a redirect after the test, such as
   `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.

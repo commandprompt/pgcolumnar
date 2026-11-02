@@ -335,7 +335,9 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# quoted or inside a substitution, so `test "$(wc -l < f)" -ge 20`
 		# is read whole. A trailing file descriptor such as the `2` of
 		# `2>x` goes back to REST. `[` and `[[` still end at the first raw
-		# `]`, which hides seven live lossy arms (#2002).
+		# `]`, which hides seven live lossy arms (#2002). KNOWN LIMIT: a
+		# redirect between the operands, as in `test "$a" -le 2>x "$b"`,
+		# hides the arm. No arm in the tree holds one.
 		function split_test(s) {
 			sub(/^[[:space:]]*/, "", s)
 			if (match(s, /^\[\[[^]]*\]\]/)) {
@@ -547,6 +549,14 @@ check_text "control: the carve-outs hold and the innocent arm above the helper i
 # redirect must not make the carve-outs stop working. A redirect into a
 # variable (`2>"$LOG"`) must not excuse an arm, in the `[` rule or in the
 # if/then/else rule. `-ge 0` must not be excused.
+#
+# EVERY PIECE OF THE REDIRECT PATTERN IS PINNED (#1995 review round 3). A
+# mechanical sweep weakened and over-applied each quantifier, anchor,
+# alternation branch and class member of the regular expressions in this part.
+# The arms from `joined to an unspaced and` down to `two spaces after the if`
+# are the ones that sweep found missing: without each, one change to the
+# pattern stayed green. The three `innocent:` arms are a test piped into
+# `cat`, whose `&&` reads cat's status and not the test's.
 _lam_probe_redir="$PGC_WORKDIR/lam_probe_redir.sh"
 cat > "$_lam_probe_redir" <<'PROBE'
 check "a threshold behind a stderr redirect" \
@@ -585,13 +595,37 @@ check_num "an if/then/else threshold behind a spaced redirect into a variable" \
 	"$(if [ "$a" -le "$b" ] 2> "$LOG"; then echo 1; else echo 0; fi)" "1"
 check_num "carried: an if/then/else behind a redirect names the number" \
 	"$(if [ "$a" -le "$b" ] 2>"$LOG"; then echo 1; else echo "0 (a=$a)"; fi)" "1"
+check "a threshold behind a redirect joined to an unspaced and" \
+	"$([ "$a" -le "$b" ] 2>/dev/null&& echo yes || echo no)" "yes"
+check "a threshold behind a quoted redirect joined to an unspaced and" \
+	"$([ "$a" -le "$b" ] 2>"$LOG"&& echo yes || echo no)" "yes"
+check "a threshold joined to an unspaced echo" \
+	"$([ "$a" -le "$b" ] &&echo yes || echo no)" "yes"
+check "a threshold behind an input redirect" \
+	"$([ "$a" -le "$b" ] </dev/null && echo yes || echo no)" "yes"
+check "a threshold behind a spaced appending redirect into a variable" \
+	"$([ "$a" -le "$b" ] 2>> "$LOG" && echo yes || echo no)" "yes"
+check "innocent: a threshold piped into cat behind a redirect" \
+	"$([ "$a" -le "$b" ] 2>/dev/null|cat && echo yes || echo no)" "yes"
+check "innocent: a threshold piped into cat behind a quoted redirect" \
+	"$([ "$a" -le "$b" ] 2>"$LOG"|cat && echo yes || echo no)" "yes"
+check "a threshold with two spaces before the bracket" \
+	"$(  [ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold behind a redirect joined to an unspaced then" \
+	"$(if [ "$a" -le "$b" ] 2>/dev/null;then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind a quoted redirect joined to an unspaced then" \
+	"$(if [ "$a" -le "$b" ] 2>"$LOG";then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold with a space before the if" \
+	"$( if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold with two spaces after the if" \
+	"$(if  [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
 PROBE
 # SORTED IN THE C LOCALE. A locale-aware sort ignores spaces, so it puts
 # `an if/then/else ...` before `a threshold ...` and the order would depend on
 # the runner. Measured: as root on PG15 the names came out in the other order.
 _lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
-	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind two redirects;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;"
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold behind a dup and a redirect into a variable;a threshold behind a quoted redirect joined to an unspaced and;a threshold behind a redirect into a variable;a threshold behind a redirect joined to an unspaced and;a threshold behind a spaced appending redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind an input redirect;a threshold behind two redirects;a threshold joined to an unspaced echo;a threshold with two spaces before the bracket;an if/then/else threshold behind a quoted redirect joined to an unspaced then;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a redirect joined to an unspaced then;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;an if/then/else threshold with a space before the if;an if/then/else threshold with two spaces after the if;"
 
 # THREE MORE SPELLINGS OF A TEST (#1986). The rules read only `[ ... ]`, so a
 # lossy arm written as `[[ ... ]]` or with the `test` builtin was never seen.
@@ -608,6 +642,11 @@ check_text "control: the sweep sees an arm behind a redirect and a floor of two"
 # `-lt 1` and `-le 0` stay refused on purpose. They pass on 0 and fail on every
 # count above it, so `no` does not say which count. The pytest twin refuses
 # `r <= 0` for the same reason.
+#
+# The arms from `a mirrored nothing versus something with doubled spaces` to
+# the end pin the mirrored excuses, the `test` end and the file descriptor
+# that `2>x` hands back to the redirect, as the mutant sweep above found
+# missing (#1995 review round 3).
 _lam_probe_forms="$PGC_WORKDIR/lam_probe_forms.sh"
 cat > "$_lam_probe_forms" <<'PROBE'
 check "a double-bracket threshold" \
@@ -660,10 +699,32 @@ check "a test-builtin floor over a count of an escaped alternation" \
 	"$(test "$(grep -c "a\|b" "$f")" -ge 20 && echo yes || echo no)" "yes"
 check "determinate: a test-builtin count against a quoted nothing" \
 	"$(test "$rows" -gt "0" && echo yes || echo no)" "yes"
+check "determinate: a mirrored nothing versus something with doubled spaces" \
+	"$([  0  -lt "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a mirrored floor of one with doubled spaces" \
+	"$([  1  -le "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a mirrored quoted nothing versus something" \
+	"$([ "0" -lt "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a mirrored quoted floor of one" \
+	"$([ "1" -le "$x" ] && echo yes || echo no)" "yes"
+check "determinate: a test-builtin count against nothing behind an input redirect" \
+	"$(test "$rows" -gt 0 </dev/null && echo yes || echo no)" "yes"
+check "determinate: a test-builtin count against nothing behind a numbered input redirect" \
+	"$(test "$rows" -gt 0 0</dev/null && echo yes || echo no)" "yes"
+check "determinate: a test-builtin count against nothing behind a two-digit descriptor" \
+	"$(test "$rows" -gt 0 10>/dev/null && echo yes || echo no)" "yes"
+check_num "determinate: an if/then/else test-builtin floor of one with its output redirected" \
+	"$(if test "$rows" -ge 1; then echo 1; else echo 0; fi 2>/dev/null)" "1"
+check "a test-builtin threshold against a number behind a redirect" \
+	"$(test "$a" -le 3 2>/dev/null && echo yes || echo no)" "yes"
+check "a test-builtin threshold whose branch holds brackets" \
+	"$(test "$a" -le "$b" && echo yes || echo "no [[x]]")" "yes"
+check "innocent: a test-builtin threshold piped into cat" \
+	"$(test "$a" -le "$b" | cat && echo yes || echo no)" "yes"
 PROBE
 _lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
-	"$_lam_forms_names" "a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a mirrored count above one;a mirrored count above ten;a mirrored floor of eleven;a test-builtin floor over a count of an escaped alternation;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold behind a redirect;a test-builtin threshold over a pipeline that may fail;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;at most zero;nothing expected and a count found;"
+	"$_lam_forms_names" "a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a mirrored count above one;a mirrored count above ten;a mirrored floor of eleven;a test-builtin floor over a count of an escaped alternation;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold against a number behind a redirect;a test-builtin threshold behind a redirect;a test-builtin threshold over a pipeline that may fail;a test-builtin threshold whose branch holds brackets;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;at most zero;nothing expected and a count found;"
 
 # A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
 #
@@ -692,6 +753,11 @@ check_text "control: the sweep reads double brackets, the test builtin and mirro
 #
 # `&&` AND `||` NEED NO SPACES. `[[ "$b" -le 3&&"$a" -gt 0 ]]` is a compound in
 # bash, so it is refused like the spaced form (#1995 review).
+#
+# THE TEST AFTER A JOIN MAY BE ONE WORD, AND MORE THAN ONE SPACE MAY COME
+# BEFORE IT. `[ "$a" = x -a "$b" ]` and `-a  "$b"` are compounds. Two fixtures
+# pin both, so the join rule's `[[:space:]]+` and its one-word lookahead
+# cannot be weakened while this part stays green (#1995 review round 3).
 _lam_probe_compound="$PGC_WORKDIR/lam_probe_compound.sh"
 cat > "$_lam_probe_compound" <<'PROBE'
 check "a compound whose first half is nothing versus something" \
@@ -752,10 +818,14 @@ check "determinate: an equality with the word -o is not a compound" \
 	"$([ "$arg" = -o ] && echo yes || echo no)" "yes"
 check "determinate: a left operand that ends in -a is not a compound" \
 	"$([ x-a = "$arg" ] && echo yes || echo no)" "yes"
+check "a compound whose last half is a one-word test" \
+	"$([ "$a" = x -a "$b" ] && echo yes || echo no)" "yes"
+check "a compound joined by a double-spaced and" \
+	"$([ "$a" = x -a  "$b" -le 3 ] && echo yes || echo no)" "yes"
 PROBE
 _lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
-	"$_lam_compound_names" "a compound whose first half is nothing versus something;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a floor of ten;a mirrored floor of zero;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
+	"$_lam_compound_names" "a compound joined by a double-spaced and;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a floor of ten;a mirrored floor of zero;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused
