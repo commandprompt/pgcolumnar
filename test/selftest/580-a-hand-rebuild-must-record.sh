@@ -107,6 +107,7 @@ check_text "the shim redirects the install away from the real prefix" \
 # mtime moves whether or not the content does, and that is the whole signal.
 _hr_live_so="$("$PGC_SELFTEST_PG_CONFIG" --pkglibdir)/pgcolumnar.so"
 _hr_live_before="$(stat -c %Y "$_hr_live_so" 2>/dev/null)"
+_hr_live_ino="$(stat -c %i "$_hr_live_so" 2>/dev/null)"
 
 _hr_stamp="$(pgc_source_stamp_path "$_hr_tmp/tree" "$_hr_tmp/pg_config")"
 check_text "no stamp for this prefix before the rebuild" \
@@ -137,6 +138,33 @@ _hr_diagnose() {	# _hr_diagnose LOGFILE -> the tail, or WHY there is no tail
 	fi
 	echo "      ---- rebuild.log, last 20 lines ----"
 	tail -20 "$_f" | sed 's/^/      /'
+}
+
+_hr_live_verdict() {	# BEFORE AFTER TARGET LIVE_SO -> untouched|overwritten|changed-elsewhere
+	# WHO WROTE IT (#1942). An unchanged mtime is untouched. A changed one is the
+	# rebuild's only if the rebuild targeted the live library, because PGXS
+	# installs into the same `pg_config --pkglibdir` that rebuild.sh prints as
+	# its target. A rebuild that printed no target cannot be cleared by it, so an
+	# empty target is blamed rather than excused.
+	if [ "${1:-}" = "${2:-}" ]; then
+		echo untouched
+	elif [ -z "${3:-}" ] || [ "$3" = "${4:-}" ]; then
+		echo overwritten
+	else
+		echo changed-elsewhere
+	fi
+}
+_hr_live_outcome() {	# VERDICT IN_CI -> pass|fail|skip
+	# A SHARED BOX SKIPS, CI DOES NOT (#1942). Off CI, other worktrees install
+	# into the same prefix, so another writer is an environment fact and the arm
+	# skips with the measurement as its reason. A CI runner has no other writer,
+	# so there the same change still fails: the arm proves as much in CI as it
+	# did before this function existed.
+	case "${1:-}" in
+		untouched) echo pass ;;
+		changed-elsewhere) [ "${2:-}" = true ] && echo fail || echo skip ;;
+		*) echo fail ;;
+	esac
 }
 
 "$PGC_TESTDIR/rebuild.sh" "$_hr_tmp/pg_config" "$_hr_tmp/tree" >"$_hr_tmp/rebuild.log" 2>&1
@@ -263,6 +291,41 @@ check_text "a rebuild that failed skips them rather than reading a stamp it did 
 check_text "and any other status skips too, rather than being read as success" \
 	"$(_hr_dependents "")" "skip"
 
+# ---- the live-library verdict must name its writer (#1942) -------------------
+#
+# The arm at the end of this part reads the live library's mtime before and after
+# the rebuild. On a shared box other worktrees install into the same prefix, and
+# any install in that window moved the mtime and was blamed on the rebuild:
+#
+#     the installed library of the running major was never touched:
+#         got [overwritten] want [untouched]
+#
+# reported by the PR #1938 review with the .so's mtime inside the run, while
+# other sessions ran pgsql suites. The rebuild cannot have written the live
+# library unless it TARGETED it: rebuild.sh prints `== target: <pkglibdir>/
+# pgcolumnar.so`, and PGXS installs into the same `pg_config --pkglibdir`. So the
+# verdict reads the rebuild's own target, and a change it did not target is named
+# as another writer's. Both decisions are functions, driven here with literals.
+check_text "premise: the live-library verdict is exposed to be judged" \
+	"$(type -t _hr_live_verdict)" "function"
+check_text "premise: and so is what that verdict does to the arm" \
+	"$(type -t _hr_live_outcome)" "function"
+check_text "an unchanged live library reads as untouched" \
+	"$(_hr_live_verdict 100 100 /tmp/t/lib/pgcolumnar.so /usr/local/x/lib/pgcolumnar.so)" "untouched"
+check_text "a changed live library the rebuild targeted reads as overwritten" \
+	"$(_hr_live_verdict 100 200 /usr/local/x/lib/pgcolumnar.so /usr/local/x/lib/pgcolumnar.so)" "overwritten"
+check_text "a changed live library the rebuild did not target names another writer" \
+	"$(_hr_live_verdict 100 200 /tmp/t/lib/pgcolumnar.so /usr/local/x/lib/pgcolumnar.so)" "changed-elsewhere"
+check_text "a rebuild that printed no target is blamed, not excused" \
+	"$(_hr_live_verdict 100 200 "" /usr/local/x/lib/pgcolumnar.so)" "overwritten"
+check_text "untouched passes and overwritten fails, on a shared box and in CI" \
+	"$(_hr_live_outcome untouched "")/$(_hr_live_outcome untouched true)/$(_hr_live_outcome overwritten "")/$(_hr_live_outcome overwritten true)" \
+	"pass/pass/fail/fail"
+check_text "another writer on a shared box skips the arm with a reason" \
+	"$(_hr_live_outcome changed-elsewhere "")" "skip"
+check_text "another writer in CI still fails, because nothing else installs there" \
+	"$(_hr_live_outcome changed-elsewhere true)" "fail"
+
 _hr_dtmp="$(mktemp -d)"
 printf 'rebuild: UNRESOLVED SYMBOLS against PostgreSQL 18\n__aarch64_ldadd4_acq_rel\n' \
 	> "$_hr_dtmp/full.log"
@@ -314,9 +377,27 @@ if [ "$(_hr_dependents "$_hr_rc")" = run ]; then
 	check_text "and it reads a different source as stale rather than fresh" \
 		"$(pgc_freshness_verdict "$(head -1 "$_hr_stamp" 2>/dev/null)" deadbeefdead)" "stale"
 
-	check_text "and the installed library of the running major was never touched" \
-		"$(if [ "$(stat -c %Y "$_hr_live_so" 2>/dev/null)" = "$_hr_live_before" ];
-		then echo untouched; else echo overwritten; fi)" "untouched"
+	# WHERE THE REBUILD SAID IT INSTALLED, read from its own log (#1942).
+	_hr_target="$(sed -n 's/^== target:  *//p' "$_hr_tmp/rebuild.log" | head -1)"
+	check_text "premise: the rebuild names the temporary prefix as its target" \
+		"$_hr_target" "$_hr_tmp/prefix/lib/pgcolumnar.so"
+
+	# THE MEASUREMENT TRAVELS WITH THE VERDICT (#1942, part 540): both mtimes,
+	# both inodes, the owner now, and the rebuild's target, so a reader can judge
+	# when the write happened and who made it.
+	_hr_live_after="$(stat -c %Y "$_hr_live_so" 2>/dev/null)"
+	_hr_live_now="$(stat -c '%i %U' "$_hr_live_so" 2>/dev/null)"
+	_hr_live_v="$(_hr_live_verdict "$_hr_live_before" "$_hr_live_after" "$_hr_target" "$_hr_live_so")"
+	_hr_live_m="$_hr_live_v: $_hr_live_so mtime $_hr_live_before -> $_hr_live_after, inode $_hr_live_ino -> ${_hr_live_now%% *}, owner ${_hr_live_now#* }, rebuild target ${_hr_target:-<none>}"
+	# The arm name stays literal on both branches, so part 470 can compare it.
+	if [ "$(_hr_live_outcome "$_hr_live_v" "${GITHUB_ACTIONS:-}")" = skip ]; then
+		check_skip "and the installed library of the running major was never touched" \
+			"SKIP  and the installed library of the running major was never touched (another writer installed into the shared prefix during the run; $_hr_live_m)" \
+			"another writer installed into the shared prefix"
+	else
+		check_text "and the installed library of the running major was never touched" \
+			"$(if [ "$_hr_live_v" = untouched ]; then echo untouched; else echo "$_hr_live_m"; fi)" "untouched"
+	fi
 else
 	# THE ONLY DIAGNOSIS THERE IS. rebuild.sh's output goes to a file this part
 	# deletes on the way out, so without this the run reports `got [1] want [0]`
@@ -326,6 +407,7 @@ else
 	for _hr_arm in \
 		"and the freshness gate then reads the tree as built from this source" \
 		"and it reads a different source as stale rather than fresh" \
+		"premise: the rebuild names the temporary prefix as its target" \
 		"and the installed library of the running major was never touched"; do
 		check_skip "$_hr_arm" \
 			"SKIP  $_hr_arm (the hand rebuild failed, so there is no stamp to read)" \

@@ -534,6 +534,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
+  session installs into the same prefix during the run (#1942). The check
+  "the installed library of the running major was never touched" now reads the
+  rebuild's own target. A change to the installed library that the rebuild did
+  not target skips the check, with the measurement as the reason. In GitHub
+  Actions the same change still fails the check. A failure now prints both
+  modification times, both inodes, the owner and the target. docs/testing.md.
+
 - The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
   unset (#1933). That fixed default does not exist in the dev container, so
   every cluster fixture failed at setup, and
