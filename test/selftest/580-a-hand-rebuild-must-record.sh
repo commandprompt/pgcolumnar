@@ -379,7 +379,7 @@ if [ "$(_hr_dependents "$_hr_rc")" = run ]; then
 
 	# WHERE THE REBUILD SAID IT INSTALLED, read from its own log (#1942).
 	_hr_target="$(sed -n 's/^== target:  *//p' "$_hr_tmp/rebuild.log" | head -1)"
-	check_text "premise: the rebuild names the temporary prefix as its target" \
+	check_text "the rebuild names the temporary prefix as its target" \
 		"$_hr_target" "$_hr_tmp/prefix/lib/pgcolumnar.so"
 
 	# THE MEASUREMENT TRAVELS WITH THE VERDICT (#1942, part 540): both mtimes,
@@ -407,7 +407,7 @@ else
 	for _hr_arm in \
 		"and the freshness gate then reads the tree as built from this source" \
 		"and it reads a different source as stale rather than fresh" \
-		"premise: the rebuild names the temporary prefix as its target" \
+		"the rebuild names the temporary prefix as its target" \
 		"and the installed library of the running major was never touched"; do
 		check_skip "$_hr_arm" \
 			"SKIP  $_hr_arm (the hand rebuild failed, so there is no stamp to read)" \
