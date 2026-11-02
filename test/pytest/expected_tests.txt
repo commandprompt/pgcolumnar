@@ -1770,4 +1770,9 @@ guard_tests 863
 # detail escapes a newline in the table's name, a backslash before an x and the LATIN1 NEL, and prints
 # the WIN1252 euro sign as written), added to an existing test, by collection: 6160 tests collected,
 # less guard_tests 863.
+# cluster_tests 5297 -> 5297 for #1964 review round two's six checks in test_tier_partition.py (a
+# glob result other than the path does not count; 128 levels match and 129 error; a 4096-byte pattern
+# errors; a 4096-byte path is false; 400000 parts answer inside a 1 s timeout; a 4000-level pattern
+# errors and the server stays up), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
 cluster_tests 5297
