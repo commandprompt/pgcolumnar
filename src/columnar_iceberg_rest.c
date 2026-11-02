@@ -1009,6 +1009,11 @@ rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
 	StringInfoData rp;
 
 	rest_refuse_only_empty_level(levels);
+	/*
+	 * A guard for future callers. The SQL functions refuse '' before
+	 * rest_resolve, and PgColumnarIcebergRestLoadTableLocation has no caller
+	 * yet, so no test reaches this call today.
+	 */
 	rest_refuse_empty_table(table);
 	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
