@@ -11184,6 +11184,9 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint` | empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1 |
 | `test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint` | empty level: a missing namespace with no empty level gets no empty-level hint |
 | `test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the namespace db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_middle_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x |
+| `test_empty_level_iceberg_rest_namespaces_lists_the_text_form_of_each_namespace` | empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y |
 | `test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables` | empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables |
 | `test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables` | empty level: iceberg_rest_tables of the text form 'db.' lists its tables |
 | `test_empty_level_iceberg_rest_table_location_resolves_the_table` | empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table |
@@ -11204,6 +11207,15 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
 | `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
 | `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
+| `test_empty_table_name_location_is_refused` | empty table name: iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_scan_is_refused` | empty table name: iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_array_form_location_is_refused` | empty table name: the text[] form of iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_array_form_scan_is_refused` | empty table name: the text[] form of iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_location_is_refused_when_the_catalog_cannot_be_reached` | empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_table_name_oauth_server_location_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_table_name_the_same_catalog_still_resolves_the_table` | empty table name: the same catalog still resolves db.events |
+| `test_empty_table_name_no_request_has_an_empty_table_segment` | empty table name: no request reaches the catalog with an empty table segment |
 
 ## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
 

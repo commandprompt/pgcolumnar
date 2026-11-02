@@ -1484,6 +1484,13 @@ catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
 The REST spec has no other way to write it. The error's hint reads
 `Level 1 of 1 of the namespace is empty`.
 
+`iceberg_rest_table_location` and `iceberg_rest_scan` refuse an empty table
+name, `''`, with SQLSTATE 22023 (#1931). The error reads
+`iceberg: the table name is empty`. The refusal comes before any request,
+including a server's OAuth token request. The request path would end in an
+empty segment, as in `/v1/namespaces/db/tables/`. A proxy that strips the
+trailing slash would send it to the table list instead.
+
 A catalog cannot be asked about a level that contains its own namespace
 separator, because the catalog would split that level in two. The function
 then fails with SQLSTATE 22023 before it sends any request that names the
@@ -1614,7 +1621,9 @@ Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
 its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
 argument of the other REST functions, with two exceptions, described next. A
-row with an empty level, such as `{db,""}`, passes back too (#1891).
+row with an empty level, such as `{db,""}`, passes back too (#1891). The
+function also lists the children of such a namespace, such as `{db,"",x}`,
+and their children, such as `{db,"",x,y}` (#1939).
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.

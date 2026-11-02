@@ -546,12 +546,32 @@ check "empty level: a missing namespace with no empty level gets no empty-level 
 # This catalog (separator %1F) keeps its table in the namespace db, '' (an
 # empty second level), as the Apache Iceberg REST catalog allows. The client
 # must reach it in every form, and a listed row must pass back unchanged.
-start_fx emptylevel --namespace-levels '["db",""]' --table events
+# The catalog also serves db, '', x, a child of db, '' (#1939), and
+# db, '', x, y below it, so the walk must name an empty level that sits
+# between two others in ?parent=.
+start_fx emptylevel --namespace-levels '["db",""]' --table events --extra-namespace 'db..x.y'
 ECAT="http://127.0.0.1:$FX_PORT"
 check "empty level: iceberg_rest_namespace_levels lists the namespace db, ''" \
 	"$(rows_of "SELECT string_agg(array_to_json(ns)::text, ' ' ORDER BY array_to_json(ns)::text COLLATE \"C\")
 	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
-	'["db",""] ["db"]'
+	'["db","","x","y"] ["db","","x"] ["db",""] ["db"]'
+# The walk must go on below db, '': an empty level among other levels can be
+# named in ?parent=, so its children are listed (#1939).
+check "empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, ''" \
+	"$(rows_of "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x']) || ' of ' || count(*)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	"1 of 4"
+# The walk must go on below db, '', x too: its ?parent= holds two separators
+# in a row, for the empty level in the middle.
+check "empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x" \
+	"$(rows_of "SELECT count(*) FILTER (WHERE ns = ARRAY['db','','x','y']) || ' of ' || count(*)
+	            FROM pgcolumnar.iceberg_rest_namespace_levels('$ECAT') AS ns")" \
+	"1 of 4"
+# The text form shares the walk, and must list the same four namespaces.
+check "empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y" \
+	"$(rows_of "SELECT string_agg(ns, ',' ORDER BY ns COLLATE \"C\")
+	            FROM pgcolumnar.iceberg_rest_namespaces('$ECAT') AS ns")" \
+	"db,db.,db..x,db..x.y"
 check "empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables" \
 	"$(rows_of "SELECT string_agg(t, ',' ORDER BY t) FROM pgcolumnar.iceberg_rest_tables('$ECAT', ARRAY['db','']) AS t")" \
 	"events"
@@ -667,6 +687,50 @@ check "empty only level: the OAuth server form of iceberg_rest_scan of '' is ref
 check "empty only level: no request reaches the catalog with an empty path segment" \
 	"$(cat "$OLOG" "$KLOG" | grep -c '^GET [^ ?]*//')" \
 	"0"
+# ---- #1931: an empty table name ---------------------------------------------
+# An empty table name makes the loadTable path /v1/namespaces/db/tables/, which
+# ends in an empty segment. A proxy that strips the trailing slash would reach
+# listTables instead. So the client refuses it (22023) before any request,
+# including a server's OAuth token request. This fixture would answer the path.
+start_fx emptytable --table events
+TCAT="http://127.0.0.1:$FX_PORT"
+TLOG="$PGC_WORKDIR/emptytable.log"
+check "empty table name: iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_table_location of '' is refused" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', ARRAY['db'], '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the text[] form of iceberg_rest_scan of '' is refused" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('$TCAT', ARRAY['db'], '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('http://127.0.0.1:1', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request" \
+	"$(refusal_of "SELECT pgcolumnar.iceberg_rest_table_location('irs_down', 'db', '')" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+check "empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request" \
+	"$(refusal_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('irs_down', 'db', '') AS t(id bigint)" \
+	   "the table name is empty" " as empty")" \
+	"22023 as empty"
+# The control resolves db.events on the same fixture, so its log is known to
+# record requests; then no GET in it may end in an empty table segment.
+check "empty table name: the same catalog still resolves db.events" \
+	"$(rows_of "SELECT pgcolumnar.iceberg_rest_table_location('$TCAT', 'db', 'events')")" \
+	"$MDLOC"
+check "empty table name: no request reaches the catalog with an empty table segment" \
+	"loadTable events=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/events ') empty table segment=$(cat "$TLOG" 2>/dev/null | grep -c '^GET [^ ?]*/tables/ ')" \
+	"loadTable events=1 empty table segment=0"
 # The text[] overloads are STRICT: a NULL namespace array gives no rows. It runs last,
 # so a crash here reddens only it and the survival check below.
 check "text[] form: iceberg_rest_tables of a NULL namespace array returns no rows" \
