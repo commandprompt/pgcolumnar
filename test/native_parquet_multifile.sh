@@ -366,4 +366,158 @@ check "a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels ra
 wait_up
 psql_run "DROP FOREIGN TABLE ftdeep;"
 
+# ---- the reader's walk on the real filesystem is bounded (#1984) -----------
+#
+# glob(3) lists . and .. in every real directory, and .* matches both, so each
+# level of .*/ multiplies the walk. glob(3) does not check for interrupts and
+# keeps what it finds in memory it mallocs outside PostgreSQL. The reader counts
+# the steps of the walk and stops past 1,000,000 with 54000, as
+# path_glob_matches does (#1973), and a cancel stops the walk. Before the fix,
+# 18 levels ran for minutes and no cancel stopped them, so each probe here runs
+# under a client timeout, and a backend still walking then is killed.
+# kill_walks -> SIGKILL every backend whose statement holds the tag pgc1984
+kill_walks() {
+	local pid
+	for pid in $(q "SELECT pid FROM pg_stat_activity WHERE query LIKE '%pgc1984%' AND pid <> pg_backend_pid();"); do
+		pgc_pg "kill -9 $pid" >/dev/null 2>&1
+	done
+	wait_up
+}
+# st_in SECONDS OPTIONS SQL -> as st, with PGOPTIONS set to OPTIONS, or
+# "no answer in SECONDS s" when the client times out
+st_in() {
+	local out rc
+	out=$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS="$2" timeout "$1" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$3" 2>&1 >/dev/null)
+	rc=$?
+	if [ "$rc" = 124 ]; then
+		kill_walks
+		echo "no answer in $1 s"
+		return
+	fi
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
+	echo "${out:-no answer}"
+}
+# The walk takes about 0.25 s on the test host but over 1 s on a loaded CI
+# runner, so the statement_timeout is 10 s. Before the fix no timeout stopped
+# the walk, and the client gave up after 20 s.
+mkdir -p "$W/emptyglob"
+dots18="'$W/emptyglob/' || repeat('.*/', 18) || 'x.parquet'"
+check "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 10 s statement_timeout" \
+	"$(st_in 20 '-c statement_timeout=10s' "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($dots18) AS t($cols)")" \
+	"54000"
+# fan/ holds 10 symbolic links to itself, l1 to l10, so each level of */ in
+# fan/ matches the 10 links and the walk grows tenfold per level. */ never
+# matches . or .., so the walk stays inside fan/ and its length does not
+# depend on the host. With glibc 2.43, 5 levels take 366,664 steps, under the
+# bound: the walk ends and matches nothing (58P01). A 20 ms
+# statement_timeout fires inside that walk, and the walk must stop for it
+# (57014). Before the fix the walk ran to its end and the read raised 58P01
+# before the timeout was seen.
+mkdir -p "$W/fan"
+for i in 1 2 3 4 5 6 7 8 9 10; do ln -sfn . "$W/fan/l$i"; done
+fan5="'$W/fan/' || repeat('*/', 5) || 'x.parquet'"
+check "a 20 ms statement_timeout stops read_parquet's local glob walk with 57014; without it the walk ends with 58P01" \
+	"$(st_in 60 '' "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($fan5) AS t($cols)")|$(st_in 60 '-c statement_timeout=20ms' "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($fan5) AS t($cols)")" \
+	"58P01|57014"
+# 6 levels over fan/ take 3,666,664 steps, so the walk runs until the bound
+# stops it, after 1,000,000 steps, about 0.5 s on the test host. The cancel is
+# sent 0.1 s after the statement shows as active, and the walk must stop for
+# it before the bound. A host that runs 1,000,000 steps in under 0.1 s would
+# print 54000 here.
+# cancel_walk SQL -> the SQLSTATE SQL fails with after pg_cancel_backend
+cancel_walk() {
+	local f="$W/cancel1984.out" pid="" i bg
+	st_in 60 '' "$1" >"$f" &
+	bg=$!
+	for i in $(seq 500); do
+		pid=$(q "SELECT pid FROM pg_stat_activity WHERE query LIKE '%pgc1984 cancel%' AND state = 'active' AND pid <> pg_backend_pid() LIMIT 1;")
+		[ -n "$pid" ] && break
+		sleep 0.01
+	done
+	sleep 0.1
+	[ -n "$pid" ] && q "SELECT pg_cancel_backend($pid);" >/dev/null
+	wait "$bg"
+	if [ -n "$pid" ]; then cat "$f"; else echo "$(cat "$f")|no active backend seen"; fi
+}
+fan6="'$W/fan/' || repeat('*/', 6) || 'x.parquet'"
+check "pg_cancel_backend stops read_parquet's local glob walk with 57014" \
+	"$(cancel_walk "SELECT /* pgc1984 cancel */ count(*) FROM pgcolumnar.read_parquet($fan6) AS t($cols)")" \
+	"57014"
+# The step count and the "stopped" flags are statics; each walk resets them.
+check "after a refused walk, read_parquet still reads a local glob in the same session" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=20s' timeout 20 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($dots18) AS t($cols);" \
+		-c "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/part-[01].parquet') AS t($cols);" 2>&1 | sed 's/^ERROR: *//' | paste -sd'|')" \
+	"54000|2000"
+# A walk cut by an interrupt sets a static flag too, and each walk resets it.
+# Without the reset, every later glob in the session fails with 57014.
+check "after a walk a statement_timeout cut, read_parquet still reads a local glob in the same session" \
+	"$(env PATH="$PGC_BINDIR:$PATH" timeout 60 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -v VERBOSITY=sqlstate \
+		-c "SET statement_timeout = '20ms';" \
+		-c "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($fan5) AS t($cols);" \
+		-c "RESET statement_timeout;" \
+		-c "SELECT count(*) FROM pgcolumnar.read_parquet('$DIR/part-[01].parquet') AS t($cols);" 2>&1 | grep -v '^SET$\|^RESET$' | sed 's/^ERROR: *//' | paste -sd'|')" \
+	"57014|2000"
+# glob(3) closes each directory it opened, also after the walk stopped, so
+# refused and cut walks leave the backend with as many open files as before.
+# fd_walks -> "open files before|open files after|the SQLSTATEs of the walks"
+fd_walks() {
+	local f="$W/fd1984.sql" i
+	{
+		echo "SELECT count(*) FROM pg_ls_dir('/proc/self/fd');"
+		for i in $(seq 10); do echo "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($dots18) AS t($cols);"; done
+		echo "SET statement_timeout = '20ms';"
+		for i in $(seq 10); do echo "SELECT /* pgc1984 */ count(*) FROM pgcolumnar.read_parquet($fan5) AS t($cols);"; done
+		echo "RESET statement_timeout;"
+		echo "SELECT count(*) FROM pg_ls_dir('/proc/self/fd');"
+	} >"$f"
+	local fds codes
+	fds=$(env PATH="$PGC_BINDIR:$PATH" timeout 120 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -q -v VERBOSITY=sqlstate -f "$f" 2>"$f.err" | paste -sd'|')
+	codes=$(sed -n 's/.*ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' "$f.err" | sort | uniq -c | awk '{printf "%s%sx%s", (NR>1?" ":""), $1, $2}')
+	echo "$fds|$codes"
+}
+fdgot="$(fd_walks)"
+check "10 refused and 10 cut local glob walks leave the backend's open file count unchanged" \
+	"$fdgot" "${fdgot%%|*}|${fdgot%%|*}|10x54000 10x57014"
+kill_walks
+# Each name glob(3) reads is a step, so a glob over a large directory must
+# stay far below the bound and still read every match.
+python3 - "$W/many" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.parquet as pq
+d = sys.argv[1]
+os.makedirs(d)
+for i in range(2000):
+    pq.write_table(pa.table({"id": pa.array([i], pa.int32()), "v": pa.array([i], pa.int64())}),
+                   f"{d}/m-{i:05d}.parquet")
+for i in range(10000):
+    open(f"{d}/n-{i:05d}.txt", "w").close()
+PY
+check "read_parquet reads all 2000 files a local glob matches among 12000 names" \
+	"$(q "SELECT count(*) || '|' || sum(id) FROM pgcolumnar.read_parquet('$W/many/m-*.parquet') AS t($cols)")" \
+	"2000|1999000"
+# client_connection_check_interval raises an interrupt every time it fires,
+# and that interrupt raises no error. The walk must not stop for it: a walk
+# longer than the interval would be cut on every attempt and the read would
+# fail with 57014. ccitree/ holds 200 links to ccileaf/, which holds 1 Parquet file
+# and 1000 other names, so the walk reads about 200,000 names and takes
+# longer than 10 ms.
+python3 - "$W/ccileaf" "$W/ccitree" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.parquet as pq
+leaf, tree = sys.argv[1], sys.argv[2]
+os.makedirs(leaf)
+os.makedirs(tree)
+pq.write_table(pa.table({"id": pa.array([7], pa.int32()), "v": pa.array([7], pa.int64())}), f"{leaf}/m.parquet")
+for i in range(1000):
+    open(f"{leaf}/n-{i:04d}.txt", "w").close()
+for i in range(200):
+    os.symlink(leaf, f"{tree}/d{i:03d}")
+PY
+check "read_parquet reads all 200 matches of a local glob under client_connection_check_interval = 10ms" \
+	"$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c client_connection_check_interval=10ms' timeout 60 psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -v VERBOSITY=sqlstate \
+		-c "SELECT /* pgc1984 */ count(*) || '|' || sum(id) FROM pgcolumnar.read_parquet('$W/ccitree/*/*.parquet') AS t($cols)" 2>&1 | sed 's/^ERROR: *//' | paste -sd'|')" \
+	"200|1400"
+
 pgc_summary

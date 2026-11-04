@@ -1223,11 +1223,33 @@ pattern could crash the server. The limits are those of
 The reader checks the pattern before it looks for an object of that exact
 name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
 
-The reader does not yet bound the number of steps of a local walk (#1984).
-Each real directory lists `.` and `..`, so each level of `.*/` in a local
-pattern multiplies the walk. With 15 such levels the walk can run for minutes,
-and a cancel does not stop it until `glob(3)` returns. Avoid `.*` as a whole
-level of a local pattern.
+The reader also bounds the walk of a local pattern on the filesystem
+(#1984). Each real directory lists `.` and `..`, and a name such as `.*`
+matches both. So each level of `.*/` in a local pattern multiplies the walk.
+The reader counts each directory it opens, each name it reads and each
+`stat` as one step. It stops after 1,000,000 steps with error 54000, the
+error of `path_glob_matches`, and reads no file. The count covers every
+name the walk reads in every directory the pattern reaches, not only the
+names that match. So a glob fails when the directories it walks hold more
+than about 1,000,000 names in all. That includes a partitioned tree such as
+`<tree>/*/*.parquet` whose directories are each small: 400 directories of
+2,600 names each are refused. Read such a tree as a directory instead. A
+directory read finds every `*.parquet` in its subdirectories and does not
+count steps. We measured on PostgreSQL 18 with glibc 2.43. A pattern of 18
+levels of `.*/` is refused after about 0.25 s. A glob that matches 2000
+files among 12,000 names reads every match.
+
+A cancel, a `statement_timeout`, a `transaction_timeout` (PostgreSQL 17
+and later) or `pg_terminate_backend` stops the walk. Before, the walk did not stop for any of them: with 15
+levels of `.*/` it ran for minutes, and only SIGKILL stopped it. An
+interrupt that raises no error, such as the one
+`client_connection_check_interval` sets, does not stop the walk; the reader
+handles it once the walk ends.
+
+If a cancel arrives while interrupts are held off, the reader cannot process
+it, and the walk stops again at once on every attempt. After 100 such
+attempts the read fails with error 57014,
+`could not expand pattern "...": interrupted 100 times`.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 

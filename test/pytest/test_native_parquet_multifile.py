@@ -471,3 +471,195 @@ def test_a_glob_too_deep_or_too_long_for_glob3_is_an_error(pgc_conn, pgc_cluster
         _wait_up(pgc_cluster)
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
             c.execute("DROP FOREIGN TABLE IF EXISTS ftdeep")
+
+
+def _state_within(cluster, sql, seconds, options=None):
+    """-> the SQLSTATE `sql` fails with on its own connection, "ok", or
+    "no answer in N s" when it has not ended after `seconds`. A backend still
+    running the statement then is killed: before #1984 no cancel stopped it."""
+    out = []
+
+    def run():
+        out.append(_sqlstate(cluster, sql, options=options))
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    if t.is_alive():
+        _kill_walks(cluster)
+        return f"no answer in {seconds} s"
+    return out[0] if out else "no result"
+
+
+def _kill_walks(cluster):
+    """SIGKILL every backend whose statement holds the tag pgc1984, then wait."""
+    import signal
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        pids = [r[0] for r in c.execute("SELECT pid FROM pg_stat_activity WHERE query LIKE '%pgc1984%' "
+                                        "AND pid <> pg_backend_pid()").fetchall()]
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    _wait_up(cluster)
+
+
+def test_the_readers_local_glob_walk_is_bounded(pgc_cluster, server_dir, expect):
+    """#1984. glob(3) lists . and .. in every real directory, and .* matches both,
+    so each level of .*/ multiplies the reader's walk. The reader counts the steps
+    and stops past 1,000,000 with 54000, and a cancel stops the walk. Each probe
+    runs under a client timeout, and a backend still walking then is killed."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; multi-file suite needs it")
+    if pa is None:
+        return
+    pq = expect.require_module("pyarrow.parquet", name="pyarrow not available; multi-file suite needs it")
+    w = server_dir / "walk1984"
+    (w / "emptyglob").mkdir(parents=True)
+    fan = w / "fan"
+    fan.mkdir()
+    for i in range(1, 11):
+        (fan / f"l{i}").symlink_to(".")
+    parts = w / "parts"
+    parts.mkdir()
+    for i in range(2):
+        pq.write_table(pa.table({"id": pa.array(range(i * 1000, i * 1000 + 1000), pa.int32()),
+                                 "v": pa.array(range(i * 1000, i * 1000 + 1000), pa.int64())}),
+                       str(parts / f"part-{i}.parquet"))
+    many = w / "many"
+    many.mkdir()
+    for i in range(2000):
+        pq.write_table(pa.table({"id": pa.array([i], pa.int32()), "v": pa.array([i], pa.int64())}),
+                       str(many / f"m-{i:05d}.parquet"))
+    for i in range(10000):
+        (many / f"n-{i:05d}.txt").touch()
+    ccileaf = w / "ccileaf"
+    ccileaf.mkdir()
+    pq.write_table(pa.table({"id": pa.array([7], pa.int32()), "v": pa.array([7], pa.int64())}),
+                   str(ccileaf / "m.parquet"))
+    for i in range(1000):
+        (ccileaf / f"n-{i:04d}.txt").touch()
+    ccitree = w / "ccitree"
+    ccitree.mkdir()
+    for i in range(200):
+        (ccitree / f"d{i:03d}").symlink_to(ccileaf)
+    for p in list(parts.iterdir()) + list(many.iterdir()) + list(ccileaf.iterdir()):
+        p.chmod(0o644)
+
+    def rp(expr, tag="pgc1984"):
+        return f"SELECT /* {tag} */ count(*) FROM pgcolumnar.read_parquet({expr}) AS t({COLS})"
+
+    dots18 = f"'{w}/emptyglob/' || repeat('.*/', 18) || 'x.parquet'"
+    expect.text(_state_within(pgc_cluster, rp(dots18), 20, options="-c statement_timeout=10s"), "54000",
+                "read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 10 s statement_timeout")
+    # fan/ holds 10 links to itself, l1 to l10. */ never matches . or .., so
+    # the walk stays inside fan/. 5 levels take 366,664 steps with glibc 2.43,
+    # under the bound, and a 20 ms statement_timeout fires inside the walk.
+    fan5 = f"'{fan}/' || repeat('*/', 5) || 'x.parquet'"
+    expect.text(f"{_state_within(pgc_cluster, rp(fan5), 60)}|"
+                f"{_state_within(pgc_cluster, rp(fan5), 60, options='-c statement_timeout=20ms')}",
+                "58P01|57014",
+                "a 20 ms statement_timeout stops read_parquet's local glob walk with 57014; without it the walk "
+                "ends with 58P01")
+    # 6 levels take 3,666,664 steps, so the walk runs until the bound stops it;
+    # the cancel is sent 0.1 s after the statement shows as active.
+    fan6 = f"'{fan}/' || repeat('*/', 6) || 'x.parquet'"
+    out = []
+    t = threading.Thread(target=lambda: out.append(_sqlstate(pgc_cluster, rp(fan6, "pgc1984 cancel"))), daemon=True)
+    t.start()
+    pid = None
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        for _ in range(500):
+            row = c.execute("SELECT pid FROM pg_stat_activity WHERE query LIKE '%pgc1984 cancel%' "
+                            "AND state = 'active' AND pid <> pg_backend_pid() LIMIT 1").fetchone()
+            if row:
+                pid = row[0]
+                break
+            time.sleep(0.01)
+        time.sleep(0.1)
+        if pid is not None:
+            c.execute("SELECT pg_cancel_backend(%s)", (pid,))
+    t.join(60)
+    got = out[0] if out else "no answer in 60 s"
+    if t.is_alive():
+        _kill_walks(pgc_cluster)
+    expect.text(got if pid is not None else f"{got}|no active backend seen", "57014",
+                "pg_cancel_backend stops read_parquet's local glob walk with 57014")
+    # The step count and the "stopped" flags are statics; each walk resets them.
+    same = []
+
+    def run_same():
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True, options="-c statement_timeout=20s") as c:
+            same.extend(_answer(c, sql) for sql in (rp(dots18), rp(f"'{parts}/part-[01].parquet'", "")))
+
+    t = threading.Thread(target=run_same, daemon=True)
+    t.start()
+    t.join(20)
+    if t.is_alive():
+        _kill_walks(pgc_cluster)
+    expect.text("|".join(same), "54000|2000",
+                "after a refused walk, read_parquet still reads a local glob in the same session")
+    # A walk cut by an interrupt sets a static flag too, and each walk resets it.
+    cut = []
+
+    def run_cut():
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+            c.execute("SET statement_timeout = '20ms'")
+            cut.append(_answer(c, rp(fan5)))
+            c.execute("RESET statement_timeout")
+            cut.append(_answer(c, rp(f"'{parts}/part-[01].parquet'", "")))
+
+    t = threading.Thread(target=run_cut, daemon=True)
+    t.start()
+    t.join(60)
+    if t.is_alive():
+        _kill_walks(pgc_cluster)
+    expect.text("|".join(cut), "57014|2000",
+                "after a walk a statement_timeout cut, read_parquet still reads a local glob in the same session")
+    # glob(3) closes each directory it opened, also after the walk stopped.
+    fds = []
+    codes = {}
+
+    def run_fds():
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+            fds.append(_answer(c, "SELECT count(*) FROM pg_ls_dir('/proc/self/fd')"))
+            for _ in range(10):
+                st = _answer(c, rp(dots18))
+                codes[st] = codes.get(st, 0) + 1
+            c.execute("SET statement_timeout = '20ms'")
+            for _ in range(10):
+                st = _answer(c, rp(fan5))
+                codes[st] = codes.get(st, 0) + 1
+            c.execute("RESET statement_timeout")
+            fds.append(_answer(c, "SELECT count(*) FROM pg_ls_dir('/proc/self/fd')"))
+
+    t = threading.Thread(target=run_fds, daemon=True)
+    t.start()
+    t.join(120)
+    if t.is_alive():
+        _kill_walks(pgc_cluster)
+    got = "|".join(fds) + "|" + " ".join(f"{n}x{k}" for k, n in sorted(codes.items()))
+    before = fds[0] if fds else ""
+    expect.text(got, f"{before}|{before}|10x54000 10x57014",
+                "10 refused and 10 cut local glob walks leave the backend's open file count unchanged")
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        got = _answer(c, f"SELECT count(*) || '|' || sum(id) FROM pgcolumnar.read_parquet('{many}/m-*.parquet') "
+                         f"AS t({COLS})")
+    expect.text(got, "2000|1999000", "read_parquet reads all 2000 files a local glob matches among 12000 names")
+    # client_connection_check_interval raises an interrupt each time it fires,
+    # and that interrupt raises no error. The walk must not stop for it.
+    cci = []
+
+    def run_cci():
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True,
+                             options="-c client_connection_check_interval=10ms") as c:
+            cci.append(_answer(c, f"SELECT /* pgc1984 */ count(*) || '|' || sum(id) FROM pgcolumnar.read_parquet("
+                                  f"'{ccitree}/*/*.parquet') AS t({COLS})"))
+
+    t = threading.Thread(target=run_cci, daemon=True)
+    t.start()
+    t.join(60)
+    if t.is_alive():
+        _kill_walks(pgc_cluster)
+    expect.text(cci[0] if cci else "no answer in 60 s", "200|1400",
+                "read_parquet reads all 200 matches of a local glob under client_connection_check_interval = 10ms")

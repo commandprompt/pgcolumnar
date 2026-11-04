@@ -534,6 +534,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Parquet reader's walk of a local glob now stops after 1,000,000 steps
+  with error 54000, and a cancel stops it (#1984). The reader expands a local
+  pattern with `glob(3)` on the filesystem. Each real directory lists `.` and
+  `..`, and `.*` matches both, so each level of `.*/` multiplies the walk.
+  `glob(3)` does not check for interrupts. So
+  `read_parquet('<empty dir>/' || repeat('.*/', 18) || 'x.parquet')` ran for
+  minutes, grew the backend to 2.2 GB, and ignored `statement_timeout`,
+  `pg_cancel_backend` and `pg_terminate_backend`. Now the reader passes
+  `glob(3)` callbacks that count each directory opened, name read and `stat`.
+  They use the bound and the error of `path_glob_matches` (#1973). When a
+  cancel, a timeout or a termination is pending they end the walk, and the
+  reader then raises its error. An interrupt that raises no error, such as
+  `client_connection_check_interval`, does not end the walk. The reader
+  never reads the list of a walk that stopped. If a cancel cannot be
+  processed, because interrupts are held off, the reader walks again, and
+  after 100 attempts it fails with 57014 `could not expand pattern "...":
+  interrupted 100 times`. The 18-level pattern is refused after about
+  0.25 s on PostgreSQL 18. The bound counts every name the walk reads across
+  all the directories it reaches. So a glob over about 1,000,000 names in
+  all is refused too, even a partitioned tree whose directories are each
+  small; a directory read of the same tree works. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  twin.
 - `native_compact`, `replication` and their pytest twins no longer fail when
   another session holds an old snapshot during `compact` or `truncate` (#1987).
   They called each one once, and a held snapshot made the call do nothing. Now
@@ -686,7 +708,7 @@ true until the next version shipped.
   1,000,000 steps with error 54000, in about 60 ms, and never answers false.
   Each call starts the count again, so a refused pattern does not fail later
   calls in the same session. The reader's own walk on the real filesystem is
-  not bounded yet (#1984). docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  bounded too since #1984. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
   twin.
 - `tier_partition` now refuses a file that a foreign table's local glob reads
   through a name that matches `.` or `..` (#1982). `glob(3)` lists `.` and
