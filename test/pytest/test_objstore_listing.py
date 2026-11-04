@@ -202,6 +202,34 @@ def _refusal_detail(dsn, sql):
     return query_error("no error: the statement completed")
 
 
+def _sqlstate(dsn, sql):
+    """-> the SQLSTATE `sql` fails with, "ok" when it succeeds, or "no answer" when the
+    connection is lost, as the shell's st reads it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
+def _deep_premise(dsn, sql):
+    """-> "<SQLSTATE> names the key" when `sql` fails with an error that names the
+    1000-level key, as the shell's deep_premise reads it, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        if "a/a/x.parquet" in str(exc) or "a/a/x.parquet" in (exc.diag.message_detail or ""):
+            return f"{exc.sqlstate} names the key"
+        return f"{exc.sqlstate}: {_message(exc)[:200]}"
+    return "no error"
+
+
 def _list_requests(log):
     try:
         return sum(1 for line in pathlib.Path(log).read_text(errors="replace").splitlines()
@@ -560,6 +588,46 @@ def osl(pgc_cluster):
             c.execute(f"CREATE FOREIGN TABLE fmix (id int8) SERVER s3srv OPTIONS (path 's3://{BUCKET}/mix/')")
         r["mix fdw"] = _refusal_detail(dsn, "SELECT count(*) FROM fmix")
         r["survived"] = _survived(dsn, log, before)
+
+        # #1972: an s3:// glob of more than 128 *, or of 4096 bytes or more, is
+        # refused with 54000 before the listing, as path_glob_matches refuses it
+        def rst(n):
+            open(s3log, "w").close()
+            got = _sqlstate(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                 f"'s3://{BUCKET}/glb/' || repeat('*/', {n}) || 'x.parquet') AS t(id int8)")
+            return f"{got} lists={_list_requests(s3log)}"
+        r["deep stars"] = f"{rst(128)}|{rst(129)}"
+        r["deep bytes"] = "|".join(
+            _sqlstate(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                           f"rpad('s3://{BUCKET}/*', {n}, 'a') || '.parquet') AS t(id int8)") for n in (4087, 4088))
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE fdeep (id int8) SERVER s3srv "
+                      f"OPTIONS (path %L)', 's3://{BUCKET}/' || repeat('*/', 129) || 'x.parquet'); END$$")
+        r["deep fdw"] = _sqlstate(dsn, "SELECT count(*) FROM fdeep")
+        # A key of 1000 levels, listed from __listing_override__ so that no tree
+        # 1000 directories deep is made on disk. It holds no object, so a glob
+        # that matches it fails on the read and names the key: the premise. The
+        # crash read runs in a C.UTF-8 database, where fnmatch keeps more on the
+        # stack for each *.
+        override = work / "__listing_override__"
+        override.write_text('<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>'
+                            f'<Contents><Key>deep/{"a/" * 1000}x.parquet</Key></Contents></ListBucketResult>\n')
+        r["deep premise"] = _deep_premise(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                               f"'s3://{BUCKET}/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8)")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE DATABASE lst_cutf8 TEMPLATE template0 ENCODING 'UTF8' "
+                      "LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'")
+        udsn = cluster.dsn("lst_cutf8")
+        with psycopg.connect(udsn, autocommit=True) as c:
+            c.execute("CREATE EXTENSION pgcolumnar")
+        deep_before = _crashes(log)
+        r["deep crash"] = (_sqlstate(udsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/deep/' || repeat('*/', 1000) || '*.parquet') AS t(id int8)")
+                           + "|" + _survived(dsn, log, deep_before))
+        override.unlink()
+        _wait_up(dsn)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("DROP DATABASE lst_cutf8")
         r["integration"] = _integration(cluster, datadir, log, bucket, work)
         yield r
     finally:
@@ -843,6 +911,41 @@ def test_the_backend_is_still_up_after_the_listing_refusals(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(r["survived"], "1", "backend still up after the listing refusals")
+
+
+def test_an_s3_glob_of_more_than_128_stars_is_refused_before_the_listing(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep stars"], "58P01 lists=2|54000 lists=0",
+                    "read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists")
+
+
+def test_an_s3_glob_of_4096_bytes_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep bytes"], "58P01|54000",
+                    "read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000")
+
+
+def test_a_foreign_table_over_an_s3_glob_of_129_stars_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep fdw"], "54000", "a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000")
+
+
+def test_the_listing_returns_a_key_of_1000_levels_that_one_star_matches(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep premise"], "58P01 names the key",
+                    "premise: the listing returns a key of 1000 levels, and a glob of one * matches it")
+
+
+def test_an_s3_glob_of_1000_levels_is_refused_and_the_server_stays_up(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep crash"], "54000|1",
+                    "read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 "
+                    "in a UTF-8 database, and the server stays up")
 
 
 _NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation (or its upload failed), "

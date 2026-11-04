@@ -2108,6 +2108,81 @@ pgc_retry_past_horizon() {
 	echo "$total/$calls"
 }
 
+# pgc_freed_range_blockers TABLE -- how many sessions, prepared transactions and
+# replication slots hold truncate's horizon at or before the newest range compact
+# freed in TABLE (#1988). Prints nothing when TABLE has no freed range.
+#
+# truncate removes a freed range only when the oldest-xmin horizon has passed the
+# transaction that freed it (free_space.freed_xid). For a user table, PostgreSQL
+# computes that horizon from this database's sessions, but one of them is
+# truncate's own, and its snapshot's xmin is the oldest transaction ID running in
+# any database (#1992). So this counts, where the xid or xmin is not newer than
+# freed_xid:
+#   - each session, in any database, with a backend_xid;
+#   - each session in this database, or with no database such as a walsender,
+#     with a backend_xmin (a snapshot with no xid in another database does not
+#     hold truncate back);
+#   - each prepared transaction, in any database;
+#   - each replication slot with an xmin.
+# xid has no ordering operator, so age() compares them: the older xid has the
+# larger age, and an xid equal to freed_xid holds it too. 0 means a truncate now
+# is not held back by the horizon.
+#
+# It counts more than the horizon in one case: PostgreSQL skips a backend that
+# is running VACUUM, and pg_stat_activity cannot tell this apart. Such a count
+# only makes the wait longer.
+#
+# With no freed range there is no transaction to compare against. Then every
+# comparison is NULL and a count would read 0 without measuring anything. So
+# the query returns NULL and this prints nothing.
+pgc_freed_range_blockers() {
+	q "WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+	              WHERE storage_id = pgcolumnar.get_storage_id('$1') AND freed_xid >= 3)
+	   SELECT CASE WHEN f.a IS NOT NULL THEN
+	            (SELECT count(*) FROM pg_stat_activity
+	              WHERE pid <> pg_backend_pid()
+	                AND (age(backend_xid) >= f.a
+	                     OR ((datname = current_database() OR datid IS NULL)
+	                         AND age(backend_xmin) >= f.a)))
+	          + (SELECT count(*) FROM pg_prepared_xacts WHERE age(transaction) >= f.a)
+	          + (SELECT count(*) FROM pg_replication_slots WHERE age(xmin) >= f.a)
+	          END
+	     FROM f;"
+}
+
+# pgc_wait_freed_range_past_horizon TABLE [CALLS] -- wait until nothing holds the
+# horizon at or before the newest range compact freed in TABLE, and print
+# "<blockers>/<calls>" (#1988).
+#
+# For a check that a truncate does NOT shrink the file. While the horizon holds,
+# truncate leaves the file as it is for that reason alone, and such a check passes
+# whatever it means to test. So it asks every 0.5 s, up to CALLS times (default
+# 60, so 30 s). When something still holds the horizon after the last call, what
+# holds it is printed to stderr. The caller's check prints the count itself.
+#
+# When TABLE has no freed range, or the query fails, it stops at once and prints
+# "none/<calls>", so a check that wants 0 fails (#1992).
+pgc_wait_freed_range_past_horizon() {
+	local table="$1" max="${2:-60}" n="" calls=0
+	while [ "$calls" -lt "$max" ]; do
+		[ "$calls" -gt 0 ] && sleep 0.5
+		n="$(pgc_freed_range_blockers "$table")"
+		calls=$((calls + 1))
+		case "$n" in
+			0) break ;;
+			''|*[!0-9]*)
+				echo "  no count for $table on call $calls: no freed range, or the query failed: ${n:-empty}" >&2
+				echo "none/$calls"
+				return ;;
+		esac
+	done
+	if [ "$n" != 0 ]; then
+		echo "  the newest range freed in $table is still held after $calls calls ($n). What holds the horizon back:" >&2
+		pgc_horizon_holders | sed 's/^/    /' >&2
+	fi
+	echo "$n/$calls"
+}
+
 # ---- summary ---------------------------------------------------------------
 
 # A dependency this suite needs is not installed.
