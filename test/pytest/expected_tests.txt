@@ -1847,6 +1847,12 @@ guard_tests 863
 # test_native_parquet_multifile.py (18 .*/ levels refused with 54000 inside a 10 s timeout; a 20 ms timeout and
 # pg_cancel_backend stop the walk with 57014; a refused walk does not fail the next read in the session; a glob
 # reads all 2000 matches among 12000 names), by collection: 6207 tests collected, less guard_tests 863.
+# cluster_tests stays 5345 for #2001's checks (a relative glob or path resolved against the data directory in
+# path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6208 tests collected,
+# less guard_tests 863.
+# cluster_tests stays 5345 for #2004's checks (a relative path resolved against the data directory in
+# tier_partition's comparisons without a glob, and a caller without pg_read_all_settings), added to existing
+# tests in test_tier_partition.py, by collection: 6208 tests collected, less guard_tests 863.
 # cluster_tests 5345 -> 5346 for #1993's test_fgm_no_transaction_older_than_the_delete_before_compact in
 # test_native_fetch_group_memo.py (nothing older than the DELETE from fd holds the horizon before the
 # same-statement compact); #1994's and #1999's checks are added to existing tests in test_native_truncate.py

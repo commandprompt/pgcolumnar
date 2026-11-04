@@ -761,6 +761,31 @@ true until the next version shipped.
   cannot match `..`, so `/w/x/*/??/a.parquet` still does not match
   `/w/x/a.parquet`. docs/sql-reference.md. `test/tier_partition.sh` and its
   pytest twin.
+- `tier_partition` now refuses a file that a foreign table's relative local
+  glob reads through a `..` above the glob's start (#2001). The server reads
+  a relative path from the data directory, so a table on
+  `../*/x/a.parquet` reads `x/a.parquet` there: `..` climbs to the data
+  directory's parent and `*` matches its name. `path_glob_matches` rooted a
+  relative path at `/`, so that `..` had nowhere to go, and it answered
+  false. It also missed a relative glob against the same file spelled in
+  full, and the other way round. It now resolves a relative pattern and a
+  relative path against the data directory before it walks. A relative
+  pattern matches every path when the data directory's name holds a glob
+  character, or is not the working directory as `getcwd(3)` spells it.
+  docs/sql-reference.md. `test/tier_partition.sh` and its pytest twin.
+- `tier_partition` now resolves a relative local path against the data
+  directory in every comparison, not only in the glob arm (#2004). A foreign
+  table on `x/a.parquet` reads `x/a.parquet` in the data directory, but a
+  move to that file spelled in full was not refused, nor the other way round.
+  The same held under a directory, under an Iceberg location and in the
+  folded form, where a `..` can climb out of the data directory and back in.
+  The rule is `path_glob_matches`'s: an absolute path and `''` are kept, and
+  a remote URL is never resolved. Where that function cannot resolve a
+  relative path soundly, a table on a local path refuses every local target
+  if either one is relative. So does a caller without
+  `pg_read_all_settings`, who cannot read `data_directory`.
+  docs/sql-reference.md and docs/how-to.md.
+  `test/tier_partition.sh` and its pytest twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`

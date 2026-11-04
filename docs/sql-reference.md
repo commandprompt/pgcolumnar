@@ -794,8 +794,16 @@ The function refuses these:
   kernel opens only when no symbolic link comes before a `..`. When one does,
   the kernel goes up from the directory the link leads to. The check can then
   refuse a file the reader does not read, and allow the file it does read.
-  A symbolic link is not resolved, and a relative path is not resolved
-  against the data directory. A remote key is compared as written, because `//` is part of a
+  A symbolic link is not resolved. A relative local path names a file in the
+  data directory, where the server opens it. Every comparison also resolves
+  it there, by the rule of `path_glob_matches` (#2001, #2004). So a table on
+  `x/a.parquet` refuses the same file spelled in full under the data
+  directory, and a table on that full path refuses `x/a.parquet`. When
+  `path_glob_matches` cannot resolve a relative path soundly (see below), a
+  table on a local path refuses every local `path` if either one is relative.
+  So does a caller without `pg_read_all_settings`, who cannot read
+  `data_directory`.
+  A remote key is compared as written, because `//` is part of a
   key. A new file under a directory a foreign table reads is refused too;
   docs/how-to.md shows ways around it.
   Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
@@ -854,6 +862,18 @@ It returns false for a pattern that the reader does not read as a glob:
 A local pattern does not match a remote `path`.
 A `path` of 4096 bytes (`PATH_MAX`) or more returns false, because no file
 can be opened by such a path.
+
+A relative local pattern or `path` names a path under the data directory.
+The server's working directory is the data directory, so the reader's
+`glob(3)` and `export_parquet` start there. The function first resolves a
+relative pattern and a relative `path` against the data directory (#2001).
+So `../*/x/a.parquet` matches `x/a.parquet`, and the same file spelled in
+full. Here `..` climbs to the data directory's parent, and `*` matches the
+data directory's own name. In two cases the function cannot read a relative
+pattern as `glob(3)` does, so it answers true for every `path`. One is a data
+directory whose name holds `*`, `?`, `[` or `\`. The other is a data
+directory that is not the working directory as `getcwd(3)` spells it, such as
+through a symbolic link.
 
 A pattern that is too large for glibc to match safely raises error 54000
 (`program_limit_exceeded`) instead of an answer:
