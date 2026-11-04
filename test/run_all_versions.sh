@@ -220,6 +220,7 @@ SUITES=(
 	native_rewrite_conc
 	native_roundtrip
 	native_saop_pushdown
+	native_scale
 	native_sketch
 	native_sketch_agg
 	native_sketch_fold
