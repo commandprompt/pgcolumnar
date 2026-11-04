@@ -50,9 +50,11 @@ RUNNER="$TESTDIR/run_all_versions.sh"
 # the standalone suites source for their port), the two runners, and the two developer helpers
 # that build rather than test. build_all_versions compiles against every major
 # and is run before merging a change that touches a version guard; it takes no
-# cluster and reports per major, so the matrix cannot run it as a suite. native_scale is a suite but is opt-in by
-# design and says so in its own header: it runs at a row count the matrix should
-# not carry. pg_upgrade takes two pg_configs (an old major and a new one)
+# cluster and reports per major, so the matrix cannot run it as a suite.
+# native_scale was listed here as opt-in, for a row count the matrix "should not
+# carry", and so no job ran it (#2018). Measured at its default 500000 rows on a
+# heavily loaded 8-core box: 157 s and at most 120 MB of server memory. That is
+# far inside a suites job, so it is a registered suite now. pg_upgrade takes two pg_configs (an old major and a new one)
 # rather than one, so the matrix cannot invoke it the way it invokes a suite; it
 # is a second gate run explicitly, like run_san.
 # build_san builds the ASAN+UBSAN PostgreSQL and run_san is the
@@ -60,7 +62,7 @@ RUNNER="$TESTDIR/run_all_versions.sh"
 # not a suite the ordinary five-major matrix can carry.
 not_a_suite() {
 	case "$1" in
-		lib|portlib|run_all_versions|build_all_versions|devloop|rebuild|native_scale|build_san|run_san|run_coverage|pg_upgrade|extension_upgrade|format_downgrade|capability_sweep) return 0 ;;
+		lib|portlib|run_all_versions|build_all_versions|devloop|rebuild|build_san|run_san|run_coverage|pg_upgrade|extension_upgrade|format_downgrade|capability_sweep) return 0 ;;
 		*) return 1 ;;
 	esac
 }
