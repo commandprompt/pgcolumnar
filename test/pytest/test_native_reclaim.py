@@ -17,6 +17,8 @@ compact_rewrite call, which returns what it rewrote.
 """
 import psycopg
 
+from pgc_horizon import wait_freed_range_past_horizon
+
 GEN = "SELECT g, g AS v, md5(g::text) AS payload FROM generate_series(1, 6000) g"
 FREE = "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('n')"
 
@@ -57,7 +59,16 @@ def test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded(pgc_conn
         expect.text("yes" if free2 > 0 else "no", "yes", "free space recorded after first recluster")
         expect.num(_one(cur, "SELECT count(*) FROM n"), 6000, "data intact after first recluster")
 
-        recs = [_one(cur, f"SELECT pgcolumnar.recluster('n', '{key}')") for key in ("v", "id", "v", "id")]
+        # wait for the horizon first (#2010): a recluster reuses a freed range only
+        # when no transaction is older than the one that freed it, and under a held
+        # snapshot each recluster appended and the file grew
+        recs = []
+        for i, key in ((1, "v"), (2, "id"), (3, "v"), (4, "id")):
+            blockers, calls = wait_freed_range_past_horizon(pgc_conn, "n")
+            print(f"-- repeated recluster {i} horizon blockers/calls: {blockers}/{calls}")
+            expect.num(blockers, 0,
+                       f"repeated recluster {i}: no transaction older than the newest freed range was open before it")
+            recs.append(_one(cur, f"SELECT pgcolumnar.recluster('n', '{key}')"))
         size3, free3 = _one(cur, "SELECT pg_relation_size('n')"), _one(cur, FREE)
         print(f"-- file size: initial={size1} after-1={size2} after-5={size3}; free_space rows {free2} -> {free3}")
         expect.text("yes" if all(r > 0 for r in recs) else f"no ({recs})", "yes",

@@ -345,6 +345,14 @@ The helper reads the newest `DELETE` from the `xmin` of the table's rows in
 helper below. Once the count is 0 it stays 0: a snapshot taken later has a newer
 `xmin`.
 
+`catalog_delete_index`, `maintenance_crash` and `maintenance_rollback` wait the
+same way (#2010). Each `compact` they check runs only once, so it cannot be
+repeated. `maintenance_rollback` and the first loop of `maintenance_crash` read
+`compact` inside its open transaction. The second loop of `maintenance_crash`
+reads what `compact` committed, after the crash. `catalog_delete_index` also
+waits before its `VACUUM` readings: the vacuum reads a group's deletes only
+past the horizon.
+
 ### A check that truncate does nothing must wait too
 
 A check that `truncate` leaves the file alone, for example with
@@ -364,6 +372,13 @@ check_num "GUC off: no transaction older than the compact was open" "${blockers%
 from pgc_horizon import wait_freed_range_past_horizon
 blockers, calls = wait_freed_range_past_horizon(conn, "n")
 ```
+
+A check that a rewrite reuses freed space needs the same wait. `compact_rewrite`
+reuses a freed range only when no transaction is older than the one that freed
+it. Otherwise it appends, and the file grows. `native_scale` waits with this
+helper before the rewrites in rounds 2 to 4, which its steady-state check
+compares (#2010). `native_reclaim` waits with it before each of its four
+repeated reclusters, whose file size its plateau check compares.
 
 The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
 table. It counts what has a transaction ID or `xmin` not newer than that:
