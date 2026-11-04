@@ -534,6 +534,45 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 reads three more check arms correctly (#2007, #2011,
+  #2012). It excuses `[ -a = "$arg" ]` and `[ -o != "$arg" ]`, where the first
+  word `-a` or `-o` is an operand of `=`, `!=` or `==` and not a join. A later
+  join, as in `[ -a = x -a "$b" -le 3 ]`, is still refused. It reads a branch
+  written with `printf` as it reads `echo`, so `&& printf yes || echo no` and an
+  if/then/else with a `printf` branch are refused, while `printf '%s' "$x"`
+  carries its value and stays excused. It looks for a carried `$` only up to
+  the `)` that closes the arm, so a `$` in a later argument such as
+  `"$(want)"` no longer excuses the arm; a `)` in quotes or in a subshell does
+  not end it. A branch that ends in a bare `$`, as in `|| echo no$)`, still
+  excuses the arm, as on main, and is recorded as a known limit. A mutant
+  sweep changed the regular expressions and conditions this change added or
+  touched in 225 ways. Under mawk and gawk alike, 134 fail a named check and 91
+  pass, and the 91 give the same verdict as the fixed sweep on about 45,000
+  generated arms. The tree sweep still finds the same 70
+  arms, so no suite changed.
+- `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
+  `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot
+  (#2010). In the first three, `compact` returned 0 while a transaction older
+  than the `DELETE` was open, so the checks on what it retired read 0 or
+  `unchanged`. Each `compact` is measured once, so it cannot be repeated. These
+  suites and their pytest twins now wait until nothing holds the horizon at
+  the `DELETE`, and new checks want that count to be 0. Each wait lasts up to
+  30 s; `catalog_delete_index` waits once per target table, so up to 90 s per
+  phase.
+  `catalog_delete_index` and its twin also wait before their `VACUUM`
+  readings: the vacuum reads a group's deletes only past the horizon, so
+  `premise: the vacuum walked this table's groups` read 0. In
+  `native_scale`, a held snapshot kept each rewrite from reusing freed space,
+  so the file grew and `reclaim reached steady state` failed. Rounds 2 to 4,
+  which that check reads, now wait until nothing holds the horizon at the
+  newest freed range, and a new check per round wants that count to be 0.
+  `native_reclaim` and its twin had the same defect in their recluster loop:
+  under a held snapshot each recluster appended, so `repeated recluster
+  reuses space (file plateaus)` and `free space is being reused` failed.
+  Each of the four repeated reclusters now waits the same way, with a new
+  check per recluster. The other 21 suites that #2010 lists were checked and
+  need no change.
+  docs/testing.md.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored

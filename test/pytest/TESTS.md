@@ -6818,12 +6818,14 @@ COUNTED IN THE STATEMENT'S OWN TRANSACTION, NOT FROM `pg_statio_all_tables` (#12
 
 `pg_stat_reset()` is database-wide. The corpus runs serially within a worker.
 
+compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s per target, up to 90 s per phase, until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`. The vacuum test waits the same way before its vacuums, because the vacuum reads a group's deletes only past the horizon: `no transaction older than the vacuumed table's delete was open before the vacuums`.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
-| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
+| `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, `no transaction older than the phase ... deletes was open before the compactions`, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
+| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | `no transaction older than the vacuumed table's delete was open before the vacuums`, after waiting up to 30 s for the horizon (#2010); that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
 | `test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole` | that a DROP costs less catalog work than reading the seven catalogs whole, and -- below the threshold -- less than forcing a probe. The subject is `delete_rows_by_storage_id`, one parameterised line serving seven catalogs on the DROP/TRUNCATE path, which nothing covered before (#1207). Measured in buffers, never the access path, and on a fixture sixty tables wide because `pgc_own_db` gives this file a private database where the shell twin shares a cluster |
 | `test_a_catalog_reading_takes_in_none_of_another_sessions_reads` | that a statement which reads no catalog itself, inside which a second session (run by `COPY ... TO PROGRAM`) scans `row_group` and `column_chunk` and exits, reads zero; and, as its control, that the second session's reads do reach the shared view (#1298) |
 
@@ -7550,11 +7552,13 @@ The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by t
 
 The pytest twin of `test/maintenance_rollback.sh` (#1341), every check by the shell's name. `compact_rewrite`, `recluster`, `compact`, `vacuum` and `vacuum_sorted` each retire row groups, and most write new ones. Each runs inside a transaction on a table with row groups of 1000 rows, two rows in five deleted, and one group deleted whole. Its effect on the row groups is read inside the transaction, and the transaction rolls back. The table must then hold the same rows by content and the same row groups, and an index scan must agree. The same then runs under a savepoint, later writes commit, and every function runs for real. The rollback is issued as SQL statements, because `pgc_conn` is a watching wrapper and an autocommit flag set on it does not reach the connection.
 
+`compact` retires the deleted group only when no transaction is older than the `DELETE`, and it runs once, inside the transaction that rolls back (#2010). So before `compact` both harnesses wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_maintenance_function_that_rolls_back_leaves_the_table_as_it_was` | each function's effect inside its transaction, the table after each rollback by scan and by index, the savepoint case, and the real runs |
+| `test_a_maintenance_function_that_rolls_back_leaves_the_table_as_it_was` | `no transaction older than the DELETE from mr was open before compact ran inside its transaction`; each function's effect inside its transaction, the table after each rollback by scan and by index, the savepoint case, and the real runs |
 
 ## 121. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent
 
@@ -7581,11 +7585,13 @@ The pytest twin of `test/prepared_across_sessions.sh` (#1341), every check by th
 
 The pytest twin of `test/maintenance_crash.sh` (#1341), every check by the shell's name. A private cluster, because each arm crashes the postmaster: the shell kills its process group, and this side stops it with `-m immediate`, which leaves the same redo for the next start. `compact_rewrite`, `recluster`, `compact` and `vacuum` each run twice on a fresh table with row groups of 1000 rows, two rows in five deleted, one group deleted whole, and an index. First the function runs in an open transaction, another session checkpoints, and the server crashes: after recovery the table is as it was. Then the function commits and the server crashes before any checkpoint: after recovery the table is as the function left it. Each arm also checks that the server logged a crash recovery. After each recovery an index scan through `mc_id` must read the rows a scan reads: the as-before arms compare two by-index readings with each other, so an index already wrong before the crash agrees with itself there.
 
+`compact` retires the deleted group only when no transaction is older than the `DELETE`, and each `compact` runs once (#2010). So before each `compact` both harnesses wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_crash_part_way_through_maintenance_loses_nothing` | for each function, the uncommitted crash and the committed crash, each with its recovery logged and the index agreeing with a scan after it |
+| `test_a_crash_part_way_through_maintenance_loses_nothing` | for each function, the uncommitted crash and the committed crash, each with its recovery logged and the index agreeing with a scan after it; before `compact`, `no transaction older than the DELETE from mc was open before compact ran in its open transaction` and `no transaction older than the DELETE from mc was open before compact committed` |
 
 ## 124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table
 
@@ -8120,13 +8126,15 @@ Each cleanup arm compares the catalogs with their state just before its own tabl
 
 The pytest twin of `test/native_reclaim.sh` (ported for #1341, item 70), every check by the shell's name. Retiring a row group records its byte range in `pgcolumnar.free_space`, and a later online compaction reserves from a freed range instead of growing the file. So repeated reclusters plateau the file, free_space stays bounded, and the reused blocks read back the heap mirror's rows. The reclusters alternate their key, because recluster self-gates on a table already in that key's order: four more `recluster('n', 'id')` calls each returned 0, and the file "plateaued" with reuse disabled.
 
+A recluster reuses a freed range only when no transaction is older than the one that freed it (#2010). Under a snapshot held from before the loop, each recluster appended and the file grew. So before each of the four repeated reclusters both harnesses wait up to 30 s until nothing holds the horizon at the newest range freed in `n`, and check the count of what still holds it, which must be 0: `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`.
+
 `compact_rewrite()` and `maintenance_due()` refuse NaN, negative, above-1 and (for maintenance_due) NULL thresholds with 22023, and accept the boundaries 0.0 and 1.0. Controls pin that other failures carry other SQLSTATEs. `max_groups` caps one `compact_rewrite` call, which returns what it rewrote.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
+| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | before each repeated recluster, `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`; every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
 | `test_maintenance_due_validates_both_thresholds` | each threshold is refused out of range or NULL by 22023 and accepted on its boundaries, and the verdict follows the deleted fraction |
 | `test_max_groups_caps_one_compact_rewrite` | a capped call rewrites three of ten half-deleted groups and an uncapped one the other seven, with every live row kept |
 

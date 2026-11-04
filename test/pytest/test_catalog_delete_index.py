@@ -43,6 +43,8 @@ concurrently with another that reads statistics.
 
 import time
 
+from pgc_horizon import wait_delete_past_horizon
+
 # Phase 0 is small ON PURPOSE. The claim it carries -- that probing every
 # catalog costs more than choosing -- is worth 284 parts per thousand at six
 # catalog pages, 151 at nine and 31 at eighteen, against a drift of 3 to 10
@@ -253,6 +255,25 @@ def _phase(conn, expect, name, prefix, groups, other, other_label, carried=0):
         _columnar_relations(conn) - carried,
         3,
         f"premise: the phase {name} catalogs hold only this file's tables",
+    )
+
+    # WAIT FOR THE HORIZON FIRST (#2010), as the shell half does. compact retires
+    # a dead group only when no transaction is older than the DELETE. A snapshot
+    # another session held from before _make_target's DELETE made each compaction
+    # retire nothing. Each compaction is measured once, in its own transaction, so
+    # it cannot be repeated: wait at each table's DELETE, and check the count.
+    held = 0
+    for t in tables:
+        n, calls = wait_delete_past_horizon(conn, t)
+        print(f"--   horizon blockers/calls before compacting {t}: {n}/{calls}")
+        if n is None:
+            held = None
+            break
+        held += n
+    expect.num(
+        held,
+        0,
+        f"no transaction older than the phase {name} deletes was open before the compactions",
     )
 
     control, _ = _compact_work(conn, tables[0])
@@ -470,6 +491,18 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
             cur.execute("RESET pgcolumnar.index_min_blocks")
             cur.execute("SELECT pg_stat_force_next_flush()")
         return _work(conn)
+
+    # WAIT FOR THE HORIZON FIRST (#2010), as the shell half does. The vacuum walks
+    # a group's deletes only when no transaction is older than the DELETE. A
+    # snapshot another session held from before that DELETE left delete_vector
+    # unread. Once the count reads 0 it stays 0, so one wait covers all three.
+    v_held, v_calls = wait_delete_past_horizon(conn, "vac_small")
+    print(f"-- horizon blockers/calls before the vacuums: {v_held}/{v_calls}")
+    expect.num(
+        v_held,
+        0,
+        "no transaction older than the vacuumed table's delete was open before the vacuums",
+    )
 
     w_default = vacuum_work()
     w_control = vacuum_work()

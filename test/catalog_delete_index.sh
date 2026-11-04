@@ -254,6 +254,24 @@ phase() {
 		"$(( $(q "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam
 			WHERE a.amname = 'pgcolumnar';") - carried ))" "3"
 
+	# WAIT FOR THE HORIZON FIRST (#2010). compact retires a dead group only when
+	# no transaction is older than the DELETE. A snapshot another session held
+	# from before make_target's DELETE made each compaction retire nothing: the
+	# check on retired groups read 0, and the work readings measured a compaction
+	# with nothing to do. Each compaction is measured once, inside its own
+	# transaction, so it cannot be repeated. pgc_wait_delete_past_horizon waits
+	# until nothing holds the horizon at each table's DELETE, and the count is
+	# checked before the compactions run.
+	local held=0 b
+	for t in "$t_control" "$t_default" "$t_other"; do
+		b="$(pgc_wait_delete_past_horizon "$t")"
+		echo "--   horizon blockers/calls before compacting $t: $b"
+		case "${b%/*}" in ''|*[!0-9]*) held="$b ($t)"; break ;; esac
+		held=$((held + ${b%/*}))
+	done
+	check_num "no transaction older than the phase $ph deletes was open before the compactions" \
+		"$held" "0"
+
 	control="$(compact_work "$t_control")";      echo "--   control:      $(cat_detail)"
 	default="$(compact_work "$t_default")";      echo "--   default:      $(cat_detail)"
 	other_work="$(compact_work "$t_other" "$other")"; echo "--   $label: $(cat_detail)"
@@ -441,6 +459,16 @@ echo "-- row_group pages=$rg_pages, threshold=$min_blocks"
 # its fixture was corrected to a private database.
 check_num "row_group is larger than the threshold, so the two paths differ" \
 	"$(margin "$((rg_pages - min_blocks))" 1)" "1"
+
+# WAIT FOR THE HORIZON FIRST (#2010), as the compactions above do. The vacuum
+# walks a group's deletes only when no transaction is older than the DELETE. A
+# snapshot another session held from before that DELETE left delete_vector
+# unread, and "premise: the vacuum walked this table's groups" read 0. Once the
+# count reads 0 it stays 0, so one wait covers all three vacuums.
+v_b="$(pgc_wait_delete_past_horizon del_vac)"
+echo "-- horizon blockers/calls before the vacuums: $v_b"
+check_num "no transaction older than the vacuumed table's delete was open before the vacuums" \
+	"${v_b%/*}" "0"
 
 v_d="$(vac_work del_vac)"
 v_c="$(vac_work del_vac)"
