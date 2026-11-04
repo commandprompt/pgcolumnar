@@ -557,6 +557,32 @@ true until the next version shipped.
   check per recluster. The other 21 suites that #2010 lists were checked and
   need no change.
   docs/testing.md.
+- Self-test part 540 now reads three more spellings of a check arm that
+  prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
+  `test` builtin, as well as `[ ... ]`. It excuses the mirrored
+  nothing-versus-something tests `[ 0 -lt "$x" ]` and `[ 1 -le "$x" ]`, which
+  it used to refuse. `-lt 1` and `-le 0` stay refused: they fail on every count
+  above 0. It no longer excuses a compound test joined by `-a`, `-o`, `&&` or
+  `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
+  so `no` hid which half failed. `&&` and `||` count without spaces around
+  them. A `-a` or `-o` with no test after it, as in `[ "$arg" = -a ]`, is an
+  operand and not a join. It ignores quotes, command substitutions and
+  backticks when it looks for a compound, so
+  `"$(grep -c "x)" f || true)" -gt 0` is still excused. A `test` no longer
+  ends at a `<` or `|` inside a substitution, so `test "$(wc -l < f)" -ge 20`
+  is read whole. A redirect into a quoted path with a space, in double or
+  single quotes such as `2>"a b"` or `2>'a b'`, no longer hides an arm, and
+  nor does a noclobber redirect such as `>|x`. New fixture arms pin the end
+  anchors of the `-gt 0` and `-ge 1` excuses. Mutant sweeps changed each
+  regular expression this change added. A review sweep found 8 changes to the
+  single-quoted redirect target that hid a valid arm while every check passed,
+  such as `2>'a b'x`. Three new fixture arms make each of the 8 fail the
+  redirect control. The changes that still pass either give the same verdict
+  on every generated arm or differ only on shapes the part records as known
+  limits: `&& printf` (#2011), `[ ""0 -lt "$x" ]`, and a redirect target that
+  joins a word or quoted part to a quoted part with a space, such as
+  `2>x"y z"` (#2019).
+  The wider sweep finds no new arm in the test suites, so no suite changed.
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
   (#1993). `compact` runs once, inside the checked statement, and returned 0
