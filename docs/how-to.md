@@ -812,9 +812,11 @@ foreign table on `/w//*.parquet` or `/w/\./*.parquet` blocks a move to
 where the server opens it. So `x/a.parquet` and the same file spelled in full
 block each other (#2004). A caller without `pg_read_all_settings` cannot
 read the data directory's name. For that caller, a local move is refused
-beside a table on a local path when either path is relative. The function does not resolve a symbolic
-link. So it
-does not see a local file reached through a link. A link followed by `..` is worse: for
+beside a table on a local path when either path is relative. A table on a
+relative glob is the exception (#2013). It blocks what its glob matches,
+and a path under the glob as written, as under a directory. The function
+does not resolve a symbolic link. So it does not see a local file reached
+through a link. A link followed by `..` is worse: for
 `/w/lnk/../*.parquet`, where `/w/lnk` leads to `/z/q`, the reader reads
 `/z/*.parquet`. The function refuses `/w/a.parquet` instead, and allows a move
 that overwrites `/z/a.parquet`. Do not spell a reader's path with a link

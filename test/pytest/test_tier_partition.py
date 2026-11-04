@@ -1570,6 +1570,44 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
                 "a caller who cannot read data_directory is refused a relative target beside tables on paths in full")
     expect.text(as_role("tier_own_py", own_rolled(server_dir / "np2004py" / "c.parquet")), "58P01",
                 "a caller who cannot read data_directory still moves a path in full no table reads beside tables on paths in full")
+    # A table on a relative glob does not need that rule (#2013): the glob
+    # arm asks path_glob_matches, which resolves a relative pattern against
+    # the data directory in C and needs no privilege. So such a table refuses
+    # only what its glob matches. The rule stays for a table on a relative
+    # path without a glob, for a relative target beside a table on a glob in
+    # full, and for a path under the glob's own spelling, as under a
+    # directory: a directory with that literal name is read as a directory.
+    # A relative target stays refused here anyway, beside pw_mar, which now
+    # reads a path in full. None of the directories named here exists, so a
+    # move that is not refused fails 58P01.
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE pw_g13 (x int) SERVER tq OPTIONS (path 'g2013py/*.parquet')")
+    expect.text(as_role("tier_own_py", own_rolled(server_dir / "nodir2013py" / "c.parquet")), "58P01",
+                "a caller who cannot read data_directory still moves a path in full no table reads beside a table on a relative glob")
+    expect.text(f"{as_role('tier_own_py', own_rolled(f'{datadir}/g2013py/a.parquet'))}"
+                f"|{as_role_detail('tier_own_py', own_rolled(f'{datadir}/g2013py/a.parquet'))}",
+                "58P02|Foreign table public.pw_g13 reads path 'g2013py/*.parquet'.",
+                "a caller who cannot read data_directory is refused a path in full a relative glob matches, and the detail names that table")
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE pw_n13 (x int) SERVER tq OPTIONS (path 'n2013py/a.parquet')")
+    unrelated = server_dir / "nodir2013py" / "c.parquet"
+    expect.text(f"{as_role('tier_own_py', own_rolled(unrelated))}"
+                f"|{as_role_detail('tier_own_py', own_rolled(unrelated))}",
+                "58P02|Foreign table public.pw_n13 reads path 'n2013py/a.parquet'.",
+                "beside a table on a relative glob, a caller who cannot read data_directory is still refused a path no table reads beside a table on a relative path without a glob, and the detail names that table")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE pw_g13, pw_n13")
+        cur.execute(f"CREATE FOREIGN TABLE pw_ag13 (x int) SERVER tq"
+                    f" OPTIONS (path '{server_dir / 'ag2013py' / '*.parquet'}')")
+    expect.text(as_role("tier_own_py", own_rolled("ag2013py/b.parquet")), "58P02",
+                "a caller who cannot read data_directory is refused a relative target beside a table on a glob in full")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE pw_ag13")
+        cur.execute("CREATE FOREIGN TABLE pw_gd13 (x int) SERVER tq OPTIONS (path 'gd2013py[1]')")
+    expect.text(as_role("tier_own_py", own_rolled(f"{datadir}/gd2013py[1]/x.parquet")), "58P02",
+                "a caller who cannot read data_directory is refused a path under a relative path with a glob character, spelled in full, as under a directory")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE pw_gd13")
 
 
 def _pg_ctl(cluster, args, extra_env):

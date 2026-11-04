@@ -1266,6 +1266,35 @@ check "a caller who cannot read data_directory is refused a relative target besi
 	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', 'np2004/b.parquet'); ROLLBACK")" "58P02"
 check "a caller who cannot read data_directory still moves a path in full no table reads beside tables on paths in full" \
 	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$W/np2004/c.parquet'); ROLLBACK")" "58P01"
+# A table on a relative glob does not need that rule (#2013): the glob arm
+# asks path_glob_matches, which resolves a relative pattern against the data
+# directory in C and needs no privilege. So such a table refuses only what
+# its glob matches. The rule stays for a table on a relative path without a
+# glob, for a relative target beside a table on a glob in full, and for a
+# path that lies under the glob's own spelling, as under a directory: a
+# directory with that literal name is read as a directory, not as a glob.
+# A relative target stays refused here anyway, beside pw_jan, which now
+# reads a path in full. None of the directories named here exists, so a move
+# that is not refused fails 58P01.
+psql_run "CREATE FOREIGN TABLE dup_g13 (x int) SERVER tier_pq OPTIONS (path 'g2013/*.parquet');"
+check "a caller who cannot read data_directory still moves a path in full no table reads beside a table on a relative glob" \
+	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$W/nodir2013/c.parquet'); ROLLBACK")" "58P01"
+check "a caller who cannot read data_directory is refused a path in full a relative glob matches, and the detail names that table" \
+	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$D/g2013/a.parquet'); ROLLBACK")|$(errdetail_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$D/g2013/a.parquet'); ROLLBACK")" \
+	"58P02|Foreign table public.dup_g13 reads path 'g2013/*.parquet'."
+psql_run "CREATE FOREIGN TABLE dup_n13 (x int) SERVER tier_pq OPTIONS (path 'n2013/a.parquet');"
+check "beside a table on a relative glob, a caller who cannot read data_directory is still refused a path no table reads beside a table on a relative path without a glob, and the detail names that table" \
+	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$W/nodir2013/c.parquet'); ROLLBACK")|$(errdetail_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$W/nodir2013/c.parquet'); ROLLBACK")" \
+	"58P02|Foreign table public.dup_n13 reads path 'n2013/a.parquet'."
+psql_run "DROP FOREIGN TABLE dup_g13, dup_n13;"
+psql_run "CREATE FOREIGN TABLE dup_ag13 (x int) SERVER tier_pq OPTIONS (path '$W/ag2013/*.parquet');"
+check "a caller who cannot read data_directory is refused a relative target beside a table on a glob in full" \
+	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', 'ag2013/b.parquet'); ROLLBACK")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_ag13;"
+psql_run "CREATE FOREIGN TABLE dup_gd13 (x int) SERVER tier_pq OPTIONS (path 'gd2013[1]');"
+check "a caller who cannot read data_directory is refused a path under a relative path with a glob character, spelled in full, as under a directory" \
+	"$(sqlstate_as tier_own "BEGIN; SELECT pgcolumnar.tier_partition('pw_feb', 'tier_pq', '$D/gd2013[1]/x.parquet'); ROLLBACK")" "58P02"
+psql_run "DROP FOREIGN TABLE dup_gd13;"
 
 # ---- a failure after each step ----------------------------------------------
 for step in export detach drop create attach; do

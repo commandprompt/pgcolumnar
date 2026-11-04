@@ -808,6 +808,17 @@ true until the next version shipped.
   `pg_read_all_settings`, who cannot read `data_directory`.
   docs/sql-reference.md and docs/how-to.md.
   `test/tier_partition.sh` and its pytest twin.
+- `tier_partition` no longer refuses every local move beside a foreign
+  table on a relative glob for a caller without `pg_read_all_settings`
+  (#2013). Since #2004, such a caller was refused a local target beside a
+  table on any relative path, because it cannot read `data_directory`. A
+  glob does not need that: `path_glob_matches` resolves a relative pattern
+  itself, with no privilege. Such a table now refuses what its glob matches,
+  and a path under the glob as written, as under a directory. Beside a
+  table on a relative path without a glob, and for a relative target beside
+  a table on a path in full, glob or not, such a caller is still refused as
+  before. docs/sql-reference.md and docs/how-to.md.
+  `test/tier_partition.sh` and its pytest twin.
 
 - `tier_partition` now refuses a path under the location of a
   `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
