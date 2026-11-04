@@ -794,11 +794,16 @@ The function refuses these:
   kernel opens only when no symbolic link comes before a `..`. When one does,
   the kernel goes up from the directory the link leads to. The check can then
   refuse a file the reader does not read, and allow the file it does read.
-  A symbolic link is not resolved. A relative path names a file in the data
-  directory, where the server opens it. `path_glob_matches` resolves it so
-  when a glob is involved (#2001). The other comparisons read a relative
-  path as written, so `x/a.parquet` does not refuse the same file spelled in
-  full under the data directory. A remote key is compared as written, because `//` is part of a
+  A symbolic link is not resolved. A relative local path names a file in the
+  data directory, where the server opens it. Every comparison also resolves
+  it there, by the rule of `path_glob_matches` (#2001, #2004). So a table on
+  `x/a.parquet` refuses the same file spelled in full under the data
+  directory, and a table on that full path refuses `x/a.parquet`. When
+  `path_glob_matches` cannot resolve a relative path soundly (see below), a
+  table on a local path refuses every local `path` if either one is relative.
+  So does a caller without `pg_read_all_settings`, who cannot read
+  `data_directory`.
+  A remote key is compared as written, because `//` is part of a
   key. A new file under a directory a foreign table reads is refused too;
   docs/how-to.md shows ways around it.
   Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
