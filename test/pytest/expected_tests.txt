@@ -1853,4 +1853,7 @@ guard_tests 863
 # cluster_tests stays 5345 for #2004's checks (a relative path resolved against the data directory in
 # tier_partition's comparisons without a glob, and a caller without pg_read_all_settings), added to existing
 # tests in test_tier_partition.py, by collection: 6208 tests collected, less guard_tests 863.
+# cluster_tests stays 5345 for #2013's checks (a caller without pg_read_all_settings beside a table on a
+# relative glob), added to an existing test in test_tier_partition.py, by collection: 6208 tests collected,
+# less guard_tests 863.
 cluster_tests 5345
