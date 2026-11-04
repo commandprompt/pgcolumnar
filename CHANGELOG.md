@@ -547,10 +547,14 @@ true until the next version shipped.
   backticks when it looks for a compound, so
   `"$(grep -c "x)" f || true)" -gt 0` is still excused. A `test` no longer
   ends at a `<` or `|` inside a substitution, so `test "$(wc -l < f)" -ge 20`
-  is read whole. A redirect into a quoted path with a space, such as
-  `2>"a b"`, no longer hides an arm. New fixture arms pin the end anchors of
-  the `-gt 0` and `-ge 1` excuses, and every regular expression this change
-  added is pinned by a fixture or recorded as unable to change a valid arm.
+  is read whole. A redirect into a quoted path with a space, in double or
+  single quotes such as `2>"a b"` or `2>'a b'`, no longer hides an arm, and
+  nor does a noclobber redirect such as `>|x`. New fixture arms pin the end
+  anchors of the `-gt 0` and `-ge 1` excuses. A mutant sweep changed the
+  regular expressions this change added in 671 ways: 441 changes fail a named
+  check, 2 hang, and 228 pass. Of the 228, 225 give the same verdict as the
+  unchanged sweep on 240,000 generated arms. The other 3 differ only on two
+  shapes the part records as known limits: `&& printf`, and `[ ""0 -lt "$x" ]`.
   The wider sweep finds no new arm in the test suites, so no suite changed.
 - The Parquet reader's walk of a local glob now stops after 1,000,000 steps
   with error 54000, and a cancel stops it (#1984). The reader expands a local
