@@ -5,8 +5,9 @@ check by the shell's name.
 The small suites prove the logic on a handful of row groups. This one proves the
 mutation, clustering and reclaim machinery holds at scale and across many cycles. Every
 step is compared against a heap mirror with an order-independent fingerprint. Then four
-rounds of {delete a rotating 1/8 slice, compact_rewrite} run with no inserts, so the only
-writes are compaction's, and the file must plateau: round 4 is no larger than round 2.
+rounds of {delete a 1/8 slice, compact_rewrite} run with no inserts, so the only writes
+are compaction's, and the file must plateau: round 4 is no larger than round 2. Each
+round's delete must remove its whole slice, so every round does reclaim work (#2024).
 
 SCALE_N sets the row count, as it does for the shell suite. The default is the shell's,
 500000. The pytest-cluster jobs in ci.yml and nightly.yml set SCALE_N=200000, so the
@@ -95,16 +96,18 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
         expect.rows(_fp(cur, "n"), _fp(cur, "h"), "parity after recluster")
 
         # ---- physical reclaim: steady state across repeated compaction ----
+        # Round 4 deletes id % 8 = 5, not 4 (#2024). Every id with id % 8 = 4 also
+        # has id % 4 = 0, and those rows went in the first delete. So round 4
+        # deleted nothing, rewrote nothing, and the steady-state check compared
+        # round 3 with round 2. Each round's delete is now counted: it must remove
+        # all (N - s) // 8 + 1 rows of its slice from each table.
+        slices = (1, 2, 3, 5)
         sizes = []
         for r in (1, 2, 3, 4):
-            # Round 4 deletes nothing, in the shell suite too: every id with
-            # id % 8 = 4 also has id % 4 = 0, and those went in the first delete.
-            # So round 4 rewrites without new deletes. Said here as a count, since a
-            # write that wrote nothing must be named.
+            s = slices[r - 1]
             for t in ("h", "n"):
-                cur.execute(f"DELETE FROM {t} WHERE id % 8 = {r}")
-                if r == 4:
-                    expect.wrote(cur, 0, f"round 4 deletes no rows from {t}: id % 8 = 4 went with id % 4 = 0")
+                cur.execute(f"DELETE FROM {t} WHERE id % 8 = {s}")
+                expect.wrote(cur, (N - s) // 8 + 1, f"reclaim round {r} deletes its whole id % 8 slice from {t}")
             # Wait for the horizon first (#2010): a rewrite reuses a freed range only
             # when no transaction is older than the one that freed it. Rounds 2 to 4,
             # the rounds the steady-state check reads, wait. Round 1 reuses what the
@@ -120,6 +123,7 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
             sizes.append(_one(cur, "SELECT pg_relation_size('n')"))
             print(f"-- round {r} file size: {sizes[-1]}")
 
-        # Rounds 2 to 4 reuse earlier frees, so the file must not grow past round 2.
+        # Rounds 2 to 4 each delete a slice and reuse earlier frees, so the file
+        # must not grow past round 2.
         expect.text("yes" if sizes[3] <= sizes[1] else f"no (round 2 {sizes[1]}, round 4 {sizes[3]})",
                     "yes", "reclaim reached steady state (round 4 <= round 2)")

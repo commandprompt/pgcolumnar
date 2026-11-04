@@ -94,10 +94,22 @@ check "parity after recluster" "$(fp_n)" "$(fp_h)"
 # the only writes are compaction's. After the first round establishes a
 # generation, the file must PLATEAU: each round reuses the prior round's freed
 # space instead of extending. A growing file here means reuse regressed.
+#
+# Round 4 deletes id % 8 = 5, not 4 (#2024). Every id with id % 8 = 4 also has
+# id % 4 = 0, and those rows went in the delete above. So round 4 deleted no
+# rows, rewrote nothing, and the steady-state check compared round 3 with round
+# 2. A mutant that turned reuse off from round 4 on passed all 20 checks. Each
+# round's delete is now counted: it must remove all (N - s) / 8 + 1 rows of its
+# slice from each table.
 sizes=()
+SLICES=(1 2 3 5)
 for r in 1 2 3 4; do
-	psql_run "DELETE FROM h WHERE id % 8 = $r;"
-	psql_run "DELETE FROM n WHERE id % 8 = $r;"
+	s="${SLICES[r-1]}"
+	want_del=$(( (N - s) / 8 + 1 ))
+	for t in h n; do
+		del="$(q "WITH d AS (DELETE FROM $t WHERE id % 8 = $s RETURNING 1) SELECT count(*) FROM d;")"
+		check_num "reclaim round $r deletes its whole id % 8 slice from $t" "$del" "$want_del"
+	done
 	# WAIT FOR THE HORIZON FIRST (#2010). A rewrite reuses a freed range only
 	# when no transaction is older than the one that freed it. A snapshot another
 	# session held through the rounds made every rewrite append. The reuse code
@@ -118,7 +130,8 @@ for r in 1 2 3 4; do
 	sizes+=("$(fsize)")
 	echo "  (round $r file size: ${sizes[-1]})"
 done
-# Rounds 2..4 reuse prior frees; the file must not grow past round 2's size.
+# Rounds 2..4 each delete a slice and reuse earlier frees; the file must not
+# grow past round 2's size.
 check "reclaim reached steady state (round 4 <= round 2)" \
 	"$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes ||
 	   echo "no (round 2 ${sizes[1]}, round 4 ${sizes[3]})")" "yes"
