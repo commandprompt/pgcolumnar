@@ -534,14 +534,6 @@ true until the next version shipped.
 
 ### Fixed
 
-- `native_scale` now runs in CI (#2018). No job ran it before: it was missing
-  from the `SUITES` list in `test/run_all_versions.sh`, and `run_coverage.sh`
-  refused it by name. It is in the list now, so the per-PR gate runs it on
-  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 and in the coverage
-  report. A new pytest twin, `test_native_scale.py`, runs in the pytest-cluster
-  job. The harness self-test no longer excuses it from "every suite is
-  registered in run_all_versions.sh".
-  The suite's steady-state check now prints both file sizes when it fails.
 - `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
   `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot
   (#2010). In the first three, `compact` returned 0 while a transaction older
@@ -565,6 +557,14 @@ true until the next version shipped.
   check per recluster. The other 21 suites that #2010 lists were checked and
   need no change.
   docs/testing.md.
+- `native_scale` now runs in CI (#2018). No job ran it before: it was missing
+  from the `SUITES` list in `test/run_all_versions.sh`, and `run_coverage.sh`
+  refused it by name. It is in the list now, so the per-PR gate runs it on
+  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 and in the coverage
+  report. A new pytest twin, `test_native_scale.py`, runs in the pytest-cluster
+  job. The harness self-test no longer excuses it from "every suite is
+  registered in run_all_versions.sh".
+  The suite's steady-state check now prints both file sizes when it fails.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored
