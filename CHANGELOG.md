@@ -550,11 +550,15 @@ true until the next version shipped.
   is read whole. A redirect into a quoted path with a space, in double or
   single quotes such as `2>"a b"` or `2>'a b'`, no longer hides an arm, and
   nor does a noclobber redirect such as `>|x`. New fixture arms pin the end
-  anchors of the `-gt 0` and `-ge 1` excuses. A mutant sweep changed the
-  regular expressions this change added in 671 ways: 441 changes fail a named
-  check, 2 hang, and 228 pass. Of the 228, 225 give the same verdict as the
-  unchanged sweep on 240,000 generated arms. The other 3 differ only on two
-  shapes the part records as known limits: `&& printf`, and `[ ""0 -lt "$x" ]`.
+  anchors of the `-gt 0` and `-ge 1` excuses. Mutant sweeps changed each
+  regular expression this change added. A review sweep found 8 changes to the
+  single-quoted redirect target that hid a valid arm while every check passed,
+  such as `2>'a b'x`. Three new fixture arms make each of the 8 fail the
+  redirect control. The changes that still pass either give the same verdict
+  on every generated arm or differ only on shapes the part records as known
+  limits: `&& printf` (#2011), `[ ""0 -lt "$x" ]`, and a redirect target that
+  joins a word or quoted part to a quoted part with a space, such as
+  `2>x"y z"` (#2019).
   The wider sweep finds no new arm in the test suites, so no suite changed.
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
