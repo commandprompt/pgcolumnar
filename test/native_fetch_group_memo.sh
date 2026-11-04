@@ -198,11 +198,24 @@ check "a same-statement retire neither loses nor doubles rows (500|t|500)" \
 # resurrect as an all-NULL row). On assert builds an assert-only CCI after
 # compact() masks a severed reset, so the removal proof for this arm fires on
 # the matrix's non-assert majors.
+#
+# WAIT FOR THE HORIZON FIRST (#1993). compact retires a dead group only when no
+# transaction is older than the DELETE. A snapshot another session held from
+# before the DELETE made compact return 0, and the check read 10|f|0 with nothing
+# wrong in the memo. compact must run once, inside the checked statement, so it
+# cannot be repeated. pgc_wait_delete_past_horizon waits until nothing holds the
+# horizon at the DELETE, and the count is checked before the statement runs. No
+# autovacuum on fd: it would retire the dead group itself, and compact would find
+# none.
 q "SET pgcolumnar.stripe_row_limit=2000;
-   CREATE TABLE fd (id int, v text) USING pgcolumnar;
+   CREATE TABLE fd (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false);
    INSERT INTO fd SELECT g, 'f'||g FROM generate_series(1,10000) g;
    CREATE INDEX fd_id ON fd (id);
    DELETE FROM fd WHERE id <= 2000;" >/dev/null
+blockers="$(pgc_wait_delete_past_horizon fd)"
+echo "  (horizon blockers/calls before the same-statement compact: $blockers)"
+check_num "no transaction older than the DELETE from fd was open before the same-statement compact" \
+	"${blockers%/*}" "0"
 
 compact_out="$(psql_c "SET pgcolumnar.reclaim_coalesce=off;
 $FORCE

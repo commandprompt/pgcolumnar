@@ -599,6 +599,117 @@ sync_or_fail "sync 9"
 check "with the module back, the replayed table reads correctly" \
 	"$(hash_standby r2)" "$(hash_primary r2)"
 
+# ---------------------------------------------------------------------------
+# Scenario 4: a standby's snapshot holds truncate back, and the horizon helper
+# counts it (#1999)
+#
+# With hot_standby_feedback on, the standby sends the xmin of its oldest snapshot
+# to the primary. The primary keeps it in one of two places: in the replication
+# slot the standby streams through, or, with no slot, in the walsender's own
+# backend_xmin. A walsender has no database. Either one holds the primary's
+# horizon back, so truncate leaves a freed range in place. The horizon helper
+# (pgc_freed_range_blockers in lib.sh) must count both: a check that wants 0
+# blockers could otherwise pass while a standby holds truncate back. Each arm
+# opens a snapshot on the standby after the DELETE, so compact can retire the
+# groups but truncate cannot remove them. The slot arm runs first, because the
+# walsender arm has to drop the slot.
+# ---------------------------------------------------------------------------
+
+pgc_pg "printf '%s\\n' 'hot_standby_feedback = on' 'wal_receiver_status_interval = 1' >> '$SB_DIR/postgresql.conf'" \
+	>/dev/null 2>&1
+sb_q "SELECT pg_reload_conf()" >/dev/null
+psql_run "CREATE TABLE hs (id int) USING pgcolumnar WITH (autovacuum_enabled = false);" >/dev/null 2>&1
+psql_run "SELECT pgcolumnar.set_options('hs', stripe_row_limit => 1000, chunk_group_row_limit => 1000);" >/dev/null 2>&1
+psql_run "INSERT INTO hs SELECT g FROM generate_series(1, 12000) g;" >/dev/null 2>&1
+
+# sb_hold -- open a snapshot on the standby in a background session named
+# rp_sb_reader, and wait until it sleeps.
+sb_hold() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$SB_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "SET application_name = 'rp_sb_reader'" -c "BEGIN ISOLATION LEVEL REPEATABLE READ" \
+		-c "SELECT count(*) FROM hs" -c "SELECT pg_sleep(120)" >/dev/null 2>&1 &
+	sb_hold_pid=$!
+	for _ in $(seq 1 40); do
+		[ "$(sb_q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'rp_sb_reader' AND wait_event = 'PgSleep'")" = 1 ] && break
+		sleep 0.25
+	done
+}
+# sb_unhold -- end the standby snapshot.
+sb_unhold() {
+	sb_q "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE application_name = 'rp_sb_reader'" >/dev/null
+	wait "$sb_hold_pid" 2>/dev/null
+}
+# feedback_via slot|walsender -- "yes" once the primary holds an xmin not newer
+# than the standby snapshot's, in the slot pgc_standby and not in a walsender, or
+# the other way round. Waits up to 30 s. Otherwise prints what it read.
+feedback_via() {
+	local hx sx wx ok
+	for _ in $(seq 1 60); do
+		hx="$(sb_q "SELECT backend_xmin FROM pg_stat_activity WHERE application_name = 'rp_sb_reader'")"
+		sx="$(q "SELECT coalesce(xmin::text, '-') FROM pg_replication_slots WHERE slot_name = 'pgc_standby'")"
+		wx="$(q "SELECT coalesce(string_agg(coalesce(backend_xmin::text, '-'), ','), 'none')
+		           FROM pg_stat_activity WHERE backend_type = 'walsender'")"
+		ok=no
+		case "$1" in
+			slot) [ -n "$hx" ] && [ "$wx" = - ] && [ "$(q "SELECT age('${sx:--}'::xid) >= age('$hx'::xid)" 2>/dev/null)" = t ] && ok=yes ;;
+			walsender) [ -n "$hx" ] && [ -z "$sx" ] && [ "$(q "SELECT age('$wx'::xid) >= age('$hx'::xid)" 2>/dev/null)" = t ] && ok=yes ;;
+		esac
+		[ "$ok" = yes ] && { echo yes; return; }
+		sleep 0.5
+	done
+	echo "no (slot xmin=${sx:-no slot}, walsender xmin=$wx, standby snapshot xmin=${hx:-none})"
+}
+# hs_counted -- "yes" when the helper counts at least one holder of hs's freed range.
+hs_counted() {
+	local n
+	n="$(pgc_freed_range_blockers hs)"
+	echo "  (horizon blockers of hs: ${n:-none})" >&2
+	[ "${n:-0}" -ge 1 ] 2>/dev/null && echo yes || echo "no (${n:-none})"
+}
+# hs_reclaims -- "yes" when truncate reclaims, waiting for the horizon.
+hs_reclaims() {
+	local r
+	r="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.truncate('hs');")"
+	echo "  (truncate of hs returned/calls: $r)" >&2
+	[ "${r%/*}" -gt 0 ] 2>/dev/null && echo yes || echo "no (${r%/*})"
+}
+# hs_cycle UPTO -- delete the rows of hs above UPTO, let the standby replay it,
+# open the standby snapshot.
+hs_cycle() {
+	psql_run "DELETE FROM hs WHERE id > $1;" >/dev/null 2>&1
+	sync_or_fail "hs delete above $1"
+	sb_hold
+}
+
+hs_cycle 9000
+check "premise: the standby's feedback reaches the primary through slot pgc_standby" "$(feedback_via slot)" "yes"
+echo "  (compact of hs retired/calls: $(pgc_retry_past_horizon 3 "SELECT pgcolumnar.compact('hs');"))"
+check "premise: truncate is held while the standby snapshot is open, through the slot" \
+	"$(q "SELECT pgcolumnar.truncate('hs');")" "0"
+check "the horizon helper counts a replication slot that holds a standby's xmin" "$(hs_counted)" "yes"
+sb_unhold
+check "truncate reclaims once the standby snapshot held through the slot ends" "$(hs_reclaims)" "yes"
+
+# No slot from here: the standby streams without one, and the slot is dropped so
+# its last xmin does not hold the horizon. The suite ends soon after, so the WAL
+# the slot kept is not needed again.
+pgc_pg "printf '%s\\n' \"primary_slot_name = ''\" >> '$SB_DIR/postgresql.auto.conf'" >/dev/null 2>&1
+sb_q "SELECT pg_reload_conf()" >/dev/null
+for _ in $(seq 1 60); do
+	[ "$(q "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'pgc_standby' AND NOT active")" = 1 ] && break
+	sleep 0.5
+done
+q "SELECT pg_drop_replication_slot('pgc_standby')" >/dev/null
+hs_cycle 6000
+check "premise: the standby's feedback reaches the primary through its walsender, with no slot" \
+	"$(feedback_via walsender)" "yes"
+echo "  (compact of hs retired/calls: $(pgc_retry_past_horizon 3 "SELECT pgcolumnar.compact('hs');"))"
+check "premise: truncate is held while the standby snapshot is open, through the walsender" \
+	"$(q "SELECT pgcolumnar.truncate('hs');")" "0"
+check "the horizon helper counts a walsender that holds a standby's xmin" "$(hs_counted)" "yes"
+sb_unhold
+check "truncate reclaims once the standby snapshot held through the walsender ends" "$(hs_reclaims)" "yes"
+
 # On failure, restate the evidence at the END of the output.
 #
 # run_all_versions.sh tails the last 20 lines of a failing suite's log, and every

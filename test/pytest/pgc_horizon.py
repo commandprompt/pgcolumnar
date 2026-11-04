@@ -70,17 +70,19 @@ def retry_past_horizon(conn, sql, want, calls=CALLS, pause=PAUSE):
     return total, made
 
 
-# The twin of `pgc_freed_range_blockers` in test/lib.sh (#1988, #1992). truncate's
-# own snapshot has as its xmin the oldest transaction ID running in any database.
-# So a session with an xid, or a prepared transaction, holds truncate back from any
+# The twin of `_pgc_horizon_blockers_since` in test/lib.sh (#1988, #1992, #1993).
+# `since` is a query that returns one column, a: the age of the transaction to
+# compare against, or NULL. compact and truncate use one horizon. The caller's own
+# snapshot has as its xmin the oldest transaction ID running in any database. So a
+# session with an xid, or a prepared transaction, holds the horizon back from any
 # database. A snapshot with no xid holds it only from this database, or from a
-# session with no database such as a walsender. Replication slots count too. xid
-# has no ordering operator, so age() compares: the older xid has the larger age, and
-# an xid equal to freed_xid holds it too. With no freed range the query returns
-# NULL, because a count would read 0 without measuring anything.
-FREED_RANGE_BLOCKERS = """
-WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
-            WHERE storage_id = pgcolumnar.get_storage_id(%s) AND freed_xid >= 3)
+# session with no database such as a walsender. Replication slots count too,
+# physical or logical. xid has no ordering operator, so age() compares: the older
+# xid has the larger age, and an xid equal to the one compared against holds it
+# too. With nothing to compare against the query returns NULL, because a count
+# would read 0 without measuring anything.
+BLOCKERS_SINCE = """
+WITH f AS ({since})
 SELECT CASE WHEN f.a IS NOT NULL THEN
          (SELECT count(*) FROM pg_stat_activity
            WHERE pid <> pg_backend_pid()
@@ -92,42 +94,75 @@ SELECT CASE WHEN f.a IS NOT NULL THEN
        END
   FROM f
 """
+# truncate removes a freed range only when the horizon has passed the transaction
+# that freed it (free_space.freed_xid).
+FREED_RANGE_BLOCKERS = BLOCKERS_SINCE.format(since="""
+SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+ WHERE storage_id = pgcolumnar.get_storage_id(%s) AND freed_xid >= 3""")
+# compact retires a fully deleted row group only when the horizon has passed the
+# transaction that deleted its rows: the xmin of its row in delete_vector.
+DELETE_BLOCKERS = BLOCKERS_SINCE.format(since="""
+SELECT min(age(xmin)) AS a FROM pgcolumnar.delete_vector
+ WHERE storage_id = pgcolumnar.get_storage_id(%s) AND xmin::text::bigint >= 3""")
+
+
+def _blockers(conn, sql, table):
+    with conn.cursor() as cur:
+        cur.execute(sql, (table,))
+        return cur.fetchone()[0]
 
 
 def freed_range_blockers(conn, table):
     """How many sessions, prepared transactions and replication slots hold the
     horizon at or before the newest range compact freed in `table` (see above).
-    truncate removes a freed range only when the horizon has passed the transaction
-    that freed it. None when `table` has no freed range. A backend running VACUUM is
-    counted although PostgreSQL skips it; that only makes a wait longer."""
-    with conn.cursor() as cur:
-        cur.execute(FREED_RANGE_BLOCKERS, (table,))
-        return cur.fetchone()[0]
+    None when `table` has no freed range. A backend running VACUUM is counted
+    although PostgreSQL skips it; that only makes a wait longer."""
+    return _blockers(conn, FREED_RANGE_BLOCKERS, table)
+
+
+def delete_blockers(conn, table):
+    """How many sessions, prepared transactions and replication slots hold the
+    horizon at or before the newest DELETE in `table` (#1993). None when `table`
+    has no deleted rows."""
+    return _blockers(conn, DELETE_BLOCKERS, table)
+
+
+def _wait_no_blockers(conn, counter, table, what, calls, pause):
+    """Call counter(conn, table) every `pause` seconds, up to `calls` times, until
+    it reads 0. -> (blockers, calls made). When blockers is not 0, what holds the
+    horizon is printed. blockers is None, after one call, when there is nothing to
+    compare against (#1992), so a check that wants 0 fails."""
+    n = made = 0
+    while made < calls:
+        if made:
+            time.sleep(pause)
+        n = counter(conn, table)
+        made += 1
+        if n is None:
+            print(f"-- no count for {table}: nothing to compare against")
+            return None, made
+        if n == 0:
+            break
+    if n != 0:
+        print(f"-- {what} is still held after {made} calls ({n}). What holds the horizon back:")
+        for line in horizon_holders(conn):
+            print(f"--   {line}")
+    return n, made
 
 
 def wait_freed_range_past_horizon(conn, table, calls=CALLS, pause=PAUSE):
     """Wait until nothing holds the horizon at or before the newest range compact
     freed in `table` (#1988). For a check that a truncate does NOT shrink the file:
     while the horizon holds, truncate leaves the file alone for that reason alone.
+    -> (blockers, calls made), as `_wait_no_blockers`."""
+    return _wait_no_blockers(conn, freed_range_blockers, table,
+                             f"the newest range freed in {table}", calls, pause)
 
-    -> (blockers, calls made). When blockers is not 0, what holds the horizon is
-    printed. blockers is None, after one call, when `table` has no freed range
-    (#1992), so a check that wants 0 fails.
-    """
-    n = made = 0
-    while made < calls:
-        if made:
-            time.sleep(pause)
-        n = freed_range_blockers(conn, table)
-        made += 1
-        if n is None:
-            print(f"-- no count for {table}: it has no freed range")
-            return None, made
-        if n == 0:
-            break
-    if n != 0:
-        print(f"-- the newest range freed in {table} is still held after {made} calls "
-              f"({n}). What holds the horizon back:")
-        for line in horizon_holders(conn):
-            print(f"--   {line}")
-    return n, made
+
+def wait_delete_past_horizon(conn, table, calls=CALLS, pause=PAUSE):
+    """Wait until nothing holds the horizon at or before the newest DELETE in
+    `table` (#1993). For a compact that must run once, inside a statement the check
+    reads. Once this reads 0, no new session can hold the horizon there: a snapshot
+    taken later has a newer xmin. -> (blockers, calls made), as `_wait_no_blockers`."""
+    return _wait_no_blockers(conn, delete_blockers, table,
+                             f"the newest delete in {table}", calls, pause)
