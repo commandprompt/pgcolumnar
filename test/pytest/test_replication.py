@@ -26,7 +26,7 @@ import time
 
 import psycopg
 
-from pgc_horizon import retry_past_horizon
+from pgc_horizon import freed_range_blockers, retry_past_horizon
 from pgc_vacuity import query_error
 
 PROJ_SQL = ("SELECT count(*) FROM pgcolumnar.projection "
@@ -278,8 +278,94 @@ def test_a_streaming_standby_and_a_restore_replay_columnar_tables(pgc_cluster, e
         _answers(sb)
         assert _caught_up(pri, sb), "the standby did not catch up (sync 9)"
         expect.hash(_hash(sb, "r2"), _hash(pri, "r2"), "with the module back, the replayed table reads correctly")
+
+        _standby_feedback_arms(pri, sb, sb_dir, expect)
     finally:
         for c in (rs, sb, pri):
             if c is not None:
                 c.stop()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _feedback_via(pri, sb, where, tries=60):
+    """-> "yes" once the primary holds an xmin not newer than the standby snapshot's,
+    in the slot pgc_standby and not in a walsender (`where` = "slot"), or the other
+    way round ("walsender"). Waits up to 30 s; otherwise what it read."""
+    hx = sx = wx = None
+    for _ in range(tries):
+        hx = _q(sb, "SELECT backend_xmin::text FROM pg_stat_activity WHERE application_name = 'rp_sb_reader'")
+        sx = _q(pri, "SELECT coalesce(xmin::text, '-') FROM pg_replication_slots WHERE slot_name = 'pgc_standby'")
+        wx = _q(pri, "SELECT coalesce(string_agg(coalesce(backend_xmin::text, '-'), ','), 'none') "
+                     "FROM pg_stat_activity WHERE backend_type = 'walsender'")
+        if isinstance(hx, str) and hx:
+            if where == "slot" and wx == "-" and isinstance(sx, str) and sx != "-":
+                if _q(pri, f"SELECT age('{sx}'::xid) >= age('{hx}'::xid)") is True:
+                    return "yes"
+            if where == "walsender" and sx is None and wx not in ("-", "none") and "," not in str(wx):
+                if _q(pri, f"SELECT age('{wx}'::xid) >= age('{hx}'::xid)") is True:
+                    return "yes"
+        time.sleep(0.5)
+    return f"no (slot xmin={'no slot' if sx is None else sx}, walsender xmin={wx}, standby snapshot xmin={hx or 'none'})"
+
+
+def _hs_cycle(pri, sb, upto, where):
+    """DELETE the rows of hs above `upto`, let the standby replay it, open a snapshot
+    on the standby, compact, and read truncate's answer and the helper's count while
+    it is open. Then end it and truncate again, waiting for the horizon.
+    -> (feedback premise, truncate while held, helper count while held, blocks after)."""
+    _run(pri, f"DELETE FROM hs WHERE id > {upto}")
+    assert _caught_up(pri, sb), f"the standby did not catch up (hs delete above {upto})"
+    hold = psycopg.connect(sb.dsn(), autocommit=True, application_name="rp_sb_reader")
+    try:
+        hold.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+        hold.execute("SELECT count(*) FROM hs")
+        via = _feedback_via(pri, sb, where)
+        retired = _retry(pri, "SELECT pgcolumnar.compact('hs')", 3)
+        print(f"-- compact of hs retired {retired}")
+        held = _q(pri, "SELECT pgcolumnar.truncate('hs')")
+        with psycopg.connect(pri.dsn(), autocommit=True) as c:
+            n = freed_range_blockers(c, "hs")
+        print(f"-- horizon blockers of hs: {n}")
+    finally:
+        hold.close()
+    after = _retry(pri, "SELECT pgcolumnar.truncate('hs')", 1)
+    return via, held, n, after
+
+
+def _counted(n):
+    return "yes" if isinstance(n, int) and n >= 1 else f"no ({'none' if n is None else n})"
+
+
+def _standby_feedback_arms(pri, sb, sb_dir, expect):
+    """Scenario 4 (#1999). With hot_standby_feedback on, the standby sends the xmin of
+    its oldest snapshot to the primary, which keeps it in the slot the standby streams
+    through or, with no slot, in the walsender's own backend_xmin (a walsender has no
+    database). Either one holds truncate back, and the horizon helper must count
+    both, or a check that wants 0 blockers could pass while a standby holds truncate
+    back. The slot arm runs first, because the walsender arm drops the slot."""
+    _conf(sb_dir, "hot_standby_feedback = on", "wal_receiver_status_interval = 1")
+    _q(sb, "SELECT pg_reload_conf()")
+    _run(pri, "CREATE TABLE hs (id int) USING pgcolumnar WITH (autovacuum_enabled = false)")
+    _run(pri, "SELECT pgcolumnar.set_options('hs', stripe_row_limit => 1000, chunk_group_row_limit => 1000)")
+    _run(pri, "INSERT INTO hs SELECT g FROM generate_series(1, 12000) g")
+
+    via, held, n, after = _hs_cycle(pri, sb, 9000, "slot")
+    expect.text(via, "yes", "premise: the standby's feedback reaches the primary through slot pgc_standby")
+    expect.num(held, 0, "premise: truncate is held while the standby snapshot is open, through the slot")
+    expect.text(_counted(n), "yes", "the horizon helper counts a replication slot that holds a standby's xmin")
+    expect.at_least(after, 1, "truncate reclaims once the standby snapshot held through the slot ends")
+
+    # no slot from here, and the slot dropped so its last xmin does not hold the horizon
+    with open(sb_dir / "postgresql.auto.conf", "a") as fh:
+        fh.write("\nprimary_slot_name = ''\n")
+    _q(sb, "SELECT pg_reload_conf()")
+    for _ in range(60):
+        if _q(pri, "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'pgc_standby' AND NOT active") == 1:
+            break
+        time.sleep(0.5)
+    _q(pri, "SELECT pg_drop_replication_slot('pgc_standby')")
+    via, held, n, after = _hs_cycle(pri, sb, 6000, "walsender")
+    expect.text(via, "yes", "premise: the standby's feedback reaches the primary through its walsender, with no slot")
+    expect.num(held, 0, "premise: truncate is held while the standby snapshot is open, through the walsender")
+    expect.text(_counted(n), "yes", "the horizon helper counts a walsender that holds a standby's xmin")
+    expect.at_least(after, 1, "truncate reclaims once the standby snapshot held through the walsender ends")

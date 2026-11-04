@@ -1832,6 +1832,7 @@ DECLARE
 	lim_detail text;
 	pass	int;
 	callers_timeout text := current_setting('lock_timeout');
+	dd		text;
 BEGIN
 	-- A REPEATABLE READ or SERIALIZABLE snapshot predates the lock taken below, so
 	-- the export would miss rows committed in between, and DROP would take them
@@ -1937,7 +1938,26 @@ BEGIN
 	-- glob(3) and open(2) read '//' and '/./' so, and the Iceberg reader
 	-- resolves its location with realpath. A symbolic link is not resolved: it
 	-- needs the file system at the time of the call, and the link can change
-	-- after it. A relative path is not resolved against the data directory.
+	-- after it.
+	-- A relative local path names a file under the backend's working
+	-- directory, the data directory. So every comparison above also runs on
+	-- each local path resolved against current_setting('data_directory'), in
+	-- the form as written and in the folded form (#2004). The rule mirrors
+	-- pq_local_resolve in src/columnar_parquet_reader.c, which resolves for
+	-- path_glob_matches (#2001): an absolute path and '' are kept, and any
+	-- other local path p becomes data_directory || '/' || p. The glob arm
+	-- passes the paths as written, and path_glob_matches resolves them itself.
+	-- Resolving is unsound when data_directory holds *, ?, [ or a backslash,
+	-- or when it is not the working directory as getcwd(3) spells it (a
+	-- symbolic link in it, say). pq_local_glob_match then answers true for any
+	-- relative pattern, so path_glob_matches('?', '') is true exactly then: ''
+	-- matches no pattern otherwise. That call asks the C code its own
+	-- condition rather than copying it. When it is true, a table on a local
+	-- path refuses a local target whenever either of the two is relative:
+	-- refuse more, not less. The call is made only for such a pair.
+	-- current_setting('data_directory') needs pg_read_all_settings, which a
+	-- caller holding the two server-file roles need not have. For such a
+	-- caller nothing is resolved, and such a pair is refused in the same way.
 	-- An s3://, gs://, az:// or http(s) key is not folded: '//' and '.' are
 	-- part of a key.
 	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
@@ -1959,6 +1979,9 @@ BEGIN
 	-- block of its own, so a table without a glob costs no subtransaction.
 	-- A row that reads the path without a glob comes first, so it costs no
 	-- call of the matcher; then the rows go in the order of their oid.
+	IF pg_has_role(current_user, 'pg_read_all_settings', 'USAGE') THEN
+		dd := current_setting('data_directory');
+	END IF;
 	FOR cand IN
 		SELECT h.* FROM (
 		SELECT c.relid, c.opath, c.ice, c.tp, c.fp, c.ntp, c.nfp,
@@ -1968,9 +1991,22 @@ BEGIN
 					AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
 				OR c.ntp = c.nfp
 				OR (c.nfp !~ '^(s3|gs|az|https?)://' AND c.nfp <> ''
-					AND starts_with(c.ntp, rtrim(c.nfp, '/') || '/'))) AS hit
+					AND starts_with(c.ntp, rtrim(c.nfp, '/') || '/'))
+				-- each local path resolved against the data directory (#2004)
+				OR c.rtp = c.rfp
+				OR (c.rfp !~ '^(s3|gs|az|https?)://' AND c.rfp <> ''
+					AND starts_with(c.rtp, rtrim(c.rfp, '/') || '/'))
+				OR c.nrtp = c.nrfp
+				OR (c.nrfp !~ '^(s3|gs|az|https?)://' AND c.nrfp <> ''
+					AND starts_with(c.nrtp, rtrim(c.nrfp, '/') || '/'))
+				OR CASE WHEN c.tp !~ '^(s3|gs|az|https?)://' AND c.fp !~ '^(s3|gs|az|https?)://'
+							 AND c.tp <> '' AND c.fp <> ''
+							 AND (left(c.tp, 1) <> '/' OR left(c.fp, 1) <> '/')
+						THEN dd IS NULL OR pgcolumnar.path_glob_matches('?', '')
+						ELSE false END) AS hit
 	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
-				   v.np[1] AS tp, v.np[2] AS fp, nz.nn[1] AS ntp, nz.nn[2] AS nfp
+				   v.np[1] AS tp, v.np[2] AS fp, nz.nn[1] AS ntp, nz.nn[2] AS nfp,
+				   rz.rr[1] AS rtp, rz.rr[2] AS rfp, nz.nn[3] AS nrtp, nz.nn[4] AS nrfp
 			  FROM pg_foreign_table t
 			  JOIN pg_foreign_server fs ON fs.oid = t.ftserver
 			  JOIN pg_foreign_data_wrapper w ON w.oid = fs.srvfdw,
@@ -1996,7 +2032,14 @@ BEGIN
 								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
 								 ELSE p END ORDER BY n)
 						   FROM unnest(ARRAY[path, f.opath]) WITH ORDINALITY AS s(p, n)) AS v(np),
-				   -- the lexical form of each local path (#1965, #1959)
+				   -- each local path resolved against the data directory, as
+				   -- pq_local_resolve resolves it (#2004)
+				   LATERAL (SELECT array_agg(
+							CASE WHEN p IS NULL OR p = '' OR left(p, 1) = '/' OR p ~ '^(s3|gs|az|https?)://' THEN p
+								 ELSE dd || '/' || p END ORDER BY n)
+						   FROM unnest(v.np) WITH ORDINALITY AS s(p, n)) AS rz(rr),
+				   -- the lexical form of each local path, as written and
+				   -- resolved (#1965, #1959, #2004)
 				   LATERAL (SELECT array_agg(
 							CASE WHEN p IS NULL OR p = '' OR p ~ '^(s3|gs|az|https?)://' THEN p
 								 ELSE (WITH RECURSIVE
@@ -2004,7 +2047,7 @@ BEGIN
 														FROM unnest(string_to_array(p, '/')) WITH ORDINALITY AS u(w, ord),
 															 -- glob(3) unescapes a name without a glob
 															 -- character, so a glob's \. is . (#1978 review)
-															 LATERAL (SELECT CASE WHEN n = 2 AND p ~ '[*?[]'
+															 LATERAL (SELECT CASE WHEN n IN (2, 4) AND p ~ '[*?[]'
 																				   AND regexp_replace(w, '\\(.)', '\1', 'g') IN ('.', '..')
 																				  THEN regexp_replace(w, '\\(.)', '\1', 'g')
 																				  ELSE w END) AS e(a)
@@ -2024,7 +2067,7 @@ BEGIN
 															  || array_to_string(st.s, '/')
 														 FROM st ORDER BY st.k DESC LIMIT 1) AS y(q)) AS z(r))
 								 END ORDER BY n)
-						   FROM unnest(v.np) WITH ORDINALITY AS s(p, n)) AS nz(nn)
+						   FROM unnest(v.np || rz.rr) WITH ORDINALITY AS s(p, n)) AS nz(nn)
 			 WHERE (w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure AND o.opt LIKE 'path=%')
 				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c) AS h
 		 WHERE h.hit OR h.fp ~ '[*?[]'

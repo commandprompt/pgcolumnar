@@ -323,6 +323,28 @@ a prepared transaction or replication slot. For example:
 An error from the statement stops the wait at once. The shell helper prints it,
 and the Python helper raises it, so an error does not read as a held horizon.
 
+### A compact that must run once
+
+Sometimes `compact` must run once, inside a statement that the check reads, so
+the helper cannot repeat it. `native_fetch_group_memo` does this (#1993). Then
+wait until nothing holds the horizon at the `DELETE`, check that count, and run
+the statement once:
+
+```sh
+blockers="$(pgc_wait_delete_past_horizon fd)"
+check_num "no transaction older than the DELETE from fd was open before the same-statement compact" "${blockers%/*}" "0"
+```
+
+```python
+from pgc_horizon import wait_delete_past_horizon
+blockers, calls = wait_delete_past_horizon(conn, "fd")
+```
+
+The helper reads the newest `DELETE` from the `xmin` of the table's rows in
+`pgcolumnar.delete_vector`. It counts and waits the same way as the freed-range
+helper below. Once the count is 0 it stays 0: a snapshot taken later has a newer
+`xmin`.
+
 ### A check that truncate does nothing must wait too
 
 A check that `truncate` leaves the file alone, for example with
@@ -350,7 +372,13 @@ table. It counts what has a transaction ID or `xmin` not newer than that:
 - each session with a snapshot (`backend_xmin`) in the current database, and
   each session with no database, such as a walsender;
 - each prepared transaction, in any database;
-- each replication slot.
+- each replication slot, physical or logical.
+
+A standby with `hot_standby_feedback` on is counted through one of two of these
+terms. When the standby streams through a replication slot, the primary keeps
+the standby's oldest `xmin` in that slot, the last term. With no slot, the
+primary keeps it in the standby's walsender, the second term.
+`replication.sh` checks that the helper counts both (#1999).
 
 A snapshot with no transaction ID in another database does not hold truncate
 back. A transaction ID in another database does (#1992). truncate's own snapshot
@@ -366,6 +394,26 @@ back, as above. When the table has no freed range, there is nothing to compare
 against. The helper then stops after one call and gives no count: the shell
 helper prints `none/1`, and the Python helper returns `None`. A check that wants
 0 then fails.
+
+`truncate` also returns 0, and leaves the file alone, when it cannot take its
+ACCESS EXCLUSIVE lock on the table at once (#1994). First it takes SHARE UPDATE
+EXCLUSIVE, and waits for it. Then it asks for ACCESS EXCLUSIVE without waiting.
+That request fails while another session holds a weaker lock on the table, or
+waits for any lock on it. The weaker locks are ACCESS SHARE, ROW SHARE and ROW
+EXCLUSIVE. A
+session that holds SHARE UPDATE EXCLUSIVE or a stronger lock makes `truncate`
+wait instead.
+
+So any check that wants `truncate` to return 0 counts the locks too. The session
+that makes the call counts the other sessions' locks on the table in
+`pg_locks`, just before and just after the call. It counts every lock, which
+covers both cases. The check wants both counts to be 0. In `native_truncate`,
+`truncate_alone` (shell) and `_truncate_alone` (Python) do this for each call
+that wants 0.
+
+The counts are separate statements, so a lock taken and released between a
+count and the call goes unseen. No other session uses the table while the
+suite runs, so the gap only matters if one did.
 
 ## Before merging: build every major
 
