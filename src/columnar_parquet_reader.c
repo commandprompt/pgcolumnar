@@ -4508,12 +4508,14 @@ pq_vwalk(const char *pattern, const char *path, const char *want,
 }
 
 /*
- * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
- * if `path` existed? A path of PATH_MAX bytes or more, or with a name longer
- * than a directory entry holds, cannot be opened, so it matches nothing. A
- * pattern of PATH_MAX bytes or more, or with more than PQ_GLOB_MAX_LEVELS
- * slashes after its first *, ? or [, raises an error before glob(3) runs, as
- * no answer can be given safely. So does a walk of more than PQ_GLOB_MAX_STEPS
+ * Would glob(pattern, GLOB_NOSORT) return exactly `path` if `path` existed,
+ * for a pattern and a path that are absolute, or a path that is ""
+ * (pq_local_glob_match)? A path with a name longer than a directory entry
+ * holds cannot be opened, so it matches nothing. pq_local_glob_match refuses
+ * a path of PATH_MAX bytes or more in the same way, and raises an error for
+ * a pattern of PATH_MAX bytes or more, or with more than PQ_GLOB_MAX_LEVELS
+ * slashes after its first *, ? or [, before glob(3) runs, as no answer can
+ * be given safely. So does a walk of more than PQ_GLOB_MAX_STEPS
  * steps (#1973). It never answers false for a walk an interrupt cut short,
  * nor for a glob(3) error: it processes the interrupt and walks again, or
  * raises an error. A path glob(3) returns matches when it is `path` as
@@ -4524,7 +4526,7 @@ pq_vwalk(const char *pattern, const char *path, const char *want,
  * passes PQ_GLOB_MAX_STEPS, or a stand-in cannot be named.
  */
 static bool
-pq_local_glob_match(const char *pattern, const char *path)
+pq_local_glob_walk(const char *pattern, const char *path)
 {
 	char	   *copy;
 	PqVTree		tree;
@@ -4535,10 +4537,6 @@ pq_local_glob_match(const char *pattern, const char *path)
 	bool		closed;
 	PqVOpen    *vo;
 	char	   *want;
-
-	pq_local_glob_bound(pattern);
-	if (strlen(path) >= PATH_MAX)
-		return false;
 
 	copy = pstrdup(path);
 	p = copy;
@@ -4597,6 +4595,53 @@ pq_local_glob_match(const char *pattern, const char *path)
 		found = found || over;
 	}
 	return found;
+}
+
+/*
+ * A relative pattern or path names a path under the backend's working
+ * directory, the data directory: the reader's glob(3), export_parquet's open
+ * and the reader's open all start there. The tree roots every path at '/', so
+ * a relative one is first resolved against DataDir, the name of that
+ * directory (#2001). Otherwise a ".." above the pattern's first name would
+ * have nowhere to go: ../d?ta/a.parquet would never reach a.parquet in a data
+ * directory called data.
+ * "" is left as it is: it names no file. -> a palloc'd copy, or `p` itself
+ * when it is absolute or "".
+ */
+static const char *
+pq_local_resolve(const char *p)
+{
+	if (p[0] == '/' || p[0] == '\0')
+		return p;
+	return psprintf("%s/%s", DataDir, p);
+}
+
+/*
+ * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
+ * if `path` existed? The bounds apply to the pattern and the path as given,
+ * then each is resolved (pq_local_resolve) and pq_local_glob_walk answers.
+ * A relative path resolved so is DataDir's spelling of the file, as an
+ * absolute path under it would be. A relative pattern is read as glob(3)
+ * reads it from the working directory only when DataDir names that directory
+ * plainly, so the answer is true, matching every path, when it does not:
+ * when DataDir holds *, ?, [ or a backslash, which a pattern reads as glob
+ * syntax, or when it is not the working directory as getcwd(3) spells it (a
+ * symbolic link in it, say), as ".." from the working directory then leads
+ * somewhere DataDir/.. does not.
+ */
+static bool
+pq_local_glob_match(const char *pattern, const char *path)
+{
+	char		cwd[MAXPGPATH];
+
+	pq_local_glob_bound(pattern);
+	if (strlen(path) >= PATH_MAX)
+		return false;
+	if (pattern[0] != '/' &&
+		(strpbrk(DataDir, "*?[\\") != NULL ||
+		 getcwd(cwd, sizeof(cwd)) == NULL || strcmp(cwd, DataDir) != 0))
+		return true;
+	return pq_local_glob_walk(pq_local_resolve(pattern), pq_local_resolve(path));
 }
 
 /*

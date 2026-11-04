@@ -965,6 +965,31 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "a path above a local glob * with no later name that matches .. is not refused")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_wplain")
+    # A relative path reads from the server's working directory, which is the
+    # data directory, and export_parquet writes a relative path there too. So
+    # a table on ../*/tier2001_py.parquet reads tier2001_py.parquet in the
+    # data directory: .. climbs to its parent and * matches the data
+    # directory's own name (#2001). path_glob_matches resolves a relative
+    # pattern and a relative target against the data directory before it
+    # walks, so the move is refused for the path spelled either way. A path
+    # the glob does not reach is not.
+    datadir = _one(conn, "SELECT current_setting('data_directory')")
+    rel = "../*/tier2001_py.parquet"
+    with conn.cursor() as cur:
+        cur.execute("SELECT pgcolumnar.export_parquet('s_apr', 'tier2001_py.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_rel {cols} SERVER tq OPTIONS (path '{rel}')")
+    landed = _one(conn, f"SELECT (pg_stat_file('{datadir}/tier2001_py.parquet')).size > 0")
+    expect.text(f"{'t' if landed else 'f'}|{_one(conn, 'SELECT count(*) FROM s_dup_rel')}", f"t|{apr}",
+                "premise: export_parquet writes a relative path in the data directory, and a relative glob that climbs above it reads that file")
+    expect.text(f"{rolled(tier.format(f'{datadir}/tier2001_py.parquet'))}"
+                f"|{rolled(tier.format('tier2001_py.parquet'))}"
+                f"|{rolled_detail(tier.format('tier2001_py.parquet'))}",
+                f"58P02|58P02|Foreign table public.s_dup_rel reads path '{rel}'.",
+                "a path a relative glob reads through a .. above the data directory and a * name is refused, spelled in full or relative, and the detail names that table")
+    expect.text(rolled(tier.format(f"{datadir}/nrel/tier2001_py.parquet")), "58P01",
+                "a path no table reads is not refused beside a relative glob through a .. above the data directory")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_rel")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
@@ -1813,3 +1838,27 @@ def test_tier_partition_path_glob_matches_errors_where_glibc_would_crash(pgc_own
                      "SELECT pgcolumnar.path_glob_matches('/v/y/*/.?/a.parquet', '/v/y/b.parquet')"),
                 "false|false|false",
                 "path_glob_matches answers false for a path above a * name that no later name climbs back from, or that the last name does not match")
+    # A relative pattern or target names a path under the data directory, the
+    # server's working directory, where the reader's glob(3) and
+    # export_parquet start (#2001). The helper resolves both against it before
+    # it walks, so a .. above the pattern's start climbs to the data
+    # directory's parent, and a * there can match the data directory's own
+    # name.
+    dd = "current_setting('data_directory')"
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('../*/rg/a.parquet', 'rg/a.parquet')",
+                     f"SELECT pgcolumnar.path_glob_matches('../*/rg/a.parquet', {dd} || '/rg/a.parquet')"),
+                "true|true",
+                "path_glob_matches answers true for a relative glob whose .. climbs above its start and comes back down through a * name, to a relative path or that path in full")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('.*/*/?.parquet', 'a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('rg/../.?/[!.]*/rg/a.parquet', 'rg/a.parquet')"),
+                "true|true",
+                "path_glob_matches answers true for a relative glob whose .* or .? name climbs above its start and comes back down through a * or a [class] name")
+    expect.text(pair(f"SELECT pgcolumnar.path_glob_matches('rg/*.parquet', {dd} || '/rg/a.parquet')",
+                     f"SELECT pgcolumnar.path_glob_matches({dd} || '/rg/*.parquet', 'rg/a.parquet')"),
+                "true|true",
+                "path_glob_matches matches a relative glob against a path in full under the data directory, and a glob in full against a relative path")
+    expect.text(pair("SELECT pgcolumnar.path_glob_matches('../*/rg/b.parquet', 'rg/a.parquet')",
+                     "SELECT pgcolumnar.path_glob_matches('../../*/rg/a.parquet', 'rg/a.parquet')",
+                     f"SELECT pgcolumnar.path_glob_matches('../rg/*.parquet', {dd} || '/rg/a.parquet')"),
+                "false|false|false",
+                "path_glob_matches answers false for a relative glob that climbs into another directory than the path's, or whose last name does not match")

@@ -819,6 +819,25 @@ psql_run "DROP FOREIGN TABLE dup_wdq;
 check "a path above a local glob * with no later name that matches .. is not refused" \
 	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', '$W/nw/a.parquet');")" "58P01"
 psql_run "DROP FOREIGN TABLE dup_wplain;"
+# A relative path reads from the server's working directory, which is the
+# data directory, and export_parquet writes a relative path there too. So a
+# table on ../*/tier2001.parquet reads tier2001.parquet in the data
+# directory: .. climbs to its parent and * matches the data directory's own
+# name (#2001). path_glob_matches resolves a relative pattern and a relative
+# target against the data directory before it walks, so the move is refused
+# for the path spelled either way. A path the glob does not reach is not.
+psql_run "SELECT pgcolumnar.export_parquet('m_feb', 'tier2001.parquet');
+          CREATE FOREIGN TABLE dup_rel (ts timestamptz, dev int, v bigint, note text) SERVER tier_pq
+            OPTIONS (path '../*/tier2001.parquet');"
+check "premise: export_parquet writes a relative path in the data directory, and a relative glob that climbs above it reads that file" \
+	"$(q "SELECT (pg_stat_file(current_setting('data_directory') || '/tier2001.parquet')).size > 0;")|$(q "SELECT count(*) FROM dup_rel;")" \
+	"t|$feb_rows"
+check "a path a relative glob reads through a .. above the data directory and a * name is refused, spelled in full or relative, and the detail names that table" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', current_setting('data_directory') || '/tier2001.parquet');")|$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'tier2001.parquet');")|$(errdetail "BEGIN" "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', 'tier2001.parquet');")" \
+	"58P02|58P02|Foreign table public.dup_rel reads path '../*/tier2001.parquet'."
+check "a path no table reads is not refused beside a relative glob through a .. above the data directory" \
+	"$(rolled "SELECT pgcolumnar.tier_partition('m_feb', 'tier_pq', current_setting('data_directory') || '/nrel/tier2001.parquet');")" "58P01"
+psql_run "DROP FOREIGN TABLE dup_rel;"
 # The Iceberg reader is also chosen by its handler, not by the wrapper's name.
 # A path option under a wrapper with any handler but the Parquet one refuses
 # nothing: the Iceberg handler does not read path, and a handler pgcolumnar
@@ -1466,4 +1485,21 @@ check "path_glob_matches answers false for a path above a * name that no later n
 	"$(ansst "SELECT pgcolumnar.path_glob_matches('/w/x/*/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/*/??/a.parquet', '/w/x/a.parquet') || '|' || pgcolumnar.path_glob_matches('/w/x/*/.?/a.parquet', '/w/x/b.parquet');")" \
 	"false|false|false"
 
+# A relative pattern or target names a path under the data directory, the
+# server's working directory, where the reader's glob(3) and export_parquet
+# start (#2001). The helper resolves both against it before it walks, so a
+# .. above the pattern's start climbs to the data directory's parent, and a
+# * there can match the data directory's own name.
+check "path_glob_matches answers true for a relative glob whose .. climbs above its start and comes back down through a * name, to a relative path or that path in full" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('../*/rg/a.parquet', 'rg/a.parquet') || '|' || pgcolumnar.path_glob_matches('../*/rg/a.parquet', current_setting('data_directory') || '/rg/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers true for a relative glob whose .* or .? name climbs above its start and comes back down through a * or a [class] name" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('.*/*/?.parquet', 'a.parquet') || '|' || pgcolumnar.path_glob_matches('rg/../.?/[!.]*/rg/a.parquet', 'rg/a.parquet');")" \
+	"true|true"
+check "path_glob_matches matches a relative glob against a path in full under the data directory, and a glob in full against a relative path" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('rg/*.parquet', current_setting('data_directory') || '/rg/a.parquet') || '|' || pgcolumnar.path_glob_matches(current_setting('data_directory') || '/rg/*.parquet', 'rg/a.parquet');")" \
+	"true|true"
+check "path_glob_matches answers false for a relative glob that climbs into another directory than the path's, or whose last name does not match" \
+	"$(ansst "SELECT pgcolumnar.path_glob_matches('../*/rg/b.parquet', 'rg/a.parquet') || '|' || pgcolumnar.path_glob_matches('../../*/rg/a.parquet', 'rg/a.parquet') || '|' || pgcolumnar.path_glob_matches('../rg/*.parquet', current_setting('data_directory') || '/rg/a.parquet');")" \
+	"false|false|false"
 pgc_summary
