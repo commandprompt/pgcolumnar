@@ -1958,6 +1958,13 @@ BEGIN
 	-- current_setting('data_directory') needs pg_read_all_settings, which a
 	-- caller holding the two server-file roles need not have. For such a
 	-- caller nothing is resolved, and such a pair is refused in the same way.
+	-- A table on a relative glob is left out of that rule (#2013): the glob
+	-- arm covers it, as path_glob_matches resolves a relative pattern itself
+	-- and needs no privilege. Where resolving is unsound, the matcher refuses
+	-- every such pattern anyway. The rule still holds for that table when
+	-- the target lies under the table's path in the folded form, as under a
+	-- directory: a directory of that literal name is read as a directory,
+	-- which the glob arm does not see.
 	-- An s3://, gs://, az:// or http(s) key is not folded: '//' and '.' are
 	-- part of a key.
 	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
@@ -2002,6 +2009,9 @@ BEGIN
 				OR CASE WHEN c.tp !~ '^(s3|gs|az|https?)://' AND c.fp !~ '^(s3|gs|az|https?)://'
 							 AND c.tp <> '' AND c.fp <> ''
 							 AND (left(c.tp, 1) <> '/' OR left(c.fp, 1) <> '/')
+							 -- a table on a relative glob, to the glob arm (#2013)
+							 AND NOT (c.fp ~ '[*?[]' AND left(c.fp, 1) <> '/'
+									  AND strpos('/' || c.ntp, '/' || rtrim(c.nfp, '/') || '/') = 0)
 						THEN dd IS NULL OR pgcolumnar.path_glob_matches('?', '')
 						ELSE false END) AS hit
 	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
