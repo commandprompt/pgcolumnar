@@ -8082,11 +8082,13 @@ Each replay arm is about a write the primary made. Vacuum must have rewritten th
 
 A session that holds a snapshot across `compact` or `truncate` makes the call do nothing (#1987). Both harnesses call `compact('r')`, `compact('t')` and `truncate('t')` through the shared helper, which retries every 0.5 s for up to 30 s, and `r` and `t` have autovacuum off from the compact arm on. `compact retired the 15 trailing row groups of t on the primary` checks the count before `truncate` runs.
 
+A standby holds the primary's horizon back too, once `hot_standby_feedback` is on (#1999). The primary keeps the standby's oldest xmin in the replication slot the standby streams through, or, with no slot, in the walsender's own `backend_xmin`. A walsender has no database. The last arm opens a snapshot on the standby after a `DELETE` from table `hs`, first with the slot and then with the slot dropped. For each one it checks that the xmin reaches the primary that way, that truncate returns 0 while the snapshot is open, that the horizon helper counts the slot or the walsender, and that truncate reclaims once the snapshot ends. Without these checks, a helper that left out the slot term or the walsender term passed both harnesses.
+
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically (`compact retired the 15 trailing row groups of t on the primary` before the truncate), and a module-less standby replays |
+| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically (`compact retired the 15 trailing row groups of t on the primary` before the truncate), and a module-less standby replays; through the slot and then through the walsender: `premise: the standby's feedback reaches the primary through ...`, `premise: truncate is held while the standby snapshot is open, through ...`, `the horizon helper counts a replication slot that holds a standby's xmin`, `the horizon helper counts a walsender that holds a standby's xmin`, `truncate reclaims once the standby snapshot held through ... ends` |
 
 ## 153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock
 
@@ -8417,14 +8419,16 @@ The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by 
 
 The setting-off arm has the opposite problem (#1988). While a transaction older than the `compact` is open, `truncate` returns 0 and leaves the file alone whatever the setting says, so the arm passed with the setting ignored. It now waits until nothing holds the horizon at the freed range. `GUC off: no transaction older than the compact was open` checks the count of what still holds it, which must be 0. A snapshot with no transaction ID in another database does not hold truncate back, and the count leaves it out (#1992). So the arm opens such a snapshot in database `postgres` before the compact and keeps it open through both calls. `premise: a snapshot older than the compact is open in another database` shows that snapshot is older than the freed range, and `the other-database snapshot was still open after the GUC-on truncate` shows truncate reclaimed while it lived. `a table with no freed range gives the horizon helper no count` checks that the helper gives no count, rather than 0, for a table with nothing freed.
 
+`truncate` also returns 0, and leaves the file alone, when it cannot take its ACCESS EXCLUSIVE lock at once (#1994). That happens while another session holds a lock weaker than SHARE UPDATE EXCLUSIVE on the table, or waits for any lock on it. That too passed the arm whatever the setting said, and it passed every other check that wants 0. So each call that wants 0 counts the other sessions' locks on `n` in its own session, just before and just after the call, and the check wants `0|0`: `truncate before any delete: no other session held a lock on n before or after the call`, `second truncate: no other session held a lock on n before or after the call` and `GUC off: no other session held a lock on n before or after the call`.
+
 A transaction ID in another database does hold truncate back, because truncate's own snapshot takes the oldest running transaction ID from every database as its xmin (#1992). The last test opens three holders on table `xw`, one at a time, each after a `DELETE` and before the `compact`: a writer in database `postgres`, a prepared transaction in database `postgres`, and a snapshot in this database taken just before the `compact`, whose xmin equals the freed range's `freed_xid`. For each one it checks that truncate returns 0 while the holder is open, that the helper counts it, and that truncate reclaims once it ends.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_truncate_shrinks_the_file_and_keeps_every_row` | a truncate with nothing freed returns 0; `compact retired the 15 trailing groups`; then truncate returns blocks, the file shrinks, the rows match the heap, and a second truncate returns 0 |
-| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; `premise: a snapshot older than the compact is open in another database`; `GUC off: no transaction older than the compact was open`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks; `the other-database snapshot was still open after the GUC-on truncate`; `a table with no freed range gives the horizon helper no count` |
+| `test_truncate_shrinks_the_file_and_keeps_every_row` | `truncate before any delete: no other session held a lock on n before or after the call`; a truncate with nothing freed returns 0; `compact retired the 15 trailing groups`; then truncate returns blocks, the file shrinks, the rows match the heap; `second truncate: no other session held a lock on n before or after the call`; and a second truncate returns 0 |
+| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; `premise: a snapshot older than the compact is open in another database`; `GUC off: no transaction older than the compact was open`; `GUC off: no other session held a lock on n before or after the call`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks; `the other-database snapshot was still open after the GUC-on truncate`; `a table with no freed range gives the horizon helper no count` |
 | `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | `compact retired the 3 groups from id 30001 to 33000`; refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
 | `test_the_horizon_helper_counts_what_holds_truncate` | for a writer in another database, a prepared transaction in another database, and a snapshot from just before the compact: `premise: truncate is held while ... is open`, `the horizon helper counts ...`, `truncate reclaims once ... ends` |
 
@@ -11978,6 +11982,8 @@ Every test makes one check under the shell's name, on a private database built o
 
 The twin of `test/native_fetch_group_memo.sh` (#709). 3000 index-probe fetches cost a bounded number of row_group index reads and no heap scan of row_group; scattered fetches are exact; and a group flushed under an aborted savepoint, or retired mid-statement by compact_rewrite() or compact(), never resurrects through a stale memo. Unique checks, an AFTER UPDATE trigger's OLD row, a fresh DELETE and a same-transaction TRUNCATE keep their behaviour.
 
+The compact() arm calls compact once, inside the checked statement, and compact retires nothing while a transaction older than the `DELETE` is open (#1993). So both harnesses first wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0. Table `fd` has autovacuum off, so an autovacuum cannot retire the group first.
+
 ### Every test
 
 Every test makes one check under the shell's name, on a private database built once in the shell's order. Where the shell runs one psql -c, the twin runs one transaction, so the transaction-local scan counters bracket the measured statement as they do in the shell. Readings are values: a failed query is a query_error(), a reading taken before a later statement fails is kept, and a failed fixture step reds the checks that depend on it by name. Survival reads the server log's crash count as well as SELECT 1.
@@ -11992,6 +11998,7 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_fgm_same_transaction_flush_then_fetch` | same-transaction flush then fetch sees the new rows |
 | `test_fgm_aborted_savepoint_rows_do_not_resurrect` | rows flushed under an aborted savepoint do not resurrect through the cursor |
 | `test_fgm_same_statement_retire_neither_loses_nor_doubles` | a same-statement retire neither loses nor doubles rows (500|t|500) |
+| `test_fgm_no_transaction_older_than_the_delete_before_compact` | no transaction older than the DELETE from fd was open before the same-statement compact |
 | `test_fgm_same_statement_compact_resurrects_nothing` | a same-statement compact() of a fully deleted group resurrects nothing (10|t|0) |
 | `test_fgm_table_is_exact_after_the_rewrite` | the table is exact after the in-statement rewrite |
 | `test_fgm_duplicate_still_violates_a_unique_index` | a buffered + flushed duplicate still violates a unique index (23505) |
