@@ -990,6 +990,65 @@ def test_tier_partition_moves_a_partition_exactly_once(pgc_own_db, pgc_cluster, 
                 "a path no table reads is not refused beside a relative glob through a .. above the data directory")
     with conn.cursor() as cur:
         cur.execute("DROP FOREIGN TABLE s_dup_rel")
+    # The comparisons that need no glob (the same path, a path under a
+    # directory, a path under an Iceberg location, and the folded form of
+    # each) resolve a relative path against the data directory too, by the
+    # rule path_glob_matches uses (#2004). So a table on p2004/a.parquet
+    # refuses the path spelled in full under the data directory, and a table
+    # on a path in full refuses the relative spelling. A path no table reads
+    # is still moved, and a remote key is never resolved: s3:/tierb/r04py.parquet
+    # is a local path in the data directory, not the key
+    # s3://tierb/r04py.parquet. None of the directories under the data
+    # directory exists, so a move that is not refused fails 58P01;
+    # tier2004_py.parquet does exist.
+    dbase = os.path.basename(datadir)
+    with conn.cursor() as cur:
+        cur.execute("SELECT pgcolumnar.export_parquet('s_apr', 'tier2004_py.parquet')")
+        cur.execute(f"CREATE FOREIGN TABLE s_dup_r04 {cols} SERVER tq OPTIONS (path 'tier2004_py.parquet')")
+        for name, opt in (("s_dup_r04x", "p2004/a.parquet"), ("s_dup_a04", f"{datadir}/p2004/b.parquet"),
+                          ("s_dup_rd04", "p2004d"), ("s_dup_ad04", f"{datadir}/p2004e/"),
+                          ("s_dup_rdd04", f"../{dbase}/p2004f/a.parquet"),
+                          ("s_dup_add04", f"{datadir}/p2004h/a.parquet"),
+                          ("s_dup_s04", "s3:/tierb/r04py.parquet"), ("s_dup_rs04", "s3://tierb/r05py.parquet")):
+            cur.execute(f"CREATE FOREIGN TABLE {name} (x int) SERVER tq OPTIONS (path '{opt}')")
+        cur.execute("CREATE FOREIGN TABLE s_dup_ir04 (at timestamptz, reading int) SERVER ti"
+                    " OPTIONS (metadata_path 'ice2004py/metadata/v1.metadata.json')")
+    landed = _one(conn, f"SELECT (pg_stat_file('{datadir}/tier2004_py.parquet')).size > 0")
+    expect.text(f"{'t' if landed else 'f'}|{_one(conn, 'SELECT count(*) FROM s_dup_r04')}", f"t|{apr}",
+                "premise: a foreign table on a relative path without a glob reads the file export_parquet wrote under that name in the data directory")
+    expect.text(f"{rolled(tier.format(f'{datadir}/tier2004_py.parquet'))}"
+                f"|{rolled(tier.format(f'{datadir}/p2004/a.parquet'))}"
+                f"|{rolled_detail(tier.format(f'{datadir}/p2004/a.parquet'))}",
+                "58P02|58P02|Foreign table public.s_dup_r04x reads path 'p2004/a.parquet'.",
+                "a path a foreign table reads as a relative path without a glob is refused spelled in full under the data directory, and the detail names that table")
+    expect.text(f"{rolled(tier.format('p2004/b.parquet'))}|{rolled_detail(tier.format('p2004/b.parquet'))}",
+                f"58P02|Foreign table public.s_dup_a04 reads path '{datadir}/p2004/b.parquet'.",
+                "a relative target is refused when a foreign table reads it spelled in full under the data directory, and the detail names that table")
+    expect.text(f"{rolled(tier.format(f'{datadir}/p2004d/sub/x.parquet'))}"
+                f"|{rolled(tier.format('p2004e/sub/x.parquet'))}", "58P02|58P02",
+                "a path under a directory a foreign table reads is refused when one of the two is relative and the other is spelled in full under the data directory")
+    expect.text(f"{rolled(tier.format(f'{datadir}/p2004f/a.parquet'))}"
+                f"|{rolled(tier.format('p2004f/a.parquet'))}"
+                f"|{rolled(tier.format(f'../{dbase}/p2004h/a.parquet'))}", "58P02|58P02|58P02",
+                "a relative path whose .. climbs out of the data directory and back into it is refused against the file it names, spelled in full or relative")
+    expect.text(f"{rolled(tier.format(f'{datadir}/ice2004py/data/x.parquet'))}"
+                f"|{rolled_detail(tier.format(f'{datadir}/ice2004py/data/x.parquet'))}",
+                "58P02|Foreign table public.s_dup_ir04 reads Iceberg files under 'ice2004py/'.",
+                "a path under the location of an Iceberg table on a relative metadata_path is refused spelled in full under the data directory, and the detail names that location")
+    expect.text("|".join(rolled(tier.format(t)) for t in
+                         ("p2004n/a.parquet", f"{datadir}/p2004n/a.parquet", f"../{dbase}/p2004n/a.parquet",
+                          "p2004dx/a.parquet")),
+                "58P01|58P01|58P01|58P01",
+                "a relative path no table reads is not refused beside tables on relative paths and on paths in full under the data directory")
+    expect.text(f"{_sqlstate(conn, tier.format('s3://tierb/r04py.parquet'))}"
+                f"|{rolled(tier.format('s3:/tierb/r05py.parquet'))}"
+                f"|{_sqlstate(conn, tier.format('s3://tierb/r05py.parquet'))}", "28000|58P01|58P02",
+                "a remote key is not resolved against the data directory, so a local path that spells it there is not refused and the key itself still is")
+    expect.text(_sqlstate(conn, "SELECT pgcolumnar.tier_partition('s_apr', 'tq', NULL)"), "22004",
+                "a NULL path is refused as null beside foreign tables on relative paths")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE s_dup_r04, s_dup_r04x, s_dup_a04, s_dup_rd04, s_dup_ad04, s_dup_rdd04,"
+                    " s_dup_add04, s_dup_ir04, s_dup_s04, s_dup_rs04")
     # The Iceberg reader is also chosen by its handler, not by the wrapper's
     # name. A path option under a wrapper with any handler but the Parquet one
     # refuses nothing: the Iceberg handler does not read path, and a handler
@@ -1477,6 +1536,40 @@ def test_tier_partition_runs_on_the_callers_own_privileges(pgc_own_db, pgc_clust
     expect.text(as_role("tier_own_py", f"SELECT pgcolumnar.tier_partition('pw_mar', 'tq', '{server_dir / 'pw_own.parquet'}')")
                 + f"|{_mar_shape(conn, 'pw')}", f"ok|f:-:{BOUND}",
                 "a non-superuser owner tiers its own partition")
+    # A caller without pg_read_all_settings cannot read data_directory, so
+    # tier_partition cannot resolve a relative path for it (#2004). It then
+    # refuses a local target beside a table on a local path whenever either
+    # of the two is relative, as where resolving is unsound. Two paths in
+    # full are compared as before.
+    datadir = _one(conn, "SELECT current_setting('data_directory')")
+    with conn.cursor() as cur:
+        cur.execute("CREATE FOREIGN TABLE pw_np04 (x int) SERVER tq OPTIONS (path 'np2004py/a.parquet')")
+
+    def as_role_detail(role, sql):
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user={role} dbname={db}",
+                                 autocommit=True) as c:
+                c.execute(sql)
+            return "ok"
+        except psycopg.Error as e:
+            return e.diag.message_detail or "none"
+
+    def own_rolled(path):
+        return f"BEGIN; SELECT pgcolumnar.tier_partition('pw_apr', 'tq', '{path}'); ROLLBACK"
+
+    expect.text(as_role("tier_own_py", "SELECT current_setting('data_directory')"), "42501",
+                "premise: tier_own cannot read data_directory")
+    expect.text(f"{as_role('tier_own_py', own_rolled(f'{datadir}/np2004py/a.parquet'))}"
+                f"|{as_role('tier_own_py', own_rolled(server_dir / 'np2004py' / 'c.parquet'))}"
+                f"|{as_role_detail('tier_own_py', own_rolled(server_dir / 'np2004py' / 'c.parquet'))}",
+                "58P02|58P02|Foreign table public.pw_np04 reads path 'np2004py/a.parquet'.",
+                "a caller who cannot read data_directory is refused a path in full beside a table on a relative path, and the detail names that table")
+    with conn.cursor() as cur:
+        cur.execute("DROP FOREIGN TABLE pw_np04")
+    expect.text(as_role("tier_own_py", own_rolled("np2004py/b.parquet")), "58P02",
+                "a caller who cannot read data_directory is refused a relative target beside tables on paths in full")
+    expect.text(as_role("tier_own_py", own_rolled(server_dir / "np2004py" / "c.parquet")), "58P01",
+                "a caller who cannot read data_directory still moves a path in full no table reads beside tables on paths in full")
 
 
 def _pg_ctl(cluster, args, extra_env):

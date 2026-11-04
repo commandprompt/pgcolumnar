@@ -767,9 +767,10 @@ any path under `s3://wh/db/t/` (#1949). The reader refuses a file outside the
 table location and does not read it. So the location covers every file the
 table can read. A `metadata_path` with no directory above `metadata/` is cut
 as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
-refused. A relative `metadata/v1.metadata.json` gives `./`, which matches
-only a path written as `./...`, because a relative path is not resolved
-against the data directory. A location that holds `..`, such as
+refused. A relative `metadata/v1.metadata.json` gives `./`, the data
+directory, because a relative path is resolved against it (#2004). So every
+local path under the data directory is refused, spelled relative or in full.
+A location that holds `..`, such as
 `/w/x/../t/`, refuses paths under `/w/t/` (#1959). The reader reads `/w/t/`
 too, unless `/w/x` is a symbolic link. Then the reader goes up from the
 directory the link leads to, and the check refuses the wrong directory. A
@@ -807,9 +808,13 @@ written, and again in a folded form (#1965, #1959). That form reads a run of
 `/` as one `/`, drops a `.` name, and drops a name followed by `..`. In a
 glob, `\.` counts as `.`, because `glob(3)` removes the backslash. So a
 foreign table on `/w//*.parquet` or `/w/\./*.parquet` blocks a move to
-`/w/a.parquet`. The function does not resolve a symbolic link or a relative
-path. So it does not see a local file reached through a link, or spelled
-relative to the data directory. A link followed by `..` is worse: for
+`/w/a.parquet`. A relative path is resolved against the data directory,
+where the server opens it. So `x/a.parquet` and the same file spelled in full
+block each other (#2004). A caller without `pg_read_all_settings` cannot
+read the data directory's name. For that caller, a local move is refused
+beside a table on a local path when either path is relative. The function does not resolve a symbolic
+link. So it
+does not see a local file reached through a link. A link followed by `..` is worse: for
 `/w/lnk/../*.parquet`, where `/w/lnk` leads to `/z/q`, the reader reads
 `/z/*.parquet`. The function refuses `/w/a.parquet` instead, and allows a move
 that overwrites `/z/a.parquet`. Do not spell a reader's path with a link
