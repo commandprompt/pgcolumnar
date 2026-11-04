@@ -5706,6 +5706,7 @@ native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is ex
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
 native_scale	native_scale	bulk load count	15;16;17;18;19	never	-
 native_scale	native_scale	bulk load parity	15;16;17;18;19	never	-
+native_scale	native_scale	compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
 native_scale	native_scale	indexed lookup after rewrite	15;16;17;18;19	never	-
 native_scale	native_scale	parity after compact_rewrite	15;16;17;18;19	never	-
 native_scale	native_scale	parity after delete	15;16;17;18;19	never	-
@@ -5715,6 +5716,11 @@ native_scale	native_scale	parity after reclaim round 3	15;16;17;18;19	never	-
 native_scale	native_scale	parity after reclaim round 4	15;16;17;18;19	never	-
 native_scale	native_scale	parity after recluster	15;16;17;18;19	never	-
 native_scale	native_scale	reclaim reached steady state (round 4 <= round 2)	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	reclaim round 1: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 2: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 3: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 4: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	recluster returned a group count	15;16;17;18;19	2026-11-04	CommandCounterIncrement at the end of PgColumnarAllocateFreeSpace removed (#2018)
 native_scale	native_scale	round 2: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
 native_scale	native_scale	round 3: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
 native_scale	native_scale	round 4: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)

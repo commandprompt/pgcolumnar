@@ -14145,6 +14145,8 @@ The pytest twin of `test/native_scale.sh` (#2018), every check by the shell's na
 
 It loads `SCALE_N` rows (default 500000, as in the shell) into a columnar table and a heap mirror. It deletes a quarter, runs `compact_rewrite`, checks an indexed range lookup, and reclusters by `c`. After each step the two tables must give the same order-independent fingerprint. Then four rounds delete a slice and run `compact_rewrite` with no inserts. Before rounds 2 to 4 it waits for the horizon, as `test_native_reclaim.py` does (#2010). The file after round 4 must be no larger than after round 2.
 
+Each `recluster` and `compact_rewrite` call must return a group count. A failed call rolls back, so the parity checks still pass and the file stops changing, which the plateau check reads as success. With the allocator's `CommandCounterIncrement` removed, `recluster` fails with "tuple already updated by self", and only the group-count check fails (review of #2021). CI runs the twin at `SCALE_N=200000`, so the pytest-cluster job stays inside its 40-minute limit. At 200000 it still fails that mutant and the reuse-off mutant.
+
 Round 4 deletes nothing, in both harnesses: every id with `id % 8 = 4` also has `id % 4 = 0`, and the first delete removed those. The twin names that zero, because its write guard refuses an unnamed one. Those two checks are the only ones the shell suite does not have.
 
 ### Every test
@@ -14154,16 +14156,22 @@ Round 4 deletes nothing, in both harnesses: every id with `id % 8 = 4` also has 
 | `test_scale_parity_and_reclaim_steady_state` | bulk load count |
 | `test_scale_parity_and_reclaim_steady_state` | bulk load parity |
 | `test_scale_parity_and_reclaim_steady_state` | parity after delete |
+| `test_scale_parity_and_reclaim_steady_state` | compact_rewrite returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after compact_rewrite |
 | `test_scale_parity_and_reclaim_steady_state` | indexed lookup after rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | recluster returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after recluster |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1: compact_rewrite returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 1 |
 | `test_scale_parity_and_reclaim_steady_state` | round 2: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2: compact_rewrite returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 2 |
 | `test_scale_parity_and_reclaim_steady_state` | round 3: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3: compact_rewrite returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 3 |
 | `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from h: id % 8 = 4 went with id % 4 = 0 |
 | `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from n: id % 8 = 4 went with id % 4 = 0 |
 | `test_scale_parity_and_reclaim_steady_state` | round 4: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |

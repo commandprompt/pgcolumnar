@@ -668,7 +668,13 @@ workflows, except the four timing suites that `PGC_SKIP_TIMING` drops. A suite
 outside that list runs in no job. `native_scale` was outside
 it until #2018. It checks compaction, recluster and reclaim against a heap
 mirror at 500000 rows, and nothing ran it. It is in the list now, and its pytest
-twin runs in the pytest-cluster job. On a shared 8-core machine under heavy load
+twin runs in the pytest-cluster job. The nightly runs the suite on 15 to 18 on
+x86_64 and on 18 on aarch64. The twin runs at 200000 rows in CI
+(`SCALE_N=200000` in the pytest-cluster jobs), because those jobs run close to
+their 40-minute limit. The suite checks that every `recluster` and
+`compact_rewrite` call returned a group count. A failed call rolls back, so
+parity still holds and the file stops growing, and only that check sees it.
+On a shared 8-core machine under heavy load
 it took 36 s of test time at 200000 rows and 157 s at 500000. Its server used
 at most 120 MB of memory and its data directory 301 MB of disk.
 

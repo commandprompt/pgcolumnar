@@ -314,6 +314,12 @@ jobs:
           /tmp/pgcvenv/bin/python -c 'import pyarrow, pyarrow.parquet; print("pyarrow", pyarrow.__version__)'
           /tmp/pgcvenv/bin/python -c 'import duckdb; print("duckdb", duckdb.__version__)'
           export PGC_REQUIRE=pyarrow,duckdb
+          # TWIN OF native_scale AT 200000 ROWS (#2018, review of #2021). The job runs
+          # close to its 40-minute limit, and the twin's default is 500000. At
+          # 200000 the twin still fails the two regressions it guards: the
+          # allocator's missing CommandCounterIncrement and broken free-space
+          # reuse. The shell suite keeps its default in the suites job.
+          export SCALE_N=200000
           PYTHONPATH=. /tmp/pgcvenv/bin/pytest -q \
             --pg-config /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
             --pgc-expect-tests "$WANT" \

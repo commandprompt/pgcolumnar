@@ -9,7 +9,9 @@ rounds of {delete a rotating 1/8 slice, compact_rewrite} run with no inserts, so
 writes are compaction's, and the file must plateau: round 4 is no larger than round 2.
 
 SCALE_N sets the row count, as it does for the shell suite. The default is the shell's,
-500000.
+500000. The pytest-cluster jobs in ci.yml and nightly.yml set SCALE_N=200000, so the
+jobs stay inside their 40-minute limit. At 200000 this twin still fails a recluster
+that errors and a rewrite that stops reusing freed space.
 """
 import os
 
@@ -30,6 +32,27 @@ FP = """SELECT count(*), sum(a)::bigint, sum(b)::bigint, min(c), max(c),
 def _one(cur, sql):
     cur.execute(sql)
     return cur.fetchone()[0]
+
+
+def _maint(cur, sql):
+    """Run one maintenance call and return its result, or its error text.
+
+    The shell suite's maint() does the same. A failed recluster or compact_rewrite
+    rolls back, so the parity checks still pass and the file stops changing, which
+    the plateau check reads as success. So the result is checked by name, and the
+    error text is what a failure prints (OffgridwithJD, review of #2021).
+    """
+    import psycopg          # deferred, as conftest does
+    try:
+        return _one(cur, sql)
+    except psycopg.Error as e:
+        return f"{type(e).__name__}: {e}".strip()
+
+
+def _is_count(result):
+    """'yes' when the call returned a group count, else the whole result."""
+    ok = isinstance(result, int) and not isinstance(result, bool)
+    return "yes" if ok else f"no: [{result}]"
 
 
 def _fp(cur, table):
@@ -55,8 +78,9 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
         cur.execute("DELETE FROM h WHERE id % 4 = 0")
         cur.execute("DELETE FROM n WHERE id % 4 = 0")
         expect.rows(_fp(cur, "n"), _fp(cur, "h"), "parity after delete")
-        rew = _one(cur, "SELECT pgcolumnar.compact_rewrite('n', 0.1)")
+        rew = _maint(cur, "SELECT pgcolumnar.compact_rewrite('n', 0.1)")
         print(f"-- compact_rewrite rewrote {rew} groups")
+        expect.text(_is_count(rew), "yes", "compact_rewrite returned a group count")
         expect.rows(_fp(cur, "n"), _fp(cur, "h"), "parity after compact_rewrite")
         # Rewritten rows carry new row numbers and need fresh index entries, so an
         # indexed range lookup must match the heap exactly.
@@ -65,8 +89,9 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
                    "indexed lookup after rewrite")
 
         # Online recluster by c; the results do not change. This is the slow step.
-        rec = _one(cur, "SELECT pgcolumnar.recluster('n', 'c')")
+        rec = _maint(cur, "SELECT pgcolumnar.recluster('n', 'c')")
         print(f"-- recluster processed {rec} groups")
+        expect.text(_is_count(rec), "yes", "recluster returned a group count")
         expect.rows(_fp(cur, "n"), _fp(cur, "h"), "parity after recluster")
 
         # ---- physical reclaim: steady state across repeated compaction ----
@@ -89,7 +114,8 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
                 print(f"-- round {r} horizon blockers/calls before the rewrite: {blockers}/{calls}")
                 expect.num(blockers, 0,
                            f"round {r}: no transaction older than the newest freed range was open before the rewrite")
-            cur.execute("SELECT pgcolumnar.compact_rewrite('n', 0.02)")
+            rw = _maint(cur, "SELECT pgcolumnar.compact_rewrite('n', 0.02)")
+            expect.text(_is_count(rw), "yes", f"reclaim round {r}: compact_rewrite returned a group count")
             expect.rows(_fp(cur, "n"), _fp(cur, "h"), f"parity after reclaim round {r}")
             sizes.append(_one(cur, "SELECT pg_relation_size('n')"))
             print(f"-- round {r} file size: {sizes[-1]}")

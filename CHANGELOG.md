@@ -560,11 +560,16 @@ true until the next version shipped.
 - `native_scale` now runs in CI (#2018). No job ran it before: it was missing
   from the `SUITES` list in `test/run_all_versions.sh`, and `run_coverage.sh`
   refused it by name. It is in the list now, so the per-PR gate runs it on
-  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 and in the coverage
-  report. A new pytest twin, `test_native_scale.py`, runs in the pytest-cluster
-  job. The harness self-test no longer excuses it from "every suite is
-  registered in run_all_versions.sh".
+  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 on x86_64, on 18 on
+  aarch64, and in the coverage report. A new pytest twin, `test_native_scale.py`,
+  runs in the pytest-cluster job at 200000 rows (`SCALE_N=200000`), so that job
+  stays inside its 40-minute limit. The harness self-test no longer excuses it
+  from "every suite is registered in run_all_versions.sh".
   The suite's steady-state check now prints both file sizes when it fails.
+  The suite now checks that each `recluster` and `compact_rewrite` call returned
+  a group count, and prints the error when one did not. Before, it threw the
+  error away: with the allocator's `CommandCounterIncrement` removed, `recluster`
+  failed with "tuple already updated by self" and the suite still passed 14/14.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored
