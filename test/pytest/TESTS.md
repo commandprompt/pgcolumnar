@@ -6819,7 +6819,7 @@ COUNTED IN THE STATEMENT'S OWN TRANSACTION, NOT FROM `pg_statio_all_tables` (#12
 
 `pg_stat_reset()` is database-wide. The corpus runs serially within a worker.
 
-compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`. The vacuum test waits the same way before its vacuums, because the vacuum reads a group's deletes only past the horizon: `no transaction older than the vacuumed table's delete was open before the vacuums`.
+compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s per target, up to 90 s per phase, until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`. The vacuum test waits the same way before its vacuums, because the vacuum reads a group's deletes only past the horizon: `no transaction older than the vacuumed table's delete was open before the vacuums`.
 
 ### Every test
 
@@ -8127,13 +8127,15 @@ Each cleanup arm compares the catalogs with their state just before its own tabl
 
 The pytest twin of `test/native_reclaim.sh` (ported for #1341, item 70), every check by the shell's name. Retiring a row group records its byte range in `pgcolumnar.free_space`, and a later online compaction reserves from a freed range instead of growing the file. So repeated reclusters plateau the file, free_space stays bounded, and the reused blocks read back the heap mirror's rows. The reclusters alternate their key, because recluster self-gates on a table already in that key's order: four more `recluster('n', 'id')` calls each returned 0, and the file "plateaued" with reuse disabled.
 
+A recluster reuses a freed range only when no transaction is older than the one that freed it (#2010). Under a snapshot held from before the loop, each recluster appended and the file grew. So before each of the four repeated reclusters both harnesses wait up to 30 s until nothing holds the horizon at the newest range freed in `n`, and check the count of what still holds it, which must be 0: `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`.
+
 `compact_rewrite()` and `maintenance_due()` refuse NaN, negative, above-1 and (for maintenance_due) NULL thresholds with 22023, and accept the boundaries 0.0 and 1.0. Controls pin that other failures carry other SQLSTATEs. `max_groups` caps one `compact_rewrite` call, which returns what it rewrote.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
+| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | before each repeated recluster, `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`; every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
 | `test_maintenance_due_validates_both_thresholds` | each threshold is refused out of range or NULL by 22023 and accepted on its boundaries, and the verdict follows the deleted fraction |
 | `test_max_groups_caps_one_compact_rewrite` | a capped call rewrites three of ten half-deleted groups and an uncapped one the other seven, with every live row kept |
 

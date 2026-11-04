@@ -377,7 +377,8 @@ A check that a rewrite reuses freed space needs the same wait. `compact_rewrite`
 reuses a freed range only when no transaction is older than the one that freed
 it. Otherwise it appends, and the file grows. `native_scale` waits with this
 helper before the rewrites in rounds 2 to 4, which its steady-state check
-compares (#2010).
+compares (#2010). `native_reclaim` waits with it before each of its four
+repeated reclusters, whose file size its plateau check compares.
 
 The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
 table. It counts what has a transaction ID or `xmin` not newer than that:

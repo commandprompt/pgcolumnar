@@ -81,8 +81,21 @@ check "data intact after first recluster" \
 # so they wrote nothing and the file "plateaued" with reuse disabled too. With v and
 # id in turn every call rewrites all six groups; without reuse the file then grows
 # 311296 -> 901120 and free_space gains a row per cycle.
+#
+# WAIT FOR THE HORIZON FIRST (#2010). A recluster reuses a freed range only when
+# no transaction is older than the one that freed it. Under a snapshot another
+# session held from before the loop, each recluster appended, the file grew
+# 311296 -> 753664 and free_space went from 1 row to 4. So each recluster first
+# waits until nothing holds the horizon at the newest range freed in n, and a
+# check per recluster wants that count to be 0.
 recs=""
+i=0
 for key in v id v id; do
+	i=$((i + 1))
+	blockers="$(pgc_wait_freed_range_past_horizon n)"
+	echo "  (repeated recluster $i horizon blockers/calls: $blockers)"
+	check_num "repeated recluster $i: no transaction older than the newest freed range was open before it" \
+		"${blockers%/*}" "0"
 	recs="$recs$(q "SELECT pgcolumnar.recluster('n', '$key');")|"
 done
 size3="$(fsize)"
