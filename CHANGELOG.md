@@ -547,7 +547,12 @@ true until the next version shipped.
   another session locks the table (#1994). `truncate` returns 0 when it cannot
   take its lock at once, whatever the setting says. A new check in both
   harnesses, `GUC off: no other session held a lock on n before or after the
-  call`, wants 0 locks just before and just after the call. docs/testing.md.
+  call`, wants 0 locks just before and just after the call. The same false
+  pass hit `truncate before any delete is a no-op` and `second truncate is a
+  no-op`, so each now has a lock check too: `truncate before any delete: no
+  other session held a lock on n before or after the call` and `second
+  truncate: no other session held a lock on n before or after the call`.
+  docs/testing.md.
 - `replication` and its pytest twin now check that the horizon helper counts a
   standby that holds truncate back with `hot_standby_feedback` on, through its
   replication slot and, with no slot, through its walsender (#1999). Before,

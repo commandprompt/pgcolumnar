@@ -81,11 +81,36 @@ def nt(pgc_cluster):
             a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
 
 
+# No other session may lock n when a check wants 0 (#1994). truncate returns 0, and
+# leaves the file alone, when it cannot take its ACCESS EXCLUSIVE lock on n at once:
+# while another session holds a lock weaker than SHARE UPDATE EXCLUSIVE on n, or
+# waits for any lock on it. Then a check that wants 0 passed whatever truncate would
+# have done. So each such call runs through _truncate_alone, and its lock counts are
+# checked as well.
+LOCKS_ON_N = """
+SELECT count(*) FROM pg_locks
+ WHERE locktype = 'relation' AND relation = 'n'::regclass
+   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND pid <> pg_backend_pid()
+"""
+
+
+def _truncate_alone(c):
+    """-> ("before|after", answer): the locks other sessions hold or wait for on n,
+    counted just before and just after truncate on n, and what truncate returned."""
+    before = _one(c, LOCKS_ON_N)
+    out = _one(c, "SELECT pgcolumnar.truncate('n')")
+    after = _one(c, LOCKS_ON_N)
+    return f"{before}|{after}", out
+
+
 def test_truncate_shrinks_the_file_and_keeps_every_row(nt, expect):
     c = nt
     expect.text(*_hashes(c), "load parity")
     # nothing has been freed yet
-    expect.text(_one(c, "SELECT pgcolumnar.truncate('n')"), "0", "truncate before any delete is a no-op")
+    locks, out = _truncate_alone(c)
+    expect.text(locks, "0|0", "truncate before any delete: no other session held a lock on n before or after the call")
+    expect.text(out, "0", "truncate before any delete is a no-op")
 
     # the trailing half deleted whole (groups 16..30), and compacted to free it
     _both(c, "DELETE FROM {t} WHERE id > 15000")
@@ -97,7 +122,9 @@ def test_truncate_shrinks_the_file_and_keeps_every_row(nt, expect):
     expect.at_least(before - _size(c), 1, "file shrank")
     expect.text(*_hashes(c), "parity after truncate")
     expect.text(_one(c, "SELECT count(*) FROM n"), "15000", "row count after truncate")
-    expect.text(_one(c, "SELECT pgcolumnar.truncate('n')"), "0", "second truncate is a no-op")
+    locks, out = _truncate_alone(c)
+    expect.text(locks, "0|0", "second truncate: no other session held a lock on n before or after the call")
+    expect.text(out, "0", "second truncate is a no-op")
 
 
 XDB_PREMISE = """
@@ -106,14 +133,6 @@ WITH f AS (SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
 SELECT count(*) FROM pg_stat_activity, f
  WHERE application_name = 'nt_xdb_holder' AND datname <> current_database()
    AND age(backend_xmin) >= f.a
-"""
-
-
-LOCKS_ON_N = """
-SELECT count(*) FROM pg_locks
- WHERE locktype = 'relation' AND relation = 'n'::regclass
-   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-   AND pid <> pg_backend_pid()
 """
 
 
@@ -169,17 +188,13 @@ def _guc_cycle(c, expect):
     expect.num(blockers, 0, "GUC off: no transaction older than the compact was open")
     # its own statement, and its answer checked: the shell once sent SET and the call
     # as one string, an implicit transaction block that truncate refuses
-    # and no other session may lock n (#1994): truncate also returns 0 when it cannot
-    # take an ACCESS EXCLUSIVE lock at once, so the same session counts the locks
-    # other sessions hold or wait for on n just before and just after the call
+    # and no other session may lock n (#1994): see _truncate_alone
     c.execute("SET pgcolumnar.enable_end_truncation = off")
     try:
-        before = _one(c, LOCKS_ON_N)
-        off = _one(c, "SELECT pgcolumnar.truncate('n')")
-        after = _one(c, LOCKS_ON_N)
+        locks, off = _truncate_alone(c)
     finally:
         c.execute("RESET pgcolumnar.enable_end_truncation")
-    expect.text(f"{before}|{after}", "0|0", "GUC off: no other session held a lock on n before or after the call")
+    expect.text(locks, "0|0", "GUC off: no other session held a lock on n before or after the call")
     expect.text(f"{_size(c)}|{off}", f"{guard}|0", "GUC off: truncate does nothing")
     expect.at_least(_truncated(c), 1, "GUC on: truncate reclaims")
     expect.at_least(guard - _size(c), 1, "GUC on: file shrank")

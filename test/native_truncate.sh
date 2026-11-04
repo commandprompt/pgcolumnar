@@ -41,8 +41,34 @@ psql_run "INSERT INTO n SELECT g, md5(g::text) FROM generate_series(1, 30000) g;
 check "load parity" "$(hash_n)" "$(hash_h)"
 size_full="$(size)"
 
+# NO OTHER SESSION MAY LOCK n WHEN A CHECK WANTS 0 (#1994). truncate returns 0,
+# and leaves the file alone, when it cannot take its ACCESS EXCLUSIVE lock on n at
+# once. That happens while another session holds a lock weaker than SHARE UPDATE
+# EXCLUSIVE on n (such as ACCESS SHARE), or waits for any lock on it. Then a check
+# that wants 0 passed whatever truncate would have done. So each such call runs
+# through truncate_alone, and its lock counts are checked as well.
+LOCKS_ON_N="SELECT count(*) FROM pg_locks
+             WHERE locktype = 'relation' AND relation = 'n'::regclass
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+               AND pid <> pg_backend_pid()"
+# truncate_alone [SQL...] -- in one session: run each SQL, count the locks other
+# sessions hold or wait for on n, call truncate on n, and count them again. Each is
+# its own statement, so the call is not in a transaction block. Sets trunc_locks
+# ("before|after") and trunc_out (what truncate returned).
+truncate_alone() {
+	local s out
+	local -a cmds=()
+	for s in "$@"; do cmds+=(-c "$s"); done
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		"${cmds[@]}" -c "$LOCKS_ON_N" -c "SELECT pgcolumnar.truncate('n')" -c "$LOCKS_ON_N" 2>&1)"
+	trunc_locks="$(sed -n '1p;3p' <<<"$out" | paste -sd'|')"
+	trunc_out="$(sed -n '2p' <<<"$out")"
+}
+
 # nothing has been freed yet: truncate is a no-op.
-check "truncate before any delete is a no-op" "$(q "SELECT pgcolumnar.truncate('n');")" "0"
+truncate_alone
+check "truncate before any delete: no other session held a lock on n before or after the call" "$trunc_locks" "0|0"
+check "truncate before any delete is a no-op" "$trunc_out" "0"
 
 # fully delete the trailing half (groups 16..30), compact to free them.
 #
@@ -68,7 +94,9 @@ check "parity after truncate" "$(hash_n)" "$(hash_h)"
 check "row count after truncate" "$(q 'SELECT count(*) FROM n;')" "15000"
 
 # idempotent: a second truncate has nothing left to do.
-check "second truncate is a no-op" "$(q "SELECT pgcolumnar.truncate('n');")" "0"
+truncate_alone
+check "second truncate: no other session held a lock on n before or after the call" "$trunc_locks" "0|0"
+check "second truncate is a no-op" "$trunc_out" "0"
 
 # fully usable after truncation: reinsert, index, indexed lookup, delete.
 psql_run "INSERT INTO h SELECT g, md5(g::text) FROM generate_series(30001, 40000) g;"
@@ -124,22 +152,10 @@ check_num "GUC off: no transaction older than the compact was open" "${blockers%
 # truncate refuses: the arm passed on an unchanged file whatever the GUC did, and
 # stayed green with the GUC not consulted at all.
 #
-# AND NO OTHER SESSION MAY LOCK n (#1994). truncate also returns 0, and leaves the
-# file alone, when it cannot take an ACCESS EXCLUSIVE lock on the table at once.
-# Then this arm passed whatever the setting said. So the same session counts the
-# locks other sessions hold or wait for on n just before and just after the call,
-# and both counts are checked.
-LOCKS_ON_N="SELECT count(*) FROM pg_locks
-             WHERE locktype = 'relation' AND relation = 'n'::regclass
-               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-               AND pid <> pg_backend_pid()"
-guc_off="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
-	-c "SET pgcolumnar.enable_end_truncation = off" -c "$LOCKS_ON_N" \
-	-c "SELECT pgcolumnar.truncate('n')" -c "$LOCKS_ON_N" 2>&1)"
-guc_off_locks="$(sed -n '1p;3p' <<<"$guc_off" | paste -sd'|')"
-guc_off="$(sed -n '2p' <<<"$guc_off")"
-check "GUC off: no other session held a lock on n before or after the call" "$guc_off_locks" "0|0"
-check "GUC off: truncate does nothing" "$(size)|$guc_off" "$size_guard|0"
+# AND NO OTHER SESSION MAY LOCK n (#1994): see truncate_alone.
+truncate_alone "SET pgcolumnar.enable_end_truncation = off"
+check "GUC off: no other session held a lock on n before or after the call" "$trunc_locks" "0|0"
+check "GUC off: truncate does nothing" "$(size)|$trunc_out" "$size_guard|0"
 guc_on="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.truncate('n');")"
 guc_on="${guc_on%/*}"
 check "GUC on: truncate reclaims" \

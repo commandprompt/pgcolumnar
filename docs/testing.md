@@ -374,10 +374,11 @@ table. It counts what has a transaction ID or `xmin` not newer than that:
 - each prepared transaction, in any database;
 - each replication slot, physical or logical.
 
-The last two kinds of holder include a standby with `hot_standby_feedback` on.
-The primary keeps the standby's oldest `xmin` in the slot the standby streams
-through, or, with no slot, in its walsender. `replication.sh` checks that the
-helper counts both (#1999).
+A standby with `hot_standby_feedback` on is counted through one of two of these
+terms. When the standby streams through a replication slot, the primary keeps
+the standby's oldest `xmin` in that slot, the last term. With no slot, the
+primary keeps it in the standby's walsender, the second term.
+`replication.sh` checks that the helper counts both (#1999).
 
 A snapshot with no transaction ID in another database does not hold truncate
 back. A transaction ID in another database does (#1992). truncate's own snapshot
@@ -394,11 +395,25 @@ against. The helper then stops after one call and gives no count: the shell
 helper prints `none/1`, and the Python helper returns `None`. A check that wants
 0 then fails.
 
-`truncate` also leaves the file alone when another session holds or waits for any
-lock on the table (#1994). It takes its ACCESS EXCLUSIVE lock only if it can at
-once. So the session that makes the call counts the other sessions' locks on the
-table in `pg_locks`, just before and just after the call. The check wants both
-counts to be 0. `native_truncate` shows how.
+`truncate` also returns 0, and leaves the file alone, when it cannot take its
+ACCESS EXCLUSIVE lock on the table at once (#1994). First it takes SHARE UPDATE
+EXCLUSIVE, and waits for it. Then it asks for ACCESS EXCLUSIVE without waiting.
+That request fails while another session holds a weaker lock on the table, or
+waits for any lock on it. The weaker locks are ACCESS SHARE, ROW SHARE and ROW
+EXCLUSIVE. A
+session that holds SHARE UPDATE EXCLUSIVE or a stronger lock makes `truncate`
+wait instead.
+
+So any check that wants `truncate` to return 0 counts the locks too. The session
+that makes the call counts the other sessions' locks on the table in
+`pg_locks`, just before and just after the call. It counts every lock, which
+covers both cases. The check wants both counts to be 0. In `native_truncate`,
+`truncate_alone` (shell) and `_truncate_alone` (Python) do this for each call
+that wants 0.
+
+The counts are separate statements, so a lock taken and released between a
+count and the call goes unseen. No other session uses the table while the
+suite runs, so the gap only matters if one did.
 
 ## Before merging: build every major
 
