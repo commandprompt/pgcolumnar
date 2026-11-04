@@ -534,6 +534,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 reads three more check arms correctly (#2007, #2011,
+  #2012). It excuses `[ -a = "$arg" ]` and `[ -o != "$arg" ]`, where the first
+  word `-a` or `-o` is an operand of `=`, `!=` or `==` and not a join. A later
+  join, as in `[ -a = x -a "$b" -le 3 ]`, is still refused. It reads a branch
+  written with `printf` as it reads `echo`, so `&& printf yes || echo no` and an
+  if/then/else with a `printf` branch are refused, while `printf '%s' "$x"`
+  carries its value and stays excused. It looks for a carried `$` only up to
+  the `)` that closes the arm, so a `$` in a later argument such as
+  `"$(want)"` no longer excuses the arm; a `)` in quotes or in a subshell does
+  not end it. A branch that ends in a bare `$`, as in `|| echo no$)`, still
+  excuses the arm, as on main, and is recorded as a known limit. A mutant
+  sweep changed the regular expressions and conditions this change added or
+  touched in 225 ways. Under mawk and gawk alike, 134 fail a named check and 91
+  pass, and the 91 give the same verdict as the fixed sweep on about 45,000
+  generated arms. The tree sweep still finds the same 70
+  arms, so no suite changed.
 - `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
   `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot
   (#2010). In the first three, `compact` returned 0 while a transaction older
