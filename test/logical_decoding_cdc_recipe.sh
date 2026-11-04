@@ -205,8 +205,9 @@ check_num "and the DELETE as a DELETE" \
 	"$(dq "op[text]:'DELETE'")" "1"
 # the matcher itself must be capable of finding something, or the two arms above
 # are a pair of zeros agreeing with a pair of zeros
+ldcr_inserts="$(dq "op[text]:'INSERT'")"
 check "premise: the same matcher finds the INSERTs, so a 1 above is a real match" \
-	"$([ "$(dq "op[text]:'INSERT'")" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "$ldcr_inserts" -gt 1 ] && echo yes || echo "no ($ldcr_inserts INSERTs found)")" "yes"
 
 # ---- the guide's warning about the pgcolumnar schema is necessary -------------
 # "Exclude the pgcolumnar schema from any publication." That is only advice worth

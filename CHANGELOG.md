@@ -560,6 +560,26 @@ true until the next version shipped.
   joins a word or quoted part to a quoted part with a space, such as
   `2>x"y z"` (#2019).
   The wider sweep finds no new arm in the test suites, so no suite changed.
+- Self-test part 540 now examines four more shapes of a check arm that prints
+  only `no` when it fails (#1997, #2002, #2019).
+  - Two tests chained outside the brackets, as in
+    `[ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no`, are a
+    compound, and the part refuses them (#1997). It used to read only the
+    first test, so it never examined these arms. It also joins a line that
+    ends in `&&` or `||` to the next, as bash does. The tree holds 66 such
+    arms in 39 suites. `test/lossy_arms.tsv` lists them, and grows from 70 to
+    136 rows. No suite changed for this.
+  - A `]` inside quotes or a substitution, as in `"${sizes[5]}"`, no longer
+    ends a test early (#2002). This hid seven lossy arms in six suites:
+    `native_reclaim_cycles`, `native_scale`, `logical_decoding_cdc_recipe`
+    and self-test parts 250, 300 and 510. Each arm now prints its numbers
+    when it fails, for example `no (cycle 5 size 16384, cycle 2 size 8192)`.
+    No check is renamed and no pass condition changed.
+  - A redirect target made of several parts, where a later part is quoted and
+    holds a space, such as `2>x"y z"` or `>'a''b c'`, no longer hides an arm.
+    Nor does an ANSI-C quoted target such as `2>$'a b'` (#2019).
+  - New fixture arms pin parts of the older regular expressions that a mutant
+    sweep could change while every check stayed green (#2006).
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
   (#1993). `compact` runs once, inside the checked statement, and returned 0

@@ -144,6 +144,7 @@ echo "  (file sizes by cycle: ${sizes[*]})"
 
 # Cycles 2..5 reuse the prior cycle's frees; the file must not grow past cycle 2.
 check "file reaches steady state (cycle 5 <= cycle 2)" \
-	"$([ "${sizes[5]}" -le "${sizes[2]}" ] && echo yes || echo no)" "yes"
+	"$([ "${sizes[5]}" -le "${sizes[2]}" ] && echo yes \
+		|| echo "no (cycle 5 size ${sizes[5]}, cycle 2 size ${sizes[2]})")" "yes"
 
 pgc_summary

@@ -83,6 +83,7 @@ for r in 1 2 3 4; do
 done
 # Rounds 2..4 reuse prior frees; the file must not grow past round 2's size.
 check "reclaim reached steady state (round 4 <= round 2)" \
-	"$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes || echo no)" "yes"
+	"$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes \
+		|| echo "no (round 4 size ${sizes[3]}, round 2 size ${sizes[1]})")" "yes"
 
 pgc_summary

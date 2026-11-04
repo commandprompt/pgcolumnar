@@ -263,8 +263,9 @@ check "and it fails the major" \
 # so this is latent, and latent is exactly what a guard is for.
 _comm510() { grep -vE '^[[:space:]]*#' "$_rv510"; }
 
+_comm510_n="$(_comm510 | grep -cE '(^|[^_[:alnum:]])comm ')"
 check "premise: the runner really does use comm, so this arm has a subject" \
-	"$([ "$(_comm510 | grep -cE '(^|[^_[:alnum:]])comm ')" -ge 3 ] && echo yes || echo no)" "yes"
+	"$([ "$_comm510_n" -ge 3 ] && echo yes || echo "no ($_comm510_n comm calls)")" "yes"
 
 check "every comm in the runner pins its collation" \
 	"$(_comm510 | grep -E '(^|[^_[:alnum:]])comm ' | grep -cv 'LC_ALL=C comm ' || true)" "0"
