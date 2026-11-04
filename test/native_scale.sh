@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
-# pgColumnar Phase F scale validation (OPT-IN; not in the default matrix -- run it
-# manually or nightly). Exercises online compaction, rewrite, reclustering, and
-# physical page reclaim at a large row count and asserts correctness against a
-# heap mirror plus a bounded, steady-state file under repeated compaction. The
-# small matrix suites prove logic on a handful of groups; this proves the
+# pgColumnar Phase F scale validation. Registered in run_all_versions.sh (#2018),
+# so the per-PR matrix runs it on PG 17 and 18 and the nightly on 15 to 18, at the
+# default SCALE_N. Until #2018 it was opt-in and no job ran it. Its pytest twin is
+# test/pytest/test_native_scale.py. Exercises online compaction, rewrite,
+# reclustering, and physical page reclaim at a large row count and asserts
+# correctness against a heap mirror plus a bounded, steady-state file under
+# repeated compaction. The small matrix suites prove logic on a handful of
+# groups; this proves the
 # mutation/clustering/reclaim machinery holds at scale and across many cycles
 # (no O(rows) blowups, and reclaim actually reaches a plateau rather than
 # growing without bound). Uses order-independent aggregates for parity (a full
@@ -97,6 +100,7 @@ for r in 1 2 3 4; do
 done
 # Rounds 2..4 reuse prior frees; the file must not grow past round 2's size.
 check "reclaim reached steady state (round 4 <= round 2)" \
-	"$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes || echo no)" "yes"
+	"$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes ||
+	   echo "no (round 2 ${sizes[1]}, round 4 ${sizes[3]})")" "yes"
 
 pgc_summary

@@ -110,7 +110,7 @@ echo "-- counters redirected to $GCOV_PREFIX"
 not_a_suite() {
 	case "$1" in
 		lib|portlib|run_all_versions|build_all_versions|devloop|rebuild) return 0 ;;
-		native_scale|build_san|run_san|run_coverage) return 0 ;;
+		build_san|run_san|run_coverage) return 0 ;;
 		pg_upgrade|extension_upgrade|format_downgrade|capability_sweep) return 0 ;;
 		*) return 1 ;;
 	esac

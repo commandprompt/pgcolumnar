@@ -663,6 +663,15 @@ compiler warning as a failure. The suites run on 17 and 18. The build preflight
 catches an API change between majors. The suite run catches a change in
 behaviour.
 
+Every suite in the `SUITES` list of `test/run_all_versions.sh` runs in both
+workflows, except the four timing suites that `PGC_SKIP_TIMING` drops. A suite
+outside that list runs in no job. `native_scale` was outside
+it until #2018. It checks compaction, recluster and reclaim against a heap
+mirror at 500000 rows, and nothing ran it. It is in the list now, and its pytest
+twin runs in the pytest-cluster job. On a shared 8-core machine under heavy load
+it took 36 s of test time at 200000 rows and 157 s at 500000. Its server used
+at most 120 MB of memory and its data directory 301 MB of disk.
+
 **Nightly at 06:00 UTC** (`.github/workflows/nightly.yml`): the full packaged
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an

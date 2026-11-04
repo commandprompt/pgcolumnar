@@ -400,6 +400,7 @@ behaviour, the source of that number is named.
 - [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
+- [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
 
 ## 1. How to read a test in here
 
@@ -14137,3 +14138,32 @@ The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name
 | `test_a_replaced_library_is_reported` | an unchanged library is not reported |
 | `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |
 | `test_a_run_whose_library_changed_fails` | a run whose library changed mid-run ends failed |
+
+## 355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows
+
+The pytest twin of `test/native_scale.sh` (#2018), every check by the shell's name. Until #2018 neither harness ran this property in any job. The shell suite was opt-in and is now a registered suite.
+
+It loads `SCALE_N` rows (default 500000, as in the shell) into a columnar table and a heap mirror. It deletes a quarter, runs `compact_rewrite`, checks an indexed range lookup, and reclusters by `c`. After each step the two tables must give the same order-independent fingerprint. Then four rounds delete a slice and run `compact_rewrite` with no inserts. Before rounds 2 to 4 it waits for the horizon, as `test_native_reclaim.py` does (#2010). The file after round 4 must be no larger than after round 2.
+
+Round 4 deletes nothing, in both harnesses: every id with `id % 8 = 4` also has `id % 4 = 0`, and the first delete removed those. The twin names that zero, because its write guard refuses an unnamed one. Those two checks are the only ones the shell suite does not have.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_scale_parity_and_reclaim_steady_state` | bulk load count |
+| `test_scale_parity_and_reclaim_steady_state` | bulk load parity |
+| `test_scale_parity_and_reclaim_steady_state` | parity after delete |
+| `test_scale_parity_and_reclaim_steady_state` | parity after compact_rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | indexed lookup after rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | parity after recluster |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 1 |
+| `test_scale_parity_and_reclaim_steady_state` | round 2: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 2 |
+| `test_scale_parity_and_reclaim_steady_state` | round 3: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 3 |
+| `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from h: id % 8 = 4 went with id % 4 = 0 |
+| `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from n: id % 8 = 4 went with id % 4 = 0 |
+| `test_scale_parity_and_reclaim_steady_state` | round 4: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
