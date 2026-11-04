@@ -224,8 +224,80 @@ margin() {
 }
 PROBE
 
-_lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
+# CONTINUATIONS ARE FOLDED FIRST, by a stage of their own. The corpus wraps
+# arms across lines, and a line-by-line reader sees `&& echo "smaller"`
+# without the `|| echo "UNCHANGED ($ROWS_AFTER of $ROWS_BEFORE)"` that
+# follows it. So four arms that DO carry their values read as though they
+# discard them. Measured: 65 sites before folding, 61 after.
+#
+# A line that ends in `\` is joined to the next. A line whose CODE ends in
+# `&&` or `||` is joined to the next too, as bash does, with a space between
+# (#1997). Code means the line without its comment, with quoted text hidden.
+# So `echo x # note ||` and `note="a &&` are not joined: bash does not
+# continue either one.
+#
+# THE NEXT LINE IS NOT JOINED WHEN IT STARTS A RECORDER CALL OR IS A COMMENT
+# (#2022 review). The arm is already on a recorder line, as it always was.
+# Joining it hid the arm or gave it a wrong name: `start_x "$p" &&` and an
+# unindented `check "..."` became `&&check "...`, which the recorder pattern
+# does not match. `[ -n "$X" ] &&` lent the arm the name `$X`. Two arms on
+# one line lost the first, because the rules read only the last `$([`. A
+# comment below `foo &&` is skipped by bash, and a comment that quoted an arm
+# was refused (#1255). The join needs to look one line ahead, which a single
+# awk with `getline` cannot undo, so this stage reads the whole file first.
+_lam_join() {  # _lam_join FILE -> FILE with its continued lines folded
 	awk '
+		# THE CODE OF s: its comment cut off, and every character inside
+		# quotes or backticks replaced by `_`. A `$(...)` stays code, so the
+		# `&&` that ends `"$([ "$a" -gt 0 ] &&` still counts. A `#` starts a
+		# comment only at the start of a word, so `$#` and `${#x}` do not.
+		function code_of(s,   n, i, ch, d, q, bt, out) {
+			n = length(s); out = ""; d = 0; q[0] = ""; bt = 0
+			for (i = 1; i <= n; i++) {
+				ch = substr(s, i, 1)
+				if (q[d] == "\047") {
+					if (ch == "\047") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\\" && i < n) { out = out "__"; i++; continue }
+				if (bt) { if (ch == "`") bt = 0; out = out "_"; continue }
+				if (ch == "`") { bt = 1; out = out "_"; continue }
+				if (ch == "$" && substr(s, i + 1, 1) == "(") {
+					d++; q[d] = ""; out = out "$("; i++; continue
+				}
+				if (q[d] == "\"") {
+					if (ch == "\"") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\"" || ch == "\047") { q[d] = ch; out = out "_"; continue }
+				if (ch == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:];&|()]/)) return out
+				if (d > 0 && ch == "(") { d++; q[d] = "" }
+				if (d > 0 && ch == ")") d--
+				out = out ch
+			}
+			return out
+		}
+		{ L[++n] = $0 }
+		END {
+			for (i = 1; i <= n; ) {
+				line = L[i++]
+				while (i <= n) {
+					if (line ~ /\\$/) {
+						sub(/\\$/, " ", line); line = line L[i++]; continue
+					}
+					if (code_of(line) !~ /(&&|\|\|)[[:space:]]*$/) break
+					if (L[i] ~ /^[[:space:]]*#/) break
+					if (L[i] ~ /^[[:space:]]*(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/) break
+					line = line " " L[i++]
+				}
+				print line
+			}
+		}
+	' "$1"
+}
+
+_lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
+	_lam_join "$1" | awk '
 		# HIDE WHAT IS QUOTED OR SUBSTITUTED (#1986). Returns s with every
 		# character inside quotes, a `$(...)` or a backtick replaced by `_`,
 		# so the result has the same length and its positions match s. A
@@ -385,18 +457,8 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			}
 			return a
 		}
-		# CONTINUATIONS ARE FOLDED FIRST. The corpus wraps these arms across
-		# lines, and a line-by-line reader sees `&& echo "smaller"` without the
-		# `|| echo "UNCHANGED ($ROWS_AFTER of $ROWS_BEFORE)"` that follows it --
-		# so four arms that DO carry their values read as though they discard
-		# them. Measured: 65 sites before folding, 61 after.
-		{
-			line = $0
-			while ((line ~ /\\$/ || line !~ /^[[:space:]]*#/ && line ~ /(&&|\|\|)[[:space:]]*$/) && (getline nxt) > 0) {
-				sub(/\\$/, " ", line)
-				line = line nxt
-			}
-		}
+		# Each record is one line as _lam_join folded it.
+		{ line = $0 }
 		# A WHOLE-LINE COMMENT IS NOT CODE (#1255). A comment QUOTING the
 		# anti-pattern supplied a real match, and the missing recorder conjunct
 		# below then gave it the name of whatever arm preceded it -- so a file
@@ -479,6 +541,18 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		#     yes || echo no`, is not read, so the arm is not examined.
 		#   - A line is joined to the next only after `\`, `&&` or `||`. An
 		#     arm split after a `|` or inside quotes is read as two lines.
+		#   - _lam_join reads one line at a time for quotes and does not know
+		#     here-docs. So a line in the middle of a multi-line string, or in
+		#     a here-doc body, that ends in `&&` or `||` is still joined to
+		#     the next line, unless that line starts a recorder call or is a
+		#     comment. Main joined no line after `&&` or `||` at all.
+		#   - A comment line between a line that ends in `&&` and the rest of
+		#     a chained arm stops the join, so the rest is read alone.
+		#   - A redirect into a substitution, as in `2>$(mktemp)`, hides the
+		#     arm: the target stops at the `)`. Main has the same limit.
+		#   - A `[[ ]]` with an unquoted regex that holds a bracket class, as
+		#     in `[[ "$a" =~ ^[0-9]+$ ]]`, ends at the `]` of the class, so an arm
+		#     in that shape is not examined. Main has the same limit. It is #2027.
 		#
 		# THREE SPELLINGS OF THE TEST (#1986): `[ ... ]`, `[[ ... ]]` and
 		# `test ...`. Only the first was read, so the other two hid a lossy arm.
@@ -526,7 +600,7 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			if (!CHAINED && determinate(T1)) next
 			if (name != "") print suite "\t" name
 		}
-	' suite="$(basename "${1%.sh}")" "$1"
+	' suite="$(basename "${1%.sh}")"
 }
 
 # AND THE SAME RULE OVER AN AWK-RENDERED VERDICT (#1174). A separate fixture, so
@@ -1032,6 +1106,8 @@ check "determinate: a floor of one with two spaces before the one" \
 	"$([ "$rows" -ge  1 ] && echo yes || echo no)" "yes"
 check "determinate: a quoted floor of one" \
 	"$([ "$rows" -ge "1" ] && echo yes || echo no)" "yes"
+check "determinate: a double-bracket quoted floor of one" \
+	"$([[ "$rows" -ge "1" ]] && echo yes || echo no)" "yes"
 check_text "a threshold recorded by check_text" \
 	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
 check_ratio "a threshold recorded by check_ratio" \
@@ -1145,6 +1221,14 @@ check_text "control: the sweep reads double brackets, the test builtin and mirro
 # that ends in `&&` or `||` is joined to the next, as bash does, so a carrying
 # branch on the next line still counts. A comment that ends in `||` is not
 # joined, or it would swallow the arm below it.
+#
+# THE JOIN MUST NOT HIDE OR RENAME AN ARM THAT MAIN READ (#2022 review). The
+# last ten arms pin _lam_join: a trailing comment or an open string that
+# ends in `||` or `&&` is not code, so the line is not joined; a recorder
+# line after `[ -n "$X" ] &&`, after `start_x "$p" &&` or after another arm
+# that ends in `&&` is read alone, under its own name; so is the recorder
+# line after a here-doc body line or a string line that ends in `&&`; and a
+# comment below `foo &&` is still a comment.
 #
 # THE JOIN RULE MUST NOT OVER-APPLY EITHER. `[ "$x"-a = "$y" ]`, `[ 5-a = "$x"
 # ]`, `[ $a = 0 ]` and `test "$a" = -a10>x` hold no join, and a redirect
@@ -1319,10 +1403,35 @@ check "not this shape: a test piped with its stderr into a test builtin" \
 	"$([ "$a" -le "$b" ] |& test "$c" -gt 0 && echo yes || echo no)" "yes"
 check "a pair of tests chained with two spaces before the and" \
 	"$([ "$a" -gt 0 ] && [ "$b" -gt 0 ]  && echo yes || echo no)" "yes"
+echo "x" # a trailing comment that ends in or ||
+check "a threshold below a trailing comment that ends in or" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+[ -n "$X" ] &&
+	check "a threshold guarded by the line above, which ends in and" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+start_x "$p" &&
+check "a threshold on the line after a command that ends in and" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "a threshold whose line ends in and before a carrying arm" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	check "carried: an arm on the line after one that ends in and" "$([ "$c" -le "$d" ] && echo yes || echo "no ($c $d)")" "yes"
+cat <<EOF
+a here-doc body line that ends in and &&
+check "a threshold on the here-doc body line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+EOF
+note="a string whose first line ends in and &&
+check "a threshold on the line after a string whose first line ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+the string ends here"
+check "a threshold whose line ends in a comment that ends in or" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" # a note ||
+	echo "the next line names $a"
+check "a threshold whose line opens a string that ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; note="a string &&
+	that names $a"
+foo &&
+# check "not this shape: a comment below a line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+bar
 PROBE
 _lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
-	"$_lam_compound_names" "a chain of three tests;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a file test chained to a test builtin by a tab;a file test chained to a test-builtin count against nothing;a floor of ten;a floor over a count of an escaped alternation across a continuation;a mirrored floor of zero;a pair of determinate tests chained by and;a pair of double-bracket tests chained by and;a pair of tests chained across a line break after and;a pair of tests chained behind a redirect;a pair of tests chained by an unspaced and;a pair of tests chained by and;a pair of tests chained by or;a pair of tests chained with a redirect joined to the second;a pair of tests chained with tabs;a pair of tests chained with two spaces before the and;a single-bracket test chained to a double-bracket test;a test-builtin compound whose last operand is glued to a redirect;a test-builtin count against nothing chained to a test builtin by or;a test-builtin threshold chained to a file test;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold below a comment that ends in or;a threshold below a doubly indented comment that ends in or;a threshold below a line sent to the background;a threshold below a line that ends in an and and a command;a threshold below an indented comment that ends in or;a threshold with a leading zero;an if/then/else pair of tests chained by an unspaced and;an if/then/else pair of tests chained by and;an if/then/else pair of tests chained by or;an if/then/else threshold behind a redirect into a quoted path with a space;"
+	"$_lam_compound_names" "a chain of three tests;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a file test chained to a test builtin by a tab;a file test chained to a test-builtin count against nothing;a floor of ten;a floor over a count of an escaped alternation across a continuation;a mirrored floor of zero;a pair of determinate tests chained by and;a pair of double-bracket tests chained by and;a pair of tests chained across a line break after and;a pair of tests chained behind a redirect;a pair of tests chained by an unspaced and;a pair of tests chained by and;a pair of tests chained by or;a pair of tests chained with a redirect joined to the second;a pair of tests chained with tabs;a pair of tests chained with two spaces before the and;a single-bracket test chained to a double-bracket test;a test-builtin compound whose last operand is glued to a redirect;a test-builtin count against nothing chained to a test builtin by or;a test-builtin threshold chained to a file test;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold below a comment that ends in or;a threshold below a doubly indented comment that ends in or;a threshold below a line sent to the background;a threshold below a line that ends in an and and a command;a threshold below a trailing comment that ends in or;a threshold below an indented comment that ends in or;a threshold guarded by the line above, which ends in and;a threshold on the here-doc body line after one that ends in and;a threshold on the line after a command that ends in and;a threshold on the line after a string whose first line ends in and;a threshold whose line ends in a comment that ends in or;a threshold whose line ends in and before a carrying arm;a threshold whose line opens a string that ends the line in and;a threshold with a leading zero;an if/then/else pair of tests chained by an unspaced and;an if/then/else pair of tests chained by and;an if/then/else pair of tests chained by or;an if/then/else threshold behind a redirect into a quoted path with a space;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused

@@ -560,13 +560,18 @@ true until the next version shipped.
   joins a word or quoted part to a quoted part with a space, such as
   `2>x"y z"` (#2019).
   The wider sweep finds no new arm in the test suites, so no suite changed.
-- Self-test part 540 now examines four more shapes of a check arm that prints
-  only `no` when it fails (#1997, #2002, #2019).
+- Self-test part 540 now examines three more shapes of a check arm that prints
+  only `no` when it fails (#1997, #2002, #2019), and pins more of its own rules
+  (#2006).
   - Two tests chained outside the brackets, as in
     `[ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no`, are a
     compound, and the part refuses them (#1997). It used to read only the
-    first test, so it never examined these arms. It also joins a line that
-    ends in `&&` or `||` to the next, as bash does. The tree holds 66 such
+    first test, so it never examined these arms. It also joins a line whose
+    code ends in `&&` or `||` to the next, as bash does. It does not join a
+    line whose `&&` or `||` sits in a comment or an open string. It does not
+    join the next line when that line starts a check call or is a comment, so
+    the join no longer hides the arm on that line or gives it a wrong name.
+    The tree holds 66 such
     arms in 39 suites. `test/lossy_arms.tsv` lists them, and grows from 70 to
     136 rows. No suite changed for this.
   - A `]` inside quotes or a substitution, as in `"${sizes[5]}"`, no longer
@@ -580,6 +585,11 @@ true until the next version shipped.
     Nor does an ANSI-C quoted target such as `2>$'a b'` (#2019).
   - New fixture arms pin parts of the older regular expressions that a mutant
     sweep could change while every check stayed green (#2006).
+  - The part sorts and compares the lists of arms with `LC_ALL=C`. Under
+    `en_US.UTF-8`, `comm` called the lists unsorted, and a red run named an
+    arm that was tracked.
+  - The `logical_decoding_cdc_recipe` premise arm shows an empty INSERT count
+    as `[]` when it fails, and no longer prints an `integer expected` error.
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
   (#1993). `compact` runs once, inside the checked statement, and returned 0
