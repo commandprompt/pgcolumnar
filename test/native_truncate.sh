@@ -123,8 +123,22 @@ check_num "GUC off: no transaction older than the compact was open" "${blockers%
 # "SET ...; SELECT pgcolumnar.truncate('n')" is an implicit transaction block, which
 # truncate refuses: the arm passed on an unchanged file whatever the GUC did, and
 # stayed green with the GUC not consulted at all.
+#
+# AND NO OTHER SESSION MAY LOCK n (#1994). truncate also returns 0, and leaves the
+# file alone, when it cannot take an ACCESS EXCLUSIVE lock on the table at once.
+# Then this arm passed whatever the setting said. So the same session counts the
+# locks other sessions hold or wait for on n just before and just after the call,
+# and both counts are checked.
+LOCKS_ON_N="SELECT count(*) FROM pg_locks
+             WHERE locktype = 'relation' AND relation = 'n'::regclass
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+               AND pid <> pg_backend_pid()"
 guc_off="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
-	-c "SET pgcolumnar.enable_end_truncation = off" -c "SELECT pgcolumnar.truncate('n')" 2>&1)"
+	-c "SET pgcolumnar.enable_end_truncation = off" -c "$LOCKS_ON_N" \
+	-c "SELECT pgcolumnar.truncate('n')" -c "$LOCKS_ON_N" 2>&1)"
+guc_off_locks="$(sed -n '1p;3p' <<<"$guc_off" | paste -sd'|')"
+guc_off="$(sed -n '2p' <<<"$guc_off")"
+check "GUC off: no other session held a lock on n before or after the call" "$guc_off_locks" "0|0"
 check "GUC off: truncate does nothing" "$(size)|$guc_off" "$size_guard|0"
 guc_on="$(pgc_retry_past_horizon 1 "SELECT pgcolumnar.truncate('n');")"
 guc_on="${guc_on%/*}"

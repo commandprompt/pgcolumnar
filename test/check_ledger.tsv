@@ -4529,10 +4529,11 @@ native_fetch_coalesce	native_fetch_coalesce	the wide fetch returns the projected
 native_fetch_group_memo	native_fetch_group_memo	3000 index fetches cost a bounded number of row_group reads (delta <= 20)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
 native_fetch_group_memo	native_fetch_group_memo	a DELETE is visible to the very next fetch (delete vectors uncached)	15;16;17;18;19	never	-
 native_fetch_group_memo	native_fetch_group_memo	a buffered + flushed duplicate still violates a unique index (23505)	15;16;17;18;19	never	-
-native_fetch_group_memo	native_fetch_group_memo	a same-statement compact() of a fully deleted group resurrects nothing (10|t|0)	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarRetireGroup no longer resets the group-list memo
+native_fetch_group_memo	native_fetch_group_memo	a same-statement compact() of a fully deleted group resurrects nothing (10|t|0)	15;16;17;18;19	2026-11-04	columnar_metadata.c: PgColumnarRetireGroup no longer resets the group-list memo;test harness: a snapshot held from before the DELETE from fd across the same-statement compact, on main's suite text with no horizon wait (#1993);test harness: a snapshot held from before the DELETE from fd for 40 s, past the 30 s horizon wait (#1993)
 native_fetch_group_memo	native_fetch_group_memo	a same-statement retire neither loses nor doubles rows (500|t|500)	15;16;17;18;19	2026-10-22	columnar_metadata.c: PgColumnarRetireGroup no longer resets the group-list memo
 native_fetch_group_memo	native_fetch_group_memo	an AFTER UPDATE trigger still sees the OLD row (SnapshotAny re-fetch)	15;16;17;18;19	never	-
 native_fetch_group_memo	native_fetch_group_memo	backend alive	15;16;17;18;19	never	-
+native_fetch_group_memo	native_fetch_group_memo	no transaction older than the DELETE from fd was open before the same-statement compact	15;16;17;18;19	2026-11-04	test harness: a snapshot held from before the DELETE from fd for 40 s, past the 30 s horizon wait (#1993)
 native_fetch_group_memo	native_fetch_group_memo	row_group is never heap-scanned in the window (index resolution intact)	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
 native_fetch_group_memo	native_fetch_group_memo	rows flushed under an aborted savepoint do not resurrect through the cursor	15;16;17;18;19	2026-10-22	columnar_reader.c: the memo's last-group fast path serves rows up to 1000 past that group's end
 native_fetch_group_memo	native_fetch_group_memo	same-transaction TRUNCATE then fetch sees only the new rows	15;16;17;18;19	never	-
@@ -5826,6 +5827,7 @@ native_toasted_write	native_toasted_write	the min/max zone map is correct (range
 native_toasted_write	native_toasted_write	the min/max zone map is correct below a bound (range count matches heap)	15;16;17;18;19	2026-10-17	columnar_write_state.c: the running minimum is never lowered past a chunk's first value
 native_toasted_write	native_toasted_write	the non-toasted column is byte-identical too	15;16;17;18;19	never	-
 native_toasted_write	native_toasted_write	toasted values are byte-identical to the heap mirror	15;16;17;18;19	never	-
+native_truncate	native_truncate	GUC off: no other session held a lock on n before or after the call	15;16;17;18;19	2026-11-04	test harness: another session holds ACCESS SHARE on n across the GUC-off truncate (#1994)
 native_truncate	native_truncate	GUC off: no transaction older than the compact was open	15;16;17;18;19	2026-11-02	pgc_freed_range_blockers before the fix: counts sessions in every database, and reads 0 for a table with no freed range (#1992);pgc_wait_freed_range_past_horizon cut to one call (the code before the fix), a session holding a snapshot from between the DELETE and the compact (#1988)
 native_truncate	native_truncate	GUC off: truncate does nothing	15;16;17;18;19	2026-11-02	pgcolumnar.truncate() ignores pgcolumnar.enable_end_truncation (src/columnar_vacuum.c), a session holding a snapshot across the compact (#1988)
 native_truncate	native_truncate	GUC on: file shrank	15;16;17;18;19	2026-11-02	pgc_retry_past_horizon cut to one call (the code before the fix), a second session holding a snapshot from before the DELETE (#1979);pgcolumnar.truncate() returns 0 without truncating (columnar_vacuum.c)
@@ -8101,8 +8103,14 @@ replication	replication	it replayed columnar WAL past the primary's LSN without 
 replication	replication	pg_basebackup carried the projection catalog row, unlike pg_dump (#266)	15;16;17;18;19	never	-
 replication	replication	pg_basebackup produced a data directory	15;16;17;18;19	never	-
 replication	replication	premise: the primary wrote r2's second batch while the standby ran without the module	15;16;17;18;19	never	-
+replication	replication	premise: the standby's feedback reaches the primary through its walsender, with no slot	15;16;17;18;19	never	-
+replication	replication	premise: the standby's feedback reaches the primary through slot pgc_standby	15;16;17;18;19	never	-
+replication	replication	premise: truncate is held while the standby snapshot is open, through the slot	15;16;17;18;19	never	-
+replication	replication	premise: truncate is held while the standby snapshot is open, through the walsender	15;16;17;18;19	never	-
 replication	replication	streaming replay carried a projection created after the backup	15;16;17;18;19	never	-
 replication	replication	the base backup carried the initial rows	15;16;17;18;19	never	-
+replication	replication	the horizon helper counts a replication slot that holds a standby's xmin	15;16;17;18;19	2026-11-04	test/lib.sh: pgc_freed_range_blockers counts only replication slots in the current database (#1999)
+replication	replication	the horizon helper counts a walsender that holds a standby's xmin	15;16;17;18;19	2026-11-04	test/lib.sh: pgc_freed_range_blockers without the OR datid IS NULL walsender term (#1999)
 replication	replication	the primary actually truncated (record was emitted)	15;16;17;18;19	2026-11-02	columnar_vacuum.c: compact retires no fully deleted row group (retired = 0);each compact and truncate called once, without pgc_retry_past_horizon (the code before the fix), a second session holding a snapshot across it (#1987)
 replication	replication	the primary has a projection to preserve, before the backup runs	15;16;17;18;19	never	-
 replication	replication	the primary now has a second, post-backup projection	15;16;17;18;19	never	-
@@ -8116,6 +8124,8 @@ replication	replication	the standby is in recovery	15;16;17;18;19	never	-
 replication	replication	the standby is still in recovery after the truncate record	15;16;17;18;19	never	-
 replication	replication	the standby's main fork shrank to match the primary	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarTruncateMainFork emits no XLOG_SMGR_TRUNCATE record (if (false && needs_wal));columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
 replication	replication	the truncate did not cost rows on the standby	15;16;17;18;19	never	-
+replication	replication	truncate reclaims once the standby snapshot held through the slot ends	15;16;17;18;19	never	-
+replication	replication	truncate reclaims once the standby snapshot held through the walsender ends	15;16;17;18;19	never	-
 replication	replication	vacuum replays identically	15;16;17;18;19	2026-10-16	columnar_storage.c: PgColumnarWriteLogicalData logs no data or gap page (if (false) for both RelationNeedsWAL)
 replication	replication	vacuum rewrote r into a new relfilenode on the primary	15;16;17;18;19	2026-10-16	columnar_vacuum.c: pgcolumnar_vacuum returns before rewriting
 replication	replication	with replay paused the standby does NOT see the new rows	15;16;17;18;19	never	-

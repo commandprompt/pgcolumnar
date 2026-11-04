@@ -534,6 +534,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `native_fetch_group_memo` and its pytest twin no longer fail when another
+  session holds an old snapshot during the same-statement `compact` arm
+  (#1993). `compact` runs once, inside the checked statement, and returned 0
+  while a transaction older than the `DELETE` was open. The check then read
+  `10|f|0`. Both harnesses now wait up to 30 s until nothing holds the horizon
+  at the `DELETE`, and a new check wants that count to be 0. New helpers:
+  `pgc_wait_delete_past_horizon` in `test/lib.sh` and
+  `wait_delete_past_horizon` in `test/pytest/pgc_horizon.py`. Table `fd` has
+  autovacuum off. docs/testing.md.
+- `native_truncate`'s `GUC off: truncate does nothing` no longer passes when
+  another session locks the table (#1994). `truncate` returns 0 when it cannot
+  take its lock at once, whatever the setting says. A new check in both
+  harnesses, `GUC off: no other session held a lock on n before or after the
+  call`, wants 0 locks just before and just after the call. docs/testing.md.
+- `replication` and its pytest twin now check that the horizon helper counts a
+  standby that holds truncate back with `hot_standby_feedback` on, through its
+  replication slot and, with no slot, through its walsender (#1999). Before,
+  the helper could leave out either term and both harnesses still passed.
+  docs/testing.md.
 - The Parquet reader's walk of a local glob now stops after 1,000,000 steps
   with error 54000, and a cancel stops it (#1984). The reader expands a local
   pattern with `glob(3)` on the filesystem. Each real directory lists `.` and

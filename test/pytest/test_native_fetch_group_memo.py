@@ -29,6 +29,7 @@ import time
 import psycopg
 import pytest
 
+from pgc_horizon import wait_delete_past_horizon
 from pgc_vacuity import query_error
 
 DB = "pgc_native_fetch_group_memo"
@@ -158,6 +159,18 @@ def _in_tx(dsn, statements, settings=(), commit=False):
     return "|".join("t" if v is True else "f" if v is False else str(v) for v in row)
 
 
+def _delete_horizon(dsn, table):
+    """-> how many things still hold the horizon at or before the newest DELETE in
+    `table`, after waiting up to 30 s; or the failure as a query_error()."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            n, calls = wait_delete_past_horizon(conn, table)
+    except psycopg.Error as exc:
+        return _failed(exc)
+    print(f"-- horizon blockers/calls before the same-statement compact: {n}/{calls}")
+    return n
+
+
 def _savepoint_move(dsn):
     """The cursor drained after ROLLBACK TO SAVEPOINT -> MOVE ALL's command tag."""
     try:
@@ -273,10 +286,13 @@ def fm(pgc_cluster):
             ("SET pgcolumnar.reclaim_coalesce=off",) + FORCE, commit=True)
         _await_up(dsn)
         fd_setup = _setup(dsn, ["SET pgcolumnar.stripe_row_limit=2000",
-                                "CREATE TABLE fd (id int, v text) USING pgcolumnar",
+                                "CREATE TABLE fd (id int, v text) USING pgcolumnar WITH (autovacuum_enabled = false)",
                                 "INSERT INTO fd SELECT g, 'f'||g FROM generate_series(1,10000) g",
                                 "CREATE INDEX fd_id ON fd (id)",
                                 "DELETE FROM fd WHERE id <= 2000"])
+        # wait for the horizon first (#1993): compact runs once, inside the checked
+        # statement, and returns 0 while a transaction older than the DELETE is open
+        r["compact horizon"] = fd_setup or _delete_horizon(dsn, "fd")
         r["compact"] = fd_setup or _in_tx(dsn, [
             "SELECT (SELECT count(*) FROM generate_series(2001,2010) g, LATERAL (SELECT v FROM fd WHERE fd.id = g) x), "
             "(SELECT pgcolumnar.compact('fd'::regclass) >= 1), "
@@ -332,6 +348,11 @@ def test_fgm_aborted_savepoint_rows_do_not_resurrect(fm, expect):
 
 def test_fgm_same_statement_retire_neither_loses_nor_doubles(fm, expect):
     expect.text(fm["retire"], "500|t|500", "a same-statement retire neither loses nor doubles rows (500|t|500)")
+
+
+def test_fgm_no_transaction_older_than_the_delete_before_compact(fm, expect):
+    expect.num(fm["compact horizon"], 0,
+               "no transaction older than the DELETE from fd was open before the same-statement compact")
 
 
 def test_fgm_same_statement_compact_resurrects_nothing(fm, expect):

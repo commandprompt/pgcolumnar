@@ -109,6 +109,14 @@ SELECT count(*) FROM pg_stat_activity, f
 """
 
 
+LOCKS_ON_N = """
+SELECT count(*) FROM pg_locks
+ WHERE locktype = 'relation' AND relation = 'n'::regclass
+   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+   AND pid <> pg_backend_pid()
+"""
+
+
 def test_the_table_stays_usable_and_the_guc_turns_it_off(nt, pgc_cluster, expect):
     c = nt
     _both(c, "INSERT INTO {t} SELECT g, md5(g::text) FROM generate_series(30001, 40000) g")
@@ -161,11 +169,17 @@ def _guc_cycle(c, expect):
     expect.num(blockers, 0, "GUC off: no transaction older than the compact was open")
     # its own statement, and its answer checked: the shell once sent SET and the call
     # as one string, an implicit transaction block that truncate refuses
+    # and no other session may lock n (#1994): truncate also returns 0 when it cannot
+    # take an ACCESS EXCLUSIVE lock at once, so the same session counts the locks
+    # other sessions hold or wait for on n just before and just after the call
     c.execute("SET pgcolumnar.enable_end_truncation = off")
     try:
+        before = _one(c, LOCKS_ON_N)
         off = _one(c, "SELECT pgcolumnar.truncate('n')")
+        after = _one(c, LOCKS_ON_N)
     finally:
         c.execute("RESET pgcolumnar.enable_end_truncation")
+    expect.text(f"{before}|{after}", "0|0", "GUC off: no other session held a lock on n before or after the call")
     expect.text(f"{_size(c)}|{off}", f"{guard}|0", "GUC off: truncate does nothing")
     expect.at_least(_truncated(c), 1, "GUC on: truncate reclaims")
     expect.at_least(guard - _size(c), 1, "GUC on: file shrank")
