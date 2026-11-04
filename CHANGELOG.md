@@ -543,10 +543,12 @@ true until the next version shipped.
   carries its value and stays excused. It looks for a carried `$` only up to
   the `)` that closes the arm, so a `$` in a later argument such as
   `"$(want)"` no longer excuses the arm; a `)` in quotes or in a subshell does
-  not end it. A mutant sweep changed the regular expressions and conditions
-  this change added or touched in 220 ways. Under mawk and gawk alike, 128 fail
-  a named check and 92 pass, and the 92 give the same verdict as the fixed
-  sweep on about 45,000 generated arms. The tree sweep still finds the same 70
+  not end it. A branch that ends in a bare `$`, as in `|| echo no$)`, still
+  excuses the arm, as on main, and is recorded as a known limit. A mutant
+  sweep changed the regular expressions and conditions this change added or
+  touched in 225 ways. Under mawk and gawk alike, 134 fail a named check and 91
+  pass, and the 91 give the same verdict as the fixed sweep on about 45,000
+  generated arms. The tree sweep still finds the same 70
   arms, so no suite changed.
 - `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
   `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot

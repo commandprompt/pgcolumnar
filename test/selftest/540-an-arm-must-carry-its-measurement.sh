@@ -453,6 +453,12 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# carries a value.
 		#
 		# KNOWN LIMITS. No arm in the tree has any of these shapes.
+		#   - A branch that ends in a bare dollar sign, as in `|| echo no$)`,
+		#     prints a literal dollar sign and carries no value, but that `$`
+		#     still excuses the arm. Main has the same limit. The redirect
+		#     probe pins it as a `known limit:` arm, which also pins where the
+		#     cut ends: one character short and the arm is refused (#2020
+		#     review).
 		#   - `[ ""0 -lt "$x" ]` means `[ 0 -lt "$x" ]` but is refused, because
 		#     the mirrored excuse allows at most one quote on each side.
 		#   - A redirect target that joins a bare word or a quoted part to a
@@ -604,9 +610,12 @@ check_text "control: the carve-outs hold and the innocent arm above the helper i
 # is not in a branch, so it does not excuse the arm. An arm that goes on after
 # `||` on the next line is still read. The three new `carried:` arms hold a
 # quoted `(`, a subshell, and a `$n` that ends the else branch, so the cut can
-# stop neither early nor one character short.
+# stop neither early nor one character short. The `known limit:` arm ends its
+# else branch in a bare `$`, which bash prints as a literal: the arm carries no
+# value but is excused, as on main. It pins that the cut keeps the last
+# character before the `)` (#2020 review).
 #
-# The `not this shape:` arms (four here, four in the next probe) are not this
+# The `not this shape:` arms (four here, eight in the next probe) are not this
 # rule's shape: a test piped into `cat` or `echo`, or sent to the background.
 # In the two `| cat` arms the `&&` reads `cat`'s status. In the `|&` and `&`
 # arms `echo` runs whatever the test says. Either way the test's result is
@@ -752,6 +761,8 @@ check "carried: a branch that ends in the number" \
 	"$([ "$n" -ge 5 ] && echo yes || echo no $n)" "yes"
 check "a threshold whose substitution is followed by a variable in the same argument" \
 	"$([ "$a" -le "$b" ] && echo yes || echo no)$x" "yes"
+check "known limit: a branch that ends in a literal dollar sign" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no$)" "yes"
 PROBE
 # SORTED IN THE C LOCALE. A locale-aware sort ignores spaces, so it puts
 # `an if/then/else ...` before `a threshold ...` and the order would depend on
@@ -784,9 +795,10 @@ check_text "control: the sweep sees an arm behind a redirect and a floor of two"
 # A BRANCH MAY BE WRITTEN WITH `printf` (#2011). `&& printf yes || echo no`
 # prints only `no` on failure, as `echo` does, and so does an if/then/else whose
 # then or else branch is `printf`. A `printf` that prints a value carries it,
-# as `echo "$x"` does, so the two `carried:` printf arms stay excused. The three
-# `not this shape:` arms run `printenv`, which the rule does not read: they pin
-# that only `echo` and `printf` are. The arms with two spaces or a tab after
+# as `echo "$x"` does, so the two `carried:` printf arms stay excused. The seven
+# `not this shape:` arms run `printenv`, `cat out.log` or `true`, which the rule
+# does not read: they pin that only `echo` and `printf` are. Their branches hold
+# no `$`, so the carried-value excuse cannot hide a widened rule (#2020 review). The arms with two spaces or a tab after
 # `then` and `else`, and the one with `&& true` before `then`, pin how the
 # if/then/else rule finds its branches.
 _lam_probe_forms="$PGC_WORKDIR/lam_probe_forms.sh"
@@ -923,6 +935,14 @@ check_num "an if/then/else threshold with tabs after then and after else" \
 	"$(if [ "$a" -le "$b" ]; then	echo 1; else	echo 0; fi)" "1"
 check_num "an if/then/else threshold with another command before then" \
 	"$(if [ "$a" -le "$b" ] && true; then echo 1; else echo 0; fi)" "1"
+check "not this shape: a threshold whose first branch is cat" \
+	"$([ "$a" -le "$b" ] && cat out.log || echo no)" "yes"
+check "not this shape: a threshold whose first branch is true" \
+	"$([ "$a" -le "$b" ] && true || echo no)" "yes"
+check_num "not this shape: an if/then/else threshold whose then branch is cat" \
+	"$(if [ "$a" -le "$b" ]; then cat out.log; else echo 0; fi)" "1"
+check_num "not this shape: an if/then/else threshold whose else branch is cat" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else cat out.log; fi)" "1"
 PROBE
 _lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
