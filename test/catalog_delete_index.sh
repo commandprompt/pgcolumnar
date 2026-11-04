@@ -460,6 +460,16 @@ echo "-- row_group pages=$rg_pages, threshold=$min_blocks"
 check_num "row_group is larger than the threshold, so the two paths differ" \
 	"$(margin "$((rg_pages - min_blocks))" 1)" "1"
 
+# WAIT FOR THE HORIZON FIRST (#2010), as the compactions above do. The vacuum
+# walks a group's deletes only when no transaction is older than the DELETE. A
+# snapshot another session held from before that DELETE left delete_vector
+# unread, and "premise: the vacuum walked this table's groups" read 0. Once the
+# count reads 0 it stays 0, so one wait covers all three vacuums.
+v_b="$(pgc_wait_delete_past_horizon del_vac)"
+echo "-- horizon blockers/calls before the vacuums: $v_b"
+check_num "no transaction older than the vacuumed table's delete was open before the vacuums" \
+	"${v_b%/*}" "0"
+
 v_d="$(vac_work del_vac)"
 v_c="$(vac_work del_vac)"
 v_s="$(vac_work del_vac 2147483647)"

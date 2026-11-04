@@ -540,12 +540,16 @@ true until the next version shipped.
   than the `DELETE` was open, so the checks on what it retired read 0 or
   `unchanged`. Each `compact` is measured once, so it cannot be repeated. These
   suites and their pytest twins now wait up to 30 s until nothing holds the
-  horizon at the `DELETE`, and new checks want that count to be 0. In
+  horizon at the `DELETE`, and new checks want that count to be 0.
+  `catalog_delete_index` and its twin also wait before their `VACUUM`
+  readings: the vacuum reads a group's deletes only past the horizon, so
+  `premise: the vacuum walked this table's groups` read 0. In
   `native_scale`, a held snapshot kept each rewrite from reusing freed space,
-  so the file grew and `reclaim reached steady state` failed. Each round now
-  waits until nothing holds the horizon at the newest freed range, and a new
-  check per round wants that count to be 0. The other 22 suites that #2010
-  lists were checked and need no change. docs/testing.md.
+  so the file grew and `reclaim reached steady state` failed. Rounds 2 to 4,
+  which that check reads, now wait until nothing holds the horizon at the
+  newest freed range, and a new check per round wants that count to be 0.
+  The other 22 suites that #2010 lists were checked and need no change.
+  docs/testing.md.
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
   (#1993). `compact` runs once, inside the checked statement, and returned 0

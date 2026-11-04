@@ -6819,14 +6819,14 @@ COUNTED IN THE STATEMENT'S OWN TRANSACTION, NOT FROM `pg_statio_all_tables` (#12
 
 `pg_stat_reset()` is database-wide. The corpus runs serially within a worker.
 
-compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`.
+compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`. The vacuum test waits the same way before its vacuums, because the vacuum reads a group's deletes only past the horizon: `no transaction older than the vacuumed table's delete was open before the vacuums`.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, `no transaction older than the phase ... deletes was open before the compactions`, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
-| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
+| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | `no transaction older than the vacuumed table's delete was open before the vacuums`, after waiting up to 30 s for the horizon (#2010); that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
 | `test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole` | that a DROP costs less catalog work than reading the seven catalogs whole, and -- below the threshold -- less than forcing a probe. The subject is `delete_rows_by_storage_id`, one parameterised line serving seven catalogs on the DROP/TRUNCATE path, which nothing covered before (#1207). Measured in buffers, never the access path, and on a fixture sixty tables wide because `pgc_own_db` gives this file a private database where the shell twin shares a cluster |
 | `test_a_catalog_reading_takes_in_none_of_another_sessions_reads` | that a statement which reads no catalog itself, inside which a second session (run by `COPY ... TO PROGRAM`) scans `row_group` and `column_chunk` and exits, reads zero; and, as its control, that the second session's reads do reach the shared view (#1298) |
 

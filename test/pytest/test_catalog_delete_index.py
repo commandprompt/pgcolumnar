@@ -492,6 +492,18 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
             cur.execute("SELECT pg_stat_force_next_flush()")
         return _work(conn)
 
+    # WAIT FOR THE HORIZON FIRST (#2010), as the shell half does. The vacuum walks
+    # a group's deletes only when no transaction is older than the DELETE. A
+    # snapshot another session held from before that DELETE left delete_vector
+    # unread. Once the count reads 0 it stays 0, so one wait covers all three.
+    v_held, v_calls = wait_delete_past_horizon(conn, "vac_small")
+    print(f"-- horizon blockers/calls before the vacuums: {v_held}/{v_calls}")
+    expect.num(
+        v_held,
+        0,
+        "no transaction older than the vacuumed table's delete was open before the vacuums",
+    )
+
     w_default = vacuum_work()
     w_control = vacuum_work()
     w_scan = vacuum_work(READ_WHOLE)
