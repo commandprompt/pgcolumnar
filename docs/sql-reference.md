@@ -802,7 +802,10 @@ The function refuses these:
   `path_glob_matches` cannot resolve a relative path soundly (see below), a
   table on a local path refuses every local `path` if either one is relative.
   So does a caller without `pg_read_all_settings`, who cannot read
-  `data_directory`.
+  `data_directory`. A table on a relative glob is the exception (#2013).
+  `path_glob_matches` resolves its pattern without that privilege. So the
+  table refuses what its glob matches, and a path under the glob as
+  written, as under a directory.
   A remote key is compared as written, because `//` is part of a
   key. A new file under a directory a foreign table reads is refused too;
   docs/how-to.md shows ways around it.
