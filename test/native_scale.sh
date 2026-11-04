@@ -76,6 +76,16 @@ sizes=()
 for r in 1 2 3 4; do
 	psql_run "DELETE FROM h WHERE id % 8 = $r;"
 	psql_run "DELETE FROM n WHERE id % 8 = $r;"
+	# WAIT FOR THE HORIZON FIRST (#2010). A rewrite reuses a freed range only
+	# when no transaction is older than the one that freed it. A snapshot another
+	# session held through the rounds made every rewrite append, and the file grew
+	# 3792896 -> 5054464 -> 6045696 with reuse working. So each rewrite waits
+	# until nothing holds the horizon at the newest range freed in n, and the
+	# count is checked.
+	blockers="$(pgc_wait_freed_range_past_horizon n)"
+	echo "  (round $r horizon blockers/calls before the rewrite: $blockers)"
+	check_num "round $r: no transaction older than the newest freed range was open before the rewrite" \
+		"${blockers%/*}" "0"
 	q "SELECT pgcolumnar.compact_rewrite('n', 0.02);" >/dev/null
 	check "parity after reclaim round $r" "$(fp_n)" "$(fp_h)"
 	sizes+=("$(fsize)")

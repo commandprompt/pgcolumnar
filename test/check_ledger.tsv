@@ -726,6 +726,9 @@ catalog_delete_index	catalog_delete_index	A1 with more catalog pages the default
 catalog_delete_index	catalog_delete_index	B1 with large catalogs the default does far less work than reading every one whole	15;16;17;18;19	2026-10-12	pgcolumnar_index_min_blocks default 3 -> 2147483647, so no site probes;pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
 catalog_delete_index	catalog_delete_index	P1 with a few catalog pages the default does less work than probing every one	15;16;17;18;19	2026-10-12	pgcolumnar_scan_index_oid stops asking the relation its size, so every site probes;the eight converted scan sites back to InvalidOid
 catalog_delete_index	catalog_delete_index	a reading takes in none of another session's catalog reads (#1298)	15;16;17;18;19	2026-10-14	cat_blocks read pg_statio_all_tables after a reset, as main's helpers did
+catalog_delete_index	catalog_delete_index	no transaction older than the phase 0 deletes was open before the compactions	15;16;17;18;19	2026-11-04	test harness: the horizon wait before the phase compactions cut to one call, under a REPEATABLE READ snapshot held from before the DELETEs and ended after the check (#2010)
+catalog_delete_index	catalog_delete_index	no transaction older than the phase A deletes was open before the compactions	15;16;17;18;19	2026-11-04	test harness: the horizon wait before the phase compactions cut to one call, under a REPEATABLE READ snapshot held from before the DELETEs and ended after the check (#2010)
+catalog_delete_index	catalog_delete_index	no transaction older than the phase B deletes was open before the compactions	15;16;17;18;19	2026-11-04	test harness: the horizon wait before the phase compactions cut to one call, under a REPEATABLE READ snapshot held from before the DELETEs and ended after the check (#2010)
 catalog_delete_index	catalog_delete_index	premise: the deep table grew the catalogs it is there to grow	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the drop fixture grew the catalogs it is there to grow	15;16;17;18;19	never	-
 catalog_delete_index	catalog_delete_index	premise: the phase 0 catalogs hold only this file's tables	15;16;17;18;19	never	-
@@ -4036,14 +4039,16 @@ maintenance_crash	maintenance_crash	after a crash with vacuum committed, the ind
 maintenance_crash	maintenance_crash	after a crash with vacuum committed, the table is as vacuum left it, with the same rows	15;16;17;18;19	2026-10-15	PgColumnarWriteLogicalData writes data pages without WAL, so a committed rewrite's pages are lost in a crash
 maintenance_crash	maintenance_crash	after a crash with vacuum uncommitted, the index reads the rows the scan reads	15;16;17;18;19	2026-10-16	pgcolumnar_index_fetch_tuple finds no row (columnar_tableam.c)
 maintenance_crash	maintenance_crash	after a crash with vacuum uncommitted, the table is as it was, by scan and by index	15;16;17;18;19	never	-
-maintenance_crash	maintenance_crash	compact changed the row groups before the crash	15;16;17;18;19	never	-
-maintenance_crash	maintenance_crash	compact changed the row groups in its open transaction	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	compact changed the row groups before the crash	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
+maintenance_crash	maintenance_crash	compact changed the row groups in its open transaction	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
 maintenance_crash	maintenance_crash	compact committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact ran in its open transaction, and the cluster came back after a crash	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact_rewrite changed the row groups before the crash	15;16;17;18;19	2026-10-15	compact_rewrite rewrites nothing (rewritten = 0)
 maintenance_crash	maintenance_crash	compact_rewrite changed the row groups in its open transaction	15;16;17;18;19	2026-10-15	compact_rewrite rewrites nothing (rewritten = 0)
 maintenance_crash	maintenance_crash	compact_rewrite committed, and the cluster came back after a crash before any checkpoint	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	compact_rewrite ran in its open transaction, and the cluster came back after a crash	15;16;17;18;19	never	-
+maintenance_crash	maintenance_crash	no transaction older than the DELETE from mc was open before compact committed	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
+maintenance_crash	maintenance_crash	no transaction older than the DELETE from mc was open before compact ran in its open transaction	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
 maintenance_crash	maintenance_crash	premise: the by-index reading is an Index Scan through mc_id	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	recluster changed the row groups before the crash	15;16;17;18;19	never	-
 maintenance_crash	maintenance_crash	recluster changed the row groups in its open transaction	15;16;17;18;19	never	-
@@ -4087,8 +4092,9 @@ maintenance_rollback	maintenance_rollback	after recluster rolls back, the table 
 maintenance_rollback	maintenance_rollback	after vacuum rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 maintenance_rollback	maintenance_rollback	after vacuum_sorted rolls back, the table holds the same rows and row groups, by scan and by index	15;16;17;18;19	2026-10-16	columnar_tableam.c: pgcolumnar_index_fetch_tuple finds no row
 maintenance_rollback	maintenance_rollback	and every function then runs for real and keeps the same rows	15;16;17;18;19	never	-
-maintenance_rollback	maintenance_rollback	compact changed the row groups inside its transaction	15;16;17;18;19	never	-
+maintenance_rollback	maintenance_rollback	compact changed the row groups inside its transaction	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
 maintenance_rollback	maintenance_rollback	compact_rewrite changed the row groups inside its transaction	15;16;17;18;19	never	-
+maintenance_rollback	maintenance_rollback	no transaction older than the DELETE from mr was open before compact ran inside its transaction	15;16;17;18;19	2026-11-04	test harness: the horizon wait before compact cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 8 s (#2010)
 maintenance_rollback	maintenance_rollback	premise: the by-index reading is an Index Scan through mr_id	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	premise: the table holds the rows it was given	15;16;17;18;19	never	-
 maintenance_rollback	maintenance_rollback	recluster changed the row groups inside its transaction	15;16;17;18;19	never	-
@@ -5691,6 +5697,21 @@ native_saop_pushdown	native_saop_pushdown	the predicate builder's reject express
 native_saop_pushdown	native_saop_pushdown	the predicate builder's reject expression contains SK_SEARCHNULL	15;16;17;18;19	2026-10-16	columnar_reader.c: the reject expression keeps only SK_ISNULL
 native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is exact (conservative keys not folded)	15;16;17;18;19	2026-10-16	columnar_reader.c: a set key never probes the bloom filter (it probes zero values and rules the group out)
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
+native_scale	native_scale	bulk load count	15;16;17;18;19	never	-
+native_scale	native_scale	bulk load parity	15;16;17;18;19	never	-
+native_scale	native_scale	indexed lookup after rewrite	15;16;17;18;19	never	-
+native_scale	native_scale	parity after compact_rewrite	15;16;17;18;19	never	-
+native_scale	native_scale	parity after delete	15;16;17;18;19	never	-
+native_scale	native_scale	parity after reclaim round 1	15;16;17;18;19	never	-
+native_scale	native_scale	parity after reclaim round 2	15;16;17;18;19	never	-
+native_scale	native_scale	parity after reclaim round 3	15;16;17;18;19	never	-
+native_scale	native_scale	parity after reclaim round 4	15;16;17;18;19	never	-
+native_scale	native_scale	parity after recluster	15;16;17;18;19	never	-
+native_scale	native_scale	reclaim reached steady state (round 4 <= round 2)	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	round 1: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	never	-
+native_scale	native_scale	round 2: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	round 3: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	round 4: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
 native_sketch	native_sketch	DROP TABLE leaves no sketch behind	15;16;17;18;19	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
 native_sketch	native_sketch	TRUNCATE leaves no sketch for the old storage	15;16;17;18;19	2026-10-26	columnar_metadata.c: deleting a storage's metadata keeps its sketch rows (mutation, #1309);columnar_write_state.c: check_sketch_column refuses every column (mutation, #1309)
 native_sketch	native_sketch	a column not named gets no sketch	15;16;17;18;19	2026-10-26	columnar_write_state.c: the writer sketches every column, whatever the option names (mutation, #1309)

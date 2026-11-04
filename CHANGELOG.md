@@ -534,6 +534,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback` and
+  `native_scale` no longer fail while another session holds an old snapshot
+  (#2010). In the first three, `compact` returned 0 while a transaction older
+  than the `DELETE` was open, so the checks on what it retired read 0 or
+  `unchanged`. Each `compact` is measured once, so it cannot be repeated. These
+  suites and their pytest twins now wait up to 30 s until nothing holds the
+  horizon at the `DELETE`, and new checks want that count to be 0. In
+  `native_scale`, a held snapshot kept each rewrite from reusing freed space,
+  so the file grew and `reclaim reached steady state` failed. Each round now
+  waits until nothing holds the horizon at the newest freed range, and a new
+  check per round wants that count to be 0. The other 22 suites that #2010
+  lists were checked and need no change. docs/testing.md.
 - `native_fetch_group_memo` and its pytest twin no longer fail when another
   session holds an old snapshot during the same-statement `compact` arm
   (#1993). `compact` runs once, inside the checked statement, and returned 0

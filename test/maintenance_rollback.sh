@@ -66,8 +66,19 @@ rolled_back() {
 for f in "pgcolumnar.compact_rewrite('mr', 0.0)" "pgcolumnar.recluster('mr', 'v')" "pgcolumnar.compact('mr')" \
          "pgcolumnar.vacuum('mr')" "pgcolumnar.vacuum_sorted('mr', 'v')"; do
 	build_mr
-	got="$(rolled_back "$f")"
 	name="${f#pgcolumnar.}"; name="${name%%(*}"
+	# WAIT FOR THE HORIZON FIRST (#2010). compact retires the deleted group only
+	# when no transaction is older than build_mr's DELETE. A snapshot another
+	# session held from before it made compact change nothing, and the check below
+	# read "unchanged". compact runs once, inside the transaction that rolls back,
+	# so it cannot be repeated: wait, and check the count first.
+	if [ "$name" = compact ]; then
+		blockers="$(pgc_wait_delete_past_horizon mr)"
+		echo "  (horizon blockers/calls before compact inside its transaction: $blockers)"
+		check_num "no transaction older than the DELETE from mr was open before compact ran inside its transaction" \
+			"${blockers%/*}" "0"
+	fi
+	got="$(rolled_back "$f")"
 	check "$name changed the row groups inside its transaction" \
 		"$([ "${got%%|*}" != "$RG0" ] && [ -n "${got%%|*}" ] && echo changed || echo "unchanged (${got%%|*})")" "changed"
 	check "after $name rolls back, the table holds the same rows and row groups, by scan and by index" \
