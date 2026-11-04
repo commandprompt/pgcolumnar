@@ -21,6 +21,7 @@ import tempfile
 
 import psycopg
 
+from pgc_horizon import wait_delete_past_horizon
 from pgc_vacuity import query_error
 
 ROWS = ("SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id)) FROM mc")
@@ -62,6 +63,16 @@ def _fresh_table(dsn):
             c.execute(s)
 
 
+def _delete_horizon(dsn, what):
+    """Wait until nothing holds the horizon at the DELETE from mc (#2010), and
+    -> the count of what still holds it, or None when there is nothing to
+    compare against."""
+    with psycopg.connect(dsn, autocommit=True) as c:
+        n, calls = wait_delete_past_horizon(c, "mc")
+    print(f"-- horizon blockers/calls before {what}: {n}/{calls}")
+    return n
+
+
 def _redo_count(log):
     try:
         return log.read_text(errors="replace").count("database system was not properly shut down")
@@ -96,6 +107,11 @@ def test_a_crash_part_way_through_maintenance_loses_nothing(pgc_cluster, expect)
         for f in ("compact_rewrite('mc', 0.0)", "recluster('mc', 'v')", "compact('mc')", "vacuum('mc')"):
             name = f.split("(")[0]
             _fresh_table(dsn)
+            # compact retires the deleted group only when no transaction is older
+            # than the DELETE, and it runs once, in the open transaction (#2010)
+            if name == "compact":
+                expect.num(_delete_horizon(dsn, "compact in its open transaction"), 0,
+                           "no transaction older than the DELETE from mc was open before compact ran in its open transaction")
             before = _state(dsn)
             redo0 = _redo_count(log)
             holder = psycopg.connect(dsn, autocommit=True)
@@ -131,6 +147,9 @@ def test_a_crash_part_way_through_maintenance_loses_nothing(pgc_cluster, expect)
         for f in ("compact_rewrite('mc', 0.0)", "recluster('mc', 'v')", "compact('mc')", "vacuum('mc')"):
             name = f.split("(")[0]
             _fresh_table(dsn)
+            if name == "compact":
+                expect.num(_delete_horizon(dsn, "compact committed"), 0,
+                           "no transaction older than the DELETE from mc was open before compact committed")
             before_rows = _one(dsn, ROWS)
             before_groups = _one(dsn, GROUPS)
             _one(dsn, f"SELECT pgcolumnar.{f}")

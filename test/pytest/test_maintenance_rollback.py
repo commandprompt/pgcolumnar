@@ -16,6 +16,7 @@ function for real.
 """
 import psycopg
 
+from pgc_horizon import wait_delete_past_horizon
 from pgc_vacuity import query_error
 
 ROWS = ("SELECT count(*) || '/' || md5(string_agg(id || ':' || v || ':' || w, ',' ORDER BY id)) "
@@ -80,6 +81,13 @@ def test_a_maintenance_function_that_rolls_back_leaves_the_table_as_it_was(pgc_c
     for f in funcs:
         name = f.split("(")[0]
         _build_mr(pgc_conn)
+        # compact retires the deleted group only when no transaction is older than
+        # the DELETE, and it runs once, inside the transaction that rolls back:
+        # wait, and check the count first (#2010)
+        if name == "compact":
+            n, calls = wait_delete_past_horizon(pgc_conn, "mr")
+            print(f"-- horizon blockers/calls before compact inside its transaction: {n}/{calls}")
+            expect.num(n, 0, "no transaction older than the DELETE from mr was open before compact ran inside its transaction")
         # BEGIN and ROLLBACK as statements: pgc_conn is a watching wrapper, and an
         # autocommit flag set on it would not reach the connection, so the
         # function would commit and the rollback would do nothing.

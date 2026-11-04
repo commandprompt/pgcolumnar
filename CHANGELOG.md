@@ -534,6 +534,29 @@ true until the next version shipped.
 
 ### Fixed
 
+- `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
+  `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot
+  (#2010). In the first three, `compact` returned 0 while a transaction older
+  than the `DELETE` was open, so the checks on what it retired read 0 or
+  `unchanged`. Each `compact` is measured once, so it cannot be repeated. These
+  suites and their pytest twins now wait until nothing holds the horizon at
+  the `DELETE`, and new checks want that count to be 0. Each wait lasts up to
+  30 s; `catalog_delete_index` waits once per target table, so up to 90 s per
+  phase.
+  `catalog_delete_index` and its twin also wait before their `VACUUM`
+  readings: the vacuum reads a group's deletes only past the horizon, so
+  `premise: the vacuum walked this table's groups` read 0. In
+  `native_scale`, a held snapshot kept each rewrite from reusing freed space,
+  so the file grew and `reclaim reached steady state` failed. Rounds 2 to 4,
+  which that check reads, now wait until nothing holds the horizon at the
+  newest freed range, and a new check per round wants that count to be 0.
+  `native_reclaim` and its twin had the same defect in their recluster loop:
+  under a held snapshot each recluster appended, so `repeated recluster
+  reuses space (file plateaus)` and `free space is being reused` failed.
+  Each of the four repeated reclusters now waits the same way, with a new
+  check per recluster. The other 21 suites that #2010 lists were checked and
+  need no change.
+  docs/testing.md.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored
