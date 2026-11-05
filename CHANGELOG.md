@@ -600,6 +600,17 @@ true until the next version shipped.
   a group count, and prints the error when one did not. Before, it threw the
   error away: with the allocator's `CommandCounterIncrement` removed, `recluster`
   failed with "tuple already updated by self" and the suite still passed 14/14.
+- `native_scale`: reclaim round 4 now deletes rows, so the steady-state check
+  tests a fourth round of reuse (#2024). Round 4 deleted `id % 8 = 4`, but every
+  such id also has `id % 4 = 0`, and an earlier delete removed those. So round 4
+  deleted nothing and rewrote nothing, and the check really compared round 3
+  with round 2. A mutant that turned off free-space reuse from round 4 on passed
+  all 20 checks. Round 4 now deletes `id % 8 = 5`. A new check per round and
+  table wants the delete to remove the whole slice. The suite and its pytest
+  twin change together; the twin's two "round 4 deletes no rows" checks are
+  gone. A second new check per round wants `compact_rewrite` to rewrite at
+  least one group. Before, a rewrite that returned 0 passed: the file kept its
+  size, and the plateau check read that as reuse.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored

@@ -674,6 +674,10 @@ x86_64 and on 18 on aarch64. The twin runs at 200000 rows in CI
 their 40-minute limit. The suite checks that every `recluster` and
 `compact_rewrite` call returned a group count. A failed call rolls back, so
 parity still holds and the file stops growing, and only that check sees it.
+Each of the four reclaim rounds also has two checks. The delete must remove its
+whole slice, and `compact_rewrite` must rewrite at least one group.
+A rewrite that returns 0 leaves the file the same size, and the plateau check
+alone reads that as reuse (#2024).
 On a shared 8-core machine under heavy load
 it took 36 s of test time at 200000 rows and 157 s at 500000. Its server used
 at most 120 MB of memory and its data directory 301 MB of disk.

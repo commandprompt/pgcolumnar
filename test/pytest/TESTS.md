@@ -14147,7 +14147,9 @@ It loads `SCALE_N` rows (default 500000, as in the shell) into a columnar table 
 
 Each `recluster` and `compact_rewrite` call must return a group count. A failed call rolls back, so the parity checks still pass and the file stops changing, which the plateau check reads as success. With the allocator's `CommandCounterIncrement` removed, `recluster` fails with "tuple already updated by self", and only the group-count check fails (review of #2021). CI runs the twin at `SCALE_N=200000`, so the pytest-cluster job stays inside its 40-minute limit. At 200000 it still fails that mutant and the reuse-off mutant.
 
-Round 4 deletes nothing, in both harnesses: every id with `id % 8 = 4` also has `id % 4 = 0`, and the first delete removed those. The twin names that zero, because its write guard refuses an unnamed one. Those two checks are the only ones the shell suite does not have.
+The four rounds delete `id % 8` = 1, 2, 3 and 5. Each delete must remove its whole slice from both tables, `(N - s) // 8 + 1` rows. Round 4 used to delete `id % 8 = 4`, and every such id also has `id % 4 = 0`, which the first delete removed. So round 4 deleted nothing and rewrote nothing, and the plateau check compared round 3 with round 2 (#2024). A mutant that turned off free-space reuse from round 4 on passed every check. With slice 5, round 4 grew the file at 200000 rows from 1490944 to 1744896 bytes under that mutant, and the plateau check failed.
+
+Each round's `compact_rewrite` must also rewrite at least one group. A group count of 0 passes the group-count check, and a rewrite that does nothing leaves the file the same size, which passes the plateau check. A mutant that made `compact_rewrite` return 0 from round 4 on passed all 28 earlier checks; the new check fails it with `no: rewrote [0] groups` (review of #2029).
 
 ### Every test
 
@@ -14161,17 +14163,27 @@ Round 4 deletes nothing, in both harnesses: every id with `id % 8 = 4` also has 
 | `test_scale_parity_and_reclaim_steady_state` | indexed lookup after rewrite |
 | `test_scale_parity_and_reclaim_steady_state` | recluster returned a group count |
 | `test_scale_parity_and_reclaim_steady_state` | parity after recluster |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1 deletes its whole id % 8 slice from n |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 1: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 1 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2 deletes its whole id % 8 slice from n |
 | `test_scale_parity_and_reclaim_steady_state` | round 2: no transaction older than the newest freed range was open before the rewrite |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 2: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 2 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3 deletes its whole id % 8 slice from n |
 | `test_scale_parity_and_reclaim_steady_state` | round 3: no transaction older than the newest freed range was open before the rewrite |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 3: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 3 |
-| `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from h: id % 8 = 4 went with id % 4 = 0 |
-| `test_scale_parity_and_reclaim_steady_state` | round 4 deletes no rows from n: id % 8 = 4 went with id % 4 = 0 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4 deletes its whole id % 8 slice from n |
 | `test_scale_parity_and_reclaim_steady_state` | round 4: no transaction older than the newest freed range was open before the rewrite |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
