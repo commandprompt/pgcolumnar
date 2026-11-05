@@ -534,6 +534,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now reads a `[[ ]]` test whose unquoted regex after `=~`
+  holds a bracket class, as in `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]`
+  (#2027). The test ended at the `]` of the class, so the part never examined
+  such an arm. It now reads the regex as one word, as bash does: a group with
+  `|` or a blank, a quoted part and an escaped blank stay in it. No arm in the
+  tree has this shape, so `test/lossy_arms.tsv` and every suite are unchanged.
 - `harness_selftest` fails on a suite listed twice in `SUITES`, and on a suite
   in `SUITES` that a `not_a_suite` list excuses (#2025, #2026). Part 060's
   sorted check compares the list with `sort`, which keeps duplicates, so a
