@@ -447,6 +447,39 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			}
 			return p
 		}
+		# HIDE THE REGEX AFTER `=~` IN A MASKED `[[ ]]` (#2027). m is what
+		# mask() returned. An unquoted regex such as `^[0-9]+$` holds a `]`,
+		# and the test ended there, so the rest of a compound such as
+		# `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]` was never examined. Bash
+		# reads the regex as one word, so every character of it is replaced
+		# by `_`, as mask() does. The word ends at a blank, but not at one
+		# inside `(` and `)`, and a `\` takes the next character with it.
+		# A `&&` glued to the regex is hidden with it, which changes no
+		# verdict: T is cut from s, not from the mask. Quoted parts are
+		# already hidden. `=~` counts only as a word of its own. KNOWN
+		# LIMIT, and no arm in the tree holds it: `=~` as an operand, as in
+		# `[[ "$op" == =~ ]]`, is read as the operator too, so the `]]`
+		# after it is hidden and the arm is not examined.
+		function rx_hide(m,   n, i, j, d, ch) {
+			n = length(m)
+			for (i = 2; i < n; i++) {
+				if (substr(m, i, 2) != "=~") continue
+				if (substr(m, i - 1, 1) !~ /[[:space:]]/) continue
+				if (substr(m, i + 2, 1) !~ /[[:space:]]/) continue
+				for (j = i + 2; j <= n && substr(m, j, 1) ~ /[[:space:]]/; j++) ;
+				for (d = 0; j <= n; j++) {
+					ch = substr(m, j, 1)
+					if (ch == "\\" && j < n) {
+						m = substr(m, 1, j - 1) "__" substr(m, j + 2); j++; continue
+					}
+					if (ch == "(") d++
+					else if (ch == ")" && d) d--
+					else if (!d && ch ~ /[[:space:]]/) break
+					m = substr(m, 1, j - 1) "_" substr(m, j + 1)
+				}
+			}
+			return m
+		}
 		# SPLIT ONE TEST FROM WHAT FOLLOWS IT (#1986). s starts at the test.
 		# Sets T to the text the test compares and REST to the text after it.
 		# `test` ends at the first `&`, `|`, `;`, `<` or `>` that is not
@@ -458,12 +491,13 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# seven live lossy arms in six suites (#2002). AN UNQUOTED ARRAY
 		# ELEMENT, as in `[ ${s[5]} -le 3 ]`, is hidden too (#2023): each
 		# `${` up to the first `]`, with no `}` before it, is replaced by `_`
-		# before the end of the test is found. KNOWN LIMITS, and no arm in
-		# the tree holds either: a redirect between the operands, as in
-		# `test "$a" -le 2>x "$b"`, hides the arm; and a `]` or `}` inside the
+		# before the end of the test is found. In `[[ ]]`, the regex after
+		# `=~` is hidden too (#2027), by rx_hide. KNOWN LIMITS, and no arm in
+		# the tree holds any of them: a redirect between the operands, as in
+		# `test "$a" -le 2>x "$b"`, hides the arm; a `]` or `}` inside the
 		# `${...}` that is not quoted, in the subscript or after it, as in
 		# `${s[${i}]}`, `${s[3]%]*}` or `${s[3]:-[0]}`, still ends the test
-		# early.
+		# early; and so does a glob such as `[[ $c == [[:digit:]] ]]`.
 		function split_test(s,   m, u) {
 			sub(/^[[:space:]]*/, "", s)
 			m = mask(s)
@@ -471,7 +505,7 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 				u = substr(m, RSTART, RLENGTH); gsub(/./, "_", u)
 				m = substr(m, 1, RSTART - 1) u substr(m, RSTART + RLENGTH)
 			}
-			if (match(m, /^\[\[[^]]*\]\]/)) {
+			if (m ~ /^\[\[/ && match(rx_hide(m), /^\[\[[^]]*\]\]/)) {
 				T = substr(s, 3, RLENGTH - 4); REST = substr(s, RLENGTH + 1); return 1
 			}
 			if (match(m, /^\[[^]]*\]/)) {
@@ -605,9 +639,6 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		#     pulls in the next line. Main has the same behaviour.
 		#   - A redirect into a substitution, as in `2>$(mktemp)`, hides the
 		#     arm: the target stops at the `)`. Main has the same limit.
-		#   - A `[[ ]]` with an unquoted regex that holds a bracket class, as
-		#     in `[[ "$a" =~ ^[0-9]+$ ]]`, ends at the `]` of the class, so an arm
-		#     in that shape is not examined. Main has the same limit. It is #2027.
 		#
 		# THREE SPELLINGS OF THE TEST (#1986): `[ ... ]`, `[[ ... ]]` and
 		# `test ...`. Only the first was read, so the other two hid a lossy arm.
@@ -1483,6 +1514,28 @@ check_text "control: the sweep reads array elements, quoted or not, in every spe
 # inside `[ ]` is not a `&&`. The `determinate:` arms just before the
 # #2007 arms pin that (#1995 review round 4).
 #
+# AN UNQUOTED REGEX AFTER `=~` DOES NOT END A `[[ ]]` (#2027). `^[0-9]+$`
+# holds a `]`, and the test ended there, so the compound
+# `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]` was never examined. The arms from
+# `a compound with a regex bracket class` to the one whose last operand ends
+# in `=~` hold a class that starts with `]`, a negated `[^]]`, a POSIX class,
+# a group with `|` or a blank, a quoted part and an escaped blank in the
+# regex, the regex before the `&&`, and the if/then/else form. A lone regex
+# match is refused, as `[[ "$a" =~ $re ]]` already was. The word `=~` in
+# `[ ]` is an operand and hides nothing there, and `x=~` is not `=~`. The
+# two `known limit:` arms pin that only the word after `=~` is read: a glob
+# after `==` that holds `]]`, even one that starts with `=~`, still ends the
+# test early, so the compound after it is not examined.
+#
+# The seven arms from `a compound with a tab before the regex operator` to
+# the group that holds two classes pin what rx_hide reads, as a mutant sweep
+# found missing (#2031 review): a tab is a blank before `=~`, after it, in
+# the blanks it skips and at the end of the word; a `|` outside a group does
+# not end the word, as bash reads `=~ x|[0-9]+$`; `x~` is not `=~`, so the
+# `=` is checked too; and a group ends at `)`, not at `]`. Ending the word
+# at `&`, `;`, `<` or `>` changes nothing, because each is a syntax error
+# there, but `|` is not one of them.
+#
 # THE ARMS AFTER THE CHAINED ONES PIN THE LINE JOIN AND THE CHAIN RULE, as a
 # mutant sweep found missing (#2006, #1997): a backslash inside the first
 # half of a continued arm, a comment that ends in `||` at any indent, a line
@@ -1528,6 +1581,56 @@ check "a threshold behind a redirect into a quoted path with a space and a suffi
 	"$([ "$a" -le "$b" ] 2>"$d/a b".log && echo yes || echo no)" "yes"
 check "a double-bracket compound joined by an unspaced and" \
 	"$([[ "$b" -le 3&&"$a" -gt 0 ]] && echo yes || echo no)" "yes"
+check "a compound with a regex bracket class" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex bracket class that starts with a close bracket" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[]a]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a negated regex bracket class of a close bracket" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[^]]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex POSIX class" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[[:digit:]]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex group, an alternation and a bracket class" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^(x|[0-9])+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex group that holds a space and a bracket class" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^(x [0-9])+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex whose quoted part holds a space" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^"x y"[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex that holds an escaped space" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^x\ [0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound whose regex bracket class comes before the and" \
+	"$([[ "$a" =~ ^[0-9]+$ && "$a" -le "$b" ]] && echo yes || echo no)" "yes"
+check "a regex bracket class" \
+	"$([[ "$a" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a regex in a variable" \
+	"$([[ "$a" =~ $re ]] && echo yes || echo no)" "yes"
+check_num "an if/then/else compound with a regex bracket class" \
+	"$(if [[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]; then echo 1; else echo 0; fi)" "1"
+check "carried: a compound with a regex bracket class whose branch names the operands" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]] && echo yes || echo "no (a=$a b=$b)")" "yes"
+check "determinate: an equality with the word =~ on the right" \
+	"$([[ "$op" == =~ ]] && echo yes || echo no)" "yes"
+check "a compound whose last operand is the word =~ in single brackets" \
+	"$([ "$a" -le "$b" -a "$c" != =~ ] && echo yes || echo no)" "yes"
+check "a double-bracket compound whose last operand ends in =~" \
+	"$([[ "$a" -le "$b" && "$c" == x=~ ]] && echo yes || echo no)" "yes"
+check "known limit: a double-bracket compound after a glob that holds a POSIX class" \
+	"$([[ "$c" == [[:digit:]] && "$a" -le "$b" ]] && echo yes || echo no)" "yes"
+check "known limit: a double-bracket compound after a glob that starts with =~" \
+	"$([[ "$c" == =~[[:digit:]] && "$a" -le "$b" ]] && echo yes || echo no)" "yes"
+check "a compound with a tab before the regex operator" \
+	"$([[ "$a" -le "$b" && "$a"	=~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a tab after the regex operator" \
+	"$([[ "$a" -le "$b" && "$a" =~	^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a space and a tab after the regex operator" \
+	"$([[ "$a" -le "$b" && "$a" =~ 	^[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a compound with a tab after the regex" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^[0-9]+$	]] && echo yes || echo no)" "yes"
+check "a compound with a regex alternation outside a group" \
+	"$([[ "$a" -le "$b" && "$a" =~ x|[0-9]+$ ]] && echo yes || echo no)" "yes"
+check "a double-bracket compound whose last operand ends in a tilde" \
+	"$([[ "$a" -le "$b" && "$c" == x~ ]] && echo yes || echo no)" "yes"
+check "a compound with a regex group that holds a bracket class, a space and a bracket class" \
+	"$([[ "$a" -le "$b" && "$a" =~ ^([0-9] [a])+$ ]] && echo yes || echo no)" "yes"
 check "determinate: a substitution that holds a quoted parenthesis is not a compound" \
 	"$([ "$(grep -c "x)" "$f" || true)" -gt 0 ] && echo yes || echo no)" "yes"
 check "determinate: a substitution that holds a subshell is not a compound" \
@@ -1833,7 +1936,7 @@ bar
 PROBE
 _lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
-	"$_lam_compound_names" "a chain of three tests;a compound after a double-equals equality with the word -a on the left;a compound after an equality with the word -a on the left;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound of a file test and an equality;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is an equality with the word -a on the left;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a file test chained to a test builtin by a tab;a file test chained to a test-builtin count against nothing;a floor of ten;a floor over a count of an escaped alternation across a continuation;a mirrored floor of zero;a pair of determinate tests chained by and;a pair of double-bracket tests chained by and;a pair of tests chained across a line break after a backtick that holds a comment;a pair of tests chained across a line break after a comment;a pair of tests chained across a line break after a comment glued to the and;a pair of tests chained across a line break after a comment glued to the or;a pair of tests chained across a line break after a count of arguments;a pair of tests chained across a line break after a path with a hash inside;a pair of tests chained across a line break after a path with an escaped quote;a pair of tests chained across a line break after a quoted path glued to a hash;a pair of tests chained across a line break after a string length;a pair of tests chained across a line break after and;a pair of tests chained across a line break and a comment line;a pair of tests chained across a line break and a comment line that quotes a recorder;a pair of tests chained across a line break and an unindented comment line;a pair of tests chained across a line break before a trailing comment that ends in and;a pair of tests chained across a line break whose second line ends in a comment;a pair of tests chained behind a redirect;a pair of tests chained by an unspaced and;a pair of tests chained by and;a pair of tests chained by or;a pair of tests chained with a redirect joined to the second;a pair of tests chained with tabs;a pair of tests chained with two spaces before the and;a single-bracket test chained to a double-bracket test;a test-builtin compound whose last operand is glued to a redirect;a test-builtin count against nothing chained to a test builtin by or;a test-builtin threshold chained to a file test;a threshold after a count of arguments on a line that ends in and;a threshold after a line whose comment follows an and;a threshold after an array length on a line that ends in and;a threshold before a backtick that holds a hash and ends the line in and;a threshold before a nested subshell that ends the line in and;a threshold before a quoted word glued to a hash that ends the line in and;a threshold before a substitution on its line that ends in and;a threshold before a substitution on its line that ends in or;a threshold before a substitution with a subshell on its line that ends in and;a threshold before a word with a hash inside that ends the line in and;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold below a comment that ends in or;a threshold below a comment that opens a substitution and a continued line;a threshold below a doubly indented comment that ends in or;a threshold below a line sent to the background;a threshold below a line that ends in an and and a command;a threshold below a trailing comment that ends in or;a threshold below an indented comment that ends in or;a threshold beside a substitution whose comment is glued to a close parenthesis;a threshold beside a substitution whose comment is glued to a semicolon;a threshold beside a substitution whose comment is glued to an open parenthesis;a threshold guarded by the line above, which ends in and;a threshold in a brace group inside a substitution on the line after one that ends in and;a threshold in a brace group on the line after a test that ends in and;a threshold in a case branch on the line after a test that ends in and;a threshold in a subshell on the line after a command that ends in and;a threshold inside a substitution before a helper whose name ends in check;a threshold inside a substitution before a helper whose name ends in underscore check;a threshold inside a substitution before a recorder glued to a semicolon;a threshold inside a substitution before a recorder whose name is a variable;a threshold on the here-doc body line after one that ends in and;a threshold on the line after a command that ends in and;a threshold on the line after a string whose first line ends in and;a threshold recorded by check_num inside a substitution on the line after one that ends in and;a threshold recorded by check_ratio inside a substitution on the line after one that ends in and;a threshold recorded by check_skip inside a substitution on the line after one that ends in and;a threshold recorded by check_text inside a substitution on the line after one that ends in and;a threshold recorded by pgc_fail inside a substitution on the line after one that ends in and;a threshold recorded inside a substitution on the line after one that ends in and;a threshold recorded unindented inside a substitution on the line after one that ends in and;a threshold whose line ends in a comment that ends in or;a threshold whose line ends in and before a carrying arm;a threshold whose line ends in and before a carrying assignment;a threshold whose line ends in and before an arm with no name;a threshold whose line ends in and before an echo of its operand;a threshold whose line ends in or before an echo of its operand;a threshold whose line opens a string that ends the line in and;a threshold whose quoted branch ends its line in or;a threshold whose substitution holds a comment line that quotes a carrying test before a recorder;a threshold with a leading zero;an if/then/else pair of tests chained by an unspaced and;an if/then/else pair of tests chained by and;an if/then/else pair of tests chained by or;an if/then/else threshold behind a redirect into a quoted path with a space;an unquoted threshold whose line ends in and before a carrying assignment;an unquoted threshold whose line ends in and before an arm with no name;"
+	"$_lam_compound_names" "a chain of three tests;a compound after a double-equals equality with the word -a on the left;a compound after an equality with the word -a on the left;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound of a file test and an equality;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is an equality with the word -a on the left;a compound whose last half is nothing versus something;a compound whose last operand is the word =~ in single brackets;a compound whose regex bracket class comes before the and;a compound with a negated regex bracket class of a close bracket;a compound with a regex POSIX class;a compound with a regex alternation outside a group;a compound with a regex bracket class;a compound with a regex bracket class that starts with a close bracket;a compound with a regex group that holds a bracket class, a space and a bracket class;a compound with a regex group that holds a space and a bracket class;a compound with a regex group, an alternation and a bracket class;a compound with a regex that holds an escaped space;a compound with a regex whose quoted part holds a space;a compound with a space and a tab after the regex operator;a compound with a tab after the regex;a compound with a tab after the regex operator;a compound with a tab before the regex operator;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a double-bracket compound whose last operand ends in =~;a double-bracket compound whose last operand ends in a tilde;a file test chained to a test builtin by a tab;a file test chained to a test-builtin count against nothing;a floor of ten;a floor over a count of an escaped alternation across a continuation;a mirrored floor of zero;a pair of determinate tests chained by and;a pair of double-bracket tests chained by and;a pair of tests chained across a line break after a backtick that holds a comment;a pair of tests chained across a line break after a comment;a pair of tests chained across a line break after a comment glued to the and;a pair of tests chained across a line break after a comment glued to the or;a pair of tests chained across a line break after a count of arguments;a pair of tests chained across a line break after a path with a hash inside;a pair of tests chained across a line break after a path with an escaped quote;a pair of tests chained across a line break after a quoted path glued to a hash;a pair of tests chained across a line break after a string length;a pair of tests chained across a line break after and;a pair of tests chained across a line break and a comment line;a pair of tests chained across a line break and a comment line that quotes a recorder;a pair of tests chained across a line break and an unindented comment line;a pair of tests chained across a line break before a trailing comment that ends in and;a pair of tests chained across a line break whose second line ends in a comment;a pair of tests chained behind a redirect;a pair of tests chained by an unspaced and;a pair of tests chained by and;a pair of tests chained by or;a pair of tests chained with a redirect joined to the second;a pair of tests chained with tabs;a pair of tests chained with two spaces before the and;a regex bracket class;a regex in a variable;a single-bracket test chained to a double-bracket test;a test-builtin compound whose last operand is glued to a redirect;a test-builtin count against nothing chained to a test builtin by or;a test-builtin threshold chained to a file test;a threshold after a count of arguments on a line that ends in and;a threshold after a line whose comment follows an and;a threshold after an array length on a line that ends in and;a threshold before a backtick that holds a hash and ends the line in and;a threshold before a nested subshell that ends the line in and;a threshold before a quoted word glued to a hash that ends the line in and;a threshold before a substitution on its line that ends in and;a threshold before a substitution on its line that ends in or;a threshold before a substitution with a subshell on its line that ends in and;a threshold before a word with a hash inside that ends the line in and;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold below a comment that ends in or;a threshold below a comment that opens a substitution and a continued line;a threshold below a doubly indented comment that ends in or;a threshold below a line sent to the background;a threshold below a line that ends in an and and a command;a threshold below a trailing comment that ends in or;a threshold below an indented comment that ends in or;a threshold beside a substitution whose comment is glued to a close parenthesis;a threshold beside a substitution whose comment is glued to a semicolon;a threshold beside a substitution whose comment is glued to an open parenthesis;a threshold guarded by the line above, which ends in and;a threshold in a brace group inside a substitution on the line after one that ends in and;a threshold in a brace group on the line after a test that ends in and;a threshold in a case branch on the line after a test that ends in and;a threshold in a subshell on the line after a command that ends in and;a threshold inside a substitution before a helper whose name ends in check;a threshold inside a substitution before a helper whose name ends in underscore check;a threshold inside a substitution before a recorder glued to a semicolon;a threshold inside a substitution before a recorder whose name is a variable;a threshold on the here-doc body line after one that ends in and;a threshold on the line after a command that ends in and;a threshold on the line after a string whose first line ends in and;a threshold recorded by check_num inside a substitution on the line after one that ends in and;a threshold recorded by check_ratio inside a substitution on the line after one that ends in and;a threshold recorded by check_skip inside a substitution on the line after one that ends in and;a threshold recorded by check_text inside a substitution on the line after one that ends in and;a threshold recorded by pgc_fail inside a substitution on the line after one that ends in and;a threshold recorded inside a substitution on the line after one that ends in and;a threshold recorded unindented inside a substitution on the line after one that ends in and;a threshold whose line ends in a comment that ends in or;a threshold whose line ends in and before a carrying arm;a threshold whose line ends in and before a carrying assignment;a threshold whose line ends in and before an arm with no name;a threshold whose line ends in and before an echo of its operand;a threshold whose line ends in or before an echo of its operand;a threshold whose line opens a string that ends the line in and;a threshold whose quoted branch ends its line in or;a threshold whose substitution holds a comment line that quotes a carrying test before a recorder;a threshold with a leading zero;an if/then/else compound with a regex bracket class;an if/then/else pair of tests chained by an unspaced and;an if/then/else pair of tests chained by and;an if/then/else pair of tests chained by or;an if/then/else threshold behind a redirect into a quoted path with a space;an unquoted threshold whose line ends in and before a carrying assignment;an unquoted threshold whose line ends in and before an arm with no name;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused

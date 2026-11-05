@@ -534,6 +534,12 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now reads a `[[ ]]` test whose unquoted regex after `=~`
+  holds a bracket class, as in `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]`
+  (#2027). The test ended at the `]` of the class, so the part never examined
+  such an arm. It now reads the regex as one word, as bash does: a group with
+  `|` or a blank, a quoted part and an escaped blank stay in it. No arm in the
+  tree has this shape, so `test/lossy_arms.tsv` and every suite are unchanged.
 - Self-test part 540 reads a check arm whose operands are unquoted array
   elements (#2023). In `[ ${sizes[3]} -le ${sizes[1]} ]` the `]` of the first
   subscript ended the test, so the sweep never examined the arm, and a lossy
