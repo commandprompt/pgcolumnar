@@ -450,9 +450,10 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# `${` up to the first `]`, with no `}` before it, is replaced by `_`
 		# before the end of the test is found. KNOWN LIMITS, and no arm in
 		# the tree holds either: a redirect between the operands, as in
-		# `test "$a" -le 2>x "$b"`, hides the arm; and an unquoted subscript
-		# that holds an unquoted `]` or `}`, as in `${s[${i}]}`, still ends
-		# the test early.
+		# `test "$a" -le 2>x "$b"`, hides the arm; and a `]` or `}` inside the
+		# `${...}` that is not quoted, in the subscript or after it, as in
+		# `${s[${i}]}`, `${s[3]%]*}` or `${s[3]:-[0]}`, still ends the test
+		# early.
 		function split_test(s,   m, u) {
 			sub(/^[[:space:]]*/, "", s)
 			m = mask(s)
@@ -1313,14 +1314,14 @@ check_text "control: the sweep reads double brackets, the test builtin and mirro
 # needs the match to stop at the first `]`. The `determinate:` and `carried:`
 # arms keep the old excuses working when the subscript is read.
 #
-# FOUR MUTANTS OF THE PATTERN SURVIVE, AND NONE CHANGES WHAT IT FINDS. Each
-# gave the same rows as the pattern on the tree, on 633 earlier versions of
-# the suites and on the same 633 with the quotes taken off their operands,
-# under mawk and gawk. Dropping the `$` lets a bare `{` start a match, and no
-# test holds one. Dropping `]` from the class lets the match run on to a later
-# `]` before the `}`, which is still inside the same `${...}`. `*` to `+` only
-# refuses `${]`, which bash rejects. Writing spaces instead of `_` hides the
-# same characters from the `]` search.
+# THE FIVE STRING-ORDER AND TEST-BUILTIN ARMS PIN THE REST (#2030 review).
+# The `$` must start a match, or `[ $a \< { ]` hides its own `]`. The class
+# must refuse `]`, or `[[ $a < \${ ]]` runs past the `]]`. A match may be
+# just `${]`, as in the escaped `[[ \${] < $a ]]`. The search runs on the
+# mask, so a `${` in single quotes is not read. And the `test` spelling is
+# masked too, so a `<` in a subscript does not end it. The one mutant that
+# survives writes another character, such as a space, in place of `_`: no
+# rule in split_test reads the character it writes.
 _lam_probe_subs="$PGC_WORKDIR/lam_probe_subs.sh"
 cat > "$_lam_probe_subs" <<'PROBE'
 check "subscript operands" "$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes || echo no)" "yes"
@@ -1346,6 +1347,16 @@ check "a threshold over an unquoted braced variable" \
 	"$([ ${a} -le 3 ] && echo yes || echo no)" "yes"
 check "a threshold over an unquoted plain variable" \
 	"$([ $a -le 3 ] && echo yes || echo no)" "yes"
+check "a string order against a bare brace" \
+	"$([ $a \< { ] && echo yes || echo no)" "yes"
+check "a double-bracket string order against an escaped dollar and a brace" \
+	"$([[ $a < \${ ]] && echo yes || echo no)" "yes"
+check "a double-bracket string order against an escaped dollar, a brace and a bracket" \
+	"$([[ \${] < $a ]] && echo yes || echo no)" "yes"
+check "a string order against a dollar and a brace in single quotes" \
+	"$([ "$s" \< '${' ] && echo yes || echo no)" "yes"
+check "a test-builtin threshold over an unquoted array element whose index holds a less-than" \
+	"$(test ${sizes[i<n?i:n]} -le 3 && echo yes || echo no)" "yes"
 check "determinate: an unquoted array element against nothing" \
 	"$([ ${sizes[3]} -gt 0 ] && echo yes || echo no)" "yes"
 check "determinate: a double-bracket unquoted array length against a floor of one" \
@@ -1359,7 +1370,7 @@ check_num "carried: an if/then/else branch names the unquoted array element" \
 PROBE
 _lam_subs_names="$(_lam_sweep "$_lam_probe_subs" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads array elements, quoted or not, in every spelling" \
-	"$_lam_subs_names" "a double-bracket threshold over unquoted array elements;a test-builtin threshold over unquoted array elements;a threshold over an unquoted array element whose index holds spaces;a threshold over an unquoted array element with a default;a threshold over an unquoted array length;a threshold over an unquoted braced variable;a threshold over an unquoted plain variable;a threshold over unquoted array elements;a threshold over unquoted array elements with computed indexes;an if/then/else double-bracket threshold over unquoted array elements;an if/then/else threshold over unquoted array elements;subscript operands;"
+	"$_lam_subs_names" "a double-bracket string order against an escaped dollar and a brace;a double-bracket string order against an escaped dollar, a brace and a bracket;a double-bracket threshold over unquoted array elements;a string order against a bare brace;a string order against a dollar and a brace in single quotes;a test-builtin threshold over an unquoted array element whose index holds a less-than;a test-builtin threshold over unquoted array elements;a threshold over an unquoted array element whose index holds spaces;a threshold over an unquoted array element with a default;a threshold over an unquoted array length;a threshold over an unquoted braced variable;a threshold over an unquoted plain variable;a threshold over unquoted array elements;a threshold over unquoted array elements with computed indexes;an if/then/else double-bracket threshold over unquoted array elements;an if/then/else threshold over unquoted array elements;subscript operands;"
 
 # A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
 #
