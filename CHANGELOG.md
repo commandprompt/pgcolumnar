@@ -534,6 +534,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- `harness_selftest` fails on a suite listed twice in `SUITES`, and on a suite
+  in `SUITES` that a `not_a_suite` list excuses (#2025, #2026). Part 060's
+  sorted check compares the list with `sort`, which keeps duplicates, so a
+  name listed twice next to itself passed, and the matrix ran that suite twice
+  in every job. Part 220 checks only that the two `not_a_suite` lists agree, so
+  a registered suite that both lists excuse dropped out of the coverage report
+  with every check green. The new check "no suite is listed twice in SUITES
+  (#2025)" prints the duplicate names. The new check "no suite in SUITES is
+  excused by either not_a_suite list (#2026)" puts every registered name
+  through both lists and prints each one excused, with the lists that excuse
+  it. Each has a fixture copy of the runner that must be reported by name: the
+  first suite listed twice, and a test file both lists excuse registered as a
+  suite. With `native_scale` listed twice, or registered while both lists
+  excuse it, the matching check now fails and names it.
 - Self-test part 540 reads three more check arms correctly (#2007, #2011,
   #2012). It excuses `[ -a = "$arg" ]` and `[ -o != "$arg" ]`, where the first
   word `-a` or `-o` is an operand of `=`, `!=` or `==` and not a join. A later
