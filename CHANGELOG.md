@@ -534,6 +534,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 reads a check arm whose operands are unquoted array
+  elements (#2023). In `[ ${sizes[3]} -le ${sizes[1]} ]` the `]` of the first
+  subscript ended the test, so the sweep never examined the arm, and a lossy
+  arm passed. The `[[ ]]` and if/then/else spellings had the same gap. Now the
+  sweep hides each `${` up to the first `]` with no `}` before it, then looks
+  for the end of the test. The quoted form, `"${sizes[3]}"`, from the issue's
+  own probe, was already read since #2002. The new control "control: the sweep
+  reads array elements, quoted or not, in every spelling" pins each part of
+  the pattern with a fixture arm. No live arm changes: the tree sweep still
+  gives the 136 rows in `test/lossy_arms.tsv`. A `]` or `}` inside the
+  `${...}` that is not quoted, in the subscript or after it, as in
+  `${s[${i}]}`, `${s[3]%]*}` or `${s[3]:-[0]}`, still ends the test early.
 - `harness_selftest` fails on a suite listed twice in `SUITES`, and on a suite
   in `SUITES` that a `not_a_suite` list excuses (#2025, #2026). Part 060's
   sorted check compares the list with `sort`, which keeps duplicates, so a
