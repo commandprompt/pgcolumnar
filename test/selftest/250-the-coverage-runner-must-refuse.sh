@@ -182,8 +182,9 @@ check "while the lcov --summary call stays, being correct on both builds (#974)"
 	"$(_cov_code 'lcov --summary')" "1"
 # The premise for all three: stripping comments must not strip the code. Without it
 # a grep that matches nothing reports the same 0 as a grep over an emptied file.
+_cov_tools="$(grep -vE '^[[:space:]]*#' "$_cov" | grep -cE 'genhtml|lcov')"
 check "premise: stripping comments leaves the runner's code behind" \
-	"$([ "$(grep -vE '^[[:space:]]*#' "$_cov" | grep -cE 'genhtml|lcov')" -ge 2 ] && echo yes || echo no)" \
+	"$([ "$_cov_tools" -ge 2 ] && echo yes || echo "no ($_cov_tools code lines name genhtml or lcov)")" \
 	"yes"
 
 # Counters chosen so every cell is distinguishable from every failure mode:

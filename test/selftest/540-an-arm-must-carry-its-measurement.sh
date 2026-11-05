@@ -48,7 +48,8 @@
 # (`-f`, `-n`, `-z` and the rest), equality (`=`, `!=`, `-eq`, `-ne`), and
 # nothing-versus-something (`-gt 0`, `-ge 1`, and the mirrored `0 -lt`, `1 -le`)
 # where exactly one value fails. A compound test, joined by `-a`, `-o`, `&&` or
-# `||`, is never excused (#1989).
+# `||`, is never excused (#1989). Nor are two tests chained outside the
+# brackets, as in `[ A ] && [ B ] && echo yes || echo no` (#1997).
 #
 # THOSE CARVE-OUTS ARE NOT TIDINESS, THEY WERE MEASURED. Three drafts of this
 # sweep over-reported, each caught by reading what it SELECTED rather than by
@@ -224,8 +225,105 @@ margin() {
 }
 PROBE
 
-_lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
+# CONTINUATIONS ARE FOLDED FIRST, by a stage of their own. The corpus wraps
+# arms across lines, and a line-by-line reader sees `&& echo "smaller"`
+# without the `|| echo "UNCHANGED ($ROWS_AFTER of $ROWS_BEFORE)"` that
+# follows it. So four arms that DO carry their values read as though they
+# discard them. Measured: 65 sites before folding, 61 after.
+#
+# A line that ends in `\` is joined to the next. A line whose CODE ends in
+# `&&` or `||` INSIDE A `$(` THAT IS STILL OPEN is joined to the next too, as
+# bash does, with a space between (#1997). Code means the line without its
+# comment, with quoted text hidden. So `echo x # note ||` and `note="a &&`
+# are not joined: bash does not continue either one.
+#
+# ONLY INSIDE AN OPEN `$(` (#2022 review, round 2). An arm split after `&&`
+# always leaves its `$(` open, so that is the only place a join is needed.
+# Joining after a top-level `&&` hid or renamed arms that main read: the
+# rules take the name from the first `"` on a line, the arm from the last
+# `$([`, and "carries a value" from a `$` after it. So `[ -n "$X" ] &&` lent
+# the arm below it the name `$X`, and an arm whose line ended in `&&` was
+# hidden by a carrying arm, an assignment or an `echo "$a"` on the next line.
+# code_of reports the depth of `$(` it ended at in CD, and the join stops
+# when CD is 0. A `(` or `)` outside a `$(` does not change the depth, so a
+# subshell or a `case` branch is not read as an open substitution.
+#
+# THE OPEN `$(` MUST BE THE ARM'S (#2022 review, round 3). A line can hold a
+# whole arm and then open a second `$(` that ends in `&&` or `||`, as in
+# `check "x" "$([ … ] && echo yes || echo no)" "yes"; got=$(f &&`. That open
+# `$(` is not the arm's. Joining the next line there let a `$([` on it take
+# the arm's place, so the arm main read was hidden. code_of sets CC when a
+# `$(` closed back to the top level earlier on the line, and the join stops
+# when CC is set. A chain on such a line is then read one line at a time, as
+# the base read it.
+#
+# INSIDE THE `$(`, THE JOIN READS COMMENTS AS BASH DOES. A comment line is
+# skipped, and a comment at the end of a joined line is cut off before the
+# next line is added. A comment that quoted an arm was refused before
+# (#1255), and a comment line used to stop the join, which hid the rest of a
+# chained arm. THE NEXT LINE IS NOT JOINED WHEN IT HOLDS A RECORDER CALL, by
+# the same pattern the rules use to find one. That call is an arm of its own
+# and keeps its own name. The join needs to look one line ahead, which a
+# single awk with `getline` cannot undo, so this stage reads the whole file
+# first.
+_lam_join() {  # _lam_join FILE -> FILE with its continued lines folded
 	awk '
+		# THE CODE OF s: its comment cut off, and every character inside
+		# quotes or backticks replaced by `_`, one for one, so the code is
+		# as long as the part of s before the comment. A `$(...)` stays
+		# code, so the `&&` that ends `"$([ "$a" -gt 0 ] &&` still counts. A
+		# `#` starts a comment only at the start of a word, so `$#` and
+		# `${#x}` do not. It sets CD to the depth of `$(` still open where
+		# the code ends, and CC to 1 when a `$(` closed back to depth 0
+		# before that.
+		function code_of(s,   n, i, ch, d, q, bt, out, cl) {
+			n = length(s); out = ""; d = 0; q[0] = ""; bt = 0; cl = 0
+			for (i = 1; i <= n; i++) {
+				ch = substr(s, i, 1)
+				if (q[d] == "\047") {
+					if (ch == "\047") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\\" && i < n) { out = out "__"; i++; continue }
+				if (bt) { if (ch == "`") bt = 0; out = out "_"; continue }
+				if (ch == "`") { bt = 1; out = out "_"; continue }
+				if (ch == "$" && substr(s, i + 1, 1) == "(") {
+					d++; q[d] = ""; out = out "$("; i++; continue
+				}
+				if (q[d] == "\"") {
+					if (ch == "\"") q[d] = ""
+					out = out "_"; continue
+				}
+				if (ch == "\"" || ch == "\047") { q[d] = ch; out = out "_"; continue }
+				if (ch == "#" && (out == "" || substr(out, length(out), 1) ~ /[[:space:];&|()]/)) { CD = d; CC = cl; return out }
+				if (d > 0 && ch == "(") { d++; q[d] = "" }
+				if (d > 0 && ch == ")") { d--; if (d == 0) cl = 1 }
+				out = out ch
+			}
+			CD = d; CC = cl; return out
+		}
+		{ L[++n] = $0 }
+		END {
+			for (i = 1; i <= n; ) {
+				line = L[i++]
+				while (i <= n) {
+					if (line ~ /\\$/) {
+						sub(/\\$/, " ", line); line = line L[i++]; continue
+					}
+					c = code_of(line)
+					if (c !~ /(&&|\|\|)[[:space:]]*$/ || CD == 0 || CC) break
+					if (L[i] ~ /^[[:space:]]*#/) { i++; continue }
+					if (L[i] ~ /(^|[[:space:]])(check|check_num|check_text|check_ratio|pgc_fail|check_skip)[[:space:]]+"/) break
+					line = substr(line, 1, length(c)) " " L[i++]
+				}
+				print line
+			}
+		}
+	' "$1"
+}
+
+_lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
+	_lam_join "$1" | awk '
 		# HIDE WHAT IS QUOTED OR SUBSTITUTED (#1986). Returns s with every
 		# character inside quotes, a `$(...)` or a backtick replaced by `_`,
 		# so the result has the same length and its positions match s. A
@@ -326,13 +424,17 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			return 0
 		}
 		# ONE REDIRECT PATTERN, used by every rule that strips one (#1980,
-		# #1989). A target is a quoted string, in double or single quotes,
-		# which may hold a space, or a word that stops at a space, `&`, `|`,
-		# `;` or `)`. The operator may end in `&` (`2>&1`) or in `|` (the
-		# noclobber `>|x`). Single quotes and `>|` hid the arm before (#1995
-		# review round 4).
+		# #1989). A target is any run of bare characters and quoted parts, in
+		# double or single quotes, and a quoted part may hold a space. A bare
+		# character is anything but a space, `&`, `|`, `;`, `)` or a quote.
+		# The operator may end in `&` (`2>&1`) or in `|` (the noclobber
+		# `>|x`). Single quotes and `>|` hid the arm before (#1995 review
+		# round 4). So did a bare or quoted part joined to a second quoted
+		# part that holds a space, as in `2>x"y z"`, and an ANSI-C quoted
+		# target. The target used to be one quoted part with a bare suffix,
+		# or one bare word (#2019).
 		BEGIN {
-			RD = "((&|[0-9]*)[<>]+[&|]?[[:space:]]*(\"[^\"]*\"[^[:space:]&|;)]*|\047[^\047]*\047[^[:space:]&|;)]*|[^[:space:]&|;)]*)[[:space:]]*)*"
+			RD = "((&|[0-9]*)[<>]+[&|]?[[:space:]]*([^[:space:]&|;)\"\047]|\"[^\"]*\"|\047[^\047]*\047)*[[:space:]]*)*"
 		}
 		# WHERE THE LAST MATCH OF re STARTS IN s, or 0. The rules take the LAST
 		# `$([`, so `$([ "$(wc -l < f)" -ge 20 ] ...)` reads the outer test.
@@ -350,19 +452,23 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# `test` ends at the first `&`, `|`, `;`, `<` or `>` that is not
 		# quoted or inside a substitution, so `test "$(wc -l < f)" -ge 20`
 		# is read whole. A trailing file descriptor such as the `2` of
-		# `2>x` goes back to REST. `[` and `[[` still end at the first raw
-		# `]`, which hides seven live lossy arms (#2002). KNOWN LIMIT: a
-		# redirect between the operands, as in `test "$a" -le 2>x "$b"`,
-		# hides the arm. No arm in the tree holds one.
-		function split_test(s) {
+		# `2>x` goes back to REST. `[` and `[[` end at the first `]` that is
+		# not quoted or inside a substitution, so `[ "${sizes[5]}" -le 3 ]`
+		# is read whole. They ended at the first `]` anywhere, which hid
+		# seven live lossy arms in six suites (#2002). KNOWN LIMITS, and no
+		# arm in the tree holds either: a redirect between the operands, as
+		# in `test "$a" -le 2>x "$b"`, hides the arm; and an unquoted array
+		# element such as `[ ${s[5]} -le 3 ]` still ends the test early.
+		function split_test(s,   m) {
 			sub(/^[[:space:]]*/, "", s)
-			if (match(s, /^\[\[[^]]*\]\]/)) {
+			m = mask(s)
+			if (match(m, /^\[\[[^]]*\]\]/)) {
 				T = substr(s, 3, RLENGTH - 4); REST = substr(s, RLENGTH + 1); return 1
 			}
-			if (match(s, /^\[[^]]*\]/)) {
+			if (match(m, /^\[[^]]*\]/)) {
 				T = substr(s, 2, RLENGTH - 2); REST = substr(s, RLENGTH + 1); return 1
 			}
-			if (match(mask(s), /^test[[:space:]][^&|;<>]*/)) {
+			if (match(m, /^test[[:space:]][^&|;<>]*/)) {
 				T = substr(s, 5, RLENGTH - 4); REST = substr(s, RLENGTH + 1)
 				if (REST ~ /^[<>]/ && match(T, /[[:space:]][0-9]+$/)) {
 					REST = substr(T, RSTART + 1) REST; T = substr(T, 1, RSTART)
@@ -371,18 +477,26 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			}
 			return 0
 		}
-		# CONTINUATIONS ARE FOLDED FIRST. The corpus wraps these arms across
-		# lines, and a line-by-line reader sees `&& echo "smaller"` without the
-		# `|| echo "UNCHANGED ($ROWS_AFTER of $ROWS_BEFORE)"` that follows it --
-		# so four arms that DO carry their values read as though they discard
-		# them. Measured: 65 sites before folding, 61 after.
-		{
-			line = $0
-			while (line ~ /\\$/ && (getline nxt) > 0) {
-				sub(/\\$/, " ", line)
-				line = line nxt
+		# WHAT FOLLOWS A TEST, WITH ITS REDIRECTS AND ANY TESTS CHAINED AFTER
+		# IT TAKEN OFF (#1997). `[ A ] && [ B ] && echo yes || echo no` is a
+		# compound too: `no` does not say which test failed. The rules read
+		# only the first test, so the text after it began `&& [`, not `&&
+		# echo`, and the arm was never examined. In the if/then/else form the
+		# second test was read as part of the branches, and its `$` excused
+		# the arm. A test chained by `&&` or `||`, in any of the three
+		# spellings, is now taken off, and CHAINED says one was. Returns the
+		# rest, which starts at the branches.
+		function after_test(a) {
+			CHAINED = 0
+			sub("^[[:space:]]*" RD, "", a)
+			while (a ~ /^(&&|\|\|)[[:space:]]*(\[|test[[:space:]])/ && split_test(substr(a, 3))) {
+				CHAINED = 1; a = REST
+				sub("^[[:space:]]*" RD, "", a)
 			}
+			return a
 		}
+		# Each record is one line as _lam_join folded it.
+		{ line = $0 }
 		# A WHOLE-LINE COMMENT IS NOT CODE (#1255). A comment QUOTING the
 		# anti-pattern supplied a real match, and the missing recorder conjunct
 		# below then gave it the name of whatever arm preceded it -- so a file
@@ -461,20 +575,37 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		#     review).
 		#   - `[ ""0 -lt "$x" ]` means `[ 0 -lt "$x" ]` but is refused, because
 		#     the mirrored excuse allows at most one quote on each side.
-		#   - A redirect target that joins a bare word or a quoted part to a
-		#     second quoted part holding a space, as in `2>x"y z"`, hides the
-		#     arm. So does the same shape in single quotes, and an ANSI-C
-		#     quoted target. (This comment sits inside a single-quoted awk
-		#     program, so it cannot spell those.) Main has the same limit.
-		#     It is #2019.
+		#   - A chained test after a `!`, as in `[ A ] && ! [ B ] && echo
+		#     yes || echo no`, is not read, so the arm is not examined.
+		#   - A line is joined to the next only after `\`, `&&` or `||`. An
+		#     arm split after a `|` or inside quotes is read as two lines.
+		#   - _lam_join reads one line at a time for quotes and does not know
+		#     here-docs. So a line in the middle of a multi-line string, or in
+		#     a here-doc body, that holds an open `$(` and ends in `&&` or
+		#     `||` is still joined to the next line, unless that line holds a
+		#     recorder call. Main joined no line after `&&` or `||` at all.
+		#   - A line where a `$(` closed back to the top level before the
+		#     open one is not joined, so a chain split after `&&` on it, as in
+		#     `check "rows $(n)" "$([ … ] &&`, is read one line at a time.
+		#     The base read every chain that way.
+		#   - Inside an open `$(`, a recorder call whose name is not a quoted
+		#     string, as in `check $v`, does not stop the join, so its arm is
+		#     reported under the name of the line above. A recorder call glued
+		#     to a `;` or `{` is not read as one, here or by the rules.
+		#   - A trailing `\` is joined before the comment is cut, so `# c \`
+		#     pulls in the next line. Main has the same behaviour.
+		#   - A redirect into a substitution, as in `2>$(mktemp)`, hides the
+		#     arm: the target stops at the `)`. Main has the same limit.
+		#   - A `[[ ]]` with an unquoted regex that holds a bracket class, as
+		#     in `[[ "$a" =~ ^[0-9]+$ ]]`, ends at the `]` of the class, so an arm
+		#     in that shape is not examined. Main has the same limit. It is #2027.
 		#
 		# THREE SPELLINGS OF THE TEST (#1986): `[ ... ]`, `[[ ... ]]` and
 		# `test ...`. Only the first was read, so the other two hid a lossy arm.
 		(p = last_at(line, "\\$\\([[:space:]]*(\\[|test[[:space:]])")) {
 			arms = ""
 			if (split_test(substr(line, p + 2))) {
-				arms = REST
-				sub("^[[:space:]]*" RD, "", arms)
+				T1 = T; arms = after_test(REST)
 				# THE ARM ENDS WHERE ITS SUBSTITUTION CLOSES (#2012). A `$` in a
 				# later argument, as in `... || echo no)" "$(want)"`, is not in a
 				# branch, so it must not excuse the arm. The text after the test
@@ -482,6 +613,8 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 				# reports where that level closes. A `)` in quotes or in a
 				# subshell does not close it. A line that never closes it, such
 				# as an arm that goes on after `||` on the next line, is kept.
+				# The cut runs after after_test(), which calls mask() itself
+				# and so resets SHUT, and before the branches are read.
 				mask("$(" arms)
 				if (SHUT) arms = substr(arms, 1, SHUT - 3)
 			}
@@ -491,7 +624,7 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			if (arms ~ /^&&[[:space:]]*(echo|printf)/) {
 				# (b) a branch that interpolates carries the value already.
 				if (arms ~ /\$/) next
-				if (determinate(T)) next
+				if (!CHAINED && determinate(T1)) next
 				if (name != "") print suite "\t" name
 			}
 		}
@@ -518,18 +651,17 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 			# THE REDIRECT IS STRIPPED HERE TOO (#1980), by the same pattern as
 			# the `[` rule. Without it, `if [ ... ] 2>"$LOG"; then echo 1; else
 			# echo 0; fi` reads as carrying its value, because of the `$`.
-			iarms = REST
-			sub("^[[:space:]]*" RD, "", iarms)
+			T1 = T; iarms = after_test(REST)
 			sub(/^;?[[:space:]]*/, "", iarms)
 			sub(/[[:space:]]*fi[[:space:]]*\).*$/, "", iarms)
 			# EITHER BRANCH MAY BE `printf` (#2011), as in the `[` rule.
 			if (iarms !~ /then[[:space:]]*(echo|printf)/) next
 			if (iarms !~ /else[[:space:]]*(echo|printf)/) next
 			if (iarms ~ /\$/) next
-			if (determinate(T)) next
+			if (!CHAINED && determinate(T1)) next
 			if (name != "") print suite "\t" name
 		}
-	' suite="$(basename "${1%.sh}")" "$1"
+	' suite="$(basename "${1%.sh}")"
 }
 
 # AND THE SAME RULE OVER AN AWK-RENDERED VERDICT (#1174). A separate fixture, so
@@ -540,6 +672,17 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 # value. An awk program written in DOUBLE quotes carries `$LO` in its CONDITION
 # and constants in its branches -- `print ($LO * 8 <= $HI) ? 1 : 0` -- so a test
 # for `$` anywhere excuses the whole family. The branches are what must be read.
+#
+# THE ARMS FROM `determinate: an awk exit status against nothing` TO THE END
+# PIN THE OLDER PATTERNS (#2006). A mutant sweep weakened and widened each
+# piece of the regular expressions that read an awk verdict: the comparison
+# count, the `> 0` and `>= 1` excuses, the strip after `print`, both branches
+# of the ternary and the recorder names. 121 changes to the older patterns of
+# this sweep stayed green. Each arm here makes at least one of them fail a
+# control. The `not this shape:` arm is a helper whose name only ends in
+# `check`, so it is not a recorder. KNOWN LIMIT: a branch written as a number
+# with no digit before or after its point, such as `.5` or `1.`, is read as
+# carrying a value. No arm in the tree holds one.
 _lam_probe_awk="$PGC_WORKDIR/lam_probe_awk.sh"
 cat > "$_lam_probe_awk" <<'PROBE'
 check "an awk verdict whose operands vanish" \
@@ -550,6 +693,56 @@ check "determinate: an awk count against nothing" \
 	"$(awk -v n="$SEEN" 'BEGIN{ print (n > 0) ? "some" : "none" }')" "some"
 check "carried: the awk branch names the number" \
 	"$(awk -v n="$n" 'BEGIN{ print (n >= 5) ? "yes" : "no (found " n ")" }')" "yes"
+check "determinate: an awk exit status against nothing" \
+	"$(awk -v n="$SEEN" 'BEGIN{ exit n > 0 ? 0 : 1 }')" "1"
+check "determinate: an awk count against nothing in double parentheses" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print ((n > 0)) ? "some" : "none" }')" "1"
+check "determinate: an awk count against nothing joined to its question mark" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print (n > 0)? "some" : "none" }')" "1"
+check "determinate: an awk count against nothing with two spaces before its question mark" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print (n > 0)  ? "some" : "none" }')" "1"
+check "determinate: an awk inequality" \
+	"$(awk -v s="$S" 'BEGIN{ print (s != "") ? "set" : "unset" }')" "1"
+check "an awk compound whose first half is a less-than" \
+	"$(awk -v a="$A" -v b="$B" -v n="$N" 'BEGIN{ print (a < b && n > 0) ? 1 : 0 }')" "1"
+check "determinate: an awk floor of one" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print (n >= 1) ? "some" : "none" }')" "1"
+check "determinate: an awk floor of one written without a space" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print (n >=1) ? "some" : "none" }')" "1"
+check "determinate: an awk floor of one with two spaces" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print (n >=  1) ? "some" : "none" }')" "1"
+check "an awk verdict whose question mark is joined to its branch" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ?"yes" : "no" }')" "1"
+check "an awk verdict with two spaces after its question mark" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ?  "yes" : "no" }')" "1"
+check "an awk verdict with two empty branches" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? "" : "" }')" "1"
+check "an awk verdict rendered as two-digit numbers" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 10 : 25 }')" "1"
+check "an awk verdict rendered as decimals" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1.25 : 0.75 }')" "1"
+check "an awk verdict whose colon is joined to its first branch" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1: 0 }')" "1"
+check "an awk verdict with two spaces around its colon" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1  :  0 }')" "1"
+check "an awk verdict whose colon is joined to its second branch" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 :0 }')" "1"
+check "an awk verdict that ends in a parenthesis" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print ((a <= b) ? 1 : 0) }')" "1"
+check "determinate: an awk count against nothing with no space after print" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print(n>0) ? "some" : "none" }')" "1"
+check "determinate: an awk count against nothing whose name holds a less-than, a < b" \
+	"$(awk -v n="$SEEN" 'BEGIN{ print(n > 0) ? "some" : "none" }')" "1"
+check_ratio "an awk verdict recorded by check_ratio" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 : 0 }')" "1"
+pgc_fail "an awk verdict recorded by pgc_fail" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 : 0 }')" "1"
+check_skip "an awk verdict recorded by check_skip" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 : 0 }')" "1"
+precheck "not this shape: an awk verdict handed to a helper whose name ends in check" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 : 0 }')" "1"
+check  "an awk verdict recorded with two spaces before its name" \
+	"$(awk -v a="$A" -v b="$B" 'BEGIN{ print (a <= b) ? 1 : 0 }')" "1"
 PROBE
 
 _lam_probe_hits="$(_lam_sweep "$_lam_probe" | wc -l | tr -d ' ')"
@@ -564,11 +757,11 @@ check_text "control: a determinate or carrying arm is not swept up" \
 
 _lam_awk_hits="$(_lam_sweep "$_lam_probe_awk" | wc -l | tr -d ' ')"
 check "control: the sweep sees an awk verdict that discards its operands" \
-	"$_lam_awk_hits" "2"
+	"$_lam_awk_hits" "16"
 
-_lam_awk_names="$(_lam_sweep "$_lam_probe_awk" | cut -f2 | sort | tr '\n' ';')"
+_lam_awk_names="$(_lam_sweep "$_lam_probe_awk" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a determinate or carrying awk arm is not swept up" \
-	"$_lam_awk_names" "an awk verdict rendered as a number;an awk verdict whose operands vanish;"
+	"$_lam_awk_names" "an awk compound whose first half is a less-than;an awk verdict recorded by check_ratio;an awk verdict recorded by check_skip;an awk verdict recorded by pgc_fail;an awk verdict recorded with two spaces before its name;an awk verdict rendered as a number;an awk verdict rendered as decimals;an awk verdict rendered as two-digit numbers;an awk verdict that ends in a parenthesis;an awk verdict whose colon is joined to its first branch;an awk verdict whose colon is joined to its second branch;an awk verdict whose operands vanish;an awk verdict whose question mark is joined to its branch;an awk verdict with two empty branches;an awk verdict with two spaces after its question mark;an awk verdict with two spaces around its colon;"
 
 _lam_ifs_hits="$(_lam_sweep "$_lam_probe_ifs" | wc -l | tr -d ' ')"
 check "control: the sweep sees a shell if/then/else that discards its operand" \
@@ -605,6 +798,11 @@ check_text "control: the carve-outs hold and the innocent arm above the helper i
 # green. Some of them hold tabs, because the rules accept `[[:space:]]` on
 # purpose and nothing else pinned that.
 #
+# THE ARMS FROM `a threshold behind a redirect into a word joined to a
+# single-quoted part with a space` TO THE END are targets made of more than one
+# part, where a later part is quoted and holds a space, and an ANSI-C quoted
+# target. Each hid the arm, because the target stopped at the space (#2019).
+#
 # THE ARM ENDS WHERE ITS SUBSTITUTION CLOSES (#2012). A `$` in a later
 # argument, as in `"$(want)"`, or straight after the `)` in the same argument,
 # is not in a branch, so it does not excuse the arm. An arm that goes on after
@@ -615,7 +813,7 @@ check_text "control: the carve-outs hold and the innocent arm above the helper i
 # value but is excused, as on main. It pins that the cut keeps the last
 # character before the `)` (#2020 review).
 #
-# The `not this shape:` arms (four here, eight in the next probe) are not this
+# The `not this shape:` arms (four here, ten in the next probe) are not this
 # rule's shape: a test piped into `cat` or `echo`, or sent to the background.
 # In the two `| cat` arms the `&&` reads `cat`'s status. In the `|&` and `&`
 # arms `echo` runs whatever the test says. Either way the test's result is
@@ -763,13 +961,35 @@ check "a threshold whose substitution is followed by a variable in the same argu
 	"$([ "$a" -le "$b" ] && echo yes || echo no)$x" "yes"
 check "known limit: a branch that ends in a literal dollar sign" \
 	"$([ "$a" -le "$b" ] && echo yes || echo no$)" "yes"
+check "a threshold behind a redirect into a word joined to a single-quoted part with a space" \
+	"$([ "$a" -le "$b" ] 2>x'y z' && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a word joined to a double-quoted part with a space" \
+	"$([ "$a" -le "$b" ] 2>x"y z" && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into an ANSI-C quoted path with a space" \
+	"$([ "$a" -le "$b" ] 2>$'a b' && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into two single-quoted parts, the second with a space" \
+	"$([ "$a" -le "$b" ] >'a''b c' && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a single-quoted part joined to a double-quoted part with a space" \
+	"$([ "$a" -le "$b" ] 2>'a b'"c d" && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold behind a redirect into an ANSI-C quoted path with a space" \
+	"$(if [ "$a" -le "$b" ] 2>$'a b'; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold behind a redirect into a word joined to a double-quoted part with a space" \
+	"$(if [ "$a" -le "$b" ] 2>x"y $z"; then echo 1; else echo 0; fi)" "1"
+check "a threshold behind a redirect into a path that holds the digits four and seven" \
+	"$([ "$a" -le "$b" ] 2>/tmp/x47 && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a single-quoted path that holds the digits four and seven" \
+	"$([ "$a" -le "$b" ] 2>'a 47' && echo yes || echo no)" "yes"
+check "a threshold behind a redirect into a single-quoted path, before a single-quoted want" \
+	"$([ "$a" -le "$b" ] 2>'a b' && echo yes || echo no)" 'yes'
+check "a threshold behind a redirect into a single-quoted path that holds a dollar, an underscore and a double quote" \
+	"$([ "$a" -le "$b" ] 2>'$d_"b' && echo yes || echo no)" "yes"
 PROBE
 # SORTED IN THE C LOCALE. A locale-aware sort ignores spaces, so it puts
 # `an if/then/else ...` before `a threshold ...` and the order would depend on
 # the runner. Measured: as root on PG15 the names came out in the other order.
 _lam_redir_names="$(_lam_sweep "$_lam_probe_redir" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep sees an arm behind a redirect and a floor of two" \
-	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold before a later argument that holds a substitution;a threshold behind a dup and a redirect into a variable;a threshold behind a dup joined to an unspaced and;a threshold behind a noclobber redirect;a threshold behind a quoted redirect joined to an unspaced and;a threshold behind a redirect into a bare variable;a threshold behind a redirect into a path with an underscore;a threshold behind a redirect into a quoted path that holds an and and angle brackets;a threshold behind a redirect into a quoted path with a space and two suffixes;a threshold behind a redirect into a quoted path with a space, an underscore and a digit;a threshold behind a redirect into a single-quoted path that holds an and and angle brackets;a threshold behind a redirect into a single-quoted path with a space;a threshold behind a redirect into a single-quoted path with a space and a double-quoted suffix;a threshold behind a redirect into a single-quoted path with a space and a suffix;a threshold behind a redirect into a variable;a threshold behind a redirect into a word with a quoted suffix;a threshold behind a redirect joined to an unspaced and;a threshold behind a redirect with two spaces before its target;a threshold behind a redirect with two spaces before the and;a threshold behind a single-quoted redirect joined to an unspaced and;a threshold behind a spaced appending redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind a two-digit descriptor;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind an input redirect;a threshold behind two redirects;a threshold joined to an unspaced echo;a threshold spaced with tabs;a threshold whose else branch is on the next line;a threshold whose no branch redirects;a threshold whose substitution is followed by a variable in the same argument;a threshold with two spaces before the bracket;a threshold with two spaces before the echo;an if/then/else test-builtin threshold behind an unspaced redirect into a variable;an if/then/else threshold before a comment that holds the word if;an if/then/else threshold before a later substitution that holds an if;an if/then/else threshold before a negated if;an if/then/else threshold before an if on a helper whose name starts with test;an if/then/else threshold behind a doubly spaced redirect into a variable;an if/then/else threshold behind a quoted redirect joined to an unspaced then;an if/then/else threshold behind a redirect into a single-quoted path with a space;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a redirect joined to an unspaced then;an if/then/else threshold behind a single-quoted redirect joined to an unspaced then;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;an if/then/else threshold behind an unspaced redirect into a variable;an if/then/else threshold spaced with tabs;an if/then/else threshold with a space before the if;an if/then/else threshold with an elif;an if/then/else threshold with two spaces after the if;an if/then/else threshold with two spaces before the if;"
+	"$_lam_redir_names" "a count above one;a count above one behind a redirect;a floor of zero;a threshold before a later argument that holds a substitution;a threshold behind a dup and a redirect into a variable;a threshold behind a dup joined to an unspaced and;a threshold behind a noclobber redirect;a threshold behind a quoted redirect joined to an unspaced and;a threshold behind a redirect into a bare variable;a threshold behind a redirect into a path that holds the digits four and seven;a threshold behind a redirect into a path with an underscore;a threshold behind a redirect into a quoted path that holds an and and angle brackets;a threshold behind a redirect into a quoted path with a space and two suffixes;a threshold behind a redirect into a quoted path with a space, an underscore and a digit;a threshold behind a redirect into a single-quoted part joined to a double-quoted part with a space;a threshold behind a redirect into a single-quoted path that holds a dollar, an underscore and a double quote;a threshold behind a redirect into a single-quoted path that holds an and and angle brackets;a threshold behind a redirect into a single-quoted path that holds the digits four and seven;a threshold behind a redirect into a single-quoted path with a space;a threshold behind a redirect into a single-quoted path with a space and a double-quoted suffix;a threshold behind a redirect into a single-quoted path with a space and a suffix;a threshold behind a redirect into a single-quoted path, before a single-quoted want;a threshold behind a redirect into a variable;a threshold behind a redirect into a word joined to a double-quoted part with a space;a threshold behind a redirect into a word joined to a single-quoted part with a space;a threshold behind a redirect into a word with a quoted suffix;a threshold behind a redirect into an ANSI-C quoted path with a space;a threshold behind a redirect into two single-quoted parts, the second with a space;a threshold behind a redirect joined to an unspaced and;a threshold behind a redirect with two spaces before its target;a threshold behind a redirect with two spaces before the and;a threshold behind a single-quoted redirect joined to an unspaced and;a threshold behind a spaced appending redirect into a variable;a threshold behind a spaced redirect;a threshold behind a spaced redirect into a variable;a threshold behind a stderr redirect;a threshold behind a two-digit descriptor;a threshold behind an and-redirect;a threshold behind an and-redirect into a variable;a threshold behind an input redirect;a threshold behind two redirects;a threshold joined to an unspaced echo;a threshold spaced with tabs;a threshold whose else branch is on the next line;a threshold whose no branch redirects;a threshold whose substitution is followed by a variable in the same argument;a threshold with two spaces before the bracket;a threshold with two spaces before the echo;an if/then/else test-builtin threshold behind an unspaced redirect into a variable;an if/then/else threshold before a comment that holds the word if;an if/then/else threshold before a later substitution that holds an if;an if/then/else threshold before a negated if;an if/then/else threshold before an if on a helper whose name starts with test;an if/then/else threshold behind a doubly spaced redirect into a variable;an if/then/else threshold behind a quoted redirect joined to an unspaced then;an if/then/else threshold behind a redirect into a single-quoted path with a space;an if/then/else threshold behind a redirect into a variable;an if/then/else threshold behind a redirect into a word joined to a double-quoted part with a space;an if/then/else threshold behind a redirect into an ANSI-C quoted path with a space;an if/then/else threshold behind a redirect joined to an unspaced then;an if/then/else threshold behind a single-quoted redirect joined to an unspaced then;an if/then/else threshold behind a spaced redirect into a variable;an if/then/else threshold behind an and-redirect into a variable;an if/then/else threshold behind an unspaced redirect into a variable;an if/then/else threshold spaced with tabs;an if/then/else threshold with a space before the if;an if/then/else threshold with an elif;an if/then/else threshold with two spaces after the if;an if/then/else threshold with two spaces before the if;"
 
 # THREE MORE SPELLINGS OF A TEST (#1986). The rules read only `[ ... ]`, so a
 # lossy arm written as `[[ ... ]]` or with the `test` builtin was never seen.
@@ -791,6 +1011,19 @@ check_text "control: the sweep sees an arm behind a redirect and a floor of two"
 # the end pin the mirrored excuses, the `test` end, the `[[ ]]` end and the
 # file descriptor that `2>x` hands back to the redirect, as the mutant sweep
 # above found missing (#1995 review rounds 3 and 4).
+#
+# A `]` INSIDE QUOTES OR A SUBSTITUTION DOES NOT END THE TEST (#2002). The
+# arms from `a threshold over array elements whose subscripts hold a bracket`
+# to the end hold one, as in `"${s[5]}"` or `"$(grep -c '[x]' "$f")"`. The test
+# ended at that `]`, so the rest of it read as the text after the test and the
+# arm was never examined. Seven live arms in six suites hid this way.
+#
+# THE ARMS FROM `determinate: a writable-file test` TO `a threshold behind a
+# redirect joined to the bracket`, AND THOSE AFTER THE BRACKET ARMS, PIN THE
+# OLDER PATTERNS (#2006): every unary flag, spacing and tabs in the excuses, a
+# quoted floor, each recorder name in the `[` and if/then/else rules, an
+# indented recorder, and the strip of what follows `fi)`. A mutant sweep found
+# each piece could change while every control stayed green.
 #
 # A BRANCH MAY BE WRITTEN WITH `printf` (#2011). `&& printf yes || echo no`
 # prints only `no` on failure, as `echo` does, and so does an if/then/else whose
@@ -943,10 +1176,134 @@ check_num "not this shape: an if/then/else threshold whose then branch is cat" \
 	"$(if [ "$a" -le "$b" ]; then cat out.log; else echo 0; fi)" "1"
 check_num "not this shape: an if/then/else threshold whose else branch is cat" \
 	"$(if [ "$a" -le "$b" ]; then echo 1; else cat out.log; fi)" "1"
+check "a threshold over array elements whose subscripts hold a bracket" \
+	"$([ "${s[5]}" -le "${s[2]}" ] && echo yes || echo no)" "yes"
+check "a double-bracket threshold over array elements whose subscripts hold a bracket" \
+	"$([[ "${s[5]}" -le "${s[2]}" ]] && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold over array elements whose subscripts hold a bracket" \
+	"$(if [ "${s[5]}" -le "${s[2]}" ]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else double-bracket threshold over array elements whose subscripts hold a bracket" \
+	"$(if [[ "${s[5]}" -le "${s[2]}" ]]; then echo 1; else echo 0; fi)" "1"
+check "a floor over a quoted count of a bracket class" \
+	"$([ "$(grep -c '[[:space:]]' "$f")" -ge 2 ] && echo yes || echo no)" "yes"
+check "a floor over an unquoted count of a bracket class" \
+	"$([ $(grep -c '[x]' "$f") -ge 2 ] && echo yes || echo no)" "yes"
+check "a floor over a backtick count of a bracket class" \
+	"$([ `grep -c '[x]' "$f"` -ge 2 ] && echo yes || echo no)" "yes"
+check "a double-bracket floor over a count of a bracket class" \
+	"$([[ "$(grep -c '[^_[:alnum:]]' "$f")" -ge 3 ]] && echo yes || echo no)" "yes"
+check "determinate: a count against nothing over an array element whose subscript holds a bracket" \
+	"$([ "${s[1]}" -gt 0 ] && echo yes || echo no)" "yes"
+check "carried: a branch names array elements whose subscripts hold a bracket" \
+	"$([ "${s[5]}" -le "${s[2]}" ] && echo yes || echo "no (${s[5]} > ${s[2]})")" "yes"
+check "determinate: a writable-file test" \
+	"$([ -w "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a symbolic-link test" \
+	"$([ -h "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a named-pipe test" \
+	"$([ -p "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a socket test" \
+	"$([ -S "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a block-device test" \
+	"$([ -b "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a character-device test" \
+	"$([ -c "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a set-group-id test" \
+	"$([ -g "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a sticky-bit test" \
+	"$([ -k "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a set-user-id test" \
+	"$([ -u "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a group-owner test" \
+	"$([ -G "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a negated file test with two spaces before the bang" \
+	"$([  ! -f "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a negated file test with two spaces after the bang" \
+	"$([ !  -f "$f" ] && echo yes || echo no)" "yes"
+check "determinate: a double-bracket equality written with two equals signs" \
+	"$([[ "$a" == "$b" ]] && echo yes || echo no)" "yes"
+check "determinate: a count against nothing with two spaces before the zero" \
+	"$([ "$rows" -gt  0 ] && echo yes || echo no)" "yes"
+check "determinate: a count against nothing with two spaces before the bracket" \
+	"$([ "$rows" -gt 0  ] && echo yes || echo no)" "yes"
+check "determinate: a test-builtin count against nothing joined to an unspaced and" \
+	"$(test "$rows" -gt 0&& echo yes || echo no)" "yes"
+check "determinate: a floor of one with two spaces before the one" \
+	"$([ "$rows" -ge  1 ] && echo yes || echo no)" "yes"
+check "determinate: a quoted floor of one" \
+	"$([ "$rows" -ge "1" ] && echo yes || echo no)" "yes"
+check "determinate: a double-bracket quoted floor of one" \
+	"$([[ "$rows" -ge "1" ]] && echo yes || echo no)" "yes"
+check_text "a threshold recorded by check_text" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check_ratio "a threshold recorded by check_ratio" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+pgc_fail "a threshold recorded by pgc_fail" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check_skip "a threshold recorded by check_skip" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check  "a threshold recorded with two spaces before its name" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "an if/then/else threshold recorded by check" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_text "an if/then/else threshold recorded by check_text" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_ratio "an if/then/else threshold recorded by check_ratio" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+pgc_fail "an if/then/else threshold recorded by pgc_fail" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_skip "an if/then/else threshold recorded by check_skip" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_num  "an if/then/else threshold recorded with two spaces before its name" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+	check_num "an if/then/else threshold recorded from an indented line" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else threshold with two spaces before each echo" \
+	"$(if [ "$a" -le "$b" ]; then  echo 1; else  echo 0; fi)" "1"
+check_num "an if/then/else threshold joined to fi, before a later substitution" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0;fi)" "$(want)"
+check_num "an if/then/else threshold with a space after fi, before a later substitution" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi )" "$(want)"
+check_num "carried: an if/then/else whose carrying branch is joined to fi" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo "0 ($a)";fi)" "1"
+check "a threshold behind a redirect joined to the bracket" \
+	"$([ "$a" -le "$b" ]>/dev/null && echo yes || echo no)" "yes"
+precheck "not this shape: a threshold handed to a helper whose name ends in check" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+precheck "not this shape: an if/then/else threshold handed to a helper whose name ends in check" \
+	"$(if [ "$a" -le "$b" ]; then echo 1; else echo 0; fi)" "1"
+check "a threshold over bare variables" \
+	"$([ $a -le $b ] && echo yes || echo no)" "yes"
+check "a double-bracket threshold over bare variables" \
+	"$([[ $a -le $b ]] && echo yes || echo no)" "yes"
+check "a double-bracket string order by less-than" \
+	"$([[ "$a" < "$b" ]] && echo yes || echo no)" "yes"
+check "a string order by an escaped less-than" \
+	"$([ "$a" \< "$b" ] && echo yes || echo no)" "yes"
+check "a string order by an escaped greater-than" \
+	"$([ "$a" \> "$b" ] && echo yes || echo no)" "yes"
+check "determinate: a negated file test spaced with tabs" \
+	"$([	!	-f	"$f"	] && echo yes || echo no)" "yes"
+check "determinate: an equality spaced with tabs" \
+	"$([	"$a"	=	"$b"	] && echo yes || echo no)" "yes"
+check "determinate: a numeric equality" \
+	"$([ "$n" -eq 3 ] && echo yes || echo no)" "yes"
+check "determinate: a count against nothing with a tab before the zero" \
+	"$([ "$rows" -gt	0 ] && echo yes || echo no)" "yes"
+check "determinate: a floor of one with a tab before the one" \
+	"$([ "$rows" -ge	1 ] && echo yes || echo no)" "yes"
+check "determinate: a floor of one with a tab before the bracket" \
+	"$([ "$rows" -ge 1	] && echo yes || echo no)" "yes"
+check "determinate: a floor of one with two spaces before the bracket" \
+	"$([ "$rows" -ge 1  ] && echo yes || echo no)" "yes"
+check_num "determinate: an if/then/else test-builtin string test with an elif" \
+	"$(if test -n "$e"; then echo 1; elif [ -f x ]; then echo 1; else echo 0; fi)" "1"
+check "a threshold with a redirect inside the brackets" \
+	"$([ "$a" -le "$b" 2>&1 ] && echo yes || echo no)" "yes"
 PROBE
 _lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
-	"$_lam_forms_names" "a double-bracket floor over a count read through a redirect;a double-bracket floor over a variable with an underscore;a double-bracket string order;a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a floor over a count read through a redirect whose branch holds brackets;a floor over a count whose stderr is joined;a mirrored at most one;a mirrored count above five with a leading zero;a mirrored count above one;a mirrored count above one with a leading zero;a mirrored count above ten;a mirrored floor of eleven;a mirrored negative count;a test-builtin floor over a count of a bracket class;a test-builtin floor over a count of an escaped alternation;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold against a number behind a redirect;a test-builtin threshold against a number joined to an unspaced and;a test-builtin threshold against a quoted zero glued to a digit;a test-builtin threshold behind a dup and an input redirect;a test-builtin threshold behind a redirect;a test-builtin threshold over a bare variable joined to an unspaced and;a test-builtin threshold over a pipeline that may fail;a test-builtin threshold whose branch holds brackets;a test-builtin threshold with a tab after test;a threshold whose first branch is printf;an if/then/else double-bracket threshold;an if/then/else test-builtin threshold;an if/then/else test-builtin threshold with a tab after test;an if/then/else threshold whose else branch is printf;an if/then/else threshold whose then branch is printf;an if/then/else threshold with another command before then;an if/then/else threshold with tabs after then and after else;an if/then/else threshold with two spaces after then and after else;at most zero;nothing expected and a count found;"
+	"$_lam_forms_names" "a double-bracket floor over a count of a bracket class;a double-bracket floor over a count read through a redirect;a double-bracket floor over a variable with an underscore;a double-bracket string order;a double-bracket string order by less-than;a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a double-bracket threshold over array elements whose subscripts hold a bracket;a double-bracket threshold over bare variables;a floor over a backtick count of a bracket class;a floor over a count read through a redirect whose branch holds brackets;a floor over a count whose stderr is joined;a floor over a quoted count of a bracket class;a floor over an unquoted count of a bracket class;a mirrored at most one;a mirrored count above five with a leading zero;a mirrored count above one;a mirrored count above one with a leading zero;a mirrored count above ten;a mirrored floor of eleven;a mirrored negative count;a string order by an escaped greater-than;a string order by an escaped less-than;a test-builtin floor over a count of a bracket class;a test-builtin floor over a count of an escaped alternation;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold against a number behind a redirect;a test-builtin threshold against a number joined to an unspaced and;a test-builtin threshold against a quoted zero glued to a digit;a test-builtin threshold behind a dup and an input redirect;a test-builtin threshold behind a redirect;a test-builtin threshold over a bare variable joined to an unspaced and;a test-builtin threshold over a pipeline that may fail;a test-builtin threshold whose branch holds brackets;a test-builtin threshold with a tab after test;a threshold behind a redirect joined to the bracket;a threshold over array elements whose subscripts hold a bracket;a threshold over bare variables;a threshold recorded by check_ratio;a threshold recorded by check_skip;a threshold recorded by check_text;a threshold recorded by pgc_fail;a threshold recorded with two spaces before its name;a threshold whose first branch is printf;a threshold with a redirect inside the brackets;an if/then/else double-bracket threshold;an if/then/else double-bracket threshold over array elements whose subscripts hold a bracket;an if/then/else test-builtin threshold;an if/then/else test-builtin threshold with a tab after test;an if/then/else threshold joined to fi, before a later substitution;an if/then/else threshold over array elements whose subscripts hold a bracket;an if/then/else threshold recorded by check;an if/then/else threshold recorded by check_ratio;an if/then/else threshold recorded by check_skip;an if/then/else threshold recorded by check_text;an if/then/else threshold recorded by pgc_fail;an if/then/else threshold recorded from an indented line;an if/then/else threshold recorded with two spaces before its name;an if/then/else threshold whose else branch is printf;an if/then/else threshold whose then branch is printf;an if/then/else threshold with a space after fi, before a later substitution;an if/then/else threshold with another command before then;an if/then/else threshold with tabs after then and after else;an if/then/else threshold with two spaces after then and after else;an if/then/else threshold with two spaces before each echo;at most zero;nothing expected and a count found;"
 
 # A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
 #
@@ -989,10 +1346,67 @@ check_text "control: the sweep reads double brackets, the test builtin and mirro
 # A first `-a` that is the unary file test, as in `[ -a "$f" -a "$x" = y ]`,
 # is not dropped, so that compound is refused too.
 #
+# TWO TESTS CHAINED OUTSIDE THE BRACKETS ARE A COMPOUND TOO (#1997).
+# `[ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no` was never
+# examined: the text after the first test began `&& [`, not `&& echo`. In the
+# if/then/else form the second test was read as part of the branches, and its
+# `$` excused the arm. The chain may use `&&` or `||`, any of the three
+# spellings, redirects, tabs, no spaces, or a line break after `&&`. A line
+# that ends in `&&` or `||` is joined to the next, as bash does, so a carrying
+# branch on the next line still counts. A comment that ends in `||` is not
+# joined, or it would swallow the arm below it.
+#
+# THE JOIN MUST NOT HIDE OR RENAME AN ARM THAT MAIN READ (#2022 review). The
+# arms from the one after `foo &&` near the end of this probe back to the
+# here-doc arm pin _lam_join:
+#   - a trailing comment or an open string that ends in `||` or `&&` is not
+#     code, so the line is not joined;
+#   - a line whose `&&` or `||` is at the top level, not inside an open `$(`,
+#     is not joined, so the arm on it or on the next line keeps its name and
+#     its verdict: after `[ -n "$X" ] &&`, `start_x "$p" &&`, a subshell, a
+#     `case` branch or another arm, and before an unnamed arm, an assignment
+#     or an `echo` of the operand (round 2, S3 to T4). An arm whose
+#     substitution is not quoted closes its `$(` too (round 3, Y6 and Y7);
+#   - a line that holds a whole arm and then opens a second `$(` ending in
+#     `&&` or `||` is not joined either, with or without a subshell inside
+#     it, so the arm keeps its verdict (round 3, Y8 to Y10);
+#   - a top-level `&&` followed by a comment is not joined either: the
+#     `echo` below a check whose `and` is followed by a comment stays
+#     unnamed (round 4);
+#   - a `&&` or `||` inside quotes at the end of a line is not code, even
+#     inside an open `$(` (round 3, Y3);
+#   - `#` starts a comment only at the start of a word, after a space, `;`,
+#     `&`, `|`, `(` or `)`, so `$#`, `${#s}`, `a#b` and `"$d"#y` hold no
+#     comment, and a comment line in column 0 is a comment even when it
+#     opens a `$(`. The three `not this shape:` arms whose comment is glued
+#     to a `;`, a `(` or a `)` pin those three characters (round 4);
+#   - inside an open `$(`, a comment line is skipped and a trailing comment
+#     is cut, so neither stops the chain nor lends it a value, and a quoted
+#     or backticked `#` or an escaped quote is not a comment or a quote.
+#     The pair of tests chained across a comment line that quotes a
+#     recorder pins the skip for an indented comment line (round 4);
+#   - inside an open `$(`, a line that holds a recorder call is read alone,
+#     under its own name, for each of the six recorders, unindented or after
+#     a `{`; a helper whose name only ends in `check` is joined.
+# Each arm makes one mutant of _lam_join fail this control. The round-4 arms
+# have no `$(` that closes earlier on their line, so the CC stop does not end
+# the join before the comment rules are read. The older arms that do have
+# one, such as the thresholds beside a substitution whose comment is glued
+# to a `;`, `(` or `)`, now pin the CC stop instead (round 4). Three mutants
+# stay green and are equivalent: a `\` escape at the end of the line (the
+# `\` join runs first), `check"` as a recorder (bash reads one word), and a
+# join with no space (`&&` and `||` end a word).
+#
 # THE JOIN RULE MUST NOT OVER-APPLY EITHER. `[ "$x"-a = "$y" ]`, `[ 5-a = "$x"
 # ]`, `[ $a = 0 ]` and `test "$a" = -a10>x` hold no join, and a redirect
-# inside `[ ]` is not a `&&`. The `determinate:` arms at the end pin that
-# (#1995 review round 4).
+# inside `[ ]` is not a `&&`. The `determinate:` arms just before the
+# #2007 arms pin that (#1995 review round 4).
+#
+# THE ARMS AFTER THE CHAINED ONES PIN THE LINE JOIN AND THE CHAIN RULE, as a
+# mutant sweep found missing (#2006, #1997): a backslash inside the first
+# half of a continued arm, a comment that ends in `||` at any indent, a line
+# sent to the background or ending in `&& cmd` above an arm, and a test piped
+# into a second test, which is not a chain.
 _lam_probe_compound="$PGC_WORKDIR/lam_probe_compound.sh"
 cat > "$_lam_probe_compound" <<'PROBE'
 check "a compound whose first half is nothing versus something" \
@@ -1091,10 +1505,254 @@ check "determinate: an inequality with the word -o on the left and two spaces af
 	"$([ -o  != "$arg" ] && echo yes || echo no)" "yes"
 check "a compound of a file test and an equality" \
 	"$([ -a "$f" -a "$x" = y ] && echo yes || echo no)" "yes"
+check "a pair of tests chained by and" \
+	"$([ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check_num "an if/then/else pair of tests chained by and" \
+	"$(if [ "$b" -le "$c" ] && [ "$a" -gt 0 ]; then echo 1; else echo 0; fi)" "1"
+check "a pair of tests chained by or" \
+	"$([ "$b" -le "$c" ] || [ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check_num "an if/then/else pair of tests chained by or" \
+	"$(if [ "$b" -le "$c" ] || [ "$a" -gt 0 ]; then echo 1; else echo 0; fi)" "1"
+check "a pair of determinate tests chained by and" \
+	"$([ -f "$f" ] && [ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check "a file test chained to a test-builtin count against nothing" \
+	"$([ -f "$f" ] && test "$a" -gt 0 && echo yes || echo no)" "yes"
+check "a test-builtin count against nothing chained to a test builtin by or" \
+	"$(test "$a" -gt 0 || test "$b" -gt 0 && echo yes || echo no)" "yes"
+check "a pair of double-bracket tests chained by and" \
+	"$([[ "$b" -le "$c" ]] && [[ "$a" -gt 0 ]] && echo yes || echo no)" "yes"
+check "a chain of three tests" \
+	"$([ "$a" -gt 0 ] && [ "$b" -gt 0 ] && [ "$c" -gt 0 ] && echo yes || echo no)" "yes"
+check "a pair of tests chained behind a redirect" \
+	"$([ "$a" -gt 0 ] 2>"$LOG" && [ "$b" -gt 0 ] 2>/dev/null && echo yes || echo no)" "yes"
+check "a pair of tests chained by an unspaced and" \
+	"$([ "$a" -gt 0 ]&&[ "$b" -gt 0 ]&&echo yes || echo no)" "yes"
+check_num "an if/then/else pair of tests chained by an unspaced and" \
+	"$(if [ "$a" -gt 0 ]&&[ "$b" -gt 0 ];then echo 1; else echo 0; fi)" "1"
+check "a pair of tests chained with tabs" \
+	"$([ "$a" -gt 0 ]	&&	[ "$b" -gt 0 ]	&&	echo yes || echo no)" "yes"
+check "carried: a pair of chained tests whose branch names every operand" \
+	"$([ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo "no (a=$a b=$b c=$c)")" "yes"
+check_num "carried: an if/then/else pair of chained tests whose branch names every operand" \
+	"$(if [ "$b" -le "$c" ] && [ "$a" -gt 0 ]; then echo 1; else echo "0 (a=$a b=$b c=$c)"; fi)" "1"
+check "not this shape: a test chained to a helper whose name starts with test" \
+	"$([ "$a" -gt 0 ] && test_ok && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after and" \
+	"$([ "$a" -gt 0 ] &&
+		[ "$b" -gt 0 ] && echo yes || echo no)" "yes"
+check "carried: a threshold whose carrying branch follows a line break after or" \
+	"$([ "$a" -le "$b" ] && echo yes ||
+		echo "no ($a > $b)")" "yes"
+check "carried: a threshold whose carrying branch follows a line break after or and a tab" \
+	"$([ "$a" -le "$b" ] && echo yes ||	
+		echo "no ($a > $b)")" "yes"
+# a comment that ends in or ||
+check "a threshold below a comment that ends in or" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained with a redirect joined to the second" \
+	"$([ "$a" -gt 0 ] && [ "$b" -gt 0 ]>/dev/null && echo yes || echo no)" "yes"
+check "a floor over a count of an escaped alternation across a continuation" \
+	"$([ "$(grep -c "a\|b" "$f")" -ge 20 ] \
+		&& echo yes || echo no)" "yes"
+check "a single-bracket test chained to a double-bracket test" \
+	"$([ "$a" -gt 0 ] && [[ "$b" -gt 0 ]] && echo yes || echo no)" "yes"
+check "a test-builtin threshold chained to a file test" \
+	"$(test "$a" -le "$b" && [ -f "$f" ] && echo yes || echo no)" "yes"
+check "not this shape: a test sent to the background before a chain" \
+	"$([ "$a" -le "$b" ] & [ "$c" -gt 0 ] && [ "$d" -gt 0 ] && echo yes || echo no)" "yes"
+check "determinate: a substitution that holds an escaped quote across a continuation is not a compound" \
+	"$([ "$(grep -c "x\")" "$f" || true)" -gt 0 ] \
+		&& echo yes || echo no)" "yes"
+	# an indented comment that ends in or ||
+check "a threshold below an indented comment that ends in or" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+	# check "not this shape: an indented comment that quotes an arm" \
+	# 	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "not this shape: a test piped with its stderr into a second test" \
+	"$([ "$a" -le "$b" ] |& [ "$c" -gt 0 ] && echo yes || echo no)" "yes"
+check "not this shape: a test piped into a second test" \
+	"$([ "$a" -le "$b" ] | [ "$c" -gt 0 ] && echo yes || echo no)" "yes"
+check "a file test chained to a test builtin by a tab" \
+	"$([ -f "$f" ] && test	"$a" -gt 0 && echo yes || echo no)" "yes"
+		# a doubly indented comment that ends in or ||
+check "a threshold below a doubly indented comment that ends in or" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+"$srv" -D "$d" &
+check "a threshold below a line sent to the background" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+cd "$d" && pwd
+check "a threshold below a line that ends in an and and a command" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "carried: a threshold whose carrying branch follows a line break after or and two tabs" \
+	"$([ "$a" -le "$b" ] && echo yes ||		
+		echo "no ($a > $b)")" "yes"
+check "not this shape: a test piped with its stderr into a test builtin" \
+	"$([ "$a" -le "$b" ] |& test "$c" -gt 0 && echo yes || echo no)" "yes"
+check "a pair of tests chained with two spaces before the and" \
+	"$([ "$a" -gt 0 ] && [ "$b" -gt 0 ]  && echo yes || echo no)" "yes"
+echo "x" # a trailing comment that ends in or ||
+check "a threshold below a trailing comment that ends in or" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+[ -n "$X" ] &&
+	check "a threshold guarded by the line above, which ends in and" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+start_x "$p" &&
+check "a threshold on the line after a command that ends in and" \
+	"$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "a threshold whose line ends in and before a carrying arm" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	check "carried: an arm on the line after one that ends in and" "$([ "$c" -le "$d" ] && echo yes || echo "no ($c $d)")" "yes"
+cat <<EOF
+a here-doc body line that ends in and &&
+check "a threshold on the here-doc body line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+EOF
+note="a string whose first line ends in and &&
+check "a threshold on the line after a string whose first line ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+the string ends here"
+check "a threshold whose line ends in a comment that ends in or" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" # a note ||
+	echo "the next line names $a"
+check "a threshold whose line opens a string that ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; note="a string &&
+	that names $a"
+[ -n "$X" ] &&
+	{ check "a threshold in a brace group on the line after a test that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; }
+check "a threshold whose line ends in and before an arm with no name" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo "no $c")" "yes"
+check "a threshold whose line ends in and before a carrying assignment" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	ok="$([ "$c" -le "$d" ] && echo "yes $c" || echo no)"
+check "a threshold whose line ends in and before an echo of its operand" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	echo "passed with $a"
+check "a threshold whose line ends in or before an echo of its operand" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" ||
+	echo "failed with $a"
+check "a threshold before a backtick that holds a hash and ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; v=`date # x` &&
+	echo "$a"
+check "a threshold before a word with a hash inside that ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; echo a#b &&
+	echo "$a"
+check "a threshold before a nested subshell that ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; ( (true) ) &&
+	echo "$a"
+[ $# -gt 0 ] && check "a threshold after a count of arguments on a line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	echo "$a"
+n=${#arr[@]}; check "a threshold after an array length on a line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" &&
+	echo "$a"
+check "a threshold before a quoted word glued to a hash that ends the line in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; echo "x"#y &&
+	echo "$a"
+check "a pair of tests chained across a line break whose second line ends in a comment" \
+	"$([ -f "$a" ] &&
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes" # (#1997)
+check "a pair of tests chained across a line break and a comment line" \
+	"$([ -f "$a" ] &&
+		# the file first
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break and an unindented comment line" \
+	"$([ -f "$a" ] &&
+# the file first
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a comment" \
+	"$([ -f "$a" ] && # the file first, then [ x ] && echo yes || echo "no $a"
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a comment glued to the and" \
+	"$([ -f "$a" ] &&# the file first, then [ x ] && echo yes || echo "no $a"
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a comment glued to the or" \
+	"$([ -f "$a" ] ||# no file, then [ x ] && echo yes || echo "no $a"
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "carried: an arm that holds a comment line that quotes an arm" \
+	"$(start_x "$a" &&
+		# check "not this shape: a comment inside an arm that quotes an arm" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+		check "carried: an inner arm" "$([ "$a" -le "$b" ] && echo yes || echo "no $a")" "yes")" "yes"
+check "a pair of tests chained across a line break after a path with an escaped quote" \
+	"$([ -f don\'t ] &&
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a backtick that holds a comment" \
+	"$([ `echo 1 #x` -le "$c" ] &&
+		[ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a count of arguments" \
+	"$([ $# -le "$c" ] &&
+		[ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a string length" \
+	"$([ ${#s} -le "$c" ] &&
+		[ "$a" -gt 0 ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a quoted path glued to a hash" \
+	"$([ -f "$d"#y ] &&
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a pair of tests chained across a line break after a path with a hash inside" \
+	"$([ -f a#b ] &&
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes"
+check "a threshold beside a substitution whose comment is glued to a semicolon" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; x="$(true;# a note &&
+	echo "$([ "$c" -le "$d" ] && echo yes || echo "no $c")")"
+check "a threshold beside a substitution whose comment is glued to an open parenthesis" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; x="$( (# a note &&
+	echo "$([ "$c" -le "$d" ] && echo yes || echo "no $c")") )"
+check "a threshold beside a substitution whose comment is glued to a close parenthesis" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; x="$( (true)# a note &&
+	echo "$([ "$c" -le "$d" ] && echo yes || echo "no $c")")"
+# a note that opens a substitution: "$(start_x &&
+x=1 \
+check "a threshold below a comment that opens a substitution and a continued line" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+( cd "$d" &&
+	x=1 \
+	check "a threshold in a subshell on the line after a command that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" )
+case "$m" in a) [ -n "$X" ] &&
+	x=1 \
+	check "a threshold in a case branch on the line after a test that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes" ;; esac
+check "a pair of tests chained across a line break before a trailing comment that ends in and" \
+	"$([ -f "$a" ] &&
+		[ "$b" -le "$c" ] && echo yes || echo no)" "yes" && # a note
+	x=1 \
+	check "a threshold after a line whose comment follows an and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	check "a threshold recorded inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	check_num "a threshold recorded by check_num inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo 1 || echo 0)" "1")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	check_text "a threshold recorded by check_text inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	check_ratio "a threshold recorded by check_ratio inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	pgc_fail "a threshold recorded by pgc_fail inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	check_skip "a threshold recorded by check_skip inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+check "a threshold recorded unindented inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "carried: an outer arm" "$(start_x "$p" &&
+	{ check "a threshold in a brace group inside a substitution on the line after one that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; })" "yes"
+check "a threshold inside a substitution before a helper whose name ends in check" "$(start_x "$p" &&
+	precheck "x" "$([ "$a" -le "$b" ] && echo yes || echo no)")" "yes"
+check "a threshold inside a substitution before a helper whose name ends in underscore check" "$(start_x "$p" &&
+	pre_check "x" "$([ "$a" -le "$b" ] && echo yes || echo no)")" "yes"
+check "a threshold inside a substitution before a recorder whose name is a variable" "$(start_x "$p" &&
+	check $v "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "a threshold whose substitution holds a comment line that quotes a carrying test before a recorder" "$([ "$a" -le "$b" ] && echo yes || echo no) $(start_x "$p" &&
+	# was "$([ "$a" -le "$b" ] && echo yes || echo "no $a")"
+	check "carried: an inner arm" "$([ "$a" -le "$b" ] && echo yes || echo "no $a")" "yes")" "yes"
+check "a threshold inside a substitution before a recorder glued to a semicolon" "$(start_x "$p" &&
+	x=1;check "x" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes")" "yes"
+check "a threshold before a substitution on its line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; got=$(wait_for x &&
+	echo "$([ "$c" -gt 0 ] && echo "up $c" || echo down)")
+check "a threshold before a substitution on its line that ends in or" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; r=$(f ||
+	g "$([ "$c" -gt 0 ] && echo "up $c" || echo down)")
+check "a threshold before a substitution with a subshell on its line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"; w=$( (true) &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo "no $c")" "yes")
+check "an unquoted threshold whose line ends in and before an arm with no name" $([ "$a" -le "$b" ] && echo yes || echo no) yes &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo "no $c")" "yes"
+check "an unquoted threshold whose line ends in and before a carrying assignment" $([ "$a" -le "$b" ] && echo yes || echo no) yes &&
+	ok="$([ "$c" -le "$d" ] && echo "yes $c" || echo no)"
+check "a threshold whose quoted branch ends its line in or" "$([ "$a" -le "$b" ] && echo "yes ||
+$(echo no)")" "yes"
+check "not this shape: an echo below a check whose and is followed by a comment" "yes" "yes" && # a note
+	echo "$([ "$a" -le "$b" ] && echo yes || echo no)"
+check "not this shape: a nameless check below a comment glued to a semicolon" "$(true;# a note &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo no)" "yes")" "yes"
+check "not this shape: a nameless check below a comment glued to an open parenthesis" "$( (# a note &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo no)" "yes") )" "yes"
+check "not this shape: a nameless check below a comment glued to a close parenthesis" "$( (true)# a note &&
+	check $v "$([ "$c" -le "$d" ] && echo yes || echo no)" "yes")" "yes"
+check "a pair of tests chained across a line break and a comment line that quotes a recorder" "$([ -f "$a" ] &&
+	# check "x" "$([ "$a" -le "$b" ] && echo "yes $a" || echo no)" "yes"
+	[ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+foo &&
+# check "not this shape: a comment below a line that ends in and" "$([ "$a" -le "$b" ] && echo yes || echo no)" "yes"
+bar
 PROBE
 _lam_compound_names="$(_lam_sweep "$_lam_probe_compound" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: a compound, a padded floor and a quoted redirect target are not excused" \
-	"$_lam_compound_names" "a compound after a double-equals equality with the word -a on the left;a compound after an equality with the word -a on the left;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound of a file test and an equality;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is an equality with the word -a on the left;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a floor of ten;a mirrored floor of zero;a test-builtin compound whose last operand is glued to a redirect;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold with a leading zero;an if/then/else threshold behind a redirect into a quoted path with a space;"
+	"$_lam_compound_names" "a chain of three tests;a compound after a double-equals equality with the word -a on the left;a compound after an equality with the word -a on the left;a compound joined by a double-spaced and;a compound joined by a tab-separated and;a compound of a file test and an equality;a compound whose first half is nothing versus something;a compound whose last half is a one-word test;a compound whose last half is an equality with the word -a on the left;a compound whose last half is nothing versus something;a compound with an equality half;a double-bracket compound after a backtick substitution;a double-bracket compound after a single-quoted operand;a double-bracket compound joined by an unspaced and;a double-bracket compound joined by or;a double-bracket compound whose last half is a floor of one;a file test chained to a test builtin by a tab;a file test chained to a test-builtin count against nothing;a floor of ten;a floor over a count of an escaped alternation across a continuation;a mirrored floor of zero;a pair of determinate tests chained by and;a pair of double-bracket tests chained by and;a pair of tests chained across a line break after a backtick that holds a comment;a pair of tests chained across a line break after a comment;a pair of tests chained across a line break after a comment glued to the and;a pair of tests chained across a line break after a comment glued to the or;a pair of tests chained across a line break after a count of arguments;a pair of tests chained across a line break after a path with a hash inside;a pair of tests chained across a line break after a path with an escaped quote;a pair of tests chained across a line break after a quoted path glued to a hash;a pair of tests chained across a line break after a string length;a pair of tests chained across a line break after and;a pair of tests chained across a line break and a comment line;a pair of tests chained across a line break and a comment line that quotes a recorder;a pair of tests chained across a line break and an unindented comment line;a pair of tests chained across a line break before a trailing comment that ends in and;a pair of tests chained across a line break whose second line ends in a comment;a pair of tests chained behind a redirect;a pair of tests chained by an unspaced and;a pair of tests chained by and;a pair of tests chained by or;a pair of tests chained with a redirect joined to the second;a pair of tests chained with tabs;a pair of tests chained with two spaces before the and;a single-bracket test chained to a double-bracket test;a test-builtin compound whose last operand is glued to a redirect;a test-builtin count against nothing chained to a test builtin by or;a test-builtin threshold chained to a file test;a threshold after a count of arguments on a line that ends in and;a threshold after a line whose comment follows an and;a threshold after an array length on a line that ends in and;a threshold before a backtick that holds a hash and ends the line in and;a threshold before a nested subshell that ends the line in and;a threshold before a quoted word glued to a hash that ends the line in and;a threshold before a substitution on its line that ends in and;a threshold before a substitution on its line that ends in or;a threshold before a substitution with a subshell on its line that ends in and;a threshold before a word with a hash inside that ends the line in and;a threshold behind a redirect into a quoted path with a space;a threshold behind a redirect into a quoted path with a space and a suffix;a threshold below a comment that ends in or;a threshold below a comment that opens a substitution and a continued line;a threshold below a doubly indented comment that ends in or;a threshold below a line sent to the background;a threshold below a line that ends in an and and a command;a threshold below a trailing comment that ends in or;a threshold below an indented comment that ends in or;a threshold beside a substitution whose comment is glued to a close parenthesis;a threshold beside a substitution whose comment is glued to a semicolon;a threshold beside a substitution whose comment is glued to an open parenthesis;a threshold guarded by the line above, which ends in and;a threshold in a brace group inside a substitution on the line after one that ends in and;a threshold in a brace group on the line after a test that ends in and;a threshold in a case branch on the line after a test that ends in and;a threshold in a subshell on the line after a command that ends in and;a threshold inside a substitution before a helper whose name ends in check;a threshold inside a substitution before a helper whose name ends in underscore check;a threshold inside a substitution before a recorder glued to a semicolon;a threshold inside a substitution before a recorder whose name is a variable;a threshold on the here-doc body line after one that ends in and;a threshold on the line after a command that ends in and;a threshold on the line after a string whose first line ends in and;a threshold recorded by check_num inside a substitution on the line after one that ends in and;a threshold recorded by check_ratio inside a substitution on the line after one that ends in and;a threshold recorded by check_skip inside a substitution on the line after one that ends in and;a threshold recorded by check_text inside a substitution on the line after one that ends in and;a threshold recorded by pgc_fail inside a substitution on the line after one that ends in and;a threshold recorded inside a substitution on the line after one that ends in and;a threshold recorded unindented inside a substitution on the line after one that ends in and;a threshold whose line ends in a comment that ends in or;a threshold whose line ends in and before a carrying arm;a threshold whose line ends in and before a carrying assignment;a threshold whose line ends in and before an arm with no name;a threshold whose line ends in and before an echo of its operand;a threshold whose line ends in or before an echo of its operand;a threshold whose line opens a string that ends the line in and;a threshold whose quoted branch ends its line in or;a threshold whose substitution holds a comment line that quotes a carrying test before a recorder;a threshold with a leading zero;an if/then/else pair of tests chained by an unspaced and;an if/then/else pair of tests chained by and;an if/then/else pair of tests chained by or;an if/then/else threshold behind a redirect into a quoted path with a space;an unquoted threshold whose line ends in and before a carrying assignment;an unquoted threshold whose line ends in and before an arm with no name;"
 
 # A COMMENT DESCRIBES THE SHAPE, IT DOES NOT COMMIT IT (#1255). A file was
 # refused for an anti-pattern it only WROTE ABOUT, and the name it was refused
@@ -1133,10 +1791,12 @@ for _lam_f in "$PGC_TESTDIR"/*.sh "$PGC_TESTDIR"/selftest/*.sh; do
 	case "$_lam_f" in *540-an-arm-must-carry-its-measurement.sh) continue ;; esac
 	_lam_sweep "$_lam_f" >> "$_lam_found"
 done
-sort -u -o "$_lam_found" "$_lam_found"
+# ONE COLLATION FOR sort AND comm. Under en_US.UTF-8, comm called the lists
+# unsorted and named arms that were tracked, so a red run printed wrong names.
+LC_ALL=C sort -u -o "$_lam_found" "$_lam_found"
 
 _lam_tracked="$PGC_WORKDIR/lam_tracked.tsv"
-grep -v '^#' "$_lam_list" | grep -v '^[[:space:]]*$' | sort -u > "$_lam_tracked"
+grep -v '^#' "$_lam_list" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u > "$_lam_tracked"
 
 # A SWEEP THAT READ NOTHING REPORTS THE SAME CLEAN RESULT AS A CLEAN CORPUS, so
 # assert it read the corpus before either comparison is believed.
@@ -1144,10 +1804,10 @@ check "premise: the sweep read the corpus and classified arms in it" \
 	"$([ "$(wc -l < "$_lam_found")" -ge 20 ] && echo yes || echo "no ($(wc -l < "$_lam_found"))")" \
 	"yes"
 
-_lam_new="$(comm -23 "$_lam_found" "$_lam_tracked" | sed 's/\t/: /' | tr '\n' ';')"
+_lam_new="$(LC_ALL=C comm -23 "$_lam_found" "$_lam_tracked" | sed 's/\t/: /' | tr '\n' ';')"
 check_text "a new arm that cannot say what it measured is refused by name" \
 	"${_lam_new:-none}" "none"
 
-_lam_stale="$(comm -13 "$_lam_found" "$_lam_tracked" | sed 's/\t/: /' | tr '\n' ';')"
+_lam_stale="$(LC_ALL=C comm -13 "$_lam_found" "$_lam_tracked" | sed 's/\t/: /' | tr '\n' ';')"
 check_text "a repaired arm must have its row removed, so the list only shrinks" \
 	"${_lam_stale:-none}" "none"

@@ -204,9 +204,11 @@ check_num "the decoded stream carries the UPDATE as an UPDATE" \
 check_num "and the DELETE as a DELETE" \
 	"$(dq "op[text]:'DELETE'")" "1"
 # the matcher itself must be capable of finding something, or the two arms above
-# are a pair of zeros agreeing with a pair of zeros
+# are a pair of zeros agreeing with a pair of zeros. The brackets show an empty
+# count as `[]`, and the default keeps `[` from erroring on it (#2022 review).
+ldcr_inserts="$(dq "op[text]:'INSERT'")"
 check "premise: the same matcher finds the INSERTs, so a 1 above is a real match" \
-	"$([ "$(dq "op[text]:'INSERT'")" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "${ldcr_inserts:-0}" -gt 1 ] && echo yes || echo "no (INSERTs found: [$ldcr_inserts])")" "yes"
 
 # ---- the guide's warning about the pgcolumnar schema is necessary -------------
 # "Exclude the pgcolumnar schema from any publication." That is only advice worth
