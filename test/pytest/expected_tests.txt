@@ -1860,4 +1860,15 @@ guard_tests 863
 # cluster_tests stays 5346 for #2013's checks (a caller without pg_read_all_settings beside a table on a
 # relative glob), added to an existing test in test_tier_partition.py, by collection: 6209 tests collected,
 # less guard_tests 863.
-cluster_tests 5346
+# cluster_tests 5346 -> 5347 for #2018's test_scale_parity_and_reclaim_steady_state in
+# test_native_scale.py (the new twin of native_scale.sh: heap-mirror parity through delete, compact_rewrite,
+# recluster and four reclaim rounds at SCALE_N rows, and the file at round 4 no larger than at round 2), by
+# collection: 6210 tests collected, less guard_tests 863.
+# cluster_tests stays 5347 for #2024's checks (each reclaim round deletes its whole id % 8 slice from h and
+# n; round 4 now deletes id % 8 = 5), which replace two checks in the existing
+# test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by collection: 6210 tests collected,
+# less guard_tests 863.
+# cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
+# group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
+# collection: 6210 tests collected, less guard_tests 863.
+cluster_tests 5347

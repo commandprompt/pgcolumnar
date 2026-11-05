@@ -1671,7 +1671,11 @@ harness_selftest	050-the-list-must-be-read-the	and the mistake empties the whole
 harness_selftest	050-the-list-must-be-read-the	positive control: and it is a whole list, not one lucky line	15;16;17;18;19	never	-
 harness_selftest	050-the-list-must-be-read-the	positive control: the real runner's list is read, and contains isolation	15;16;17;18;19	never	-
 harness_selftest	050-the-list-must-be-read-the	premise: the fixture really does carry the stray name	15;16;17;18;19	never	-
+harness_selftest	060-the-list-stays-sorted-which-is	a suite listed twice is reported by name (#2025)	15;16;17;18;19	2026-11-04	run_all_versions.sh: native_scale listed twice in SUITES, the #2025 reproduction;selftest 060: _listed_twice drops what uniq -d finds, so it never names a duplicate;selftest 060: _listed_twice reads the real runner instead of the runner it is given;selftest 060: _listed_twice uses uniq for uniq -d, so it names every registered suite
+harness_selftest	060-the-list-stays-sorted-which-is	no suite is listed twice in SUITES (#2025)	15;16;17;18;19	2026-11-04	run_all_versions.sh: native_scale listed twice in SUITES, the #2025 reproduction;selftest 060: _listed_twice uses uniq for uniq -d, so it names every registered suite
 harness_selftest	060-the-list-stays-sorted-which-is	premise: C collation puts sort_status before sorted_projection	15;16;17;18;19	never	-
+harness_selftest	060-the-list-stays-sorted-which-is	premise: and the fixture is still sorted in C order, so only the duplicate check can catch it	15;16;17;18;19	never	-
+harness_selftest	060-the-list-stays-sorted-which-is	premise: the duplicate fixture lists its first suite twice	15;16;17;18;19	never	-
 harness_selftest	060-the-list-stays-sorted-which-is	the suite list is sorted in C order, so two new suites land in different places	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	a file that uses comm pins the collation of every sort feeding it	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	a line with ONE of two sorts pinned is still caught	15;16;17;18;19	never	-
@@ -1683,7 +1687,7 @@ harness_selftest	070-and-comm-s-two-inputs-must	and a prefix of a registered nam
 harness_selftest	070-and-comm-s-two-inputs-must	and pins the comm itself, whose prefix does not reach its substitutions	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	and the piped form the old pattern did catch is still caught	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	every registered suite has a file	15;16;17;18;19	never	-
-harness_selftest	070-and-comm-s-two-inputs-must	every suite is registered in run_all_versions.sh	15;16;17;18;19	never	-
+harness_selftest	070-and-comm-s-two-inputs-must	every suite is registered in run_all_versions.sh	15;16;17;18;19	2026-11-04	native_scale removed from not_a_suite before it was added to SUITES (#2018)
 harness_selftest	070-and-comm-s-two-inputs-must	negative control: and does not find one that is not	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	pinning only the comm does not pin its substitutions	15;16;17;18;19	never	-
 harness_selftest	070-and-comm-s-two-inputs-must	positive control: the membership test finds a name that is registered	15;16;17;18;19	never	-
@@ -1831,11 +1835,15 @@ harness_selftest	210-no-suite-assigns-a-bash-special	control: reads, longer name
 harness_selftest	210-no-suite-assigns-a-bash-special	control: the sweep catches an assignment to a bash special	15;16;17;18;19	never	-
 harness_selftest	210-no-suite-assigns-a-bash-special	no suite assigns to a bash special variable	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	CI runs the extension-upgrade guard somewhere (#741)	15;16;17;18;19	never	-
+harness_selftest	220-an-opt-in-upgrade-guard-must	a registered suite both not_a_suite lists excuse is reported by name (#2026)	15;16;17;18;19	2026-11-04	run_all_versions.sh: native_scale listed twice in SUITES, the #2025 reproduction;run_all_versions.sh: native_scale registered in SUITES while both not_a_suite lists excuse it, the #2026 reproduction;selftest 220: _upg_registered_excused adds every registered name, excused or not;selftest 220: _upg_registered_excused asks only the coverage runner's not_a_suite;selftest 220: _upg_registered_excused asks only the selftest's not_a_suite;selftest 220: _upg_registered_excused never adds an excused name, its condition replaced by true;selftest 220: _upg_registered_excused reads every test file instead of the names in SUITES
 harness_selftest	220-an-opt-in-upgrade-guard-must	every PGC_RUN_UPGRADE-gated suite is excluded from the coverage runner (#741)	15;16;17;18;19	never	-
+harness_selftest	220-an-opt-in-upgrade-guard-must	no suite in SUITES is excused by either not_a_suite list (#2026)	15;16;17;18;19	2026-11-04	run_all_versions.sh: native_scale listed twice in SUITES, the #2025 reproduction;run_all_versions.sh: native_scale registered in SUITES while both not_a_suite lists excuse it, the #2026 reproduction;selftest 220: _upg_registered_excused adds every registered name, excused or not;selftest 220: _upg_registered_excused reads every test file instead of the names in SUITES
+harness_selftest	220-an-opt-in-upgrade-guard-must	premise: a test file the coverage list excuses was found to register	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: both not_a_suite definitions were found	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: not_a_suite says no to an ordinary suite, so its yes means something	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: run_coverage.sh defines not_a_suite and calls it	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: the PGC_RUN_UPGRADE block was found and names at least one suite	15;16;17;18;19	never	-
+harness_selftest	220-an-opt-in-upgrade-guard-must	premise: the fixture registers that name	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: the population is the real test directory, not an empty glob	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	premise: there are workflow files to search	15;16;17;18;19	never	-
 harness_selftest	220-an-opt-in-upgrade-guard-must	the coverage runner's not_a_suite agrees with the selftest's, both ways (#741)	15;16;17;18;19	never	-
@@ -5706,6 +5714,7 @@ native_saop_pushdown	native_saop_pushdown	vector-agg count over an IN-list is ex
 native_saop_pushdown	native_saop_pushdown	vector-agg path engaged for the guard arm (plan shape)	15;16;17;18;19	never	-
 native_scale	native_scale	bulk load count	15;16;17;18;19	never	-
 native_scale	native_scale	bulk load parity	15;16;17;18;19	never	-
+native_scale	native_scale	compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
 native_scale	native_scale	indexed lookup after rewrite	15;16;17;18;19	never	-
 native_scale	native_scale	parity after compact_rewrite	15;16;17;18;19	never	-
 native_scale	native_scale	parity after delete	15;16;17;18;19	never	-
@@ -5714,7 +5723,24 @@ native_scale	native_scale	parity after reclaim round 2	15;16;17;18;19	never	-
 native_scale	native_scale	parity after reclaim round 3	15;16;17;18;19	never	-
 native_scale	native_scale	parity after reclaim round 4	15;16;17;18;19	never	-
 native_scale	native_scale	parity after recluster	15;16;17;18;19	never	-
-native_scale	native_scale	reclaim reached steady state (round 4 <= round 2)	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	reclaim reached steady state (round 4 <= round 2)	15;16;17;18;19	2026-11-04	free-space reuse turned off from reclaim round 4 on: PgColumnarAllocateFreeSpace returns false once a flag file exists (#2024);test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
+native_scale	native_scale	reclaim round 1 deletes its whole id % 8 slice from h	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 1 deletes its whole id % 8 slice from n	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 1: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 1: compact_rewrite rewrote at least one group	15;16;17;18;19	2026-11-04	compact_rewrite returns 0 before table_open in every reclaim round: a flag file set after round 1 deletes (#2024)
+native_scale	native_scale	reclaim round 2 deletes its whole id % 8 slice from h	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 2 deletes its whole id % 8 slice from n	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 2: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 2: compact_rewrite rewrote at least one group	15;16;17;18;19	2026-11-04	compact_rewrite returns 0 before table_open in every reclaim round: a flag file set after round 1 deletes (#2024)
+native_scale	native_scale	reclaim round 3 deletes its whole id % 8 slice from h	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 3 deletes its whole id % 8 slice from n	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024)
+native_scale	native_scale	reclaim round 3: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 3: compact_rewrite rewrote at least one group	15;16;17;18;19	2026-11-04	compact_rewrite returns 0 before table_open in every reclaim round: a flag file set after round 1 deletes (#2024)
+native_scale	native_scale	reclaim round 4 deletes its whole id % 8 slice from h	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024);test harness: reclaim round 4 deletes id % 8 = 4 again, rows the id % 4 = 0 delete already removed (#2024)
+native_scale	native_scale	reclaim round 4 deletes its whole id % 8 slice from n	15;16;17;18;19	2026-11-04	test harness: every reclaim round deletes a slice inside id % 4 = 0 (slices 0, 4, 0, 4), so no round deletes a row (#2024);test harness: reclaim round 4 deletes id % 8 = 4 again, rows the id % 4 = 0 delete already removed (#2024)
+native_scale	native_scale	reclaim round 4: compact_rewrite returned a group count	15;16;17;18;19	2026-11-04	compact_rewrite refuses every min_deleted_fraction above 0 (bound check over-applied) (#2018)
+native_scale	native_scale	reclaim round 4: compact_rewrite rewrote at least one group	15;16;17;18;19	2026-11-04	compact_rewrite returns 0 before table_open from reclaim round 4 on: a flag file set at round 3 (#2024);compact_rewrite returns 0 before table_open in every reclaim round: a flag file set after round 1 deletes (#2024)
+native_scale	native_scale	recluster returned a group count	15;16;17;18;19	2026-11-04	CommandCounterIncrement at the end of PgColumnarAllocateFreeSpace removed (#2018)
 native_scale	native_scale	round 2: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
 native_scale	native_scale	round 3: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)
 native_scale	native_scale	round 4: no transaction older than the newest freed range was open before the rewrite	15;16;17;18;19	2026-11-04	test harness: the horizon wait before each rewrite cut to one call, under a REPEATABLE READ snapshot held from before the DELETE for 120 s (#2010)

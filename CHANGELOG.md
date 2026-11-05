@@ -534,6 +534,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- `harness_selftest` fails on a suite listed twice in `SUITES`, and on a suite
+  in `SUITES` that a `not_a_suite` list excuses (#2025, #2026). Part 060's
+  sorted check compares the list with `sort`, which keeps duplicates, so a
+  name listed twice next to itself passed, and the matrix ran that suite twice
+  in every job. Part 220 checks only that the two `not_a_suite` lists agree, so
+  a registered suite that both lists excuse dropped out of the coverage report
+  with every check green. The new check "no suite is listed twice in SUITES
+  (#2025)" prints the duplicate names. The new check "no suite in SUITES is
+  excused by either not_a_suite list (#2026)" puts every registered name
+  through both lists and prints each one excused, with the lists that excuse
+  it. Each has a fixture copy of the runner that must be reported by name: the
+  first suite listed twice, and a test file both lists excuse registered as a
+  suite. With `native_scale` listed twice, or registered while both lists
+  excuse it, the matching check now fails and names it.
 - Self-test part 540 reads three more check arms correctly (#2007, #2011,
   #2012). It excuses `[ -a = "$arg" ]` and `[ -o != "$arg" ]`, where the first
   word `-a` or `-o` is an operand of `=`, `!=` or `==` and not a join. A later
@@ -573,6 +587,30 @@ true until the next version shipped.
   check per recluster. The other 21 suites that #2010 lists were checked and
   need no change.
   docs/testing.md.
+- `native_scale` now runs in CI (#2018). No job ran it before: it was missing
+  from the `SUITES` list in `test/run_all_versions.sh`, and `run_coverage.sh`
+  refused it by name. It is in the list now, so the per-PR gate runs it on
+  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 on x86_64, on 18 on
+  aarch64, and in the coverage report. A new pytest twin, `test_native_scale.py`,
+  runs in the pytest-cluster job at 200000 rows (`SCALE_N=200000`), so that job
+  stays inside its 40-minute limit. The harness self-test no longer excuses it
+  from "every suite is registered in run_all_versions.sh".
+  The suite's steady-state check now prints both file sizes when it fails.
+  The suite now checks that each `recluster` and `compact_rewrite` call returned
+  a group count, and prints the error when one did not. Before, it threw the
+  error away: with the allocator's `CommandCounterIncrement` removed, `recluster`
+  failed with "tuple already updated by self" and the suite still passed 14/14.
+- `native_scale`: reclaim round 4 now deletes rows, so the steady-state check
+  tests a fourth round of reuse (#2024). Round 4 deleted `id % 8 = 4`, but every
+  such id also has `id % 4 = 0`, and an earlier delete removed those. So round 4
+  deleted nothing and rewrote nothing, and the check really compared round 3
+  with round 2. A mutant that turned off free-space reuse from round 4 on passed
+  all 20 checks. Round 4 now deletes `id % 8 = 5`. A new check per round and
+  table wants the delete to remove the whole slice. The suite and its pytest
+  twin change together; the twin's two "round 4 deletes no rows" checks are
+  gone. A second new check per round wants `compact_rewrite` to rewrite at
+  least one group. Before, a rewrite that returned 0 passed: the file kept its
+  size, and the plateau check read that as reuse.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored
