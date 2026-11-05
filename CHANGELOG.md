@@ -659,8 +659,10 @@ true until the next version shipped.
     code ends in `&&` or `||` inside a `$(` that is still open to the next,
     as bash does. It skips a comment line there and cuts off a trailing
     comment. It does not join a line whose `&&` or `||` sits in a comment, an
-    open string or top-level code, or a next line that holds a check call,
-    so every arm main read keeps its name and its verdict.
+    open string or top-level code, a line where an earlier `$(` already
+    closed back to the top level, or a next line that holds a check call. The
+    compound probe pins each shape the reviews found, and on each one the arm
+    main read keeps its name and its verdict.
     The tree holds 66 such
     arms in 39 suites. `test/lossy_arms.tsv` lists them, and grows from 70 to
     136 rows. No suite changed for this.
