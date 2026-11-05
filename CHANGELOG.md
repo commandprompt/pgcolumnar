@@ -644,10 +644,11 @@ true until the next version shipped.
     `[ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no`, are a
     compound, and the part refuses them (#1997). It used to read only the
     first test, so it never examined these arms. It also joins a line whose
-    code ends in `&&` or `||` to the next, as bash does. It does not join a
-    line whose `&&` or `||` sits in a comment or an open string. It does not
-    join the next line when that line starts a check call or is a comment, so
-    the join no longer hides the arm on that line or gives it a wrong name.
+    code ends in `&&` or `||` inside a `$(` that is still open to the next,
+    as bash does. It skips a comment line there and cuts off a trailing
+    comment. It does not join a line whose `&&` or `||` sits in a comment, an
+    open string or top-level code, or a next line that holds a check call,
+    so every arm main read keeps its name and its verdict.
     The tree holds 66 such
     arms in 39 suites. `test/lossy_arms.tsv` lists them, and grows from 70 to
     136 rows. No suite changed for this.
