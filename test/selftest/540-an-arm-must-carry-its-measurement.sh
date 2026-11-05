@@ -445,13 +445,21 @@ _lam_sweep() {  # _lam_sweep FILE -> one "suite<TAB>name" per lossy arm
 		# `2>x` goes back to REST. `[` and `[[` end at the first `]` that is
 		# not quoted or inside a substitution, so `[ "${sizes[5]}" -le 3 ]`
 		# is read whole. They ended at the first `]` anywhere, which hid
-		# seven live lossy arms in six suites (#2002). KNOWN LIMITS, and no
-		# arm in the tree holds either: a redirect between the operands, as
-		# in `test "$a" -le 2>x "$b"`, hides the arm; and an unquoted array
-		# element such as `[ ${s[5]} -le 3 ]` still ends the test early.
-		function split_test(s,   m) {
+		# seven live lossy arms in six suites (#2002). AN UNQUOTED ARRAY
+		# ELEMENT, as in `[ ${s[5]} -le 3 ]`, is hidden too (#2023): each
+		# `${` up to the first `]`, with no `}` before it, is replaced by `_`
+		# before the end of the test is found. KNOWN LIMITS, and no arm in
+		# the tree holds either: a redirect between the operands, as in
+		# `test "$a" -le 2>x "$b"`, hides the arm; and an unquoted subscript
+		# that holds an unquoted `]` or `}`, as in `${s[${i}]}`, still ends
+		# the test early.
+		function split_test(s,   m, u) {
 			sub(/^[[:space:]]*/, "", s)
 			m = mask(s)
+			while (match(m, /\$\{[^]}]*\]/)) {
+				u = substr(m, RSTART, RLENGTH); gsub(/./, "_", u)
+				m = substr(m, 1, RSTART - 1) u substr(m, RSTART + RLENGTH)
+			}
 			if (match(m, /^\[\[[^]]*\]\]/)) {
 				T = substr(s, 3, RLENGTH - 4); REST = substr(s, RLENGTH + 1); return 1
 			}
@@ -1290,6 +1298,68 @@ PROBE
 _lam_forms_names="$(_lam_sweep "$_lam_probe_forms" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
 check_text "control: the sweep reads double brackets, the test builtin and mirrored tests" \
 	"$_lam_forms_names" "a double-bracket floor over a count of a bracket class;a double-bracket floor over a count read through a redirect;a double-bracket floor over a variable with an underscore;a double-bracket string order;a double-bracket string order by less-than;a double-bracket threshold;a double-bracket threshold behind a redirect into a variable;a double-bracket threshold over array elements whose subscripts hold a bracket;a double-bracket threshold over bare variables;a floor over a backtick count of a bracket class;a floor over a count read through a redirect whose branch holds brackets;a floor over a count whose stderr is joined;a floor over a quoted count of a bracket class;a floor over an unquoted count of a bracket class;a mirrored at most one;a mirrored count above five with a leading zero;a mirrored count above one;a mirrored count above one with a leading zero;a mirrored count above ten;a mirrored floor of eleven;a mirrored negative count;a string order by an escaped greater-than;a string order by an escaped less-than;a test-builtin floor over a count of a bracket class;a test-builtin floor over a count of an escaped alternation;a test-builtin floor over a count read through a redirect;a test-builtin threshold;a test-builtin threshold against a number behind a redirect;a test-builtin threshold against a number joined to an unspaced and;a test-builtin threshold against a quoted zero glued to a digit;a test-builtin threshold behind a dup and an input redirect;a test-builtin threshold behind a redirect;a test-builtin threshold over a bare variable joined to an unspaced and;a test-builtin threshold over a pipeline that may fail;a test-builtin threshold whose branch holds brackets;a test-builtin threshold with a tab after test;a threshold behind a redirect joined to the bracket;a threshold over array elements whose subscripts hold a bracket;a threshold over bare variables;a threshold recorded by check_ratio;a threshold recorded by check_skip;a threshold recorded by check_text;a threshold recorded by pgc_fail;a threshold recorded with two spaces before its name;a threshold whose first branch is printf;a threshold with a redirect inside the brackets;an if/then/else double-bracket threshold;an if/then/else double-bracket threshold over array elements whose subscripts hold a bracket;an if/then/else test-builtin threshold;an if/then/else test-builtin threshold with a tab after test;an if/then/else threshold joined to fi, before a later substitution;an if/then/else threshold over array elements whose subscripts hold a bracket;an if/then/else threshold recorded by check;an if/then/else threshold recorded by check_ratio;an if/then/else threshold recorded by check_skip;an if/then/else threshold recorded by check_text;an if/then/else threshold recorded by pgc_fail;an if/then/else threshold recorded from an indented line;an if/then/else threshold recorded with two spaces before its name;an if/then/else threshold whose else branch is printf;an if/then/else threshold whose then branch is printf;an if/then/else threshold with a space after fi, before a later substitution;an if/then/else threshold with another command before then;an if/then/else threshold with tabs after then and after else;an if/then/else threshold with two spaces after then and after else;an if/then/else threshold with two spaces before each echo;at most zero;nothing expected and a count found;"
+
+# AN UNQUOTED ARRAY ELEMENT DOES NOT END THE TEST (#2023). In `[ ${s[3]} -le
+# ${s[1]} ]` the `]` of the subscript is not quoted, so the test ended there,
+# the rest read as the text after it, and a lossy arm was never examined. The
+# test builtin was not affected, because it does not end at a `]`. The quoted
+# form, as in `"${s[3]}"`, was fixed by #2002, and its arm here is the line
+# from #2023 itself.
+#
+# EACH PIECE OF THE NEW PATTERN HAS AN ARM THAT FAILS WITHOUT IT. The two
+# elements on one line need the loop. The length needs `#` and `@` in the
+# part before the `]`, and an index may hold spaces. The braced and the plain variable fail if the pattern
+# can cross a `}`, or no longer needs the `{`. The element with a default
+# needs the match to stop at the first `]`. The `determinate:` and `carried:`
+# arms keep the old excuses working when the subscript is read.
+#
+# FOUR MUTANTS OF THE PATTERN SURVIVE, AND NONE CHANGES WHAT IT FINDS. Each
+# gave the same rows as the pattern on the tree, on 633 earlier versions of
+# the suites and on the same 633 with the quotes taken off their operands,
+# under mawk and gawk. Dropping the `$` lets a bare `{` start a match, and no
+# test holds one. Dropping `]` from the class lets the match run on to a later
+# `]` before the `}`, which is still inside the same `${...}`. `*` to `+` only
+# refuses `${]`, which bash rejects. Writing spaces instead of `_` hides the
+# same characters from the `]` search.
+_lam_probe_subs="$PGC_WORKDIR/lam_probe_subs.sh"
+cat > "$_lam_probe_subs" <<'PROBE'
+check "subscript operands" "$([ "${sizes[3]}" -le "${sizes[1]}" ] && echo yes || echo no)" "yes"
+check "a threshold over unquoted array elements" \
+	"$([ ${sizes[3]} -le ${sizes[1]} ] && echo yes || echo no)" "yes"
+check "a double-bracket threshold over unquoted array elements" \
+	"$([[ ${sizes[3]} -le ${sizes[1]} ]] && echo yes || echo no)" "yes"
+check "a test-builtin threshold over unquoted array elements" \
+	"$(test ${sizes[3]} -le ${sizes[1]} && echo yes || echo no)" "yes"
+check_num "an if/then/else threshold over unquoted array elements" \
+	"$(if [ ${sizes[3]} -le ${sizes[1]} ]; then echo 1; else echo 0; fi)" "1"
+check_num "an if/then/else double-bracket threshold over unquoted array elements" \
+	"$(if [[ ${sizes[3]} -le ${sizes[1]} ]]; then echo 1; else echo 0; fi)" "1"
+check "a threshold over an unquoted array length" \
+	"$([ ${#sizes[@]} -le 3 ] && echo yes || echo no)" "yes"
+check "a threshold over unquoted array elements with computed indexes" \
+	"$([ ${sizes[$((n - 1))]} -le ${sizes[$i]} ] && echo yes || echo no)" "yes"
+check "a threshold over an unquoted array element whose index holds spaces" \
+	"$([ ${sizes[n - 1]} -le 3 ] && echo yes || echo no)" "yes"
+check "a threshold over an unquoted array element with a default" \
+	"$([ ${sizes[3]:-0} -le 3 ] && echo yes || echo no)" "yes"
+check "a threshold over an unquoted braced variable" \
+	"$([ ${a} -le 3 ] && echo yes || echo no)" "yes"
+check "a threshold over an unquoted plain variable" \
+	"$([ $a -le 3 ] && echo yes || echo no)" "yes"
+check "determinate: an unquoted array element against nothing" \
+	"$([ ${sizes[3]} -gt 0 ] && echo yes || echo no)" "yes"
+check "determinate: a double-bracket unquoted array length against a floor of one" \
+	"$([[ ${#sizes[@]} -ge 1 ]] && echo yes || echo no)" "yes"
+check_num "determinate: an if/then/else unquoted array element against nothing" \
+	"$(if [ ${sizes[3]} -gt 0 ]; then echo 1; else echo 0; fi)" "1"
+check "carried: the branch names both unquoted array elements" \
+	"$([ ${sizes[3]} -le ${sizes[1]} ] && echo yes || echo "no (${sizes[3]} > ${sizes[1]})")" "yes"
+check_num "carried: an if/then/else branch names the unquoted array element" \
+	"$(if [ ${sizes[3]} -le 3 ]; then echo 1; else echo "0 (${sizes[3]})"; fi)" "1"
+PROBE
+_lam_subs_names="$(_lam_sweep "$_lam_probe_subs" | cut -f2 | LC_ALL=C sort | tr '\n' ';')"
+check_text "control: the sweep reads array elements, quoted or not, in every spelling" \
+	"$_lam_subs_names" "a double-bracket threshold over unquoted array elements;a test-builtin threshold over unquoted array elements;a threshold over an unquoted array element whose index holds spaces;a threshold over an unquoted array element with a default;a threshold over an unquoted array length;a threshold over an unquoted braced variable;a threshold over an unquoted plain variable;a threshold over unquoted array elements;a threshold over unquoted array elements with computed indexes;an if/then/else double-bracket threshold over unquoted array elements;an if/then/else threshold over unquoted array elements;subscript operands;"
 
 # A COMPOUND TEST IS NOT EXCUSED, AND THE EXCUSES ARE ANCHORED (#1989).
 #
