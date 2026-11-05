@@ -56,6 +56,12 @@ maint() {
 is_count() {
 	pgc_is_number "$1" && echo yes || echo "no: [$1]"
 }
+# rewrote_some RESULT: "yes" when the call rewrote at least one group, else the
+# count or error it returned. is_count accepts 0, and a rewrite that does nothing
+# keeps the file the same size, which the plateau check reads as success (#2024).
+rewrote_some() {
+	pgc_is_number "$1" && [ "$1" -gt 0 ] && echo yes || echo "no: rewrote [$1] groups"
+}
 
 echo "-- loading $N rows into heap + columnar"
 psql_run "CREATE TABLE h (id int, a int, b bigint, c int);"
@@ -90,7 +96,7 @@ check "recluster returned a group count" "$(is_count "$rec")" "yes"
 check "parity after recluster" "$(fp_n)" "$(fp_h)"
 
 # ---- physical reclaim: steady state across repeated compaction -------------
-# Rounds of {delete a rotating 1/8 slice, compact_rewrite} with NO inserts, so
+# Rounds of {delete a 1/8 slice, compact_rewrite} with NO inserts, so
 # the only writes are compaction's. After the first round establishes a
 # generation, the file must PLATEAU: each round reuses the prior round's freed
 # space instead of extending. A growing file here means reuse regressed.
@@ -105,7 +111,10 @@ sizes=()
 SLICES=(1 2 3 5)
 for r in 1 2 3 4; do
 	s="${SLICES[r-1]}"
-	want_del=$(( (N - s) / 8 + 1 ))
+	# Count the ids in 1..N with id % 8 = s. When N < s there are none. Bash
+	# division truncates toward zero, so (N - s) / 8 + 1 would say 1 there; the
+	# twin's // floors and says 0. The guard makes both say 0.
+	if [ "$N" -ge "$s" ]; then want_del=$(( (N - s) / 8 + 1 )); else want_del=0; fi
 	for t in h n; do
 		del="$(q "WITH d AS (DELETE FROM $t WHERE id % 8 = $s RETURNING 1) SELECT count(*) FROM d;")"
 		check_num "reclaim round $r deletes its whole id % 8 slice from $t" "$del" "$want_del"
@@ -125,7 +134,9 @@ for r in 1 2 3 4; do
 			"${blockers%/*}" "0"
 	fi
 	rw="$(maint "SELECT pgcolumnar.compact_rewrite('n', 0.02);")"
+	echo "  (round $r compact_rewrite rewrote $rw groups)"
 	check "reclaim round $r: compact_rewrite returned a group count" "$(is_count "$rw")" "yes"
+	check "reclaim round $r: compact_rewrite rewrote at least one group" "$(rewrote_some "$rw")" "yes"
 	check "parity after reclaim round $r" "$(fp_n)" "$(fp_h)"
 	sizes+=("$(fsize)")
 	echo "  (round $r file size: ${sizes[-1]})"

@@ -56,6 +56,16 @@ def _is_count(result):
     return "yes" if ok else f"no: [{result}]"
 
 
+def _rewrote_some(result):
+    """'yes' when the call rewrote at least one group, else what it returned.
+
+    _is_count accepts 0, and a rewrite that does nothing keeps the file the same
+    size, which the plateau check reads as success (#2024).
+    """
+    ok = isinstance(result, int) and not isinstance(result, bool) and result > 0
+    return "yes" if ok else f"no: rewrote [{result}] groups"
+
+
 def _fp(cur, table):
     cur.execute(f"{FP} FROM {table}")
     return cur.fetchall()
@@ -118,7 +128,9 @@ def test_scale_parity_and_reclaim_steady_state(pgc_conn, expect):
                 expect.num(blockers, 0,
                            f"round {r}: no transaction older than the newest freed range was open before the rewrite")
             rw = _maint(cur, "SELECT pgcolumnar.compact_rewrite('n', 0.02)")
+            print(f"-- round {r} compact_rewrite rewrote {rw} groups")
             expect.text(_is_count(rw), "yes", f"reclaim round {r}: compact_rewrite returned a group count")
+            expect.text(_rewrote_some(rw), "yes", f"reclaim round {r}: compact_rewrite rewrote at least one group")
             expect.rows(_fp(cur, "n"), _fp(cur, "h"), f"parity after reclaim round {r}")
             sizes.append(_one(cur, "SELECT pg_relation_size('n')"))
             print(f"-- round {r} file size: {sizes[-1]}")

@@ -594,7 +594,9 @@ true until the next version shipped.
   all 20 checks. Round 4 now deletes `id % 8 = 5`. A new check per round and
   table wants the delete to remove the whole slice. The suite and its pytest
   twin change together; the twin's two "round 4 deletes no rows" checks are
-  gone.
+  gone. A second new check per round wants `compact_rewrite` to rewrite at
+  least one group. Before, a rewrite that returned 0 passed: the file kept its
+  size, and the plateau check read that as reuse.
 - Self-test part 540 now reads three more spellings of a check arm that
   prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
   `test` builtin, as well as `[ ... ]`. It excuses the mirrored
