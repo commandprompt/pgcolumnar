@@ -1633,6 +1633,49 @@ def test_the_grader_itself_refuses_the_suite_it_cannot_read(expect, tmp_path):
                "and DOES print a verdict, so the refusal above is the difference")
 
 
+def test_a_suite_with_no_readable_name_is_refused_not_covered(expect, tmp_path):
+    """ZERO NAMES IS NOT ZERO MISSING (#2032).
+
+    `extension_upgrade.sh` records through its own `chk` and `echo "  PASS ..."`,
+    not through a `lib.sh` recorder, so the extractor reads nothing from it. The
+    grader then reported `missing: 0` and `every bash property is covered` against
+    ANY port -- measured against three unrelated ones -- which is the same green
+    an empty list gives. A verdict about a suite of which nothing was read is the
+    verdict the unreadable-helper refusal above exists not to produce.
+
+    The fixture is the gate's own shape, cut down.
+    """
+    import io, contextlib
+    from compare_to_bash import main
+
+    port = tmp_path / "test_stub.py"
+    port.write_text("def test_x(expect):\n    expect.num(1, 1, 'an unrelated name')\n")
+    silent = tmp_path / "silent.sh"
+    silent.write_text(
+        'chk () {\n\tlocal label=$1 want=$2 got\n\tgot=$(q "$3")\n'
+        '\tif [ "$got" = "$want" ]; then echo "  PASS  $label: $got"\n'
+        '\telse echo "  FAIL  $label"; fail=1; fi\n}\n'
+        'chk "existing rows still readable" "1000" "SELECT count(*) FROM t"\n'
+        'echo "  PASS  every C function\'s link name is namespaced"\n')
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = main(str(silent), str(port))
+    text = out.getvalue()
+    expect.num(rc, 2, "the grader exits 2 on a suite it read no check name from")
+    expect.num(1 if "REFUSED" in text else 0, 1, "and says so")
+    expect.num(1 if "covered" in text else 0, 0,
+               "and does not call a suite it read nothing from covered")
+
+    # THE CONTROL: one recorder call is enough to be graded, so the refusal is about
+    # reading nothing and not about a suite that also echoes.
+    silent.write_text(silent.read_text() + 'check "an unrelated name" "$a" "$b"\n')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = main(str(silent), str(port))
+    expect.num(rc, 0, "control: the same suite with one readable name grades clean")
+
+
 def test_a_helper_reaching_only_the_primitive_is_found(expect):
     """THE SEED IS `pgc_record`, NOT THE `check` FAMILY, and four suites turn on it.
 

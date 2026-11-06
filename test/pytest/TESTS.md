@@ -4465,6 +4465,7 @@ the tool grades THIS tree.
 | `test_the_refusal_names_exactly_the_suites_it_refuses` | the refused SET is pinned by name, not counted; both directions, so an entry cannot outlive its cause |
 | `test_a_bare_interpolation_is_not_published_as_a_name` | a forwarding wrapper's `{}` is dropped: it names nothing and can match a wholly-interpolated port name |
 | `test_the_grader_itself_refuses_the_suite_it_cannot_read` | `main` exits 2 and prints no verdict, with a readable suite as the control |
+| `test_a_suite_with_no_readable_name_is_refused_not_covered` | a suite the extractor reads no check name from is refused with exit 2 and never called covered, with the same suite plus one recorder call as the control (#2032). `extension_upgrade.sh` recorded through its own `echo`, and the grader reported `missing: 0` for it against any port |
 | `test_a_helper_reaching_only_the_primitive_is_found` | the closure is seeded from `pgc_record`, not the `check` family; four suites turn on it |
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
 | `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
