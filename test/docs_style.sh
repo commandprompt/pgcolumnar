@@ -786,8 +786,6 @@ else
 	check "every dated changelog section holds what its tag shipped, plus only what is recorded" "${_cl_bad# }" ""
 	check "every dated changelog section still holds every entry its tag shipped" "${_cl_lost# }" ""
 fi
-$(_cl_versions < "$SRCDIR/CHANGELOG.md")
-CLEOF
 
 # The sweep is a claim. An empty one would make every arm above vanish and this
 # suite would report clean having compared no section at all.
