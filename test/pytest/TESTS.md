@@ -401,6 +401,7 @@ behaviour, the source of that number is named.
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
+- [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
 
 ## 1. How to read a test in here
 
@@ -4465,11 +4466,14 @@ the tool grades THIS tree.
 | `test_the_refusal_names_exactly_the_suites_it_refuses` | the refused SET is pinned by name, not counted; both directions, so an entry cannot outlive its cause |
 | `test_a_bare_interpolation_is_not_published_as_a_name` | a forwarding wrapper's `{}` is dropped: it names nothing and can match a wholly-interpolated port name |
 | `test_the_grader_itself_refuses_the_suite_it_cannot_read` | `main` exits 2 and prints no verdict, with a readable suite as the control |
+| `test_a_suite_with_no_readable_name_is_refused_not_covered` | a suite the extractor reads no check name from is refused with exit 2 and never called covered, with the same suite plus one recorder call as the control (#2032). `extension_upgrade.sh` recorded through its own `echo`, and the grader reported `missing: 0` for it against any port |
 | `test_a_helper_reaching_only_the_primitive_is_found` | the closure is seeded from `pgc_record`, not the `check` family; four suites turn on it |
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
 | `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
 | `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt` or declared in `SHELL_HARNESS`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
+| `test_every_shell_file_is_a_suite_a_paired_gate_or_declared` | every `test/*.sh` outside `SUITES` has a pytest twin or is declared in `NON_SUITE` (runners, libraries, `capability_sweep`), and a declared stem is not registered, has no twin, exists, and says why (#2032). The registered-suite arm could not see a standalone gate, so `extension_upgrade.sh` had no twin and nothing said so |
+| `test_the_non_suite_check_reddens_each_way` | the five directions of that sweep, each driven on fixtures with a clean control, so the sweep cannot pass by reading nothing |
 | `test_a_shell_harness_suite_is_declared_both_ways` | a `SHELL_HARNESS` stem (a suite that tests the shell harness itself, today `harness_selftest`) has no twin, is a registered suite, is not also listed unported, and says why: held both ways, so the declaration cannot become a one-way exemption (#1341) |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
 
@@ -14187,3 +14191,22 @@ Each round's `compact_rewrite` must also rewrite at least one group. A group cou
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
+
+## 356. test_extension_upgrade.py: an old install keeps working under this library
+
+Port of `extension_upgrade.sh` (#382, #2032). Every SQL-callable function records its C link name in `pg_proc.prosrc` when the extension is created. If a link name is renamed in C, the rows a released install holds point at a symbol the new library no longer exports. Replacing only the library, which is what a package upgrade does, then leaves the extension inert, and a fresh install shows nothing wrong.
+
+THE CLAIM IS ABOUT TWO BUILDS, so this test uses both, and it runs only when it is alone, for `test_format_downgrade.py`'s reason. It builds `v1.0-alpha`, the release nightly.yml upgrades from, and fetches the tag when the checkout is shallow. It creates the extension and a table with that build, puts this tree's install in its place, and runs `ALTER EXTENSION UPDATE`. `test_native_upgrade_converge.py` proves the catalog convergence from every release's frozen install script, but under this tree's library. Only this file runs an old library's `CREATE EXTENSION` and reads rows an old build wrote.
+
+ON A CLUSTER OF ITS OWN, AND THE PREFIX IS PUT BACK EXACTLY, by the snapshot and atomic rename `test_format_downgrade.py` uses. Measured: afterwards the prefix holds this tree's install and no temporary file.
+
+The shell gate recorded through its own `chk` and `echo`, so the parity tool read no name from it. It now records through `lib.sh`, as `format_downgrade.sh` does, and grades 11 of 11 by name against this file.
+
+Removal proof, PG18. Renaming `pgcolumnar_vacuum` in C and in the install script, with the upgrade scripts untouched, fails `ALTER EXTENSION UPDATE succeeds`. On the shell twin the same mutation fails seven arms, naming `could not find function "columnar_handler"`. Deleting the rollup tables' `GRANT` from the alpha4-to-alpha5 script fails `upgraded catalog is identical to a fresh install of the new default` on both. Moving `default_version` to a version with an install script but no update path fails `an update path leads from the old version to the new default`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_old_install_works_under_this_library` | the prefix holds this tree's install to put back; the old build compiles and stores its rows; an update path leads from the old version to the new default; `ALTER EXTENSION UPDATE` succeeds; the old table's rows read back and it takes an insert; a new columnar table can be created; the access method is still bound; `pgcolumnar.vacuum` runs; every C function's link name is in the `pgcolumnar` namespace; a fresh install of the new default stands up, and the upgraded catalog equals it object by object |
+| `test_the_install_swap_declines_beside_other_workers` | the decision that makes the swap decline beside other xdist workers, driven with the environments pytest-xdist sets: a serial run and a one-worker run proceed, a run beside three other workers declines, and a worker with no stated count is treated as not alone |

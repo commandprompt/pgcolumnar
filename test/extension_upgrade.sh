@@ -45,17 +45,22 @@ SRCDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # ephemeral range means the kernel can hand the same port to something else between
 # the choice and the bind. harness_selftest enforces this, and caught it here.
 . "$(dirname "${BASH_SOURCE[0]}")/portlib.sh"
+# lib.sh for its recorders and accounting only, as format_downgrade.sh uses it: this
+# suite stands up its own cluster (it must swap the library under it), so pgc_setup
+# and its EXIT trap are not used. Recording through it is what makes the checks below
+# readable by name, so its pytest twin can be graded against them (#2032).
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 command -v "$PG_CONFIG" >/dev/null 2>&1 || { echo "FATAL: $PG_CONFIG not found"; exit 1; }
 BINDIR=$($PG_CONFIG --bindir)
 SHAREDIR=$($PG_CONFIG --sharedir)
 PGMAJ=$($PG_CONFIG --version | grep -oE '[0-9]+' | head -1)
+PGC_MAJOR="$(pgc_major_of "$PG_CONFIG")"
 
 TMP=$(mktemp -d /tmp/pgc-extupg.XXXXXX)
 DATA=$TMP/data
 PORT=$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI" "$$")
 LOG=$TMP/server.log
-fail=0
 
 cleanup () {
 	runuser -u postgres -- "$BINDIR/pg_ctl" -D "$DATA" -w stop >/dev/null 2>&1
@@ -209,7 +214,8 @@ q "INSERT INTO t SELECT g, 'v'||g FROM generate_series(1,1000) g" >/dev/null
 before_rows=$(q "SELECT count(*) FROM t")
 old_ver=$(q "SELECT extversion FROM pg_extension WHERE extname='pgcolumnar'")
 echo "  old install: $before_rows rows, extversion $old_ver"
-[ "$before_rows" = "1000" ] || { echo "FAIL  old install did not store rows"; exit 1; }
+check_num "premise: the old install stored its rows" "$before_rows" "1000"
+[ "$before_rows" = "1000" ] || pgc_summary
 
 # ---- 2. install the tree under test over it, library and scripts ---------------------
 # Clean first. This tree may have last been built against another major, and make
@@ -239,37 +245,33 @@ new_default=$(grep -oE "default_version = '[^']+'" "$SRCDIR/pgcolumnar.control" 
 # correctly chained upgrade is not reported as a missing script.
 haspath=$(q "SELECT count(*) FROM pg_extension_update_paths('pgcolumnar')
              WHERE source='$old_ver' AND target='$new_default' AND path IS NOT NULL")
-if [ "$new_default" != "$old_ver" ] && [ "${haspath:-0}" = "0" ]; then
-	echo "  FAIL  default_version moved $old_ver -> $new_default with no update path"
-	echo "        (need pgcolumnar--$old_ver--$new_default.sql or a chain of upgrade scripts)"
-	fail=1
+# The answer carries the old version, the new one and how many paths join them, so a
+# failure says which move had no script (pgcolumnar--OLD--NEW.sql, or a chain of them).
+# The server lists one row per (source, target), so a reachable target is exactly 1.
+if [ "$new_default" = "$old_ver" ]; then
+	check "an update path leads from the old version to the new default" \
+		"none needed: $old_ver" "none needed: $new_default"
+else
+	check "an update path leads from the old version to the new default" \
+		"$old_ver -> $new_default: ${haspath:-0} path" "$old_ver -> $new_default: 1 path"
 fi
 
 upd=$(q "ALTER EXTENSION pgcolumnar UPDATE")
-case "$upd" in
-	*ERROR*) echo "  FAIL  ALTER EXTENSION UPDATE: $upd"; fail=1 ;;
-	*)       echo "  ok    ALTER EXTENSION UPDATE -> $(q "SELECT extversion FROM pg_extension WHERE extname='pgcolumnar'")" ;;
-esac
+check "ALTER EXTENSION UPDATE succeeds" "$(case "$upd" in *ERROR*) echo "$upd";; *) echo ok;; esac)" "ok"
+echo "        extversion now $(q "SELECT extversion FROM pg_extension WHERE extname='pgcolumnar'")"
 
 # ---- 4. the extension must work on the upgraded install -----------------------------
-chk () {
-	local label=$1 want=$2 got
-	got=$(q "$3")
-	if [ "$got" = "$want" ]; then
-		echo "  PASS  $label: $got"
-	else
-		echo "  FAIL  $label: got [$got] want [$want]"
-		fail=1
-	fi
-}
-chk "existing rows still readable" "1000" "SELECT count(*) FROM t"
+check_num "existing rows still readable" "$(q "SELECT count(*) FROM t")" "1000"
 q "INSERT INTO t VALUES (0,'x')" >/dev/null
-chk "insert into an existing table" "1001" "SELECT count(*) FROM t"
+check_num "insert into an existing table" "$(q "SELECT count(*) FROM t")" "1001"
 q "CREATE TABLE t2 (a int) USING pgcolumnar" >/dev/null
 q "INSERT INTO t2 SELECT generate_series(1,3)" >/dev/null
-chk "new columnar table creatable" "3" "SELECT count(*) FROM t2"
-chk "access method still bound" "pgcolumnar" "SELECT amname FROM pg_am WHERE amname='pgcolumnar'"
-chk "maintenance function callable" "" "SELECT pgcolumnar.vacuum('t')"
+check_num "new columnar table creatable" "$(q "SELECT count(*) FROM t2")" "3"
+check_text "access method still bound" "$(q "SELECT amname FROM pg_am WHERE amname='pgcolumnar'")" "pgcolumnar"
+# pgcolumnar.vacuum returns void, so success prints an empty row; the trailing SELECT
+# gives the call an answer on the last line, and an error in the call stops psql before
+# it, so the last line is then the error's.
+check_text "maintenance function callable" "$(q "SELECT pgcolumnar.vacuum('t'); SELECT 'called'" | tail -1)" "called"
 
 # Every C function's recorded link name must resolve in the library we just installed.
 # This is the general form of the bug, so it catches the next rename as well as this one.
@@ -279,12 +281,7 @@ missing=$(q "SELECT string_agg(p.proname||' -> '||p.prosrc, ', ')
              JOIN pg_extension e ON e.oid = d.refobjid AND e.extname = 'pgcolumnar'
              WHERE p.prolang = (SELECT oid FROM pg_language WHERE lanname='c')
                AND p.prosrc !~ '^pgcolumnar'")
-if [ -n "$missing" ]; then
-	echo "  FAIL  link names left outside the pgcolumnar namespace: $missing"
-	fail=1
-else
-	echo "  PASS  every C function's link name is namespaced"
-fi
+check_text "every C function's link name is namespaced" "${missing:-none outside it}" "none outside it"
 
 # ---- 5. the upgraded catalog must MATCH a fresh install of the new version -----------
 # The checks above prove the upgraded extension works; they do not prove the upgrade
@@ -315,19 +312,13 @@ snap () {
 runpg "$BINDIR/createdb" -h /tmp -p "$PORT" extfresh >/dev/null 2>&1
 fresh_err=$(runpg "$BINDIR/psql" -h /tmp -p "$PORT" -d extfresh -X -Atc "CREATE EXTENSION pgcolumnar" 2>&1)
 fresh_snap=$(snap extfresh)
-if [ -z "$fresh_snap" ]; then
-	echo "  FAIL  could not stand up a fresh $new_default install to compare against: $fresh_err"
-	fail=1
-else
+check "premise: a fresh install of the new default stood up to compare against" \
+	"$([ -n "$fresh_snap" ] && echo yes || echo "no: $fresh_err")" "yes"
+if [ -n "$fresh_snap" ]; then
 	conv_diff=$(diff <(printf '%s\n' "$fresh_snap") <(snap extupg) || true)
-	if [ -z "$conv_diff" ]; then
-		echo "  PASS  upgraded catalog is byte-identical to a fresh $new_default install ($(printf '%s\n' "$fresh_snap" | grep -c .) objects)"
-	else
-		echo "  FAIL  upgraded catalog diverges from a fresh $new_default install:"
-		printf '%s\n' "$conv_diff" | head -40 | sed 's/^/      /'
-		fail=1
-	fi
+	echo "        compared $(printf '%s\n' "$fresh_snap" | grep -c .) objects"
+	check "upgraded catalog is identical to a fresh install of the new default" \
+		"${conv_diff:-identical}" "identical"
 fi
 
-echo "== extension_upgrade: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
-exit $fail
+pgc_summary
