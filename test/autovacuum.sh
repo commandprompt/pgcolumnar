@@ -28,6 +28,15 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 CG=1000
 deleted_rows() { q "SELECT COALESCE(sum(deletedrows),0) FROM pgcolumnar.stats('$1');"; }
 
+# left_alone BEFORE AFTER -> "unchanged" when a table that had dead rows still has
+# the same number, else what happened. Two missing readings agreed as unchanged,
+# and so did a table with no dead rows to leave alone.
+left_alone() {
+	if ! pgc_is_number "$1" || ! pgc_is_number "$2"; then echo "no reading ([$1] -> [$2])"
+	elif [ "$1" -le 0 ]; then echo "no reading (no dead rows to leave alone)"
+	elif [ "$1" = "$2" ]; then echo unchanged
+	else echo "changed: $1 -> $2"; fi
+}
 mk_deleted() {  # mk_deleted <table> -- 20k rows, 40% scattered-deleted (> threshold)
 	psql_run "CREATE TABLE $1 (id int, v int, pad text) USING pgcolumnar;"
 	psql_run "SELECT pgcolumnar.set_options('$1', chunk_group_row_limit => $CG);"
@@ -37,9 +46,12 @@ mk_deleted() {  # mk_deleted <table> -- 20k rows, 40% scattered-deleted (> thres
 }
 
 # ---- premise: the launcher is registered and running ------------------------
-check "premise: the maintenance launcher is running" \
+# Not premises (#1339): the launcher and the setting's default are pgcolumnar's own,
+# so a repository change reddens either -- with the launcher never registered, all
+# of this suite goes red.
+check "the maintenance launcher is running" \
 	"$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'pgcolumnar autovacuum launcher';")" "1"
-check "premise: the daemon is OFF by default" "$(q "SHOW pgcolumnar.autovacuum;")" "off"
+check "the daemon is OFF by default" "$(q "SHOW pgcolumnar.autovacuum;")" "off"
 
 # ---- control: OFF -> a deleted-heavy table is left alone ---------------------
 mk_deleted av_off
@@ -49,7 +61,7 @@ check "premise: av_off starts with dead rows above the threshold" \
 sleep 8   # several naptimes; the daemon is off, so nothing should change
 OFF_AFTER="$(deleted_rows av_off)"
 check "OFF: the daemon did not touch the table (dead rows unchanged)" \
-	"$OFF_AFTER" "$OFF_BEFORE"
+	"$(left_alone "$OFF_BEFORE" "$OFF_AFTER")" "unchanged"
 
 # ---- enable: ON -> the deleted-heavy table gets compacted -------------------
 mk_deleted av_on
@@ -70,7 +82,7 @@ for _ in $(seq 1 15); do
 done
 check "ON: the daemon compacted the deleted-heavy table (dead rows now 0)" "$ON_AFTER" "0"
 # and the live data is intact (compact_rewrite drops only dead rows)
-check "ON: the surviving rows are unchanged" \
+check_num "ON: the surviving rows are unchanged" \
 	"$(q "SELECT count(*) FROM av_on;")" \
 	"$(q "SELECT count(*) FROM generate_series(1,20000) g WHERE NOT ((g * 2654435761)::bigint % 100 < 40);")"
 
@@ -104,6 +116,6 @@ mk_deleted av_off2
 OFF2_BEFORE="$(deleted_rows av_off2)"
 sleep 8
 check "OFF-again: a new deleted table is left alone after disabling" \
-	"$(deleted_rows av_off2)" "$OFF2_BEFORE"
+	"$(left_alone "$OFF2_BEFORE" "$(deleted_rows av_off2)")" "unchanged"
 
 pgc_summary

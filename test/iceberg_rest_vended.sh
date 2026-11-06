@@ -13,6 +13,8 @@
 # s3:// metadata-location and vends the S3 fixture's key/secret/region/endpoint.
 #
 # Usage:  test/iceberg_rest_vended.sh [PG_CONFIG]
+#
+# PGC_VENDED_S3_START_DELAY=N delays the S3 fixture's start by N seconds (#1961).
 
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -39,16 +41,63 @@ LAST_PORT=""
 vend_teardown() { for p in $PIDS; do kill "$p" 2>/dev/null; done; pgc_teardown; }
 trap vend_teardown EXIT INT TERM
 
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
+# refusal SQL PHRASE -> the SQLSTATE when SQL is refused with PHRASE in its message;
+# "SQLSTATE (another refusal: MESSAGE)" when something else refused it; "no error"
+# when it ran; nothing when the server could not be asked. The wrong-secret arm read
+# the SQLSTATE alone, and 28000 is also "no credentials": with vended credentials
+# never built at all, the read was refused for having none and the arm passed.
+refusal() {
+	local out st msg
+	await_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
 $1;
 SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then
+		case "$msg" in *"$2"*) echo "$st" ;; *) echo "$st (another refusal: $msg)" ;; esac
+	elif grep -q 'could not connect\|server closed the connection\|terminating connection' <<<"$out"; then
+		:
+	else
+		echo "no error"
+	fi
+}
+
+# await_up -> wait, at most 60 s, until the server answers, so an arm after a crash
+# reads the table rather than crash recovery.
+await_up() {
+	local i
+	for i in $(seq 1 120); do
+		[ "$(q 'SELECT 1')" = 1 ] && return 0
+		sleep 0.5
+	done
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read. "SELECT 1" alone answers again after crash recovery: with the
+# 403 refusal replaced by abort(), the survival check passed.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	await_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
 }
 pg_restart_env() {
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
-	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	# Every AWS_* unset first: the vended arms prove something only while the postmaster
+	# holds no ambient credential, so none may arrive from the caller's environment or
+	# a login profile. An arm that wants ambient credentials passes them in "$@".
+	pgc_pg "unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ENDPOINT_URL AWS_REGION AWS_DEFAULT_REGION AWS_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_CONFIG_FILE; $* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done
 	echo "FATAL: cluster did not come back after env restart"; exit 1
 }
@@ -67,14 +116,63 @@ start_rest() {  # $@=extra args; picks a fresh free port into LAST_PORT
 mkdir -p "$PGC_WORKDIR/$BUCKET"
 cp -r "$FX/warehouse_del/db" "$PGC_WORKDIR/$BUCKET/db"
 chmod -R u+rwX "$PGC_WORKDIR/$BUCKET"
-python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+# PGC_VENDED_S3_START_DELAY (seconds, default 0) delays the fixture's start. It
+# exists to test the wait below: a slow runner, made on purpose (#1961).
+S3_FIXTURE="$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py"
+( sleep "${PGC_VENDED_S3_START_DELAY:-0}"
+  exec python3 "$S3_FIXTURE" \
 	--dir "$PGC_WORKDIR" --port "$S3_PORT" --log "$PGC_WORKDIR/s3.log" \
-	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" \
+	--sigv4-key "$AKID" --sigv4-secret "$SECRET" --sigv4-region "$REGION" ) \
 	> "$PGC_WORKDIR/s3.out" 2>&1 &
-PIDS="$PIDS $!"
-for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/s3.out" 2>/dev/null && break; sleep 0.1; done
-check "premise: the SigV4 S3 fixture is up" \
-	"$(grep -c READY "$PGC_WORKDIR/s3.out" 2>/dev/null)" "1"
+S3_PID=$!
+PIDS="$PIDS $S3_PID"
+
+# s3_state sets S3_STATE: "up" once the fixture prints READY, which it does right
+# after it binds its port. Otherwise, what was seen: whether the process is still running or
+# exited, whether the port accepts a connection, and what s3.out holds.
+#
+# The wait is 30 s. It was 5 s, and a busy CI runner took longer than that to start
+# Python (#1961). It stops early when the process has exited, because an exited
+# fixture will never print READY. It runs in this shell, not in $(...), because
+# only the parent shell can wait for the process and read its exit status.
+s3_state() {
+	local _ st alive port out el t0="${EPOCHREALTIME//[!0-9]/}"
+	for _ in $(seq 1 300); do
+		grep -q READY "$PGC_WORKDIR/s3.out" 2>/dev/null && { S3_STATE=up; return; }
+		kill -0 "$S3_PID" 2>/dev/null || break
+		sleep 0.1
+	done
+	# One last look: the process may have printed READY and then exited.
+	grep -q READY "$PGC_WORKDIR/s3.out" 2>/dev/null && { S3_STATE=up; return; }
+	el=$(( (${EPOCHREALTIME//[!0-9]/} - t0) / 100000 ))	# tenths of a second
+	el="$((el / 10)).$((el % 10)) s"
+	if kill -0 "$S3_PID" 2>/dev/null; then
+		alive="still running with no READY after $el"
+	else
+		wait "$S3_PID" 2>/dev/null; st=$?
+		alive="exited with status $st after $el"
+	fi
+	# A port that accepts a connection while the fixture is not running is held by
+	# another process. In CI run 41425423611 the arms got HTTP 501 from it (#1961).
+	if (exec 3<>"/dev/tcp/127.0.0.1/$S3_PORT") 2>/dev/null; then
+		port=yes
+		kill -0 "$S3_PID" 2>/dev/null \
+			|| port="yes, so another process holds it and the fixture never served it"
+	else
+		port=no
+	fi
+	out="$(head -c 2000 "$PGC_WORKDIR/s3.out" 2>/dev/null | tr '\n\t' '  ')"
+	S3_STATE="$alive; port $S3_PORT accepts a connection: $port; s3.out: [${out:-empty}]"
+}
+s3_state
+check "premise: the SigV4 S3 fixture is up" "$S3_STATE" "up"
+
+# Each arm that reads S3 is recorded as unrunnable, not asked, when the fixture
+# is not up. Such an arm fails for a reason unrelated to what it tests, and 11
+# such failures hid the one that mattered (#1961). The premise above stays a
+# failure. Each site calls check_unrunnable itself, with the arm's own name,
+# because harness_selftest part 480 refuses a new wrapper around it.
+S3_DOWN="the SigV4 S3 fixture is not up, so this arm cannot read S3 (see the premise)"
 
 S3EP="http://127.0.0.1:$S3_PORT"
 # the catalog that vends the correct S3 creds + endpoint
@@ -86,14 +184,16 @@ CAT="http://127.0.0.1:$LAST_PORT"
 pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
+CRASHES_BEFORE="$(crashes)"
 
 # ---- CORE: vended creds sign the S3 reads (no ambient creds exist) -----------
 # apply.metadata.json drops ordinals 1,3 (id 2, id 4); survivors 1,3,5.
-check "iceberg_rest_scan reads via vended credentials (no ambient creds set)" \
+if [ "$S3_STATE" != up ]; then check_unrunnable "iceberg_rest_scan reads via vended credentials (no ambient creds set)" UNMET_PRECONDITION "$S3_DOWN"
+else check "iceberg_rest_scan reads via vended credentials (no ambient creds set)" \
 	"$(q "SELECT id || '|' || region || '|' || amount
 	      FROM pgcolumnar.iceberg_rest_scan('$CAT','db','t') AS t(id bigint, region text, amount int)
 	      ORDER BY id")" \
-	"$(printf '1|eu|10\n3|us|30\n5|us|50')"
+	"$(printf '1|eu|10\n3|us|30\n5|us|50')"; fi
 
 # ---- the vended secret never appears in any log --------------------------
 # the secret comes from the catalog response, is used only as the SigV4 signing
@@ -124,27 +224,103 @@ check "premise: the PG server log holds lines to search" \
 	"$([ "${_irv_loglines:-0}" -gt 0 ] && echo yes || echo no)" "yes"
 check "the vended secret never appears in the PG server log" \
 	"$(grep -c "$SECRET" "$PGC_LOGFILE" 2>/dev/null)" "0"
-check "the vended secret never appears in the S3 request log" \
-	"$(grep -c "$SECRET" "$PGC_WORKDIR/s3.log" 2>/dev/null)" "0"
+if [ "$S3_STATE" != up ]; then check_unrunnable "the vended secret never appears in the S3 request log" UNMET_PRECONDITION "$S3_DOWN"
+else check "the vended secret never appears in the S3 request log" \
+	"$(grep -c "$SECRET" "$PGC_WORKDIR/s3.log" 2>/dev/null)" "0"; fi
 
 # ---- a WRONG vended secret is used and refused (403 -> 28000), not bypassed --
 start_rest --token "$RESTTOK" \
 	--vend-key "$AKID" --vend-secret "wrong-vended-secret" --vend-region "$REGION" --vend-endpoint "$S3EP"
 BAD_PORT="$LAST_PORT"
-check "a wrong vended secret is refused by S3, not bypassed (28000)" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$BAD_PORT','db','t')
-	                AS t(id bigint, region text, amount int)")" \
-	"28000"
+if [ "$S3_STATE" != up ]; then check_unrunnable "a wrong vended secret is refused by S3, not bypassed (28000)" UNMET_PRECONDITION "$S3_DOWN"
+else check "a wrong vended secret is refused by S3, not bypassed (28000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$BAD_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" "was denied (HTTP 403")" \
+	"28000"; fi
 
 # ---- storage-credentials: longest-prefix entry (correct) beats catch-all ----
+# The catalog's flat config vends WRONG credentials here too, so a reader that
+# ignored the storage-credentials array and used the flat config is refused. With
+# the array never read, this arm passed while the flat config was correct.
 start_rest --token "$RESTTOK" \
 	--vend-key "$AKID" --vend-secret "$SECRET" --vend-region "$REGION" --vend-endpoint "$S3EP" \
 	--storage-cred-prefix "s3://$BUCKET/db/t"
 SC_PORT="$LAST_PORT"
-check "storage-credentials longest-prefix match selects the right creds" \
+await_up
+if [ "$S3_STATE" != up ]; then check_unrunnable "storage-credentials longest-prefix match selects the right creds" UNMET_PRECONDITION "$S3_DOWN"
+else check "storage-credentials longest-prefix match selects the right creds" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SC_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
-	"3"
+	"3"; fi
+
+# ---- storage-credentials: each file gets its OWN longest-prefix match (#1820) --
+# Neither prefix covers the other, so one choice made against the
+# metadata-location cannot be right for the data files. A reader that signed
+# every file with the metadata/ entry reads the bad-key arm with no error.
+TL="s3://$BUCKET/db/t"
+VEND_GOOD=(--token "$RESTTOK" --vend-key "$AKID" --vend-secret "$SECRET" \
+	--vend-region "$REGION" --vend-endpoint "$S3EP")
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/metadata/=good" --storage-cred "$TL/data/=good"
+SPLIT_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "split metadata/ and data/ credentials each sign their own files" UNMET_PRECONDITION "$S3_DOWN"
+else check "split metadata/ and data/ credentials each sign their own files" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SPLIT_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"; fi
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/metadata/=good" --storage-cred "$TL/data/=bad"
+SPLITBAD_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "the data/ credential, not the metadata/ one, signs a data file (28000)" UNMET_PRECONDITION "$S3_DOWN"
+else check "the data/ credential, not the metadata/ one, signs a data file (28000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SPLITBAD_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" '.parquet" was denied (HTTP 403')" \
+	"28000"; fi
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=good" --flat-config good
+FLAT_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "the flat config signs a file no storage-credentials prefix covers" UNMET_PRECONDITION "$S3_DOWN"
+else check "the flat config signs a file no storage-credentials prefix covers" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$FLAT_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"; fi
+# The longer prefix is listed FIRST and a broader bad one after it. In every
+# arm above the prefixes are listed shortest first or don't overlap, so a
+# reader that kept the last match instead of the longest one read them all.
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/=good" --storage-cred "s3://$BUCKET/=bad"
+LONGFIRST_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "the longest prefix wins when it is listed before a broader one" UNMET_PRECONDITION "$S3_DOWN"
+else check "the longest prefix wins when it is listed before a broader one" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$LONGFIRST_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"; fi
+# An entry with a key id and no secret vends no usable credential, so the
+# reader ignores it and the broader good entry signs every file. It is the
+# longest match and listed last, so a reader that kept it would either sign
+# with no secret (a NULL secret reaches the module) or treat its prefix as
+# covered by nothing (28000). The backend must survive it.
+AKIDONLY_CRASHES="$(crashes)"
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=akidonly"
+AKIDONLY_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "an entry with a key id and no secret is ignored, not used" UNMET_PRECONDITION "$S3_DOWN"
+else check "an entry with a key id and no secret is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AKIDONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"; fi
+check "backend still up after an entry with a key id and no secret" \
+	"$(survived "$AKIDONLY_CRASHES")" "1"
+# The other half of the both-keys rule: an entry with a secret and no key id
+# vends nothing either. It is the longest match and listed last. A reader that
+# kept it hands the module a config with no key id, which refuses the read
+# (28000) instead of letting the broader good entry sign it.
+start_rest "${VEND_GOOD[@]}" --storage-cred "s3://$BUCKET/=good" --storage-cred "$TL/=secretonly"
+SECRETONLY_PORT="$LAST_PORT"
+if [ "$S3_STATE" != up ]; then check_unrunnable "an entry with a secret and no key id is ignored, not used" UNMET_PRECONDITION "$S3_DOWN"
+else check "an entry with a secret and no key id is ignored, not used" \
+	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$SECRETONLY_PORT','db','t')
+	      AS t(id bigint, region text, amount int)")" \
+	"3"; fi
+
+# Started now, read after the restart below that gives the server ambient keys.
+start_rest "${VEND_GOOD[@]}" --storage-cred "$TL/data/=bad"
+DATAONLY_PORT="$LAST_PORT"
 
 # ---- vended creds do NOT bypass the allow-list ------------------------------
 # a catalog that vends an endpoint off the allow-list is refused at the read.
@@ -153,9 +329,9 @@ start_rest --token "$RESTTOK" \
 	--vend-endpoint "http://127.0.0.2:$S3_PORT"
 LL_PORT="$LAST_PORT"
 check "vended creds for an off-allow-list endpoint are refused (42501)" \
-	"$(sqlstate_of "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
+	"$(refusal "SET pgcolumnar.objstore_allowed_endpoints='127.0.0.1';
 	                SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$LL_PORT','db','t')
-	                AS t(id bigint, region text, amount int)")" \
+	                AS t(id bigint, region text, amount int)" "is not in pgcolumnar.objstore_allowed_endpoints")" \
 	"42501"
 
 # ---- ambient still works when the catalog vends nothing ---------------------
@@ -166,11 +342,21 @@ pg_restart_env "PGCOLUMNAR_ICEBERG_REST_TOKEN='$RESTTOK'" \
 	"AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
 q "ALTER SYSTEM SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'" >/dev/null
 q "SELECT pg_reload_conf()" >/dev/null
-check "a table vending no creds still reads with ambient (cfg NULL path)" \
+await_up
+if [ "$S3_STATE" != up ]; then check_unrunnable "a table vending no creds still reads with ambient (cfg NULL path)" UNMET_PRECONDITION "$S3_DOWN"
+else check "a table vending no creds still reads with ambient (cfg NULL path)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$AMB_PORT','db','t')
 	      AS t(id bigint, region text, amount int)")" \
-	"3"
+	"3"; fi
 
-check "backend still up after the vended-credential arms" "$(q 'SELECT 1')" "1"
+# The server now holds ambient keys that S3 accepts. The catalog vends one
+# credential, for data/ only, so nothing covers the metadata file: reading it
+# with the ambient identity is the silent fallback #1820 removes.
+check "a file no vended credential covers is refused, not read ambient (28000)" \
+	"$(refusal "SELECT * FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$DATAONLY_PORT','db','t')
+	                AS t(id bigint, region text, amount int)" "no vended storage credential covers")" \
+	"28000"
+
+check "backend still up after the vended-credential arms" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

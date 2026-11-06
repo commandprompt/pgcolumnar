@@ -32,12 +32,16 @@ psql_run "CREATE FUNCTION pgcolumnar.debug_set_metapage_version(regclass, int, i
   RETURNS void AS 'pgcolumnar', 'pgcolumnar_debug_set_metapage_version'
   LANGUAGE C;"
 
-# Error text (stderr) of a failing statement; empty when it succeeds. Used to
-# assert the guard rejects rather than misreads. ON_ERROR_STOP so a failure is an
-# error, not a warning; stdout discarded so only the diagnostic is captured.
+# Error text (stderr) of a statement that fails with an ERROR; empty otherwise. Used
+# to assert the guard rejects rather than misreads. stdout is discarded so only the
+# diagnostic is captured. Only an ERROR counts (#1341): a guard that fell to a
+# WARNING, or a backend that died with a FATAL, also writes to stderr, and taking
+# that as the refusal kept these arms green under both (#1531 review).
 err_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "$1" 2>&1 >/dev/null
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "$1" 2>&1 >/dev/null)"
+	case "$out" in *"ERROR:"*) printf '%s\n' "$out" ;; esac
 }
 contains() { case "$1" in *"$2"*) echo yes;; *) echo no;; esac; }
 
@@ -115,7 +119,10 @@ psql_run "UPDATE pgcolumnar.storage SET format_version = 99 WHERE storage_id = $
 # UPDATE standing in for a future format version.
 fverr_scan="$(err_of 'SELECT v FROM fv LIMIT 1;')"
 fverr_agg="$(err_of 'SELECT count(*) FROM fv;')"
-fverr_idx="$(err_of 'SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT v FROM fv WHERE id = 42;')"
+# THE CUSTOM SCAN IS OFF HERE TOO (#1341), as in part 5 below: with it on, pgcolumnar's
+# own node serves the index query, and with the fetch path's stamp check deleted the
+# three arms on this query stayed green, refused by the scan-open guard instead.
+fverr_idx="$(err_of 'SET pgcolumnar.enable_custom_scan=off; SET enable_seqscan=off; SET enable_bitmapscan=off; SELECT v FROM fv WHERE id = 42;')"
 check "a seq-scan read of a future native format_version fails (not silently misread)" \
 	"$([ -n "$fverr_scan" ] && echo yes || echo no)" "yes"
 check "an aggregate over a future native format_version fails (not silently misread)" \
@@ -133,13 +140,17 @@ check "backend survives the native-format rejection" "$(q 'SELECT 1;')" "1"
 # binary misreads: some rows that hold a value come back NULL. So this build
 # stamps 2, and alpha4 -- which refuses any stamp but 1 -- refuses the table at
 # every decode entry point. This build still reads 1 (MIN_READABLE). Each arm
-# below drives all four entry points that check the stamp:
+# below runs one query per entry point that checks the stamp:
 #
 #     seq scan        PgColumnarBeginReadWithStorage   SELECT v ... LIMIT
 #     aggregate scan  PgColumnarBeginAggScan           count(*)
 #     group agg scan  PgColumnarBeginGroupAggScan      GROUP BY
 #     row fetch       pgcolumnar_fetch_row             index scan of a non-key column,
 #                                                      custom scan OFF
+#
+# THE GROUP BY QUERY DOES NOT PROVE THE GROUP AGG SCAN'S OWN CHECK. It plans the
+# group agg node, but with that node's stamp check removed no arm here goes red
+# (#1531 review): an earlier check refuses the query first.
 #
 # THE CUSTOM SCAN HAS TO BE OFF FOR THE FOURTH, and that was measured rather
 # than assumed. With it on, the index query is served by pgcolumnar's own scan

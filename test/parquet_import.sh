@@ -23,13 +23,20 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Parquet import verification"
 fi
 
-expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
-	else
-		check "$label" "error" "error"
-	fi
+# A REFUSAL IS ITS SQLSTATE AND ITS MESSAGE, NOT ANY ERROR (#432). This read "psql
+# failed", which a crash satisfies, and so does a refusal for the wrong reason: a file
+# the server cannot open, or a mutant that lets a bad file through to fail later. It
+# also recorded a red under a name no green run carries ("... (expected error)").
+pq_refusal() {	# pq_refusal SQL -> "SQLSTATE: message" of the ERROR it raised, or "accepted"
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "$1" 2>&1)" && { echo accepted; return; }
+	sed -nE 's/^ERROR:  ([0-9A-Z]{5}: .*)/\1/p' <<<"$out" | head -1 | grep . \
+		|| echo "no SQLSTATE ($(head -1 <<<"$out"))"
+}
+expect_error() {	# expect_error LABEL SQL WANT, WANT being "SQLSTATE: message"
+	local label="$1" sql="$2" want="$3"
+	check "$label" "$(pq_refusal "$sql")" "$want"
 }
 
 # Generate identical data as a Parquet file (given page version) and a CSV.
@@ -125,9 +132,11 @@ check "plain import sum(id)" "$(q 'SELECT sum(id) FROM pp;')" "12502500"
 check "plain import first s" "$(q "SELECT s FROM pp WHERE id = 42;")" "x42"
 
 echo "-- argument validation"
-expect_error "reject non-parquet file" "SELECT pgcolumnar.import_parquet('pp', '$gen_py');"
+expect_error "reject non-parquet file" "SELECT pgcolumnar.import_parquet('pp', '$gen_py');" \
+	"XX001: \"$gen_py\" is not a Parquet file (bad magic)"
 psql_run "CREATE TABLE pmismatch (id int, s text, extra int) USING pgcolumnar;"
-expect_error "reject column-count mismatch" "SELECT pgcolumnar.import_parquet('pmismatch', '$PGC_WORKDIR/plain.parquet');"
+expect_error "reject column-count mismatch" "SELECT pgcolumnar.import_parquet('pmismatch', '$PGC_WORKDIR/plain.parquet');" \
+	"42804: Parquet file has fewer columns than the target table"
 
 IXFILE="$PGC_WORKDIR/ix_roundtrip.parquet"
 
@@ -192,7 +201,8 @@ psql_run "CREATE TABLE ix_uq (id int, v text) USING pgcolumnar;"
 psql_run "CREATE UNIQUE INDEX ix_uq_id ON ix_uq (id);"
 psql_run "SELECT pgcolumnar.import_parquet('ix_uq', '$IXFILE');"
 expect_error "importing the same keys twice raises unique_violation" \
-	"SELECT pgcolumnar.import_parquet('ix_uq', '$IXFILE');"
+	"SELECT pgcolumnar.import_parquet('ix_uq', '$IXFILE');" \
+	"23505: duplicate key value violates unique constraint \"ix_uq_id\""
 check "the failed second import left the row count alone" \
 	"$(q 'SELECT count(*) FROM ix_uq;')" "3000"
 
@@ -281,14 +291,40 @@ else
 	check_num "control: a HEAP target still imports, so the guard is about storage" \
 		"$(q "SELECT pgcolumnar.import_parquet('pq_heap', '$PQFILE');")" "50"
 
-	expect_error "importing into the partitioned parent is refused" \
-		"SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');"
+	# A REFUSAL IS 42809, AND THE CRASH IS READ FROM THE SERVER LOG (#1341). With
+	# the guard removed the import SIGSEGVs, and "is refused" passed on the crash,
+	# since a dropped connection is an error too; only the liveness check went red,
+	# and only because it reached the server before crash recovery finished. A
+	# check that connects after recovery reads a live cluster.
+	pq_crashes() {
+		# a number, or nothing when the log can't be read: grep -c prints 0 itself when
+		# nothing matches (and exits 1), but nothing at all for a file it cannot open,
+		# and a blind count must not read as "no crashes"
+		local _n
+		_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+		case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+	}
+	pq_crashes_since() {	# pq_crashes_since BEFORE -> "N backend crashes", or why it can't count
+		local _now; _now="$(pq_crashes)"
+		if [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then
+			echo "$(( _now - $1 )) backend crashes"
+		else
+			echo "crash count unreadable"
+		fi
+	}
+	pq_crashes0="$(pq_crashes)"
+	pq_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_parquet('pq_parent', '$PQFILE');" 2>&1)" \
+		&& pq_state=accepted \
+		|| pq_state="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$pq_out" | head -1 | grep . \
+			|| echo "no SQLSTATE ($(head -1 <<<"$pq_out"))")"
+	check "importing into the partitioned parent is refused" "$pq_state" "42809"
 	# `q`, not `psql_run`: psql_run runs -q with no -At and prints nothing, so this
 	# arm returned empty on a LIVE cluster and could never pass. It read as a
 	# correct red against the unfixed build and would have stayed red against the
 	# fix -- a discriminator that discriminates nothing.
 	check "and the cluster is still up, so the refusal was not an abort" \
-		"$(q "SELECT 1;")" "1"
+		"$(q "SELECT 1;")|$(pq_crashes_since "$pq_crashes0")" "1|0 backend crashes"
 fi
 
 pgc_summary

@@ -27,6 +27,7 @@
 #include "miscadmin.h"
 #include "libpq/pqsignal.h"
 #include "port/atomics.h"
+#include "port/pg_bitutils.h"
 #include "postmaster/bgworker.h"
 #include "storage/dsm.h"
 #include "storage/ipc.h"
@@ -44,6 +45,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 /*
@@ -101,7 +103,10 @@ typedef struct PflushWorkerSlot
 typedef struct PflushHeader
 {
 	Oid			dbid;
-	Oid			roleid;
+	Oid			roleid;			/* the caller's user id, with secContext */
+	int			secContext;
+	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
+	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
 	Oid			relid;
 	uint64		storageId;
 	uint64		groupNumber;
@@ -223,6 +228,8 @@ typedef struct PgColumnarColumnDef
 	bool		bloomable;
 	FmgrInfo	hashFn;
 	Oid			hashCollation;	/* collation to hash under (InvalidOid if none) */
+	FmgrInfo	sketchFn;		/* extended hash for the column's sketch (#1309) */
+	Oid			sketchCollation;
 
 	/*
 	 * Cached FSST keep/drop verdict and how many row groups have reused it
@@ -292,6 +299,26 @@ struct PgColumnarWriteState
 {
 	Oid			relid;
 	SubTransactionId subid;			/* subtransaction that owns the buffer */
+
+	/*
+	 * Set while the buffer's rows are on disk under a subtransaction BELOW the
+	 * owner, written by a read in that subtransaction (#1360); invalid otherwise.
+	 * The buffer is kept until that subtransaction resolves: committed into the
+	 * owner, the rows are the owner's and the buffer is dropped; aborted, the
+	 * catalog rows go and the kept buffer is flushed again under the owner.
+	 */
+	SubTransactionId flushedUnder;
+
+	/*
+	 * Set once a read below the owner has had to write this buffer out (#1403
+	 * review). The owner's next append then writes the buffer at once, under the
+	 * owner, and clears it, so each read costs one write of the rows since the
+	 * last and every row is written at most twice. Kept instead, the buffer grew
+	 * with each row and every abort's re-write covered every earlier row
+	 * (quadratic); eager until the statement ended, one early read made every
+	 * later row its own row group.
+	 */
+	bool		eagerFlush;
 	TupleDesc	tupdesc;			/* copy owned by writeContext */
 	int			natts;
 
@@ -312,6 +339,15 @@ struct PgColumnarWriteState
 	int			encodeEffort;		/* per-table encode_effort at open time */
 	uint64		storageId;
 	PgColumnarColumnDef *colDefs;		/* array [natts], in writeContext */
+
+	/*
+	 * #1309: one HyperLogLog register array per column named in sketch_columns,
+	 * NULL for every other column, filled as rows are written and written out and
+	 * cleared at each row-group flush. The leader keeps them, so a parallel flush
+	 * writes the same sketch as a serial one. NULL as a whole for a projection's
+	 * writer: a projection's storage gets no sketch.
+	 */
+	uint8	  **sketchRegs;
 
 	MemoryContext writeContext;		/* lives for the transaction */
 	MemoryContext stripeContext;	/* reset after each stripe flush */
@@ -373,10 +409,16 @@ static List *PgColumnarWriteStates = NIL;
 bool		pgcolumnar_parallel_flush = false;
 
 static void pgcolumnar_flush_row_group(PgColumnarWriteState *writeState);
+static void flush_row_group(PgColumnarWriteState *writeState, bool keep);
+static void reset_stripe(PgColumnarWriteState *writeState);
 static void flush_ws_projections(PgColumnarWriteState *writeState);
+static void flush_ws_projections_ext(PgColumnarWriteState *writeState, bool keep);
+static void reset_ws_projections(PgColumnarWriteState *writeState);
+static bool ws_has_projection_rows(PgColumnarWriteState *writeState);
 static ChunkGroupBuffer *pgcolumnar_start_chunk_group(PgColumnarWriteState *writeState);
 static uint64 *grow_uint64_array(uint64 *arr, int oldSize, int newSize);
 static void pgcolumnar_init_col_defs(PgColumnarWriteState *writeState);
+static void pgcolumnar_init_sketches(PgColumnarWriteState *writeState, Oid relid);
 static void build_column_def(Form_pg_attribute att, bool bloomEnabled,
 							 MemoryContext cxt, PgColumnarColumnDef *def);
 
@@ -543,6 +585,104 @@ build_column_def(Form_pg_attribute att, bool bloomEnabled, MemoryContext cxt,
 		def->bloomable = true;
 		fmgr_info_copy(&def->hashFn, &tce->hash_proc_finfo, cxt);
 		def->hashCollation = att->attcollation;
+	}
+}
+
+/*
+ * pgcolumnar_unsketchable_reason
+ *		Why a column cannot carry a sketch (#1309), or NULL when it can. The ONE
+ *		predicate, used by set_options (through pgcolumnar_check_sketch_column)
+ *		and by the writer, so the two cannot disagree: the type needs an extended
+ *		hash, and a collatable value a deterministic collation, or two values
+ *		equal under the collation would hash apart and count twice.
+ */
+static const char *
+pgcolumnar_unsketchable_reason(Form_pg_attribute att)
+{
+	TypeCacheEntry *tce = lookup_type_cache(att->atttypid, TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+
+	if (!OidIsValid(tce->hash_extended_proc_finfo.fn_oid))
+		return psprintf("its type %s has no extended hash function",
+						format_type_be(att->atttypid));
+	if (!PgColumnarCollationIsDeterministic(att->attcollation))
+		return "its collation is nondeterministic";
+	return NULL;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_check_sketch_column);
+
+/*
+ * pgcolumnar_check_sketch_column
+ *		SQL: pgcolumnar.check_sketch_column(regclass, name). Raises 0A000 when the
+ *		named column cannot carry a sketch; set_options calls it for each column
+ *		of sketch_columns, after its own existence check.
+ */
+Datum
+pgcolumnar_check_sketch_column(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Name		col = PG_GETARG_NAME(1);
+	HeapTuple	tup = SearchSysCacheAttName(relid, NameStr(*col));
+	const char *why;
+
+	if (!HeapTupleIsValid(tup))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_COLUMN),
+				 errmsg("column \"%s\" of relation \"%s\" does not exist",
+						NameStr(*col), get_rel_name(relid))));
+	why = pgcolumnar_unsketchable_reason((Form_pg_attribute) GETSTRUCT(tup));
+	ReleaseSysCache(tup);
+	if (why != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("column \"%s\" cannot have a sketch: %s", NameStr(*col), why)));
+	PG_RETURN_VOID();
+}
+
+/*
+ * pgcolumnar_init_sketches
+ *		Give each column named in the relation's sketch_columns option a register
+ *		array (#1309). set_options refuses a column that cannot be sketched; one
+ *		that became unsketchable since (a type changed under it) is skipped here
+ *		rather than refused, so the option cannot block a write.
+ */
+static void
+pgcolumnar_init_sketches(PgColumnarWriteState *writeState, Oid relid)
+{
+	List	   *names;
+	ListCell   *lc;
+
+	if (!PgColumnarSketchCatalogPresent())
+		return;
+	names = PgColumnarReadSketchColumns(relid);
+	if (names == NIL)
+		return;
+
+	writeState->sketchRegs = MemoryContextAllocZero(PgColumnarWriteContext,
+													sizeof(uint8 *) * writeState->natts);
+	foreach(lc, names)
+	{
+		const char *name = (const char *) lfirst(lc);
+		int			c;
+
+		for (c = 0; c < writeState->natts; c++)
+		{
+			Form_pg_attribute att = TupleDescAttr(writeState->tupdesc, c);
+			TypeCacheEntry *tce;
+
+			if (att->attisdropped || strcmp(NameStr(att->attname), name) != 0)
+				continue;
+			if (pgcolumnar_unsketchable_reason(att) == NULL)
+			{
+				tce = lookup_type_cache(att->atttypid, TYPECACHE_HASH_EXTENDED_PROC_FINFO);
+				fmgr_info_copy(&writeState->colDefs[c].sketchFn,
+							   &tce->hash_extended_proc_finfo, PgColumnarWriteContext);
+				writeState->colDefs[c].sketchCollation = att->attcollation;
+				writeState->sketchRegs[c] =
+					MemoryContextAllocZero(PgColumnarWriteContext, PGC_SKETCH_REGISTERS);
+			}
+			break;
+		}
 	}
 }
 
@@ -714,6 +854,7 @@ PgColumnarGetWriteState(Relation rel)
 	}
 
 	pgcolumnar_init_col_defs(writeState);
+	pgcolumnar_init_sketches(writeState, relid);
 
 	writeState->stripeContext = AllocSetContextCreate(PgColumnarWriteContext,
 													  "columnar stripe",
@@ -978,6 +1119,19 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 
 				appendBinaryStringInfo(&col->hashBuf, (char *) &h, sizeof(uint32));
 			}
+
+			/*
+			 * #1309: the row group's HyperLogLog sketch. The low PGC_SKETCH_LOG2M
+			 * bits of the type's extended hash (seed 0) pick the register; its
+			 * value is the rank of the first set bit in the rest, kept as a max.
+			 * Pinned by native_sketch: the registers are on disk, and merged with
+			 * ones other builds wrote.
+			 */
+			if (writeState->sketchRegs != NULL && writeState->sketchRegs[c] != NULL)
+				pgc_sketch_add(writeState->sketchRegs[c],
+							   DatumGetUInt64(FunctionCall2Coll(&writeState->colDefs[c].sketchFn,
+																writeState->colDefs[c].sketchCollation,
+																v, Int64GetDatum(0))));
 
 			/* maintain the per-chunk exact int sum for the zone map (D5) */
 			if (writeState->colDefs[c].summableInt)
@@ -2415,7 +2569,6 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	pg_atomic_uint32 *claim;
 	PflushWorkerSlot *me;
 	int			widx;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
 
@@ -2440,10 +2593,8 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	claim = (pg_atomic_uint32 *) shm_toc_lookup(toc, PFLUSH_KEY_CLAIM, false);
 	me = &slots[widx];
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
 
 	/*
 	 * A fresh snapshot for catalog/tupdesc reads only. A plain
@@ -2471,7 +2622,16 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		pgcolumnar_fsst_min_gain_percent = hdr->fsstMinGainPercent;
 		pgcolumnar_encoding_sample_rows = hdr->encodingSampleRows;
 
-		initStringInfo(&recbuf);
+		/*
+		 * The record outlives the transaction: it is copied into the OUTPUT
+		 * segment after the commit below (#1747).
+		 */
+		{
+			MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+			initStringInfo(&recbuf);
+			MemoryContextSwitchTo(oldcxt);
+		}
 
 		for (;;)
 		{
@@ -2526,20 +2686,29 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		 * from the record. Pin the segment so it survives this worker's exit --
 		 * the backend attaches only after WaitForBackgroundWorkerShutdown, by
 		 * which point an unpinned segment (zero mappings) would be gone.
+		 *
+		 * COMMIT FIRST, PIN LAST (#1747). A worker that raised after the pin
+		 * reported FAILED, and the dispatcher's collect loop unpins only a DONE
+		 * slot, so the pinned segment stayed until postmaster restart. Everything
+		 * that can raise -- the commit, the create -- now runs before the pin;
+		 * after it there is only the detach and the DONE write. A segment created
+		 * and not yet pinned is freed when this worker exits.
 		 */
+		table_close(rel, AccessShareLock);
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+
 		outseg = dsm_create((Size) sizeof(uint32) + recbuf.len, 0);
 		obase = (char *) dsm_segment_address(outseg);
 		memcpy(obase, &count, sizeof(uint32));
 		if (recbuf.len > 0)
 			memcpy(obase + sizeof(uint32), recbuf.data, recbuf.len);
-		dsm_pin_segment(outseg);
-		me->outHandle = dsm_segment_handle(outseg);
+		/* the handle first: the dispatcher's error cleanup frees what it names */
 		me->outLen = (uint32) (sizeof(uint32) + recbuf.len);
+		me->outHandle = dsm_segment_handle(outseg);
+		pg_write_barrier();
+		dsm_pin_segment(outseg);
 		dsm_detach(outseg);		/* pinned: persists for the backend to attach */
-
-		table_close(rel, AccessShareLock);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
 		pg_atomic_write_u32(&me->state, PFLUSH_DONE);
 	}
 	PG_CATCH();
@@ -2587,16 +2756,35 @@ pflush_error_cleanup(int code, Datum arg)
 	PflushCleanup *cl = (PflushCleanup *) DatumGetPointer(arg);
 	int			i;
 
+	/*
+	 * NOTHING HERE MAY BE CUT SHORT (#1745). This runs inside the error being
+	 * handled, and WaitForBackgroundWorkerShutdown checks for interrupts: a
+	 * second cancel landing in the wait raised out of this function before the
+	 * loop below, leaving every published output segment pinned until
+	 * postmaster restart, and reported the second cancel in place of the first.
+	 * The wait is as long as a single cancel's already is -- a terminated worker
+	 * exits at its next interrupt check, after the column it is encoding -- so
+	 * holding interrupts adds no latency; it only stops a second cancel (or a
+	 * terminate, which still fires once this returns) from abandoning it.
+	 */
+	HOLD_INTERRUPTS();
 	for (i = 0; i < cl->nstarted; i++)
 		if (cl->handles[i] != NULL)
-		{
 			TerminateBackgroundWorker(cl->handles[i]);
+	for (i = 0; i < cl->nstarted; i++)
+		if (cl->handles[i] != NULL)
 			WaitForBackgroundWorkerShutdown(cl->handles[i]);
-		}
+	RESUME_INTERRUPTS();
 
+	/*
+	 * Every worker has exited, so a valid outHandle is a segment it published,
+	 * whatever state it reached after: the worker records the handle BEFORE
+	 * pinning, so one that died in between left an unpinned segment that is
+	 * already gone (dsm_attach returns NULL), and one that died after pinning
+	 * but before writing DONE is still freed here.
+	 */
 	for (i = 0; i < cl->nworkers; i++)
-		if (pg_atomic_read_u32(&cl->slots[i].state) == PFLUSH_DONE &&
-			cl->slots[i].outHandle != DSM_HANDLE_INVALID)
+		if (cl->slots[i].outHandle != DSM_HANDLE_INVALID)
 		{
 			dsm_segment *s = dsm_attach(cl->slots[i].outHandle);
 
@@ -2745,7 +2933,9 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	pg_atomic_init_u32(claim, 0);
 
 	hdr->dbid = MyDatabaseId;
-	hdr->roleid = GetUserId();
+	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
+	hdr->authid = GetAuthenticatedUserId();
+	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
 	hdr->relid = writeState->relid;
 	hdr->storageId = writeState->storageId;
 	hdr->groupNumber = groupNumber;
@@ -2850,6 +3040,15 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 			 */
 			dsm_unpin_segment(slots[i].outHandle);
 
+			/*
+			 * Forget the handle at once (#1753). The segment is ours to free now,
+			 * through our mapping; if anything below raises, the error cleanup
+			 * must not attach it again ("can't attach the same segment more than
+			 * once" would replace the original error and cut the cleanup short,
+			 * leaving the other workers' segments pinned).
+			 */
+			slots[i].outHandle = DSM_HANDLE_INVALID;
+
 			obase = (char *) dsm_segment_address(outseg);
 			memcpy(&count, obase, sizeof(uint32));
 			cursor = obase + sizeof(uint32);
@@ -2878,13 +3077,30 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 				nWorkerCols++;
 			}
 			dsm_detach(outseg);
-			slots[i].outHandle = DSM_HANDLE_INVALID;	/* freed; skip in cleanup */
 		}
 		else if (st == PFLUSH_FAILED)
 		{
 			ereport(WARNING,
 					(errmsg("pgcolumnar parallel_flush worker %d failed, completing its columns serially: %s",
 							i, slots[i].errmsg[0] ? slots[i].errmsg : "unknown error")));
+		}
+
+		/*
+		 * A segment this loop did not collect is freed here (#1747): the worker
+		 * pins last, so nothing should raise after it, but one it named and did
+		 * not report DONE for would otherwise stay pinned to postmaster restart.
+		 * A named segment that was never pinned is already gone (attach NULL).
+		 */
+		if (slots[i].outHandle != DSM_HANDLE_INVALID)
+		{
+			dsm_segment *s = dsm_attach(slots[i].outHandle);
+
+			if (s != NULL)
+			{
+				dsm_unpin_segment(slots[i].outHandle);
+				dsm_detach(s);
+			}
+			slots[i].outHandle = DSM_HANDLE_INVALID;
 		}
 	}
 	}
@@ -2960,6 +3176,49 @@ rel_new_in_current_xact(Oid relid)
  */
 static void
 pgcolumnar_flush_row_group(PgColumnarWriteState *writeState)
+{
+	flush_row_group(writeState, false);
+}
+
+/*
+ * reset_stripe
+ *		Drop the buffered stripe once its rows are the owner's on disk; the next
+ *		row reserves a fresh stripe id (row group).
+ */
+static void
+reset_stripe(PgColumnarWriteState *writeState)
+{
+	MemoryContextReset(writeState->stripeContext);
+	writeState->chunkGroups = NIL;
+	writeState->currentGroup = NULL;
+	writeState->stripeRowCount = 0;
+	writeState->haveReservation = false;
+
+	/*
+	 * The sketch registers belong to the buffer, so they are cleared with it and
+	 * nowhere else (#1309). A kept flush (#1360) writes the buffer and keeps it,
+	 * and if its subtransaction aborts the same rows are written again: had the
+	 * flush cleared the registers, that rewrite would sketch none of them.
+	 */
+	if (writeState->sketchRegs != NULL)
+	{
+		int			c;
+
+		for (c = 0; c < writeState->natts; c++)
+			if (writeState->sketchRegs[c] != NULL)
+				memset(writeState->sketchRegs[c], 0, PGC_SKETCH_REGISTERS);
+	}
+}
+
+/*
+ * flush_row_group
+ *		Write the buffered stripe as one row group. With `keep`, the buffer and
+ *		its reservation survive the write, so the same rows can be written again,
+ *		with the same group number and row numbers, if the subtransaction the
+ *		catalog rows went under aborts (#1360).
+ */
+static void
+flush_row_group(PgColumnarWriteState *writeState, bool keep)
 {
 	MemoryContext flushContext;
 	MemoryContext oldContext;
@@ -3236,6 +3495,14 @@ pgcolumnar_flush_row_group(PgColumnarWriteState *writeState)
 			PgColumnarInsertZoneMapRow((NativeZoneMapMetadata *) lfirst(lc));
 		foreach(lc, bloomRows)
 			PgColumnarInsertBloomRow((NativeBloomMetadata *) lfirst(lc));
+		if (writeState->sketchRegs != NULL)
+			for (c = 0; c < natts; c++)
+				if (writeState->sketchRegs[c] != NULL)
+				{
+					PgColumnarInsertSketchRow(writeState->storageId, groupNumber, c,
+											  writeState->sketchRegs[c],
+											  PGC_SKETCH_REGISTERS);
+				}
 
 		PgColumnarEndMetadataFlush();
 	}
@@ -3267,12 +3534,8 @@ pgcolumnar_flush_row_group(PgColumnarWriteState *writeState)
 	MemoryContextSwitchTo(oldContext);
 	MemoryContextDelete(flushContext);
 
-	/* reset accumulation; the next row reserves a fresh stripe id (row group) */
-	MemoryContextReset(writeState->stripeContext);
-	writeState->chunkGroups = NIL;
-	writeState->currentGroup = NULL;
-	writeState->stripeRowCount = 0;
-	writeState->haveReservation = false;
+	if (!keep)
+		reset_stripe(writeState);
 
 	if (pushedSnapshot)
 		PopActiveSnapshot();
@@ -3483,7 +3746,7 @@ proj_row_cmp(const void *a, const void *b, void *arg)
  *		stripe to the projection's storage, then reset the buffer.
  */
 static void
-flush_proj_writer(PgColumnarProjWriter *w, Relation tableRel)
+flush_proj_writer(PgColumnarProjWriter *w, Relation tableRel, bool keep)
 {
 	int			i;
 
@@ -3506,6 +3769,13 @@ flush_proj_writer(PgColumnarProjWriter *w, Relation tableRel)
 	if (w->innerWs->stripeRowCount > 0)
 		pgcolumnar_flush_row_group(w->innerWs);
 
+	/*
+	 * Kept rows are written again, re-encoded under a new projection group, if
+	 * the subtransaction this write went under aborts (#1360). Each carries its
+	 * base row number, which is what a projection is joined back on.
+	 */
+	if (keep)
+		return;
 	MemoryContextReset(w->rowCtx);
 	w->nrows = 0;
 }
@@ -3632,7 +3902,7 @@ append_proj_row(PgColumnarProjWriter *w, Relation rel, TupleDesc tableDesc,
 	MemoryContextSwitchTo(oldContext);
 
 	if (w->nrows >= w->stripeRowLimit)
-		flush_proj_writer(w, rel);
+		flush_proj_writer(w, rel, false);
 }
 
 /*
@@ -3738,12 +4008,45 @@ PgColumnarBackfillProjection(Relation rel, const PgColumnarProjection *proj)
 		append_proj_row(w, rel, tableDesc, rowNumber, values, nulls);
 	PgColumnarEndRead(readState);
 
-	flush_proj_writer(w, rel);
+	flush_proj_writer(w, rel, false);
 }
 
 /* Flush all projection writers hanging off a base write state. */
 static void
 flush_ws_projections(PgColumnarWriteState *ws)
+{
+	flush_ws_projections_ext(ws, false);
+}
+
+/* Whether any projection writer holds buffered rows. */
+static bool
+ws_has_projection_rows(PgColumnarWriteState *ws)
+{
+	ListCell   *lc;
+
+	foreach(lc, ws->projWriters)
+		if (((PgColumnarProjWriter *) lfirst(lc))->nrows > 0)
+			return true;
+	return false;
+}
+
+/* Drop every projection writer's kept rows (#1360). */
+static void
+reset_ws_projections(PgColumnarWriteState *ws)
+{
+	ListCell   *lc;
+
+	foreach(lc, ws->projWriters)
+	{
+		PgColumnarProjWriter *w = (PgColumnarProjWriter *) lfirst(lc);
+
+		MemoryContextReset(w->rowCtx);
+		w->nrows = 0;
+	}
+}
+
+static void
+flush_ws_projections_ext(PgColumnarWriteState *ws, bool keep)
 {
 	ListCell   *lc;
 	Relation	rel;
@@ -3757,7 +4060,7 @@ flush_ws_projections(PgColumnarWriteState *ws)
 
 	rel = table_open(ws->relid, RowExclusiveLock);
 	foreach(lc, ws->projWriters)
-		flush_proj_writer((PgColumnarProjWriter *) lfirst(lc), rel);
+		flush_proj_writer((PgColumnarProjWriter *) lfirst(lc), rel, keep);
 	table_close(rel, RowExclusiveLock);
 }
 
@@ -3797,22 +4100,65 @@ PgColumnarResetProjectionWritersForRelation(Oid relid)
  * PgColumnarFlushWriteStateForRelation
  *		Flush any pending partial stripe for a single relation. Used at scan
  *		start so data written earlier in this transaction is persisted.
+ *
+ *		A BUFFER AN ENCLOSING SUBTRANSACTION OWNS IS WRITTEN AND KEPT (#1360). A
+ *		read inside a plpgsql EXCEPTION block must see the rows the enclosing
+ *		statement has buffered so far, as heap's does, so they are written. But
+ *		the catalog rows go under the block's subtransaction, and its rollback
+ *		took them: an INSERT ... SELECT f(g) of 3000 rows, where f's block read
+ *		the table and raised, kept one row. So the buffer is kept, with its
+ *		reservation, until that subtransaction resolves (see flushedUnder). The
+ *		enclosing statement cannot add a row meanwhile: it runs only in the
+ *		owner, and the block is below it. Once written, a kept buffer is not
+ *		written again for a deeper read: the rows are already visible there.
  */
 void
 PgColumnarFlushWriteStateForRelation(Oid relid)
 {
+	SubTransactionId current = GetCurrentSubTransactionId();
 	ListCell   *lc;
 
 	foreach(lc, PgColumnarWriteStates)
 	{
 		PgColumnarWriteState *writeState = (PgColumnarWriteState *) lfirst(lc);
+		bool		keep = (writeState->subid != current);
 
 		if (writeState->relid != relid)
 			continue;
+		if (writeState->flushedUnder != InvalidSubTransactionId)
+			continue;
+		if (keep && writeState->stripeRowCount == 0 &&
+			!ws_has_projection_rows(writeState))
+			continue;
 		if (writeState->stripeRowCount > 0)
-			pgcolumnar_flush_row_group(writeState);
-		flush_ws_projections(writeState);
+			flush_row_group(writeState, keep);
+		flush_ws_projections_ext(writeState, keep);
+		if (keep)
+		{
+			writeState->flushedUnder = current;
+			writeState->eagerFlush = true;
+		}
 	}
+}
+
+/*
+ * PgColumnarWriteStateAfterAppend
+ *		Called after a row and its projection fan-out are buffered. A buffer in
+ *		eager mode (see eagerFlush) is written out once, under its owner, which is
+ *		the current subtransaction whenever the owner appends; it then buffers as
+ *		before until the next read below the owner.
+ */
+void
+PgColumnarWriteStateAfterAppend(PgColumnarWriteState *writeState)
+{
+	if (!writeState->eagerFlush ||
+		writeState->subid != GetCurrentSubTransactionId() ||
+		writeState->flushedUnder != InvalidSubTransactionId)
+		return;
+	if (writeState->stripeRowCount > 0)
+		pgcolumnar_flush_row_group(writeState);
+	flush_ws_projections(writeState);
+	writeState->eagerFlush = false;
 }
 
 /*
@@ -3859,8 +4205,39 @@ PgColumnarFlushAllPendingWrites(void)
 	{
 		PgColumnarWriteState *writeState = (PgColumnarWriteState *) lfirst(lc);
 
+		/* every subtransaction has resolved by now, and with it every kept buffer */
+		Assert(writeState->flushedUnder == InvalidSubTransactionId);
 		pgcolumnar_flush_row_group(writeState);
 		flush_ws_projections(writeState);
+	}
+}
+
+/*
+ * PgColumnarFlushPendingWritesOfSubXact
+ *		Flush only the write states the given subtransaction owns (#1341).
+ *
+ *		A flush writes catalog rows under the subtransaction that is CURRENT, not
+ *		the one that buffered the rows. So flushing an enclosing statement's buffer
+ *		while a child subtransaction is current -- a statement inside a plpgsql
+ *		EXCEPTION block ends -- attributes the parent's rows to the child, and the
+ *		block's rollback takes them away. Measured before this: an INSERT ... SELECT
+ *		f(g) of 5000 rows, where f's EXCEPTION block wrote a columnar table and rolled
+ *		back, kept one row. A parent's buffer waits for its own statement's end.
+ */
+void
+PgColumnarFlushPendingWritesOfSubXact(SubTransactionId subid)
+{
+	ListCell   *lc;
+
+	foreach(lc, PgColumnarWriteStates)
+	{
+		PgColumnarWriteState *writeState = (PgColumnarWriteState *) lfirst(lc);
+
+		if (writeState->subid != subid)
+			continue;
+		pgcolumnar_flush_row_group(writeState);
+		flush_ws_projections(writeState);
+		writeState->eagerFlush = false;
 	}
 }
 
@@ -3898,8 +4275,17 @@ PgColumnarWriteStateDiscardSubXact(SubTransactionId subid)
 	{
 		PgColumnarWriteState *writeState = (PgColumnarWriteState *) lfirst(lc);
 
-		if (writeState->subid != subid)
-			kept = lappend(kept, writeState);
+		if (writeState->subid == subid)
+			continue;
+
+		/*
+		 * An enclosing statement's buffer this subtransaction wrote out (#1360):
+		 * the abort takes the catalog rows, and the kept buffer, reservation and
+		 * row numbers included, is written again under its owner.
+		 */
+		if (writeState->flushedUnder == subid)
+			writeState->flushedUnder = InvalidSubTransactionId;
+		kept = lappend(kept, writeState);
 	}
 	MemoryContextSwitchTo(oldContext);
 
@@ -3923,5 +4309,22 @@ PgColumnarWriteStatePromoteSubXact(SubTransactionId subid, SubTransactionId pare
 
 		if (writeState->subid == subid)
 			writeState->subid = parent;
+
+		/*
+		 * A kept buffer (#1360) whose catalog rows now belong to its owner is
+		 * done with: drop it. Committed into a subtransaction still below the
+		 * owner, it waits for that one instead, since that one can still abort.
+		 */
+		if (writeState->flushedUnder == subid)
+		{
+			if (parent == writeState->subid)
+			{
+				reset_stripe(writeState);
+				reset_ws_projections(writeState);
+				writeState->flushedUnder = InvalidSubTransactionId;
+			}
+			else
+				writeState->flushedUnder = parent;
+		}
 	}
 }

@@ -19,8 +19,11 @@
 #     SELECT count(*) FROM cc WHERE a = 1;   -- 228, via Index Only Scan
 #     SELECT count(b) FROM cc WHERE a = 1;   -- 400, via the columnar scan
 #
-# at SHIPPED DEFAULTS, on a table whose 400 rows are all live. The planner picks
-# the index-only scan on its own; no setting is needed to be wrong, only to look.
+# at SHIPPED DEFAULTS, on a table whose 400 rows are all live, when the planner
+# picked the index-only scan on its own. It does not always: on current builds
+# count(*) at defaults plans a Custom Scan (PgColumnarScan), so the two
+# shipped-defaults checks below need not reach the index. The arms force the
+# index, and assert that the plan names it.
 #
 # The controls carry the argument. Without them a failing arm would only say that
 # index churn loses rows in general, which is not the claim:
@@ -40,13 +43,30 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 N=400
 ROUNDS=12
 
+# CHURNED is left holding the rows the churn updated, which the arms carry in
+# their readings. The churn used to throw away all its output, so a churn that
+# errored updated nothing, the index stayed complete, and all nine checks passed
+# (measured, with the UPDATE naming a column that does not exist).
+CHURNED=""
 churn() {	# churn <table> <set-clause> <COMMIT|ROLLBACK>
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -Atq -c "
 		BEGIN;
-		DO \$\$ BEGIN FOR i IN 1..$ROUNDS LOOP UPDATE $1 SET $2; END LOOP; END \$\$;
-		$3;" >/dev/null 2>&1
+		DO \$\$ DECLARE n bigint := 0; c bigint;
+		BEGIN FOR i IN 1..$ROUNDS LOOP UPDATE $1 SET $2; GET DIAGNOSTICS c = ROW_COUNT; n := n + c; END LOOP;
+		RAISE NOTICE 'churned %', n; END \$\$;
+		$3;" 2>&1)"
+	CHURNED="$(printf '%s\n' "$out" | sed -n 's/.*NOTICE:  churned \([0-9]*\).*/\1/p' | tail -1)"
+	[ -n "$CHURNED" ] || CHURNED="none"
 }
+CHURN_WANT=$((N * ROUNDS))
+# num_or <side> <reading> -- the reading when it is a number, else the side's name
+# and what it read. truth and viaindex print psql's last line, so a failed read
+# is its error text: carried bare, two reads that fail the same way agreed and
+# arm D passed with neither taken (measured, with every row group past the
+# churn's unreadable). Tagged by side, two failures can never agree.
+num_or() { pgc_is_number "$2" && echo "$2" || echo "$1 unread [$2]"; }
 # The truth: a plan that cannot use the index at all.
 truth() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
@@ -77,35 +97,35 @@ mk() {	# mk <table> <USING clause> [extra index]
 
 # ---- arm A: columnar, churn on the NON-indexed column, ROLLBACK -------------
 mk ca "USING pgcolumnar"
-check_num "premise: arm A holds $N rows before the churn" "$(truth ca)" "$N"
-churn ca "b = b || 'y'" ROLLBACK
+check_num "premise: arm A holds 400 rows before the churn" "$(truth ca)" "$N"
+churn ca "b = b || 'y'" ROLLBACK; a_c="$CHURNED"
 check "premise: arm A really plans an Index Scan, so the arm measures the index" \
 	"$(case "$(viaindexplan ca)" in *"Index Scan"*) echo yes ;; *) echo "no: $(viaindexplan ca)" ;; esac)" "yes"
 a_t="$(truth ca)"; a_i="$(viaindex ca)"
 echo "-- arm A columnar, non-indexed churn, ROLLBACK: rows=$a_t via-index=$a_i"
-check_num "arm A: a ROLLBACK leaves every live row reachable through the index" "$a_i" "$a_t"
+check_text "arm A: a ROLLBACK leaves every live row reachable through the index" "churned $a_c: $(num_or index "$a_i")" "churned $CHURN_WANT: $(num_or truth "$a_t")"
 
 # ---- control B: columnar, churn ON the indexed column -----------------------
 mk cb "USING pgcolumnar"
-churn cb "a = a" ROLLBACK
+churn cb "a = a" ROLLBACK; b_c="$CHURNED"
 b_t="$(truth cb)"; b_i="$(viaindex cb)"
 echo "-- control B columnar, INDEXED-column churn: rows=$b_t via-index=$b_i"
-check_num "control B: indexed-column churn triggers no bottom-up pass and loses nothing" "$b_i" "$b_t"
+check_text "control B: indexed-column churn triggers no bottom-up pass and loses nothing" "churned $b_c: $(num_or index "$b_i")" "churned $CHURN_WANT: $(num_or truth "$b_t")"
 
 # ---- control C: heap under the same hint ------------------------------------
 mk hb "" second
-churn hb "b = b || 'y'" ROLLBACK
+churn hb "b = b || 'y'" ROLLBACK; c_c="$CHURNED"
 c_t="$(truth hb)"; c_i="$(viaindex hb)"
 echo "-- control C heap, same indexUnchanged hint: rows=$c_t via-index=$c_i"
-check_num "control C: the heap loses nothing under the same churn" "$c_i" "$c_t"
+check_text "control C: the heap loses nothing under the same churn" "churned $c_c: $(num_or index "$c_i")" "churned $CHURN_WANT: $(num_or truth "$c_t")"
 
 # ---- arm D: committed churn, and the answer at SHIPPED DEFAULTS -------------
 # An abort is not required, and no setting is required to get a wrong answer.
 mk cc "USING pgcolumnar"
-churn cc "b = b || 'y'" COMMIT
+churn cc "b = b || 'y'" COMMIT; d_c="$CHURNED"
 d_t="$(truth cc)"; d_i="$(viaindex cc)"
 echo "-- arm D columnar, non-indexed churn, COMMIT: rows=$d_t via-index=$d_i"
-check_num "arm D: a COMMIT leaves every live row reachable through the index" "$d_i" "$d_t"
+check_text "arm D: a COMMIT leaves every live row reachable through the index" "churned $d_c: $(num_or index "$d_i")" "churned $CHURN_WANT: $(num_or truth "$d_t")"
 
 def_star="$(q "SELECT count(*) FROM cc WHERE a = 1;")"
 def_b="$(q "SELECT count(b) FROM cc WHERE a = 1;")"
@@ -117,8 +137,8 @@ check_num "at shipped defaults the table answers the same to count(*) and count(
 
 # ---- heap oracle on the same shape ------------------------------------------
 mk hc "" second
-churn hc "b = b || 'y'" COMMIT
-check_num "oracle: the heap answers count(*) correctly after the same churn" \
-	"$(q "SELECT count(*) FROM hc WHERE a = 1;")" "$N"
+churn hc "b = b || 'y'" COMMIT; h_c="$CHURNED"
+check_text "oracle: the heap answers count(*) correctly after the same churn" \
+	"churned $h_c: $(q "SELECT count(*) FROM hc WHERE a = 1;")" "churned $CHURN_WANT: $N"
 
 pgc_summary

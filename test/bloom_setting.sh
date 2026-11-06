@@ -49,20 +49,25 @@ check "filters are written when the setting is on" \
 	"$(awk -v n="$(filters bs_on)" 'BEGIN { print (n > 0) ? "some" : "none" }')" "some"
 
 build bs_off off
-check "no filters are written when the setting is off" "$(filters bs_off)" "0"
+# Read with the rows the table holds: a build that failed, whose stderr is discarded
+# above, writes no filters either, and read 0 here.
+check "no filters are written when the setting is off" \
+	"$(filters bs_off) filters over $(q "SELECT count(*) FROM bs_off;" | tail -1) rows" "0 filters over $ROWS rows"
 
 # --- 2. a chunk with no filter still answers equality --------------------------
 
 # This is the direction that would be a silent wrong answer: skipping a chunk
 # because it has no filter returns fewer rows and raises nothing.
-for setting in on off; do
-	check "written off, read with the setting $setting: present value found" \
-		"$(q "SET pgcolumnar.enable_bloom_filter = $setting;
-			SELECT count(*) FROM bs_off WHERE v = 'k$((ROWS / 2))';" | tail -1)" "1"
-	check "written off, read with the setting $setting: absent value not found" \
-		"$(q "SET pgcolumnar.enable_bloom_filter = $setting;
-			SELECT count(*) FROM bs_off WHERE v = 'nosuchvalue';" | tail -1)" "0"
-done
+# One check per reading, each named literally: a name built from a loop variable is a
+# template to compare_to_bash.
+probe() {	# $1 = setting, $2 = value -> rows of bs_off holding it
+	q "SET pgcolumnar.enable_bloom_filter = $1;
+		SELECT count(*) FROM bs_off WHERE v = '$2';" | tail -1
+}
+check "written off, read with the setting on: present value found" "$(probe on "k$((ROWS / 2))")" "1"
+check "written off, read with the setting on: absent value not found" "$(probe on nosuchvalue)" "0"
+check "written off, read with the setting off: present value found" "$(probe off "k$((ROWS / 2))")" "1"
+check "written off, read with the setting off: absent value not found" "$(probe off nosuchvalue)" "0"
 
 # and the mirror: written with filters, read with skipping off
 check "written on, read with the setting off: present value found" \
@@ -72,9 +77,10 @@ check "written on, read with the setting off: present value found" \
 # every row still reachable, not just the probed one
 check "a full scan of the unfiltered table is complete" \
 	"$(q "SELECT count(*) FROM bs_off;" | tail -1)" "$ROWS"
+# with the rows compared: two empty tables have no mismatch either
 check "the two tables hold identical data" \
-	"$(q "SELECT count(*) FROM bs_on a FULL JOIN bs_off b USING (id)
-		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)" "0"
+	"$(q "SELECT count(*) FILTER (WHERE a.v IS DISTINCT FROM b.v) || ' of ' || count(*)
+		FROM bs_on a FULL JOIN bs_off b USING (id);" | tail -1)" "0 of $ROWS"
 
 # --- 3. projections follow the same decision -----------------------------------
 
@@ -89,11 +95,15 @@ psql_run "DROP TABLE IF EXISTS bs_p;
 psql_run "SET pgcolumnar.enable_bloom_filter = on;
 	INSERT INTO bs_p SELECT g, 'p' || g FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 
-# the projection has its own storage id, so count filters across every storage
-# belonging to this relation rather than just the base one
+# The projection has its own storage id, and the filters counted are that storage's.
+# This counted every filter in the database, so bs_on's alone made it read "some":
+# with the projection's write state dropping its filters -- the defect described
+# above -- main passed it.
 check "a projection still gets filters when the setting is on" \
-	"$(awk -v n="$(q "SELECT count(*) FROM pgcolumnar.bloom;" | tail -1)" \
-		'BEGIN { print (n > 0) ? "some" : "none" }')" "some"
+	"$(awk -v n="$(q "SELECT count(*) FROM pgcolumnar.bloom
+		WHERE storage_id IN (SELECT proj_storage_id FROM pgcolumnar.projection
+		                      WHERE name = 'bs_p_proj');" | tail -1)" \
+		'BEGIN { print (n > 0) ? "some" : "none (" n ")" }')" "some"
 check "the projected table reads correctly" \
 	"$(q "SELECT count(*) FROM bs_p WHERE v = 'p$((ROWS / 2))';" | tail -1)" "1"
 

@@ -75,7 +75,7 @@ INSERT INTO dim_l VALUES (1);
 CREATE TABLE fact_l(k int, m float8) USING pgcolumnar;
 INSERT INTO fact_l VALUES (1, 1.0), (2, 2.0);
 CREATE TABLE heap_l (k int, m float8) USING heap;
-INSERT INTO heap_l SELECT * FROM fact_l;
+INSERT INTO heap_l VALUES (1, 1.0), (2, 2.0);
 ANALYZE dim_l;
 ANALYZE fact_l;
 SQL

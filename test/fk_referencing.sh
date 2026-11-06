@@ -220,6 +220,16 @@ check "converting back to heap is unaffected" \
 	"$(case "$back" in *ERROR*) echo "no ($back)" ;; *) echo yes ;; esac)" \
 	"yes"
 
+# AND ON THE REFERENCED TABLE ITSELF (#1341). The control above converts a table
+# with no foreign key, so it cannot see a rule that refuses every SET ACCESS METHOD
+# on a referenced table whatever the target: with the guard's columnar-target test
+# removed, this file stayed 26/26. Only a columnar target needs the row lock the
+# constraint cannot get.
+refheap="$(psql_run "ALTER TABLE fk_conv_parent SET ACCESS METHOD heap;" 2>&1 || true)"
+check "an FK-referenced table may still be set to a row store" \
+	"$(case "$refheap" in *ERROR*) echo "no ($refheap)" ;; *) echo yes ;; esac)" \
+	"yes"
+
 # --- 7. a partitioned parent is refused too (#201) -----------------------------
 
 # A partitioned table has no storage, so setting its access method breaks nothing

@@ -23,13 +23,18 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Arrow nested export verification"
 fi
 
-expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
-	else
-		check "$label" "error" "error"
+# refused SQL -> "refused: multi-dimensional", "succeeded", or the other error. Any
+# error used to pass, so a missing table or a failed fixture read as the refusal.
+md_refusal() {
+	local out
+	if out="$(psql_run "$1" 2>&1)"; then
+		echo "succeeded"
+		return
 	fi
+	case "$out" in
+	*"does not support multi-dimensional arrays"*) echo "refused: multi-dimensional" ;;
+	*) echo "other error: $(printf '%s' "$out" | head -n 1)" ;;
+	esac
 }
 
 NF="$PGC_WORKDIR/nt.arrows"
@@ -64,6 +69,11 @@ check "nested field types" "$types" "True int32 True string True 2 x int32 y str
 vals="$(python3 - "$NF" <<'PY'
 import sys, pyarrow as pa, pyarrow.ipc as ipc
 d = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all().to_pydict()
+# every row, once: a file holding no rows, or only some, compared nothing for the
+# rows it lacked and read MATCH (an export that wrote no batch passed this)
+if sorted(d['id']) != list(range(1, 5001)):
+    print("ROWS %d, not ids 1..5000" % len(d['id']))
+    sys.exit(0)
 bad = None
 for i in range(len(d['id'])):
     g = d['id'][i]
@@ -93,6 +103,8 @@ PY
 echo "-- multi-dimensional array rejected"
 psql_run "CREATE TABLE ntm (id int, m int[]) USING pgcolumnar;"
 psql_run "INSERT INTO ntm VALUES (1, ARRAY[[1,2],[3,4]]);"
-expect_error "reject multi-dim array" "SELECT pgcolumnar.export_arrow('ntm', '$PGC_WORKDIR/ntm.arrows');"
+check "reject multi-dim array" \
+	"$(md_refusal "SELECT pgcolumnar.export_arrow('ntm', '$PGC_WORKDIR/ntm.arrows');")" \
+	"refused: multi-dimensional"
 
 pgc_summary

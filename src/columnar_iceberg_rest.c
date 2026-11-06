@@ -28,12 +28,16 @@
 #include "catalog/pg_type_d.h"
 #include "catalog/pg_user_mapping.h"
 #include "commands/defrem.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
 #include "foreign/foreign.h"
 #include "lib/stringinfo.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/hsearch.h"
 #include "utils/jsonb.h"
 #include "utils/syscache.h"
 #include "utils/tuplestore.h"
@@ -99,12 +103,14 @@ rest_objstore(void)
 
 /*
  * Resolve a FOREIGN SERVER (pgcolumnar_iceberg_catalog) into its catalog_uri and
- * the current role's bearer token. The token comes from the role's USER MAPPING
- * (or the PUBLIC mapping), which lives in pg_user_mapping and is not
- * world-readable. When the mapping carries no token, fall back to the
- * environment token only if ambient use is allowed (a superuser, or a mapping
- * that set credentials_required 'false'); otherwise refuse (28000). *out_token
- * may be NULL for an anonymous catalog.
+ * the current role's bearer token. The role must hold USAGE on the server, as
+ * dblink requires before it uses a named server's mapping (#1819): without the
+ * check, REVOKE USAGE did not stop a role using its own mapping, nor a PUBLIC
+ * one. The token comes from the role's USER MAPPING (or the PUBLIC mapping),
+ * which lives in pg_user_mapping and is not world-readable. When the mapping
+ * carries no token, fall back to the environment token only if ambient use is
+ * allowed (a superuser, or a mapping that set credentials_required 'false');
+ * otherwise refuse (28000). *out_token may be NULL for an anonymous catalog.
  */
 static char *rest_oauth_token(const char *catalog_uri, const char *token_uri,
 							  const char *client_id, const char *client_secret,
@@ -125,6 +131,17 @@ rest_resolve_server(const char *name, char **out_uri, char **out_token,
 	char	   *oauthUri = NULL;
 	bool		credRequired = true;
 	HeapTuple	tp;
+	AclResult	aclresult;
+
+	/* before any mapping is read or any request is made */
+#if PG_VERSION_NUM >= 160000
+	aclresult = object_aclcheck(ForeignServerRelationId, srv->serverid,
+								GetUserId(), ACL_USAGE);
+#else
+	aclresult = pg_foreign_server_aclcheck(srv->serverid, GetUserId(), ACL_USAGE);
+#endif
+	if (aclresult != ACLCHECK_OK)
+		aclcheck_error(aclresult, OBJECT_FOREIGN_SERVER, srv->servername);
 
 	foreach(lc, srv->options)
 	{
@@ -182,18 +199,17 @@ rest_resolve_server(const char *name, char **out_uri, char **out_token,
 	}
 
 	/* OAuth2 client-credentials: a half credential (one of id/secret) is refused
-	 * before any request; a complete pair mints the bearer when no static token. */
-	if (token == NULL && (oauthId != NULL || oauthSecret != NULL))
-	{
-		if (oauthId == NULL || oauthSecret == NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-					 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
-							name),
-					 errhint("Set both oauth_client_id and oauth_client_secret on the "
-							 "USER MAPPING.")));
+	 * before any request, whether or not a static token is also set (#1794); a
+	 * complete pair mints the bearer when no static token. */
+	if ((oauthId == NULL) != (oauthSecret == NULL))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("iceberg: incomplete OAuth2 credential for REST catalog server \"%s\"",
+						name),
+				 errhint("Set both oauth_client_id and oauth_client_secret on the "
+						 "USER MAPPING.")));
+	if (token == NULL && oauthId != NULL)
 		token = rest_oauth_token(uri, oauthUri, oauthId, oauthSecret, oauthScope);
-	}
 
 	if (token == NULL)
 	{
@@ -270,14 +286,279 @@ rest_pct_encode(StringInfo out, const char *s)
 }
 
 /*
- * Append a namespace to a resource path. The REST wire form joins multi-level
- * namespace parts with the unit separator 0x1F ("%1F" encoded); a caller passes
- * the levels dot-separated. Each level is percent-encoded, so a level bearing
- * '/', '.', or a control byte cannot alter the request path.
+ * What GET /v1/config tells a client about the catalog's paths (#1793).
+ *   base  "/v1/", or "/v1/<prefix>/" when the catalog has a prefix. Every
+ *         resource path but /v1/config starts with it.
+ *   sep   the namespace separator, percent-encoded byte by byte ("%1F" by
+ *         default, "%2E" on the Apache Iceberg 1.12 REST catalog).
+ */
+typedef struct RestCatalogConfig
+{
+	char	   *base;
+	char	   *sep;
+	char	   *rawsep;			/* sep decoded: the bytes a level must not hold */
+} RestCatalogConfig;
+
+/* The REST spec's default namespace separator, the unit separator 0x1F. */
+#define REST_DEFAULT_SEPARATOR	"%1F"
+
+/*
+ * The byte length of the character at p in the database encoding, never past
+ * the string's end. A level is text in the database encoding: in a LATIN1
+ * database "é" is the one byte E9, so a UTF-8 length would step over the next
+ * two bytes (#1865).
+ */
+static int
+rest_char_len(const char *p)
+{
+	int			len = pg_mblen(p);	/* every major has it; clamped below */
+	int			n = 0;
+
+	while (n < len && p[n] != '\0')
+		n++;
+	return n;
+}
+
+/*
+ * Whether `level` holds the separator `rawsep`. The separator matches only as
+ * whole characters of the database encoding: it must start and end on a
+ * character boundary. In a UTF-8 database, a one-byte separator at or above
+ * 0x80 thus never matches part of a multibyte character (#1865).
+ */
+static bool
+rest_level_holds_separator(const char *level, const char *rawsep)
+{
+	int			seplen = (int) strlen(rawsep);
+	const char *p;
+
+	for (p = level; *p != '\0'; p += rest_char_len(p))
+	{
+		int			covered = 0;
+
+		if (strncmp(p, rawsep, seplen) != 0)
+			continue;
+		while (covered < seplen)
+			covered += rest_char_len(p + covered);
+		if (covered == seplen)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * The first level in `levels` that holds the catalog's separator, or NULL. The
+ * catalog splits a namespace on its separator, so it would read such a level
+ * as two levels (#1865). The Apache Iceberg REST catalog's separator is ".".
+ */
+static const char *
+rest_unnameable_level(List *levels, const RestCatalogConfig *cc)
+{
+	ListCell   *lc;
+
+	foreach(lc, levels)
+	{
+		if (rest_level_holds_separator((const char *) lfirst(lc), cc->rawsep))
+			return (const char *) lfirst(lc);
+	}
+	return NULL;
+}
+
+/*
+ * A level as an error message shows it: each control byte (0x1F is the default
+ * separator) becomes \xNN, so it never reaches the log or the client raw.
+ */
+static char *
+rest_level_for_message(const char *level)
+{
+	StringInfoData out;
+	const char *p;
+
+	initStringInfo(&out);
+	for (p = level; *p != '\0'; p++)
+	{
+		unsigned char c = (unsigned char) *p;
+
+		if (c < 0x20 || c == 0x7F)
+			appendStringInfo(&out, "\\x%02X", c);
+		else
+			appendStringInfoChar(&out, (char) c);
+	}
+	return out.data;
+}
+
+/*
+ * Refuse the namespace [""]: one level, and it is empty. Its request path would
+ * hold an empty segment, as in /v1/namespaces//tables. The Apache Iceberg REST
+ * catalog answers that path with HTTP 400, a proxy may collapse "//" to "/",
+ * and the REST spec has no other way to write it (#1922). The check needs no
+ * catalog config, so callers run it before any request. An empty ?parent= is
+ * a query value, not a path segment, so the namespace walk still sends it.
  */
 static void
-rest_append_namespace(StringInfo out, const char *ns)
+rest_refuse_only_empty_level(List *levels)
 {
+	if (list_length(levels) == 1 &&
+		((const char *) linitial(levels))[0] == '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace has one level, and it is empty"),
+				 errdetail("Its request path would hold an empty segment (\"//\"). "
+						   "The Apache Iceberg REST catalog refuses such a path, and a proxy may collapse it."),
+				 errhint("Level 1 of 1 of the namespace is empty. "
+						 "In the text form, '' makes an empty level.")));
+}
+
+/*
+ * Refuse an empty table name. Its loadTable path would end in an empty segment,
+ * as in /v1/namespaces/db/tables/. A proxy that strips the trailing slash would
+ * reach listTables instead (#1931). The check needs no catalog config, so
+ * callers run it before any request, including a server's OAuth token request.
+ */
+static void
+rest_refuse_empty_table(const char *table)
+{
+	if (table[0] == '\0')
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the table name is empty"),
+				 errdetail("Its request path would end in an empty segment (\"/tables/\"). "
+						   "A proxy that strips the trailing slash would reach the table list instead.")));
+}
+
+/* Whether `s` is a dot segment, "." or "..", which RFC 3986 removes from a path. */
+static bool
+rest_is_dot_segment(const char *s)
+{
+	return strcmp(s, ".") == 0 || strcmp(s, "..") == 0;
+}
+
+/*
+ * Refuse a table named "." or "..". rest_pct_encode keeps '.', so its loadTable
+ * path would end in a dot segment, as in "/v1/namespaces/db/tables/..". A
+ * server or proxy that removes dot segments (RFC 3986 section 5.2.4) would reach
+ * another endpoint: loadNamespace for "..", the table list for "." (#1948). A
+ * name that only holds dots, such as "a.b" or "...", is not a dot segment. The
+ * check needs no catalog config, so callers run it before any request.
+ */
+static void
+rest_refuse_dot_table(const char *table)
+{
+	if (rest_is_dot_segment(table))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the table name \"%s\" is a dot segment", table),
+				 errdetail("Its request path would end in \"/tables/%s\". A server or proxy "
+						   "that removes dot segments from a path would reach another endpoint.",
+						   table),
+				 errhint("A table named \".\" or \"..\" cannot be sent in a request path.")));
+}
+
+/*
+ * Refuse a namespace whose request path segment would be "." or ".." (#1948):
+ * a server or proxy that removes dot segments would reach another endpoint,
+ * such as /v1/tables for /v1/namespaces/../tables. The segment is the levels
+ * joined with the catalog's separator `rawsep`. With no catalog config yet
+ * (rawsep NULL), only a namespace of one level can be judged, and callers do
+ * that before any request. rest_append_levels judges again with the separator:
+ * the separator "%2E" joins ["", ""] into "%2E", and a normaliser may decode
+ * that to "." first (RFC 3986 section 6.2.2.2). A level "..", among others, is
+ * not a whole segment, so ["db", ".."] passes.
+ */
+static void
+rest_refuse_dot_namespace(List *levels, const char *rawsep)
+{
+	StringInfoData seg;
+	ListCell   *lc;
+
+	if (rawsep == NULL && list_length(levels) != 1)
+		return;
+	initStringInfo(&seg);
+	foreach(lc, levels)
+	{
+		if (lc != list_head(levels))
+			appendStringInfoString(&seg, rawsep);
+		appendStringInfoString(&seg, (const char *) lfirst(lc));
+	}
+	if (rest_is_dot_segment(seg.data))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace would make the dot segment \"%s\" in the request path",
+						seg.data),
+				 errdetail("A server or proxy that removes dot segments from a path "
+						   "would reach another endpoint."),
+				 errhint("A namespace whose levels, joined with the catalog's separator, "
+						 "read \".\" or \"..\" cannot be sent in a request path.")));
+	pfree(seg.data);
+}
+
+/*
+ * Append a namespace, given as a List of level strings, to a resource path or
+ * to a ?parent= query value. The levels are joined with the catalog's
+ * separator (already encoded). Each level is percent-encoded, so a level
+ * bearing '/' or a control byte cannot alter the request path. A '.' is
+ * unreserved and goes out as it is, so a namespace whose path segment is "."
+ * or ".." would be a dot segment, which a normalising server or proxy removes:
+ * with `in_path` it is refused (#1948). A ?parent= value is a query, which
+ * dot-segment removal leaves alone. A level that holds the separator is
+ * refused: the catalog would read it as a different namespace (#1865). With
+ * `in_path`, the namespace [""] is refused too: it would make an empty path
+ * segment (#1922).
+ */
+static void
+rest_append_levels(StringInfo out, List *levels, const RestCatalogConfig *cc,
+				   bool in_path)
+{
+	ListCell   *lc;
+	const char *bad = rest_unnameable_level(levels, cc);
+
+	if (in_path)
+	{
+		rest_refuse_only_empty_level(levels);
+		rest_refuse_dot_namespace(levels, cc->rawsep);
+	}
+	if (bad != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: the namespace level \"%s\" contains the catalog's namespace separator",
+						rest_level_for_message(bad)),
+				 errdetail("The catalog joins namespace levels with %s, so it would read this level as more than one.",
+						   cc->sep)));
+	foreach(lc, levels)
+	{
+		if (lc != list_head(levels))
+			appendStringInfoString(out, cc->sep);
+		rest_pct_encode(out, (const char *) lfirst(lc));
+	}
+}
+
+/*
+ * A hint for the catalog's 404 when a namespace level is empty (#1891), or
+ * NULL when none is. The catalog accepts such a namespace, so the client sends
+ * it as given; but a stray dot in the text form makes one by mistake, and the
+ * plain "no such namespace" did not say so.
+ */
+static char *
+rest_empty_level_hint(List *levels)
+{
+	ListCell   *lc;
+	int			i = 0;
+
+	foreach(lc, levels)
+	{
+		i++;
+		if (((const char *) lfirst(lc))[0] == '\0')
+			return psprintf("Level %d of %d of the namespace is empty. "
+							"In the text form, a leading, trailing or doubled dot makes an empty level.",
+							i, list_length(levels));
+	}
+	return NULL;
+}
+
+/* Split a dot-separated namespace, as a caller gives it, into its levels. */
+static List *
+rest_split_namespace(const char *ns)
+{
+	List	   *levels = NIL;
 	const char *start = ns;
 	const char *p;
 
@@ -285,15 +566,158 @@ rest_append_namespace(StringInfo out, const char *ns)
 	{
 		if (*p == '.' || *p == '\0')
 		{
-			char	   *level = pnstrdup(start, p - start);
-
-			rest_pct_encode(out, level);
-			pfree(level);
+			levels = lappend(levels, pnstrdup(start, p - start));
 			if (*p == '\0')
 				break;
-			appendStringInfoString(out, "%1F");
 			start = p + 1;
 		}
+	}
+	return levels;
+}
+
+/*
+ * The levels of a namespace given as a text[] (#1865): each element is one
+ * level, as given, so a level may hold a dot. The array must have one
+ * dimension, at least one element, and no NULL element.
+ */
+static List *
+rest_array_levels(ArrayType *arr)
+{
+	Datum	   *elems;
+	bool	   *nulls;
+	int			n;
+	int			i;
+	List	   *levels = NIL;
+
+	if (ARR_NDIM(arr) > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: a namespace array must have one dimension, not %d",
+						ARR_NDIM(arr))));
+	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT, &elems, &nulls, &n);
+	if (n == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("iceberg: a namespace array must hold at least one level")));
+	for (i = 0; i < n; i++)
+	{
+		if (nulls[i])
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					 errmsg("iceberg: a namespace level must not be NULL"),
+					 errdetail("Element %d of the namespace array is NULL.", i + 1)));
+		levels = lappend(levels, TextDatumGetCString(elems[i]));
+	}
+	return levels;
+}
+
+/*
+ * The namespace argument of a REST function: a dot-separated text, split on
+ * every dot, or a text[] of levels (#1865).
+ */
+static List *
+rest_namespace_arg(FunctionCallInfo fcinfo, int argno, bool is_array)
+{
+	if (is_array)
+		return rest_array_levels(PG_GETARG_ARRAYTYPE_P(argno));
+	return rest_split_namespace(text_to_cstring(PG_GETARG_TEXT_PP(argno)));
+}
+
+static int
+rest_hexval(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	if (c >= 'a' && c <= 'f')
+		return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F')
+		return c - 'A' + 10;
+	return -1;
+}
+
+/*
+ * Turn the namespace-separator a catalog advertises into the form the client
+ * puts in a path. The catalog sends it percent-encoded ("%1F", "%2E"), but a
+ * plain character is allowed too. Decode it, then encode every byte as %XX, so
+ * a hostile value can never put a '/', '?' or '#' into the request.
+ */
+static char *
+rest_encode_separator(const char *advertised, char **raw)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	StringInfoData out;
+	StringInfoData dec;
+	const char *p;
+
+	initStringInfo(&out);
+	initStringInfo(&dec);
+	for (p = advertised; *p != '\0'; p++)
+	{
+		int			c = (unsigned char) *p;
+
+		if (*p == '%')
+		{
+			int			hi = rest_hexval(p[1]);
+			int			lo = (hi < 0) ? -1 : rest_hexval(p[2]);
+
+			if (hi < 0 || lo < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("iceberg: the REST catalog advertised an invalid namespace-separator \"%s\"",
+								advertised)));
+			c = hi * 16 + lo;
+			p += 2;
+		}
+		if (c == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog advertised an invalid namespace-separator \"%s\"",
+							advertised)));
+		appendStringInfoChar(&out, '%');
+		appendStringInfoChar(&out, hex[c >> 4]);
+		appendStringInfoChar(&out, hex[c & 0x0f]);
+		appendStringInfoChar(&dec, (char) c);
+	}
+	*raw = dec.data;
+	if (out.len == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("iceberg: the REST catalog advertised an empty namespace-separator")));
+	return out.data;
+}
+
+/*
+ * Append a catalog prefix as path segments. A prefix may hold '/', such as
+ * "catalogs/main": split it there and encode each piece on its own, as
+ * pyiceberg and the Java client send it. A leading or trailing '/' is dropped.
+ * An empty, "." or ".." piece is refused: the prefix comes from the catalog.
+ */
+static void
+rest_append_prefix(StringInfo out, const char *prefix)
+{
+	const char *p = prefix;
+	const char *end;
+
+	while (*p == '/')
+		p++;
+	end = p + strlen(p);
+	while (end > p && end[-1] == '/')
+		end--;
+	while (p < end)
+	{
+		const char *slash = memchr(p, '/', end - p);
+		const char *stop = (slash != NULL) ? slash : end;
+		char	   *piece = pnstrdup(p, stop - p);
+
+		if (piece[0] == '\0' || strcmp(piece, ".") == 0 || strcmp(piece, "..") == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog advertised an invalid prefix \"%s\"",
+							prefix)));
+		rest_pct_encode(out, piece);
+		appendStringInfoChar(out, '/');
+		pfree(piece);
+		p = (slash != NULL) ? slash + 1 : end;
 	}
 }
 
@@ -333,19 +757,85 @@ rest_json_string_opt(JsonbContainer *c, const char *key)
 }
 
 /*
+ * The catalog's ErrorModel from a non-200 body, {"error":{"message","type"}}:
+ * *msg and *type are palloc'd strings, or NULL when absent (#1820). A body that
+ * is not JSON is not an error of its own here: the caller still reports the
+ * status. The message is the catalog's text, so it goes in an errdetail, cut to
+ * REST_ERROR_MSG_MAX bytes on a character boundary.
+ */
+#define REST_ERROR_MSG_MAX 512
+static void
+rest_error_model(const PgColumnarHttpResult *r, char **msg, char **type)
+{
+	MemoryContext oldcxt = CurrentMemoryContext;
+	Jsonb	   *volatile doc = NULL;
+
+	*msg = NULL;
+	*type = NULL;
+	if (r->body == NULL || r->body_len <= 0 || r->body[0] != '{' ||
+		strlen(r->body) != (size_t) r->body_len)
+		return;
+	PG_TRY();
+	{
+		doc = DatumGetJsonbP(DirectFunctionCall1(jsonb_in,
+												 CStringGetDatum(r->body)));
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		/*
+		 * Not JSON: drop the parse error, and the status alone is reported.
+		 * jsonb_in raises a parse error in the data-exception class (22xxx) and
+		 * holds no resource, so no subtransaction is needed to drop it. Any
+		 * other error (stack depth, out of memory, a cancel) is not about the
+		 * body, so it rises unchanged (#1820 review).
+		 */
+		MemoryContextSwitchTo(oldcxt);
+		edata = CopyErrorData();
+		if (ERRCODE_TO_CATEGORY(edata->sqlerrcode) != ERRCODE_DATA_EXCEPTION)
+		{
+			FreeErrorData(edata);
+			PG_RE_THROW();
+		}
+		FreeErrorData(edata);
+		FlushErrorState();
+		doc = NULL;
+	}
+	PG_END_TRY();
+	if (doc != NULL && JsonContainerIsObject(&doc->root))
+	{
+		JsonbValue	vbuf;
+		JsonbValue *ev = getKeyJsonValueFromContainer(&doc->root, "error", 5, &vbuf);
+
+		if (ev != NULL && ev->type == jbvBinary &&
+			JsonContainerIsObject(ev->val.binary.data))
+		{
+			*msg = rest_json_string_opt(ev->val.binary.data, "message");
+			*type = rest_json_string_opt(ev->val.binary.data, "type");
+		}
+	}
+	if (*msg != NULL && strlen(*msg) > REST_ERROR_MSG_MAX)
+		(*msg)[pg_mbcliplen(*msg, strlen(*msg), REST_ERROR_MSG_MAX)] = '\0';
+}
+
+/*
  * GET catalog_uri + resource_path, sending the bearer token when set. Maps the
  * transport-level statuses the catalog can return to clean SQLSTATEs; returns
  * the parsed JSON body of a 200 as a Jsonb, or raises. `what` labels errors.
+ * `hint404`, when not NULL, is the hint of a 404.
  */
 static Jsonb *
 rest_get_json(const char *catalog_uri, const char *resource_path,
-			  const char *what, const char *token)
+			  const char *what, const char *token, const char *hint404)
 {
 	const PgColumnarObjStoreApi *api = rest_objstore();
 	StringInfoData url;
 	const char *headers[2];
 	int			nheaders = 0;
 	char	   *authhdr = NULL;
+	char	   *emsg = NULL;
+	char	   *etype = NULL;
 	PgColumnarHttpResult r;
 	Datum		jd;
 
@@ -368,22 +858,36 @@ rest_get_json(const char *catalog_uri, const char *resource_path,
 	if (authhdr != NULL)
 		pfree(authhdr);
 
+	if (r.status != 200)
+		rest_error_model(&r, &emsg, &etype);
 	if (r.status == 401 || r.status == 403)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 				 errmsg("iceberg: the REST catalog refused the request (HTTP %d)",
 						r.status),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
 				 errhint("Provide the catalog's bearer token via a USER MAPPING "
 						 "or the %s server environment variable.", REST_TOKEN_ENV)));
+	/* the ErrorModel type tells a missing namespace from a missing table */
+	if (r.status == 404 && etype != NULL &&
+		strcmp(etype, "NoSuchNamespaceException") == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_SCHEMA_NAME),
+				 errmsg("iceberg: the REST catalog has no such namespace (HTTP 404)"),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
+				 hint404 ? errhint("%s", hint404) : 0));
 	if (r.status == 404)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_TABLE),
-				 errmsg("iceberg: the REST catalog has no such %s (HTTP 404)", what)));
+				 errmsg("iceberg: the REST catalog has no such %s (HTTP 404)", what),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0,
+				 hint404 ? errhint("%s", hint404) : 0));
 	if (r.status != 200)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("iceberg: the REST catalog returned HTTP %d for the %s",
-						r.status, what)));
+						r.status, what),
+				 emsg ? errdetail("The catalog said: %s", emsg) : 0));
 	if (r.body == NULL || r.body_len == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
@@ -484,18 +988,46 @@ rest_oauth_token(const char *catalog_uri, const char *token_uri,
 }
 
 /*
- * Call GET /v1/config (to learn any path prefix) then loadTable, and return the
- * whole loadTable JSON document. *out_location is set to its metadata-location.
+ * A config property: "overrides" first, then a top-level key, then "defaults"
+ * (the REST spec: overrides win over the client, defaults lose to it). NULL
+ * when no level sets it as a string.
  */
-static Jsonb *
-rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
-					const char *token, const char *warehouse, char **out_location)
+static char *
+rest_config_value(JsonbContainer *root, const char *key)
+{
+	char	   *v = NULL;
+	JsonbValue	vbuf;
+	JsonbValue *ov;
+
+	ov = getKeyJsonValueFromContainer(root, "overrides", 9, &vbuf);
+	if (ov != NULL && ov->type == jbvBinary)
+		v = rest_json_string_opt(ov->val.binary.data, key);
+	if (v == NULL)
+		v = rest_json_string_opt(root, key);
+	if (v == NULL)
+	{
+		JsonbValue *dv = getKeyJsonValueFromContainer(root, "defaults", 8, &vbuf);
+
+		if (dv != NULL && dv->type == jbvBinary)
+			v = rest_json_string_opt(dv->val.binary.data, key);
+	}
+	return v;
+}
+
+/*
+ * GET /v1/config and fill *cc with the path base and the namespace separator.
+ * Every resource call goes through this, so the list functions see the same
+ * prefix and separator as loadTable (#1793).
+ */
+static void
+rest_catalog_config(const char *catalog_uri, const char *token,
+					const char *warehouse, RestCatalogConfig *cc)
 {
 	Jsonb	   *cfg;
 	char	   *prefix;
-	Jsonb	   *lt;
-	StringInfoData rp;
+	char	   *sep;
 	StringInfoData cfgpath;
+	StringInfoData base;
 
 	if (pg_strncasecmp(catalog_uri, "http://", 7) != 0 &&
 		pg_strncasecmp(catalog_uri, "https://", 8) != 0)
@@ -503,8 +1035,7 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("iceberg: a REST catalog URI must be http:// or https://")));
 
-	/* config: {overrides, defaults}; a prefix, if any, is spliced after /v1/.
-	 * A warehouse option selects a warehouse on a multi-warehouse catalog and is
+	/* A warehouse option selects a warehouse on a multi-warehouse catalog and is
 	 * sent as the ?warehouse= query parameter (Iceberg REST spec). */
 	initStringInfo(&cfgpath);
 	appendStringInfoString(&cfgpath, "/v1/config");
@@ -513,7 +1044,7 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 		appendStringInfoString(&cfgpath, "?warehouse=");
 		rest_pct_encode(&cfgpath, warehouse);
 	}
-	cfg = rest_get_json(catalog_uri, cfgpath.data, "config", token);
+	cfg = rest_get_json(catalog_uri, cfgpath.data, "config", token, NULL);
 	/*
 	 * The config body is untrusted (a compromised or hostile allow-listed
 	 * catalog). getKeyJsonValueFromContainer Asserts object-ness before its
@@ -525,30 +1056,49 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("iceberg: the REST catalog config response is not a JSON object")));
-	prefix = rest_json_string_opt(&cfg->root, "prefix");
-	if (prefix == NULL)
-	{
-		JsonbValue	vbuf;
-		JsonbValue *ov = getKeyJsonValueFromContainer(&cfg->root, "overrides", 9,
-													  &vbuf);
+	prefix = rest_config_value(&cfg->root, "prefix");
+	initStringInfo(&base);
+	appendStringInfoString(&base, "/v1/");
+	if (prefix != NULL)
+		rest_append_prefix(&base, prefix);
+	cc->base = base.data;
 
-		if (ov != NULL && ov->type == jbvBinary)
-			prefix = rest_json_string_opt(ov->val.binary.data, "prefix");
-	}
+	sep = rest_config_value(&cfg->root, "namespace-separator");
+	cc->sep = rest_encode_separator(sep != NULL ? sep : REST_DEFAULT_SEPARATOR,
+									&cc->rawsep);
+}
 
+/*
+ * Call GET /v1/config (to learn the prefix and separator) then loadTable, and
+ * return the whole loadTable JSON document. *out_location is set to its
+ * metadata-location.
+ */
+static Jsonb *
+rest_load_table_doc(const char *catalog_uri, List *levels, const char *table,
+					const char *token, const char *warehouse, char **out_location)
+{
+	RestCatalogConfig cc;
+	Jsonb	   *lt;
+	StringInfoData rp;
+
+	rest_refuse_only_empty_level(levels);
+	/*
+	 * Guards for future callers. The SQL functions refuse '', "." and ".."
+	 * before rest_resolve, and PgColumnarIcebergRestLoadTableLocation has no
+	 * caller yet, so no test reaches these calls today.
+	 */
+	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
-	appendStringInfoString(&rp, "/v1/");
-	if (prefix != NULL && prefix[0] != '\0')
-	{
-		rest_pct_encode(&rp, prefix);
-		appendStringInfoChar(&rp, '/');
-	}
+	appendStringInfoString(&rp, cc.base);
 	appendStringInfoString(&rp, "namespaces/");
-	rest_append_namespace(&rp, ns);
+	rest_append_levels(&rp, levels, &cc, true);
 	appendStringInfoString(&rp, "/tables/");
 	rest_pct_encode(&rp, table);
 
-	lt = rest_get_json(catalog_uri, rp.data, "table", token);
+	lt = rest_get_json(catalog_uri, rp.data, "table", token,
+					   rest_empty_level_hint(levels));
 	if (out_location != NULL)
 		*out_location = rest_json_string(&lt->root, "metadata-location",
 										 "loadTable response");
@@ -556,35 +1106,74 @@ rest_load_table_doc(const char *catalog_uri, const char *ns, const char *table,
 }
 
 /*
- * Build an object-store config from the storage credentials a loadTable reply
- * vends, or NULL when it vends none (the caller then falls back to ambient). A
- * `storage-credentials` array is preferred, choosing the entry whose `prefix` is
- * the longest match for `metadata_location`; otherwise the flat `config` object.
- * allow_ambient is false: once a catalog vends credentials a read must use them,
- * never silently the server's ambient identity.
+ * One vended credential config as an object-store config, or NULL when it holds
+ * no s3.access-key-id and s3.secret-access-key (it vends no usable credential).
+ * allow_ambient is false: the module must use these keys, never the server's.
  */
 static PgColumnarObjStoreConfig *
-rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
+rest_cred_cfg(JsonbContainer *c)
 {
-	JsonbContainer *chosen = NULL;
-	int			bestlen = -1;
+	char	   *akid = rest_json_string_opt(c, "s3.access-key-id");
+	char	   *secret = rest_json_string_opt(c, "s3.secret-access-key");
+	PgColumnarObjStoreConfig *cfg;
+
+	if (akid == NULL || secret == NULL)
+		return NULL;
+	cfg = (PgColumnarObjStoreConfig *) palloc0(sizeof(PgColumnarObjStoreConfig));
+	cfg->akid = akid;
+	cfg->secret = secret;
+	cfg->token = rest_json_string_opt(c, "s3.session-token");
+	cfg->region = rest_json_string_opt(c, "s3.region");
+	if (cfg->region == NULL)
+		cfg->region = rest_json_string_opt(c, "client.region");
+	cfg->endpoint = rest_json_string_opt(c, "s3.endpoint");
+	cfg->allow_ambient = false;
+	cfg->vended = true;			/* a refused key's hint names the catalog (#1796) */
+	return cfg;
+}
+
+/*
+ * Build an object-store config from the storage credentials a loadTable reply
+ * vends, or NULL when it vends none (the read then uses the ambient
+ * environment, as for iceberg_scan).
+ *
+ * With no usable `storage-credentials` entry, the flat `config` signs every
+ * file. Otherwise the result carries every entry, and the reader chooses one
+ * per file (#1820): the entry whose `prefix` is the longest match for that
+ * file's URL, else the flat config, else it refuses the file. An entry or a
+ * flat config without both S3 keys vends nothing and is ignored. Once a catalog
+ * vends credentials, no file is read silently with the server's ambient
+ * identity.
+ */
+static PgColumnarObjStoreConfig *
+rest_vended_cfg(JsonbContainer *lt)
+{
 	JsonbValue	vbuf;
 	JsonbValue *sc;
-	char	   *akid;
-	char	   *secret;
+	JsonbValue *fv;
+	PgColumnarObjStoreConfig *flat = NULL;
+	PgColumnarObjStoreCredSet *cs;
 	PgColumnarObjStoreConfig *cfg;
 
 	if (lt == NULL || !JsonContainerIsObject(lt))
 		return NULL;
 
+	fv = getKeyJsonValueFromContainer(lt, "config", 6, &vbuf);
+	if (fv != NULL && fv->type == jbvBinary &&
+		JsonContainerIsObject(fv->val.binary.data))
+		flat = rest_cred_cfg(fv->val.binary.data);
+
+	cs = (PgColumnarObjStoreCredSet *) palloc0(sizeof(PgColumnarObjStoreCredSet));
 	sc = getKeyJsonValueFromContainer(lt, "storage-credentials", 19, &vbuf);
 	if (sc != NULL && sc->type == jbvBinary &&
 		JsonContainerIsArray(sc->val.binary.data))
 	{
 		uint32		n = JsonContainerSize(sc->val.binary.data);
 		uint32		i;
-		int			mloclen = (int) strlen(metadata_location);
 
+		cs->prefix = (const char **) palloc0(sizeof(char *) * Max(n, 1));
+		cs->cfg = (const PgColumnarObjStoreConfig **)
+			palloc0(sizeof(PgColumnarObjStoreConfig *) * Max(n, 1));
 		for (i = 0; i < n; i++)
 		{
 			JsonbValue *e = getIthJsonbValueFromContainer(sc->val.binary.data, i);
@@ -592,6 +1181,7 @@ rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
 						cbuf;
 			JsonbValue *pv;
 			JsonbValue *cv;
+			PgColumnarObjStoreConfig *ec;
 
 			if (e == NULL || e->type != jbvBinary ||
 				!JsonContainerIsObject(e->val.binary.data))
@@ -602,42 +1192,26 @@ rest_vended_cfg(JsonbContainer *lt, const char *metadata_location)
 				cv == NULL || cv->type != jbvBinary ||
 				!JsonContainerIsObject(cv->val.binary.data))
 				continue;
-			if (pv->val.string.len <= mloclen &&
-				strncmp(metadata_location, pv->val.string.val,
-						pv->val.string.len) == 0 &&
-				pv->val.string.len > bestlen)
-			{
-				bestlen = pv->val.string.len;
-				chosen = cv->val.binary.data;
-			}
+			ec = rest_cred_cfg(cv->val.binary.data);
+			if (ec == NULL)
+				continue;
+			cs->prefix[cs->n] = pnstrdup(pv->val.string.val, pv->val.string.len);
+			cs->cfg[cs->n] = ec;
+			cs->n++;
 		}
 	}
 
-	if (chosen == NULL)
-	{
-		JsonbValue *cv = getKeyJsonValueFromContainer(lt, "config", 6, &vbuf);
+	if (cs->n == 0)
+		return flat;			/* NULL here means the ambient environment */
 
-		if (cv != NULL && cv->type == jbvBinary &&
-			JsonContainerIsObject(cv->val.binary.data))
-			chosen = cv->val.binary.data;
-	}
-	if (chosen == NULL)
-		return NULL;
-
-	akid = rest_json_string_opt(chosen, "s3.access-key-id");
-	secret = rest_json_string_opt(chosen, "s3.secret-access-key");
-	if (akid == NULL || secret == NULL)
-		return NULL;			/* no usable vended creds -> ambient fallback */
-
+	/*
+	 * No credential triple and allow_ambient false: if this config ever reached
+	 * the module unresolved, the module would refuse it (28000).
+	 */
+	cs->fallback = flat;
 	cfg = (PgColumnarObjStoreConfig *) palloc0(sizeof(PgColumnarObjStoreConfig));
-	cfg->akid = akid;
-	cfg->secret = secret;
-	cfg->token = rest_json_string_opt(chosen, "s3.session-token");
-	cfg->region = rest_json_string_opt(chosen, "s3.region");
-	if (cfg->region == NULL)
-		cfg->region = rest_json_string_opt(chosen, "client.region");
-	cfg->endpoint = rest_json_string_opt(chosen, "s3.endpoint");
 	cfg->allow_ambient = false;
+	cfg->byprefix = cs;
 	return cfg;
 }
 
@@ -651,8 +1225,48 @@ PgColumnarIcebergRestLoadTableLocation(const char *catalog_uri,
 {
 	char	   *loc;
 
-	(void) rest_load_table_doc(catalog_uri, ns, table, token, warehouse, &loc);
+	(void) rest_load_table_doc(catalog_uri, rest_split_namespace(ns), table,
+							   token, warehouse, &loc);
 	return loc;
+}
+
+/* Every REST entry point reads an external service: superuser or this role. */
+static void
+rest_check_privilege(void)
+{
+	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+}
+
+/*
+ * iceberg_rest_table_location, with the namespace as a dot-separated text or
+ * as a text[] of levels (#1865).
+ */
+static Datum
+rest_table_location(FunctionCallInfo fcinfo, bool ns_is_array)
+{
+	char	   *arg0;
+	List	   *levels;
+	char	   *table;
+	char	   *catalog_uri;
+	char	   *token;
+	char	   *warehouse;
+	char	   *loc;
+
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
+	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
+	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	(void) rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
+	PG_RETURN_TEXT_P(cstring_to_text(loc));
 }
 
 PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location);
@@ -665,40 +1279,30 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location);
 Datum
 pgcolumnar_iceberg_rest_table_location(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	char	   *table = text_to_cstring(PG_GETARG_TEXT_PP(2));
-	char	   *catalog_uri;
-	char	   *token;
-	char	   *warehouse;
-	char	   *loc;
-
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
-
-	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
-	loc = PgColumnarIcebergRestLoadTableLocation(catalog_uri, ns, table, token,
-												 warehouse);
-	PG_RETURN_TEXT_P(cstring_to_text(loc));
+	return rest_table_location(fcinfo, false);
 }
 
-PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan);
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_table_location_levels);
+
+/* SQL: iceberg_rest_table_location(catalog_uri text, namespace text[], table_name text). */
+Datum
+pgcolumnar_iceberg_rest_table_location_levels(PG_FUNCTION_ARGS)
+{
+	return rest_table_location(fcinfo, true);
+}
 
 /*
- * SQL: iceberg_rest_scan(catalog_uri, namespace, table_name) RETURNS SETOF
- * record. Resolve the table's current metadata-location through the catalog,
- * then read it through the very same path as iceberg_scan (a resolved remote
- * location reads because the reader is remote-capable). Superuser /
+ * iceberg_rest_scan: resolve the table's current metadata-location through the
+ * catalog, then read it through the very same path as iceberg_scan (a resolved
+ * remote location reads because the reader is remote-capable). Superuser /
  * pg_read_server_files, materialize-mode SRF, column definition list required.
  */
-Datum
-pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
+static Datum
+rest_scan(FunctionCallInfo fcinfo, bool ns_is_array)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	char	   *table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	char	   *arg0;
+	List	   *levels;
+	char	   *table;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	char	   *catalog_uri;
@@ -708,10 +1312,7 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	char	   *loc;
 	PgColumnarObjStoreConfig *cfg;
 
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+	rest_check_privilege();
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo) ||
 		(rsinfo->allowedModes & SFRM_Materialize) == 0)
 		ereport(ERROR,
@@ -723,10 +1324,18 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 				 errmsg("pgcolumnar.iceberg_rest_scan requires a column definition list"),
 				 errhint("Call it as SELECT * FROM pgcolumnar.iceberg_rest_scan(uri, ns, tbl) AS t(col1 type1, ...).")));
 
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
+	table = text_to_cstring(PG_GETARG_TEXT_PP(2));
+	/* before rest_resolve: a server's OAuth token POST is a request too */
+	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
+	rest_refuse_empty_table(table);
+	rest_refuse_dot_table(table);
 	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
 	/* one loadTable: the metadata-location AND the vended storage creds (if any) */
-	lt = rest_load_table_doc(catalog_uri, ns, table, token, warehouse, &loc);
-	cfg = rest_vended_cfg(&lt->root, loc);
+	lt = rest_load_table_doc(catalog_uri, levels, table, token, warehouse, &loc);
+	cfg = rest_vended_cfg(&lt->root);
 	/*
 	 * A metadata-location is a URI. The reader's remote path handles s3:// and
 	 * http(s)://; a file:// location is a local path, and the local read path
@@ -734,7 +1343,359 @@ pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
 	 */
 	if (pg_strncasecmp(loc, "file://", 7) == 0)
 		loc += 7;
-	PgColumnarIcebergScanInto(loc, tupdesc, rsinfo, cfg);
+	PgColumnarIcebergScanInto(loc, tupdesc, rsinfo, cfg, "pgcolumnar.iceberg_rest_scan");
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan);
+
+/* SQL: iceberg_rest_scan(catalog_uri, namespace text, table_name) RETURNS SETOF record. */
+Datum
+pgcolumnar_iceberg_rest_scan(PG_FUNCTION_ARGS)
+{
+	return rest_scan(fcinfo, false);
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_scan_levels);
+
+/* SQL: iceberg_rest_scan(catalog_uri, namespace text[], table_name) RETURNS SETOF record. */
+Datum
+pgcolumnar_iceberg_rest_scan_levels(PG_FUNCTION_ARGS)
+{
+	return rest_scan(fcinfo, true);
+}
+
+/*
+ * Bounds on a list walk, so a broken or hostile catalog cannot keep a backend
+ * busy for ever. A real catalog stays far below both.
+ */
+#define REST_MAX_PAGES				100000
+#define REST_MAX_NAMESPACE_DEPTH	64
+
+/*
+ * A set of strings, for "seen before?" questions about values a catalog sends.
+ * Keyed by a 64-bit hash; each entry keeps every string with that hash, so a
+ * collision never makes two different strings look equal.
+ */
+typedef struct RestStrSetEntry
+{
+	uint64		hash;			/* the key; must be first */
+	List	   *strs;
+} RestStrSetEntry;
+
+/*
+ * Is `s` in *set? With `add`, also put it there. *set starts NULL and is made
+ * on the first add, in the current memory context.
+ */
+static bool
+rest_strset_lookup(HTAB **set, const char *s, bool add)
+{
+	uint64		h = hash_bytes_extended((const unsigned char *) s, (int) strlen(s), 0);
+	RestStrSetEntry *e;
+	bool		found;
+	ListCell   *lc;
+
+	if (*set == NULL)
+	{
+		HASHCTL		ctl;
+
+		if (!add)
+			return false;
+		memset(&ctl, 0, sizeof(ctl));
+		ctl.keysize = sizeof(uint64);
+		ctl.entrysize = sizeof(RestStrSetEntry);
+		ctl.hcxt = CurrentMemoryContext;
+		*set = hash_create("pgcolumnar REST string set", 64, &ctl,
+						   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	e = (RestStrSetEntry *) hash_search(*set, &h, add ? HASH_ENTER : HASH_FIND, &found);
+	if (!found)
+	{
+		if (e != NULL)
+			e->strs = list_make1(pstrdup(s));
+		return false;
+	}
+	foreach(lc, e->strs)
+	{
+		if (strcmp((const char *) lfirst(lc), s) == 0)
+			return true;
+	}
+	if (add)
+		e->strs = lappend(e->strs, pstrdup(s));
+	return false;
+}
+
+/*
+ * GET a list resource and return the elements of its `key` array, following
+ * next-page-token across pages (the REST spec's pageToken query parameter).
+ * `path` may already hold a query string. Each element is a JsonbValue that
+ * points into its page's document. `what` labels errors and the object check.
+ */
+static List *
+rest_get_list(const char *catalog_uri, const char *path, const char *key,
+			  const char *what, const char *token, const char *hint404)
+{
+	List	   *items = NIL;
+	char	   *pagetoken = NULL;
+	int			pages = 0;
+	HTAB	   *seen = NULL;	/* every token sent so far */
+
+	for (;;)
+	{
+		StringInfoData rp;
+		Jsonb	   *doc;
+		JsonbValue	vbuf;
+		JsonbValue *arr;
+		char	   *next;
+
+		CHECK_FOR_INTERRUPTS();
+		if (++pages > REST_MAX_PAGES)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("iceberg: the REST catalog %s has more than %d pages",
+							what, REST_MAX_PAGES)));
+		initStringInfo(&rp);
+		appendStringInfoString(&rp, path);
+		if (pagetoken != NULL)
+		{
+			appendStringInfoString(&rp, strchr(path, '?') ? "&pageToken=" : "?pageToken=");
+			rest_pct_encode(&rp, pagetoken);
+		}
+		doc = rest_get_json(catalog_uri, rp.data, what, token, hint404);
+		if (!JsonContainerIsObject(&doc->root))
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("iceberg: the REST catalog %s response is not a JSON object",
+							what)));
+		arr = getKeyJsonValueFromContainer(&doc->root, key, (int) strlen(key), &vbuf);
+		if (arr != NULL && arr->type == jbvBinary &&
+			JsonContainerIsArray(arr->val.binary.data))
+		{
+			uint32		n = JsonContainerSize(arr->val.binary.data);
+			uint32		i;
+
+			for (i = 0; i < n; i++)
+			{
+				JsonbValue *e = getIthJsonbValueFromContainer(arr->val.binary.data, i);
+
+				if (e != NULL)
+					items = lappend(items, e);
+			}
+		}
+
+		/* a null, absent or empty token ends the list */
+		next = rest_json_string_opt(&doc->root, "next-page-token");
+		if (next == NULL || next[0] == '\0')
+			break;
+		/* any earlier token, not only the last one: an A, B, A cycle never ends */
+		if (rest_strset_lookup(&seen, next, true))
+			ereport(ERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("iceberg: the REST catalog returned the same page token twice for the %s",
+							what)));
+		pagetoken = next;
+	}
+	return items;
+}
+
+/*
+ * The levels of one namespace element (a JSON array of strings) as a List, or
+ * NIL when the element is not such an array.
+ */
+static List *
+rest_namespace_levels(JsonbValue *lv)
+{
+	List	   *levels = NIL;
+	uint32		nlev;
+	uint32		j;
+
+	if (lv == NULL || lv->type != jbvBinary ||
+		!JsonContainerIsArray(lv->val.binary.data))
+		return NIL;
+	nlev = JsonContainerSize(lv->val.binary.data);
+	for (j = 0; j < nlev; j++)
+	{
+		JsonbValue *pv = getIthJsonbValueFromContainer(lv->val.binary.data, j);
+
+		if (pv == NULL || pv->type != jbvString)
+			return NIL;
+		levels = lappend(levels, pnstrdup(pv->val.string.val, pv->val.string.len));
+	}
+	return levels;
+}
+
+/*
+ * A key for a namespace's levels that no two different namespaces share: each
+ * level with its length in front, so ["a.b"] and ["a","b"] differ.
+ */
+static char *
+rest_levels_key(List *levels)
+{
+	StringInfoData k;
+	ListCell   *lc;
+
+	initStringInfo(&k);
+	foreach(lc, levels)
+	{
+		const char *l = (const char *) lfirst(lc);
+
+		appendStringInfo(&k, "%zu:%s", strlen(l), l);
+	}
+	return k.data;
+}
+
+/*
+ * Emit every namespace under `parent` (NIL: the top level), then walk into
+ * each one with ?parent=. The REST spec lists only the direct children of
+ * `parent`, so a nested namespace appears only through this walk (#1793).
+ *
+ * Below the top level, a child must extend its parent by exactly one level;
+ * anything else (such as a catalog that ignores ?parent= and repeats the top
+ * level) is skipped, so the walk always goes deeper and ends.
+ *
+ * Some catalogs list nested namespaces at the top level too. Each one is
+ * emitted there, as before #1793, but not walked from there, and *topnested
+ * remembers it so the walk below does not emit it a second time. The walk
+ * still goes into it, to find its own children.
+ *
+ * Each namespace is emitted as its dot-joined levels (text), or with
+ * `as_array` as a text[] of its levels, which keeps a level that holds a dot
+ * apart from two levels (#1865). A level that holds the catalog's separator
+ * is emitted but not walked into: no request can name it. The namespace [""]
+ * is walked into with an empty ?parent= (#1922), and [".."] with ?parent=..:
+ * a query value is not a path segment, so no dot segment is sent (#1948).
+ */
+static void
+rest_walk_namespaces(const char *catalog_uri, const char *token,
+					 RestCatalogConfig *cc, List *parent, HTAB **topnested,
+					 bool as_array, Tuplestorestate *ts, TupleDesc td)
+{
+	StringInfoData rp;
+	List	   *items;
+	ListCell   *lc;
+	int			depth = list_length(parent);
+
+	/* a namespace REST_MAX_NAMESPACE_DEPTH levels deep is still walked */
+	if (depth > REST_MAX_NAMESPACE_DEPTH)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("iceberg: the REST catalog nests namespaces deeper than %d levels",
+						REST_MAX_NAMESPACE_DEPTH)));
+	check_stack_depth();
+
+	initStringInfo(&rp);
+	appendStringInfoString(&rp, cc->base);
+	appendStringInfoString(&rp, "namespaces");
+	if (parent != NIL)
+	{
+		appendStringInfoString(&rp, "?parent=");
+		rest_append_levels(&rp, parent, cc, false);
+	}
+	items = rest_get_list(catalog_uri, rp.data, "namespaces", "namespaces", token,
+							  NULL);
+
+	if (parent == NIL)
+	{
+		foreach(lc, items)
+		{
+			List	   *levels = rest_namespace_levels((JsonbValue *) lfirst(lc));
+
+			if (list_length(levels) > 1)
+				rest_strset_lookup(topnested, rest_levels_key(levels), true);
+		}
+	}
+
+	foreach(lc, items)
+	{
+		List	   *levels = rest_namespace_levels((JsonbValue *) lfirst(lc));
+		StringInfoData name;
+		ListCell   *l2;
+		Datum		values[1];
+		bool		nulls[1] = {false};
+
+		if (levels == NIL)
+			continue;
+		if (parent != NIL)
+		{
+			bool		extends = (list_length(levels) == depth + 1);
+			int			k = 0;
+
+			foreach(l2, parent)
+			{
+				if (!extends)
+					break;
+				extends = strcmp((const char *) lfirst(l2),
+								 (const char *) list_nth(levels, k++)) == 0;
+			}
+			if (!extends)
+				continue;
+		}
+
+		/* emitted already when the top level listed it */
+		if (parent == NIL ||
+			!rest_strset_lookup(topnested, rest_levels_key(levels), false))
+		{
+			if (as_array)
+			{
+				Datum	   *elems = palloc(sizeof(Datum) * list_length(levels));
+				int			k = 0;
+
+				foreach(l2, levels)
+					elems[k++] = CStringGetTextDatum((const char *) lfirst(l2));
+				values[0] = PointerGetDatum(construct_array(elems, k, TEXTOID, -1,
+															false, TYPALIGN_INT));
+				tuplestore_putvalues(ts, td, values, nulls);
+			}
+			else
+			{
+				/* dot-join the levels; an empty first level keeps its dot (#1922) */
+				initStringInfo(&name);
+				foreach(l2, levels)
+				{
+					if (foreach_current_index(l2) > 0)
+						appendStringInfoChar(&name, '.');
+					appendStringInfoString(&name, (const char *) lfirst(l2));
+				}
+				values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
+				tuplestore_putvalues(ts, td, values, nulls);
+				pfree(name.data);
+			}
+		}
+
+		/* a nested namespace on the top-level list is walked from its parent */
+		if (parent == NIL && list_length(levels) > 1)
+			continue;
+		/* a level the catalog cannot be asked about has no children we can list */
+		if (rest_unnameable_level(levels, cc) != NULL)
+			continue;
+		rest_walk_namespaces(catalog_uri, token, cc, levels, topnested, as_array,
+							 ts, td);
+	}
+}
+
+/* iceberg_rest_namespaces (text rows) and iceberg_rest_namespace_levels (text[]) */
+static Datum
+rest_namespaces(FunctionCallInfo fcinfo, bool as_array)
+{
+	char	   *arg0;
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Tuplestorestate *ts;
+	TupleDesc	td;
+	char	   *catalog_uri;
+	char	   *token;
+	char	   *warehouse;
+	RestCatalogConfig cc;
+	HTAB	   *topnested = NULL;
+
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	ts = rest_text_srf_setup(rsinfo, &td);
+	if (as_array)
+		TupleDescInitEntry(td, 1, "namespace", TEXTARRAYOID, -1, 0);
+
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
+	rest_walk_namespaces(catalog_uri, token, &cc, NIL, &topnested, as_array, ts, td);
 	return (Datum) 0;
 }
 
@@ -742,128 +1703,76 @@ PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespaces);
 
 /*
  * SQL: iceberg_rest_namespaces(catalog_uri) RETURNS SETOF text. One row per
- * namespace; a multi-level namespace is dot-joined.
+ * namespace, at every level; a multi-level namespace is dot-joined.
  */
 Datum
 pgcolumnar_iceberg_rest_namespaces(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	Tuplestorestate *ts;
-	TupleDesc	td;
-	char	   *catalog_uri;
-	char	   *token;
-	Jsonb	   *doc;
-	JsonbValue	vbuf;
-	JsonbValue *nsv;
-	uint32		n;
-	uint32		i;
-
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
-	ts = rest_text_srf_setup(rsinfo, &td);
-
-	rest_resolve(arg0, &catalog_uri, &token, NULL);
-	doc = rest_get_json(catalog_uri, "/v1/namespaces", "namespaces", token);
-	if (!JsonContainerIsObject(&doc->root))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("iceberg: the REST catalog namespaces response is not a JSON object")));
-	nsv = getKeyJsonValueFromContainer(&doc->root, "namespaces", 10, &vbuf);
-	if (nsv == NULL || nsv->type != jbvBinary ||
-		!JsonContainerIsArray(nsv->val.binary.data))
-		return (Datum) 0;		/* no namespaces */
-
-	/* each element is itself an array of level strings; dot-join them */
-	n = JsonContainerSize(nsv->val.binary.data);
-	for (i = 0; i < n; i++)
-	{
-		JsonbValue *lv = getIthJsonbValueFromContainer(nsv->val.binary.data, i);
-		StringInfoData name;
-		uint32		nlev;
-		uint32		j;
-		Datum		values[1];
-		bool		nulls[1] = {false};
-
-		if (lv == NULL || lv->type != jbvBinary ||
-			!JsonContainerIsArray(lv->val.binary.data))
-			continue;
-		initStringInfo(&name);
-		nlev = JsonContainerSize(lv->val.binary.data);
-		for (j = 0; j < nlev; j++)
-		{
-			JsonbValue *pv = getIthJsonbValueFromContainer(lv->val.binary.data, j);
-
-			if (pv == NULL || pv->type != jbvString)
-				continue;
-			if (name.len > 0)
-				appendStringInfoChar(&name, '.');
-			appendBinaryStringInfo(&name, pv->val.string.val, pv->val.string.len);
-		}
-		values[0] = PointerGetDatum(cstring_to_text_with_len(name.data, name.len));
-		tuplestore_putvalues(ts, td, values, nulls);
-		pfree(name.data);
-	}
-	return (Datum) 0;
+	return rest_namespaces(fcinfo, false);
 }
 
-PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables);
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_namespace_levels);
 
 /*
- * SQL: iceberg_rest_tables(catalog_uri, namespace) RETURNS SETOF text. One row
- * per table name in the namespace.
+ * SQL: iceberg_rest_namespace_levels(catalog_uri) RETURNS SETOF text[]. The
+ * same namespaces, each as a text[] of its levels (#1865). A row passes back
+ * unchanged as the namespace argument of the other REST functions, except a
+ * row with a level that holds the catalog's separator, or the row {""}, {"."}
+ * or {".."}: they refuse it (22023, #1922, #1948). Another row with an empty
+ * level passes back too (#1891).
  */
 Datum
-pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
+pgcolumnar_iceberg_rest_namespace_levels(PG_FUNCTION_ARGS)
 {
-	char	   *arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	char	   *ns = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	return rest_namespaces(fcinfo, true);
+}
+
+/*
+ * iceberg_rest_tables: one row per table name in the namespace, given as a
+ * dot-separated text or as a text[] of levels (#1865).
+ */
+static Datum
+rest_tables(FunctionCallInfo fcinfo, bool ns_is_array)
+{
+	char	   *arg0;
+	List	   *levels;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	Tuplestorestate *ts;
 	TupleDesc	td;
 	char	   *catalog_uri;
 	char	   *token;
+	char	   *warehouse;
+	RestCatalogConfig cc;
 	StringInfoData rp;
-	Jsonb	   *doc;
-	JsonbValue	vbuf;
-	JsonbValue *idv;
-	uint32		n;
-	uint32		i;
+	List	   *items;
+	ListCell   *lc;
 
-	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of the pg_read_server_files role to read a REST catalog")));
+	rest_check_privilege();
+	arg0 = text_to_cstring(PG_GETARG_TEXT_PP(0));
+	levels = rest_namespace_arg(fcinfo, 1, ns_is_array);
 	ts = rest_text_srf_setup(rsinfo, &td);
 
-	rest_resolve(arg0, &catalog_uri, &token, NULL);
+	rest_refuse_only_empty_level(levels);
+	rest_refuse_dot_namespace(levels, NULL);
+	rest_resolve(arg0, &catalog_uri, &token, &warehouse);
+	rest_catalog_config(catalog_uri, token, warehouse, &cc);
 	initStringInfo(&rp);
-	appendStringInfoString(&rp, "/v1/namespaces/");
-	rest_append_namespace(&rp, ns);
+	appendStringInfoString(&rp, cc.base);
+	appendStringInfoString(&rp, "namespaces/");
+	rest_append_levels(&rp, levels, &cc, true);
 	appendStringInfoString(&rp, "/tables");
-	doc = rest_get_json(catalog_uri, rp.data, "table list", token);
-	if (!JsonContainerIsObject(&doc->root))
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("iceberg: the REST catalog table-list response is not a JSON object")));
-	idv = getKeyJsonValueFromContainer(&doc->root, "identifiers", 11, &vbuf);
-	if (idv == NULL || idv->type != jbvBinary ||
-		!JsonContainerIsArray(idv->val.binary.data))
-		return (Datum) 0;		/* no tables */
+	items = rest_get_list(catalog_uri, rp.data, "identifiers", "table list", token,
+						  rest_empty_level_hint(levels));
 
-	n = JsonContainerSize(idv->val.binary.data);
-	for (i = 0; i < n; i++)
+	foreach(lc, items)
 	{
-		JsonbValue *e = getIthJsonbValueFromContainer(idv->val.binary.data, i);
+		JsonbValue *e = (JsonbValue *) lfirst(lc);
 		JsonbValue	nbuf;
 		JsonbValue *nm;
 		Datum		values[1];
 		bool		nulls[1] = {false};
 
-		if (e == NULL || e->type != jbvBinary ||
-			!JsonContainerIsObject(e->val.binary.data))
+		if (e->type != jbvBinary || !JsonContainerIsObject(e->val.binary.data))
 			continue;
 		nm = getKeyJsonValueFromContainer(e->val.binary.data, "name", 4, &nbuf);
 		if (nm == NULL || nm->type != jbvString)
@@ -873,6 +1782,24 @@ pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(ts, td, values, nulls);
 	}
 	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables);
+
+/* SQL: iceberg_rest_tables(catalog_uri, namespace text) RETURNS SETOF text. */
+Datum
+pgcolumnar_iceberg_rest_tables(PG_FUNCTION_ARGS)
+{
+	return rest_tables(fcinfo, false);
+}
+
+PG_FUNCTION_INFO_V1(pgcolumnar_iceberg_rest_tables_levels);
+
+/* SQL: iceberg_rest_tables(catalog_uri, namespace text[]) RETURNS SETOF text. */
+Datum
+pgcolumnar_iceberg_rest_tables_levels(PG_FUNCTION_ARGS)
+{
+	return rest_tables(fcinfo, true);
 }
 
 /* -------------------------------------------------------------------------

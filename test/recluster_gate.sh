@@ -34,11 +34,13 @@ physlayout() { q "SELECT md5(string_agg(stripeid::text||':'||fileoffset::text||'
 # ---- fixture: cluster once by (a) --------------------------------------------
 mk rg_t
 FIRST="$(q "SELECT pgcolumnar.recluster('rg_t','a');")"
-check "premise: the first recluster does real work (>0 groups)" \
+# Not premises (#1339): these three read recluster's own work, its recorded key (#415)
+# and its recorded extent (#311), and a one-line change to recluster reddens each.
+check "the first recluster does real work (>0 groups)" \
 	"$([ "${FIRST:-0}" -gt 0 ] && echo yes || echo no)" "yes"
-check "premise: sort_status now reports the clustering key (was NULL before #415)" \
+check "sort_status now reports the clustering key (was NULL before #415)" \
 	"$(q "SELECT sort_key::text FROM pgcolumnar.sort_status('rg_t');")" "{a}"
-check "premise: the run covers the whole relation (0 appended groups)" \
+check "the run covers the whole relation (0 appended groups)" \
 	"$(q "SELECT appended_groups FROM pgcolumnar.sort_status('rg_t');")" "0"
 
 # ---- the gate: a second recluster by the same key is a no-op -----------------
@@ -46,8 +48,10 @@ PHYS_BEFORE="$(physlayout rg_t)"
 SECOND="$(q "SELECT pgcolumnar.recluster('rg_t','a');")"
 PHYS_AFTER="$(physlayout rg_t)"
 check_num "recluster by the same key on an unchanged table reclusters 0 groups" "$SECOND" "0"
+# Two failed layout reads agreed, so a missing reading is "no reading", not "same".
 check "and it leaves the physical layout byte-identical (group offsets unmoved)" \
-	"$([ "$PHYS_BEFORE" = "$PHYS_AFTER" ] && echo same || echo rewritten)" "same"
+	"$(if [ -z "$PHYS_BEFORE" ] || [ -z "$PHYS_AFTER" ]; then echo "no reading: [$PHYS_BEFORE] -> [$PHYS_AFTER]"
+	   elif [ "$PHYS_BEFORE" = "$PHYS_AFTER" ]; then echo same; else echo rewritten; fi)" "same"
 THIRD="$(q "SELECT pgcolumnar.recluster('rg_t','a');")"
 check_num "a third identical recluster is also a no-op" "$THIRD" "0"
 
@@ -72,9 +76,14 @@ check_num "a repeat recluster by the new key is a no-op" \
 	"$(q "SELECT pgcolumnar.recluster('rg_t','b');")" "0"
 
 # ---- correctness: the data is unchanged by the no-op (oracle vs heap) --------
-psql_run "CREATE TABLE rg_h (a int, b int, pad text);"
-psql_run "INSERT INTO rg_h SELECT a,b,pad FROM rg_t;"
-check "no-op recluster preserved the exact row set (columnar == heap mirror)" \
+# The mirror is built from the generator, NOT copied from rg_t: a copy of rg_t agrees
+# with rg_t whatever the reclusters did to it (with a row corrupted before the copy,
+# this passed). rg_t holds g = 1..20000, then g = 1..5000 again from the append.
+psql_run "CREATE TABLE rg_h AS
+	SELECT ((g*2654435761)::bigint % 1000)::int AS a, g AS b, md5(g::text) AS pad FROM generate_series(1,20000) g
+	UNION ALL
+	SELECT ((g*2654435761)::bigint % 1000)::int, g, md5(g::text) FROM generate_series(1,5000) g;"
+check_text "no-op recluster preserved the exact row set (columnar == heap mirror)" \
 	"$(q "SELECT count(*)||'/'||sum(a)||'/'||sum(b)||'/'||md5(string_agg(pad,',' ORDER BY b)) FROM rg_t;")" \
 	"$(q "SELECT count(*)||'/'||sum(a)||'/'||sum(b)||'/'||md5(string_agg(pad,',' ORDER BY b)) FROM rg_h;")"
 

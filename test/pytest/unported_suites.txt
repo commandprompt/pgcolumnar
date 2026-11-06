@@ -1,0 +1,8 @@
+# Registered shell suites that have no pytest twin yet (#1341, #432).
+#
+# One stem per line, sorted. test_compare_to_bash.py holds this list in both
+# directions: a registered suite with no test_<stem>.py must be listed here, and a
+# listed stem that gains its twin must be removed and declared COMPLETE or INCOMPLETE
+# in that file. A port PR removes its own line, so two ports never conflict here.
+#
+# The parity goal (#432) is this file empty.

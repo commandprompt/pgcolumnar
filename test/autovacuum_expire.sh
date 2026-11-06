@@ -59,14 +59,18 @@ poll() {
 	printf '%s' "$got"
 }
 
-check "premise: the maintenance launcher is running" \
+# Not premises (#1339): the launcher, its compaction pass and expire's refusal are
+# pgcolumnar's own, so a repository change reddens each -- with the launcher never
+# registered, or expire raising the wrong SQLSTATE. The zone-date premise below reads
+# only the fixture's arithmetic, and stays one.
+check "the maintenance launcher is running" \
 	"$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'pgcolumnar autovacuum launcher';")" "1"
 check "the daemon's expire switch exists and is OFF by default" \
 	"$(q "SELECT current_setting('pgcolumnar.autovacuum') || '/' || current_setting('pgcolumnar.autovacuum_expire');")" "on/off"
 
 # ---- the fixture is one an expire would change ------------------------------
 mk_ttl ex_copy
-check_num "premise: a manual expire on the same fixture retires its two aged groups" \
+check_num "a manual expire on the same fixture retires its two aged groups" \
 	"$(q "SELECT pgcolumnar.expire('ex_copy');")" "2"
 
 # ---- OFF: the daemon runs, compacts, and does not expire --------------------
@@ -75,7 +79,7 @@ psql_run "CREATE TABLE ex_busy (id int, v int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('ex_busy', chunk_group_row_limit => $CG);"
 psql_run "INSERT INTO ex_busy SELECT g, g FROM generate_series(1, 20000) g;"
 psql_run "DELETE FROM ex_busy WHERE (id * 2654435761)::bigint % 100 < 40;"
-check "premise: the daemon compacted a deleted-heavy table, so it was running passes" \
+check "the daemon compacted a deleted-heavy table, so it was running passes" \
 	"$(poll 40 'deleted_rows ex_busy' 0)" "0"
 sleep 4   # two more passes over ex_off
 check_num "OFF: with autovacuum_expire off the daemon retired nothing" "$(aged ex_off)" "$((2*CG))"
@@ -116,7 +120,7 @@ sqlstate_of() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-qtA -v VERBOSITY=sqlstate -c "$1" 2>&1 | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
 }
-check "premise: expire on a table whose TTL column is gone fails with undefined_column" \
+check "expire on a table whose TTL column is gone fails with undefined_column" \
 	"$(sqlstate_of "SELECT pgcolumnar.expire('ex_bad');")" "42703"
 psql_run "ALTER SYSTEM SET pgcolumnar.autovacuum_expire = on;"
 psql_run "SELECT pg_reload_conf();"
@@ -149,7 +153,7 @@ holds() {
 	   WHERE l.relation = 'ex_hold'::regclass AND l.mode = 'ShareUpdateExclusiveLock'
 	     AND l.granted AND a.backend_type = 'pgcolumnar autovacuum worker';"
 }
-check "premise: the daemon holds ShareUpdateExclusiveLock inside expire (the hold window is open)" \
+check "the daemon holds ShareUpdateExclusiveLock inside expire (the hold window is open)" \
 	"$(poll 40 holds 1)" "1"
 psql_run "DROP TABLE ex_gone;"
 t0=$(date +%s)
@@ -173,6 +177,73 @@ check_num "dropped: and the pass goes on to expire the next table" "$(poll 45 'a
 check "dropped: a table dropped mid-pass is logged as skipped" \
 	"$([ "$(grep -c 'pgcolumnar autovacuum: skipped expire on .*ex_gone' "$PGC_LOGFILE" 2>/dev/null)" -ge 1 ] && echo yes || echo no)" "yes"
 psql_run "ALTER SYSTEM RESET pgcolumnar.maintenance_hold_ms;"
+psql_run "SELECT pg_reload_conf();"
+
+# ---- which TimeZone the daemon's expire cuts a date retention at (#1341) ------
+#
+# For a date or timestamp retention column the cutoff is a calendar date, so it
+# depends on the zone. how-to.md says the daemon uses the server's TimeZone. Measured
+# (PG17), it does, and it follows a change once reloaded, but a database-level
+# ALTER DATABASE ... SET TimeZone overrides it, as it does for any session connecting
+# to that database. Two zones 25 hours apart, so they are never on the same date.
+#
+# One row group per day, six days either side of today (UTC); the expire retires the
+# groups wholly before the cutoff, so the first surviving day IS the cutoff the
+# daemon computed: today in its zone, less the one-day retention.
+tz_mk() {	# tz_mk TABLE: built with the daemon's expire off, so no pass sees half of it
+	psql_run "CREATE TABLE $1 (d date, v int) USING pgcolumnar;"
+	psql_run "SELECT pgcolumnar.set_options('$1', chunk_group_row_limit => 1000, stripe_row_limit => 1000,
+	          ttl_column => 'd', ttl_interval => '1 day');"
+	for k in $(seq -6 6); do
+		psql_run "INSERT INTO $1 SELECT (now() AT TIME ZONE 'UTC')::date + $k, g FROM generate_series(1, 100) g;"
+	done
+}
+tz_cut() { q "SELECT ((now() AT TIME ZONE '$1')::date - 1)::text;"; }
+tz_expire() {	# tz_expire on|off  (silent: tz_first's output is its answer)
+	psql_run "ALTER SYSTEM SET pgcolumnar.autovacuum_expire = $1;" >/dev/null
+	psql_run "SELECT pg_reload_conf();" >/dev/null
+	[ "$1" = off ] && sleep 5
+}
+# tz_first TABLE ZONE -> "match" if the first surviving day is the zone's cutoff, read
+# just before and just after the daemon's passes (a zone's midnight may fall
+# between); otherwise the day it holds and the two cutoffs it was compared with.
+tz_first() {
+	local before after got last="" same=0 i
+	before="$(tz_cut "$2")"
+	tz_expire on
+	for i in $(seq 1 60); do
+		got="$(q "SELECT min(d)::text FROM $1;")"
+		if [ "$got" = "$last" ] && [ "$got" != "$tz_start" ]; then
+			same=$((same + 1)); [ "$same" -ge 8 ] && break
+		else
+			same=0
+		fi
+		last="$got"; sleep 1
+	done
+	after="$(tz_cut "$2")"
+	tz_expire off
+	{ [ "$got" = "$before" ] || [ "$got" = "$after" ]; } && echo match || echo "$got (want $before or $after)"
+}
+psql_run "ALTER SYSTEM RESET pgcolumnar.maintenance_hold_ms;"
+tz_expire off
+psql_run "ALTER SYSTEM SET timezone = 'Pacific/Kiritimati';"
+psql_run "SELECT pg_reload_conf();"
+tz_mk tz_k
+tz_start="$(q "SELECT min(d)::text FROM tz_k;")"
+check "premise: the two zones are on different dates, so every arm below can tell them apart" \
+	"$([ "$(tz_cut Pacific/Kiritimati)" != "$(tz_cut Pacific/Pago_Pago)" ] && echo apart || echo same)|$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('tz_k');")" \
+	"apart|13"
+check "the daemon cuts a date retention at the server's TimeZone" "$(tz_first tz_k Pacific/Kiritimati)" "match"
+psql_run "ALTER SYSTEM SET timezone = 'Pacific/Pago_Pago';"
+psql_run "SELECT pg_reload_conf();"
+sleep 3
+tz_mk tz_p
+check "and follows a change to it once the configuration is reloaded" "$(tz_first tz_p Pacific/Pago_Pago)" "match"
+psql_run "ALTER DATABASE \"$PGC_DB\" SET timezone = 'Pacific/Kiritimati';"
+tz_mk tz_d
+check "a database-level TimeZone overrides the server's for the daemon too" "$(tz_first tz_d Pacific/Kiritimati)" "match"
+psql_run "ALTER DATABASE \"$PGC_DB\" RESET timezone;"
+psql_run "ALTER SYSTEM RESET timezone;"
 psql_run "SELECT pg_reload_conf();"
 
 pgc_summary

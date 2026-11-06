@@ -245,9 +245,30 @@ EXPLAIN (ANALYZE, COSTS OFF) SELECT id FROM events_parquet WHERE ts >= '2026-01-
 --     Files: 4
 ```
 
-The `path` may also be an object-storage URL. Every read and export function, and
-both foreign-data wrappers, accept an `s3://`, `http://`, or `https://` URL where
-they accept a local path.
+**Timestamps and time zones.** A Parquet timestamp column holds either instants
+(UTC-adjusted) or wall times with no zone. Read into the matching type
+(`timestamptz` for instants, `timestamp` for wall times), a value comes back
+unchanged. Read into the other type, it is converted as PostgreSQL's own cast
+converts it, in the session's `TimeZone`:
+
+- a wall time read into `timestamptz` is taken as local time in that zone, like
+  `'2024-06-01 12:00'::timestamp::timestamptz`;
+- an instant read into `timestamp` becomes the local wall time, like
+  `'2024-06-01 12:00+00'::timestamptz::timestamp`.
+
+A foreign-table scan does not skip row groups of a column read this way, because
+the conversion does not keep order across a daylight-saving change. For the same
+reason the Iceberg foreign table does not prune files on a `year()`, `month()`,
+`day()` or `hour()` partition of such a column. A column marked only with the
+older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type, with no `isAdjustedToUTC`
+flag, holds instants: the Parquet format defines it so. `parquet_schema` advises
+`timestamptz` for every column that holds instants, and `timestamp` for wall
+times.
+
+The `path` may also be an object-storage URL. Every Parquet read and export
+function accepts an `s3://`, `http://`, or `https://` URL where it accepts a
+local path. So do the `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data
+wrappers.
 
 ```sql
 SELECT count(*) FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
@@ -285,11 +306,12 @@ SELECT * FROM pgcolumnar.iceberg_rest_scan(
 
 For per-role credentials, pass a foreign server name as the first argument. The
 server holds the catalog URI, and the current role's user mapping supplies the
-token.
+token. The role needs `USAGE` on the server.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')

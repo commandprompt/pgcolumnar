@@ -25,28 +25,21 @@
 # The argument is accepted and ignored; this suite needs no cluster.
 # Written fresh for pgColumnar.
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 SRCDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# No cluster needed; pgc_setup is skipped deliberately, as in wal_envelope.sh. The
+# checks go through lib.sh's check() so each one is a RESULT record the ledger and
+# the pytest twin can name (#1341); the suite used to keep its own tally, which
+# emitted none. PGC_MAJOR comes from the pg_config every suite is handed, and
+# degrades to `unknown` rather than to a guessed major when there is none.
+PGC_MAJOR="$(pgc_major_of "${1:-}" 2>/dev/null)"
 PGC_CHECKS=0
 PGC_FAIL=0
-check() {
-	local name="$1" got="$2" want="$3"
-	PGC_CHECKS=$((PGC_CHECKS + 1))
-	if [ "$got" = "$want" ]; then
-		echo "PASS  $name"
-	else
-		echo "FAIL  $name: got [$got] want [$want]"
-		PGC_FAIL=1
-	fi
-}
 
 GUARDS="$SRCDIR/bench/cb_guards.sh"
-if [ ! -f "$GUARDS" ]; then
-	echo "FAIL  bench/cb_guards.sh is missing, so the benchmark's guards are untestable"
-	PGC_CHECKS=$((PGC_CHECKS + 1))
-	PGC_FAIL=1
-	echo; echo "checks run: $PGC_CHECKS"; echo "$(basename "$0"): FAILED"; exit 1
-fi
+check "premise: bench/cb_guards.sh is present to be judged" "$([ -f "$GUARDS" ] && echo yes || echo no)" "yes"
+[ -f "$GUARDS" ] || pgc_summary
 # shellcheck source=/dev/null
 . "$GUARDS"
 
@@ -60,37 +53,83 @@ echo "== pgColumnar test: $(basename "$0") =="
 # requirement the script does not enforce is the same shape as selftest 080 not
 # scanning bench/: the rule existed, the check did not.
 #
-# Asserted on the SOURCE rather than by running the benchmarks, because running
-# them takes minutes and the question is whether the guard is present and shaped
-# right.
-for _bp in "$(dirname "${BASH_SOURCE[0]}")/../bench/"run_*.sh; do
-	_bs="$(basename "$_bp")"
-	check "[$_bs] refuses an assert build rather than documenting the requirement" \
-		"$([ "$(grep -c 'enable-cassert' "$_bp")" -gt 0 ] && echo yes || echo no)" "yes"
-	# EVERY assertion here keys on shared TEXT, never on a prefix, and that is
-	# load-bearing rather than incidental: run_profile.sh uses PROFILE_* where
-	# the other five use BENCH_*, so a check written against `BENCH_ALLOW_CASSERT`
-	# would pass on five runners and silently stop covering the sixth. Proved:
-	# keying that one check on BENCH_ALLOW_CASSERT leaves run_profile.sh as the
-	# only red. The unprefixed match below is what keeps it in scope.
-	#
-	# If anyone tidies the prefixes to match, this comment says the checks need
-	# no change. If anyone tidies the CHECKS to match the prefixes, that is the
-	# moment coverage is lost with nothing going red.
-	check "[$_bs] and offers a named override rather than only refusing" \
-		"$([ "$(grep -cE 'ALLOW_CASSERT' "$_bp")" -gt 0 ] && echo yes || echo no)" "yes"
-	check "[$_bs] and exits non-zero rather than warning past it" \
-		"$([ "$(grep -A24 'enable-cassert' "$_bp" | grep -c 'exit 1')" -gt 0 ] && echo yes || echo no)" "yes"
-	# "not an assert build" and "could not tell" are different answers and only
-	# one of them is a pass. Written as a bare `--configure | grep -c`, a missing
-	# or failing pg_config gives empty output, grep -c gives 0, and the guard
-	# returns its cleanest verdict on the least information -- so it must capture
-	# the output and refuse an empty one.
-	check "[$_bs] refuses when it CANNOT TELL, rather than treating that as a pass" \
-		"$([ "$(grep -c 'produced no --configure output' "$_bp")" -gt 0 ] && echo yes || echo no)" "yes"
-	check "[$_bs] and does not decide from an unbuffered pipe into grep -c" \
-		"$([ "$(grep -cE '\$\("\$PG_CONFIG" --configure[^)]*\| *grep -c' "$_bp")" -eq 0 ] && echo yes || echo no)" "yes"
+# Asserted by RUNNING each runner's own guard, not by grepping for its words
+# (#1341). The guard is the block from the runner's --configure capture through
+# the `fi` that closes its ALLOW_CASSERT test, read with comments removed, and it
+# is run against a stand-in pg_config that reports an assert build, a plain one,
+# or nothing. Running the whole runner is not an option: past its guard it
+# builds, loads and downloads.
+#
+# The greps this replaces passed with the refusal gone. Every runner's header
+# mentions --enable-cassert, and the cannot-tell block's `exit 1` sits within 24
+# lines of that mention, so with the assert branch's `exit 1` turned into `true`,
+# with the empty-capture `exit 1` removed, with every build refused, or with the
+# override ignored, main's suite passed all 60 checks. Measured on run_bench.sh.
+#
+# EVERY assertion still keys on shared TEXT, never on a prefix: run_profile.sh
+# uses PROFILE_* where the other five use BENCH_*, so the override variable is
+# read from the runner's own guard rather than spelled here.
+_fake="$(mktemp -d)"
+for _mode in cassert plain empty; do
+	{
+		echo '#!/bin/sh'
+		echo 'case "$1" in'
+		case "$_mode" in
+			cassert) echo "  --configure) echo \"'--prefix=/nonexistent' '--enable-cassert'\" ;;" ;;
+			plain) echo "  --configure) echo \"'--prefix=/nonexistent'\" ;;" ;;
+			empty) echo "  --configure) exit 1 ;;" ;;
+		esac
+		echo '  --bindir) echo /nonexistent/bin ;;'
+		echo '  --version) echo "PostgreSQL 17.0" ;;'
+		echo '  *) echo /nonexistent ;;'
+		echo 'esac'
+	} >"$_fake/pg_config_$_mode"
+	chmod +x "$_fake/pg_config_$_mode"
 done
+guard_of() {	# guard_of RUNNER -> its assert guard as code, comments removed, or nothing
+	# Only a COMPLETE guard is returned: the capture, an ALLOW_CASSERT test and the
+	# `fi` closing it, within 60 code lines. Anything else returns nothing, which
+	# the checks below refuse. Returning a partial block would run whatever follows
+	# it in the runner -- the build, the load, the download -- and with the assert
+	# test removed it once returned the rest of run_bench.sh.
+	awk '/^[[:space:]]*#/ {next}
+		!on && /--configure/ && /PG_CONFIG/ {on=1}
+		on {buf = buf $0 "\n"; n++}
+		on && /ALLOW_CASSERT/ {seen=1}
+		on && seen && /^fi$/ {printf "%s", buf; exit}
+		n > 60 {exit}' "$1"
+}
+run_guard() {	# run_guard RUNNER MODE [ALLOW] -> "rc=N" then the guard's output
+	local block var out rc
+	block="$(guard_of "$1")"
+	var="$(grep -oE '[A-Z_]*ALLOW_CASSERT' <<<"$block" | head -1)"
+	out="$(env -i PATH=/usr/bin:/bin PG_CONFIG="$_fake/pg_config_$2" ${3:+"${var:-NO_OVERRIDE_FOUND}=1"} \
+		bash -c "set -uo pipefail; $block" 2>&1)"
+	rc=$?
+	echo "rc=$rc"
+	echo "$out"
+}
+for _bp in "$SRCDIR/bench/"run_*.sh; do
+	_bs="$(basename "$_bp")"
+	_asrt="$(run_guard "$_bp" cassert)"
+	_ovrd="$(run_guard "$_bp" cassert allow)"
+	_pln="$(run_guard "$_bp" plain)"
+	_none="$(run_guard "$_bp" empty)"
+	check "[$_bs] refuses an assert build rather than documenting the requirement" \
+		"$(grep -q 'is an --enable-cassert build' <<<"$_asrt" && echo yes || echo "no: $(head -c 200 <<<"$_asrt" | tr '\n' ' ')")" "yes"
+	check "[$_bs] and offers a named override rather than only refusing" \
+		"$(head -1 <<<"$_ovrd")/$(grep -c 'WARNING' <<<"$_ovrd")" "rc=0/1"
+	check "[$_bs] and exits non-zero rather than warning past it" "$(head -1 <<<"$_asrt")" "rc=1"
+	check "[$_bs] and lets a non-assert build through" \
+		"$(head -1 <<<"$_pln")/$(grep -c 'FATAL' <<<"$_pln")" "rc=0/0"
+	# "not an assert build" and "could not tell" are different answers and only
+	# one of them is a pass: a missing or failing pg_config must be refused.
+	check "[$_bs] refuses when it CANNOT TELL, rather than treating that as a pass" \
+		"$(head -1 <<<"$_none")/$(grep -c 'produced no --configure output' <<<"$_none")" "rc=1/1"
+	check "[$_bs] and does not decide from an unbuffered pipe into grep -c" \
+		"$([ "$(guard_of "$_bp" | grep -cE '\$\("\$PG_CONFIG" --configure[^)]*\| *grep -c')" -eq 0 ] && echo yes || echo no)" "yes"
+done
+rm -rf "$_fake"
 
 # The control: the scan has to be reading files that exist, or four greps over
 # nothing would report compliance.
@@ -144,7 +183,7 @@ check "N + 1 is still refused: the coordinator needs a slot too" \
 	"$(cb_worker_slots_ok 9 8 && echo ok || echo refused)" "refused"
 check "N + 2 is accepted, the measured minimum" \
 	"$(cb_worker_slots_ok 10 8 && echo ok || echo refused)" "ok"
-check "more than enough is accepted" \
+check "more than enough worker slots are accepted" \
 	"$(cb_worker_slots_ok 32 8 && echo ok || echo refused)" "ok"
 check "the rule holds at another worker count (4 needs 6)" \
 	"$(cb_worker_slots_ok 6 4 && echo ok || echo refused)" "ok"
@@ -218,7 +257,7 @@ tag_none="$(cb_cold_tag none 2>/dev/null)"
 # "lukewarm-cold-run", and "the run was not called cold" therefore PASSES against
 # no implementation whatever. Seen, not reasoned about -- it passed exactly that
 # way on the first red run of this suite.
-check "premise: the guard exists and emitted a tag to judge" \
+check "the guard exists and emitted a tag to judge" \
 	"$([ -n "$tag_none" ] && echo yes || echo no)" "yes"
 check "a host that could not drop the page cache is not called a cold run" \
 	"$(grep -qi 'lukewarm-cold-run' <<<"$tag_none" && echo claimed || echo not-claimed)" \
@@ -239,7 +278,7 @@ check "and the tag says plainly that the run was warm" \
 #
 # The three numbers below are that run's q13, the smallest real case: heap
 # 1588.095 ms, columnar 1582.859 ms, and a warm-try scatter of 0.99 percent.
-check "premise: the verdict helpers are present to be judged" \
+check "the verdict helpers are present to be judged" \
 	"$(type -t cb_verdict)/$(type -t cb_warm_spread)/$(type -t cb_band)" \
 	"function/function/function"
 
@@ -294,11 +333,13 @@ CB="$SRCDIR/bench/run_clickbench.sh"
 check "premise: the benchmark script is present to be judged" \
 	"$([ -f "$CB" ] && echo yes || echo no)" "yes"
 
+# Matched as a WHOLE name (#1341): `r[12]=` alone also matched `rr1=`, so with
+# the variables renamed this premise passed and the check below read nothing.
 # Without this premise the next check is vacuous. Rename r1 and "no ratio value
 # decides anything" passes against a report that has gone back to deciding on one
 # under another name -- the grep finds nothing and nothing is what it approves.
 check "premise: the report still captures ratio() into a display variable" \
-	"$([ "$(grep -c 'r[12]=\$(ratio' "$CB")" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "$(grep -cE '(^|[^[:alnum:]_])r[12]=\$\(ratio' "$CB")" -ge 1 ] && echo yes || echo no)" "yes"
 
 check "ratio()'s output reaches printf and nothing else" \
 	"$(grep '\$r[12]' "$CB" | grep -vc 'printf')" "0"
@@ -316,8 +357,11 @@ check "ratio()'s output reaches printf and nothing else" \
 # `cb_verdict "` is the shape a call takes here and a mention almost never does.
 # Measured on the bypassed tree: loose 1 (approves), tight 0 (rejects); on the
 # good tree tight is 1 and still approves.
+# Read as CODE: a comment that keeps the call's shape is not a call. With the
+# verdict recomputed inline and `# was: case "$(cb_verdict "$c" ...` left behind,
+# main's suite passed this check (#1341).
 check "and the verdict is asked of cb_verdict rather than recomputed inline" \
-	"$([ "$(grep -c 'cb_verdict "' "$CB")" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "$(grep -vE '^[[:space:]]*#' "$CB" | grep -c 'cb_verdict "')" -ge 1 ] && echo yes || echo no)" "yes"
 
 # ---- the accelerator claim must not call a separation "variation" (#565) ----
 #
@@ -369,11 +413,4 @@ echo "  tuned-arm settings named on the page:$([ -z "$_miss" ] && echo ' all fou
 check "the tuned-arm section names all four settings and the group-cap value" \
 	"missing:$_miss" "missing:"
 
-echo
-echo "checks run: $PGC_CHECKS"
-if [ "$PGC_FAIL" != 0 ]; then
-	echo "$(basename "$0"): FAILED"
-	exit 1
-fi
-echo "$(basename "$0"): PASSED"
-exit 0
+pgc_summary

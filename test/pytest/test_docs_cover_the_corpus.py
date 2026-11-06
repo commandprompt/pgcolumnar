@@ -45,14 +45,25 @@ def corpus_tests(directory):
     return found
 
 
+def _words(text):
+    """-> every whole word in TEXT, file names (`x.py`) included.
+
+    A name counts as named only as a whole word, not as a substring: 22 tests in this
+    corpus have a name that is the prefix of another's (`test_whole_row` /
+    `test_whole_row_var_on_off`), and `name in text` counted the shorter one as
+    documented by the longer one's entry (#1339).
+    """
+    return set(re.findall(r"\w+", text)) | set(re.findall(r"\w+\.py", text))
+
+
 def undocumented(directory, doc_path):
     """-> sorted list of file and test names the document does not name."""
-    text = pathlib.Path(doc_path).read_text()
+    words = _words(pathlib.Path(doc_path).read_text())
     missing = []
     for name, tests in corpus_tests(directory).items():
-        if name not in text:
+        if name not in words:
             missing.append(name)
-        missing.extend(t for t in tests if t not in text)
+        missing.extend(t for t in tests if t not in words)
     return sorted(missing)
 
 
@@ -65,6 +76,16 @@ def stated_totals_in(text):
 def stated_totals(doc_path):
     """-> (tests, files) the document claims, or None if it states none."""
     return stated_totals_in(pathlib.Path(doc_path).read_text())
+
+
+def totals_line_refused(path):
+    """-> "none" when PATH states no totals line, else what it states, refused.
+
+    The no-totals arm's own predicate, so its fixture below reaches the arm rather
+    than comparing two constants (#1339).
+    """
+    m = stated_totals(path)
+    return "none" if m is None else "refused: %d tests in %d files" % m
 
 
 def _fixture(tmp_path, doc_body):
@@ -179,6 +200,16 @@ def test_a_documented_file_that_does_not_exist_is_caught(tmp_path, expect):
                 "a documented file that does not exist is named")
 
 
+def _duplicated_names(names):
+    """-> the sorted names that occur more than once in NAMES.
+
+    ONE rule, used by the real arm and by the fixture below. The fixture used to carry
+    its own copy of the expression, so it proved the copy: with the real arm's rule
+    broken (`count(n) > 2`) the fixture stayed green (#1339).
+    """
+    return sorted({n for n in names if names.count(n) > 1})
+
+
 def test_no_test_name_is_defined_twice_in_the_corpus(expect):
     """The premise the set-equality argument needs, and it was missing (@jdatcmd).
 
@@ -205,7 +236,7 @@ def test_no_test_name_is_defined_twice_in_the_corpus(expect):
     found = corpus_tests(HERE)
     names = [n for tests in found.values() for n in tests]
     expect.at_least(len(names), 20, "premise: the corpus was found")
-    dupes = sorted({n for n in names if names.count(n) > 1})
+    dupes = _duplicated_names(names)
     expect.text(", ".join(dupes) or "none", "none",
                 "no test name is defined twice in the corpus")
     expect.num(len(names), len(set(names)),
@@ -220,7 +251,7 @@ def test_a_name_defined_in_two_files_is_caught(tmp_path, expect):
     names = [n for tests in found.values() for n in tests]
     expect.num(len(names), 2, "premise: both definitions were seen")
     expect.num(len(set(names)), 1, "and they share one name")
-    expect.text(", ".join(sorted({n for n in names if names.count(n) > 1})),
+    expect.text(", ".join(_duplicated_names(names)),
                 "test_shared_shape",
                 "a name defined in two files is named, not passed over")
 
@@ -253,7 +284,7 @@ def test_the_document_states_no_totals_for_a_merge_to_get_wrong(expect):
     stays for it: the reader still has to work, or "no totals line" would be
     indistinguishable from "cannot find one".
     """
-    expect.text(repr(stated_totals(DOC)), "None",
+    expect.text(totals_line_refused(DOC), "none",
                 "TESTS.md states no totals line for a merge to get wrong")
 
     # And the reader that reports it must still be able to FIND one, or the arm
@@ -275,7 +306,11 @@ def test_the_corpus_counts_are_reported_rather_than_written(expect):
     found = corpus_tests(HERE)
     total = sum(len(v) for v in found.values())
     expect.at_least(total, 20, "premise: the corpus was found, so a count means something")
-    expect.num(len(found), len({f for f in found}), "each file counted once")
+    # Against the directory itself, listed without corpus_tests(): `found` is a dict,
+    # so comparing it with the set of its own keys could not fail (#1339).
+    on_disk = {p.name for p in HERE.iterdir() if re.fullmatch(r"test_\w+\.py", p.name)}
+    expect.text(", ".join(sorted(on_disk ^ set(found))) or "none", "none",
+                "each file counted once")
     print(f"\nCORPUS: {total} test functions in {len(found)} files")
 
 
@@ -317,9 +352,10 @@ def test_a_stated_total_that_disagrees_with_disk_is_visible(tmp_path, expect):
     expect.text(repr(stated_totals(doc)), "(9, 4)", "the document states 9 in 4")
     expect.text(repr((sum(len(v) for v in found.values()), len(found))), "(2, 1)",
                 "while the fixture on disk holds 2 in 1")
-    expect.differ(stated_totals(doc),
-                  (sum(len(v) for v in found.values()), len(found)),
-                  "a stated total that disagrees with disk does not compare equal")
+    # The arm that refuses a totals line must refuse THIS one. Comparing the two
+    # tuples above with each other could not fail: both are pinned already (#1339).
+    expect.text(totals_line_refused(doc), "refused: 9 tests in 4 files",
+                "and the no-totals arm refuses a document that states one")
 
 
 # ---------------------------------------------------------------------------
@@ -404,8 +440,12 @@ def test_the_readme_and_the_inventory_agree_on_what_is_refused(expect):
     """
     refused, _, _ = _named_modes()
     readme = (HERE / "README.md").read_text()
-    expect.at_least(readme.count(f"{len(refused)} refused"), 1,
-                    "README.md quotes the number of modes actually named as refused")
+    # Every "N refused" README states, read as a whole number: a count of the right
+    # substring passed with "128 refused", and with a second, contradicting number
+    # beside the right one (#1339).
+    said = sorted({int(n) for n in re.findall(r"(?<!\d)(\d+) refused\b", readme)})
+    expect.text(", ".join(map(str, said)) or "none", str(len(refused)),
+                "README.md quotes the number of modes actually named as refused")
 
 
 def test_the_inventory_accounts_for_every_mode_the_run_found(expect):
@@ -1145,6 +1185,23 @@ def test_a_stale_next_step_is_caught_on_a_fixture(expect):
                 "and an open entry whose id reached section 2 is named")
 
 
+def _empty_sections(lines):
+    """-> the numbered sections in LINES with nothing between their heading and the next.
+
+    ONE reader for the real arm and its control. The control carried its own copy,
+    so it proved the copy: with the real reader counting blank lines as a body, the
+    control stayed green (#1339).
+    """
+    heads = [i for i, l in enumerate(lines) if re.match(r"^## \d+[a-z]?\. ", l)]
+    empty = []
+    for k, i in enumerate(heads):
+        end = heads[k + 1] if k + 1 < len(heads) else len(lines)
+        body = [l for l in lines[i + 1:end] if l.strip() and not l.startswith("#")]
+        if not body:
+            empty.append(lines[i][3:].split(":")[0].strip())
+    return empty
+
+
 def test_a_numbered_section_has_a_body_of_its_own(expect):
     """A numbered heading immediately followed by another heading documents nothing.
 
@@ -1165,23 +1222,13 @@ def test_a_numbered_section_has_a_body_of_its_own(expect):
     expect.at_least(len(heads), 20,
                     "premise: the numbered headings were found at all")
 
-    empty = []
-    for k, i in enumerate(heads):
-        end = heads[k + 1] if k + 1 < len(heads) else len(lines)
-        body = [l for l in lines[i + 1:end] if l.strip() and not l.startswith("#")]
-        if not body:
-            empty.append(lines[i][3:].split(":")[0].strip())
+    empty = _empty_sections(lines)
     expect.text(", ".join(empty) or "none", "none",
                 "every numbered section carries a body of its own")
 
     # Control: plant the shape and prove the reader names it, so a green above is the
     # absence of the defect rather than the absence of a working check.
     planted = lines[:heads[1]] + ["## 999. planted.py: nothing follows this", ""] + lines[heads[1]:]
-    heads2 = [i for i, l in enumerate(planted) if re.match(r"^## \d+[a-z]?\. ", l)]
-    found = []
-    for k, i in enumerate(heads2):
-        end = heads2[k + 1] if k + 1 < len(heads2) else len(planted)
-        if not [l for l in planted[i + 1:end] if l.strip() and not l.startswith("#")]:
-            found.append(planted[i][3:].split(":")[0].strip())
+    found = _empty_sections(planted)
     expect.text(", ".join(found), "999. planted.py",
                 "control: a planted empty section is named by the same reader")

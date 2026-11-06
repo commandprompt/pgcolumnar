@@ -112,7 +112,7 @@ q "CREATE TABLE cw (ts timestamptz, v int) USING pgcolumnar;
    INSERT INTO cw SELECT '2026-06-01'::timestamptz + g * interval '1 s', g FROM generate_series(1, 2000) g;" >/dev/null
 q "COPY (SELECT '2020-01-01'::timestamptz + g * interval '1 day', g FROM generate_series(1, 4000) g)
    TO '$PGC_WORKDIR/cw.txt' WITH (FORMAT text);" >/dev/null
-check "premise: parallel_copy's loaders, flushing into one table at once, all commit" \
+check "parallel_copy's loaders, flushing into one table at once, all commit" \
 	"$(q "SELECT pgcolumnar.parallel_copy('cw', '$PGC_WORKDIR/cw.txt', 4);")" "4000"
 check "and the extent covers what they loaded" "$(ext cw ts)" "$(truth cw ts)"
 
@@ -189,8 +189,11 @@ q "CREATE TABLE ex (ts timestamptz, v int) USING pgcolumnar;
    INSERT INTO ex SELECT now() - interval '400 days' + g * interval '1 min', g FROM generate_series(1, 3000) g;
    INSERT INTO ex SELECT now() - interval '1 day' + g * interval '1 s', g FROM generate_series(1, 3000) g;" >/dev/null
 ex_before="$(ext ex ts)"
+# The extent was there before expire (#1339): the arms below say it MOVED, which
+# means nothing if it was never written.
+check "before expire the extent covers the table" "$ex_before" "$(truth ex ts)"
 retired="$(q "SELECT pgcolumnar.expire('ex');")"
-check "premise: expire retires the old row groups with the extent in place" "$([ "${retired:-0}" -ge 1 ] && echo yes || echo no)" "yes"
+check "expire retires the old row groups with the extent in place" "$([ "${retired:-0}" -ge 1 ] && echo yes || echo no)" "yes"
 check "after expire the extent is recomputed to the data that is left" "$(ext ex ts)" "$(truth ex ts)"
 check "and it did move: the retired groups held the old minimum" \
 	"$([ "$ex_before" != "$(ext ex ts)" ] && echo yes || echo no)" "yes"
@@ -200,7 +203,7 @@ q "CREATE TABLE cr (ts timestamptz, v int) USING pgcolumnar;
    INSERT INTO cr SELECT '2026-01-01'::timestamptz + g * interval '1 min', g FROM generate_series(1, 4000) g;
    DELETE FROM cr WHERE v > 3500 OR v <= 400;" >/dev/null
 rewritten="$(q "SELECT pgcolumnar.compact_rewrite('cr', 0.1);")"
-check "premise: compact_rewrite rewrites the groups the deletes thinned" "$([ "${rewritten:-0}" -ge 1 ] && echo yes || echo no)" "yes"
+check "compact_rewrite rewrites the groups the deletes thinned" "$([ "${rewritten:-0}" -ge 1 ] && echo yes || echo no)" "yes"
 check "after compact_rewrite the extent is the live rows'" "$(ext cr ts)" "$(truth cr ts)"
 
 q "CREATE TABLE vr (ts timestamptz, v int) USING pgcolumnar;
@@ -209,6 +212,21 @@ q "CREATE TABLE vr (ts timestamptz, v int) USING pgcolumnar;
    DELETE FROM vr WHERE v > 2000;" >/dev/null
 q "VACUUM vr;" >/dev/null
 check "after VACUUM retires a fully deleted group the extent is the live rows'" "$(ext vr ts)" "$(truth vr ts)"
+
+# recluster rewrites every group too, and the changelog names it with the three
+# above (#1341 item 75): the rows a DELETE removed are not written back, so its
+# extent must be the live rows', not wider by rows no longer stored. The deleted
+# rows hold the minimum, so a stale extent keeps it.
+q "CREATE TABLE rc (ts timestamptz, v int) USING pgcolumnar;
+   SELECT pgcolumnar.set_options('rc', stripe_row_limit => 1000, chunk_group_row_limit => 1000);
+   INSERT INTO rc SELECT '2026-01-01'::timestamptz + g * interval '1 min', (g * 7919) % 3001 FROM generate_series(1, 3000) g;
+   DELETE FROM rc WHERE ts < '2026-01-01'::timestamptz + interval '400 min';" >/dev/null
+rc_before="$(ext rc ts)"
+reclustered="$(q "SELECT pgcolumnar.recluster('rc', 'ts', 'v');")"
+check "recluster rewrites the table's row groups" "$([ "${reclustered:-0}" -ge 1 ] && echo yes || echo "no ($reclustered)")" "yes"
+check "after recluster the extent is the live rows'" "$(ext rc ts)" "$(truth rc ts)"
+check "and it did move: the deleted rows held the old minimum" \
+	"$([ -n "$rc_before" ] && [ "$rc_before" != "$(ext rc ts)" ] && echo yes || echo "no ($rc_before)")" "yes"
 
 # ---- no complete extent where the zone maps cannot give one ----------------------
 q "CREATE TABLE ac (ts timestamptz) USING pgcolumnar;
@@ -234,13 +252,16 @@ q "CREATE TABLE hk (ts timestamptz, v int) USING pgcolumnar;" >/dev/null
 for k in $(seq 1 50); do q "INSERT INTO hk VALUES ('2026-01-01'::timestamptz + interval '$k min', $k);" >/dev/null; done
 hk_rows="$(q "SELECT count(*) FROM pgcolumnar.column_extent WHERE storage_id = $(sid hk) AND column_index = 0;")"
 check "fifty committing writers leave a bounded number of extent rows" \
-	"$([ "${hk_rows:-99}" -le 9 ] && echo yes || echo "no (${hk_rows:-none})")" "yes"
+	"$([ "${hk_rows:-0}" -ge 1 ] && [ "${hk_rows:-99}" -le 9 ] && echo yes || echo "no (${hk_rows:-none})")" "yes"
 check "and the extent still covers all fifty" "$(ext hk ts)" "$(truth hk ts)"
 hk_old="$(sid hk)"
 q "TRUNCATE hk;" >/dev/null
 check "TRUNCATE removes the old storage's extent rows" \
 	"$(q "SELECT count(*) FROM pgcolumnar.column_extent WHERE storage_id = $hk_old;")" "0"
 cw_old="$(sid cw)"
+# Rows to remove (#1339): a count of zero after the DROP proves nothing without it.
+check "before DROP the table has extent rows to remove" \
+	"$(q "SELECT (count(*) > 0)::text FROM pgcolumnar.column_extent WHERE storage_id = $cw_old;")" "true"
 q "DROP TABLE cw;" >/dev/null
 check "DROP TABLE removes them" "$(q "SELECT count(*) FROM pgcolumnar.column_extent WHERE storage_id = $cw_old;")" "0"
 
@@ -251,5 +272,10 @@ check "the extent catalog is not readable by an ordinary role (it holds column v
 	"$(as_role ce_r "SELECT count(*) FROM pgcolumnar.column_extent" | sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p')" "42501"
 check "nor is a table's extent through the function, without SELECT on the table" \
 	"$(as_role ce_r "SELECT * FROM pgcolumnar.column_extent('public.ty', 'ts')" | sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p')" "42501"
+# The control (#1339): the same role, given SELECT, reads it. Without this, a function
+# refused to everyone -- by EXECUTE, or by the schema -- passed the arm above.
+q "GRANT SELECT ON ty TO ce_r;" >/dev/null
+check "and with SELECT on the table the same role reads its extent" \
+	"$(as_role ce_r "SELECT count(*) FROM pgcolumnar.column_extent('public.ty', 'ts')")" "1"
 
 pgc_summary

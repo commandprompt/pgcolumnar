@@ -335,9 +335,13 @@ per `pgcolumnar.autovacuum_naptime` (default 60 seconds), and logs
 any. A pass that retires nothing logs at `DEBUG1` only.
 
 For a `date` or `timestamp` retention column, the cutoff depends on the time
-zone. The daemon uses the server's `TimeZone` setting, which may differ from
-the time zone your sessions use. For a cutoff in your session's time zone, run
-`pgcolumnar.expire` by hand from that session.
+zone. The daemon uses the `TimeZone` in effect for the database it connects to.
+That is the database's own setting (`ALTER DATABASE ... SET TimeZone`) when it
+has one. Otherwise it is the server's `TimeZone`, including a change made by
+reloading the configuration. Either may differ from the time zone your sessions
+use. For a
+cutoff in your session's time zone, run `pgcolumnar.expire` by hand from that
+session.
 
 `pgcolumnar.reset_options` has no argument for the retention. To stop expiring,
 set `ttl_interval` to a span no row will reach.
@@ -663,6 +667,11 @@ If the source is rewritten, for example by `pgcolumnar.vacuum`, `refresh_rollup`
 refuses with `55000`. If the rollup was current before the rewrite, run
 `pgcolumnar.rebase_rollup` to record the rewritten table and continue.
 
+**A rollup depends on its source.** `DROP TABLE` of the source is refused while
+a rollup reads from it, as it is for a view. `DROP TABLE ... CASCADE` drops the
+rollup too. To remove only the rollup, run `DROP VIEW` on it, which also drops
+its partials table and its catalog rows.
+
 Run `refresh_rollup` at READ COMMITTED. A role that is not a superuser needs
 `USAGE` on schema `pgcolumnar`, which a superuser grants. Each role then sees
 and refreshes only the rollups that it owns.
@@ -682,6 +691,17 @@ CREATE SERVER cold FOREIGN DATA WRAPPER pgcolumnar_parquet;
 SELECT pgcolumnar.tier_partition('metrics_2026_01', 'cold',
                                  's3://archive/metrics/2026_01.parquet');
 ```
+
+The function writes the file with the settings of the server that you name:
+its endpoint and region, and your user mapping on it. These are the settings
+the foreign partition reads with. If the object store rejects your mapping, the
+move fails and the rows stay where they were. Before it commits, the function
+also reads the rows back through the foreign partition, as you. If that read
+fails, the move rolls back.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser.
+Every role that queries the parent after the move needs `pg_read_server_files`
+and a mapping on the server that can read the file.
 
 The function returns the number of rows that it moved. It runs as one
 transaction: if it fails at any step, the rows stay in the columnar partition,
@@ -715,10 +735,105 @@ every row is stored exactly once.
 **A failed attempt leaves its file behind.** A transaction cannot remove a file
 that it wrote. You can retry with the same `path`: the function overwrites a
 file that no foreign table in the database reads. It refuses a `path` that a
-foreign table in this database reads (`58P02`). The check compares the text of
-the path, so the same file spelled another way, for example through a symbolic
-link, is not recognised. It also cannot see readers outside the database, so do
-not reuse a path that another system reads.
+foreign table in this database reads (`58P02`). A foreign table reads every
+file its `path` names, so the function refuses a `path` when a foreign table's
+`path` is one of these (#1941):
+
+- The same path. The scheme of a remote URL matches in any case, and `s3a://`
+  and `s3n://` match `s3://`. So `s3a://b/k` and `S3://b/k` both block a move
+  to `s3://b/k` (#1936). The host of an `http://` or `https://` URL also
+  matches in any case.
+- A directory that holds the path at any depth. A remote directory ends in
+  `/`, such as `s3://b/dir/`. A local directory may end in `/` or not.
+- A glob that matches the path, such as `s3://b/g/*.parquet`. The function
+  asks `pgcolumnar.path_glob_matches`, which matches with the reader's own
+  code: `fnmatch` for an `s3://` key, and `glob(3)` for a local path. So it
+  refuses the paths that the glob expands to, and no others (#1957, #1962).
+  In a glob, `*`, `?` and a `[...]` class do not match `/`, except that a
+  class in an `s3://` key can. A name that starts with `.` matches only when
+  the glob spells the dot. A range such as `[a-c]` follows the database's
+  collation, as it does when the foreign table reads.
+
+The function reads the `path` option only of foreign tables whose wrapper uses
+pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
+option of another wrapper's foreign table means what that wrapper says, so it
+blocks no move. A path that such a table really reads is not refused either.
+
+A `pgcolumnar_iceberg` foreign table has no `path` option. It reads data files
+under its table location. The function takes that location as the reader
+does: the parent of the directory that holds `metadata_path`. So with
+`metadata_path` `s3://wh/db/t/metadata/v3.metadata.json`, the function refuses
+any path under `s3://wh/db/t/` (#1949). The reader refuses a file outside the
+table location and does not read it. So the location covers every file the
+table can read. A `metadata_path` with no directory above `metadata/` is cut
+as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
+refused. A relative `metadata/v1.metadata.json` gives `./`, the data
+directory, because a relative path is resolved against it (#2004). So every
+local path under the data directory is refused, spelled relative or in full.
+A location that holds `..`, such as
+`/w/x/../t/`, refuses paths under `/w/t/` (#1959). The reader reads `/w/t/`
+too, unless `/w/x` is a symbolic link. Then the reader goes up from the
+directory the link leads to, and the check refuses the wrong directory. A
+location reached through a symbolic link does not refuse paths in the
+directory the link leads to, although the reader reads that directory.
+
+**A new file under a directory that a foreign table reads is refused too.**
+The function cannot tell a new file from an old one. Once the move is done,
+the foreign table on the directory reads the new file as well. So this common
+layout fails from the second move on:
+
+1. You move January to `s3://archive/metrics/2026_01.parquet`.
+2. You create one foreign table on `s3://archive/metrics/` to read every
+   month.
+3. You move February to `s3://archive/metrics/2026_02.parquet`. The function
+   refuses it (`58P02`), and the error detail names the foreign table on
+   `s3://archive/metrics/`.
+
+You do not need such a table to read the moved months. Each move attaches its
+file as a foreign partition, so the parent table already reads every moved
+month. If you still want a foreign table over the moved files, for example for
+another tool, do one of these:
+
+- Keep the moves and that table apart. Move each month under one prefix, such
+  as `s3://archive/metrics/`. Give the table a copy of the files under another
+  prefix that no move writes to.
+- Give that table a glob that leaves out the next file's name, such as
+  `s3://archive/metrics/2025_*.parquet` while you move the months of 2026.
+  A `[...]` class works too: `2026_0[1-6].parquet` does not block
+  `2026_07.parquet`.
+- Drop that table before the move and create it again after.
+
+The bucket and the key must match in case. A local path is compared as
+written, and again in a folded form (#1965, #1959). That form reads a run of
+`/` as one `/`, drops a `.` name, and drops a name followed by `..`. In a
+glob, `\.` counts as `.`, because `glob(3)` removes the backslash. So a
+foreign table on `/w//*.parquet` or `/w/\./*.parquet` blocks a move to
+`/w/a.parquet`. A relative path is resolved against the data directory,
+where the server opens it. So `x/a.parquet` and the same file spelled in full
+block each other (#2004). A caller without `pg_read_all_settings` cannot
+read the data directory's name. For that caller, a local move is refused
+beside a table on a local path when either path is relative. A table on a
+relative glob is the exception (#2013). It blocks what its glob matches,
+and a path under the glob as written, as under a directory. The function
+does not resolve a symbolic link. So it does not see a local file reached
+through a link. A link followed by `..` is worse: for
+`/w/lnk/../*.parquet`, where `/w/lnk` leads to `/z/q`, the reader reads
+`/z/*.parquet`. The function refuses `/w/a.parquet` instead, and allows a move
+that overwrites `/z/a.parquet`. Do not spell a reader's path with a link
+followed by `..`. It does not follow a link because a link can change after the check,
+and the reader follows it at each query. A `file://` URL is not another spelling
+of a local path. The Parquet reader opens `file://...` as a file of that
+name, which does not exist. So a foreign table on it reads nothing and blocks
+nothing. The function also cannot see readers outside the database. So do not
+reuse a path that another system reads, or a local file that a foreign table
+reads under another spelling.
+
+Some globs are too large for glibc to match: see `path_glob_matches` in
+docs/sql-reference.md. A foreign table with such a glob blocks every move to a
+local path, with error `54000`. An `s3://` glob with more than 128 `*` blocks
+every move to an `s3://` path the same way. The function cannot tell whether that table reads
+the path, so it refuses. The error detail names the table and its glob
+(#1974). Change that table's path, or drop the table, to move again.
 
 The function refuses these partitions before it moves anything:
 
@@ -798,20 +913,27 @@ skipped.
 
 ## Import and export Arrow
 
-The Arrow IPC file format works the same way as Parquet.
+`export_arrow` writes the Arrow IPC stream format. `import_arrow` reads the
+stream format and the Arrow IPC file format, which includes Feather v2.
 
 ```sql
-SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');
-SELECT pgcolumnar.export_arrow('events', '/data/events.arrow');
+SELECT pgcolumnar.export_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrows');
+SELECT pgcolumnar.import_arrow('events', '/data/events.arrow');  -- IPC file or Feather v2
 ```
+
+To read an export with pyarrow, use `pyarrow.ipc.open_stream`. The export has no
+file footer, so `pyarrow.ipc.open_file` and Feather readers refuse it.
 
 **Tuning.** Use Arrow to exchange data with an in-process analytic engine without
 a Parquet encode step. Use Parquet for durable, compressed files.
 
 ## Use object storage
 
-Every path that accepts a local path also accepts an `s3://`, `http://`, or
-`https://` URL. Credentials come from the server process environment.
+The Parquet functions, `export_arrow` and the Iceberg reader accept an `s3://`,
+`http://`, or `https://` URL where they accept a local path. `import_arrow`,
+`file_split_offsets` and `parallel_copy` read local files only. Credentials come
+from the server process environment.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
@@ -827,11 +949,13 @@ pgcolumnar.objstore_allowed_endpoints = 's3.amazonaws.com, minio.internal'
 ```
 
 The environment supplies `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. A host that resolves to
-a link-local or instance-metadata address is refused even when it is listed.
+`AWS_SESSION_TOKEN`, `AWS_REGION`, and `AWS_ENDPOINT_URL`. The module refuses a
+host that resolves to a link-local range or a known instance-metadata address,
+even when it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 
 **Tuning.** Raise `pgcolumnar.objstore_part_size` to use larger multipart parts
-over a high-latency network. Choose `pgcolumnar.objstore_s3_addressing` to match
+over a high-latency network. Its maximum is 512 MiB. Choose `pgcolumnar.objstore_s3_addressing` to match
 your provider's path or virtual-host style. Keep the allow-list as small as your
 buckets require.
 
@@ -852,7 +976,11 @@ SELECT * FROM pgcolumnar.iceberg_data_files('.../00042.metadata.json');
 The reader resolves each output column to a schema field id, so a file written
 before a column rename still reads. It applies position deletes, equality
 deletes, and format-version 3 deletion vectors. The metadata path may be a local
-path or an `s3://`, `http://`, or `https://` URL.
+path or an `s3://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+`s3n://` as `s3://`. The metadata file may be gzip-compressed, as a writer makes it
+when `write.metadata.compression-codec` is `gzip`. Manifests must use the Avro
+codec `null` or `deflate`; [Limitations](limitations.md#reading-apache-iceberg)
+lists the rest.
 
 **Tuning.** Select only the columns you need. Read from object storage under the
 same allow-list as every other remote access.
@@ -872,14 +1000,22 @@ SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
 SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'analytics');
 ```
 
+A dotted namespace such as `'analytics.daily'` is split into levels at every
+dot. To name a level that itself contains a dot, give the levels as a `text[]`,
+such as `ARRAY['analytics.v2']`. `iceberg_rest_namespace_levels` lists the
+namespaces in that form. See
+[Name a namespace](sql-reference.md#name-a-namespace).
+
 For per-role credentials, name a foreign server instead of a URI. The server
 holds the catalog URI. The current role's user mapping holds the bearer token,
-kept in `pg_user_mapping` where it is not world-readable. On a multi-warehouse
-catalog, add a `warehouse` server option; it is sent on the config request.
+kept in `pg_user_mapping` where it is not world-readable. The role needs `USAGE`
+on the server. On a multi-warehouse catalog, add a `warehouse` server option; it
+is sent on the config request.
 
 ```sql
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com', warehouse 'analytics_wh');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT * FROM pgcolumnar.iceberg_rest_scan('cat', 'analytics', 'events')

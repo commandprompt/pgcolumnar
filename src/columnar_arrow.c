@@ -28,8 +28,11 @@
 #include "columnar_objstore.h"
 #include "columnar_sink.h"
 
+#include <unistd.h>
+
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -302,6 +305,7 @@ typedef struct ArrowCol
 	int16		elemlen;
 	bool		elembyval;
 	char		elemalign;
+	PgcTextQueue pending;		/* this row's texts, made by arrowcol_value_bytes */
 }			ArrowCol;
 
 static void
@@ -621,8 +625,15 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 				{
 					if (c->convertText)
 					{
-						char	   *str = OutputFunctionCall(&c->outFinfo, d);
-						int			len = (int) strlen(str);
+						/* the text arrowcol_value_bytes made, or a new one */
+						int			len = 0;
+						char	   *str = PgcTextQueuePop(&c->pending, d, &len);
+
+						if (str == NULL)
+						{
+							str = OutputFunctionCall(&c->outFinfo, d);
+							len = (int) strlen(str);
+						}
 
 						if (len > 0)
 							appendBinaryStringInfo(&c->vardata, str, len);
@@ -962,6 +973,144 @@ write_record_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows)
 }
 
 /*
+ * arrowcol_bytes
+ *		The bytes one column has buffered for the current batch, its children
+ *		included (#1811).
+ */
+static int64
+arrowcol_bytes(const ArrowCol *c)
+{
+	int64		bytes = (int64) c->valid.len + c->fixed.len + c->boolvals.len +
+		c->vardata.len + c->offs.len;
+	int			k;
+
+	for (k = 0; k < c->nchildren; k++)
+		bytes += arrowcol_bytes(&c->children[k]);
+	return bytes;
+}
+
+/*
+ * arrowcol_value_bytes
+ *		An upper bound on the bytes arrowcol_append adds for one value, counted
+ *		in the column's written form (#1811, #1843 review): the validity byte,
+ *		the fixed width or the offset, and the bytes of a variable-length value.
+ *		A numeric or jsonb written as text is measured by its text, which can be
+ *		far longer than the stored value. A value that arrowcol_append folds to
+ *		null adds less than this. The column keeps that text for arrowcol_append,
+ *		which takes the texts in the same order, so each value converts once.
+ */
+static int64
+arrowcol_value_bytes(ArrowCol *c, Datum d, bool isnull)
+{
+	int64		bytes = 1;		/* validity */
+	int			k;
+
+	switch (c->kind)
+	{
+		case A_BOOL:
+			return bytes + 1;
+		case A_UTF8:
+		case A_BINARY:
+			bytes += 4;			/* offset */
+			if (isnull)
+				return bytes;
+			if (c->convertText)
+			{
+				char	   *str = OutputFunctionCall(&c->outFinfo, d);
+				int			len = (int) strlen(str);
+
+				bytes += (int64) len;
+				PgcTextQueuePush(&c->pending, d, str, len);
+			}
+			else
+				bytes += (int64) toast_raw_datum_size(d) - VARHDRSZ;
+			return bytes;
+		case A_LIST:
+			bytes += 4;			/* list offset */
+			if (!isnull)
+			{
+				ArrowCol   *e = &c->children[0];
+				ArrayType  *arr = DatumGetArrayTypeP(d);
+				int			n = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+
+				if (e->nchildren == 0 && !e->convertText &&
+					e->kind != A_UTF8 && e->kind != A_BINARY)
+					bytes += (int64) n * (1 + Max(e->width, 1));
+				else if (e->nchildren == 0 && !e->convertText)
+					bytes += (int64) n * (1 + 4) + ARR_SIZE(arr);
+				else
+				{
+					Datum	   *elems;
+					bool	   *enulls;
+					int			nelems;
+
+					deconstruct_array(arr, c->elemtype, c->elemlen,
+									  c->elembyval, c->elemalign,
+									  &elems, &enulls, &nelems);
+					for (k = 0; k < nelems; k++)
+						bytes += arrowcol_value_bytes(e, elems[k], enulls[k]);
+					pfree(elems);
+					pfree(enulls);
+				}
+				if ((Pointer) arr != DatumGetPointer(d))
+					pfree(arr);
+			}
+			return bytes;
+		case A_STRUCT:
+			if (isnull)
+			{
+				for (k = 0; k < c->nchildren; k++)
+					bytes += arrowcol_value_bytes(&c->children[k], (Datum) 0, true);
+			}
+			else
+			{
+				HeapTupleHeader th = DatumGetHeapTupleHeader(d);
+				TupleDesc	td = lookup_rowtype_tupdesc(HeapTupleHeaderGetTypeId(th),
+														HeapTupleHeaderGetTypMod(th));
+				HeapTupleData tmptup;
+				Datum	   *av = palloc(sizeof(Datum) * td->natts);
+				bool	   *an = palloc(sizeof(bool) * td->natts);
+				int			a;
+				int			fi = 0;
+
+				tmptup.t_len = HeapTupleHeaderGetDatumLength(th);
+				ItemPointerSetInvalid(&tmptup.t_self);
+				tmptup.t_tableOid = InvalidOid;
+				tmptup.t_data = th;
+				heap_deform_tuple(&tmptup, td, av, an);
+				for (a = 0; a < td->natts; a++)
+				{
+					if (TupleDescAttr(td, a)->attisdropped)
+						continue;
+					bytes += arrowcol_value_bytes(&c->children[fi], av[a], an[a]);
+					fi++;
+				}
+				ReleaseTupleDesc(td);
+				pfree(av);
+				pfree(an);
+			}
+			return bytes;
+		default:
+			return bytes + c->width;
+	}
+}
+
+/* write the buffered rows as one RecordBatch, then reset the columns */
+static void
+arrow_flush_batch(PqSink *snk, ArrowCol *cols, int ncols, int64 nrows,
+				  MemoryContext batchCtx)
+{
+	MemoryContext oldCtx = MemoryContextSwitchTo(batchCtx);
+	int			i;
+
+	write_record_batch(snk, cols, ncols, nrows);
+	MemoryContextSwitchTo(oldCtx);
+	MemoryContextReset(batchCtx);
+	for (i = 0; i < ncols; i++)
+		arrowcol_reset(&cols[i]);
+}
+
+/*
  * pgcolumnar_export_arrow
  *		SQL: pgcolumnar.export_arrow(rel regclass, path text) -> bigint.
  *		Write a columnar table to an Arrow IPC stream file; returns the number
@@ -1007,6 +1156,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	relid = PG_GETARG_OID(0);
 	pathText = PG_GETARG_TEXT_PP(1);
 	path = text_to_cstring(pathText);
+	PgColumnarRefuseS3AliasWrite("export_arrow", path);
 
 	/*
 	 * SELECT on the source, before the file is opened (#559). The server-file
@@ -1127,7 +1277,29 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 	while (PgColumnarReadNextRow(readState, values, nulls, &rowNumber))
 	{
+		int64		batchBytes = 0;
+		int64		rowBytes = 0;
+
 		CHECK_FOR_INTERRUPTS();
+
+		/*
+		 * Cut by bytes too (#1811): write the batch before a row that would
+		 * take its buffered bytes past the cap. The batch body is built in
+		 * one allocation, capped at 1 GiB. The row is counted as written,
+		 * not as stored (#1843 review).
+		 */
+		for (i = 0; i < ncols; i++)
+		{
+			batchBytes += arrowcol_bytes(&cols[i]);
+			rowBytes += arrowcol_value_bytes(&cols[i], values[i], nulls[i]);
+		}
+		if (batchRows > 0 &&
+			batchBytes + rowBytes > (int64) pgcolumnar_export_group_bytes)
+		{
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
+			batchRows = 0;
+		}
+
 		for (i = 0; i < ncols; i++)
 			arrowcol_append(&cols[i], values[i], nulls[i]);
 		batchRows++;
@@ -1135,12 +1307,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 		if (batchRows == ARROW_BATCH_ROWS)
 		{
-			oldCtx = MemoryContextSwitchTo(batchCtx);
-			write_record_batch(snk, cols, ncols, batchRows);
-			MemoryContextSwitchTo(oldCtx);
-			MemoryContextReset(batchCtx);
-			for (i = 0; i < ncols; i++)
-				arrowcol_reset(&cols[i]);
+			arrow_flush_batch(snk, cols, ncols, batchRows, batchCtx);
 			batchRows = 0;
 		}
 	}
@@ -1171,8 +1338,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
-		PgColumnarSinkAbort(snk);
-		PG_RE_THROW();
+		PgColumnarSinkAbortAndRethrow(snk);	/* never returns (#1741) */
 	}
 	PG_END_TRY();
 
@@ -1192,6 +1358,9 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
  * malformed file raises ERRCODE_DATA_CORRUPTED rather than reading out of
  * bounds.
  * ========================================================================= */
+
+/* the first 6 bytes, and the last 6, of an Arrow IPC file (not a stream) */
+#define ARROW_FILE_MAGIC "ARROW1"
 
 #define IMPORT_CORRUPT(msg) \
 	ereport(ERROR, \
@@ -1565,8 +1734,160 @@ imp_field_mismatch(const char *arrowtype, Oid typid)
 					arrowtype, format_type_be(typid))));
 }
 
+/* Arrow Type union tags this reader names but never reads (Schema.fbs) */
+#define ARROW_TYPE_Null			1
+#define ARROW_TYPE_Interval		11
+#define ARROW_TYPE_Union		14
+#define ARROW_TYPE_FixedSizeList 16
+#define ARROW_TYPE_Map			17
+#define ARROW_TYPE_Duration		18
+#define ARROW_TYPE_LargeBinary	19
+#define ARROW_TYPE_LargeUtf8	20
+#define ARROW_TYPE_LargeList	21
+#define ARROW_TYPE_RunEndEncoded 22
+#define ARROW_TYPE_BinaryView	23
+#define ARROW_TYPE_Utf8View		24
+#define ARROW_TYPE_ListView		25
+#define ARROW_TYPE_LargeListView 26
+
+/* "a struct", "a large list", ... for an Arrow Type union tag */
+static const char *
+arrow_type_tag_desc(uint8 typetag)
+{
+	switch (typetag)
+	{
+		case ARROW_TYPE_Null:
+			return "a null";
+		case ARROW_TYPE_Int:
+			return "an integer";
+		case ARROW_TYPE_FloatingPoint:
+			return "a float";
+		case ARROW_TYPE_Binary:
+			return "a binary";
+		case ARROW_TYPE_Utf8:
+			return "a string";
+		case ARROW_TYPE_Bool:
+			return "a boolean";
+		case ARROW_TYPE_Decimal:
+			return "a decimal";
+		case ARROW_TYPE_Date:
+			return "a date";
+		case ARROW_TYPE_Time:
+			return "a time";
+		case ARROW_TYPE_Timestamp:
+			return "a timestamp";
+		case ARROW_TYPE_Interval:
+			return "an interval";
+		case ARROW_TYPE_List:
+			return "a list";
+		case ARROW_TYPE_Struct:
+			return "a struct";
+		case ARROW_TYPE_Union:
+			return "a union";
+		case ARROW_TYPE_FixedSizeBinary:
+			return "a fixed-size binary";
+		case ARROW_TYPE_FixedSizeList:
+			return "a fixed-size list";
+		case ARROW_TYPE_Map:
+			return "a map";
+		case ARROW_TYPE_Duration:
+			return "a duration";
+		case ARROW_TYPE_LargeBinary:
+			return "a large binary";
+		case ARROW_TYPE_LargeUtf8:
+			return "a large string";
+		case ARROW_TYPE_LargeList:
+			return "a large list";
+		case ARROW_TYPE_RunEndEncoded:
+			return "a run-end encoded array";
+		case ARROW_TYPE_BinaryView:
+			return "a binary view";
+		case ARROW_TYPE_Utf8View:
+			return "a string view";
+		case ARROW_TYPE_ListView:
+			return "a list view";
+		case ARROW_TYPE_LargeListView:
+			return "a large list view";
+		default:
+			return "an unknown Arrow type";
+	}
+}
+
+/* how many List levels start at `field`: 1 for list<int64>, 2 for list<list<..>> */
+static int
+arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
+{
+	int			depth = 0;
+
+	/* bounded: a crafted file's offsets can wrap, so do not trust them to end */
+	while (field != 0 && depth < 1000)
+	{
+		uint32		pos = pgc_fb_field(meta, metaLen, field, 2);
+		uint32		vec;
+
+		if (pos == 0 || fbr_u8(meta, metaLen, pos) != ARROW_TYPE_List)
+			break;
+		depth++;
+		pos = pgc_fb_field(meta, metaLen, field, 5);	/* children */
+		if (pos == 0)
+			break;
+		vec = pgc_fb_indirect(meta, metaLen, pos);
+		if (fbr_u32(meta, metaLen, vec) < 1)
+			break;
+		field = pgc_fb_indirect(meta, metaLen, vec + 4);
+	}
+	return depth;
+}
+
+/*
+ * A nested Arrow type must have the shape of the node the target type gave it
+ * (#1932). Buffer indices are assigned from the TARGET's tree, so a List, Map or
+ * Struct where the target has a scalar -- or a scalar where it has an array or a
+ * composite -- is read with the wrong buffer layout. That ended in XX001 "value
+ * buffer too small for the row count", calling a valid list<list<int64>> file
+ * damaged, and a large list's 64-bit offsets read as 32-bit ones imported wrong
+ * arrays with no error at all. A Map is a list of key/value structs with the
+ * List layout, so it reads into an array of a two-field composite. Tags no
+ * target has the layout of (large and fixed-size lists, list views, unions,
+ * run-end encoding) are refused under every node. The wording follows
+ * import_parquet's for the same shape (#1917).
+ */
 static void
-imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
+imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
+				uint32 field, const char *colname, const char *path,
+				int listDepth)
+{
+	bool		fileList = (typetag == ARROW_TYPE_List || typetag == ARROW_TYPE_Map);
+	bool		fileStruct = (typetag == ARROW_TYPE_Struct);
+	bool		fileOther = (typetag == ARROW_TYPE_Union ||
+							 typetag == ARROW_TYPE_FixedSizeList ||
+							 typetag == ARROW_TYPE_LargeList ||
+							 typetag == ARROW_TYPE_RunEndEncoded ||
+							 typetag == ARROW_TYPE_ListView ||
+							 typetag == ARROW_TYPE_LargeListView);
+
+	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
+		!fileOther)
+		return;
+
+	if (typetag == ARROW_TYPE_List && listDepth > 0 && n->kind != A_LIST)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("Arrow column for array \"%s\" is nested %d lists deep, but pgcolumnar.import_arrow reads one list level into an array",
+						colname,
+						listDepth + arrow_field_list_depth(meta, metaLen, field)),
+				 errdetail("The mismatched file is \"%s\".", path)));
+	ereport(ERROR,
+			(errcode(ERRCODE_DATATYPE_MISMATCH),
+			 errmsg("Arrow column \"%s\" holds %s, which pgcolumnar.import_arrow cannot read into type %s",
+					colname, arrow_type_tag_desc(typetag),
+					format_type_be(n->typid)),
+			 errdetail("The mismatched file is \"%s\".", path)));
+}
+
+static void
+imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
+				const char *colname, const char *path, int listDepth)
 {
 	uint32		pos;
 	uint32		tt;
@@ -1582,6 +1903,8 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 
 	if (tt != 0)
 	{
+		imp_check_shape(n, typetag, meta, metaLen, field, colname, path,
+						listDepth);
 		/*
 		 * Stamp a node ONLY when the file's tag matches the kind the target type
 		 * gave it. n->width is both the stride and the divisor in
@@ -1755,7 +2078,9 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field)
 		for (i = 0; i < n->nchildren; i++)
 			imp_apply_field(&n->children[i], meta, metaLen,
 							pgc_fb_indirect(meta, metaLen,
-											vec + 4 + (uint32) i * 4));
+											vec + 4 + (uint32) i * 4),
+							colname, path,
+							listDepth + (n->kind == A_LIST ? 1 : 0));
 	}
 }
 
@@ -2139,6 +2464,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	ImpNode    *tops;
 	int			totalBuffers = 0;
 	int			fd;
+	off_t		fileSize = 0;
+	int64		streamPos;		/* bytes of the file read so far */
+	int64		streamEnd;		/* where the stream ends: EOF, or an IPC file's footer */
 	TupleTableSlot *slot;
 	PgColumnarIndexInsertState *indexes;
 	CommandId	cid;
@@ -2175,6 +2503,13 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 
 	/* RLS after the ACL check, matching core's ordering (#563). */
 	PgColumnarRequireNoRowSecurity(relid);
+
+	/*
+	 * A local file only (#1886): refuse a URL after the INSERT and RLS checks, so
+	 * a caller who may not write the target gets 42501 for a URL as for a local
+	 * path, and before the target's kind is checked or the file is opened.
+	 */
+	PgColumnarRefuseRemotePath("import_arrow", path);
 
 	rel = table_open(relid, RowExclusiveLock);
 	if (!PgColumnarIsColumnarRelation(relid))
@@ -2220,7 +2555,49 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	 * survives a cancel/statement_timeout (a DoS). See #644 / #686. */
 	/* Race-free local open (rejects a FIFO without a stat-before-open window);
 	 * it raises on failure, and the RowExclusiveLock releases at abort. */
-	fd = PgColumnarOpenLocalRegularFile(path, NULL);
+	fd = PgColumnarOpenLocalRegularFile(path, &fileSize);
+
+	/*
+	 * The Arrow IPC file format (#1806) is the stream format wrapped in an
+	 * 8-byte header ("ARROW1" and two padding bytes) and a trailer (the
+	 * footer, its int32 length, and "ARROW1" again). Feather v2 is the same
+	 * format. The footer only indexes the messages that the stream already
+	 * holds, so read the stream between the header and the footer, and
+	 * ignore the footer. A file without the magic is read as a bare stream.
+	 */
+	{
+		char		head[8];
+
+		if (fileSize >= 8 && PgColumnarReadExact(fd, head, 8) &&
+			memcmp(head, ARROW_FILE_MAGIC, 6) == 0)
+		{
+			char		tail[10];
+			int32		footerLen;
+
+			if (fileSize < 8 + 10 ||
+				lseek(fd, fileSize - 10, SEEK_SET) < 0 ||
+				!PgColumnarReadExact(fd, tail, 10) ||
+				memcmp(tail + 4, ARROW_FILE_MAGIC, 6) != 0)
+				IMPORT_CORRUPT("the file starts with ARROW1 but does not end with it");
+			memcpy(&footerLen, tail, 4);
+			if (footerLen < 0 || (int64) footerLen > (int64) fileSize - 8 - 10)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATA_CORRUPTED),
+						 errmsg("columnar: malformed Arrow IPC file: footer length %d is out of range",
+								footerLen)));
+			streamEnd = (int64) fileSize - 10 - footerLen;
+			streamPos = 8;
+		}
+		else
+		{
+			streamEnd = (int64) fileSize;
+			streamPos = 0;
+		}
+		if (lseek(fd, (off_t) streamPos, SEEK_SET) < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not seek in file \"%s\": %m", path)));
+	}
 
 	slot = table_slot_create(rel, NULL);
 	cid = GetCurrentCommandId(true);
@@ -2251,21 +2628,34 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 		uint8		headerType;
 
 		/* message framing: [0xFFFFFFFF] [metaLen] or [metaLen] (legacy) */
-		if (!PgColumnarReadExact(fd, &first, 4))
-			break;				/* clean EOF */
+		if (streamPos >= streamEnd || !PgColumnarReadExact(fd, &first, 4))
+			break;				/* clean EOF, or the start of an IPC file's footer */
+		streamPos += 4;
 		if (first == 0xFFFFFFFF)
 		{
 			if (!PgColumnarReadExact(fd, &metaLen, 4))
 				IMPORT_CORRUPT("truncated continuation");
+			streamPos += 4;
 		}
 		else
 			metaLen = first;
 		if (metaLen == 0)
 			break;				/* end-of-stream marker */
 
+		/*
+		 * Check each length against the bytes left before allocating it
+		 * (#1806): a length the file cannot hold would otherwise allocate up
+		 * to 1 GB, or fail in palloc with an error that names no file.
+		 */
+		if ((int64) metaLen > streamEnd - streamPos)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("columnar: malformed Arrow IPC file: metadata length %u is larger than the " INT64_FORMAT " bytes left in the file",
+							metaLen, Max(streamEnd - streamPos, 0))));
 		meta = palloc(metaLen);
 		if (!PgColumnarReadExact(fd, meta, metaLen))
 			IMPORT_CORRUPT("truncated metadata");
+		streamPos += metaLen;
 
 		msg = pgc_fb_indirect(meta, metaLen, 0);
 		pos = pgc_fb_field(meta, metaLen, msg, 1);	/* header_type (u8) */
@@ -2276,12 +2666,18 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 		bodyLength = pos ? fbr_i64(meta, metaLen, pos) : 0;
 		if (bodyLength < 0)
 			IMPORT_CORRUPT("negative body length");
+		if (bodyLength > streamEnd - streamPos)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("columnar: malformed Arrow IPC file: body length " INT64_FORMAT " is larger than the " INT64_FORMAT " bytes left in the file",
+							bodyLength, Max(streamEnd - streamPos, 0))));
 
 		if (bodyLength > 0)
 		{
 			body = palloc((Size) bodyLength);
 			if (!PgColumnarReadExact(fd, body, (size_t) bodyLength))
 				IMPORT_CORRUPT("truncated body");
+			streamPos += bodyLength;
 		}
 
 		if (headerType == ARROW_MSG_Schema)
@@ -2305,7 +2701,9 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 			for (i = 0; i < ncols; i++)
 				imp_apply_field(&tops[i], meta, metaLen,
 								pgc_fb_indirect(meta, metaLen,
-												fieldsVec + 4 + (uint32) i * 4));
+												fieldsVec + 4 + (uint32) i * 4),
+								NameStr(TupleDescAttr(tupdesc, i)->attname),
+								path, 0);
 			sawSchema = true;
 		}
 		else if (headerType == ARROW_MSG_RecordBatch)

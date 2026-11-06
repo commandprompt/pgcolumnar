@@ -21,9 +21,15 @@ GEN="SELECT g, (g * 10)::bigint, 'row-' || g FROM generate_series(1, 5000) g"
 psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
 
-# DELETE across several row groups.
-psql_run "DELETE FROM h WHERE id % 7 = 0;"
-psql_run "DELETE FROM n WHERE id % 7 = 0;"
+# DELETE across several row groups, and the table's smallest and largest ids with
+# them. Without those two, min and max are the same whether or not the deleted rows
+# count, so the min/max arm below could not see a zone-map answer that ignored the
+# deletes (#1341): measured, with groups that hold deletes left on the zone-map path,
+# this file stayed 13/13.
+psql_run "DELETE FROM h WHERE id % 7 = 0 OR id IN (1, 5000);"
+psql_run "DELETE FROM n WHERE id % 7 = 0 OR id IN (1, 5000);"
+check "premise: the deletes moved the smallest and largest id and k" \
+	"$(q 'SELECT min(id) || '"'"'|'"'"' || max(id) || '"'"'|'"'"' || min(k) || '"'"'|'"'"' || max(k) FROM h;')" "2|4999|20|49990"
 
 check "count after delete" "$(q 'SELECT count(*) FROM n;')" "$(q 'SELECT count(*) FROM h;')"
 check "rows after delete match heap" \
@@ -32,14 +38,20 @@ check "rows after delete match heap" \
 # Aggregates after delete: the zone-map path is bypassed (deletes present), so this
 # exercises the delete-applying scan fold.
 check "sum(k) after delete" "$(q 'SELECT sum(k) FROM n;')" "$(q 'SELECT sum(k) FROM h;')"
+# k as well as id: measured, a zone-map answer that ignored the deletes still gave
+# min/max(id) right and min/max(k) wrong (10|50000 for 20|49990).
 check "min/max after delete" \
-	"$(q 'SELECT min(id), max(id) FROM n;')" \
-	"$(q 'SELECT min(id), max(id) FROM h;')"
+	"$(q 'SELECT min(id), max(id), min(k), max(k) FROM n;')" \
+	"$(q 'SELECT min(id), max(id), min(k), max(k) FROM h;')"
 check "deleted rows gone" "$(q 'SELECT count(*) FROM n WHERE id % 7 = 0;')" "0"
 
 # Index lookup of a deleted row returns nothing; a live row still resolves.
 idx() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -q -At -c "SET enable_seqscan=off" -c "$1" 2>/dev/null; }
 # id 4444 is live (4444 % 7 = 6); id 4445 was deleted (4445 % 7 = 0).
+# The lookups must take the primary-key index, or these arms test the scan instead
+# of the index fetch's delete check.
+check "premise: the lookups take the primary-key index" \
+	"$(idx 'EXPLAIN (COSTS off) SELECT count(*) FROM n WHERE id = 4445;' | grep -c 'Index.* using n_pkey')" "1"
 check "index finds live row"    "$(idx 'SELECT v FROM n WHERE id = 4444;')" "$(q 'SELECT v FROM h WHERE id = 4444;')"
 check "index skips deleted row" "$(idx 'SELECT count(*) FROM n WHERE id = 4445;')" "0"
 

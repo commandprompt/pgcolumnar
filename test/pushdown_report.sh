@@ -97,8 +97,12 @@ check "pushdown off skips none" "${skipped_off:-unset}" "0"
 removed_on="$(field "$on" 'Rows Removed by Filter')"
 removed_off="$(field "$off" 'Rows Removed by Filter')"
 
+# A plan that ran may filter nothing at all, so a missing line on the on side
+# reads as 0. An empty on plan is a failed read, not 0: it used to pass here.
 check "the executor filters far more rows with pushdown off" \
-	"$([ "${removed_off:-0}" -gt "${removed_on:-0}" ] && echo yes || echo no)" "yes"
+	"$(if [ -z "$on" ]; then echo "no reading (the pushdown-on plan is empty)"
+	   elif [ "${removed_off:-0}" -gt "${removed_on:-0}" ] 2>/dev/null; then echo yes
+	   else echo "no (off removed [$removed_off], on removed [$removed_on])"; fi)" "yes"
 
 check "pushdown off examines every row" "${removed_off:-unset}" "$((ROWS - 1))"
 
@@ -313,18 +317,18 @@ plainplan() {  # plainplan <guc> <sql>
 PDR_Q="SELECT count(*), sum(b) FROM pdr_u WHERE plain > $((ROWS - 10000))"
 u_plain="$(plainplan $UAGG "$PDR_Q")"
 
-check "premise: the plain EXPLAIN arm is the ungrouped vectorized aggregate" \
+check "the plain EXPLAIN arm is the ungrouped vectorized aggregate" \
 	"$(has "$u_plain" 'Columnar Vectorized Aggregates')" "yes"
 # The premise that makes a zero meaningful: under ANALYZE the number is NOT zero,
 # so a zero on the plain plan is a value that was never filled in rather than an
 # honest report of no pushdown.
-check "premise: the same query under ANALYZE reports a non-zero count" \
+check "the same query under ANALYZE reports a non-zero count" \
 	"$([ "$(field "$u_usable" 'Columnar Pushed-Down Filters')" -gt 0 ] && echo yes || echo no)" "yes"
 
-check "plain EXPLAIN reports the ungrouped node's pushed-down filters (#726)" \
+check_num "plain EXPLAIN reports the ungrouped node's pushed-down filters (#726)" \
 	"$(field "$u_plain" 'Columnar Pushed-Down Filters')" \
 	"$(field "$u_usable" 'Columnar Pushed-Down Filters')"
-check "plain EXPLAIN reports the ungrouped node's vector predicates (#726)" \
+check_num "plain EXPLAIN reports the ungrouped node's vector predicates (#726)" \
 	"$(field "$u_plain" 'Columnar Vector Predicates')" \
 	"$(field "$u_usable" 'Columnar Vector Predicates')"
 
@@ -337,9 +341,9 @@ check "plain EXPLAIN reports the ungrouped node's vector predicates (#726)" \
 # that into a failure instead of a shrug.
 g_plain="$(plainplan pgcolumnar.enable_group_vectorization \
 	"SELECT b, count(*) FROM pdr_u WHERE plain > $((ROWS - 10000)) GROUP BY 1")"
-check "premise: the grouped node IS planned for the cross-node arm" \
+check "the grouped node IS planned for the cross-node arm" \
 	"$(has "$g_plain" 'Columnar Vectorized Group Keys')" "yes"
-check "plain EXPLAIN: the grouped node agrees with the ungrouped one (#493, #726)" \
+check_num "plain EXPLAIN: the grouped node agrees with the ungrouped one (#493, #726)" \
 	"$(field "$g_plain" 'Columnar Pushed-Down Filters')" \
 	"$(field "$u_plain" 'Columnar Pushed-Down Filters')"
 
@@ -416,15 +420,21 @@ check "grouped: and the unusable arm builds no skip predicate" \
 # not of any plan. The behavioural half -- that the nodes agree -- is the checks
 # above.
 PGC_SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src"
-for _line in "Columnar Pushed-Down Filters" \
-             "Columnar Usable Skip Predicates" \
-             "Columnar Chunk Groups Total" \
-             "Columnar Chunk Groups Read" \
-             "Columnar Chunk Groups Removed by Filter"; do
-	check "exactly one emitter for \"$_line\" (#495)" \
-		"$(grep -rho "ExplainPropertyInteger(\"$_line\"" "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
-		"1"
-done
+check "exactly one emitter for Columnar Pushed-Down Filters (#495)" \
+	"$(grep -rho 'ExplainPropertyInteger("Columnar Pushed-Down Filters"' "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
+	"1"
+check "exactly one emitter for Columnar Usable Skip Predicates (#495)" \
+	"$(grep -rho 'ExplainPropertyInteger("Columnar Usable Skip Predicates"' "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
+	"1"
+check "exactly one emitter for Columnar Chunk Groups Total (#495)" \
+	"$(grep -rho 'ExplainPropertyInteger("Columnar Chunk Groups Total"' "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
+	"1"
+check "exactly one emitter for Columnar Chunk Groups Read (#495)" \
+	"$(grep -rho 'ExplainPropertyInteger("Columnar Chunk Groups Read"' "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
+	"1"
+check "exactly one emitter for Columnar Chunk Groups Removed by Filter (#495)" \
+	"$(grep -rho 'ExplainPropertyInteger("Columnar Chunk Groups Removed by Filter"' "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
+	"1"
 
 # The three nodes, same table, same predicate, same label.
 pdr_scalar="$(q "SET pgcolumnar.enable_qual_pushdown = on;
@@ -433,13 +443,13 @@ pdr_scalar="$(q "SET pgcolumnar.enable_qual_pushdown = on;
 	EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
 	SELECT count(*), sum(b) FROM pdr_u WHERE b >>> $((ROWS - 10000))::oid;")"
 
-check "premise: the scalar arm really is the scalar scan (#493)" \
+check "the scalar arm really is the scalar scan (#493)" \
 	"$(has "$pdr_scalar" 'Columnar Projected Columns')" "yes"
 
-check "scalar and ungrouped agree on Pushed-Down Filters (#493)" \
+check_num "scalar and ungrouped agree on Pushed-Down Filters (#493)" \
 	"$(field "$u_unusable" 'Columnar Pushed-Down Filters')" \
 	"$(field "$pdr_scalar" 'Columnar Pushed-Down Filters')"
-check "scalar and grouped agree on Pushed-Down Filters (#493)" \
+check_num "scalar and grouped agree on Pushed-Down Filters (#493)" \
 	"$(field "$g_unusable" 'Columnar Pushed-Down Filters')" \
 	"$(field "$pdr_scalar" 'Columnar Pushed-Down Filters')"
 
@@ -451,7 +461,7 @@ check "the ungrouped node reports its vector-predicate count separately (#493)" 
 check "and it is the count that used to be mislabelled (#493)" \
 	"$(field "$u_unusable" 'Columnar Vector Predicates')" "0"
 
-check "exactly one emitter for \"Columnar Vector Predicates\" (#495)" \
+check "exactly one emitter for Columnar Vector Predicates (#495)" \
 	"$(grep -rho "ExplainPropertyInteger(\"Columnar Vector Predicates\"" "$PGC_SRC_DIR" | wc -l | tr -d ' ')" \
 	"1"
 

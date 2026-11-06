@@ -76,6 +76,20 @@ check "count(*) uses the metadata agg node" \
 check "sum/min/max uses the metadata agg node" \
 	"$(has_aggnode "$(plan 'SELECT sum(id), min(id), max(id) FROM n')")" "yes"
 
+# A WHERE that references no column is a gating qual: planned as a one-time
+# filter, not part of the per-row quals. The node answered from the zone maps alone
+# and ignored it, so a false gate returned every row's aggregates (#1435).
+GATED="SELECT count(*) || '/' || coalesce(min(id)::text, '-') || '/' || coalesce(max(id)::text, '-') FROM"
+check "premise: count, min and max with no WHERE are the vectorized aggregate" \
+	"$(has_aggnode "$(plan 'SELECT count(*), min(id), max(id) FROM n')")" "yes"
+check "a WHERE (SELECT false) with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE (SELECT false)")" "$(q "$GATED h WHERE (SELECT false)")"
+check "a WHERE on now() with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE now() < '2000-01-01'")" "$(q "$GATED h WHERE now() < '2000-01-01'")"
+check "a WHERE on current_user with no column in it gives heap's answer" \
+	"$(q "$GATED n WHERE current_user = 'pgc_nobody'")" "$(q "$GATED h WHERE current_user = 'pgc_nobody'")"
+check "premise: heap's answer to a false gate is no rows" "$(q "$GATED h WHERE (SELECT false)")" "0/-/-"
+
 # Supported aggregates answered from zone maps must equal the heap oracle.
 check "count(*)"          "$(q 'SELECT count(*) FROM n;')"        "$(q 'SELECT count(*) FROM h;')"
 check "count(col,nulls)"  "$(q 'SELECT count(s) FROM n;')"       "$(q 'SELECT count(s) FROM h;')"
@@ -150,9 +164,13 @@ check "empty min NULL"  "$(q 'SELECT min(label) IS NULL FROM e;')"       "t"
 # querying session, against a control that must decode the same column.
 psql_run "CREATE TABLE tz (dev int, ts timestamptz) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('tz', stripe_row_limit => 1000);"
-psql_run "INSERT INTO tz SELECT g % 50, '2026-03-01'::timestamptz + ((g::bigint * 7919) % 400000) * interval '1 min'
-          FROM generate_series(1, 400000) g;"
-psql_run "CREATE TABLE tzh AS SELECT * FROM tz;"
+# THE HEAP IS WRITTEN FROM THE GENERATOR, NOT COPIED (#1339): a CTAS from tz put a
+# write path's consistent error on both sides of every parity arm.
+_tzgen="SELECT g % 50, '2026-03-01'::timestamptz + ((g::bigint * 7919) % 400000) * interval '1 min'
+          FROM generate_series(1, 400000) g"
+psql_run "INSERT INTO tz $_tzgen;"
+psql_run "CREATE TABLE tzh (dev int, ts timestamptz) USING heap;"
+psql_run "INSERT INTO tzh $_tzgen;"
 # THE ROW COUNT FIRST. The first draft computed g * 7919 in int, which overflows
 # past g = 271,000; the INSERT failed, psql_run reported nothing, and every arm
 # below measured an empty table -- the decode "control" read 3 blocks.
@@ -171,7 +189,7 @@ tz_max="$(tz_blocks "SELECT max(ts) FROM tz")"
 tz_min="$(tz_blocks "SELECT min(ts) FROM tz")"
 echo "-- tz blocks read: decode=$tz_decode max=$tz_max min=$tz_min"
 
-check "premise: max(ts) over timestamptz plans the metadata agg node" \
+check "max(ts) over timestamptz plans the metadata agg node" \
 	"$(has_aggnode "$(plan 'SELECT max(ts) FROM tz')")" "yes"
 # THE CONTROL. A decode of ts has to show up, or every comparison below is
 # against an instrument that cannot see a read.
@@ -194,7 +212,7 @@ check "min(timestamptz) parity" "$(q 'SELECT min(ts) FROM tz;')" "$(q 'SELECT mi
 # group with deletes must not be folded from it (#149).
 psql_run "DELETE FROM tz  WHERE ts > (SELECT max(ts) FROM tzh) - interval '30 min' OR ts < (SELECT min(ts) FROM tzh) + interval '30 min';"
 psql_run "DELETE FROM tzh WHERE ts > (SELECT max(ts) FROM tzh) - interval '30 min' OR ts < (SELECT min(ts) FROM tzh) + interval '30 min';"
-check "premise: the deletes removed rows at both ends, the same rows from each" \
+check "the deletes removed rows at both ends, the same rows from each" \
 	"$(q 'SELECT count(*) < 400000 FROM tz;')|$(q 'SELECT count(*) FROM tz;')" \
 	"t|$(q 'SELECT count(*) FROM tzh;')"
 check "max(timestamptz) parity after deleting the newest rows" "$(q 'SELECT max(ts) FROM tz;')" "$(q 'SELECT max(ts) FROM tzh;')"

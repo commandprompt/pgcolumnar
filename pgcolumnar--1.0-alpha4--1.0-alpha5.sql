@@ -42,14 +42,19 @@ ALTER TABLE pgcolumnar.zone_map ADD COLUMN IF NOT EXISTS max_upper bytea;
 -- plain view while its sibling errored on the same relation. The predicate is
 -- copied from set_options verbatim and deliberately not widened; see the
 -- comment in the function body.
-CREATE OR REPLACE FUNCTION pgcolumnar.reset_options(
+-- #1309 adds sketch_columns, a new argument, so the old signature is dropped
+-- rather than replaced, and the COMMENT ON is re-issued with it.
+DROP FUNCTION IF EXISTS pgcolumnar.reset_options(regclass, bool, bool, bool, bool, bool, bool);
+
+CREATE FUNCTION pgcolumnar.reset_options(
 	table_name regclass,
 	chunk_group_row_limit bool DEFAULT false,
 	stripe_row_limit bool DEFAULT false,
 	compression bool DEFAULT false,
 	compression_level bool DEFAULT false,
 	encode_effort bool DEFAULT false,
-	sort_by bool DEFAULT false)
+	sort_by bool DEFAULT false,
+	sketch_columns bool DEFAULT false)
 	RETURNS void
 	LANGUAGE plpgsql
 	AS $reset_options$
@@ -107,10 +112,16 @@ BEGIN
 			THEN NULL ELSE o.encode_effort END,
 		sort_by = CASE
 			WHEN reset_options.sort_by
-			THEN NULL ELSE o.sort_by END
+			THEN NULL ELSE o.sort_by END,
+		sketch_columns = CASE
+			WHEN reset_options.sketch_columns
+			THEN NULL ELSE o.sketch_columns END
 	WHERE o.regclass = table_name;
 END;
 $reset_options$;
+
+COMMENT ON FUNCTION pgcolumnar.reset_options(regclass, bool, bool, bool, bool, bool, bool, bool)
+	IS 'reset per-table columnar options to the instance defaults';
 
 -- set_options accepts a columnar MATERIALIZED VIEW (#1265). jd settled the
 -- question this file's sibling comment left open: a matview holds rows of its
@@ -127,13 +138,15 @@ $reset_options$;
 --   < FN|pgcolumnar.set_options(...)|2113853fea4ad7a654560b4e1784045e|...
 --   > FN|pgcolumnar.set_options(...)|44abe8992bafb0acd1e809cdb1b0c3d9|...
 --
--- The body below is copied verbatim from pgcolumnar--1.0-alpha5.sql, with only
--- CREATE changed to CREATE OR REPLACE. The two must stay byte-identical from
--- the argument list down; that suite is what enforces it. CREATE OR REPLACE
--- keeps the existing COMMENT ON, which is why none is re-issued here -- the
--- same reason reset_options above does not re-issue its own.
+-- The body below is copied verbatim from pgcolumnar--1.0-alpha5.sql. The two
+-- must stay byte-identical from the argument list down; that suite is what
+-- enforces it. Since #1309 the old signature is dropped first, so the COMMENT ON
+-- is re-issued after it, as reset_options' above is.
 
-CREATE OR REPLACE FUNCTION pgcolumnar.set_options(
+-- #1309 adds sketch_columns, a new argument: dropped and re-created, comment and all.
+DROP FUNCTION IF EXISTS pgcolumnar.set_options(regclass, int, int, name, int, name, name[], name, interval);
+
+CREATE FUNCTION pgcolumnar.set_options(
 	table_name regclass,
 	chunk_group_row_limit int DEFAULT NULL,
 	stripe_row_limit int DEFAULT NULL,
@@ -142,7 +155,8 @@ CREATE OR REPLACE FUNCTION pgcolumnar.set_options(
 	encode_effort name DEFAULT NULL,
 	sort_by name[] DEFAULT NULL,
 	ttl_column name DEFAULT NULL,
-	ttl_interval interval DEFAULT NULL)
+	ttl_interval interval DEFAULT NULL,
+	sketch_columns name[] DEFAULT NULL)
 	RETURNS void
 	LANGUAGE plpgsql
 	AS $set_options$
@@ -281,13 +295,36 @@ BEGIN
 		END LOOP;
 	END IF;
 
+	/*
+	 * sketch_columns (#1309): each named column must exist, and must be one the
+	 * writer can sketch. pgcolumnar.check_sketch_column applies the writer's own
+	 * predicate, so set_options cannot accept a column the writer would skip.
+	 */
+	IF sketch_columns IS NOT NULL THEN
+		FOREACH col IN ARRAY sketch_columns LOOP
+			IF NOT EXISTS (SELECT 1 FROM pg_attribute a
+						   WHERE a.attrelid = table_name
+							 AND a.attname = col
+							 AND a.attnum > 0
+							 AND NOT a.attisdropped
+							 AND a.attgenerated <> 'v') THEN
+				RAISE EXCEPTION 'column "%" cannot be used in sketch_columns for table %',
+					col, table_name
+					USING ERRCODE = 'undefined_column',
+						HINT = 'The column must exist, must not be dropped, '
+						'and must not be a VIRTUAL generated column.';
+			END IF;
+			PERFORM pgcolumnar.check_sketch_column(table_name, col);
+		END LOOP;
+	END IF;
+
 	INSERT INTO pgcolumnar.options AS o
 		(regclass, chunk_group_row_limit, stripe_row_limit,
 		 compression, compression_level, encode_effort, sort_by,
-		 ttl_column, ttl_interval)
+		 ttl_column, ttl_interval, sketch_columns)
 	VALUES (table_name, chunk_group_row_limit, stripe_row_limit,
 			compression, compression_level, encode_effort, sort_by,
-			ttl_column, ttl_interval)
+			ttl_column, ttl_interval, sketch_columns)
 	ON CONFLICT (regclass) DO UPDATE SET
 		chunk_group_row_limit =
 			COALESCE(EXCLUDED.chunk_group_row_limit, o.chunk_group_row_limit),
@@ -304,9 +341,14 @@ BEGIN
 		ttl_column =
 			COALESCE(EXCLUDED.ttl_column, o.ttl_column),
 		ttl_interval =
-			COALESCE(EXCLUDED.ttl_interval, o.ttl_interval);
+			COALESCE(EXCLUDED.ttl_interval, o.ttl_interval),
+		sketch_columns =
+			COALESCE(EXCLUDED.sketch_columns, o.sketch_columns);
 END;
 $set_options$;
+
+COMMENT ON FUNCTION pgcolumnar.set_options(regclass, int, int, name, int, name, name[], name, interval, name[])
+	IS 'set per-table columnar options; NULL leaves a value unchanged. sort_by declares the physical sort key applied by vacuum_sorted() with no explicit columns (#288); it is NOT auto-maintained -- rows inserted after a sort append in insert order, so re-run vacuum_sorted() to re-establish it, like PostgreSQL CLUSTER';
 
 
 /*
@@ -1188,6 +1230,7 @@ CREATE TABLE pgcolumnar.rollup (
 	partials regclass NOT NULL,        -- the table behind it
 	source regclass NOT NULL,
 	source_storage bigint NOT NULL,    -- the source's storage id when recorded
+	source_oid oid NOT NULL,           -- and its OID: a dump writes it as a number (#1377)
 	ts_column name NOT NULL,
 	width interval NOT NULL,
 	origin timestamptz NOT NULL,
@@ -1221,6 +1264,24 @@ CREATE POLICY rollup_group_owner ON pgcolumnar.rollup_group
 	USING (pg_has_role(current_user,
 					   (SELECT c.relowner FROM pg_class c WHERE c.oid = rollup), 'USAGE'));
 GRANT SELECT, INSERT, UPDATE, DELETE ON pgcolumnar.rollup, pgcolumnar.rollup_group TO PUBLIC;
+/*
+ * A rollup's definition is dumped (#1377); the row groups it folded are not, as
+ * they name storage a restore replaces. Every column holds a regclass or names,
+ * which a restore resolves, except source_oid: written as the old number, it no
+ * longer matches the restored source, and refresh_rollup refuses until
+ * rebase_rollup records the groups again. The storage id cannot tell them apart:
+ * storageid_seq restarts with the extension, so a restored source can get the
+ * one recorded, and refresh would fold its rows into the restored partials twice.
+ */
+SELECT pg_catalog.pg_extension_config_dump('pgcolumnar.rollup', '');
+
+-- The view depends on its source, and the partials on the view, recorded by this
+-- trigger whenever a rollup row is written, a restore included (#1376, #1377).
+CREATE FUNCTION pgcolumnar.rollup_record_dependencies() RETURNS trigger
+	LANGUAGE C AS 'MODULE_PATHNAME', 'pgcolumnar_rollup_record_dependencies';
+CREATE TRIGGER rollup_dependencies
+	AFTER INSERT OR UPDATE OF rollup, partials, source ON pgcolumnar.rollup
+	FOR EACH ROW EXECUTE FUNCTION pgcolumnar.rollup_record_dependencies();
 
 /*
  * The source's row groups, with each one's deleted count. SECURITY DEFINER
@@ -1240,15 +1301,20 @@ CREATE FUNCTION pgcolumnar.rollup_source_groups(source regclass)
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 AS $rsg$
+DECLARE
+	-- once, not per catalog row: in a filter on a scan of the catalog the call
+	-- runs for every row, and each call reads the source's first page (#1614)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(source);
+	sid := pgcolumnar.get_storage_id(source);
 	RETURN QUERY
 		SELECT g.group_number, g.first_row_number, g.row_count,
 			   coalesce(d.deleted_count, 0)::bigint
 		  FROM pgcolumnar.row_group g
 		  LEFT JOIN pgcolumnar.delete_vector d
 			ON d.storage_id = g.storage_id AND d.group_number = g.group_number
-		 WHERE g.storage_id = pgcolumnar.get_storage_id(source);
+		 WHERE g.storage_id = sid;
 END
 $rsg$;
 
@@ -1262,11 +1328,16 @@ CREATE FUNCTION pgcolumnar.rollup_source_retired(source regclass)
 	LANGUAGE plpgsql STABLE SECURITY DEFINER
 	SET search_path = pg_catalog, pg_temp
 AS $rsr$
+DECLARE
+	-- once, not per catalog row: in a filter on a scan of the catalog the call
+	-- runs for every row, and each call reads the source's first page (#1614)
+	sid bigint;
 BEGIN
 	PERFORM pgcolumnar.require_caller_select(source);
+	sid := pgcolumnar.get_storage_id(source);
 	RETURN QUERY
 		SELECT r.group_number, r.deleted_count FROM pgcolumnar.retired_group r
-		 WHERE r.storage_id = pgcolumnar.get_storage_id(source);
+		 WHERE r.storage_id = sid;
 END
 $rsr$;
 
@@ -1390,7 +1461,7 @@ BEGIN
 	view_oid := format('%I.%I', nsp, rollup)::regclass;
 	INSERT INTO pgcolumnar.rollup VALUES
 		(view_oid, format('%I.%I', nsp, partials)::regclass, source,
-		 pgcolumnar.get_storage_id(source), ts_column, width, origin,
+		 pgcolumnar.get_storage_id(source), source::oid, ts_column, width, origin,
 		 coalesce(group_by, '{}'), agg_functions, agg_columns);
 	RETURN view_oid;
 END
@@ -1442,6 +1513,12 @@ BEGIN
 	-- Self-conflicting, so two refreshes run one after the other; readers pass.
 	EXECUTE format('LOCK TABLE %s IN SHARE UPDATE EXCLUSIVE MODE', r.partials);
 
+	IF r.source::oid <> r.source_oid THEN
+		RAISE EXCEPTION 'the source of rollup % is not the table its row groups were recorded from', rollup
+			USING ERRCODE = 'object_not_in_prerequisite_state',
+				  DETAIL = 'The rollup was restored from a dump, which does not carry the row groups it folded.',
+				  HINT = 'If the rollup is current, pgcolumnar.rebase_rollup records the source''s row groups.';
+	END IF;
 	IF pgcolumnar.get_storage_id(r.source) <> r.source_storage THEN
 		RAISE EXCEPTION 'the source of rollup % was rewritten since its last refresh', rollup
 			USING ERRCODE = 'object_not_in_prerequisite_state',
@@ -1686,7 +1763,8 @@ BEGIN
 					  AND ctid <= pgcolumnar.row_tid(s.first_row_number + s.row_count - 1)) x
 		$f$, r.source, r.rollup, r.ts_column);
 	GET DIAGNOSTICS n = ROW_COUNT;
-	UPDATE pgcolumnar.rollup x SET source_storage = pgcolumnar.get_storage_id(r.source)
+	UPDATE pgcolumnar.rollup x SET source_storage = pgcolumnar.get_storage_id(r.source),
+								  source_oid = r.source::oid
 	 WHERE x.rollup = r.rollup;
 	RETURN n;
 END
@@ -1695,12 +1773,40 @@ $rb$;
 COMMENT ON FUNCTION pgcolumnar.rebase_rollup(regclass)
 	IS 'record a rollup''s source row groups as folded without touching the rollup, after the source was rewritten; the caller asserts the rollup is current (#1294)';
 
+-- #1795: the same export, writing a remote path with a pgcolumnar_parquet
+-- server's endpoint and region and the caller's user mapping, as a foreign table
+-- of that server reads. tier_partition writes through it.
+CREATE FUNCTION pgcolumnar.export_parquet(rel regclass, path text, server name)
+	RETURNS bigint
+	LANGUAGE C
+	AS 'MODULE_PATHNAME', 'pgcolumnar_export_parquet';
+
+COMMENT ON FUNCTION pgcolumnar.export_parquet(regclass, text, name)
+	IS 'export a columnar table to a Parquet file, writing a remote path with the named pgcolumnar_parquet server and the caller''s user mapping (#1795); returns rows written';
+
+-- #1957: does a foreign table whose path is `pattern` read `path`, as one of
+-- the names the glob expands to? It matches with the reader's own code:
+-- fnmatch for an s3:// key, glob(3) for a local path, over a tree in memory.
+-- tier_partition's check calls it, so the check agrees with the reader. It
+-- reads no file and takes no relation, so it needs no privilege, as row_tid.
+-- It is VOLATILE: its answer follows LC_COLLATE, and glibc can answer a rare
+-- range differently from one call to the next (#1964 review).
+CREATE FUNCTION pgcolumnar.path_glob_matches(pattern text, path text)
+	RETURNS boolean
+	LANGUAGE C VOLATILE STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_path_glob_matches';
+
+COMMENT ON FUNCTION pgcolumnar.path_glob_matches(text, text)
+	IS 'true when a foreign table whose path is pattern expands it, as a glob, to path: the reader''s fnmatch for an s3:// key, its glob(3) for a local path; reads no file (#1957)';
+
 -- #1295: move a cold columnar partition to Parquet in one transaction.
 CREATE FUNCTION pgcolumnar.tier_partition(partition regclass, server name, path text,
 										  lock_wait interval DEFAULT '10 seconds')
 	RETURNS bigint
 	LANGUAGE plpgsql
 	SET search_path = pg_catalog, pg_temp
+	-- the detail's escape pattern holds backslashes (#1946 review, #1960)
+	SET standard_conforming_strings = on
 AS $tier$
 DECLARE
 	fault	text := coalesce(current_setting('pgcolumnar.tier_fault_after', true), '');
@@ -1708,13 +1814,25 @@ DECLARE
 	parent	regclass;
 	bound	text;
 	fdw		name;
+	isparquet boolean;
 	cols	text;
 	deps	text;
 	note	text;
 	acl		record;
 	moved	bigint;
 	seen	bigint;
+	cand	record;
+	said	text;
+	hit		boolean;
+	kind	text;
+	hrel	regclass;
+	hpath	text;
+	hice	boolean;
+	lim_msg	text;
+	lim_detail text;
+	pass	int;
 	callers_timeout text := current_setting('lock_timeout');
+	dd		text;
 BEGIN
 	-- A REPEATABLE READ or SERIALIZABLE snapshot predates the lock taken below, so
 	-- the export would miss rows committed in between, and DROP would take them
@@ -1740,13 +1858,31 @@ BEGIN
 			USING ERRCODE = 'feature_not_supported',
 				  DETAIL = 'A foreign partition cannot take the rows no other partition accepts.';
 	END IF;
-	SELECT w.fdwname INTO fdw FROM pg_foreign_server s
+	-- The server's wrapper is known by its handler, as the path check below
+	-- knows the Parquet reader (#1963): a wrapper made with
+	-- pgcolumnar.parquet_fdw_handler under another name is the Parquet writer
+	-- and reader too, and export_parquet takes it by the same rule.
+	SELECT w.fdwname, w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure
+	  INTO fdw, isparquet
+	  FROM pg_foreign_server s
 		JOIN pg_foreign_data_wrapper w ON w.oid = s.srvfdw WHERE s.srvname = server;
 	IF fdw IS NULL THEN
 		RAISE EXCEPTION 'server "%" does not exist', server USING ERRCODE = 'undefined_object';
-	ELSIF fdw <> 'pgcolumnar_parquet' THEN
-		RAISE EXCEPTION 'server "%" uses the % wrapper, not pgcolumnar_parquet', server, fdw
+	ELSIF NOT isparquet THEN
+		RAISE EXCEPTION 'server "%" uses the % wrapper, whose handler is not pgcolumnar.parquet_fdw_handler', server, fdw
 			USING ERRCODE = 'wrong_object_type';
+	END IF;
+
+	-- The move writes the file and then reads it back through the foreign
+	-- partition, as the caller, before it commits (#1795). The export needs
+	-- pg_write_server_files and a foreign table reads a file only for a member of
+	-- pg_read_server_files, so a caller without both is refused here, before
+	-- anything is written, rather than after the export.
+	IF NOT (pg_has_role(current_user, 'pg_write_server_files', 'USAGE')
+			AND pg_has_role(current_user, 'pg_read_server_files', 'USAGE')) THEN
+		RAISE EXCEPTION 'must be superuser or a member of both the pg_write_server_files and the pg_read_server_files roles to tier a partition'
+			USING ERRCODE = 'insufficient_privilege',
+				  DETAIL = 'tier_partition writes the file and reads it back through the foreign partition before it commits.';
 	END IF;
 
 	SELECT i.inhparent INTO parent FROM pg_inherits i WHERE i.inhrelid = partition;
@@ -1781,10 +1917,242 @@ BEGIN
 	-- export_parquet overwrites an existing file without a word. A file another
 	-- foreign table in this database reads is refused; one only a failed earlier
 	-- attempt left behind is overwritten, so a retry can use the same path.
-	IF EXISTS (SELECT 1 FROM pg_foreign_table t
-			   WHERE ('path=' || path) = ANY (t.ftoptions)) THEN
+	-- A foreign table reads every file its path expands to, as pq_resolve_paths
+	-- expands it (#1941). So the path is refused when a table's path is:
+	--   - the same path;
+	--   - a remote directory (it ends in '/'), or any local path, and the path
+	--     lies below it at any depth. Nothing lies below a local file, so a
+	--     local path that is not a directory refuses nothing more;
+	--   - a glob that the path matches. pgcolumnar.path_glob_matches answers
+	--     with the reader's own code: fnmatch for an s3:// key, and glob(3)
+	--     for a local path, over a tree in memory that holds only the path.
+	--     So the check agrees with the reader by construction (#1957, #1962).
+	-- Both paths are normalised first (#1936): a remote scheme matches in any
+	-- case, s3a:// and s3n:// match s3:// (#1930), and so does the host of an
+	-- http(s) URL. The bucket and key keep their case.
+	-- A local path is compared twice: as written, and in the lexical form the
+	-- kernel gives it when no symbolic link is involved (#1965, #1959). That
+	-- form folds a run of '/' into one, drops a '.' name, and drops a name with
+	-- the '..' after it; a '..' at the root stays at the root. A path is refused
+	-- when either comparison refuses it, so the second one only adds refusals.
+	-- glob(3) and open(2) read '//' and '/./' so, and the Iceberg reader
+	-- resolves its location with realpath. A symbolic link is not resolved: it
+	-- needs the file system at the time of the call, and the link can change
+	-- after it.
+	-- A relative local path names a file under the backend's working
+	-- directory, the data directory. So every comparison above also runs on
+	-- each local path resolved against current_setting('data_directory'), in
+	-- the form as written and in the folded form (#2004). The rule mirrors
+	-- pq_local_resolve in src/columnar_parquet_reader.c, which resolves for
+	-- path_glob_matches (#2001): an absolute path and '' are kept, and any
+	-- other local path p becomes data_directory || '/' || p. The glob arm
+	-- passes the paths as written, and path_glob_matches resolves them itself.
+	-- Resolving is unsound when data_directory holds *, ?, [ or a backslash,
+	-- or when it is not the working directory as getcwd(3) spells it (a
+	-- symbolic link in it, say). pq_local_glob_match then answers true for any
+	-- relative pattern, so path_glob_matches('?', '') is true exactly then: ''
+	-- matches no pattern otherwise. That call asks the C code its own
+	-- condition rather than copying it. When it is true, a table on a local
+	-- path refuses a local target whenever either of the two is relative:
+	-- refuse more, not less. The call is made only for such a pair.
+	-- current_setting('data_directory') needs pg_read_all_settings, which a
+	-- caller holding the two server-file roles need not have. For such a
+	-- caller nothing is resolved, and such a pair is refused in the same way.
+	-- A table on a relative glob is left out of that rule (#2013): the glob
+	-- arm covers it, as path_glob_matches resolves a relative pattern itself
+	-- and needs no privilege. Where resolving is unsound, the matcher refuses
+	-- every such pattern anyway. The rule still holds for that table when
+	-- the target lies under the table's path in the folded form, as under a
+	-- directory: a directory of that literal name is read as a directory,
+	-- which the glob arm does not see.
+	-- An s3://, gs://, az:// or http(s) key is not folded: '//' and '.' are
+	-- part of a key.
+	-- A NULL path matches nothing, so it reaches the null refusal (#1937 review).
+	-- Only a wrapper with pgcolumnar's Parquet handler reads path= as above.
+	-- Another wrapper's path option means what that wrapper says, so it is not
+	-- read (#1949). An Iceberg foreign table (pgcolumnar's Iceberg handler) has
+	-- no path option: it reads data files under its table location, which is
+	-- the parent of the directory holding metadata_path. The location is cut
+	-- as the reader cuts it: the part before the last '/', taken twice, where
+	-- a path with no '/' gives '.' and '/x' gives '/'. A path under that
+	-- location is refused, as under a directory. The reader refuses any file
+	-- outside the location, so this covers every file it reads (#1949). The
+	-- location always ends in '/', so read as a glob it can match only a path
+	-- that ends in '/', which names no file (#1955 review).
+	-- path_glob_matches raises 54000 for a pattern too large to match safely.
+	-- The move then fails closed, and the error names the foreign table and
+	-- its path (#1974). A table that really reads the path is reported first.
+	-- Only a row whose pattern holds *, ? or [ calls the matcher, each in a
+	-- block of its own, so a table without a glob costs no subtransaction.
+	-- A row that reads the path without a glob comes first, so it costs no
+	-- call of the matcher; then the rows go in the order of their oid.
+	IF pg_has_role(current_user, 'pg_read_all_settings', 'USAGE') THEN
+		dd := current_setting('data_directory');
+	END IF;
+	FOR cand IN
+		SELECT h.* FROM (
+		SELECT c.relid, c.opath, c.ice, c.tp, c.fp, c.ntp, c.nfp,
+			   (c.tp = c.fp
+				OR (c.fp ~ '^(s3|gs|az|https?)://' AND right(c.fp, 1) = '/' AND starts_with(c.tp, c.fp))
+				OR (c.fp !~ '^(s3|gs|az|https?)://' AND c.fp <> ''
+					AND starts_with(c.tp, rtrim(c.fp, '/') || '/'))
+				OR c.ntp = c.nfp
+				OR (c.nfp !~ '^(s3|gs|az|https?)://' AND c.nfp <> ''
+					AND starts_with(c.ntp, rtrim(c.nfp, '/') || '/'))
+				-- each local path resolved against the data directory (#2004)
+				OR c.rtp = c.rfp
+				OR (c.rfp !~ '^(s3|gs|az|https?)://' AND c.rfp <> ''
+					AND starts_with(c.rtp, rtrim(c.rfp, '/') || '/'))
+				OR c.nrtp = c.nrfp
+				OR (c.nrfp !~ '^(s3|gs|az|https?)://' AND c.nrfp <> ''
+					AND starts_with(c.nrtp, rtrim(c.nrfp, '/') || '/'))
+				OR CASE WHEN c.tp !~ '^(s3|gs|az|https?)://' AND c.fp !~ '^(s3|gs|az|https?)://'
+							 AND c.tp <> '' AND c.fp <> ''
+							 AND (left(c.tp, 1) <> '/' OR left(c.fp, 1) <> '/')
+							 -- a table on a relative glob, to the glob arm (#2013)
+							 AND NOT (c.fp ~ '[*?[]' AND left(c.fp, 1) <> '/'
+									  AND strpos('/' || c.ntp, '/' || rtrim(c.nfp, '/') || '/') = 0)
+						THEN dd IS NULL OR pgcolumnar.path_glob_matches('?', '')
+						ELSE false END) AS hit
+	  FROM (SELECT t.ftrelid::regclass AS relid, f.ice, f.opath,
+				   v.np[1] AS tp, v.np[2] AS fp, nz.nn[1] AS ntp, nz.nn[2] AS nfp,
+				   rz.rr[1] AS rtp, rz.rr[2] AS rfp, nz.nn[3] AS nrtp, nz.nn[4] AS nrfp
+			  FROM pg_foreign_table t
+			  JOIN pg_foreign_server fs ON fs.oid = t.ftserver
+			  JOIN pg_foreign_data_wrapper w ON w.oid = fs.srvfdw,
+				   unnest(t.ftoptions) AS o(opt),
+				   LATERAL (SELECT w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure,
+								   CASE WHEN w.fdwhandler = 'pgcolumnar.iceberg_fdw_handler()'::regprocedure
+										THEN (SELECT CASE WHEN right(d, 1) = '/' THEN d ELSE d || '/' END
+												FROM (SELECT CASE WHEN strpos(d1, '/') = 0 THEN '.'
+																  WHEN d1 ~ '^/[^/]*$' THEN '/'
+																  ELSE regexp_replace(d1, '/[^/]*$', '') END
+														FROM (SELECT CASE WHEN strpos(m, '/') = 0 THEN '.'
+																		  WHEN m ~ '^/[^/]*$' THEN '/'
+																		  ELSE regexp_replace(m, '/[^/]*$', '') END
+																FROM (SELECT substr(o.opt, 15)) AS x(m)) AS y(d1)) AS z(d))
+										ELSE substr(o.opt, 6) END) AS f(ice, opath),
+				   LATERAL (SELECT array_agg(
+							CASE WHEN p ~* '^s3[an]?://'
+								 THEN 's3://' || substr(p, strpos(p, '://') + 3)
+								 WHEN p ~* '^https?://'
+								 THEN lower(substring(p FROM '^[^:]*://[^/]*'))
+									  || substr(p, length(substring(p FROM '^[^:]*://[^/]*')) + 1)
+								 WHEN p ~* '^(gs|az)://'
+								 THEN lower(split_part(p, '://', 1)) || substr(p, strpos(p, '://'))
+								 ELSE p END ORDER BY n)
+						   FROM unnest(ARRAY[path, f.opath]) WITH ORDINALITY AS s(p, n)) AS v(np),
+				   -- each local path resolved against the data directory, as
+				   -- pq_local_resolve resolves it (#2004)
+				   LATERAL (SELECT array_agg(
+							CASE WHEN p IS NULL OR p = '' OR left(p, 1) = '/' OR p ~ '^(s3|gs|az|https?)://' THEN p
+								 ELSE dd || '/' || p END ORDER BY n)
+						   FROM unnest(v.np) WITH ORDINALITY AS s(p, n)) AS rz(rr),
+				   -- the lexical form of each local path, as written and
+				   -- resolved (#1965, #1959, #2004)
+				   LATERAL (SELECT array_agg(
+							CASE WHEN p IS NULL OR p = '' OR p ~ '^(s3|gs|az|https?)://' THEN p
+								 ELSE (WITH RECURSIVE
+										 pt(k, a) AS (SELECT row_number() OVER (ORDER BY ord), a COLLATE "C"
+														FROM unnest(string_to_array(p, '/')) WITH ORDINALITY AS u(w, ord),
+															 -- glob(3) unescapes a name without a glob
+															 -- character, so a glob's \. is . (#1978 review)
+															 LATERAL (SELECT CASE WHEN n IN (2, 4) AND p ~ '[*?[]'
+																				   AND regexp_replace(w, '\\(.)', '\1', 'g') IN ('.', '..')
+																				  THEN regexp_replace(w, '\\(.)', '\1', 'g')
+																				  ELSE w END) AS e(a)
+													   WHERE a NOT IN ('', '.')),
+										 st(k, s) AS (SELECT 0::bigint, ARRAY[]::text[] COLLATE "C"
+													  UNION ALL
+													  SELECT st.k + 1,
+															 CASE WHEN pt.a <> '..' THEN st.s || pt.a
+																  WHEN cardinality(st.s) > 0 AND st.s[cardinality(st.s)] <> '..'
+																  THEN st.s[1:cardinality(st.s) - 1]
+																  WHEN left(p, 1) = '/' THEN st.s
+																  ELSE st.s || pt.a END
+														FROM st JOIN pt ON pt.k = st.k + 1)
+									   SELECT r || CASE WHEN right(p, 1) = '/' AND right(r, 1) <> '/' THEN '/' ELSE '' END
+										 FROM (SELECT CASE WHEN q = '' THEN '.' ELSE q END
+												 FROM (SELECT CASE WHEN left(p, 1) = '/' THEN '/' ELSE '' END
+															  || array_to_string(st.s, '/')
+														 FROM st ORDER BY st.k DESC LIMIT 1) AS y(q)) AS z(r))
+								 END ORDER BY n)
+						   FROM unnest(v.np || rz.rr) WITH ORDINALITY AS s(p, n)) AS nz(nn)
+			 WHERE (w.fdwhandler = 'pgcolumnar.parquet_fdw_handler()'::regprocedure AND o.opt LIKE 'path=%')
+				OR (f.ice AND o.opt LIKE 'metadata_path=%')) AS c) AS h
+		 WHERE h.hit OR h.fp ~ '[*?[]'
+		 ORDER BY h.hit IS TRUE DESC, h.relid
+	LOOP
+		hit := cand.hit IS TRUE;
+		-- The glob as written, then its folded form, each in a block of its
+		-- own: a glob over the limit as written can be within it once folded
+		-- (#1978 review).
+		FOR pass IN 1 .. CASE WHEN cand.nfp <> cand.fp OR cand.ntp <> cand.tp THEN 2 ELSE 1 END LOOP
+			EXIT WHEN hit;
+			BEGIN
+				hit := coalesce(CASE pass WHEN 1 THEN pgcolumnar.path_glob_matches(cand.fp, cand.tp)
+										  ELSE pgcolumnar.path_glob_matches(cand.nfp, cand.ntp) END, false);
+			EXCEPTION WHEN program_limit_exceeded THEN
+				IF kind IS NULL THEN
+					GET STACKED DIAGNOSTICS lim_msg = MESSAGE_TEXT, lim_detail = PG_EXCEPTION_DETAIL;
+					kind := 'limit';
+					hrel := cand.relid;
+					hpath := cand.opath;
+					hice := cand.ice;
+				END IF;
+				hit := false;
+			END;
+		END LOOP;
+		IF hit THEN
+			kind := 'read';
+			hrel := cand.relid;
+			hpath := cand.opath;
+			hice := cand.ice;
+			EXIT;
+		END IF;
+	END LOOP;
+	-- The detail quotes the path by hand, not with %L, so a backslash prints as
+	-- written. It doubles a ', so the path cannot close the quote (#1953
+	-- review). Another role chose both the table's name and its path, so the
+	-- detail prints a control character in either as \xHH, and the text
+	-- cannot add a line that reads like a server HINT (#1960, #1964 review).
+	-- A C1 control (U+0080 to U+009F) is found by its meaning, through
+	-- UTF-8, so the euro sign, 0x80 in WIN1252, prints as written. SQL_ASCII
+	-- has no meaning for such a byte, so it prints as written there. A
+	-- backslash before an x prints as \x5C, so a path that holds the four
+	-- characters \x0A does not print like a newline.
+	-- A pattern too large to match keeps its own message and SQLSTATE; the
+	-- detail adds the table and its path after the matcher's own detail.
+	IF kind IS NOT NULL THEN
+		said := (SELECT format(CASE WHEN hice
+									THEN 'Foreign table %s reads Iceberg files under ''%s'''
+									ELSE 'Foreign table %s reads path ''%s''' END, e[1], e[2])
+							  FROM (SELECT array_agg(x.esc ORDER BY u.k)
+									  FROM unnest(ARRAY[hrel::text,
+														replace(hpath, '''', '''''')])
+										   WITH ORDINALITY AS u(s, k),
+										   LATERAL (SELECT coalesce(string_agg(
+												CASE WHEN z.ch ~ '[\x01-\x1f\x7f]'
+														  OR (z.ch = '\' AND z.nx = 'x')
+														  OR CASE WHEN z.ch ~ '[\x80-\x9f]'
+																   AND getdatabaseencoding() <> 'SQL_ASCII'
+																  THEN convert_to(z.ch, 'UTF8')
+																	   BETWEEN '\xc280'::bytea AND '\xc29f'::bytea
+																  ELSE false END
+													 THEN '\x' || lpad(upper(to_hex(ascii(z.ch))), 2, '0')
+													 ELSE z.ch END, '' ORDER BY z.n), '')
+													  FROM (SELECT c.ch, c.n, lead(c.ch) OVER (ORDER BY c.n) AS nx
+															  FROM regexp_split_to_table(u.s, '') WITH ORDINALITY AS c(ch, n)) AS z
+												   ) AS x(esc)) AS y(e));
+		IF kind = 'limit' THEN
+			RAISE EXCEPTION '%', lim_msg
+				USING ERRCODE = 'program_limit_exceeded',
+					  DETAIL = format('%s %s, so tier_partition cannot tell whether it reads the target.',
+									  lim_detail, said);
+		END IF;
 		RAISE EXCEPTION 'file "%" is read by a foreign table in this database', path
-			USING ERRCODE = 'duplicate_file';
+			USING ERRCODE = 'duplicate_file',
+				  DETAIL = said || '.';
 	END IF;
 
 	-- Every column as ATTACH will compare it: type, collation where it is not
@@ -1813,7 +2181,9 @@ BEGIN
 
 	-- Writes to the cold partition wait; reads go on.
 	EXECUTE format('LOCK TABLE %s IN SHARE MODE', partition);
-	moved := pgcolumnar.export_parquet(partition, path);
+	-- Through the server the foreign partition will read with, so the write
+	-- and every later read use one endpoint and one identity (#1795).
+	moved := pgcolumnar.export_parquet(partition, path, server);
 	-- Under the lock nothing can commit to the partition, so a statement taken
 	-- now sees what the export saw. A difference is an error, never a loss.
 	EXECUTE format('SELECT count(*) FROM %s', partition) INTO seen;
@@ -1824,7 +2194,8 @@ BEGIN
 	IF fault = 'export' THEN RAISE EXCEPTION 'injected fault after export'; END IF;
 	IF fault = 'pause' THEN PERFORM pg_sleep(2); END IF;
 
-	-- From here the parent is held ACCESS EXCLUSIVE until commit: catalog work only.
+	-- From here the parent is held ACCESS EXCLUSIVE until commit: catalog work,
+	-- then one count through the new foreign partition.
 	EXECUTE format('ALTER TABLE %s DETACH PARTITION %s', parent, partition);
 	IF fault = 'detach' THEN RAISE EXCEPTION 'injected fault after detach'; END IF;
 	EXECUTE format('DROP TABLE %s', partition);
@@ -1851,6 +2222,16 @@ BEGIN
 	EXECUTE format('ALTER TABLE %s ATTACH PARTITION %s.%I %s',
 				   parent, rel.relnamespace::regnamespace, rel.relname, bound);
 	IF fault = 'attach' THEN RAISE EXCEPTION 'injected fault after attach'; END IF;
+	-- Read the file back through the foreign partition, as the caller, before
+	-- commit (#1795). The write proved the key can write; this proves the caller
+	-- can read what the parent now points at. A key that can write but not read
+	-- (s3:PutObject without s3:GetObject) fails here, and the move rolls back.
+	EXECUTE format('SELECT count(*) FROM %s.%I', rel.relnamespace::regnamespace, rel.relname)
+		INTO seen;
+	IF seen <> moved THEN
+		RAISE EXCEPTION 'wrote % rows to "%" but the foreign partition reads %', moved, path, seen
+			USING ERRCODE = 'internal_error';
+	END IF;
 	-- No ANALYZE: pgcolumnar_parquet has no AnalyzeForeignTable, so there is no
 	-- sample to take (checked on #1295).
 	-- The caller's lock_timeout again, or it would last to the end of their
@@ -1862,3 +2243,248 @@ $tier$;
 
 COMMENT ON FUNCTION pgcolumnar.tier_partition(regclass, name, text, interval)
 	IS 'move a cold columnar partition to a Parquet file, attached in its place as a foreign partition with the same name, bounds, grants and comment, in one transaction at READ COMMITTED (#1295). Holds ACCESS EXCLUSIVE on the parent for the catalog steps; every lock waits at most lock_wait. Returns rows moved';
+
+-- stats() and sort_status() read the table's storage id once (#1637). Both
+-- filtered a shared catalog with `storage_id = pgcolumnar.get_storage_id(rel)`.
+-- In the filter of a sequential scan that call runs once per catalog row, and
+-- each call reads the table's first page, so the cost grew with every other
+-- columnar table in the database. Copied from pgcolumnar--1.0-alpha5.sql, so a
+-- fresh install and an upgraded one converge.
+CREATE OR REPLACE FUNCTION pgcolumnar.stats(
+	rel regclass,
+	OUT stripeid bigint,
+	OUT fileoffset bigint,
+	OUT rowcount bigint,
+	OUT deletedrows bigint,
+	OUT chunkcount integer,
+	OUT datalength bigint)
+	RETURNS SETOF record
+	LANGUAGE plpgsql STABLE SECURITY DEFINER
+	SET search_path = pg_catalog, pg_temp
+	AS $stats$
+DECLARE
+	-- once, not per catalog row: in the filter of a sequential scan of the
+	-- catalog the call runs for every row, and each call reads the table's
+	-- first page (#1637)
+	sid bigint;
+BEGIN
+	PERFORM pgcolumnar.require_caller_select(rel);
+	sid := pgcolumnar.get_storage_id(rel);
+	RETURN QUERY
+	-- Native (PGCN v1) tables report one row per row group from the native
+	-- catalog.
+	SELECT rg.group_number,
+		   rg.file_offset,
+		   rg.row_count,
+		   COALESCE((SELECT sum(rm.deleted_count)::bigint
+					 FROM pgcolumnar.delete_vector rm
+					 WHERE rm.storage_id = rg.storage_id
+					   AND rm.group_number = rg.group_number), 0::bigint),
+		   (SELECT count(DISTINCT zm.vector_index)::int
+			FROM pgcolumnar.zone_map zm
+			WHERE zm.storage_id = rg.storage_id
+			  AND zm.group_number = rg.group_number
+			  AND zm.vector_index >= 0),
+		   rg.byte_length
+	FROM pgcolumnar.row_group rg
+	WHERE rg.storage_id = sid
+	ORDER BY 1;
+END;
+$stats$;
+
+CREATE OR REPLACE FUNCTION pgcolumnar.sort_status(
+	rel regclass,
+	OUT sort_key name[],
+	OUT sorted_kind text,
+	OUT total_groups bigint,
+	OUT sorted_groups bigint,
+	OUT appended_groups bigint,
+	OUT sorted_rows bigint,
+	OUT appended_rows bigint)
+	RETURNS record
+	-- SECURITY DEFINER, like stats() (#560): the body reads pgcolumnar's internal
+	-- catalogs (storage, row_group, options), which carry no GRANT, so an
+	-- invoker-rights function false-denied a table's own owner on their own table
+	-- (#608). require_caller_select gates the REAL caller via GetOuterUserId(), so
+	-- definer rights do not widen who may read a table's sort status. search_path
+	-- is pinned as a definer function must.
+	LANGUAGE plpgsql STABLE SECURITY DEFINER
+	SET search_path = pg_catalog, pg_temp
+	AS $sort_status$
+DECLARE
+	-- once, not per catalog row: in the filter of a sequential scan of the
+	-- catalog the call runs for every row, and each call reads the table's
+	-- first page (#1637)
+	sid bigint;
+BEGIN
+	PERFORM pgcolumnar.require_caller_select(rel);
+	sid := pgcolumnar.get_storage_id(rel);
+	WITH s AS (
+		SELECT st.storage_id, st.sorted_through, st.sorted_from
+		FROM pgcolumnar.storage st
+		WHERE st.storage_id = sid
+	),
+	g AS (
+		-- A NULL mark means the storage was never ordered, so no group is in the
+		-- run. Comparing against NULL would make every count NULL instead.
+		--
+		-- The run is a range, not everything below a boundary (#342). A group
+		-- numbered below sorted_from was not written by the rewrite that set the
+		-- mark: its stripe id was drawn before the rewrite's first, so it is a
+		-- concurrent writer's group and is not ordered. sorted_from is NULL only
+		-- for a mark written before this column existed, where the old
+		-- everything-below reading is kept.
+		SELECT rg.row_count,
+			   (s.sorted_through IS NOT NULL
+				AND rg.group_number <= s.sorted_through
+				AND (s.sorted_from IS NULL
+					 OR rg.group_number >= s.sorted_from)) AS in_run
+		FROM pgcolumnar.row_group rg
+		JOIN s ON rg.storage_id = s.storage_id
+	)
+	-- sort_key reports the ACTUAL clustering recorded by the last recluster
+	-- (#415, storage.sorted_by), falling back to the declared options.sort_by
+	-- when nothing has been reclustered yet. Before #415 this read only the
+	-- declared key, so it was NULL on a table clustered but never declared.
+	SELECT COALESCE(
+			(SELECT st.sorted_by FROM pgcolumnar.storage st
+			 WHERE st.storage_id = sid),
+			(SELECT o.sort_by FROM pgcolumnar.options o WHERE o.regclass = rel)),
+		   -- HOW that key is applied (#761). sort_key names the columns and says
+		   -- nothing about whether they are sorted or laid on a Z-order curve,
+		   -- and a Z-order over two or more columns is not a sort on any one of
+		   -- them. The catalog has carried this since #758; pgcolumnar.storage
+		   -- has no GRANT and is superuser-only, so a table's own owner could
+		   -- read it nowhere. NULL when the storage was never ordered, or was
+		   -- ordered before the column existed.
+		   (SELECT st.sorted_kind FROM pgcolumnar.storage st
+			WHERE st.storage_id = sid),
+		   (SELECT count(*)::bigint FROM g),
+		   (SELECT count(*)::bigint FROM g WHERE g.in_run),
+		   (SELECT count(*)::bigint FROM g WHERE NOT g.in_run),
+		   COALESCE((SELECT sum(g.row_count)::bigint FROM g WHERE g.in_run), 0::bigint),
+		   COALESCE((SELECT sum(g.row_count)::bigint FROM g WHERE NOT g.in_run), 0::bigint)
+	INTO sort_key, sorted_kind, total_groups, sorted_groups, appended_groups,
+		 sorted_rows, appended_rows;
+END;
+$sort_status$;
+
+-- Per-row-group distinct-count sketches (#1309): the option column, the catalog and
+-- the check set_options calls. All three are in pgcolumnar--1.0-alpha5.sql too, so
+-- a fresh install and an upgraded one converge.
+ALTER TABLE pgcolumnar.options ADD COLUMN IF NOT EXISTS sketch_columns name[];
+
+/* ---------------------------------------------------------------------------
+ * pgcolumnar.sketch (#1309)
+ *
+ * One HyperLogLog sketch per row group for each column the table's options name
+ * in sketch_columns: 2048 one-byte registers, from the type's extended hash
+ * (seed 0) of each non-NULL value. Keyed like bloom, and like bloom NOT dumped:
+ * a restore rewrites the rows, and the writer rewrites the sketches with them.
+ * ------------------------------------------------------------------------- */
+CREATE TABLE pgcolumnar.sketch (
+	storage_id bigint NOT NULL,
+	group_number bigint NOT NULL,
+	column_index smallint NOT NULL,
+	registers bytea NOT NULL
+);
+CREATE UNIQUE INDEX sketch_pkey
+	ON pgcolumnar.sketch USING btree (storage_id, group_number, column_index);
+
+CREATE FUNCTION pgcolumnar.check_sketch_column(table_name regclass, col name)
+	RETURNS void
+	LANGUAGE C STABLE STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_check_sketch_column';
+
+COMMENT ON FUNCTION pgcolumnar.check_sketch_column(regclass, name)
+	IS 'raise 0A000 unless the column can carry a distinct-count sketch (#1309): an extended hash, and a deterministic collation';
+
+/* ---------------------------------------------------------------------------
+ * pgcolumnar.approx_count_distinct (#1309 phase 2)
+ *
+ * A HyperLogLog distinct count over the type's extended hash, with the same
+ * 2048 registers and register rule as pgcolumnar.sketch. Its state is the
+ * registers, serialized as bytea between parallel workers and combined by a
+ * register-wise max. NULLs are not counted, as with count(DISTINCT).
+ * ------------------------------------------------------------------------- */
+CREATE FUNCTION pgcolumnar.approx_count_distinct_transfn(internal, anyelement)
+	RETURNS internal
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_transfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_combinefn(internal, internal)
+	RETURNS internal
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_combinefn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_serialfn(internal)
+	RETURNS bytea
+	LANGUAGE C STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_serialfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_deserialfn(bytea, internal)
+	RETURNS internal
+	LANGUAGE C STRICT PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_deserialfn';
+
+CREATE FUNCTION pgcolumnar.approx_count_distinct_finalfn(internal)
+	RETURNS bigint
+	LANGUAGE C PARALLEL SAFE
+	AS 'MODULE_PATHNAME', 'pgcolumnar_acd_finalfn';
+
+CREATE AGGREGATE pgcolumnar.approx_count_distinct(anyelement) (
+	SFUNC = pgcolumnar.approx_count_distinct_transfn,
+	STYPE = internal,
+	FINALFUNC = pgcolumnar.approx_count_distinct_finalfn,
+	COMBINEFUNC = pgcolumnar.approx_count_distinct_combinefn,
+	SERIALFUNC = pgcolumnar.approx_count_distinct_serialfn,
+	DESERIALFUNC = pgcolumnar.approx_count_distinct_deserialfn,
+	PARALLEL = SAFE
+);
+
+COMMENT ON AGGREGATE pgcolumnar.approx_count_distinct(anyelement)
+	IS 'approximate count of distinct non-NULL values: HyperLogLog, 2048 registers, standard error about 2.3% (#1309)';
+
+-- #1865: the namespace as a text[] of levels, so a level may hold a dot. The
+-- text forms above split their namespace on every dot.
+CREATE FUNCTION pgcolumnar.iceberg_rest_table_location(catalog_uri text,
+													   namespace text[],
+													   table_name text)
+	RETURNS text
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_table_location_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_table_location(text, text[], text)
+	IS 'resolve the current metadata-location of a table named by an Iceberg REST catalog; the namespace is a text[] of levels, so a level may hold a dot (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_scan(catalog_uri text,
+											 namespace text[],
+											 table_name text)
+	RETURNS SETOF record
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_scan_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_scan(text, text[], text)
+	IS 'read a table named by an Iceberg REST catalog at its current snapshot; the namespace is a text[] of levels, so a level may hold a dot; supply a column definition list (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text)
+	RETURNS SETOF text[]
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_namespace_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_namespace_levels(text)
+	IS 'list the namespaces of an Iceberg REST catalog, one per row, each as a text[] of its levels; a row passes back as the namespace argument of the other iceberg_rest_* functions, except a row with a level that holds the catalog''s namespace separator, which they refuse with 22023 (#1865)';
+
+CREATE FUNCTION pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text[])
+	RETURNS SETOF text
+	LANGUAGE C STRICT
+	AS 'MODULE_PATHNAME', 'pgcolumnar_iceberg_rest_tables_levels';
+
+COMMENT ON FUNCTION pgcolumnar.iceberg_rest_tables(text, text[])
+	IS 'list the table names in a namespace of an Iceberg REST catalog, one per row; the namespace is a text[] of levels, so a level may hold a dot (#1865)';
+
+-- parquet_schema reports a nested column under its top-level name, not as its
+-- leaves (#1893). The comment in pgcolumnar--1.0-alpha5.sql says so too, so a
+-- fresh install and an upgraded one converge.
+COMMENT ON FUNCTION pgcolumnar.parquet_schema(text)
+	IS 'report the columns of a Parquet file, one row per column read_parquet declares, and the PostgreSQL type each maps to: a list or struct under its own name, other nesting one row per leaf (#1893); for a directory or glob, of its first file; field_id is the SchemaElement field id Iceberg projects by, NULL when the writer emitted none (Phase G scan core, #388)';

@@ -21,14 +21,16 @@ So there are two properties, and each needs its own arm:
      them across 42 SQLSTATE classes, measured against psycopg 3.3.5;
   2. the block must hold exactly one statement, or nothing says which one raised.
 
-THE TWO PROPERTIES CLOSE DIFFERENT AMOUNTS, and that asymmetry is the reason the
-last three arms exist. Property 1 CLOSES `raises-too-broad`: a broad family with
-nothing pinned cannot be collected. Property 2 only MITIGATES
+THE TWO PROPERTIES CLOSE DIFFERENT AMOUNTS. Property 1 CLOSES `raises-too-broad`:
+a broad family with nothing pinned cannot be collected. Property 2 only NARROWS
 `raises-catches-setup`, because it counts TOP-LEVEL statements: a call to a helper
 that performs the setup is one statement, and so is a `for` holding the setup and
-the statement under test. `test_a_helper_hiding_the_setup_is_refused` and
-`test_a_compound_statement_hiding_the_setup_is_refused` assert this scan
-reports NOTHING on those two shapes, which is why `raises-catches-setup` stays in
+the statement under test. Two more rules now refuse those two shapes: the block may
+hold no compound statement, and it may not call a function defined in the same
+file. `test_a_helper_hiding_the_setup_is_refused` and
+`test_a_compound_statement_hiding_the_setup_is_refused` assert that the scan
+refuses both. Other shapes still pass -- a comprehension, a tuple of calls, a
+helper defined in another file -- so `raises-catches-setup` stays in
 `VACUITY_MODES.md` section 3.4 rather than moving to section 2.
 
 THE SCAN IS AST, NOT A LINE REGEX, and this file is the reason. Every arm below
@@ -398,14 +400,12 @@ def test_the_raises_scan_does_not_touch_a_recorder_made_in_the_body(pytester, ex
 
 
 # ---------------------------------------------------------------------------
-# THE RESIDUAL, PINNED. `raises-catches-setup` is MITIGATED by the one-statement
-# rule, NOT closed, and the two shapes that walk past it get an arm each. They
-# assert the scan reports NOTHING, which is what makes the residual a measurement
-# rather than a sentence -- and what stops the next reader of the scan from
-# assuming the sibling mode is handled.
-#
-# The one-statement rule counts TOP-LEVEL statements in the block. Both shapes
-# below are one top-level statement that performs the setup inside the block.
+# THE TWO SHAPES THE ONE-STATEMENT RULE MISSED, NOW REFUSED. The one-statement
+# rule counts TOP-LEVEL statements in the block. Both shapes below are one top-level
+# statement that performs the setup inside the block. Each gets an arm that asserts
+# the scan REFUSES it: a helper call by the same-file rule, a compound statement by
+# `_COMPOUND_STATEMENTS`. `raises-catches-setup` is still NARROWED, not closed: the
+# shapes that still pass are listed in `VACUITY_MODES.md` section 3.4.
 # ---------------------------------------------------------------------------
 
 def test_a_helper_hiding_the_setup_is_refused(pytester, expect):
@@ -488,20 +488,36 @@ def test_a_helper_hidden_in_an_assignment_is_refused_too(pytester, expect):
 
 
 def test_every_compound_statement_is_refused_not_only_a_loop(pytester, expect):
-    """`if`, `while`, `with` and `try` nest exactly as `for` does.
+    """Every compound statement nests exactly as `for` does, so each is driven.
 
     The inventory named the `for` spelling. A rule that caught only that one would
-    leave three spellings of the same shape, which is the difference between closing
-    a mode and closing an example of it.
+    leave the other spellings of the same shape, which is the difference between
+    closing a mode and closing an example of it. `_COMPOUND_STATEMENTS` lists nine
+    kinds; `for` has its own test above, and this one drives the other eight.
+
+    THE ASYNC KINDS RUN, and are not merely written. Python lets them stand only in
+    an `async def`, and pytest without an async plugin FAILS an `async def` test --
+    which `run_failed` would read as a refusal whatever the scan did. So the block
+    sits in a coroutine the test runs with `asyncio.run`, over stdlib iterables (a
+    helper defined in the file would be refused by the other rule), and the inner run
+    passes when nothing refuses it, as it does for the other six kinds.
     """
+    raise_x = 'raise psycopg.errors.UndefinedObject("x")'
+    pad = "\n" + " " * 20
     bodies = {
-        "If":    'if True:\n                    raise psycopg.errors.UndefinedObject("x")',
-        "While": 'while True:\n                    raise psycopg.errors.UndefinedObject("x")',
-        "With":  'with open("/dev/null"):\n                    raise psycopg.errors.UndefinedObject("x")',
-        "Try":   'try:\n                    raise psycopg.errors.UndefinedObject("x")\n                finally:\n                    pass',
+        "If":        f'if True:{pad}{raise_x}',
+        "While":     f'while True:{pad}{raise_x}',
+        "With":      f'with open("/dev/null"):{pad}{raise_x}',
+        "Try":       f'try:{pad}{raise_x}\n                finally:{pad}pass',
+        "TryStar":   f'try:{pad}{raise_x}\n                except* ValueError:{pad}pass',
+        "Match":     f'match 1:{pad}case _:{pad}    {raise_x}',
     }
-    for kind, body in bodies.items():
-        result = _inner(pytester, f'''
+    apad = "\n" + " " * 24
+    async_bodies = {
+        "AsyncFor":  f'async for _ in asyncio.as_completed([asyncio.sleep(0)]):{apad}{raise_x}',
+        "AsyncWith": f'async with asyncio.timeout(60):{apad}{raise_x}',
+    }
+    sources = {kind: f'''
         import psycopg
         import pytest
 
@@ -509,7 +525,22 @@ def test_every_compound_statement_is_refused_not_only_a_loop(pytester, expect):
             with pytest.raises(psycopg.errors.UndefinedObject) as exc:
                 {body}
             expect.sqlstate(exc.value, "42704", "the statement under test")
-        ''')
+        ''' for kind, body in bodies.items()}
+    sources.update({kind: f'''
+        import asyncio
+        import psycopg
+        import pytest
+
+        def test_the_alter_is_refused(expect):
+            async def _run():
+                with pytest.raises(psycopg.errors.UndefinedObject) as exc:
+                    {body}
+                return exc
+            exc = asyncio.run(_run())
+            expect.sqlstate(exc.value, "42704", "the statement under test")
+        ''' for kind, body in async_bodies.items()})
+    for kind, source in sources.items():
+        result = _inner(pytester, source)
         expect.run_failed(result, f"a {kind} inside the block must not be collectable")
         result.stderr.fnmatch_lines([f"*holds a {kind}, so which statement inside it raised*"])
 
@@ -681,9 +712,12 @@ def test_one_hop_through_a_local_name_is_an_honest_pin(pytester, expect):
         """
     )
     result = pytester.runpytest("-p", "pgc_vacuity")
+    # STDERR, NOT STDOUT. The layer reports a refusal as a usage error, which goes to
+    # stderr, so a check of stdout for the offence could never fail.
+    expect.num(sum("names no SQLSTATE" in ln for ln in result.stderr.lines), 0,
+               "and the scan reports no unpinned SQLSTATE for a one-hop pin")
     expect.outcomes(result, "a pin reached through one local name is collectable",
                     passed=0, failed=1, errors=0)
-    result.stdout.no_fnmatch_line("*names no SQLSTATE*")
 
 
 # ---- THE CLASS MAY ARRIVE BY KEYWORD ----------------------------------------
@@ -730,15 +764,18 @@ def test_the_keyword_form_with_a_pin_is_collectable(pytester, expect):
         """
     )
     result = pytester.runpytest("-p", "pgc_vacuity")
+    # STDERR, NOT STDOUT, for the reason the one-hop arm above gives.
+    expect.num(sum("names no SQLSTATE" in ln for ln in result.stderr.lines), 0,
+               "and the scan reports no unpinned SQLSTATE for a pinned keyword form")
     expect.outcomes(result, "a pinned keyword form is collectable",
                     passed=0, failed=1, errors=0)
-    result.stdout.no_fnmatch_line("*names no SQLSTATE*")
 
 
 # ---- THE NEUTERING PROOF, WHICH A TEXT PIN CANNOT CARRY ---------------------
 #
-# `test/selftest/440` checks this scan by grepping its source, and a text pin catches
-# a rewrite or a deletion but not `False and` -- which is how a guard actually dies.
+# A shell part that checked this scan by grepping its source (the old
+# `test/selftest/440-a-raises-must-name-a-sqlstate.sh`, deleted in 294cb8cb) catches a
+# rewrite or a deletion but not `False and` -- which is how a guard actually dies.
 # @jdatcmd measured three faithful neuterings (prefix `False and`, rename nothing,
 # leave every pinned substring in place) and all three left that part at 55 passed
 # while the scan went blind.
@@ -755,6 +792,11 @@ def _layer_copy(tmp_path, old, new, name):
     import importlib.util
     src = pathlib.Path(__file__).with_name("pgc_vacuity.py").read_text()
     assert old in src, "the condition to disable is not in the layer verbatim: %r" % old
+    # FAITHFUL BY CONSTRUCTION: the neutering keeps the condition's text after its
+    # `if`, so a grep for it still matches the twin. This is a property of `new`, not
+    # of the layer, so it is asserted here once rather than measured as a check that
+    # cannot fail.
+    assert old.removeprefix("if ") in new, "the neutering must keep the condition's text: %r" % new
     twin = tmp_path / (name + ".py")
     twin.write_text(src.replace(old, new, 1))
     spec = importlib.util.spec_from_file_location(name, twin)
@@ -789,8 +831,6 @@ def test_disabling_the_sqlstate_rule_makes_the_scan_blind(tmp_path, expect):
         "if False and broad and (bound is None or bound not in pinned):",
         "twin_sqlstate",
     )
-    expect.at_least(path.read_text().count("bound not in pinned"), 1,
-                    "and the twin still CONTAINS the text a grep arm pins")
     blind = [s for s in twin._raises_sites(case) if "names no SQLSTATE" in s]
     expect.num(len(blind), 0, "while the twin reports none, which no text pin can see")
 
@@ -807,8 +847,6 @@ def test_disabling_the_statement_rule_makes_the_scan_blind(tmp_path, expect):
         "if False and sites and len(node.body) != 1:",
         "twin_statements",
     )
-    expect.at_least(path.read_text().count("len(node.body) != 1"), 1,
-                    "and the twin still contains the pinned text")
     blind = [s for s in twin._raises_sites(case) if "statements" in s]
     expect.num(len(blind), 0, "while the twin reports none")
 
@@ -816,8 +854,9 @@ def test_the_mode_this_layer_only_narrows_is_still_listed_as_open(expect):
     """`raises-catches-setup` must stay in VACUITY_MODES.md section 3.
 
     Property 1 CLOSES `raises-too-broad`. Property 2 only narrows
-    `raises-catches-setup`, because the statement rule counts TOP-LEVEL statements and
-    two shapes walk past it -- both asserted above. A document that quietly moved the
+    `raises-catches-setup`: the helper-call and compound-statement shapes are refused
+    (asserted above), but a comprehension, a tuple of calls and a helper in another
+    file still pass. A document that quietly moved the
     mode to section 2 would claim a closure this scan does not make, which is the
     failure a map makes worse than a silence.
 
@@ -833,7 +872,7 @@ def test_the_mode_this_layer_only_narrows_is_still_listed_as_open(expect):
     start = re.search(r"^## 3\. ", doc, re.M)
     end = re.search(r"^## 4\. ", doc, re.M)
     expect.text("found" if start and end else "missing", "found",
-                "premise: section 3 and section 4 both have headings to bound by")
+                "section 3 and section 4 both have headings to bound by")
     section3 = doc[start.end():end.start()]
     expect.at_least(doc.count("raises-catches-setup"), 1,
                     "the document still names the mode this layer only narrows")
@@ -846,8 +885,8 @@ def test_the_mode_this_layer_only_narrows_is_still_listed_as_open(expect):
     # "`raises-catches-setup` is now closed." into section 3 and added the row to
     # section 2 satisfied the line above and moved the refused count to 29.
     #
-    # The arm already split on "is now closed" for the OTHER mode, two lines below, and
-    # did not apply the same care to its own subject. Two further conditions, because
+    # The arm once split on "is now closed" for the OTHER mode, and did not apply the
+    # same care to its own subject. Two further conditions, because
     # either alone can be satisfied by the wrong document: the id must appear in section
     # 3 OUTSIDE any closure back-reference, and it must not appear in section 2 at all.
     # Found by taking the closure claim seriously enough to measure the residuals, which
@@ -866,6 +905,10 @@ def test_the_mode_this_layer_only_narrows_is_still_listed_as_open(expect):
     expect.text("absent" if "raises-catches-setup" not in section2 else "claimed refused",
                 "absent",
                 "and does not also claim it refused in the section for what IS refused")
-    expect.text("absent" if "raises-too-broad" not in section3.split("is now closed")[0]
-                else "present", "absent",
-                "premise: and the mode this layer DOES close is not loose in section 3")
+    # PER LINE for the closed mode too. `split("is now closed")[0]` read section 3 only
+    # up to its FIRST back-reference, which belongs to another mode and sits above
+    # this one, so a line calling `raises-too-broad` open further down was never read.
+    loose = [ln for ln in section3.splitlines()
+             if "raises-too-broad" in ln and "is now closed" not in ln]
+    expect.num(len(loose), 0,
+               "and the mode this layer DOES close is not loose in section 3")

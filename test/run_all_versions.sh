@@ -42,6 +42,8 @@ SUITES=(
 	advisory_lock_class
 	alter_am_cleanup
 	alter_column_type
+	alter_table_scans
+	am_contracts
 	analyze_differential
 	analyze_function
 	analyze_reltuples
@@ -64,6 +66,7 @@ SUITES=(
 	bloom_sizing
 	cancel_decode
 	catalog_delete_index
+	catalog_filter_reads
 	catalog_natts
 	catalog_plan_index
 	catalog_scan_index
@@ -89,6 +92,7 @@ SUITES=(
 	entry_point_privilege
 	estimate_deleted
 	export_sink
+	fdw_plan_privilege
 	fk_referencing
 	fsst_margin
 	fsst_verdict_cache
@@ -100,6 +104,7 @@ SUITES=(
 	generated_columns
 	groupagg_table_sizing
 	hardening
+	harness_isolation
 	harness_selftest
 	hilbert_cluster
 	hilbert_curve
@@ -131,14 +136,18 @@ SUITES=(
 	inheritance
 	int8_agg_int128
 	isolation
+	large_values
 	latest_reading
 	local_open_race_free
 	logical_decoding_cdc_recipe
 	logical_decoding_source
 	logical_subscriber
+	maintenance_crash
 	maintenance_due
+	maintenance_rollback
 	native_agg
 	native_agg_addcolumn
+	native_agg_collation
 	native_agg_deletes
 	native_backend_crash
 	native_batch_fold_projection
@@ -211,6 +220,11 @@ SUITES=(
 	native_rewrite_conc
 	native_roundtrip
 	native_saop_pushdown
+	native_scale
+	native_sketch
+	native_sketch_agg
+	native_sketch_fold
+	native_sketch_rewrite
 	native_skip
 	native_sort_by
 	native_toasted_write
@@ -224,10 +238,14 @@ SUITES=(
 	native_zonemap
 	native_zonemap_narrow
 	native_zonemap_session
+	nologin_workers
 	objstore_addressing
 	objstore_allowlist
 	objstore_credentials
 	objstore_crlf
+	objstore_error_advice
+	objstore_export_double_cancel
+	objstore_export_open_uploads
 	objstore_http_read
 	objstore_listing
 	objstore_module
@@ -252,7 +270,10 @@ SUITES=(
 	parquet_level_width
 	parquet_nested
 	parquet_nested_import
+	parquet_skip_cross_type
+	parquet_timestamp_zone
 	partition_lifecycle
+	partition_rows
 	partman_columnar
 	pg19_vacuum_options
 	pg_dump_roundtrip
@@ -263,6 +284,7 @@ SUITES=(
 	phase6
 	planner_choice_quality
 	preimage_rewrite
+	prepared_across_sessions
 	prepared_writes
 	projection_drop_column
 	projection_parallel
@@ -281,21 +303,27 @@ SUITES=(
 	recluster_extent
 	recluster_gate
 	recovery
+	recovery_minimal_wal
 	replication
 	rewrite_group_scan
 	rewrite_storage_oid
 	rls_direct_storage
+	rls_query_paths
 	rollup
 	row_triggers
+	savepoint_flush
 	scan_decode_cost
 	scan_direction
+	serializable
 	server_file_privilege
+	settings_reference
 	smoke
 	sort_status
 	sort_status_privilege
 	sorted_mark_rename
 	sorted_pathkeys
 	sorted_projection
+	statement_self_visibility
 	stats_privilege
 	storage_row_repair
 	tablesample
@@ -305,6 +333,7 @@ SUITES=(
 	timeseries_recipes
 	truncate_cleanup
 	ttl_expire
+	type_matrix
 	ungrouped_vector_agg
 	unique_conc
 	update_conc
@@ -1211,7 +1240,7 @@ pgc_accounted_among() {	# pgc_accounted_among NAMEFILE WIDEFILE -> names
 #
 # A STATIC RULE CANNOT DO THIS JOB, and two attempts got it wrong in different
 # directions before this reader existed. "Does this suite record?" is a RUNTIME
-# property: `audit.sh` defines its own `check()` whose body calls `pgc_record`, so a
+# property: `phase2.sh` defines its own `check()` whose body calls `pgc_record`, so a
 # rule keyed on defining a local check() misses it; `objstore_stash_recovery.sh`
 # uses lib.sh's check() directly, so the string `pgc_record` never appears in the
 # file at all and a rule keyed on that misses it too. And a third, excluding files
@@ -1228,7 +1257,7 @@ pgc_log_shows_any_accounting() {	# pgc_log_shows_any_accounting LOGFILE -> yes|n
 	# Did this suite count its checks AT RUNTIME, by any mechanism the log shows?
 	#
 	# Two exist in the tree. lib.sh's pgc_summary prints the accounting line, and
-	# 239 suites use it. bench_guards and docs_style keep private counters and
+	# 239 suites use it. bench_guards keeps private counters (docs_style did until #1341) and
 	# print their own `checks run: N`; they never source lib.sh, so the first
 	# reader cannot see them, and calling them unaccounted would be false.
 	#
@@ -1735,14 +1764,37 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 		# the gate unable to do its job at all, where regenerating helps nothing.
 		# Collapsing them printed "has a check the ledger has never seen" three
 		# lines below the gate's own "new this run=0", which contradicts it and
-		# sends the reader at the wrong repair. Reported by OffgridwithJD.
+		# sends the reader at the wrong repair. Reported by OffgridwithJD. rc=1
+		# itself has several causes (an unseen check, a census that disagrees,
+		# coverage over the ceiling, a ceiling raised against the prior), so its
+		# sentence points at the gate's own line rather than naming one (#1537).
 		case "$_led_rc" in
 			0)	;;
-			1)	echo "  PG$major has a check the ledger has never seen, which is not a pass"
+			1)	echo "  PG$major: the ledger gate refused, which is not a pass. Its reason is the"
+				echo "  gate's own line above: for a check the ledger has never seen, regenerate the"
+				echo "  ledger; for a census, coverage or ceiling line, restate the budget."
 				verfail=1 ;;
 			*)	echo "  PG$major could not run the ledger gate at all, which is not a pass:"
 				echo "  the input or the prior ceiling was unusable, and regenerating the"
 				echo "  ledger will not help. The failure above says which."
+				verfail=1 ;;
+		esac
+
+		# EACH LEDGER COMMIT CARRIES ITS CENSUS (#1431). The derivation lives in the
+		# commit message now, not the budget, so every commit since the merge base with
+		# the same prior that changes the tsv must end with a `Ledger-census:` trailer
+		# equal to that commit's tsv. A restate re-derives it rather than carrying the
+		# old one.
+		python3 "$builddir/test/pgc_ledger.py" census-commits \
+			--tsv "$builddir/test/check_ledger.tsv" --against "$_led_against"
+		case "$?" in
+			0)	;;
+			1)	echo "  PG$major: a ledger commit's Ledger-census trailer is wrong or missing,"
+				echo "  which is not a pass. Re-derive it from that commit's tsv, the line above"
+				echo "  names each one, and reword the commit."
+				verfail=1 ;;
+			*)	echo "  PG$major could not check the ledger commits at all, which is not a pass:"
+				echo "  the failure above says why. A shallow checkout is the usual cause."
 				verfail=1 ;;
 		esac
 	fi
@@ -1860,6 +1912,7 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 	# suite that prints its own `checks run:` line. Measured on this tree: twelve
 	# registered suites never call `pgc_summary`, and of those exactly two --
 	# `bench_guards` and `docs_style` -- emit a tally of their own, which is the 2.
+	# (#1341 moved docs_style onto lib.sh, so today it is bench_guards alone.)
 	# The other ten keep no tally at all and are the real debt.
 	#
 	# THE NAMES ARE PRINTED, NOT COUNTED, so nothing here can go stale: the two are
@@ -1912,7 +1965,7 @@ pgc_tally_suite() {	# pgc_tally_suite NAME VERDICT LOGFILE
 		# their own `checks run:` instead. That is a statement about the ACCOUNTING
 		# LINE and nothing else: measured over all twelve of them, ten emit RESULT
 		# records perfectly well (audit 31, phase4 38, unique_conc 31, ...) and only
-		# bench_guards and docs_style emit none -- which is the pair the comment on
+		# bench_guards and docs_style emitted none (docs_style records since #1341) -- the pair the comment on
 		# pgc_log_shows_any_accounting already names, for the real reason: those two
 		# never source lib.sh at all.
 		echo "    $_acc_ran printed lib.sh's accounting line; these printed their own \`checks run:\` instead (a different accounting LINE, not a missing RESULT record):${_acc_own% }"
@@ -2028,8 +2081,11 @@ if [ "${PGC_RUN_UPGRADE:-0}" = 1 ]; then
 		# PGC_UPGRADE_OLD_SRC carries a directory through, which is the only form that
 		# works where the tree has no .git, and the documented container loop is exactly
 		# that. Without it the suite falls back to a ref and cannot build one there.
-		bash "$SRCDIR/test/extension_upgrade.sh" "$_ex" \
-			${PGC_UPGRADE_OLD_SRC:+"$PGC_UPGRADE_OLD_SRC"} >"$_exlog" 2>&1
+		# From /, not this checkout: the suite runs psql as the postgres user, which
+		# inherits the working directory, and a checkout under a 0750 home is one it
+		# cannot enter ("could not change directory", #1337). Its paths are absolute.
+		(cd / && bash "$SRCDIR/test/extension_upgrade.sh" "$_ex" \
+			${PGC_UPGRADE_OLD_SRC:+"$PGC_UPGRADE_OLD_SRC"}) >"$_exlog" 2>&1
 		_exrc=$?
 		# Exit 2 is "the environment could not supply an old source", which is not a
 		# product failure. It is reported as SKIP and not as PASS, because a gate that
@@ -2064,8 +2120,9 @@ if [ "${PGC_RUN_UPGRADE:-0}" = 1 ]; then
 	# builds that release from a throwaway clone, so it takes the same old source.
 	if [ -x "$_ex" ]; then
 		_fdlog="$(mktemp "/tmp/pgcolumnar-fmtdown-${_exmaj}.XXXXXX.log")"
-		bash "$SRCDIR/test/format_downgrade.sh" "$_ex" \
-			${PGC_DOWNGRADE_OLD_SRC:+"$PGC_DOWNGRADE_OLD_SRC"} >"$_fdlog" 2>&1
+		# From /, for extension_upgrade's reason above (#1337).
+		(cd / && bash "$SRCDIR/test/format_downgrade.sh" "$_ex" \
+			${PGC_DOWNGRADE_OLD_SRC:+"$PGC_DOWNGRADE_OLD_SRC"}) >"$_fdlog" 2>&1
 		_fdrc=$?
 		if [ "$_fdrc" = 0 ]; then
 			echo "  PASS  format_downgrade PG$_exmaj"

@@ -120,18 +120,18 @@ state_as() {  # state_as <role> <sql>
 # change made these return zero rows for everyone, a no-error owner arm would
 # stay green while the deny arms stayed green and the suite would pass over a
 # function that does nothing.
-check_num "premise: the owner reads the projection, and gets rows" \
+check_num "the owner reads the projection, and gets rows" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" "$ROWS"
-check_num "premise: the owner reconstructs, and gets rows" \
+check_num "the owner reconstructs, and gets rows" \
 	"$(q "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" "$ROWS"
 # Both functions RETURN SETOF text: one row is a single pipe-joined string, not
 # a record. A column definition list is rejected outright, which is how an
 # earlier probe of these functions produced five arms that all looked like
 # refusals and were actually call errors. Match the text.
-check "premise: reconstruct really does return the NON-COVERED column" \
+check "reconstruct really does return the NON-COVERED column" \
 	"$(q "SELECT pgcolumnar.reconstruct_via_projection('secret','p1') LIKE '%note-%' LIMIT 1;")" \
 	"t"
-check "premise: and read_projection does NOT, so the two differ as the issue says" \
+check "and read_projection does NOT, so the two differ as the issue says" \
 	"$(q "SELECT pgcolumnar.read_projection('secret','p1') LIKE '%note-%' LIMIT 1;")" \
 	"f"
 check "premise: the test roles are not superusers" \
@@ -163,6 +163,16 @@ check "the no-EXECUTE role never reaches the body, so the grant is what stopped 
 check "while the EXECUTE role reaches the projection lookup on the same call" \
 	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('prjopen','no_such_proj');")" \
 	"42704"
+# THE SAME QUESTION OF reconstruct_via_projection (#1339). It has its own REVOKE and
+# its own copy of the C check, and only read_projection was ever asked: with its
+# REVOKE deleted, t_prjnone reached the C body, got 42501 from it, and every arm
+# here stayed green.
+check "reconstruct: the no-EXECUTE role never reaches the body, so the grant is what stopped it" \
+	"$(state_as t_prjnone "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('prjopen','no_such_proj');")" \
+	"42501"
+check "reconstruct: the EXECUTE role reaches the projection lookup on the same call" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('prjopen','no_such_proj');")" \
+	"42704"
 
 # ---- layer two: the C check, reached only because EXECUTE was granted --------
 #
@@ -181,8 +191,12 @@ check "premise: t_prjexec can open a session, so a refusal below is a refusal" \
 	"$(as t_prjexec 'SELECT 1;' | head -1)" "1"
 check "a role with EXECUTE but no SELECT is refused read_projection" \
 	"$(count_as t_prjexec read_projection)" "refused"
+# The SQLSTATE, not merely "refused", as the pytest twin asserts (#1339): this
+# function has no second arm reading the code, so "refused" alone accepted any
+# error at all, a login FATAL included.
 check "and is refused reconstruct_via_projection, which leaks non-covered columns" \
-	"$(count_as t_prjexec reconstruct_via_projection)" "refused"
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" \
+	"42501"
 check "and THAT refusal is the C check, which raises 42501 from aclcheck_error" \
 	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
 	"42501"
@@ -196,6 +210,9 @@ check "and THAT refusal is the C check, which raises 42501 from aclcheck_error" 
 # than the lookup being unreachable.
 check "the base ACL is checked before the projection name is looked up" \
 	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','no_such_proj');")" \
+	"42501"
+check "reconstruct: the base ACL is checked before the projection name is looked up" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','no_such_proj');")" \
 	"42501"
 
 # ---- the bar is SELECT, not ownership ---------------------------------------
@@ -223,12 +240,13 @@ check "and still reconstructs" \
 psql_run "ALTER TABLE secret ENABLE ROW LEVEL SECURITY;"
 psql_run "CREATE POLICY p_one ON secret FOR SELECT TO t_prjsel USING (id = 1);"
 
-check_num "premise: the policy is in force for ordinary SQL" \
+check_num "the policy is in force for ordinary SQL" \
 	"$(as t_prjsel 'SELECT count(*) FROM secret;' | head -1)" "1"
 check "read_projection now refuses a policy-restricted caller (#563)" \
 	"$(count_as t_prjsel read_projection)" "refused"
 check "and so does reconstruct_via_projection" \
-	"$(count_as t_prjsel reconstruct_via_projection)" "refused"
+	"$(state_as t_prjsel "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" \
+	"0A000"
 # 0A000, not a phrase. PgColumnarRequireNoRowSecurity raises
 # ERRCODE_FEATURE_NOT_SUPPORTED, which is a different SQLSTATE CLASS from either
 # ACL refusal -- 0A against 42 -- so no rewording of any message can confuse them.
@@ -248,6 +266,9 @@ check "and the refusal says the feature is not supported, not that a privilege i
 # SELECT, and 0A000. So 42501 here is the ordering, not RLS being switched off.
 check "a caller with no SELECT is told a privilege is missing, not that RLS is in force" \
 	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.read_projection('secret','p1');")" \
+	"42501"
+check "reconstruct: a caller with no SELECT is told a privilege is missing, not that RLS is in force" \
+	"$(state_as t_prjexec "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('secret','p1');")" \
 	"42501"
 
 pgc_summary

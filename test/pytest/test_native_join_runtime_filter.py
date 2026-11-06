@@ -106,16 +106,17 @@ def test_serial_join_runtime_filter(pgc_conn, expect):
         h = c.fetchone()
     expect.rows([a], [o], "runtime answer equals off")
     expect.rows([a], [h], "runtime answer equals heap")
-    for name, s in [
-        ("LEFT refusal", "SELECT count(*)FROM f LEFT JOIN d ON f.k=d.k"),
-        ("SEMI refusal", "SELECT count(*)FROM f WHERE EXISTS(SELECT 1 FROM d WHERE d.k=f.k)"),
-        ("ANTI refusal", "SELECT count(*)FROM f WHERE NOT EXISTS(SELECT 1 FROM d WHERE d.k=f.k)"),
-        ("CROSS refusal", "SELECT count(*)FROM f CROSS JOIN d"),
+    # the shell's "$n refusal", built the same way so the two templates meet
+    for n, s in [
+        ("LEFT", "SELECT count(*)FROM f LEFT JOIN d ON f.k=d.k"),
+        ("SEMI", "SELECT count(*)FROM f WHERE EXISTS(SELECT 1 FROM d WHERE d.k=f.k)"),
+        ("ANTI", "SELECT count(*)FROM f WHERE NOT EXISTS(SELECT 1 FROM d WHERE d.k=f.k)"),
+        ("CROSS", "SELECT count(*)FROM f CROSS JOIN d"),
     ]:
         expect.num(
             _plan(pgc_conn, s, True).count("Columnar Runtime Filter Coordinator"),
             0,
-            name,
+            f"{n} refusal",
         )
 
 
@@ -183,12 +184,12 @@ def test_scattered_join_runtime_bloom(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="scattered plan uses the runtime coordinator",
+        name="scattered plan has coordinator",
     )
     expect.num(
         _json_field(plan, "Runtime Filter Groups Removed"),
         0,
-        "scattered hull cannot drop a group",
+        "scattered interval cannot drop groups",
     )
     expect.num(
         _json_field(plan, "Columnar Chunk Groups Read"),
@@ -255,7 +256,7 @@ def test_cross_type_int4_int8_bloom(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="int4/int8 plan uses the runtime coordinator",
+        name="int4/int8 plan has coordinator",
     )
     expect.num(
         _removed_or_zero(plan),
@@ -276,12 +277,14 @@ def test_collation_mismatch_bloom_only(pgc_conn, expect):
         cur.execute(
             """
             CREATE TABLE dimc(k text COLLATE "C");
-            INSERT INTO dimc SELECT (60 + 100 * g)::text FROM generate_series(0, 199) g;
+            INSERT INTO dimc SELECT (15600 + g)::text FROM generate_series(0, 199) g;
             CREATE TABLE factc(k text COLLATE "C", payload text) USING pgcolumnar;
             SELECT pgcolumnar.set_options($t$factc$t$, stripe_row_limit => 1000);
             INSERT INTO factc SELECT g::text, repeat(md5(g::text), 8)
             FROM generate_series(1, 20000) g;
-            CREATE TABLE heapc AS SELECT * FROM factc;
+            CREATE TABLE heapc(k text COLLATE "C", payload text);
+            INSERT INTO heapc SELECT g::text, repeat(md5(g::text), 8)
+            FROM generate_series(1, 20000) g;
             ANALYZE dimc;
             ANALYZE factc
             """
@@ -291,6 +294,17 @@ def test_collation_mismatch_bloom_only(pgc_conn, expect):
         cur.execute("SET max_parallel_workers_per_gather=0")
         cur.execute("SET enable_nestloop=off")
         cur.execute("SET enable_mergejoin=off")
+        # A FIXTURE THE INTERVAL COULD PRUNE (#1339): 200 keys "15600".."15799" leave
+        # every group whose keys start with 2-9 outside the C-order hull, and the
+        # matching-collation control proves an interval removes them. The old keys
+        # spanned "10060".."9960", which overlaps every group, so the "stays off" arm
+        # passed with the collation gate removed. Two hundred keys, because under ten
+        # build rows no Bloom filter is built and the Bloom arm would measure nothing.
+        cur.execute(
+            "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+            "SELECT count(*) FROM factc JOIN dimc ON factc.k = dimc.k"
+        )
+        matched_plan = cur.fetchone()[0]
         sql = """
             SELECT count(*), sum(length(factc.k)), sum(length(factc.payload))
             FROM factc JOIN dimc ON factc.k = dimc.k COLLATE "POSIX"
@@ -312,7 +326,12 @@ def test_collation_mismatch_bloom_only(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="collation-mismatch plan uses the runtime coordinator",
+        name="collation-mismatch plan has coordinator",
+    )
+    expect.at_least(
+        _removed_or_zero(matched_plan),
+        1,
+        "with matching collations the same fixture's interval removes row groups",
     )
     expect.num(
         _removed_or_zero(plan),
@@ -381,7 +400,7 @@ def test_runtime_filter_rebuilds_on_lateral_rescan(pgc_conn, expect):
         provider="Columnar Runtime Filter Coordinator",
         name="lateral rescan still uses the runtime coordinator",
     )
-    expect.rows(got, heap, "lateral rescan answers equal heap")
+    expect.rows(got, heap, "rescan answers equal heap")
 
 
 def test_saturated_build_disables_bloom(pgc_conn, expect):
@@ -425,7 +444,7 @@ def test_saturated_build_disables_bloom(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="saturated plan uses the runtime coordinator",
+        name="saturated plan has coordinator",
     )
     bloom = _json_field(plan, "Runtime Filter Bloom")
     expect.num(
@@ -486,14 +505,14 @@ def test_three_table_join_order_unchanged(pgc_conn, expect):
     expect.plan_node(
         on_plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="3-table plan uses the runtime coordinator",
+        name="3-table plan has coordinator",
     )
     expect.rows(
         _relation_names(on_plan),
         _relation_names(off_plan),
-        "3-table relation order matches filter-off",
+        "3-table join order matches filter-off",
     )
-    expect.rows([on_rows], [off_rows], "3-table answer matches filter-off")
+    expect.rows([on_rows], [off_rows], "3-table answer equals filter-off")
 
 
 def test_empty_build_runtime_filter(pgc_conn, expect):
@@ -537,7 +556,7 @@ def test_empty_build_runtime_filter(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="empty-build plan uses the runtime coordinator",
+        name="empty-build plan has coordinator",
     )
     expect.rows([got], [heap], "empty-build answer equals heap")
 
@@ -649,7 +668,7 @@ def test_early_limit_matches_heap(pgc_conn, expect):
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
-        name="early limit still uses the runtime coordinator",
+        name="early limit has coordinator",
     )
     expect.rows(got, heap, "early limit equals heap")
 
@@ -678,7 +697,7 @@ def test_fact_qual_with_late_mat_off_matches_heap(pgc_conn, expect):
         sql = """
             SELECT count(*), sum(factq.k), sum(factq.n)
             FROM factq JOIN dimq ON factq.k = dimq.k
-            WHERE factq.n > 80
+            WHERE factq.n % 3 <> 0
         """
         cur.execute(
             "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) " + sql
@@ -690,14 +709,214 @@ def test_fact_qual_with_late_mat_off_matches_heap(pgc_conn, expect):
             """
             SELECT count(*), sum(heapq.k), sum(heapq.n)
             FROM heapq JOIN dimq ON heapq.k = dimq.k
-            WHERE heapq.n > 80
+            WHERE heapq.n % 3 <> 0
             """
         )
         heap = cur.fetchone()
+        # The qual must REMOVE some matching rows (#1339). "n > 80" held for every
+        # one of the 150 matches, so an answer that ignored the qual equalled heap's.
+        cur.execute("SELECT count(*) FROM heapq JOIN dimq ON heapq.k = dimq.k WHERE heapq.n % 3 <> 0")
+        kept = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM heapq JOIN dimq ON heapq.k = dimq.k")
+        matched = cur.fetchone()[0]
 
+    expect.text(f"{kept}|{matched}", "100|150", "premise: the fact qual removes matching rows on heap")
     expect.plan_node(
         plan,
         provider="Columnar Runtime Filter Coordinator",
         name="late-mat-off fact qual still uses the runtime coordinator",
     )
     expect.rows([got], [heap], "late-mat-off fact qual equals heap")
+
+
+def test_a_fact_qual_conjunction_with_late_materialization_matches_heap(pgc_conn, expect):
+    """The shell's fact-qual arms, on the default path: late materialization ON.
+
+    The coordinator used to mark only the join key, so a conjunction that also named a
+    non-key column dropped every surviving row. The arm above covers it with late
+    materialization off; this is the default configuration the shell suite runs.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dimc(k int);
+            INSERT INTO dimc SELECT g FROM generate_series(7300, 7449) g;
+            CREATE TABLE factc(k int, n int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$factc$t$, stripe_row_limit => 1000);
+            INSERT INTO factc SELECT g, g, repeat(md5(g::text), 3)
+            FROM generate_series(1, 16000) g;
+            CREATE TABLE heapc AS SELECT * FROM factc;
+            ANALYZE dimc;
+            ANALYZE factc
+            """
+        )
+        if _has_runtime_filter(pgc_conn):
+            cur.execute("SET pgcolumnar.enable_join_runtime_filter=on")
+        cur.execute("SET max_parallel_workers_per_gather=0")
+        cur.execute("SET enable_nestloop=off")
+        cur.execute("SET enable_mergejoin=off")
+        sql = """
+            SELECT count(*), sum(factc.k), sum(factc.n)
+            FROM factc JOIN dimc ON factc.k = dimc.k
+            WHERE factc.k > 100 AND factc.n % 3 <> 0
+        """
+        cur.execute(
+            "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) " + sql
+        )
+        plan = cur.fetchone()[0]
+        cur.execute(sql)
+        got = cur.fetchone()
+        cur.execute(
+            """
+            SELECT count(*), sum(heapc.k), sum(heapc.n)
+            FROM heapc JOIN dimc ON heapc.k = dimc.k
+            WHERE heapc.k > 100 AND heapc.n % 3 <> 0
+            """
+        )
+        heap = cur.fetchone()
+        cur.execute("SELECT count(*) FROM heapc JOIN dimc ON heapc.k = dimc.k "
+                    "WHERE heapc.k > 100 AND heapc.n % 3 <> 0")
+        kept = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM heapc JOIN dimc ON heapc.k = dimc.k")
+        matched = cur.fetchone()[0]
+
+    # the conjunction must remove some matching rows, or ignoring it equals heap's answer
+    expect.text(f"{kept}|{matched}", "100|150",
+                "premise: with late materialization on, the fact qual removes matching rows")
+    expect.plan_node(
+        plan,
+        provider="Columnar Runtime Filter Coordinator",
+        name="fact-qual plan has coordinator",
+    )
+    expect.rows([got], [heap], "fact-qual conjunction equals heap")
+
+
+def test_a_gating_qual_over_the_join_matches_heap(pgc_conn, expect):
+    """A WHERE that names no column puts a gating Result over the join (#1437).
+
+    The coordinator expected its child to be the Hash Join, so the Result made
+    every such query fail, EXPLAIN included: an ERROR on a release build, and a
+    failed cast assertion that aborted the backend on an assert build. A true
+    gate must give heap's rows and a false one none, over a heap and a columnar
+    dimension. The premises show the same join with no gate takes the
+    coordinator. Independently of native_join_runtime_filter.sh: different
+    names, key range and row count.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dgh(k int);
+            INSERT INTO dgh SELECT g FROM generate_series(6400, 6549) g;
+            CREATE TABLE dgc(k int) USING pgcolumnar;
+            INSERT INTO dgc SELECT g FROM generate_series(6400, 6549) g;
+            CREATE TABLE fg(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fg$t$, stripe_row_limit => 1000);
+            INSERT INTO fg SELECT g, repeat(md5(g::text), 3)
+            FROM generate_series(1, 13000) g;
+            CREATE TABLE hg AS SELECT * FROM fg;
+            ANALYZE dgh;
+            ANALYZE dgc;
+            ANALYZE fg
+            """
+        )
+    for dim, kind in (("dgh", "heap"), ("dgc", "columnar")):
+        sql = (f"SELECT count(*), sum(fg.k), sum(length(fg.payload)) "
+               f"FROM fg JOIN {dim} ON fg.k = {dim}.k")
+        expect.num(
+            _plan(pgc_conn, sql, on=True).count("Columnar Runtime Filter Coordinator"), 1,
+            f"premise: with no gate, the {kind}-dimension join has the coordinator")
+        with pgc_conn.cursor() as cur:
+            cur.execute(f"SELECT count(*) FROM hg JOIN {dim} ON hg.k = {dim}.k WHERE (SELECT true)")
+            expect.num(cur.fetchone()[0], 150,
+                       f"premise: heap's answer under a true gate over a {kind} dimension holds every joined row")
+        for gate in ("false", "true"):
+            with pgc_conn.cursor() as cur:
+                cur.execute(f"{sql} WHERE (SELECT {gate})")
+                got = cur.fetchone()
+                cur.execute(
+                    f"SELECT count(*), sum(hg.k), sum(length(hg.payload)) "
+                    f"FROM hg JOIN {dim} ON hg.k = {dim}.k WHERE (SELECT {gate})")
+                heap = cur.fetchone()
+            expect.rows([got], [heap],
+                        f"a (SELECT {gate}) gate over a {kind} dimension equals heap")
+
+
+def test_an_empty_build_reads_no_fact_group(pgc_conn, expect):
+    """An empty build from a large dimension filtered to nothing reads no fact group (#1447).
+
+    With a large dimension the hash join fetches its first outer row before it builds,
+    so the fact scan runs. The coordinator has found the build empty, and an inner join
+    with an empty build has no rows, so the fact table must not be read. It was read
+    whole, every fact row rejected one at a time. Independently of
+    native_join_runtime_filter.sh: different names, sizes and filter.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dbig(k int, w int);
+            INSERT INTO dbig SELECT g, -g FROM generate_series(1, 150000) g;
+            CREATE TABLE fz(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fz$t$, stripe_row_limit => 1000);
+            INSERT INTO fz SELECT g, repeat(md5(g::text), 3) FROM generate_series(1, 6000) g;
+            CREATE TABLE hz(k int, payload text);
+            INSERT INTO hz SELECT g, repeat(md5(g::text), 3) FROM generate_series(1, 6000) g;
+            ANALYZE dbig;
+            ANALYZE fz
+            """
+        )
+    sql = ("SELECT count(*), sum(fz.k) FROM fz JOIN dbig ON fz.k = dbig.k "
+           "WHERE dbig.w > 0")
+    plan = _plan(pgc_conn, sql, on=True)
+    expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+               "premise: the large-dimension empty build runs under the coordinator")
+    expect.num(_v(plan, "Runtime Filter Build Rows"), 0, "premise: and its build is empty")
+    expect.num(_v(plan, "Columnar Chunk Groups Read"), 0, "an empty build reads no fact chunk group")
+    with pgc_conn.cursor() as cur:
+        cur.execute(sql)
+        got = cur.fetchone()
+        cur.execute("SELECT count(*), sum(hz.k) FROM hz JOIN dbig ON hz.k = dbig.k WHERE dbig.w > 0")
+        heap = cur.fetchone()
+    expect.rows([got], [heap], "an empty build from a large dimension answers as heap")
+
+
+def test_an_empty_build_on_one_rescan_does_not_empty_the_next(pgc_conn, expect):
+    """A LATERAL whose first outer row builds nothing and second builds every key (#1447).
+
+    An empty build now ends the join at once, so state left over from the first
+    execution would answer the second with no rows. Independently of
+    native_join_runtime_filter.sh: different names and keys.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE dre(k int);
+            INSERT INTO dre SELECT 40 + 100 * g FROM generate_series(0, 149) g;
+            CREATE TABLE fre(k int, payload text) USING pgcolumnar;
+            SELECT pgcolumnar.set_options($t$fre$t$, stripe_row_limit => 1000);
+            INSERT INTO fre SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 16000) g;
+            CREATE TABLE hre(k int, payload text);
+            INSERT INTO hre SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 16000) g;
+            ANALYZE dre;
+            ANALYZE fre
+            """
+        )
+        if _has_runtime_filter(pgc_conn):
+            cur.execute("SET pgcolumnar.enable_join_runtime_filter=on")
+        cur.execute("SET max_parallel_workers_per_gather=0")
+        lateral = """
+            SELECT v.x, s.c FROM (VALUES (88888),(0)) v(x)
+            CROSS JOIN LATERAL (
+              SELECT count(*) c FROM {t} JOIN dre ON {t}.k = dre.k WHERE dre.k > v.x
+            ) s ORDER BY 1
+        """
+        cur.execute("EXPLAIN (COSTS OFF) " + lateral.format(t="fre"))
+        plan = "\n".join(r[0] for r in cur.fetchall())
+        cur.execute(lateral.format(t="fre"))
+        got = cur.fetchall()
+        cur.execute(lateral.format(t="hre"))
+        heap = cur.fetchall()
+    expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+               "premise: the empty-then-full rescan runs under the coordinator")
+    expect.text(f"{heap[0][0]}|{heap[0][1]}", "0|150",
+                "premise: heap's empty-then-full rescan answer holds every dimension key")
+    expect.rows(got, heap, "an empty build on one rescan does not empty the next")

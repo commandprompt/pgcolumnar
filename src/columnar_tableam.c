@@ -32,6 +32,11 @@
 #include "catalog/storage.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"
+#include "storage/procarray.h"
+#include "commands/trigger.h"
+#include "catalog/dependency.h"
+#include "access/htup_details.h"
+#include "utils/acl.h"
 #include "commands/vacuum.h"
 #include "executor/executor.h"
 #include "executor/tuptable.h"
@@ -68,6 +73,7 @@
 #include "utils/syscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "columnar_objstore.h"
 
 PG_MODULE_MAGIC;
 
@@ -87,6 +93,7 @@ bool		pgcolumnar_enable_late_materialization = true;
 bool		pgcolumnar_enable_column_projection = true;
 bool		pgcolumnar_enable_bloom_filter = true;
 bool		pgcolumnar_objstore_buffered = true;	/* #393 */
+bool		pgcolumnar_objstore_pin_reads = true;	/* #1866 */
 int			pgcolumnar_objstore_part_size = 0;	/* #394 remote part size */
 char	   *pgcolumnar_objstore_allowed_endpoints = NULL;	/* #393 allow-list */
 char	   *pgcolumnar_objstore_s3_addressing = NULL;	/* #621 path|virtual */
@@ -214,6 +221,21 @@ pgcolumnar_record_rewritten(Oid relid)
 static object_access_hook_type prev_object_access_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+static ExecutorRun_hook_type prev_executor_run_hook = NULL;
+static ExecutorFinish_hook_type prev_executor_finish_hook = NULL;
+
+/*
+ * How deep we are in the executor and in ProcessUtility, counted the way
+ * pg_stat_statements counts its nesting level (#1907 second review). It is 0
+ * outside every statement and while a top-level statement's ExecutorEnd runs
+ * or its ProcessUtility returns, and above 0 inside any statement that one
+ * runs, such as a query in a plpgsql function. The object-store module drops
+ * its per-statement pins when it is 0 there; statement_timestamp() cannot
+ * tell those apart, because PostgreSQL sets it once for all the statements of
+ * one simple-query string. pgColumnar is in shared_preload_libraries, so the
+ * count starts with the session and is never off by a frame entered earlier.
+ */
+static int pgcolumnar_exec_depth = 0;
 #if PG_VERSION_NUM >= 190000
 static build_simple_rel_hook_type prev_build_simple_rel_hook = NULL;
 #else
@@ -1137,6 +1159,7 @@ pgcolumnar_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid,
 	/* fan the row out to every additional projection of this table (gap 26) */
 	PgColumnarProjectionFanoutRow(rel, writeState, rowNumber, slot->tts_values,
 								slot->tts_isnull);
+	PgColumnarWriteStateAfterAppend(writeState);	/* #1403 review */
 
 	/*
 	 * A new row makes its block not all-visible; clear any VM bit so an
@@ -1172,6 +1195,7 @@ pgcolumnar_multi_insert(Relation rel, TupleTableSlot **slots, int nslots,
 									 slots[i]->tts_isnull);
 		PgColumnarProjectionFanoutRow(rel, writeState, rowNumber,
 									slots[i]->tts_values, slots[i]->tts_isnull);
+		PgColumnarWriteStateAfterAppend(writeState);	/* #1403 review */
 		PgColumnarVMClearForRow(rel, rowNumber);	/* gap 28: block changed */
 		PgColumnarRowNumberToItemPointer(rowNumber, &slots[i]->tts_tid);
 		slots[i]->tts_tableOid = RelationGetRelid(rel);
@@ -1986,6 +2010,32 @@ pgcolumnar_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid,
 	else if (PgColumnarBufferedRowByNumber(rel, rowNumber,
 										 slot->tts_values, slot->tts_isnull))
 		ExecStoreVirtualTuple(slot);
+	else if (snapshot != NULL && snapshot->snapshot_type == SNAPSHOT_DIRTY &&
+			 (TransactionIdIsValid(snapshot->xmin) ||
+			  TransactionIdIsValid(snapshot->xmax)) &&
+			 PgColumnarRowIsLive(rel, SnapshotAny, rowNumber))
+	{
+		/*
+		 * A DELETE STILL IN PROGRESS IS NOT A DELETE YET (#1341). The row reads
+		 * as gone only because another transaction's uncommitted delete-vector
+		 * row says so, and the catalog read above recorded that transaction in
+		 * the dirty snapshot. Answering "no such row" let _bt_check_unique insert
+		 * a duplicate without waiting: when the delete then rolled back, the key
+		 * had two live rows. Measured before this change: an INSERT of k racing
+		 * an uncommitted DELETE of k, then a ROLLBACK, committed and left two
+		 * rows with k.
+		 *
+		 * Heap answers such a row as present, with xmax naming the deleter, and
+		 * the caller waits on it and asks again with the outcome known. Report
+		 * the row the same way. The snapshot's xmin/xmax are left as the catalog
+		 * read set them, so the caller waits on that transaction. If the in-progress
+		 * change was not the one that deleted this row, the cost is a wait and a
+		 * re-check, never a wrong answer. The row's values are not needed by the
+		 * uniqueness check, so they are fetched under SnapshotAny, as for a row
+		 * the caller already knows the fate of.
+		 */
+		PgColumnarSlotStoreDeferred(slot, rel, SnapshotAny, rowNumber);
+	}
 	else
 		return false;
 
@@ -2137,20 +2187,54 @@ pgcolumnar_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 }
 #endif
 
+/*
+ * Speculative insertion, which INSERT ... ON CONFLICT uses whenever an arbiter
+ * index exists (#1341). docs/limitations.md promised DO NOTHING "works", and it
+ * raised 0A000 on any table with a unique index, which is the only table ON
+ * CONFLICT arbitrates on.
+ *
+ * The executor's pre-check already skips a conflict it can see, without
+ * inserting. What reaches here is a row that looked free: insert it as an
+ * ordinary row, and if the arbiter index then reports a conflict (a concurrent
+ * inserter won), withdraw it again by marking it deleted.
+ *
+ * NO SPECULATIVE TOKEN. Heap stamps the token so a waiter can wait on the
+ * insertion rather than on the whole transaction. Here a waiter waits on the
+ * transaction, which is correct and only coarser. The same unique-key lock the
+ * ordinary insert takes (issue #5) serialises two inserters of one key.
+ *
+ * WITHDRAWN, NOT "SUPER-DELETED". Heap makes an aborted speculative tuple
+ * invisible to everyone at once. A delete mark is transactional, but the row was
+ * never visible outside this transaction, and it commits or aborts together
+ * with the mark. So no other session can ever see it, and this one never does
+ * either, since the executor does not return a withdrawn row.
+ *
+ * DO UPDATE is still refused, and not here: a conflict sends the executor to
+ * lock the existing row, and row locking is unsupported (0A000).
+ */
 static void
 pgcolumnar_tuple_insert_speculative(Relation rel, TupleTableSlot *slot,
 								  CommandId cid, COLUMNAR_TABLE_OPTIONS options,
 								  struct BulkInsertStateData *bistate,
 								  uint32 specToken)
 {
-	COLUMNAR_UNSUPPORTED("speculative insert");
+	pgcolumnar_tuple_insert(rel, slot, cid, options, bistate);
 }
 
 static void
 pgcolumnar_tuple_complete_speculative(Relation rel, TupleTableSlot *slot,
 									uint32 specToken, bool succeeded)
 {
-	COLUMNAR_UNSUPPORTED("speculative insert");
+	if (succeeded)
+		return;
+
+	/*
+	 * The row may still be buffered, and a delete mark needs the row group
+	 * that covers it. Flush first, as the projection back-fill does before it
+	 * reads this transaction's rows.
+	 */
+	PgColumnarFlushWriteStateForRelation(RelationGetRelid(rel));
+	PgColumnarMarkRowDeleted(rel, PgColumnarItemPointerToRowNumber(&slot->tts_tid));
 }
 
 /*
@@ -2168,6 +2252,19 @@ pgcolumnar_tuple_delete(COLUMNAR_TUPLE_DELETE_ARGS)
 	/* issue #5: serialize on the row identity before marking it deleted */
 	if (PgColumnarRowWriteConflict(rel, tid, cid, wait, tmfd, &conflict))
 		return conflict;
+
+	/*
+	 * A row moving to another partition is deleted here and inserted there, and
+	 * the insert reaches the destination's unique check before this delete is
+	 * flushed. Serialize it now, as the update path does, so a concurrent mover
+	 * of the same row loses with 40001 rather than 23505 (#1421).
+	 */
+#if PG_VERSION_NUM >= 190000
+	if ((options & TABLE_DELETE_CHANGING_PARTITION) != 0)
+#else
+	if (changingPart)
+#endif
+		PgColumnarSerializeRowNow(rel, rowNumber);
 
 	PgColumnarMarkRowDeleted(rel, rowNumber);
 	return TM_Ok;
@@ -2203,6 +2300,14 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 		return conflict;
 	}
 
+	/*
+	 * #1421: with a unique index, the new version's unique-key lock and check
+	 * come before the flush that serializes the old row, so a loser waited on
+	 * the winner's key and failed with 23505. Serialize the old row first.
+	 */
+	if (PgColumnarHasUniqueIndex(rel))
+		PgColumnarSerializeRowNow(rel, oldRowNumber);
+
 	PgColumnarMarkRowDeleted(rel, oldRowNumber);
 
 	writeState = PgColumnarGetWriteState(rel);
@@ -2223,6 +2328,7 @@ pgcolumnar_tuple_update(COLUMNAR_TUPLE_UPDATE_ARGS)
 	 */
 	PgColumnarProjectionFanoutRow(rel, writeState, rowNumber, slot->tts_values,
 								slot->tts_isnull);
+	PgColumnarWriteStateAfterAppend(writeState);	/* #1403 review */
 
 	/*
 	 * The new row version makes its block not all-visible, exactly as a plain
@@ -2352,6 +2458,8 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 								IndexBuildCallback callback, void *callback_state,
 								TableScanDesc scan)
 {
+	SnapshotData deadHorizon;
+	Snapshot	deadHorizonReg;
 	PgColumnarReadState *readState;
 	bool		ownReadState;
 	Bitmapset  *projected;
@@ -2363,6 +2471,7 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 	Datum		indexValues[INDEX_MAX_KEYS];
 	bool		indexNulls[INDEX_MAX_KEYS];
 	double		reltuples = 0;
+	bool		alive;
 	uint64		rowNumber;
 
 	if (start_blockno != 0 || numblocks != InvalidBlockNumber)
@@ -2476,6 +2585,27 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 		ownReadState = true;
 	}
 
+	/* deleted rows too, flagged, so the build can index them as not alive (#1341) */
+	PgColumnarReadSetEmitDeleted(readState, true);
+
+	/*
+	 * BUT NOT A ROW DEAD TO EVERY TRANSACTION (#1407). The horizon sees exactly the
+	 * transactions committed before every running snapshot began, so a row deleted
+	 * under it is one no snapshot can see, and heap's build skips the like. With
+	 * every deleted row indexed, REINDEX -- documented as what reclaims stale
+	 * entries -- reclaimed none: 9 rows in 10 deleted, and the rebuilt index kept
+	 * its size where heap's shrank to a tenth. curcid 0 keeps this transaction's
+	 * own writes out of it; a row it deleted is not dead to all anyway.
+	 */
+	memset(&deadHorizon, 0, sizeof(deadHorizon));
+	deadHorizon.snapshot_type = SNAPSHOT_MVCC;
+	deadHorizon.xmin = GetOldestNonRemovableTransactionId(table_rel);
+	deadHorizon.xmax = deadHorizon.xmin;
+	deadHorizon.curcid = FirstCommandId;
+	/* registered: a visibility check asserts it (PG 18+), and the copy outlives this frame */
+	deadHorizonReg = RegisterSnapshot(&deadHorizon);
+	PgColumnarReadSetDeadHorizon(readState, deadHorizonReg);
+
 	/*
 	 * Say which branch ran and how wide the reader it produced will actually
 	 * read, so a test can assert the projection NARROWED rather than infer it
@@ -2506,8 +2636,10 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 								 &rowNumber))
 			break;
 		ExecStoreVirtualTuple(slot);
+		alive = !PgColumnarReadLastRowDeleted(readState);
 
-		reltuples += 1;
+		if (alive)
+			reltuples += 1;
 
 		MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
@@ -2518,7 +2650,19 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 
 		PgColumnarRowNumberToItemPointer(rowNumber, &slot->tts_tid);
 
-		callback(index_rel, &slot->tts_tid, indexValues, indexNulls, true,
+		/*
+		 * A DELETED ROW IS INDEXED TOO, AS NOT ALIVE (#1341). The build reads
+		 * under a current snapshot, but a transaction whose snapshot began before
+		 * the delete still sees the row, and may use this index. Leaving the row
+		 * out made that transaction's index scan miss a row it can see. Measured
+		 * before this change: REPEATABLE READ, then a committed DELETE of row
+		 * 4242, then CREATE INDEX; the old snapshot's index lookup of 4242 found
+		 * 0 rows, where its scan of the table found 1. Heap indexes a
+		 * recently-dead tuple the same way, as not alive, so a unique index does
+		 * not count it as a duplicate. The fetch still filters by each caller's
+		 * snapshot, so a new snapshot does not see the row by this entry.
+		 */
+		callback(index_rel, &slot->tts_tid, indexValues, indexNulls, alive,
 				 callback_state);
 	}
 
@@ -2539,6 +2683,7 @@ pgcolumnar_index_build_range_scan(Relation table_rel, Relation index_rel,
 	 */
 	if (scan != NULL)
 		table_endscan(scan);
+	UnregisterSnapshot(deadHorizonReg);
 
 	return reltuples;
 }
@@ -2773,6 +2918,55 @@ pgcolumnar_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
  * is correctly discarded on its rollback (spec 9).
  * ------------------------------------------------------------------------- */
 
+#if PG_VERSION_NUM >= 180000
+static void
+pgcolumnar_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count)
+#else
+static void
+pgcolumnar_executor_run(QueryDesc *queryDesc, ScanDirection direction, uint64 count,
+						bool execute_once)
+#endif
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+#if PG_VERSION_NUM >= 180000
+		if (prev_executor_run_hook)
+			prev_executor_run_hook(queryDesc, direction, count);
+		else
+			standard_ExecutorRun(queryDesc, direction, count);
+#else
+		if (prev_executor_run_hook)
+			prev_executor_run_hook(queryDesc, direction, count, execute_once);
+		else
+			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+#endif
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+}
+
+static void
+pgcolumnar_executor_finish(QueryDesc *queryDesc)
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+		if (prev_executor_finish_hook)
+			prev_executor_finish_hook(queryDesc);
+		else
+			standard_ExecutorFinish(queryDesc);
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+}
+
 static void
 pgcolumnar_executor_end(QueryDesc *queryDesc)
 {
@@ -2781,8 +2975,19 @@ pgcolumnar_executor_end(QueryDesc *queryDesc)
 	else
 		standard_ExecutorEnd(queryDesc);
 
-	PgColumnarFlushAllPendingWrites();
-	PgColumnarFlushAllDeleteVectors();
+	/* A top-level statement ended: its object-store pins end with it. */
+	if (pgcolumnar_exec_depth == 0)
+		PgColumnarObjStoreStatementEnd();
+
+	/*
+	 * ONLY THIS SUBTRANSACTION'S BUFFERS (#1341). A statement ending inside a
+	 * plpgsql EXCEPTION block runs here while the block's subtransaction is
+	 * current; flushing the enclosing statement's buffers now would attribute
+	 * them to the block, and its rollback would lose them. They are flushed when
+	 * their own statement ends, back in their own subtransaction.
+	 */
+	PgColumnarFlushPendingWritesOfSubXact(GetCurrentSubTransactionId());
+	PgColumnarFlushDeleteVectorsOfSubXact(GetCurrentSubTransactionId());
 
 	/*
 	 * The fetch cache is scoped to a statement, so release it here rather than
@@ -3204,6 +3409,16 @@ pgcolumnar_reject_drop_projected_column(AlterTableStmt *stmt)
  * relfilenode was not rewritten, and any column whose collation differs has its
  * ordering forgotten (PgColumnarForgetColumnOrdering). A rewritten relation
  * wrote new zone maps under the new collation and needs nothing.
+ *
+ * A TYPE CHANGE THAT REWRITES NOTHING orders differently too (#1341 item 19).
+ * int4 to oid is binary-coercible, so PostgreSQL relabels the column and keeps
+ * the relfilenode, and oid orders unsigned: -5 is 4294967291. The zone maps, the
+ * extent and a projection's zone maps held int4's bounds, and WHERE c > 3000000000
+ * pruned every group heap answered from. So each column's type is recorded beside
+ * its collation, and a change in either forgets the ordering. A table sorted on
+ * such a column (vacuum_sorted, #751) is in the old order too: its claim to the
+ * planner names the key by column, not by type, so the recorded kind is cleared,
+ * which the planner already reads as "order unknown" and refuses.
  */
 typedef struct PgColumnarCollationsBefore
 {
@@ -3211,20 +3426,22 @@ typedef struct PgColumnarCollationsBefore
 	Oid			relfilenode;
 	int			natts;
 	Oid		   *collations;		/* by attnum - 1 */
+	Oid		   *types;			/* by attnum - 1: atttypid (#1341 item 19) */
 } PgColumnarCollationsBefore;
 
-static Oid
-pgcolumnar_attcollation(Oid relid, AttrNumber attnum)
+static void
+pgcolumnar_attcollation_and_type(Oid relid, AttrNumber attnum, Oid *coll, Oid *type)
 {
 	HeapTuple	tp = SearchSysCache2(ATTNUM, ObjectIdGetDatum(relid), Int16GetDatum(attnum));
-	Oid			coll = InvalidOid;
 
+	*coll = InvalidOid;
+	*type = InvalidOid;
 	if (HeapTupleIsValid(tp))
 	{
-		coll = ((Form_pg_attribute) GETSTRUCT(tp))->attcollation;
+		*coll = ((Form_pg_attribute) GETSTRUCT(tp))->attcollation;
+		*type = ((Form_pg_attribute) GETSTRUCT(tp))->atttypid;
 		ReleaseSysCache(tp);
 	}
-	return coll;
 }
 
 static List *
@@ -3265,11 +3482,37 @@ pgcolumnar_collations_before(AlterTableStmt *stmt)
 		b->natts = cls->relnatts;
 		ReleaseSysCache(tp);
 		b->collations = palloc0(sizeof(Oid) * Max(b->natts, 1));
+		b->types = palloc0(sizeof(Oid) * Max(b->natts, 1));
 		for (a = 1; a <= b->natts; a++)
-			b->collations[a - 1] = pgcolumnar_attcollation(r, a);
+			pgcolumnar_attcollation_and_type(r, a, &b->collations[a - 1], &b->types[a - 1]);
 		out = lappend(out, b);
 	}
 	return out;
+}
+
+/*
+ * A table sorted on a column whose type changed in place is in the old type's
+ * order (#1341 item 19). The run and key stay; the kind is cleared, so the
+ * planner's sorted pathkeys (pgcolumnar_sorted_pathkeys, condition 1) refuse it.
+ */
+static void
+pgcolumnar_forget_sorted_claim(uint64 storageId, const char *column)
+{
+	int64		first;
+	int64		last;
+	List	   *names;
+	char	   *kind;
+	ListCell   *lc;
+
+	PgColumnarGetSortedInfo(storageId, &first, &last, &names, &kind);
+	if (kind == NULL)
+		return;
+	foreach(lc, names)
+		if (strcmp((char *) lfirst(lc), column) == 0)
+		{
+			PgColumnarSetSortedExtent(storageId, first, last, names, NULL);
+			return;
+		}
 }
 
 static void
@@ -3301,9 +3544,13 @@ pgcolumnar_forget_changed_collations(List *before)
 
 			ListCell   *pc;
 
-			if (att->attisdropped || att->attcollation == b->collations[a - 1])
+			if (att->attisdropped ||
+				(att->attcollation == b->collations[a - 1] &&
+				 att->atttypid == b->types[a - 1]))
 				continue;
 			PgColumnarForgetColumnOrdering(storageId, a - 1);
+			if (att->atttypid != b->types[a - 1])
+				pgcolumnar_forget_sorted_claim(storageId, NameStr(att->attname));
 
 			/*
 			 * A projection stores the column in its own storage, with zone maps
@@ -3630,6 +3877,163 @@ pgcolumnar_process_utility(PlannedStmt *pstmt, const char *queryString,
 	}
 }
 
+/*
+ * The installed ProcessUtility hook: pgcolumnar_process_utility, counted in
+ * pgcolumnar_exec_depth (#1907 second review). A utility statement runs its
+ * queries, such as CREATE TABLE AS or the statements of a DO block, one level
+ * down, so their ExecutorEnd does not end the top-level statement. When a
+ * top-level utility statement returns, its object-store pins end with it.
+ */
+static void
+pgcolumnar_process_utility_counted(PlannedStmt *pstmt, const char *queryString,
+								   bool readOnlyTree, ProcessUtilityContext context,
+								   ParamListInfo params, QueryEnvironment *queryEnv,
+								   DestReceiver *dest, QueryCompletion *qc)
+{
+	pgcolumnar_exec_depth++;
+	PG_TRY();
+	{
+		pgcolumnar_process_utility(pstmt, queryString, readOnlyTree, context,
+								   params, queryEnv, dest, qc);
+	}
+	PG_FINALLY();
+	{
+		pgcolumnar_exec_depth--;
+	}
+	PG_END_TRY();
+
+	if (pgcolumnar_exec_depth == 0)
+		PgColumnarObjStoreStatementEnd();
+}
+
+/*
+ * pgcolumnar_forget_dropped_rollup
+ *		Delete the catalog rows of a dropped view if it was a rollup (#1376). Gated
+ *		as the options cleanup below is: the hook fires in every database, including
+ *		one without the extension, and DROP EXTENSION drops the extension's own views
+ *		while the catalogs themselves are going.
+ */
+static void
+pgcolumnar_forget_dropped_rollup(Oid viewOid)
+{
+	Oid			columnarNsp = get_namespace_oid(COLUMNAR_SCHEMA_NAME, true);
+	Oid			rollupOid = OidIsValid(columnarNsp) ?
+		get_relname_relid("rollup", columnarNsp) : InvalidOid;
+	Oid			extOid = get_extension_oid("pgcolumnar", true);
+
+	if (!OidIsValid(rollupOid))
+		return;
+	if (OidIsValid(extOid) &&
+		getExtensionOfObject(RelationRelationId, viewOid) == extOid)
+		return;
+	PgColumnarForgetRollup(viewOid);
+}
+
+/*
+ * pgcolumnar_rollup_record_dependencies
+ *		AFTER INSERT OR UPDATE trigger on pgcolumnar.rollup (#1376). The catalog
+ *		holds the view, its partials table and the source as bare OIDs, so nothing
+ *		stopped DROP TABLE of the source, after which the rollup could never be
+ *		refreshed again (or, with the OID reused, folded another table's rows), and
+ *		DROP VIEW left the partials and the catalog rows behind. It records:
+ *		  - the view on the source, NORMAL, as a view over the source would have:
+ *		    DROP TABLE of the source is refused, and CASCADE takes the rollup;
+ *		  - the partials on the view, AUTO: dropping the view takes its partials.
+ *		The view's own rule already depends on the partials, which is why this is
+ *		not an INTERNAL dependency: that would make DROP TABLE of the partials
+ *		redirect to the view instead of refusing.
+ *
+ *		A trigger rather than a call in create_rollup, so a restore that writes the
+ *		catalog rows back records the dependencies again (#1377). The caller must
+ *		hold SELECT on the source, as creating a view over it would require.
+ */
+PG_FUNCTION_INFO_V1(pgcolumnar_rollup_record_dependencies);
+
+Datum
+pgcolumnar_rollup_record_dependencies(PG_FUNCTION_ARGS)
+{
+	TriggerData *trigdata = (TriggerData *) fcinfo->context;
+	HeapTuple	tuple;
+	TupleDesc	desc;
+	bool		isnull;
+	Oid			view;
+	Oid			partials;
+	Oid			source;
+	ObjectAddress viewAddr;
+	ObjectAddress partialsAddr;
+	ObjectAddress sourceAddr;
+
+	if (!CALLED_AS_TRIGGER(fcinfo) ||
+		!TRIGGER_FIRED_AFTER(trigdata->tg_event) ||
+		!TRIGGER_FIRED_FOR_ROW(trigdata->tg_event))
+		elog(ERROR, "pgcolumnar_rollup_record_dependencies: not called as an AFTER ROW trigger");
+
+	desc = RelationGetDescr(trigdata->tg_relation);
+
+	/*
+	 * NOTHING CHANGES WHAT A ROW NAMES ONCE IT IS WRITTEN (#1406 review). No
+	 * function issues such an UPDATE, and re-recording would have to remove the
+	 * old row's dependencies too; a no-op SET of the same values is let through.
+	 */
+	if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+	{
+		int			att;
+
+		for (att = 1; att <= 3; att++)
+		{
+			bool		oldnull;
+			bool		newnull;
+			Oid			before = DatumGetObjectId(heap_getattr(trigdata->tg_trigtuple, att,
+															   desc, &oldnull));
+			Oid			after = DatumGetObjectId(heap_getattr(trigdata->tg_newtuple, att,
+															  desc, &newnull));
+
+			if (before != after)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("a rollup's view, partials and source cannot be changed")));
+		}
+		return PointerGetDatum(NULL);
+	}
+
+	tuple = trigdata->tg_trigtuple;
+	view = DatumGetObjectId(heap_getattr(tuple, 1, desc, &isnull));
+	partials = DatumGetObjectId(heap_getattr(tuple, 2, desc, &isnull));
+	source = DatumGetObjectId(heap_getattr(tuple, 3, desc, &isnull));
+
+	/*
+	 * THE WRITER MUST OWN WHAT IT TIES TOGETHER (#1406 review). A drop deletes
+	 * AUTO dependents with no ownership check, so a row naming another role's
+	 * table as its partials would hand that table to the writer's DROP VIEW. The
+	 * catalog's row-level security asks only that the writer own the view.
+	 */
+	if (get_rel_relkind(view) != RELKIND_VIEW)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("a rollup must be a view")));
+	if (get_rel_relkind(partials) != RELKIND_RELATION)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("a rollup's partials must be a table")));
+	if (!COLUMNAR_TABLE_OWNERCHECK(view))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_VIEW, get_rel_name(view));
+	if (!COLUMNAR_TABLE_OWNERCHECK(partials))
+		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE, get_rel_name(partials));
+	if (pg_class_aclcheck(source, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
+		ereport(ERROR,
+				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+				 errmsg("permission denied for table %s", get_rel_name(source))));
+
+	ObjectAddressSet(viewAddr, RelationRelationId, view);
+	ObjectAddressSet(partialsAddr, RelationRelationId, partials);
+	ObjectAddressSet(sourceAddr, RelationRelationId, source);
+
+	recordDependencyOn(&viewAddr, &sourceAddr, DEPENDENCY_NORMAL);
+	recordDependencyOn(&partialsAddr, &viewAddr, DEPENDENCY_AUTO);
+
+	return PointerGetDatum(NULL);
+}
+
 static void
 pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 					   int subId, void *arg)
@@ -3643,6 +4047,17 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
 		Relation	rel;
+
+		/*
+		 * A dropped rollup view takes its catalog rows with it (#1376). Its
+		 * partials table goes by the auto dependency the rollup catalog's trigger
+		 * records; these rows have no dependency of their own to go by.
+		 */
+		if (get_rel_relkind(objectId) == RELKIND_VIEW)
+		{
+			pgcolumnar_forget_dropped_rollup(objectId);
+			return;
+		}
 
 		/*
 		 * Ordinary tables AND materialized views. A columnar matview has
@@ -4028,6 +4443,23 @@ _PG_init(void)
 							 0,
 							 NULL, NULL, NULL);
 
+	/*
+	 * Pin each remote read to one version of the object (#1805, #1866). Read
+	 * by the object-store module via GetConfigOption when it opens an object.
+	 * Off sends no If-Match and no versionId, for a server whose ETag changes
+	 * from one request to the next for the same bytes.
+	 */
+	DefineCustomBoolVariable("pgcolumnar.objstore_pin_reads",
+							 "Pin each remote read to the version of the object it opened.",
+							 "On, every ranged GET sends the ETag from the opening HEAD as If-Match, "
+							 "and the version id when the store sends one. Off sends neither, so a "
+							 "read of an object overwritten mid-read can mix the two versions.",
+							 &pgcolumnar_objstore_pin_reads,
+							 true,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
+
 	DefineCustomBoolVariable("pgcolumnar.enable_late_materialization",
 							 "Evaluate the scan qualifier before building the columns it does not read.",
 							 "A row the qualifier rejects has its remaining projected columns "
@@ -4105,15 +4537,17 @@ _PG_init(void)
 							 NULL, NULL, NULL);
 
 	DefineCustomIntVariable("pgcolumnar.groupagg_max_groups",
-							"Cap on the actual group count the grouped vectorized "
-							"aggregate builds before it stops with an error.",
-							"Enforced at execution against the real number of groups: "
-							"over the cap the query errors rather than falling back, "
-							"since the plan is fixed by then. The planner takes the "
-							"grouped path only when an upper bound on the group count "
-							"is within it, so the error means it fell, or the table "
-							"grew, after planning. Raise it, or turn off "
-							"pgcolumnar.enable_group_vectorization.",
+							"Cap on the group count the grouped vectorized aggregate "
+							"holds in its table at once.",
+							"Enforced at execution against the real number of groups. "
+							"At the cap the node empties its table and carries on, "
+							"so the query still answers: when every aggregate has a "
+							"partial state it hands its groups to a core Finalize, "
+							"and otherwise it sorts them aside and merges each "
+							"group's runs at the end. The planner takes the grouped "
+							"path only when an upper bound on the group count is "
+							"within it, so the cap is reached only when it fell, or "
+							"the table grew, after planning.",
 							&pgcolumnar_groupagg_max_groups,
 							1000000, 1, INT_MAX,
 							PGC_USERSET,
@@ -4358,13 +4792,33 @@ _PG_init(void)
 	 * module's built-in 8 MiB; a small value forces the multipart path on a
 	 * small fixture. Read by the objstore module via GetConfigOption; defined
 	 * here because the module loads after configuration parsing.
+	 *
+	 * The maximum is 512 MiB (#1812). The module stages one part in one
+	 * allocation, which PostgreSQL caps at 1 GiB, so a larger part could never
+	 * be staged and every export over 1 GiB failed. S3 allows parts up to
+	 * 5 GiB, but 512 MiB leaves the allocation room to grow.
 	 */
 	DefineCustomIntVariable("pgcolumnar.objstore_part_size",
 							"Multipart part size in bytes for remote export (0 = module default 8 MiB).",
 							NULL,
 							&pgcolumnar_objstore_part_size,
 							0,
-							0, INT_MAX,
+							0, 512 * 1024 * 1024,
+							PGC_USERSET,
+							0,
+							NULL, NULL, NULL);
+
+	/*
+	 * Byte cap for one Parquet row group or Arrow record batch on export
+	 * (#1811). See PGC_EXPORT_GROUP_BYTES_MAX in columnar_sink.h. Lowering it
+	 * bounds the memory an export holds, and lets a small table show the cut.
+	 */
+	DefineCustomIntVariable("pgcolumnar.export_group_bytes",
+							"Most bytes an export buffers for one Parquet row group or Arrow record batch.",
+							"The writer starts a new group before a row that would pass it.",
+							&pgcolumnar_export_group_bytes,
+							PGC_EXPORT_GROUP_BYTES_MAX,
+							1024, PGC_EXPORT_GROUP_BYTES_MAX,
 							PGC_USERSET,
 							0,
 							NULL, NULL, NULL);
@@ -4482,7 +4936,8 @@ _PG_init(void)
 							"maintenance verb, interruptibly.",
 							"0 disables. Exists so the autovacuum-yield behaviour is testable "
 							"deterministically: the verb waits with the lock held, so a session "
-							"needing a stronger lock can observe the daemon cancel.",
+							"needing a stronger lock can observe the daemon cancel. recluster "
+							"also waits, after fixing its work set, so a test can write inside it.",
 							&pgcolumnar_maintenance_hold_ms,
 							0, 0, 600000,
 							PGC_USERSET,
@@ -4509,10 +4964,16 @@ _PG_init(void)
 	object_access_hook = pgcolumnar_object_access;
 
 	prev_process_utility_hook = ProcessUtility_hook;
-	ProcessUtility_hook = pgcolumnar_process_utility;
+	ProcessUtility_hook = pgcolumnar_process_utility_counted;
 
 	prev_executor_end_hook = ExecutorEnd_hook;
 	ExecutorEnd_hook = pgcolumnar_executor_end;
+
+	prev_executor_run_hook = ExecutorRun_hook;
+	ExecutorRun_hook = pgcolumnar_executor_run;
+
+	prev_executor_finish_hook = ExecutorFinish_hook;
+	ExecutorFinish_hook = pgcolumnar_executor_finish;
 
 	/*
 	 * Forbid index-only scans on columnar tables. PG19 replaced

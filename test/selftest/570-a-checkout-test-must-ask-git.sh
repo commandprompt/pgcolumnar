@@ -175,7 +175,7 @@ check_num "and matches none of .gitignore, .gitattributes, .github or a plain di
 # `([^A-Za-z0-9]|$)`: the derived control flags 0 and this arm goes red, where
 # a hand-written copy stays green.
 _ck_nb="${_ck_pat%'([^A-Za-z0-9_-]|$)'}"
-check_text "premise: stripping the boundary actually changed the pattern" \
+check_text "stripping the boundary actually changed the pattern" \
 	"$(if [ "$_ck_nb" = "$_ck_pat" ]; then echo no-op; else echo stripped; fi)" "stripped"
 check_num "without the trailing boundary the same pattern flags three of them" \
 	"$(printf '%s\n' "$_ck_ok" | grep -cE "$_ck_nb")" "3"
@@ -205,10 +205,10 @@ check_num "and unfolded it is invisible, so the fold is what finds it" \
 # selftest 320: a part that recomputes a rule tests the world instead of the
 # code.
 _ck_eu="$PGC_TESTDIR/extension_upgrade.sh"
-check_num "premise: the suite defines the work-tree reader this part evals" \
+check_num "the suite defines the work-tree reader this part evals" \
 	"$(grep -c '^pgc_eu_own_repo()' "$_ck_eu")" "1"
 eval "$(sed -n '/^pgc_eu_own_repo()/,/^}/p' "$_ck_eu")"
-check "premise: it is callable once evalled" \
+check "it is callable once evalled" \
 	"$(type -t pgc_eu_own_repo)" "function"
 
 # A directory whose only git presence is a gitfile IS its own work tree. That is

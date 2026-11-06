@@ -36,11 +36,22 @@ skipped() {
 		-d "$PGC_DB" -At -c "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $1" 2>/dev/null \
 		| grep 'Columnar Chunk Groups Removed by Filter' | grep -oE '[0-9]+' | head -1
 }
+# The count runs as an INDEX-ONLY scan of n_id_uq, with bitmap scans off too, and
+# idxplan prints that plan (#1341). With only seqscan and the custom scan off, the
+# count came back right with the index dropped, through the disabled seqscan.
+# An index-only scan is also what can see the visibility-map rule recluster
+# follows: the old index entries stay until a vacuum, and an index-only scan
+# answers for one without a heap fetch wherever its VM bit is still set.
+IDX_GUCS="SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off;"
+IDX_Q="SELECT count(*) FROM n WHERE id BETWEEN 1 AND 40960"
 idxcount() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At 2>/dev/null -c "$IDX_GUCS $IDX_Q;" | tail -1
+}
+idxplan() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At 2>/dev/null -c \
-		"SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off;
-		 SELECT count(*) FROM n WHERE id BETWEEN 1 AND 40960;" | tail -1
+		"$IDX_GUCS EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $IDX_Q;"
 }
 
 BOX="x BETWEEN 20 AND 40 AND y BETWEEN 20 AND 40"
@@ -56,6 +67,15 @@ check "the plan under test is a columnar custom scan" \
 	"$(pgc_is_columnar_scan "SELECT id FROM n WHERE $BOX")" "yes"
 
 before="$(skipped "SELECT id FROM n WHERE $BOX")"; before="${before:-0}"
+
+# VACUUM first, so the visibility map is set over the groups recluster replaces:
+# without it every VM bit is clear, an index-only scan fetches every row from the
+# heap, and recluster's VM clear is never needed.
+psql_run "VACUUM n;"
+# Most bits, not all: measured, 511 of the 40960 rows still take a heap fetch.
+pre_fetches="$(idxplan | grep -oE 'Heap Fetches: [0-9]+' | grep -oE '[0-9]+')"
+check "VACUUM set the visibility map, so the index-only count answers from the index before the recluster" \
+	"$([ -n "$pre_fetches" ] && [ "$pre_fetches" -lt 20480 ] && echo yes || echo "no (${pre_fetches:-no} heap fetches for 40960 rows)")" "yes"
 
 # Online recluster by (x, y).
 rec="$(q "SELECT pgcolumnar.recluster('n', 'x', 'y');")"
@@ -73,7 +93,13 @@ check "full-table parity after recluster" \
 	"$(pgc_set_hash 'SELECT id, x, y, payload FROM h ORDER BY id')"
 check "row count after recluster" "$(q 'SELECT count(*) FROM n;')" "40960"
 
-# Online index maintenance: index scan returns each live row exactly once.
+# Online index maintenance: index scan returns each live row exactly once. The old
+# entries are still in the index, so a recluster that left their VM bits set would
+# count them too.
+post_plan="$(idxplan)"
+echo "-- index count plan after the recluster:"; sed 's/^/     /' <<<"$post_plan"
+check "premise: the count takes an index-only scan of n_id_uq" \
+	"$(grep -c 'Index Only Scan using n_id_uq on n' <<<"$post_plan")" "1"
 check "index scan returns each row once" "$(idxcount)" "40960"
 # THE SQLSTATE, NOT THE EXIT CODE. This arm was
 # `psql ... && echo no || echo yes`, which reports "yes" for every failure psql can

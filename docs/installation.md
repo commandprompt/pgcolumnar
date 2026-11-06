@@ -152,6 +152,18 @@ The fix is step 3. Run `ALTER EXTENSION pgcolumnar UPDATE;` in that database and
 the error goes away. **Your data is not affected.** The tables are intact and no
 conversion happens. Only the catalog entry is stale.
 
+Between releases that add a catalog table, the new library can also need a table
+the old catalog does not have. Upgrading from `1.0-alpha4` to `1.0-alpha5`,
+`DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()` on a columnar table fail until
+step 3, and change nothing; reads and writes keep working:
+
+```
+ERROR:  columnar metadata table "pgcolumnar.retired_group" does not exist
+HINT:  The pgcolumnar catalog in this database may be older than the installed library. Run ALTER EXTENSION pgcolumnar UPDATE in this database.
+```
+
+The fix is the same: step 3.
+
 Do not use `DROP EXTENSION` instead. A plain `DROP EXTENSION pgcolumnar` fails
 while columnar tables exist, because they depend on the access method. The
 form that succeeds is `DROP EXTENSION pgcolumnar CASCADE`, and it drops every

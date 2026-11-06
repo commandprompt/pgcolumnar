@@ -160,7 +160,7 @@ def test_a_conftest_cannot_switch_off_the_order_collapse_guard(pytester, expect)
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the collapse is refused when nobody rebinds")
+    expect.run_failed(plain, "the collapse is refused when nobody rebinds")
     plain.stderr.fnmatch_lines(["*order-killed*"])
 
     pytester.makeconftest(
@@ -229,6 +229,8 @@ def test_the_two_oracles_are_different_instruments(pytester, expect):
     """
     pytester.makepyfile(
         """
+        from pgc_vacuity import VacuityError
+
         FWD = [1, 2, 3]
         REV = [3, 2, 1]
 
@@ -238,8 +240,14 @@ def test_the_two_oracles_are_different_instruments(pytester, expect):
 
         def test_the_ordered_oracle_is_order_sensitive(expect):
             # And the ordered one must NOT: this comparison has to fail.
+            # A REFUSAL IS NOT A DETECTION (#1339). VacuityError subclasses
+            # AssertionError, so catching only the latter counted an oracle that
+            # refuses every input as one that saw the order: with ordered_rows
+            # raising VacuityError unconditionally, this test passed.
             try:
                 expect.ordered_rows(FWD, REV, "ordered oracle sees order")
+            except VacuityError as exc:
+                raise AssertionError(f"the ordered oracle refused instead of comparing: {exc}")
             except AssertionError:
                 expect.num(1, 1, "the ordered oracle refused the reversed sequence")
             else:

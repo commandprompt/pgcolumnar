@@ -24,6 +24,7 @@ extern void PgColumnarMarkRowDeleted(Relation rel, uint64 rowNumber);
 extern bool PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber);
 
 extern void PgColumnarFlushAllDeleteVectors(void);
+extern void PgColumnarFlushDeleteVectorsOfSubXact(SubTransactionId subid);
 
 extern void PgColumnarDiscardAllDeleteVectors(void);
 

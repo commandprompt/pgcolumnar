@@ -29,6 +29,7 @@ import ast
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,9 @@ JOB_COMMENT = "# The pytest harness's own guards"
 # that must agree fail loudly whichever of them is wrong. It is the shape
 # selftest 350 already uses for TESTS.md, for the same reason.
 NO_CLUSTER = [
+    # #1341: bench_guards.sh's twin. It runs each bench runner's guard block and
+    # bench/cb_guards.sh through bash, with a stand-in pg_config: no cluster, no driver.
+    "test_bench_guards.py",
     "test_build_refusal.py",
     "test_docs_cover_the_corpus.py",
     "test_guards_pinned.py",
@@ -80,6 +84,12 @@ NO_CLUSTER = [
     # #1321: reads the suites and lib.sh as text, with its own Python reader. Needs
     # no cluster and no driver, and never runs the shell harness.
     "test_suite_exit_trap.py",
+    # #1344: drives `make -n` on the Makefile with no pg_config. Needs no cluster
+    # and no driver; it never builds and never runs the shell harness.
+    "test_build_needs_pg_config.py",
+    # #1382: reads the two workflow files as text, with its own Python reader. Needs
+    # no cluster and no driver, and never runs the shell harness.
+    "test_every_suite_job_installs_the_extensions.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.
@@ -141,6 +151,20 @@ NO_CLUSTER = [
     # This branch's file. It reads three published pages, the control file and the
     # upgrade-script filenames -- no connection, no cluster, no driver.
     "test_docs_upgrade_chain.py",
+    # #1341's twin of wal_envelope.sh. It reads src/*.c as text with its own Python
+    # reader -- no connection, no cluster, no driver -- and the classifier agrees.
+    "test_wal_envelope.py",
+    # #1341's twin of hilbert_curve.sh. It compiles src/columnar_curve.c with a small
+    # driver into a shared library and checks the curve in Python -- no connection, no
+    # cluster, no driver -- and the classifier agrees.
+    "test_hilbert_curve.py",
+    # #1341's twin of docs_style.sh. It reads the published pages, META.json and the
+    # tree's scripts as files, and asks git for the tags and the archive -- no
+    # connection, no cluster, no driver.
+    "test_docs_style.py",
+    "test_parquet_level_width.py",
+    "test_decode_interrupts.py",
+    "test_native_fetch_interrupt.py",
 ]
 
 
@@ -513,7 +537,7 @@ def partition(directory=None):
         #
         # The closure IS load-bearing inside conftest, where a fixture can reach
         # a cluster through a sibling without importing anything of its own, and
-        # `test_the_classifier_follows_a_conftest_fixture_that_connects_indirectly`
+        # `test_harness_deps_classifier.py::test_the_classifier_follows_a_conftest_fixture_that_connects_indirectly`
         # kills it there.
         uses = any(kind in ("fixture", "test") and set(params) & roots
                    for kind, params, _body in defs.values())
@@ -585,6 +609,37 @@ def membership_report(directory=None, declared=None):
     return "[]" if not bad else "[%d: %s]" % (len(bad), " ".join(bad))
 
 
+def test_a_declared_file_that_needs_the_driver_is_named_as_such(expect, tmp_path):
+    """The `needs-the-driver` kind, which the real corpus cannot reach (#1339).
+
+    No declared file in the tree needs the driver, so the arm over the real
+    declaration never takes this branch. Deleting it would report "[]" for a file
+    the job cannot run, and the job would then fail with no named cause.
+    """
+    d = _fake_corpus(tmp_path, {
+        "test_drives_inner.py":
+            "def test_x(pytester):\n"
+            "    pytester.makepyfile('import psycopg\\ndef test_y(): pass\\n')\n",
+        "test_plain.py": "def test_z():\n    assert True\n"})
+    expect.text(
+        membership_report(d, ["test_drives_inner.py", "test_plain.py"]),
+        "[1: needs-the-driver:test_drives_inner.py]",
+        "a declared file whose inner run imports the driver is named, and only it")
+    expect.text(membership_report(d, ["test_plain.py"]), "[]",
+                "control: declaring only the driver-free file is agreement")
+
+
+def test_the_partition_mode_prints_both_halves(expect, tmp_path, capsys):
+    """`--partition` is the command line selftest 350 can call; nothing ran it."""
+    d = _fake_corpus(tmp_path, {
+        "test_free.py": "def test_a():\n    assert True\n",
+        "test_bound.py": "def test_b(pgc_conn):\n    pass\n"})
+    expect.num(_main(["--partition", str(d)]), 0, "the mode exits 0")
+    expect.text(capsys.readouterr().out.strip(),
+                "free: test_free.py | bound: test_bound.py",
+                "and prints each file in the half it belongs to")
+
+
 def test_the_declaration_names_each_file_once(expect):
     """`membership_report` compares SETS, so it cannot see a name listed twice.
 
@@ -645,11 +700,11 @@ def _run_without_psycopg(args, expect, pg_config=None):
     """Run pytest with `import psycopg` forced to fail, and return the result.
 
     THE SUBPROCESS GETS THE SAME pg_config THIS RUN WAS GIVEN (#1016). Without it the
-    child falls back to conftest's DEFAULT_PG_CONFIG, `/usr/local/pg18a/bin/pg_config`,
-    which exists on the audit container and on no GitHub runner. The cluster fixture then
-    fails on the missing pg_config BEFORE anything imports psycopg, so the output never
-    names the shim and the arm below reports the shim absent when the shim was fine.
-    Measured: passes against a source-built prefix, fails against a packaged one.
+    child falls back to conftest's DEFAULT_PG_CONFIG: the first pg_config the child
+    finds (#1933). That may be a different build from the one this run was given,
+    so the child would test a build nobody asked for. Before #1933 the default was
+    a fixed path that most boxes lack, and the child's cluster fixture failed on it
+    before anything imported psycopg.
 
     A SHIM RATHER THAN AN UNINSTALL. Uninstalling psycopg would test the machine
     rather than the harness, cannot run concurrently with anything else, and
@@ -705,10 +760,17 @@ def test_a_cluster_test_still_needs_the_driver(expect, pytestconfig):
     driver is gone, and it must fail for that reason rather than by being skipped.
     """
     # The pg_config THIS run was given, not conftest's default: see
-    # _run_without_psycopg. Without it the child dies on a missing prefix before it can
-    # reach the import, and this arm then reports the shim absent.
-    proc = _run_without_psycopg(["test_connection.py"], expect,
-                                pg_config=pytestconfig.getoption("--pg-config"))
+    # _run_without_psycopg. The child then tests the build this run was given.
+    pg_config = pytestconfig.getoption("--pg-config")
+    # PREMISE (#1933): the child can only reach the import if the pg_config runs.
+    # One that does not fails every cluster fixture at setup, and the arm below would
+    # then report the shim absent instead of naming the real cause. shutil.which
+    # resolves a bare name on PATH, as the harness's own subprocess.run does.
+    resolved = shutil.which(pg_config)
+    expect.text(repr(resolved is not None), "True",
+                f"premise: the pg_config handed to the child, {pg_config!r}, "
+                f"resolves to an executable; shutil.which gave {resolved!r}")
+    proc = _run_without_psycopg(["test_connection.py"], expect, pg_config=pg_config)
     expect.at_least(proc.returncode, 1,
                     "a cluster test cannot pass without the driver")
     expect.contains(
@@ -719,18 +781,25 @@ def test_a_cluster_test_still_needs_the_driver(expect, pytestconfig):
 def test_conftest_imports_no_database_driver_at_module_scope(expect):
     """The regression named directly, because the behavioural arm above is slow
     and a reader changing conftest deserves to be told in one line."""
-    src = (HERE / "conftest.py").read_text()
-    module_scope = [
-        ln for ln in src.splitlines()
-        if ln.startswith("import psycopg") or ln.startswith("from psycopg")
-    ]
-    expect.text(", ".join(module_scope) or "none", "none",
+    # ONE READER FOR THE ARM AND ITS CONTROLS (#1339). The arm used to filter lines
+    # starting `import psycopg`, which misses `import os, psycopg` and an import
+    # indented under `if`/`try`/`with` -- all module scope, all fatal to collection.
+    # And its premise re-typed that filter over a literal, so breaking the arm's
+    # reader left the premise green. Both now call the module's AST reader.
+    def reads_driver_import(src):
+        return _imports_driver(_module_scope(ast.parse(src)))
+
+    expect.text(repr(reads_driver_import((HERE / "conftest.py").read_text())), "False",
                 "conftest.py imports no database driver at module scope")
-    # PREMISE: the check can see an import at all -- otherwise "none" is what a
-    # broken reader says too.
-    fake = "import os\nimport psycopg\n"
-    seen = [ln for ln in fake.splitlines() if ln.startswith("import psycopg")]
-    expect.num(len(seen), 1, "premise: the reader recognises a module-scope import")
+    for src in ("import os\nimport psycopg\n",
+                "import os, psycopg\n",
+                "from psycopg import sql\n",
+                "try:\n    import psycopg\nexcept ImportError:\n    pass\n"):
+        expect.text(repr(reads_driver_import(src)), "True",
+                    f"the reader sees a module-scope import in {src.splitlines()[-1]!r}"
+                    if "try" not in src else "the reader sees an import inside try")
+    expect.text(repr(reads_driver_import("def f():\n    import psycopg\n")), "False",
+                "control: an import inside a def is deferred, not module scope")
 
 
 # ---- the declaration must be DECIDED, in both directions ---------------------
@@ -768,8 +837,8 @@ def test_the_partition_accounts_for_every_file_in_the_corpus(expect):
     expect.num(len(free) + len(bound), len(files),
                f"every file lands in exactly one bucket: {len(free)}+{len(bound)}")
     expect.at_least(len(files), 10, "premise: the glob found the corpus")
-    expect.at_least(len(free), 1, "premise: the partition is not all cluster-bound")
-    expect.at_least(len(bound), 1, "premise: the partition is not all database-free")
+    expect.at_least(len(free), 1, "the partition is not all cluster-bound")
+    expect.at_least(len(bound), 1, "the partition is not all database-free")
     print("\n-- partition: %d database-free, %d cluster-bound, %d files"
           % (len(free), len(bound), len(files)))
 
@@ -779,8 +848,12 @@ def test_the_cluster_fixtures_are_read_off_conftest_rather_than_named_here(expec
     spells out are the driver and the module that provisions a server, so a third
     connecting fixture in conftest is covered without an edit here."""
     roots = cluster_fixtures(HERE / "conftest.py")
-    expect.at_least(len(roots), 2,
-                    f"conftest names fixtures that reach a cluster: {sorted(roots)}")
+    # THE SET, not a count of it (#1339 :782). `at_least(2)` passed a derivation that
+    # lost a fixture or invented one, and the name carried the list it was judging. A
+    # third connecting fixture still needs no edit to the CLASSIFIER; it reddens here
+    # by name, which is the reviewer seeing the derivation move.
+    expect.text(", ".join(sorted(roots)), "pgc_cluster, pgc_conn, pgc_own_db",
+                "conftest's cluster-reaching fixtures are derived exactly")
     print("\n-- cluster fixtures derived from conftest.py: %s" % sorted(roots))
 
 
@@ -856,19 +929,39 @@ def test_the_membership_report_names_a_declared_file_that_is_gone(tmp_path, expe
 
 
 def test_the_gate_runs_the_membership_decision_rather_than_only_this_file(expect):
-    """A guard that does not run is a comment, and nothing in the gate runs
-    pytest over this file: the corpus is not in `SUITES` (README.md), and the
-    `pytest-guards` job runs the database-free files, which this is not.
+    """A guard that does not run is a comment, so the gate must run this file.
 
-    So selftest 350 runs the decision through this module's command line. This
-    arm is what keeps that true."""
-    part = (HERE.parent / "selftest" / "350-the-pytest-corpus-must-be.sh")
-    expect.text(repr(part.is_file()), "True", "premise: selftest 350 is where this expects")
-    text = part.read_text()
-    expect.at_least(text.count("--disagree"), 1,
-                    "selftest 350 decides the membership in the gate")
-    # And the command line it uses must work, rather than being a string nobody
-    # ran: the same call, made here.
+    IT IS RUN BY CI'S CLUSTER JOB, NOT BY SELFTEST 350 (#1339). This arm used to
+    count the string `--disagree` in selftest 350, on the premise that the part ran
+    the decision through this module's command line. It no longer does, by jd's rule
+    that a shell arm driving the python decider agrees with it by construction; the
+    only `--disagree` left there is the comment saying so, and the arm stayed green
+    on it. The gate runs this file because the cluster job runs the complement of
+    NO_CLUSTER, derived from this module, and this file is not in NO_CLUSTER.
+
+    The command line is still asserted below: it must run and refuse a misuse, so a
+    human (or a future part) calling it gets an answer, not a traceback."""
+    # RUN THE JOB'S OWN PROGRAM, NOT A SEARCH FOR ITS TEXT (#1339). Counting the
+    # filter's text let a comment quoting it pass with the job's filter inverted: a
+    # whole-line comment first, then one trailing the job's own line (OffgridwithJD,
+    # review of #1445). The program on the job's FILES= line is what CI runs, so it
+    # is run here, and what it prints must be exactly the complement of NO_CLUSTER.
+    job = _ci_job((HERE.parents[1] / ".github" / "workflows" / "ci.yml").read_text(),
+                  "pytest-cluster")
+    files_lines = [l for l in _code_lines(job) if l.strip().startswith('FILES="$(python3 -c \'')]
+    expect.num(len(files_lines), 1,
+               "the cluster job computes its file list on exactly one FILES= line")
+    prog = re.search(r"python3 -c '([^']*)'", files_lines[0]).group(1) if files_lines else ""
+    ran = subprocess.run([sys.executable, "-c", prog], cwd=HERE, capture_output=True, text=True)
+    got = set(ran.stdout.split())
+    want = {p.name for p in HERE.glob("test_*.py")} - set(NO_CLUSTER)
+    expect.text("same" if got == want else
+                f"missing {sorted(want - got)[:5]} extra {sorted(got - want)[:5]} "
+                f"(rc {ran.returncode}: {ran.stderr[-200:]})",
+                "same", "the gate's cluster job runs the complement of NO_CLUSTER")
+    expect.text(repr(HERE.joinpath("test_harness_deps.py").name in NO_CLUSTER), "False",
+                "and this file is in that complement, so the gate runs its membership decision")
+    # The command line must work, rather than being a string nobody ran.
     proc = subprocess.run([sys.executable, str(HERE / "test_harness_deps.py"),
                            "--disagree", str(HERE)],
                           capture_output=True, text=True)
@@ -884,6 +977,23 @@ def test_the_gate_runs_the_membership_decision_rather_than_only_this_file(expect
     expect.num(bad.returncode, 2, f"a mode with no directory is a usage error: {bad.stderr[-200:]}")
     expect.text(repr(bad.stdout), "''", "and it writes nothing to stdout")
     expect.at_least(bad.stderr.count("usage:"), 1, "and says how to call it instead")
+
+
+def _ci_job(text, name):
+    """One job's text, from its key to the NEXT job key (#1339).
+
+    Cutting at "\n  build:" instead took pytest-cluster along with pytest-guards,
+    because build is not the job after it. The cluster job's own `pip show psycopg`,
+    which asserts PRESENCE, then satisfied the guard job's absence check.
+    """
+    start = text.index(f"\n  {name}:\n") + 1
+    nxt = re.search(r"\n  [A-Za-z][\w-]*:\n", text[start + 1:])
+    return text[start:start + 1 + nxt.start() + 1] if nxt else text[start:]
+
+
+def _code_lines(job):
+    """The job's lines with YAML comments dropped, so prose cannot satisfy a check."""
+    return [l for l in job.splitlines() if not l.lstrip().startswith("#")]
 
 
 def test_ci_derives_the_file_list_rather_than_repeating_it(expect):
@@ -902,15 +1012,21 @@ def test_ci_derives_the_file_list_rather_than_repeating_it(expect):
     expect.text(repr(ci.is_file()), "True", "premise: ci.yml is where this expects")
     text = ci.read_text()
 
-    expect.at_least(text.count("from test_harness_deps import NO_CLUSTER"), 1,
-                    "the job derives the file list from this module")
-    expect.at_least(text.count("requirements-test.txt"), 1,
-                    "and the pins from requirements-test.txt")
+    # IN THIS JOB, ON THE LINE THAT SETS THE VALUE (#1339). Counted over the whole
+    # file, both held while the job listed `ls test_*.py` and pinned by hand: the
+    # cluster job and the comment above this one carry the same strings.
+    job = _ci_job(text, "pytest-guards")
+    expect.num(job.count("\n  pytest-cluster:"), 0,
+               "the guard job's slice ends before the cluster job")
+    files = [l for l in _code_lines(job) if l.strip().startswith("FILES=")]
+    pins = [l for l in _code_lines(job) if l.strip().startswith("PINS=")]
+    expect.num(len([l for l in files if "from test_harness_deps import NO_CLUSTER" in l]), 1,
+               "the job derives the file list from this module")
+    expect.num(len([l for l in pins if "requirements-test.txt" in l]), 1,
+               "and the pins from requirements-test.txt")
 
     # AND IT MUST NOT ALSO HARDCODE THEM. Deriving plus a stale literal copy is
     # worse than either alone, because the copy looks authoritative.
-    job = text[text.index("pytest-guards:"):]
-    job = job[:job.index("\n  build:")] if "\n  build:" in job else job
     hardcoded = [n for n in NO_CLUSTER if n in job]
     expect.text(", ".join(hardcoded) or "none", "none",
                 "the job names no corpus file literally")
@@ -951,8 +1067,7 @@ def test_the_cluster_job_runs_the_other_half_and_derives_it(expect):
 
     expect.at_least(text.count("pytest-cluster:"), 1,
                     "a job runs the half that needs a cluster")
-    job = text[text.index("pytest-cluster:"):]
-    job = job[:job.index("\n  build:")] if "\n  build:" in job else job
+    job = _ci_job(text, "pytest-cluster")
 
     expect.at_least(job.count("NO_CLUSTER"), 1,
                     "and it derives its file list from this module rather than listing it")
@@ -961,7 +1076,12 @@ def test_the_cluster_job_runs_the_other_half_and_derives_it(expect):
     # The control for pytest-guards' own assertion. That job proves its files need no
     # database by psycopg's ABSENCE, so this one has to state its presence or the pair
     # proves nothing about the split.
-    expect.at_least(job.count("pip show psycopg"), 1,
+    # A CODE LINE THAT RUNS IT AND CAN FAIL (#1339 :964). Counting the text passed a
+    # comment and `pip show psycopg || true`, neither of which asserts anything.
+    present = [l for l in _code_lines(job)
+               if re.search(r"\bpip show psycopg\b", l)
+               and not l.lstrip().startswith("!") and "||" not in l]
+    expect.at_least(len(present), 1,
                     "and asserts the driver IS present, which is what makes it the other half")
 
     # It must not list the corpus either way round: neither the files it runs nor the
@@ -1002,15 +1122,17 @@ def test_both_pytest_jobs_assert_how_many_tests_they_collected(expect):
         expect.at_least(nums.get(key, 0), 1,
                         f"{key} is named and positive, or the flag it feeds asserts nothing")
 
-    # BOTH jobs, not one. Arming half of them would leave the other able to collect
-    # nothing and pass, which is the state this closes.
-    expect.num(text.count("--pgc-expect-tests"), 2,
-               "both pytest jobs pass the flag")
-    expect.num(text.count("expected_tests.txt"), 2,
-               "and both read the number from the tracked file rather than stating it")
-    # An empty read would OMIT the flag and fail open, so the value is guarded in the job.
-    expect.num(text.count('test -n "$WANT"'), 2,
-               "and each guards the read, because an empty value would fail open")
+    # BOTH jobs, not one, and EACH ONE IN ITS OWN CODE (#1339 :1007). A count over the
+    # whole file passed with the guard job's flag moved into a comment, because the
+    # comment kept the total at two.
+    for job_name in ("pytest-guards", "pytest-cluster"):
+        code = "\n".join(_code_lines(_ci_job(text, job_name)))
+        expect.at_least(code.count("--pgc-expect-tests"), 1,
+                        f"the {job_name} job passes the flag")
+        expect.at_least(code.count("expected_tests.txt"), 1,
+                        f"the {job_name} job reads the number from the tracked file")
+        expect.at_least(code.count('test -n "$WANT"'), 1,
+                        f"the {job_name} job guards the read, because an empty value would fail open")
 
 
 # A TRACKED KEY-VALUE FILE MUST NOT REPEAT A KEY, and the arm above could not see one.
@@ -1097,9 +1219,7 @@ def test_the_job_installs_no_database_driver(expect):
     nothing about the coupling this file exists to keep removed.
     """
     ci = (HERE.parent.parent / ".github" / "workflows" / "ci.yml")
-    job = ci.read_text()
-    job = job[job.index("pytest-guards:"):]
-    job = job[:job.index("\n  build:")] if "\n  build:" in job else job
+    job = _ci_job(ci.read_text(), "pytest-guards")
     # WHAT THIS USED TO ASK, AND WHY IT COULD NOT FAIL. The first assertion was
     #
     #     installs_driver = "psycopg" in job and "pip install" in job \
@@ -1114,16 +1234,24 @@ def test_the_job_installs_no_database_driver(expect):
     # The form below can fail: it looks at the install LINES and asks whether any of
     # them names the driver, and the premise after it is the control -- it appends such
     # a line to a copy and requires the same expression to see it.
-    driver_installs = [l for l in job.splitlines()
-                       if "pip install" in l and DRIVER in l]
-    expect.num(len(driver_installs), 0,
-               "no pip install line in the job names the database driver")
-    planted = job + "\n          pip install --quiet $PINS " + DRIVER + "[binary]==3.3.5\n"
-    expect.at_least(len([l for l in planted.splitlines()
-                         if "pip install" in l and DRIVER in l]), 1,
-                    "premise: and that test sees such a line when one is there")
-    expect.at_least(job.count("pip show " + DRIVER), 1,
-                    "and the job asserts the driver is absent rather than assuming it")
+    #
+    # `-r` COUNTS AS NAMING IT (#1339): requirements-test.txt pins the driver, so
+    # `pip install -r` installs it without the line saying so.
+    def installs(text):
+        return [l for l in _code_lines(text)
+                if "pip install" in l and (DRIVER in l or re.search(r"\s-r\s", l))]
+    expect.num(len(installs(job)), 0,
+               "no pip install line in the job installs the database driver")
+    for line in ("pip install --quiet $PINS " + DRIVER + "[binary]==3.3.5",
+                 "pip install --quiet -r test/pytest/requirements-test.txt"):
+        expect.num(len(installs(job + "\n          " + line + "\n")), 1,
+                   f"control: and that test sees `{line.split()[3]}` when it is there")
+    # NEGATED, in this job. `pip show psycopg` without the `!` asserts PRESENCE, which
+    # is what the cluster job's line does, and a count could not tell them apart.
+    absent = [l for l in _code_lines(job)
+              if re.match(r"\s*!\s+\S*pip show " + DRIVER + r"\b", l)]
+    expect.num(len(absent), 1,
+               "and the job asserts the driver is absent rather than assuming it")
 
 
 if __name__ == "__main__":
@@ -1207,6 +1335,10 @@ SHELL_REFERENCES = {
         "with its own Python reader, to find an EXIT trap that replaces the one setup "
         "arms (#1321). It never sources or executes either: the rule is about what "
         "the shell text says, so the text is the only place to read it",
+    "test_every_suite_job_installs_the_extensions.py":
+        "names the matrix and coverage runners' file names as data, to recognise a "
+        "workflow step that runs the suites (#1382). It reads only the two workflow "
+        "files and never reads or executes the runners themselves",
 }
 
 _SHELL_NAMES = re.compile(

@@ -49,7 +49,10 @@ fetch_val() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
 		-Atq -c "$1" 2>&1 | grep -v '^SET$' | tail -1
 }
-check "premise: that fetch returns the row" \
+# An arm, not a premise (#1339, #1236): an index fetch that treats a flushed row as
+# not live returns no row here. The plan premise above stays a premise: with the
+# scans off, the planner, not this repository, chooses the index.
+check "that fetch returns the row" \
 	"$(fetch_val "${FETCH} SELECT t FROM clb WHERE id = 1;")" "v1"
 
 q "UPDATE pgcolumnar.column_chunk SET page_length = page_length + 4294967296

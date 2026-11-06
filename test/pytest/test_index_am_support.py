@@ -126,7 +126,7 @@ def test_every_access_method_the_page_claims_builds_and_answers(pgc_conn, expect
     expect.text(
         "the claim and nothing else" if readable else "unreadable",
         "the claim and nothing else",
-        "premise: the claim bullet holds the claim and nothing else",
+        "the claim bullet holds the claim and nothing else",
     )
 
     # COUNTED, not a flag. The loop below is derived from `ams`, and a premise
@@ -135,7 +135,7 @@ def test_every_access_method_the_page_claims_builds_and_answers(pgc_conn, expect
     # `test_loop_coverage_premise` recognises only the counted form.
     expect.at_least(
         len(ams), 1,
-        "premise: the features page names at least one index access method",
+        "the features page names at least one index access method",
     )
 
 
@@ -155,39 +155,58 @@ def test_every_access_method_the_page_claims_builds_and_answers(pgc_conn, expect
 
             c.execute("DROP INDEX IF EXISTS ias_probe")
             c.execute(f"CREATE INDEX ias_probe ON ias USING {am} ({col})")
+            # MEASURED, NOT A LITERAL COMPARED WITH ITSELF (#1339): the index exists,
+            # is valid, and belongs to the access method under test.
+            c.execute(
+                "SELECT a.amname || ':' || i.indisvalid FROM pg_index i"
+                " JOIN pg_class x ON x.oid = i.indexrelid JOIN pg_am a ON a.oid = x.relam"
+                " WHERE x.relname = 'ias_probe'"
+            )
+            row = c.fetchone()
             expect.text(
-                "built", "built",
+                row[0] if row else "no index", f"{am}:true",
                 f"{am} builds an index over a columnar table",
             )
 
             # The scan path's answer is the oracle. Comparing against a literal
             # would pin this fixture rather than the property, and the property is
             # that the two paths agree.
+            # THE ROWS, NOT THEIR NUMBER (#1339): an index returning the wrong rows in
+            # the right number agreed on count(*). Each side is md5(ids):count.
+            ids = (f"SELECT md5(string_agg(id::text, ',' ORDER BY id)) || ':' || count(*) "
+                   f"FROM ias WHERE {pred}")
             c.execute("SET enable_indexscan = off")
             c.execute("SET enable_indexonlyscan = off")
             c.execute("SET enable_bitmapscan = off")
-            want = _count(c, f"SELECT count(*) FROM ias WHERE {pred}")
+            want = c.execute(ids).fetchone()[0]
             c.execute("RESET enable_indexscan")
             c.execute("RESET enable_indexonlyscan")
             c.execute("RESET enable_bitmapscan")
 
             c.execute("SET pgcolumnar.enable_custom_scan = off")
             c.execute("SET enable_seqscan = off")
-            got = _count(c, f"SELECT count(*) FROM ias WHERE {pred}")
+            got = c.execute(ids).fetchone()[0]
+            plan = "\n".join(r[0] for r in c.execute(
+                f"EXPLAIN (COSTS OFF) SELECT id FROM ias WHERE {pred}").fetchall())
             c.execute("RESET pgcolumnar.enable_custom_scan")
             c.execute("RESET enable_seqscan")
 
             # NON-EMPTY AS WELL AS EQUAL. Two paths that both return nothing
             # agree, and a predicate matching no row satisfies the arm below
             # while exercising neither path.
+            n = int(want.rsplit(":", 1)[1]) if want else 0
             expect.text(
-                "matches" if want > 0 else "matches-nothing", "matches",
+                "matches" if n > 0 else "matches-nothing", "matches",
                 f"premise: the {am} predicate matches rows at all",
             )
-            expect.num(
-                got, want,
+            expect.text(
+                got or "", want or "",
                 f"{am} answers its operator with the same rows the scan returns",
             )
+            # AND THE ANSWER CAME THROUGH THE INDEX (#1339): enable_seqscan = off is a
+            # price, not a ban, so a method the planner cannot use left both sides scans.
+            expect.text("yes" if "ias_probe" in plan else "no", "yes",
+                        f"{am} answers through the index it built")
 
         c.execute("DROP INDEX IF EXISTS ias_probe")
 
@@ -206,5 +225,5 @@ def test_every_access_method_the_page_claims_builds_and_answers(pgc_conn, expect
         expect.num(
             sum(1 for line in plan
                 if re.search(r"Index (Only )?Scan using ias_probe", line)), 1,
-            "premise: an overlap query reaches the row through a GiST index",
+            "an overlap query reaches the row through a GiST index",
         )

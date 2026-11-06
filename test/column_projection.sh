@@ -38,21 +38,17 @@ bufs() {  # bufs <on|off> <sql>
 }
 
 # The core oracle: projection on must equal projection off, byte for byte.
-ab() {  # ab <label> <sql>
-	local on off
-	on="$(val on "$2")"
-	off="$(val off "$2")"
-	check "$1 :: on==off" "$on" "$off"
+# agree A B -> "same" when both readings are values and equal, else what was wrong.
+# val returns psql's error text, so two runs failing the same way compared equal, and
+# so did two empty results (#1341). The names are written at each call site now,
+# because a name built inside a helper is a template to compare_to_bash.
+agree() {
+	if [ -z "$1" ] || [ -z "$2" ] || grep -q 'ERROR' <<<"$1$2"; then echo "no reading: [$1] and [$2]"
+	elif [ "$1" = "$2" ]; then echo same
+	else echo "differ: [$1] and [$2]"; fi
 }
-
-# And equal the heap, so "both arms wrong the same way" cannot pass. The query
-# is given with a %s where the table name goes.
-oracle() {  # oracle <label> <sql-with-%s>
-	local c h
-	c="$(val on "$(printf "$2" t)")"
-	h="$(val on "$(printf "$2" h)")"
-	check "$1 :: columnar==heap" "$c" "$h"
-}
+ab() { agree "$(val on "$1")" "$(val off "$1")"; }	# ab <sql>: projection on against off
+oracle() { agree "$(val on "$(printf "$1" t)")" "$(val on "$(printf "$1" h)")"; }	# oracle <sql-with-%s>: columnar against heap
 
 # ---------------------------------------------------------------------------
 # Fixture: wide enough that skipping is measurable, with every shape that
@@ -66,13 +62,16 @@ oracle() {  # oracle <label> <sql-with-%s>
 #              nothing, which would leave the test asserting a saving that the
 #              encoding had already made and projection had not.
 # ---------------------------------------------------------------------------
+# The heap is built from the generator and the columnar table from the heap, never
+# the other way round: copied out of t, h held whatever the columnar reader returned,
+# and every columnar==heap check compared the reader with itself -- with a row of t
+# corrupted before the copy, all twelve agreed (found by jdatcmd reviewing #1581).
+# The pad columns are random(), so the generator cannot simply be run twice.
 psql_run "DROP TABLE IF EXISTS t; DROP TABLE IF EXISTS h;
-          CREATE TABLE t (id int, k int, v float8, w bigint, txt text, alln int,
+          CREATE TABLE h (id int, k int, v float8, w bigint, txt text, alln int,
                           pad1 float8, pad2 float8, pad3 float8, pad4 float8,
-                          pad5 float8, pad6 float8, pad7 float8, pad8 float8)
-              USING pgcolumnar;
-          SELECT pgcolumnar.set_options('t'::regclass, stripe_row_limit => 20000);
-          INSERT INTO t
+                          pad5 float8, pad6 float8, pad7 float8, pad8 float8);
+          INSERT INTO h
           SELECT g, g % 1000,
                  CASE WHEN g % 50 = 0 THEN NULL ELSE (g % 13)::float8 * 1.5 END,
                  g::bigint * 7,
@@ -81,10 +80,11 @@ psql_run "DROP TABLE IF EXISTS t; DROP TABLE IF EXISTS h;
                  random(), random(), random(), random(),
                  random(), random(), random(), random()
           FROM generate_series(1, 300000) g;
-          CREATE TABLE h (LIKE t);
-          INSERT INTO h SELECT * FROM t;" >/dev/null
+          CREATE TABLE t (LIKE h) USING pgcolumnar;
+          SELECT pgcolumnar.set_options('t'::regclass, stripe_row_limit => 20000);
+          INSERT INTO t SELECT * FROM h;" >/dev/null
 
-check "premise: columnar and heap hold the same rows" \
+check_num "premise: columnar and heap hold the same rows" \
 	"$(val on "SELECT count(*) FROM t")" "$(val on "SELECT count(*) FROM h")"
 
 # ---- 1. it actually skips ---------------------------------------------------
@@ -98,8 +98,10 @@ B_OFF="$(bufs off "SELECT sum(v) FROM t")"
 # This premise exists because the ratio below means nothing on a tiny read. It
 # now also catches a missing measurement: bufs() sums with awk and yields 0
 # rather than the empty string bc left behind when it was not installed (#418).
-check "premise: the unprojected read is large enough to measure (off: $B_OFF)" \
-	"$([ "${B_OFF:-0}" -gt 1000 ] && echo yes || echo no)" yes
+# The value is in the reading, not the name: a name carrying the measured buffers
+# never matched from one run to the next.
+check "premise: the unprojected read is large enough to measure" \
+	"$([ "${B_OFF:-0}" -gt 1000 ] 2>/dev/null && echo yes || echo "no (off: [$B_OFF])")" yes
 # One float8 column out of fourteen. A third is far above the ideal ~1/14 and
 # far below the 1.0 a broken projection would give, so it fails on a regression
 # without tracking encoding-ratio drift.
@@ -108,7 +110,7 @@ check_ratio "one column costs less than a third of reading all of them" \
 
 # A qual-only column must be read (it is filtered on) even though it is never
 # emitted -- if it were skipped the filter would silently match nothing.
-check "qual-only column still produces the right count" \
+check_num "qual-only column still produces the right count" \
 	"$(val on "SELECT count(*) FROM t WHERE k = 7")" \
 	"$(val on "SELECT count(*) FROM h WHERE k = 7")"
 
@@ -123,27 +125,25 @@ check_ratio "SELECT * reads as much as projection-off does" \
 	"$B_OFF" "$B_ALL" 1.25
 
 # ---- 2. it is faithful ------------------------------------------------------
-ab "single column agg"         "SELECT sum(v) FROM t"
-ab "two columns"               "SELECT sum(v), sum(w) FROM t"
-ab "qual column not selected"  "SELECT count(*) FROM t WHERE k < 500"
-ab "qual and target disjoint"  "SELECT sum(v) FROM t WHERE k < 500"
-ab "varlena projected alone"   "SELECT md5(string_agg(txt, '|' ORDER BY id)) FROM t WHERE id <= 5000"
-ab "all-NULL column"           "SELECT count(alln), count(*) FROM t"
-ab "count(*)"                  "SELECT count(*) FROM t"
-ab "select star hash"          "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM t WHERE id <= 3000) x"
-ab "whole-row var"             "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM t WHERE id <= 3000"
-ab "ctid system column"        "SELECT count(DISTINCT ctid) FROM t WHERE id <= 3000"
-ab "order by unselected col"   "SELECT string_agg(id::text, ',') FROM (SELECT id FROM t WHERE id <= 200 ORDER BY k, id) s"
-ab "min/max mixed types"       "SELECT min(v), max(w), min(txt), max(id) FROM t"
-ab "join on projected column"  "SELECT count(*) FROM t a JOIN t b USING (id) WHERE a.id <= 2000"
-
-oracle "single column agg"     "SELECT sum(v) FROM %s"
-oracle "qual and target disjoint" "SELECT sum(v) FROM %s WHERE k < 500"
-oracle "varlena alone"         "SELECT md5(string_agg(txt, '|' ORDER BY id)) FROM %s WHERE id <= 5000"
-oracle "select star hash"      "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM %s WHERE id <= 3000) x"
-oracle "all-NULL column"       "SELECT count(alln), count(*) FROM %s"
-oracle "min/max mixed types"   "SELECT min(v), max(w), min(txt), max(id) FROM %s"
-
+check "single column agg :: on==off" "$(ab "SELECT sum(v) FROM t")" "same"
+check "two columns :: on==off" "$(ab "SELECT sum(v), sum(w) FROM t")" "same"
+check "qual column not selected :: on==off" "$(ab "SELECT count(*) FROM t WHERE k < 500")" "same"
+check "qual and target disjoint :: on==off" "$(ab "SELECT sum(v) FROM t WHERE k < 500")" "same"
+check "varlena projected alone :: on==off" "$(ab "SELECT md5(string_agg(txt, '|' ORDER BY id)) FROM t WHERE id <= 5000")" "same"
+check "all-NULL column :: on==off" "$(ab "SELECT count(alln), count(*) FROM t")" "same"
+check "count(*) :: on==off" "$(ab "SELECT count(*) FROM t")" "same"
+check "select star hash :: on==off" "$(ab "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM t WHERE id <= 3000) x")" "same"
+check "whole-row var :: on==off" "$(ab "SELECT md5(string_agg(t::text, '|' ORDER BY id)) FROM t WHERE id <= 3000")" "same"
+check "ctid system column :: on==off" "$(ab "SELECT count(DISTINCT ctid) FROM t WHERE id <= 3000")" "same"
+check "order by unselected col :: on==off" "$(ab "SELECT string_agg(id::text, ',') FROM (SELECT id FROM t WHERE id <= 200 ORDER BY k, id) s")" "same"
+check "min/max mixed types :: on==off" "$(ab "SELECT min(v), max(w), min(txt), max(id) FROM t")" "same"
+check "join on projected column :: on==off" "$(ab "SELECT count(*) FROM t a JOIN t b USING (id) WHERE a.id <= 2000")" "same"
+check "single column agg :: columnar==heap" "$(oracle "SELECT sum(v) FROM %s")" "same"
+check "qual and target disjoint :: columnar==heap" "$(oracle "SELECT sum(v) FROM %s WHERE k < 500")" "same"
+check "varlena alone :: columnar==heap" "$(oracle "SELECT md5(string_agg(txt, '|' ORDER BY id)) FROM %s WHERE id <= 5000")" "same"
+check "select star hash :: columnar==heap" "$(oracle "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM %s WHERE id <= 3000) x")" "same"
+check "all-NULL column :: columnar==heap" "$(oracle "SELECT count(alln), count(*) FROM %s")" "same"
+check "min/max mixed types :: columnar==heap" "$(oracle "SELECT min(v), max(w), min(txt), max(id) FROM %s")" "same"
 # ---- 3. the ADD COLUMN interaction -----------------------------------------
 # The dangerous case. An unmaterialised column and a column that predates an
 # ADD COLUMN both leave the validity pointer NULL, but they mean different
@@ -152,10 +152,9 @@ oracle "min/max mixed types"   "SELECT min(v), max(w), min(txt), max(id) FROM %s
 # hand back its default for rows that have a real stored value.
 psql_run "ALTER TABLE t ADD COLUMN added int DEFAULT 42;
           ALTER TABLE h ADD COLUMN added int DEFAULT 42;" >/dev/null
-ab     "added column alone"        "SELECT sum(added), count(added) FROM t"
-oracle "added column alone"        "SELECT sum(added), count(added) FROM %s"
-oracle "added column with others"  "SELECT sum(added), sum(v) FROM %s"
-
+check "added column alone :: on==off" "$(ab "SELECT sum(added), count(added) FROM t")" "same"
+check "added column alone :: columnar==heap" "$(oracle "SELECT sum(added), count(added) FROM %s")" "same"
+check "added column with others :: columnar==heap" "$(oracle "SELECT sum(added), sum(v) FROM %s")" "same"
 # Rows written after the ADD COLUMN carry a real chunk for it; rows written
 # before do not. Both must be right when the column is projected by itself.
 psql_run "INSERT INTO t SELECT g, g % 1000, 1.0, g, 'new'||g, NULL,
@@ -164,19 +163,16 @@ psql_run "INSERT INTO t SELECT g, g % 1000, 1.0, g, 'new'||g, NULL,
           INSERT INTO h SELECT g, g % 1000, 1.0, g, 'new'||g, NULL,
                  1,2,3,4,5,6,7,8, 99
           FROM generate_series(200001, 210000) g;" >/dev/null
-oracle "added column across the boundary" "SELECT sum(added), count(added), min(added), max(added) FROM %s"
-ab     "added column across the boundary" "SELECT sum(added), count(added), min(added), max(added) FROM t"
-
+check "added column across the boundary :: columnar==heap" "$(oracle "SELECT sum(added), count(added), min(added), max(added) FROM %s")" "same"
+check "added column across the boundary :: on==off" "$(ab "SELECT sum(added), count(added), min(added), max(added) FROM t")" "same"
 # ---- 4. deletes and updates ------------------------------------------------
 psql_run "DELETE FROM t WHERE id % 97 = 0; DELETE FROM h WHERE id % 97 = 0;" >/dev/null
-oracle "after deletes, projected column"  "SELECT sum(v), count(*) FROM %s"
-ab     "after deletes, projected column"  "SELECT sum(v), count(*) FROM t"
-
+check "after deletes, projected column :: columnar==heap" "$(oracle "SELECT sum(v), count(*) FROM %s")" "same"
+check "after deletes, projected column :: on==off" "$(ab "SELECT sum(v), count(*) FROM t")" "same"
 psql_run "UPDATE t SET v = v + 1 WHERE id % 500 = 0;
           UPDATE h SET v = v + 1 WHERE id % 500 = 0;" >/dev/null
-oracle "after updates, projected column"  "SELECT sum(v), count(*) FROM %s"
-oracle "after updates, select star hash"  "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM %s WHERE id <= 3000) x"
-
+check "after updates, projected column :: columnar==heap" "$(oracle "SELECT sum(v), count(*) FROM %s")" "same"
+check "after updates, select star hash :: columnar==heap" "$(oracle "SELECT md5(string_agg(x.*::text, '|' ORDER BY x.id)) FROM (SELECT * FROM %s WHERE id <= 3000) x")" "same"
 # ---- 5. parallel scan ------------------------------------------------------
 # Projection state is per-worker; a worker reading the wrong ranges would show
 # up as a wrong total rather than a crash.
@@ -188,10 +184,10 @@ par() {  # par <sql>
 		-c "SET min_parallel_table_scan_size=0" \
 		-c "SET $GUC=on" -c "$1" 2>&1
 }
-check "parallel scan, projected column" \
+check_text "parallel scan, projected column" \
 	"$(par "SELECT count(*), sum(w) FROM t")" \
 	"$(val on "SELECT count(*), sum(w) FROM h")"
-check "parallel scan, qual on unselected column" \
+check_text "parallel scan, qual on unselected column" \
 	"$(par "SELECT sum(v) FROM t WHERE k < 500")" \
 	"$(val on "SELECT sum(v) FROM h WHERE k < 500")"
 
@@ -241,7 +237,9 @@ echo "-- one column of fourteen: buffers $NARROW_BUF vs $WIDE_BUF, cost $NARROW_
 # The physical premise. If the narrow read did not actually touch fewer buffers
 # there would be nothing for the cost model to reflect, and the check below would
 # be demanding a discount that is not owed.
-check_num "premise: the narrow projection really does read far fewer buffers" \
+# Not a premise (#1339): the projection is pgcolumnar's, and with every column read
+# whatever it says this went red.
+check_num "the narrow projection really does read far fewer buffers" \
 	"$([ -n "$NARROW_BUF" ] && [ -n "$WIDE_BUF" ] &&
 	   awk "BEGIN{exit !($WIDE_BUF > 0 && $NARROW_BUF < $WIDE_BUF * 0.5)}" && echo 1 || echo 0)" "1"
 

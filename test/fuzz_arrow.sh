@@ -64,11 +64,8 @@ echo "-- corpus: $CORPUS"
 # since Arrow has no parquet_schema equivalent to derive it from the file.
 # ---------------------------------------------------------------------------
 mapfile -t SEEDLINES < <(python3 "$PGC_SRCDIR/test/arrow_corpus.py" "$CORPUS" 2>/dev/null)
-if [ "${#SEEDLINES[@]}" -eq 0 ]; then
-	echo "FAIL  the corpus generator produced no files"
-	PGC_FAIL=1
-	pgc_summary
-fi
+check "the seed corpus generator produced files" \
+	"$([ "${#SEEDLINES[@]}" -gt 0 ] && echo yes || echo no)" "yes"
 echo "-- ${#SEEDLINES[@]} seed files"
 
 # The composite type the struct seeds name in their column list. Created once here
@@ -97,11 +94,10 @@ for line in "${SEEDLINES[@]}"; do
 done
 echo "-- ${#SEEDPATH[@]} seeds the importer accepts pristine"
 
-if [ "${#SEEDPATH[@]}" -eq 0 ]; then
-	echo "FAIL  no seed imported cleanly; the importer rejects its own corpus"
-	PGC_FAIL=1
-	pgc_summary
-fi
+# A named check, not an unnamed FAIL: a reader that rejects its own corpus is a
+# product failure, and the fuzz loop below then runs nothing at all.
+check "the importer accepts some pristine seed" \
+	"$([ "${#SEEDPATH[@]}" -gt 0 ] && echo yes || echo no)" "yes"
 
 # ---------------------------------------------------------------------------
 # Crash detection. Judged from the server log rather than psql's message: a
@@ -112,6 +108,7 @@ fi
 # ---------------------------------------------------------------------------
 LOGPOS=0
 crashes=0
+gen=0
 hangs=0
 sanitizer=0
 errors=0
@@ -230,13 +227,15 @@ log_since
 
 echo "-- fuzzing"
 nseeds="${#SEEDPATH[@]}"
-for ((i = 0; i < ITERS; i++)); do
+[ "$nseeds" -gt 0 ] || ITERS_RUN=0
+for ((i = 0; i < ${ITERS_RUN-$ITERS}; i++)); do
 	idx=$((i % nseeds))
 	sf="${SEEDPATH[$idx]}"
 	tab="${SEEDTAB[$idx]}"
 	ms=$((SEED + i))
 
 	python3 "$PGC_SRCDIR/test/arrow_mutate.py" "$sf" "$ms" "$MUT" 2>/dev/null || continue
+	gen=$((gen + 1))
 	chmod 644 "$MUT" 2>/dev/null
 
 	# Empty the target first so an accepted mutant does not accumulate rows across
@@ -258,6 +257,11 @@ echo "-- done: $ITERS mutants, ${errors} rejected with ERROR, ${clean} accepted"
 check "no mutant crashed the backend" "$crashes" "0"
 check "no mutant hung the decode" "$hangs" "0"
 check "no mutant tripped a sanitizer" "$sanitizer" "0"
+# Every mutant generated, and every statement run with an outcome. A mutate that
+# failed was skipped with `continue`, and a corpus run that generated almost nothing
+# passed: the reach check below needs only one ERROR.
+check "every mutant was generated and ran the import" \
+	"$gen/$((errors + clean + crashes + hangs + sanitizer))" "$ITERS/$((ITERS * 1))"
 
 # A corpus rejected outright teaches nothing and would make the three checks above
 # pass for the wrong reason. Some mutants must have reached the decoder and been

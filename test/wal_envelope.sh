@@ -56,18 +56,26 @@ echo "srcdir=$SRC"
 
 # ---- 1. only core mechanisms emit WAL --------------------------------------
 
+# How many .c files this reads. Every "none found" below is read against it: a count
+# of matches in an empty or misplaced src/ is 0, which is exactly the passing answer,
+# so these checks passed on a tree holding no source at all.
+nsrc="$(find "$SRC" -maxdepth 1 -name '*.c' 2>/dev/null | wc -l)"
+scanned() {  # count -> the count, or a sentence when there was nothing to scan
+	[ "$nsrc" -gt 0 ] && echo "$1" || echo "no .c files under $SRC"
+}
+
 check "no custom resource manager is registered" \
-	"$(grep -rlE 'RegisterCustomRmgr|RmgrData[[:space:]]+[A-Za-z_]+[[:space:]]*=' "$SRC" | wc -l)" "0"
+	"$(scanned "$(grep -rlE 'RegisterCustomRmgr|RmgrData[[:space:]]+[A-Za-z_]+[[:space:]]*=' "$SRC" | wc -l)")" "0"
 
 check "no rmgr id other than the smgr truncate is used" \
-	"$(grep -rhoE 'XLogInsert\([[:space:]]*RM_[A-Z_]+' "$SRC" | sort -u | grep -cv 'RM_SMGR_ID')" "0"
+	"$(scanned "$(grep -rhoE 'XLogInsert\([[:space:]]*RM_[A-Z_]+' "$SRC" | sort -u | grep -cv 'RM_SMGR_ID')")" "0"
 
 check "exactly one direct XLogInsert in the tree" \
 	"$(grep -rc 'XLogInsert(' "$SRC"/*.c | awk -F: '{n += $2} END {print n}')" "1"
 
 check "every other WAL emitter is a core full-page-image helper" \
-	"$(grep -rhoE '\b(log_newpage|log_newpage_buffer|XLogInsert|GenericXLogFinish|XLogRegisterBuffer)\b' "$SRC"/*.c \
-		| sort -u | grep -cvE '^(log_newpage|log_newpage_buffer|XLogInsert)$')" "0"
+	"$(scanned "$(grep -rhoE '\b(log_newpage|log_newpage_buffer|XLogInsert|GenericXLogFinish|XLogRegisterBuffer)\b' "$SRC"/*.c \
+		| sort -u | grep -cvE '^(log_newpage|log_newpage_buffer|XLogInsert)$')")" "0"
 
 # ---- 2. the envelope around the one direct record ---------------------------
 
@@ -103,10 +111,16 @@ trunc="$(at 'COLUMNAR_SMGRTRUNCATE(')"
 delay_clear="$(at 'delayChkptFlags &= ~DELAY_CHKPT_COMPLETE')"
 crit_out="$(at 'END_CRIT_SECTION()')"
 
-for v in delay_set crit_in insert flush trunc delay_clear crit_out; do
-	eval "val=\$$v"
-	check "envelope step present: $v" "$([ -n "$val" ] && echo yes || echo no)" "yes"
-done
+# One check per step, each named literally: a name built from a loop variable is
+# invisible to compare_to_bash, so a port could omit every step and still grade.
+present() { [ -n "$1" ] && echo yes || echo no; }
+check "envelope step present: delay_set" "$(present "$delay_set")" "yes"
+check "envelope step present: crit_in" "$(present "$crit_in")" "yes"
+check "envelope step present: insert" "$(present "$insert")" "yes"
+check "envelope step present: flush" "$(present "$flush")" "yes"
+check "envelope step present: trunc" "$(present "$trunc")" "yes"
+check "envelope step present: delay_clear" "$(present "$delay_clear")" "yes"
+check "envelope step present: crit_out" "$(present "$crit_out")" "yes"
 
 ordered() {  # ordered NAME A B -> A must come before B
 	check "$1" "$([ -n "$2" ] && [ -n "$3" ] && [ "$2" -lt "$3" ] && echo yes || echo no)" "yes"
@@ -124,7 +138,10 @@ ordered "the critical section ends last" "$delay_clear" "$crit_out"
 # would discard visibility state for rows that still exist.
 check "the truncate record covers the main fork only" \
 	"$(awk -v s="$start" -v e="$end" 'NR >= s && NR <= e && /SMGR_TRUNCATE_HEAP/ {n++} END {print n+0}' "$FN")" "1"
+# Read only when the function was found: 0 masks in no function is not a finding.
 check "no fork mask other than the heap fork is used here" \
-	"$(awk -v s="$start" -v e="$end" 'NR >= s && NR <= e && /SMGR_TRUNCATE_(VM|FSM|ALL)/ {n++} END {print n+0}' "$FN")" "0"
+	"$([ -n "$start" ] \
+		&& awk -v s="$start" -v e="$end" 'NR >= s && NR <= e && /SMGR_TRUNCATE_(VM|FSM|ALL)/ {n++} END {print n+0}' "$FN" \
+		|| echo "PgColumnarTruncateMainFork not found")" "0"
 
 pgc_summary

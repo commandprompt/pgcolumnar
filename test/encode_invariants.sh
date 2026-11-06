@@ -63,8 +63,13 @@ selftest="$(q "SELECT * FROM pgcolumnar.debug_encoding_selftest();")"
 fails="$(printf '%s\n' "$selftest" | grep -c '^FAIL' || true)"
 ran="$(printf '%s\n' "$selftest" | sed -n 's/^cases=//p')"
 
+# A self-test that returned nothing has no FAIL lines either: "none" is read only
+# over a run that reported its case count (measured: with the function never
+# created, this passed on its own).
 check "the encoding primitives match their reference implementations byte for byte" \
-	"$([ "$fails" = 0 ] && echo none || printf '%s' "$(printf '%s\n' "$selftest" | grep '^FAIL' | head -3)")" \
+	"$(if ! pgc_is_number "$ran"; then echo "the self-test returned no case count [${ran:-none}]";
+	   elif [ "$fails" = 0 ]; then echo none;
+	   else printf '%s' "$(printf '%s\n' "$selftest" | grep '^FAIL' | head -3)"; fi)" \
 	"none"
 # Without this a self-test that compared nothing would report no failures. It also
 # catches the self-test dying mid-run: pg_rightmost_one_pos64 asserts on zero, so
@@ -226,12 +231,15 @@ for d in 16 256 1000 1024; do
 			SET pgcolumnar.fsst_min_gain_percent = 0;
 			CREATE TABLE $t (id int, v text) USING pgcolumnar;
 			INSERT INTO $t SELECT g, $e FROM generate_series(1, 20000) g;" >/dev/null 2>&1
+		# The table must hold its 20000 rows: an empty one has no vector to choose
+		# FSST and read 0 (measured: with every load empty, this passed).
+		rows="$(q "SELECT count(*) FROM $t;" | tail -1)"
 		n="$(enc_vectors "$t" 8)"
-		[ "$n" = 0 ] || lofail="$lofail ${d}/${shape}=$n"
+		[ "$rows" = 20000 ] && [ "$n" = 0 ] || lofail="$lofail ${d}/${shape}=$n(rows=$rows)"
 	done
 done
 check "no vector selects FSST at or below the distinct cap, so skipping its build cannot change output" \
-	"$([ -z "$lofail" ] && echo none || echo "selected:$lofail")" "none"
+	"$([ -z "$lofail" ] && echo none || echo "failed:$lofail")" "none"
 
 # ---- the block compression default is pinned to its measurement (#890) -------
 #

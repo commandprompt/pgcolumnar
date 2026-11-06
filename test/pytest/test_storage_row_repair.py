@@ -52,7 +52,7 @@ def test_the_release_notes_repair_procedure_works(pgc_conn, expect):
         def found_mine():
             return _one(cur, f"SELECT count(*) FROM ({find}) z WHERE z.storage_id IN {mine}")
 
-        expect.num(found_mine(), 0, "premise: no row names a missing relation before the damage")
+        expect.num(found_mine(), 0, "no row names a missing relation before the damage")
 
         # The damage: each row names a relation created and dropped for the purpose.
         cur.execute("CREATE TABLE rep_gone_1 (x int)")

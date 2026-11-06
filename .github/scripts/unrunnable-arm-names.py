@@ -52,8 +52,8 @@ visible. An over-broad TWIN set supplies a name nothing records and turns a real
 mismatch green: silent. So refusal wrappers are followed transitively, while the
 twin set is restricted to `lib.sh` and to suite-local definitions spelled
 `check` or `check_<word>`. `check[a-z_]*` is NOT that spelling: it also matches
-`checks_in` in `decode_interrupts.sh`, a counting utility that records nothing
-(@jdatcmd). A population named after a prefix is not a population named after a
+`checks_in`, the counting utility `decode_interrupts.sh` had until #1341, which records
+nothing (@jdatcmd). A population named after a prefix is not a population named after a
 behaviour.
 
 AND THE SUBJECT MUST NOT BE IN THE REFERENCE SET. The first sweep of this

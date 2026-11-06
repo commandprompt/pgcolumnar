@@ -69,10 +69,6 @@ def _race(pgc_cluster, conn, expect, table, call, label):
         with b.cursor() as bc:
             bc.execute(f"SELECT count(*) FROM {table}")
             still = bc.fetchone()[0]
-        expect.num(
-            still, BEFORE,
-            f"premise: {label} -- A's rows are outside B's snapshot",
-        )
 
         with b.cursor() as bc:
             bc.execute(f"SELECT {call}")
@@ -82,7 +78,7 @@ def _race(pgc_cluster, conn, expect, table, call, label):
 
     with conn.cursor() as cur:
         cur.execute(f"SELECT count(*) FROM {table}")
-        return cur.fetchone()[0]
+        return still, cur.fetchone()[0]
 
 
 def test_native_vacuum_race(pgc_cluster, pgc_conn, expect):
@@ -91,15 +87,21 @@ def test_native_vacuum_race(pgc_cluster, pgc_conn, expect):
     # committed ...`, which cannot match the three literal names the bash suite
     # states -- so all three would be reported MISSING. An inline loop table is the
     # idiom the grader reads per element (#1045 class 2).
-    for table, call, label, name in (
+    for table, call, label, name, premise in (
         ("r_vac", "pgcolumnar.vacuum('r_vac')", "vacuum()",
-         "vacuum() keeps rows committed during its snapshot window (#295)"),
+         "vacuum() keeps rows committed during its snapshot window (#295)",
+         "premise: vacuum() -- A's rows are outside B's snapshot"),
         ("r_vsort", "pgcolumnar.vacuum_sorted('r_vsort','id')", "vacuum_sorted()",
-         "vacuum_sorted() keeps rows committed during its snapshot window (#295)"),
+         "vacuum_sorted() keeps rows committed during its snapshot window (#295)",
+         "premise: vacuum_sorted() -- A's rows are outside B's snapshot"),
         ("r_clu", "pgcolumnar.cluster('r_clu','id')", "cluster()",
-         "cluster() keeps rows committed during its snapshot window (#295)"),
+         "cluster() keeps rows committed during its snapshot window (#295)",
+         "premise: cluster() -- A's rows are outside B's snapshot"),
     ):
-        got = _race(pgc_cluster, pgc_conn, expect, table, call, label)
+        still, got = _race(pgc_cluster, pgc_conn, expect, table, call, label)
+        # _race reads B's count; it is asserted here, in the loop, so the grader reads
+        # each literal name (#1045 class 2).
+        expect.num(still, BEFORE, premise)
         print(f"-- {label}: {got} rows survive")
         expect.num(got, AFTER, name)
 
@@ -110,3 +112,13 @@ def test_native_vacuum_race(pgc_cluster, pgc_conn, expect):
             f"SELECT count(DISTINCT id) FROM r_vac WHERE id BETWEEN 1 AND {AFTER}"
         )
         expect.num(cur.fetchone()[0], AFTER, "vacuum() preserves the exact row set")
+        # For each call, not only vacuum() (#1339): a vacuum_sorted() or cluster()
+        # rewrite that lost 20 rows and duplicated 20 others still counted 150.
+        cur.execute(
+            f"SELECT count(DISTINCT id) FROM r_vsort WHERE id BETWEEN 1 AND {AFTER}"
+        )
+        expect.num(cur.fetchone()[0], AFTER, "vacuum_sorted() preserves the exact row set")
+        cur.execute(
+            f"SELECT count(DISTINCT id) FROM r_clu WHERE id BETWEEN 1 AND {AFTER}"
+        )
+        expect.num(cur.fetchone()[0], AFTER, "cluster() preserves the exact row set")

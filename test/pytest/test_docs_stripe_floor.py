@@ -16,6 +16,7 @@ Public seam: the three published pages. Read independently of docs_style.sh --
 this parses the pages itself rather than sharing a helper with the shell arm.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +64,18 @@ def _sections_containing(path, needle):
     return out
 
 
+def _section_text(path, headings):
+    """-> the text under the `##` headings named in HEADINGS, HTML comments removed."""
+    out, keep = [], False
+    text = re.sub(r"<!--.*?-->", "", path.read_text(encoding="utf-8"), flags=re.S)
+    for line in text.splitlines():
+        if line.startswith("## "):
+            keep = line[3:].strip() in headings
+        elif keep:
+            out.append(line)
+    return "\n".join(out)
+
+
 def test_configuration_states_the_floor_where_it_documents_the_setting(expect):
     expect.num(int(CONFIG.is_file()), 1, "premise: configuration.md is in the tree")
     expect.at_least(
@@ -86,7 +99,9 @@ def test_administration_states_it_in_the_section_that_says_to_lower_it(expect):
     expect.at_least(
         len(advice & floor), 1,
         "and the 1024 floor is stated in that same section")
-    low = ADMIN.read_text(encoding="utf-8").lower()
+    # In THAT section too: the page names FSST all through its compression section,
+    # so a page-wide search passed with the cost gone from the advice (#1339).
+    low = _section_text(ADMIN, advice & floor).lower()
     expect.contains(low, "fsst", "and names what lowering past it costs")
 
 

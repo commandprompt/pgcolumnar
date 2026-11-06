@@ -20,8 +20,17 @@ def _nodes(plan):
 
 
 def _custom_scan(plan):
+    """The first PgColumnarScan node, as the shell twin greps for
+    `Custom Scan (PgColumnarScan)`.
+
+    THE PROVIDER, not only the node type (#1339). Any custom scan used to count, so
+    with the extension's scan renamed in EXPLAIN (`CustomName = "PgColumnarScanX"`)
+    the shell twin went red on "the serial plan is a columnar scan" and this file
+    stayed green.
+    """
     for node in _nodes(plan):
-        if node.get("Node Type") == "Custom Scan":
+        if (node.get("Node Type") == "Custom Scan"
+                and node.get("Custom Plan Provider") == "PgColumnarScan"):
             return node
     return None
 
@@ -73,7 +82,7 @@ def test_parallel_scan_cost(pgc_conn, expect):
     expect.text(
         "Custom Scan" if snode else "none",
         "Custom Scan",
-        "premise: the serial plan is a columnar scan",
+        "the serial plan is a columnar scan",
     )
     expect.text(
         "none" if _gather(serial) is None else "Gather",
@@ -83,14 +92,14 @@ def test_parallel_scan_cost(pgc_conn, expect):
     expect.text(
         "Gather" if _gather(parallel) is not None else "none",
         "Gather",
-        "premise: the parallel plan has Gather",
+        "the parallel plan has Gather",
     )
     workers = (_gather(parallel) or {}).get("Workers Planned")
-    expect.num(workers, 2, "premise: the parallel plan uses two workers")
+    expect.num(workers, 2, "the parallel plan uses two workers")
     expect.text(
         "Custom Scan" if pnode else "none",
         "Custom Scan",
-        "premise: the parallel plan is a columnar scan",
+        "the parallel plan is a columnar scan",
     )
 
     s_run = snode["Total Cost"] - snode["Startup Cost"]
@@ -130,7 +139,7 @@ def test_parallel_scan_cost(pgc_conn, expect):
     expect.text(
         "Custom Scan" if pnode_on else "none",
         "Custom Scan",
-        "premise: the leader-on plan is still a parallel columnar scan",
+        "the leader-on plan is still a parallel columnar scan",
     )
 
     rows_off = pnode.get("Plan Rows") if pnode else None

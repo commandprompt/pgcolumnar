@@ -220,6 +220,28 @@ check "and the two suites are named, not left as a number" \
 check "and a real debt is still not a major failure, which is the old behaviour" \
 	"$(printf '%s\n' "$_out510b" | grep -c '^verfail=0$')" "1"
 
+# THE PARTITION IS A MEASUREMENT ONLY IF NEITHER BUCKET IS A LEFTOVER (#1339). Both
+# runs above keep suites_ran equal to the names that ran, so a block deriving the
+# debt as `suites_ran - accounted` prints the same lines and passes them. Told 4 ran
+# while the names say 3, all accounted, a counted block reports 3 + 0 != 4 and fails
+# the major; a subtracting one makes 3 + 1 == 4 by construction and stays silent.
+_out510c="$(
+	set -uo pipefail
+	eval "$(sed -n '/^pgc_ran_without_accounting()/,/^}/p' "$_rv510")"
+	eval "$(sed -n '/^pgc_accounted_among()/,/^}/p' "$_rv510")"
+	_acc_ranfile="$_d510/e2e_ran"; _acc_skipfile="$_d510/e2e_skip"
+	_acc_accounted="$_d510/e2e_acc"
+	suites_ran=4; suites_skipped=2; suites_incomplete=0; verfail=0
+	SUITES=(alpha beta gamma delta eps)
+	eval "$_blk510"
+	echo "verfail=$verfail"
+)"
+
+check "a ran count the names do not support is reported, not absorbed" \
+	"$(printf '%s\n' "$_out510c" | grep -c 'the ran breakdown does not add up: 4 ran, 3 accounted + 0 did not')" "1"
+check "and it fails the major" \
+	"$(printf '%s\n' "$_out510c" | grep -c '^verfail=1$')" "1"
+
 # ---- collation, which selftest 070's regex cannot reach ---------------------
 #
 # Found by @OffgridwithJD reviewing this change. `comm` requires both inputs sorted
@@ -241,8 +263,9 @@ check "and a real debt is still not a major failure, which is the old behaviour"
 # so this is latent, and latent is exactly what a guard is for.
 _comm510() { grep -vE '^[[:space:]]*#' "$_rv510"; }
 
+_comm510_n="$(_comm510 | grep -cE '(^|[^_[:alnum:]])comm ')"
 check "premise: the runner really does use comm, so this arm has a subject" \
-	"$([ "$(_comm510 | grep -cE '(^|[^_[:alnum:]])comm ')" -ge 3 ] && echo yes || echo no)" "yes"
+	"$([ "$_comm510_n" -ge 3 ] && echo yes || echo "no ($_comm510_n comm calls)")" "yes"
 
 check "every comm in the runner pins its collation" \
 	"$(_comm510 | grep -E '(^|[^_[:alnum:]])comm ' | grep -cv 'LC_ALL=C comm ' || true)" "0"

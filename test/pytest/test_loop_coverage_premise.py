@@ -17,16 +17,18 @@ loop, the count is non-zero, the test passes, and the loop's assertions simply n
 ran. Nothing notices. That is the shape a query returning no rows produces, and the
 one a glob matching nothing produces.
 
-THE POPULATION, measured over the whole corpus before this was written:
+THE POPULATION, measured over the whole corpus, when this was written and again on
+2026-10-16 (#1339) over 170 files:
 
-    non-empty by construction (literal, range, local literal)   20  cannot be zero-trip
-    derived, loop holds the only assertions                      0  already refused
-    derived, WITH assertions outside the loop                    2  AT RISK
+                                                            written   2026-10-16
+    non-empty by construction (literal, range, local literal)   20        112  cannot be zero-trip
+    derived, loop holds the only assertions                      0          1  already refused
+    derived, WITH assertions outside the loop                    2         15  AT RISK
 
-Both at-risk loops already carry a premise, so this arm goes green on arrival. That is
-the point rather than a weakness: the property is true today and nothing was holding it
-there, so the next loop added without a premise is what this catches. It is not
-insurance against an imagined shape -- it has a population of two and locks it in.
+Every at-risk loop carried a premise both times, so this arm went green on arrival.
+That is the point rather than a weakness: the property was true and nothing was holding
+it there, so the next loop added without a premise is what this catches. The numbers
+move as the corpus grows, so the arms read them live rather than from this table.
 
 WHY THE RULE IS LOOSER THAN THE PROPERTY, said plainly. The honest requirement is "a
 premise bounding the cardinality of THIS iterable". What is enforced is "a counted
@@ -59,7 +61,8 @@ def _nonempty_by_construction(fn, iterable):
 
     A literal with elements, a `range(...)`, or a name bound in this function to a
     non-empty literal -- including through `.items()`, which is how the corpus spells
-    a table of cases. Twenty of the corpus's twenty-two such loops are this.
+    a table of cases. Most loops that carry an assertion are this: 112 of 128 on
+    2026-10-16.
     """
     if isinstance(iterable, (ast.List, ast.Tuple, ast.Set)) and iterable.elts:
         return True
@@ -73,22 +76,42 @@ def _nonempty_by_construction(fn, iterable):
     elif isinstance(iterable, ast.Name):
         target = iterable
     if isinstance(target, ast.Name):
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == target.id for t in node.targets):
-                value = node.value
-                if isinstance(value, ast.Dict) and value.keys:
-                    return True
-                if isinstance(value, (ast.List, ast.Tuple, ast.Set)) and value.elts:
-                    return True
+        # EVERY binding of the name must be a non-empty literal, not just one (#1339):
+        # `rows = [0]` then `rows = query()` loops over the query.
+        stores = [n for n in ast.walk(fn) if isinstance(n, ast.Name)
+                  and n.id == target.id and isinstance(n.ctx, ast.Store)]
+        literal = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+                   and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name)
+                   and n.targets[0].id == target.id and _nonempty_literal(n.value)]
+        return bool(stores) and len(stores) == len(literal)
     return False
 
 
+def _nonempty_literal(value):
+    if isinstance(value, ast.Dict):
+        return bool(value.keys)
+    return isinstance(value, (ast.List, ast.Tuple, ast.Set)) and bool(value.elts)
+
+
+def _pins_zero(call):
+    """`num` against 0 in either order, `at_most(x, 0)`, or `at_least(0, x)`: each says
+    the length is at most 0, which bounds the loop from the wrong side (#1339)."""
+    zero = [isinstance(a, ast.Constant) and a.value == 0 for a in call.args[:2]]
+    if len(zero) < 2:
+        return False
+    return {"num": zero[0] or zero[1], "at_most": zero[1],
+            "at_least": zero[0]}.get(call.func.attr, False)
+
+
 def _has_cardinality_premise(fn, loop):
-    """A counted assertion OUTSIDE the loop whose arguments take `len(...)`."""
+    """A counted assertion OUTSIDE the loop whose arguments take `len(...)`, and that
+    does not pin the length at 0 or below: that bounds the iterable from the wrong
+    side, saying the loop runs no times (#1339)."""
     inside = {id(n) for n in ast.walk(loop)}
     for node in ast.walk(fn):
         if id(node) in inside or not _counted(node):
+            continue
+        if _pins_zero(node):
             continue
         for arg in node.args:
             for sub in ast.walk(arg):
@@ -98,14 +121,20 @@ def _has_cardinality_premise(fn, loop):
     return False
 
 
-def unpremised_loops(directory):
-    """-> ["file:line in test_name", ...] for every at-risk loop with no premise."""
+def classify_loops(directory, parsed=None):
+    """-> [(file, line, test, kind)] for every loop holding a counted assertion, with
+    the kind the sweep gave it: "bounded" (non-empty by construction), "holds-all"
+    (refused at runtime when zero-trip), "premised" or "unpremised". The sweep and its
+    coverage premise both read THIS, so the premise measures what the sweep saw. `parsed`,
+    when given, collects the name of every file the sweep read."""
     out = []
     for path in sorted(pathlib.Path(directory).glob("test_*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        if parsed is not None:
+            parsed.append(path.name)
         for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                    and n.name.startswith("test_")]:
             counted_in_fn = [c for c in ast.walk(fn) if _counted(c)]
@@ -115,13 +144,22 @@ def unpremised_loops(directory):
                 if not inner:
                     continue
                 if _nonempty_by_construction(fn, loop.iter):
-                    continue
+                    kind = "bounded"
                 # The loop holding every assertion is already refused at runtime.
-                if len(counted_in_fn) == len(inner):
-                    continue
-                if not _has_cardinality_premise(fn, loop):
-                    out.append(f"{path.name}:{loop.lineno} in {fn.name}")
+                elif len(counted_in_fn) == len(inner):
+                    kind = "holds-all"
+                elif _has_cardinality_premise(fn, loop):
+                    kind = "premised"
+                else:
+                    kind = "unpremised"
+                out.append((path.name, loop.lineno, fn.name, kind))
     return out
+
+
+def unpremised_loops(directory):
+    """-> ["file:line in test_name", ...] for every at-risk loop with no premise."""
+    return [f"{f}:{line} in {name}" for f, line, name, kind in classify_loops(directory)
+            if kind == "unpremised"]
 
 
 def test_every_at_risk_loop_carries_a_coverage_premise(expect):
@@ -135,21 +173,22 @@ def test_the_sweep_finds_the_loops_it_is_meant_to_police(expect):
     """The coverage premise this file's own sweep needs.
 
     A sweep that parses nothing reports no offenders, which is exactly what a clean
-    corpus reports. So count the loops it classified, not just the ones it rejected.
+    corpus reports. So count the loops IT classified, not loops this test finds by a
+    walk of its own (#1339): the first version re-walked the files itself, so a sweep
+    reading no file at all still had a green premise beside a green verdict.
     """
-    total = 0
-    for path in sorted(HERE.glob("test_*.py")):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
-            for loop in [n for n in ast.walk(fn)
-                         if isinstance(n, (ast.For, ast.AsyncFor))]:
-                if any(_counted(c) for c in ast.walk(loop)):
-                    total += 1
-    expect.at_least(total, 15,
+    parsed = []
+    kinds = [k for *_, k in classify_loops(HERE, parsed)]
+    # EVERY FILE, NOT A FLOOR (#1339): a sweep reading every fourth file found 23 loops,
+    # 4 at risk, and cleared the floors below. The directory is the denominator, so the
+    # count cannot drift out of date as the corpus grows.
+    expect.num(len(parsed), len(list(HERE.glob("test_*.py"))),
+               "premise: the sweep parsed every test file in this directory")
+    expect.at_least(len(kinds), 15,
                     "premise: the sweep found loops carrying assertions to classify")
+    # and it found the shape it exists for: derived loops with assertions outside
+    expect.at_least(kinds.count("premised") + kinds.count("unpremised"), 2,
+                    "and among them the at-risk loops it polices")
 
 
 def test_a_loop_with_no_premise_is_caught(tmp_path, expect):
@@ -182,6 +221,37 @@ def test_a_loop_with_no_premise_is_caught(tmp_path, expect):
                 "control: the same loop with a premise is clean")
 
 
+def test_a_premise_in_name_only_is_still_caught(tmp_path, expect):
+    """Two shapes the sweep used to wave through (#1339).
+
+    A literal bound first and a query bound over it later is not non-empty by
+    construction: the loop iterates the query. And a premise that the length is 0
+    bounds the iterable from the wrong side: it says the loop runs no times.
+    """
+    shapes = {
+        "rebound": ("    rows = [0]\n    rows = query()\n",
+                    "expect.num(1, 1, 'outside')"),
+        "zero": ("    rows = query()\n",
+                 "expect.num(len(rows), 0, 'the length is zero')"),
+        "reversed": ("    rows = query()\n",
+                     "expect.num(0, len(rows), 'the length is zero, the other way round')"),
+        "atleastzero": ("    rows = query()\n",
+                        "expect.at_least(0, len(rows), 'zero is at least the length')"),
+    }
+    for name, (bind, outside) in shapes.items():
+        f = tmp_path / f"test_{name}.py"
+        f.write_text(
+            f"def test_{name}(expect):\n{bind}"
+            f"    {outside}\n"
+            "    for r in rows:\n"
+            "        expect.num(r, 1, 'never runs when rows is empty')\n",
+            encoding="utf-8")
+        expect.text(", ".join(unpremised_loops(tmp_path)) or "none",
+                    f"test_{name}.py:{3 + bind.count(chr(10))} in test_{name}",
+                    f"a loop with a {name} premise is named")
+        f.unlink()
+
+
 def test_a_bounded_loop_needs_no_premise(tmp_path, expect):
     """A literal cannot be empty, so demanding a premise would be noise.
 
@@ -203,19 +273,30 @@ def test_a_bounded_loop_needs_no_premise(tmp_path, expect):
         f.unlink()
 
 
-def test_the_layer_already_refuses_a_loop_holding_every_assertion(expect):
+def test_the_layer_already_refuses_a_loop_holding_every_assertion(pytester, expect):
     """The measured half, so this file does not claim the whole mode.
 
     `pytest_runtest_call` fails a test whose counted-assertion count is 0, which is
-    what a zero-trip loop leaves behind when it holds them all. Read off the hook
-    rather than re-run inside pytest: the behaviour is pinned by `test_layer.py`, and
-    what matters here is that THIS file's sweep deliberately skips that shape.
+    what a zero-trip loop leaves behind when it holds them all. Both halves run the
+    behaviour: a planted test in a child pytest, and the sweep on a planted file.
     """
-    import inspect
-    import pgc_vacuity
-    src = inspect.getsource(pgc_vacuity.pytest_runtest_call)
-    expect.at_least(src.count("count == 0"), 1,
-                    "the layer fails a test that counted nothing")
-    mine = inspect.getsource(unpremised_loops)
-    expect.at_least(mine.count("len(counted_in_fn) == len(inner)"), 1,
-                    "and this sweep skips that shape rather than double-reporting it")
+    # BEHAVIOUR, NOT SOURCE (#1339): this read pytest_runtest_call's text for
+    # "count == 0", which a disabled branch keeps. A planted test whose only assertion
+    # sits in a zero-trip loop must be refused by the layer itself.
+    pytester.makepyfile(
+        "def test_x(expect):\n"
+        "    for r in []:\n"
+        "        expect.num(r, 1, 'never runs')\n")
+    result = pytester.runpytest("-p", "pgc_vacuity")
+    out = result.stdout.str()
+    expect.text("refused" if result.ret != 0 and "made no counted assertion" in out
+                else f"not refused (rc={result.ret}): {out.strip().splitlines()[-1:]!r}",
+                "refused", "the layer fails a test that counted nothing")
+    planted = pytester.path / "planted"
+    planted.mkdir()
+    (planted / "test_p.py").write_text(
+        "def test_x(expect, rows):\n"
+        "    for r in rows:\n"
+        "        expect.num(r, 1, 'every assertion is here')\n")
+    expect.text(repr([k for *_, k in classify_loops(planted)]), "['holds-all']",
+                "and this sweep skips that shape rather than double-reporting it")

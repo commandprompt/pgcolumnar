@@ -327,7 +327,7 @@ sqlstate() {	# sqlstate SQL -> a five-character SQLSTATE, noerror, or PROBE_UNRE
 }
 
 crun() {	# crun WHAT SQL
-	check_text "premise: $1 ran without raising" "$(sqlstate "$2")" "noerror"
+	check_text "$1 ran without raising" "$(sqlstate "$2")" "noerror"
 }
 
 # ---- the fixture ------------------------------------------------------------
@@ -412,7 +412,7 @@ check_num "premise: hh has the same group count, so a group is the same unit on 
 DZ="$(partition_digest hz)"
 DH="$(partition_digest hh)"
 echo "-- partition digests: zorder=$DZ hilbert=$DH"
-check_text "premise: the Z-order and Hilbert partitions differ" "$(differs "$DZ" "$DH")" "different"
+check_text "the Z-order and Hilbert partitions differ" "$(differs "$DZ" "$DH")" "different"
 
 # Pinned, not merely different. "Different" is satisfied by any change to
 # either layout; these two values say the layouts are the ones the pinned
@@ -511,6 +511,14 @@ BOXES="2000 5000 12000 30000"
 
 PROBE_SQL_HZ="$(window_sql hz $((STRIDE_X % (SPAN - 2000))) $((STRIDE_Y % (SPAN - 2000))) 2000)"
 PROBE_SQL_HH="$(window_sql hh $((STRIDE_X % (SPAN - 2000))) $((STRIDE_Y % (SPAN - 2000))) 2000)"
+# PARALLELISM OFF IS ASSERTED, NOT ONLY CONFIGURED. PGC_EXTRA_CONF puts it in the
+# server's config above; this reads it back on the same kind of connection every
+# arm runs through. A parallel plan divides the scan across workers, and the group
+# counters below would be a fact about scheduling. Same name as the twin's check,
+# which has to assert it because a pytest session SETs it (#1339 :733).
+check_text "parallelism is off on the connection every arm runs through" \
+	"$(q "SHOW max_parallel_workers_per_gather;")" "0"
+
 check_text "premise: the Z-order arm plans as a columnar scan" \
 	"$(pgc_is_columnar_scan "$PROBE_SQL_HZ")" "yes"
 check_text "premise: the Hilbert arm plans as a columnar scan" \

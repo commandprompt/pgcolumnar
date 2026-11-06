@@ -48,7 +48,12 @@ build() {  # table, rows-per-group
 		CREATE INDEX ${1}_id ON $1 (id);"
 }
 
-# index-driven so every row goes through the fetch path rather than a scan
+# Every updated row goes through the fetch path whatever the scan plans: the
+# UPDATE fetches its target rows by number. Measured (#1341) on PG18: this
+# UPDATE plans as Custom Scan (PgColumnarScan) under these SETs, and with the
+# cache made to miss on every lookup the ratio below still goes red (844 ms
+# against 93 ms). So the SETs are not what makes it a fetch, and no plan
+# premise is needed here, unlike the point queries further down.
 upd_ms() {
 	local start end
 	start=$(date +%s%N)

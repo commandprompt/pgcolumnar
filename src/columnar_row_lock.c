@@ -343,3 +343,98 @@ PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows, int nrows)
 				 errmsg("columnar: could not serialize access due to concurrent update or delete of the same row"),
 				 errhint("Retry the transaction.")));
 }
+
+/*
+ * PgColumnarSerializeRowNow
+ *		Serialize one row on its identity NOW, during the UPDATE, rather than at
+ *		the flush (#1421). Take the row's bucket lock, waiting for a concurrent
+ *		writer of the row to finish, then raise the same retryable
+ *		serialization_failure if that writer committed the row as deleted.
+ *
+ *		WHY NOT WAIT FOR THE FLUSH. An UPDATE of a table with a unique index takes
+ *		the new version's unique-key lock before the flush. When a concurrent
+ *		transaction updated the same row, its new version holds that key: the
+ *		loser waited on it, and when the winner committed the executor's unique
+ *		check raised unique_violation (23505), a duplicate the user never wrote,
+ *		before the flush that raises 40001 was reached. docs/limitations.md
+ *		promises 40001 and says the serialization "needs no unique index".
+ *
+ *		Called only for a relation with a unique index, so a table without one
+ *		keeps the batched, sorted acquisition at flush. The flush still runs and
+ *		re-takes this lock, which the lock manager makes a no-op. Taking locks in
+ *		row order during the statement can deadlock two multi-row UPDATEs that
+ *		reach shared rows in opposite orders (40P01, also retryable), as heap can.
+ *
+ *		ONE GROUP, NOT THE LIST. The batch reads every group's committed mask; per
+ *		row that would be O(groups). The covering group comes through the fetch
+ *		path's memo, and only its delete vector is read.
+ */
+void
+PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber)
+{
+	uint64		storageId;
+	uint32		numBuckets;
+	LOCKTAG		tag;
+	Snapshot	meta;
+	NativeRowGroupMetadata *rg;
+	bool		deleted = false;
+	MemoryContext tmp;
+	MemoryContext old;
+
+	if (!pgcolumnar_enable_row_update_lock)
+		return;
+
+	storageId = PgColumnarStorageId(rel);
+	numBuckets = (uint32) Max(1, pgcolumnar_row_lock_buckets);
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId, (uint32) storageId,
+						 (uint32) (row_identity_lock_key(storageId, rowNumber) % numBuckets),
+						 PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY);
+	(void) LockAcquire(&tag, ExclusiveLock, false /* transaction lock */ ,
+					   false /* wait */ );
+
+	/*
+	 * With the lock held, the latest committed state: a delete committed after
+	 * this statement's snapshot is visible here. This transaction's own deletes
+	 * are in its buffer, not in this committed view, so they are not conflicts.
+	 *
+	 * The reads go in a context of their own, deleted before returning. This runs
+	 * once per updated row, and in the caller's context each call would keep a copy
+	 * of the group's delete bitmap until the statement ends: 402 MB for 25,000 rows
+	 * of a 50,000-row group (OffgridwithJD, review of #1422).
+	 */
+	tmp = AllocSetContextCreate(CurrentMemoryContext,
+								"pgcolumnar row serialization check",
+								ALLOCSET_SMALL_SIZES);
+	old = MemoryContextSwitchTo(tmp);
+	PushActiveSnapshot(GetLatestSnapshot());
+	meta = PgColumnarCatalogSnapshot(GetActiveSnapshot());
+	rg = PgColumnarLookupRowGroup(storageId, meta, rowNumber);
+	if (rg != NULL)
+	{
+		List	   *maskList = PgColumnarReadDeleteVectorList(storageId,
+															  rg->groupNumber, meta);
+		uint64		bit = rowNumber - rg->firstRowNumber;
+		ListCell   *mc;
+
+		foreach(mc, maskList)
+		{
+			DeleteVectorMetadata *rm = (DeleteVectorMetadata *) lfirst(mc);
+
+			if (rm->bitmap != NULL && (bit >> 3) < rm->bitmapLen &&
+				(rm->bitmap[bit >> 3] & (1 << (bit & 7))) != 0)
+			{
+				deleted = true;
+				break;
+			}
+		}
+	}
+	PopActiveSnapshot();
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(tmp);
+
+	if (deleted)
+		ereport(ERROR,
+				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+				 errmsg("columnar: could not serialize access due to concurrent update or delete of the same row"),
+				 errhint("Retry the transaction.")));
+}

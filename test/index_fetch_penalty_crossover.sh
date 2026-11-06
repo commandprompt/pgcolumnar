@@ -98,7 +98,9 @@ check "a selective point lookup still uses the index" \
 # the day the node flips.
 EST_AT_K="$(plan_of "EXPLAIN SELECT sum(a) FROM ifc WHERE id <= $K_RANGE" \
 	| grep -m1 -E 'Index Scan|Custom Scan|Seq Scan' | grep -oE 'rows=[0-9]+' | cut -d= -f2)"
-check "premise: the ${K_RANGE}-row estimate is exact, so no arm here rests on a sample draw" \
+# NOT A PREMISE (#1339): the estimate is the scan path pgcolumnar prices, so a custom
+# scan that misreports its rows reddens it.
+check "the ${K_RANGE}-row estimate is exact, so no arm here rests on a sample draw" \
 	"${EST_AT_K:-none}" "$K_RANGE"
 
 PLAN_50="$(plan_of "EXPLAIN (COSTS OFF) SELECT sum(a) FROM ifc WHERE id <= $K_RANGE")"
@@ -106,9 +108,18 @@ echo "-- ${K_RANGE}-row range: $(printf '%s\n' "$PLAN_50" | grep -m1 -E 'Scan')"
 check "a ${K_RANGE}-row correlated range uses the custom scan, not a fetching index" \
 	"$(top_node "$PLAN_50")" "Custom Scan"
 
-IDX_SUM="$(q1 "SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off; SELECT sum(a) FROM ifc WHERE id <= $K_RANGE")"
+# BOTH PATHS AGAINST THE GENERATOR, AND THE INDEX PATH SEEN TO BE ONE (#1339). This
+# compared the two sums with each other, so two failed reads or two equally wrong
+# answers agreed, and nothing said the "index" path fetched by index at all. a is
+# g % 10, so the sum over ids 1..K is computed from generate_series, not read back.
+IDX_FORCE="SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off;"
+IDX_SUM="$(q1 "$IDX_FORCE SELECT sum(a) FROM ifc WHERE id <= $K_RANGE")"
 CS_SUM="$(q1 "SET enable_indexscan=off; SET enable_bitmapscan=off; SELECT sum(a) FROM ifc WHERE id <= $K_RANGE")"
-check "both paths return the same aggregate at $K_RANGE" "$IDX_SUM" "$CS_SUM"
+GEN_SUM="$(q1 "SELECT sum(g % 10) FROM generate_series(1, $K_RANGE) g")"
+check_text "both paths return the same aggregate at $K_RANGE" \
+	"index ${IDX_SUM:-none}, scan ${CS_SUM:-none}" "index $GEN_SUM, scan $GEN_SUM"
+check "and the index-forced path really fetches by index" \
+	"$(top_node "$(plan_of "$IDX_FORCE EXPLAIN (COSTS OFF) SELECT sum(a) FROM ifc WHERE id <= $K_RANGE")")" "Index Scan"
 
 # #355: a clustered ORDER BY of the whole table must stay on the index. A
 # per-row term that grows with rows costs this path off onto a Sort. The

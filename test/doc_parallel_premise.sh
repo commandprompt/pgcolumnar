@@ -41,9 +41,9 @@ doc_line=$(grep -m1 'The narrow query is' "$DOC")
 doc_query=$(printf '%s' "$doc_line" | sed -n 's/.*`\(SELECT[^`]*\)`.*/\1/p')
 doc_col=$(printf '%s' "$doc_query" | sed -n 's/.*WHERE[[:space:]]*\([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p')
 
-check "premise: the page still names a narrow query" \
+check "the page still names a narrow query" \
 	"$([ -n "$doc_query" ] && echo yes || echo no)" "yes"
-check "premise: and that query has an extractable filter column" \
+check "and that query has an extractable filter column" \
 	"$([ -n "$doc_col" ] && echo yes || echo no)" "yes"
 [ -n "$doc_col" ] || { echo "could not extract a filter column from: $doc_line"; pgc_summary; }
 echo "-- the page's narrow query filters on: $doc_col"
@@ -63,7 +63,7 @@ psql_run "ANALYZE c753;"
 groups_total=$(q "SELECT count(*) FROM pgcolumnar.row_group r
 	JOIN pgcolumnar.storage s USING (storage_id)
 	WHERE s.relation_oid = 'c753'::regclass")
-check "premise: the fixture holds several row groups, so pruning can be seen" \
+check "the fixture holds several row groups, so pruning can be seen" \
 	"$([ "${groups_total:-0}" -ge 5 ] && echo many || echo "$groups_total")" "many"
 
 # A constant taken from the data, so the selectivity is the same whichever
@@ -108,12 +108,14 @@ serial_cost() {
 	  | grep -oE 'cost=[0-9.]+\.\.[0-9.]+' | sed 's/.*\.\.//' | head -1
 }
 
-# The scan-node premise comes FIRST, because every counter below is read out of
+# The scan-node checks come FIRST, because every counter below is read out of
 # a columnar scan's EXPLAIN output and does not exist without one.
-for _c in "$doc_col" sel; do
-	check "premise: the $_c plan is exactly one columnar scan node" \
-		"$(scan_lines "$_c")" "1"
-done
+# Unrolled, and the documented column named by its role: its name comes from the
+# page, so a name built from it is one the grader cannot read.
+check "the documented column's plan is exactly one columnar scan node" \
+	"$(scan_lines "$doc_col")" "1"
+check "the sel plan is exactly one columnar scan node" \
+	"$(scan_lines sel)" "1"
 
 doc_read=$(read_groups "$doc_col"); doc_tot=$(total_groups "$doc_col")
 sel_read=$(read_groups sel);        sel_tot=$(total_groups sel)
@@ -122,7 +124,7 @@ sel_read=$(read_groups sel);        sel_tot=$(total_groups sel)
 # That is not hypothetical: with pgcolumnar.enable_custom_scan=off the plan is a
 # seq scan, every counter below is blank, and check 1 passed comparing one blank
 # with another. A check that passes on nothing is worse than no check.
-check "premise: the group counters were read, not blank" \
+check "the group counters were read, not blank" \
 	"$([ -n "$doc_read" ] && [ -n "$doc_tot" ] && [ -n "$sel_read" ] && [ -n "$sel_tot" ] \
 		&& echo yes || echo "doc=$doc_read/$doc_tot sel=$sel_read/$sel_tot")" "yes"
 echo "-- $doc_col (the documented column): $doc_read of $doc_tot groups read"
@@ -132,15 +134,20 @@ echo "-- sel (stored in order):            $sel_read of $sel_tot groups read"
 # The published speedup numbers were taken with every group read. If the page's
 # query prunes, the numbers beside it describe a different amount of work.
 # Defaults that CANNOT collide, so blank-versus-blank fails on its own rather
-# than relying on the premise above to catch it. `check "" ""` passes, so a check
+# than relying on the check above to catch it. `check "" ""` passes, so a check
 # fed by two extracted values must never be able to compare one blank with
 # another.
+#
+# Against the CATALOG's group count, not only the scan's own total: a reader that
+# never counted a group it read printed 0 of 0, and 0 == 0 passed (measured).
 check "the documented narrow query reads every chunk group" \
-	"${doc_read:-<no-read-counter>}" "${doc_tot:-<no-total-counter>}"
+	"${doc_read:-<no-read-counter>}/${doc_tot:-<no-total-counter>}" \
+	"$(pgc_is_number "$groups_total" && echo "$groups_total/$groups_total" || echo "<no catalog count [$groups_total]>")"
 
 # --- 2. the contrast the page now documents is real -------------------------
 check "and filtering the ordered column instead prunes some away" \
-	"$([ "${sel_read:-0}" -lt "${sel_tot:-0}" ] && echo prunes || echo "$sel_read of $sel_tot")" \
+	"$(pgc_is_number "$sel_read" && pgc_is_number "$sel_tot" && [ "$sel_read" -lt "$sel_tot" ] \
+	   && echo prunes || echo "$sel_read of $sel_tot")" \
 	"prunes"
 
 # --- 3. stated directly, so the comparison below cannot be a self-comparison -
@@ -155,11 +162,13 @@ check "the documented column is not the one stored in order" \
 # would need calibrating and the direction does not.
 if [ "$doc_col" != "sel" ]; then
 	dc=$(serial_cost "$doc_col"); sc=$(serial_cost sel)
-	check "premise: both costs were extracted, not blank" \
+	check "both costs were extracted, not blank" \
 		"$([ -n "$dc" ] && [ -n "$sc" ] && echo yes || echo "dc=$dc sc=$sc")" "yes"
 	echo "-- serial cost: $doc_col $dc, sel $sc"
 	check "and the documented column is costed above the ordered one" \
-		"$(awk -v a="$dc" -v b="$sc" 'BEGIN { print (a > b) ? "yes" : "no (" a " vs " b ")" }')" "yes"
+		"$(pgc_is_number "$dc" && pgc_is_number "$sc" \
+		   && awk -v a="$dc" -v b="$sc" 'BEGIN { print (a + 0 > b + 0) ? "yes" : "no (" a " vs " b ")" }' \
+		   || echo "unread [$dc|$sc]")" "yes"
 fi
 
 pgc_summary

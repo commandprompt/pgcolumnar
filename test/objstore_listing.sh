@@ -3,7 +3,10 @@
 # pgColumnar #619: ListObjectsV2 discovery over remote paths. The FDW and
 # read_parquet expand a remote prefix (trailing slash) or a remote glob into the
 # set of objects under it, by a paged ListObjectsV2 call behind the object-store
-# ABI, and Hive partition columns work over a remote prefix.
+# ABI, and Hive partition columns work over a remote prefix. An exact key that
+# holds `*`, `?` or `[` reads that object alone (#1785). When one object under a
+# prefix or glob does not match the declared columns, the error names it (#1902).
+# s3a:// and s3n:// read as s3://, in any case, and an export refuses them (#1930).
 #
 # The fixture (test/objstore_http_server.py) answers ListObjectsV2 over the
 # objects on disk, paged by --list-page-size, so the client's continuation-token
@@ -34,29 +37,84 @@ listing_teardown() {
 }
 trap listing_teardown EXIT INT TERM
 
+# wait_up: wait up to 15 s for the server, so a backend that crashed in one reading
+# fails that reading and survival, not every reading after it during recovery.
+wait_up() { for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && return 0; sleep 0.5; done; }
+
+# pg_restart_env ENV... -> 0 once the cluster answers again with ENV in its
+# environment, 1 when it does not; it never exits the suite (#1850). It waits out
+# a crash recovery first: a fast stop sent while the startup process replays WAL
+# did not finish in pg_ctl's 60 s, and the start then found the old postmaster.
+# The caller records the failure by name, so the arms before it still report.
 pg_restart_env() {
+	wait_up
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "$* pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do
 		[ -n "$(q 'SELECT 1')" ] && return 0
 		sleep 0.5
 	done
-	echo "FATAL: cluster did not come back after env restart"; exit 1
-}
-sqlstate_of() {
-	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
-$1;
-SQLEOF
+	return 1
 }
 listn() { grep -cE 'list-type=2' "$S3_LOG" | tr -d ' '; }
 
+# refusal_of SQL PHRASE LABEL -> "<SQLSTATE><LABEL>" when SQL raised with PHRASE in its
+# message, the bare SQLSTATE when the message lacks it, or what happened instead. The
+# two non-progress refusals share 08P01: with the no-keys check removed, the replayed
+# page reached the token check and the bare SQLSTATE still passed.
+refusal_of() {
+	local out state
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$state" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "$2" <<<"$out"; then echo "$state$3"
+	else echo "$state"; fi
+}
+
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# can't be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend aborted before it; survival also requires this count
+# not to have moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	wait_up
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+
+# qe SQL -> the rows as q prints them, or the first ERROR line, so a failed reading
+# says why rather than comparing as empty.
+qe() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then grep -m1 '^ERROR:' <<<"$out"; else echo "$out"; fi
+}
+
 # ---- fixtures on disk: a prefix of parts, a nested part, hidden + non-parquet,
-#      and a Hive-partitioned layout ------------------------------------------
+#      a Hive-partitioned layout, and #1784's named hidden directories ---------
 mkdir -p "$PGC_WORKDIR/$BUCKET/lst/sub" \
          "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-01" \
-         "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-02"
+         "$PGC_WORKDIR/$BUCKET/hive/dt=2026-01-02" \
+         "$PGC_WORKDIR/$BUCKET/_landing/_temporary" \
+         "$PGC_WORKDIR/$BUCKET/.dir" \
+         "$PGC_WORKDIR/$BUCKET/glb" \
+         "$PGC_WORKDIR/$BUCKET/lit" \
+         "$PGC_WORKDIR/$BUCKET/mix" \
+         "$PGC_WORKDIR/$BUCKET/wide"
 python3 - "$PGC_WORKDIR/$BUCKET" <<'PYEOF'
 import sys, os
 import pyarrow as pa, pyarrow.parquet as pq
@@ -74,6 +132,41 @@ open(os.path.join(B, "lst/notes.txt"), "w").write("not parquet\n")
 # Hive: two partitions, each one object
 one(os.path.join(B, "hive/dt=2026-01-01/part.parquet"), [1, 2, 3])
 one(os.path.join(B, "hive/dt=2026-01-02/part.parquet"), [4, 5, 6])
+# #1784: a prefix the user names may itself start with '_' or '.'; the hidden
+# rule applies only below it (_temporary/ under _landing/ is still skipped)
+one(os.path.join(B, "_landing/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "_landing/_temporary/t.parquet"), [99])
+one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
+# a glob matches '_' names, and a dot name only when the pattern spells the dot
+one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
+one(os.path.join(B, "glb/.h.parquet"), [100])
+# #1785: keys that hold a glob metacharacter, each beside a key its pattern
+# would also match; raw[1] has no .parquet suffix
+one(os.path.join(B, "lit/q?mark.parquet"), [2])
+one(os.path.join(B, "lit/qXmark.parquet"), [3])
+one(os.path.join(B, "lit/Q?mark.parquet"), [20])
+one(os.path.join(B, "lit/brack[1].parquet"), [1])
+one(os.path.join(B, "lit/star*x.parquet"), [4])
+one(os.path.join(B, "lit/starZZZx.parquet"), [5])
+one(os.path.join(B, "lit/raw[1]"), [8])
+# #1902: one object among several does not match the declared columns. In mix/
+# f02 holds a string where the others hold int64, each id field carrying field
+# id 1 (an int32 would not do: the field-id binder widens it to bigint); in
+# wide/ f01 has an extra column.
+def typed(path, ids, typ, **extra):
+    f = [pa.field("id", typ, metadata={b"PARQUET:field_id": b"1"})]
+    cols = [pa.array(ids, typ)]
+    for k, v in extra.items():
+        f.append(pa.field(k, pa.string(), metadata={b"PARQUET:field_id": b"2"}))
+        cols.append(pa.array(v, pa.string()))
+    pq.write_table(pa.Table.from_arrays(cols, schema=pa.schema(f)), path)
+for i in (0, 1, 3):
+    typed(os.path.join(B, "mix/f%02d.parquet" % i), [i], pa.int64())
+typed(os.path.join(B, "mix/f02.parquet"), ["2"], pa.string())
+typed(os.path.join(B, "wide/f00.parquet"), [0], pa.int64())
+typed(os.path.join(B, "wide/f01.parquet"), [1], pa.int64(), x=["extra"])
+typed(os.path.join(B, "wide/f02.parquet"), [2], pa.int64())
 PYEOF
 
 # page size 2 forces the continuation-token loop for the 4-object prefix
@@ -88,7 +181,9 @@ done
 check "premise: fixture up" "$(grep -c READY "$PGC_WORKDIR/s3_server.out" 2>/dev/null)" "1"
 
 pg_restart_env "AWS_ENDPOINT_URL='http://127.0.0.1:$S3_PORT'" \
-	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'"
+	"AWS_ACCESS_KEY_ID='$AKID'" "AWS_SECRET_ACCESS_KEY='$SECRET'" "AWS_REGION='$REGION'" \
+	|| { echo "FATAL: cluster did not come back after env restart"; exit 1; }
+CRASHES_BEFORE="$(crashes)"
 
 psql_run "CREATE SERVER s3srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 
@@ -113,11 +208,72 @@ check "glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/" \
 	"$(q "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/*.parquet') AS t(id int8);" | tr '|' ' ')" \
 	"9 99"
 
+# ---- #1784: the hidden rule applies below the named prefix only, and a glob
+#      matches as a local glob() does ----------------------------------------
+# A local directory skips '_' and '.' names it finds below the path you named, not
+# the path itself; a local glob matches '_' names and skips a dot name unless the
+# pattern spells the dot. Remote reads give the same answer.
+rpq() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/$1') AS t(id int8);" | tr '|' ' '; }
+check "a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/" \
+	"$(rpq _landing/)" "3 6"
+check "a prefix whose own name starts with . lists the objects below it" \
+	"$(rpq .dir/)" "3 15"
+check "glob under a named _ directory (_landing/*.parquet) matches" \
+	"$(rpq '_landing/*.parquet')" "3 6"
+check "glob under a named . directory (.dir/*.parquet) matches" \
+	"$(rpq '.dir/*.parquet')" "3 15"
+check "glob glb/*.parquet matches _b.parquet but not .h.parquet, as a local glob does" \
+	"$(rpq 'glb/*.parquet')" "8 66"
+check "glob glb/_*.parquet matches the _ file it spells" \
+	"$(rpq 'glb/_*.parquet')" "5 60"
+check "glob glb/.*.parquet matches the dot file it spells" \
+	"$(rpq 'glb/.*.parquet')" "1 100"
+check "prefix glb/ still skips _b.parquet and .h.parquet below it" \
+	"$(rpq glb/)" "3 6"
+# The module accepts an upper-case scheme and lists keys back as s3://, so the
+# scheme is compared without case, for a prefix and for a pattern alike.
+rpqu() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('S3://$BUCKET/$1') AS t(id int8);" | tr '|' ' '; }
+check "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does" \
+	"$(rpqu _landing/)" "3 6"
+check "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does" \
+	"$(rpqu '_landing/*.parquet')" "3 6"
+# Only the scheme ignores case. After it, a pattern matches with case, as a
+# local glob() and S3 keys do: [A_] matches _b.parquet (5 rows, sum 60) and
+# not a.parquet.
+check "an upper-case scheme glob S3://.../glb/[A_]*.parquet is case-sensitive after the scheme" \
+	"$(rpqu 'glb/[A_]*.parquet')" "5 60"
+
+# ---- #1785: an exact key that holds *, ? or [ reads that object -------------
+# `*`, `?` and `[` are legal in an S3 key. A key that holds one is looked up
+# literally in its prefix's listing first, and is matched as a pattern only when
+# no object has that exact name. Only the key after the bucket is a pattern, so
+# a bracketed authority is refused as an IPv6 literal, never listed.
+check "an exact key with ? (lit/q?mark.parquet) reads that object alone, not qXmark.parquet" \
+	"$(rpq 'lit/q?mark.parquet')" "1 2"
+check "an exact key with [ (lit/brack[1].parquet) reads that object" \
+	"$(rpq 'lit/brack[1].parquet')" "1 1"
+check "an exact key with * (lit/star*x.parquet) reads that object alone, not starZZZx.parquet" \
+	"$(rpq 'lit/star*x.parquet')" "1 4"
+check "an exact key with [ and no .parquet suffix (lit/raw[1]) reads that object" \
+	"$(rpq 'lit/raw[1]')" "1 8"
+check "an upper-case scheme exact key S3://.../lit/q?mark.parquet reads that object alone" \
+	"$(rpqu 'lit/q?mark.parquet')" "1 2"
+check "with no object of that exact name, lit/q?mar?.parquet is a pattern (q?mark and qXmark, not Q?mark)" \
+	"$(rpq 'lit/q?mar?.parquet')" "2 5"
+check "an escaped key, a backslash before the ? of lit/q?mark.parquet, matches only q?mark.parquet" \
+	"$(rpq 'lit/q\?mark.parquet')" "1 2"
+check "an IPv6 literal s3 authority s3://[::1]/... is refused as IPv6, not listed" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3://[::1]/lit/q?mark.parquet') AS t(id int8)" \
+		"IPv6 literal hosts are not supported" " by the IPv6 check")" "0A000 by the IPv6 check"
+
 # ---- an exact key is still one GET, no LIST ---------------------------------
 : > "$S3_LOG"
 psql_run "CREATE FOREIGN TABLE fexact (id int8) SERVER s3srv OPTIONS (path 's3://$BUCKET/lst/part-0000.parquet');"
 check "exact-key read returns its rows" "$(q "SELECT count(*), sum(id) FROM fexact" | tr '|' ' ')" "3 3"
 check "an exact-key read issues no ListObjectsV2" "$(listn)" "0"
+# the 0 above reads the same log: it must hold the exact key's own request
+check "and the request log recorded the exact-key read" \
+	"$(grep -qE '^(GET|HEAD) /'"$BUCKET"'/lst/part-0000\.parquet ' "$S3_LOG" && echo logged || echo "not logged")" "logged"
 
 # ---- Hive partition columns over a remote prefix ----------------------------
 psql_run "CREATE FOREIGN TABLE fhive (id int8, dt date) SERVER s3srv
@@ -130,34 +286,354 @@ check "a partition predicate prunes a remote file (Files Pruned = 1)" \
 	      SELECT count(*) FROM fhive WHERE dt = DATE '2026-01-01';" \
 		| grep 'Files Pruned' | grep -oE '[0-9]+' | head -1)" "1"
 
+# ---- #1930: s3a:// and s3n:// read as s3://, in any case --------------------
+# The Hadoop names for S3. The Iceberg reader reads them as s3:// (#1825), and so
+# do the Parquet readers, which rewrite the path before routing, listing or
+# signing it, so the module sees s3:// only. Each reading below has an s3://
+# reading of the same object above it. An error after the rewrite names the
+# s3:// URL. Only the start of the path is a scheme: s3ax:// and xs3a:// stay
+# local paths. The exports write s3:// only and refuse an alias by name, with a
+# hint naming the s3:// URL.
+rpqs() { qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$1$BUCKET/$2') AS t(id int8);" | tr '|' ' '; }
+check "an s3a:// exact key reads the object s3:// reads" "$(rpqs s3a:// lst/part-0000.parquet)" "3 3"
+check "an s3n:// exact key reads the object s3:// reads" "$(rpqs s3n:// lst/part-0000.parquet)" "3 3"
+check "an s3a:// prefix lists and reads every object under it, as s3:// does" "$(rpqs s3a:// lst/)" "12 192"
+check "an s3n:// prefix lists and reads every object under it, as s3:// does" "$(rpqs s3n:// lst/)" "12 192"
+check "an s3a:// glob lst/*.parquet matches the 3 top-level parts, as s3:// does" \
+	"$(rpqs s3a:// 'lst/*.parquet')" "9 99"
+check "an upper-case S3A:// prefix reads as s3:// does" "$(rpqs S3A:// lst/)" "12 192"
+check "a mixed-case S3n:// exact key reads as s3:// does" "$(rpqs S3n:// lst/part-0000.parquet)" "3 3"
+check "parquet_schema through s3a:// == through s3://" \
+	"$(qe "SELECT * FROM pgcolumnar.parquet_schema('s3a://$BUCKET/lst/part-0000.parquet')")|$(qe "SELECT * FROM pgcolumnar.parquet_schema('s3://$BUCKET/lst/part-0000.parquet')")" \
+	"id|bigint|t||id|bigint|t|"
+psql_run "CREATE TABLE alias_dst (id int8) USING pgcolumnar;"
+check "import_parquet through s3n:// loads the object's rows" \
+	"$(qe "SELECT pgcolumnar.import_parquet('alias_dst', 's3n://$BUCKET/lst/part-0001.parquet')")|$(qe "SELECT sum(id) FROM alias_dst")" \
+	"3|33"
+psql_run "CREATE FOREIGN TABLE falias (id int8) SERVER s3srv OPTIONS (path 's3a://$BUCKET/lst/');"
+check "the FDW over an s3a:// prefix == read_parquet over the s3:// prefix" \
+	"$(pgc_set_hash "SELECT * FROM falias")" \
+	"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")"
+psql_run "CREATE FOREIGN TABLE fhive_alias (id int8, dt date) SERVER s3srv
+          OPTIONS (path 'S3A://$BUCKET/hive/', partition_columns 'dt');"
+check "Hive over an S3A:// prefix stamps the partition column" \
+	"$(q "SELECT dt, count(*) FROM fhive_alias GROUP BY dt ORDER BY dt;" | tr '\n|' ' ')" \
+	"2026-01-01 3 2026-01-02 3 "
+# The root's own dt= component is above the partition root, as with s3://, so the
+# file carries no dt= component: refused, not stamped with the root's value.
+psql_run "CREATE FOREIGN TABLE fhive_root (id int8, dt date) SERVER s3srv
+          OPTIONS (path 's3a://$BUCKET/hive/dt=2026-01-01/', partition_columns 'dt');"
+check "an s3a:// FDW root's own dt= component is not a partition value, as with s3://" \
+	"$(refusal_of "SELECT count(*) FROM fhive_root" \
+		"file \"s3://$BUCKET/hive/dt=2026-01-01/part.parquet\" has no \"dt=\" directory component" \
+		" naming the s3:// file")" "HV004 naming the s3:// file"
+check "a missing object through s3a:// is reported under its s3:// URL" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3a://$BUCKET/lst/nope.parquet') AS t(id int8)" \
+		"\"s3://$BUCKET/lst/nope.parquet\" does not exist" " by its s3:// URL")" "58P01 by its s3:// URL"
+check "control: an s3ax:// URL is a local path, not S3" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('s3ax://$BUCKET/lst/part-0000.parquet') AS t(id int8)" \
+		"could not open file \"s3ax://$BUCKET/lst/part-0000.parquet\"" " as a local file")" "58P01 as a local file"
+check "control: an xs3a:// URL is a local path, not S3" \
+	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('xs3a://$BUCKET/lst/part-0000.parquet') AS t(id int8)" \
+		"could not open file \"xs3a://$BUCKET/lst/part-0000.parquet\"" " as a local file")" "58P01 as a local file"
+# alias_refusal SQL FUNC URL S3URL -> "0A000 named" when SQL raised 0A000 with the
+# export's own message for URL and a hint naming S3URL, else what it raised
+alias_refusal() {
+	local out st
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	if [ -z "$st" ]; then echo "no error ($(head -1 <<<"$out"))"
+	elif grep -qF "ERROR:  0A000: columnar: $2 does not write \"$3\"" <<<"$out" &&
+		grep -qF "HINT:  Write to \"$4\" instead." <<<"$out"; then echo "$st named"
+	else echo "$st ($(grep -m1 '^ERROR:' <<<"$out"))"; fi
+}
+psql_run "CREATE TABLE alias_src (id int8) USING pgcolumnar; INSERT INTO alias_src VALUES (7), (8);"
+check "export_parquet refuses s3a:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.export_parquet('alias_src', 's3a://$BUCKET/out/e.parquet')" \
+		export_parquet "s3a://$BUCKET/out/e.parquet" "s3://$BUCKET/out/e.parquet")" "0A000 named"
+check "export_arrow refuses s3n:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.export_arrow('alias_src', 's3n://$BUCKET/out/e.arrow')" \
+		export_arrow "s3n://$BUCKET/out/e.arrow" "s3://$BUCKET/out/e.arrow")" "0A000 named"
+check "parallel_export_parquet refuses S3A:// with 0A000 and a hint naming the s3:// URL" \
+	"$(alias_refusal "SELECT pgcolumnar.parallel_export_parquet('alias_src', 'S3A://$BUCKET/out/pe/')" \
+		parallel_export_parquet "S3A://$BUCKET/out/pe/" "s3://$BUCKET/out/pe/")" "0A000 named"
+
 # ---- a non-advancing continuation token is refused, not looped forever ------
 # A broken or hostile endpoint that replays one truncated page with the same
 # token would spin the paging loop toward the page cap. The client detects the
-# token that does not advance and errors (08P01) instead. Removal proof: without
-# that check the read loops until statement_timeout (57014), not 08P01.
+# token that does not advance and errors (08P01) instead, by that check's own
+# message. Removal proof: without that check the read loops until
+# statement_timeout (57014), not 08P01.
 cat > "$PGC_WORKDIR/__listing_override__" <<'XML'
 <?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>STUCK</NextContinuationToken><Contents><Key>lst/part-0000.parquet</Key></Contents></ListBucketResult>
 XML
 check "a non-advancing continuation token is refused, not an infinite paging loop" \
-	"$(sqlstate_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")" "08P01"
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned a non-advancing continuation token" " by the token check")" "08P01 by the token check"
 rm -f "$PGC_WORKDIR/__listing_override__"
 
 # A truncated page that carries NO keys is the other non-progress shape: an
 # endpoint that varies its token each page (which the token check cannot catch)
 # but never returns a key would otherwise page to the OS_LIST_MAX_PAGES backstop.
 # ListObjectsV2 always returns a key on a truncated page, so an empty truncated
-# page is refused on the first page (08P01). Removal proof: without the progress
-# check this pages until statement_timeout (57014).
+# page is refused on the first page (08P01), by the progress check's own message:
+# this page replays its token, so without the progress check the token check
+# refuses it on the second page with the same SQLSTATE.
 cat > "$PGC_WORKDIR/__listing_override__" <<'XML'
 <?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next-1</NextContinuationToken></ListBucketResult>
 XML
 check "a truncated page with no keys is refused, not looped" \
-	"$(sqlstate_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)")" "08P01"
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned a truncated page with no keys" " by the progress check")" "08P01 by the progress check"
 rm -f "$PGC_WORKDIR/__listing_override__"
 
-# ---- optional: a real S3 (Garage), same as the sibling suites ---------------
+# ---- a LIST that fails is refused, never read as an empty prefix -------------
+# An empty listing is a legal answer (a prefix with nothing under it), so a client
+# that took a failed LIST for one would read zero rows from a prefix it never saw.
+echo 500 > "$PGC_WORKDIR/__listing_status__"
+check "a LIST that returns HTTP 500 is refused, not read as an empty prefix" \
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"returned HTTP 500" " by the HTTP status check")" "08006 by the HTTP status check"
+rm -f "$PGC_WORKDIR/__listing_status__"
+
+# ---- #1902: a file that does not match the declared columns is named ---------
+# Each read binds every file against the declared columns and refuses the first
+# that does not match. The refusal names that file in its DETAIL, so a prefix of
+# thousands of objects says which one to look at.
+# refusal_detail SQL -> "SQLSTATE: message | DETAIL: detail" ("| no detail" when
+# it has none), or "no error (first line of output)".
+refusal_detail() {
+	local out st msg det
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	det="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then
+		echo "$st: $msg | ${det:+DETAIL: }${det:-no detail}"
+	else
+		echo "no error ($(head -1 <<<"$out"))"
+	fi
+}
+check "premise: the matching objects of mix/ read" \
+	"$(rpq 'mix/f0[013].parquet')" "3 4"
+MIX_TYPE='42804: Parquet column 0 physical type is not compatible with target column "id" (bigint)'
+check "read_parquet over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/mix/') AS t(id int8)")" \
+	"$MIX_TYPE | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
+check "read_parquet over a glob names the object with an extra column" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/wide/*.parquet') AS t(id int8)")" \
+	"42804: Parquet file has 2 leaf columns, target table expands to 1 | DETAIL: The mismatched file is \"s3://$BUCKET/wide/f01.parquet\"."
+check "read_parquet by field id over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/mix/', ARRAY[1]) AS t(id int8)")" \
+	"42804: Parquet column with field id 1 has a physical type incompatible with output column \"id\" (bigint) | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
+psql_run "CREATE FOREIGN TABLE fmix (id int8) SERVER s3srv OPTIONS (path 's3://$BUCKET/mix/');"
+check "the FDW over a prefix names the object whose column type does not match" \
+	"$(refusal_detail "SELECT count(*) FROM fmix")" \
+	"$MIX_TYPE | DETAIL: The mismatched file is \"s3://$BUCKET/mix/f02.parquet\"."
+
+check "backend still up after the listing refusals" "$(survived "$CRASHES_BEFORE")" "1"
+
+# ---- an s3:// glob too deep or too long for fnmatch is an error (#1972) -----
+#
+# glibc fnmatch calls itself for each * of a key, and keeps state on the stack
+# at each call. The reader refuses an s3:// pattern with more than 128 *, or of
+# PATH_MAX (4096) bytes or more, with error 54000 before it lists the prefix,
+# as path_glob_matches does (#1964).
+# st SQL [DB] -> the SQLSTATE SQL fails with, "ok" when it succeeds, or "no answer"
+st() {
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "${2:-$PGC_DB}" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1 >/dev/null)
+	[ -z "$out" ] && { echo ok; return; }
+	out=$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)
+	echo "${out:-no answer}"
+}
+# rst N -> the SQLSTATE of read_parquet over an s3:// glob of N */ levels under
+# glb/, and the number of LIST requests it sent: glb/ holds 3 keys, so a
+# listing in pages of 2 sends 2
+rst() {
+	local s
+	: > "$S3_LOG"
+	s=$(st "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/glb/' || repeat('*/', $1) || 'x.parquet') AS t(id int8)")
+	echo "$s lists=$(listn)"
+}
+check "read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists" \
+	"$(rst 128)|$(rst 129)" "58P01 lists=2|54000 lists=0"
+check "read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('s3://$BUCKET/*', 4087, 'a') || '.parquet') AS t(id int8)")|$(st "SELECT count(*) FROM pgcolumnar.read_parquet(rpad('s3://$BUCKET/*', 4088, 'a') || '.parquet') AS t(id int8)")" \
+	"58P01|54000"
+psql_run "DO \$\$BEGIN EXECUTE format('CREATE FOREIGN TABLE fdeep (id int8) SERVER s3srv OPTIONS (path %L)', 's3://$BUCKET/' || repeat('*/', 129) || 'x.parquet'); END\$\$;"
+check "a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000" \
+	"$(st "SELECT count(*) FROM fdeep")" "54000"
+# A key of 1000 levels, which the glob below would match. The fixture lists it
+# from __listing_override__, so no tree 1000 directories deep is made on disk.
+# fnmatch keeps more on the stack for each * in a UTF-8 locale than in C, so
+# the read runs in a database whose LC_CTYPE is C.UTF-8. Last of the fixture
+# arms: before the fix this read crashed the server.
+DEEP_KEY="deep/$(printf 'a/%.0s' $(seq 1000))x.parquet"
+printf '<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>%s</Key></Contents></ListBucketResult>\n' \
+	"$DEEP_KEY" > "$PGC_WORKDIR/__listing_override__"
+# The key is listed but holds no object, so a glob that matches it fails on
+# the read, and the error names the key: that is the premise.
+deep_premise() {
+	local out s
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v VERBOSITY=verbose -c "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8)" 2>&1)"
+	s="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\):.*/\1/p' <<<"$out" | head -1)"
+	if grep -qF "a/a/x.parquet" <<<"$out"; then echo "${s:-no error} names the key"
+	else echo "${s:-no error}: $(head -1 <<<"$out" | cut -c1-200)"; fi
+}
+check "premise: the listing returns a key of 1000 levels, and a glob of one * matches it" \
+	"$(deep_premise)" "58P01 names the key"
+psql_run "DROP DATABASE IF EXISTS lst_cutf8;"
+psql_run "CREATE DATABASE lst_cutf8 TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8';"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d lst_cutf8 -X -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pgcolumnar;"
+DEEP_CRASHES="$(crashes)"
+check "read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up" \
+	"$(st "SELECT count(*) FROM pgcolumnar.read_parquet('s3://$BUCKET/deep/' || repeat('*/', 1000) || '*.parquet') AS t(id int8)" lst_cutf8)|$(survived "$DEEP_CRASHES")" \
+	"54000|1"
+rm -f "$PGC_WORKDIR/__listing_override__"
+wait_up
+psql_run "DROP DATABASE lst_cutf8;"
+
+# ---- optional: a real S3 implementation (Garage), as the sibling suites (#1798)
+# The fixture above answers ListObjectsV2 from one Python handler, two keys a page.
+# These arms put a layout on a real S3 implementation under a per-run prefix and
+# read every remote prefix and glob against the same layout read from local disk,
+# so the hidden-name rules, glob matching and paging meet a real ListObjectsV2.
+# page/ holds 1100 one-row objects: a real server caps a page at 1000 keys, and the
+# client has no max-keys setting, so 1100 rows back means it followed a real
+# continuation token. The virtual-host arm needs an endpoint whose bucket
+# subdomain resolves (Garage: a root_domain such as .s3.garage.localhost), named
+# by PGC_S3_INTEGRATION_VHOST_ENDPOINT; without one it records nothing.
 if [ -n "${PGC_S3_INTEGRATION_ENDPOINT:-}" ]; then
-	:
+	IB="${PGC_S3_INTEGRATION_BUCKET:-pgcolumnar-test}"
+	IRUN="lst-$$"
+	INT="$PGC_WORKDIR/int"
+	s3cli() {
+		env AWS_ACCESS_KEY_ID="$PGC_S3_INTEGRATION_KEY" \
+			AWS_SECRET_ACCESS_KEY="$PGC_S3_INTEGRATION_SECRET" \
+			AWS_DEFAULT_REGION="${PGC_S3_INTEGRATION_REGION:-garage}" \
+			aws --endpoint-url "$1" "${@:2}"
+	}
+	# s3firstpage PREFIX -> "KeyCount IsTruncated" of ListObjectsV2's first page
+	# under PREFIX ("1000 True"), or why there is none
+	s3firstpage() {
+		local x n t
+		if ! x="$(curl -sS --aws-sigv4 "aws:amz:${PGC_S3_INTEGRATION_REGION:-garage}:s3" \
+			--user "$PGC_S3_INTEGRATION_KEY:$PGC_S3_INTEGRATION_SECRET" \
+			"$PGC_S3_INTEGRATION_ENDPOINT/$IB?list-type=2&prefix=$1" 2>&1)"
+		then
+			echo "no listing (curl failed: $(printf '%s' "$x" | tr '\n' ' ' | cut -c1-200))"
+			return
+		fi
+		n="$(printf '%s' "$x" | sed -n 's:.*<KeyCount>\([0-9]*\)</KeyCount>.*:\1:p')"
+		t="$(printf '%s' "$x" | sed -n 's:.*<IsTruncated>\([a-z]*\)</IsTruncated>.*:\1:p')"
+		case "$t" in true) t=True ;; false) t=False ;; esac
+		if [ -n "$n" ] && [ -n "$t" ]; then
+			echo "$n $t"
+		else
+			echo "no KeyCount and IsTruncated in the reply: $(printf '%s' "$x" | tr '\n' ' ' | cut -c1-200)"
+		fi
+	}
+	mkdir -p "$INT"
+	cp -a "$PGC_WORKDIR/$BUCKET/lst" "$PGC_WORKDIR/$BUCKET/_landing" \
+		"$PGC_WORKDIR/$BUCKET/.dir" "$PGC_WORKDIR/$BUCKET/glb" "$INT/"
+	python3 - "$INT" <<'PYEOF'
+import sys, os
+import pyarrow as pa, pyarrow.parquet as pq
+B = sys.argv[1]
+def one(path, ids):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pq.write_table(pa.table({"id": pa.array(ids, pa.int64())}), path)
+# hidden names beside one part: a marker, a _temporary/ directory, a dot file
+one(os.path.join(B, "hid/part.parquet"), [1, 2, 3])
+open(os.path.join(B, "hid/_SUCCESS"), "w").close()
+one(os.path.join(B, "hid/_temporary/x.parquet"), [99])
+one(os.path.join(B, "hid/.hidden.parquet"), [100])
+# 1100 one-row objects, more than one real 1000-key page
+for i in range(1100):
+    one(os.path.join(B, "page/k-%04d.parquet" % i), [i])
+PYEOF
+	if pg_restart_env "AWS_ENDPOINT_URL='$PGC_S3_INTEGRATION_ENDPOINT'" \
+		"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
+		"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
+		"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+	then int_up=yes; else int_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+	check "integration: the cluster restarts with the real S3 credentials" "$int_up" "yes"
+	IHOST="$(echo "${PGC_S3_INTEGRATION_ENDPOINT#*://}" | cut -d/ -f1 | cut -d: -f1)"
+	pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='127.0.0.1,$IHOST'\" >> '$PGC_PGDATA/postgresql.conf'"
+	q "SELECT pg_reload_conf()" >/dev/null
+	if s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3 cp --recursive --only-show-errors \
+		"$INT" "s3://$IB/$IRUN" >/dev/null 2>&1
+	then
+		# rd URL... -> each URL's "count sum", joined by "; ": the remote and local
+		# readings of one check are the same list over two roots
+		rd() {
+			local u out=""
+			for u in "$@"; do
+				out="$out${out:+; }$(qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$u') AS t(id int8);" | tr '|' ' ')"
+			done
+			echo "$out"
+		}
+		R="s3://$IB/$IRUN"
+		check_text "integration: real S3 prefix read == local directory" \
+			"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$R/lst/') AS t(id int8)")" \
+			"$(pgc_set_hash "SELECT * FROM pgcolumnar.read_parquet('$INT/lst/') AS t(id int8)")"
+		check_text "integration: real S3 glob == local glob" \
+			"$(rd "$R/lst/*.parquet" "$R/glb/*.parquet" "$R/glb/_*.parquet" "$R/glb/.*.parquet")" \
+			"$(rd "$INT/lst/*.parquet" "$INT/glb/*.parquet" "$INT/glb/_*.parquet" "$INT/glb/.*.parquet")"
+		check_text "integration: real S3 skips hidden names like a local directory" \
+			"$(rd "$R/hid/" "$R/glb/")" "$(rd "$INT/hid/" "$INT/glb/")"
+		check_text "integration: real S3 prefix under a _ or . directory == local" \
+			"$(rd "$R/_landing/" "$R/.dir/" "$R/_landing/*.parquet" "$R/.dir/*.parquet")" \
+			"$(rd "$INT/_landing/" "$INT/.dir/" "$INT/_landing/*.parquet" "$INT/.dir/*.parquet")"
+		# the server's own first page, read by another client: the premise that
+		# 1100 keys cannot come back in one page. curl signs the ListObjectsV2
+		# request itself (--aws-sigv4), since `aws s3api` fails to start on some
+		# aws-cli 2 / Python 3.14 installs ("badly formed help string")
+		check "integration: the real S3 serves the 1100 keys in pages of at most 1000" \
+			"$(s3firstpage "$IRUN/page/")" "1000 True"
+		check "integration: real S3 listing pages past 1000 keys" \
+			"$(rd "$R/page/")" "1100 604450"
+		VEP="${PGC_S3_INTEGRATION_VHOST_ENDPOINT:-}"
+		VHOST="$(echo "${VEP#*://}" | cut -d/ -f1 | cut -d: -f1)"
+		if [ -n "$VEP" ] && getent hosts "$IB.$VHOST" >/dev/null 2>&1; then
+			pgc_pg "echo \"pgcolumnar.objstore_allowed_endpoints='127.0.0.1,$IHOST,$VHOST'\" >> '$PGC_PGDATA/postgresql.conf'"
+			if pg_restart_env "AWS_ENDPOINT_URL='$VEP'" \
+				"AWS_ACCESS_KEY_ID='$PGC_S3_INTEGRATION_KEY'" \
+				"AWS_SECRET_ACCESS_KEY='$PGC_S3_INTEGRATION_SECRET'" \
+				"AWS_REGION='${PGC_S3_INTEGRATION_REGION:-garage}'"
+			then v_up=yes; else v_up="no (the cluster did not answer SELECT 1 within 15 s of the restart)"; fi
+			check "integration: the cluster restarts with the virtual-host endpoint" "$v_up" "yes"
+			VSQL="SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$R/lst/') AS t(id int8);"
+			check_text "integration: real S3 virtual-host prefix read == path-style" \
+				"$(qe "SET pgcolumnar.objstore_s3_addressing = 'virtual'; $VSQL" | grep -v '^SET$' | tr '|' ' ')" \
+				"$(qe "SET pgcolumnar.objstore_s3_addressing = 'path'; $VSQL" | grep -v '^SET$' | tr '|' ' ')"
+		else
+			echo "note: PGC_S3_INTEGRATION_VHOST_ENDPOINT unset, or $IB.<its host> does not" \
+				"resolve; the virtual-host arm is not run"
+		fi
+		s3cli "$PGC_S3_INTEGRATION_ENDPOINT" s3 rm --recursive --only-show-errors \
+			"s3://$IB/$IRUN/" >/dev/null 2>&1 || echo "note: could not remove s3://$IB/$IRUN/"
+	else
+		echo "note: integration endpoint set but the upload helper failed;" \
+			"the fixture arms above carry the proof alone"
+	fi
+else
+	echo "note: PGC_S3_INTEGRATION_ENDPOINT unset; the fixture arms above carry the proof alone"
 fi
 
 pgc_summary

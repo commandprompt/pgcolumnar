@@ -29,13 +29,20 @@ groups_removed() {
 		| grep -F "Vectors Skipped" | grep -oE '[0-9]+$' | head -1
 }
 
+# expect_error LABEL SQL SQLSTATE: the refusal must be THIS one, by its SQLSTATE.
+#
+# Any error used to count. Measured (#1341): with vacuum_sorted's columnar check
+# removed, the heap table still raised -- XX001, reading the heap's file as
+# columnar storage -- and "reject non-columnar table" stayed green on a refusal
+# that was no longer there. And a red was recorded as "$label (expected error)",
+# a name the passing run never records, so the ledger's row could not be dated;
+# it is recorded under the label now.
 expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
-	else
-		check "$label" "error" "error"
-	fi
+	local label="$1" sql="$2" want="$3" out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$sql" 2>&1 >/dev/null)"
+	state="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)"
+	check "$label" "${state:-succeeded}" "$want"
 }
 
 # Many small chunk groups; the sort key k is scrambled relative to insert order
@@ -105,10 +112,28 @@ check "live count after delete+sort" "$(q "SELECT count(*) FROM t_col;")" "25000
 diff_query "count matches heap"  "SELECT count(*) FROM %T"
 diff_query "sum matches heap"    "SELECT sum(v) FROM %T"
 # SET prints its own command tag; the scalar value is the last line.
+#
+# The custom scan off too, and a premise per arm that it reads t_col_id_idx:
+# enable_seqscan alone leaves the columnar custom scan on. Measured (#1339): with
+# vacuum_sorted's reindex removed, so the index points at the old row numbers,
+# the point lookup stayed green, because it never read the index. The deletion
+# lookup plans as an Index Only Scan (it reads only id), which still asks each
+# row whether it is live, so the premise accepts either index node.
+IDXON="SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off;"
+reads_index() {	# reads_index QUERY -> yes, or the plan's scan line
+	local plan
+	plan="$(q "$IDXON EXPLAIN (COSTS OFF) $1")"
+	case "$plan" in
+		*"Index Scan using t_col_id_idx"*|*"Index Only Scan using t_col_id_idx"*) echo yes ;;
+		*) echo "no: $(grep -m1 'Scan' <<<"$plan" | sed 's/^ *//')" ;;
+	esac
+}
+check "premise: the point lookup reads t_col_id_idx" "$(reads_index "SELECT t FROM t_col WHERE id = 4999")" "yes"
 check "index point lookup after sort" \
-	"$(q "SET enable_seqscan=off; SELECT t FROM t_col WHERE id = 4999;" | tail -1)" "r4999"
+	"$(q "$IDXON SELECT t FROM t_col WHERE id = 4999;" | tail -1)" "r4999"
+check "premise: the deletion lookup reads t_col_id_idx" "$(reads_index "SELECT count(*) FROM t_col WHERE id = 5000")" "yes"
 check "index sees deletion after sort" \
-	"$(q "SET enable_seqscan=off; SELECT count(*) FROM t_col WHERE id = 5000;" | tail -1)" "0"
+	"$(q "$IDXON SELECT count(*) FROM t_col WHERE id = 5000;" | tail -1)" "0"
 
 # ---------------------------------------------------------------------------
 # Idempotence: sorting an already-sorted table changes nothing observable.
@@ -123,12 +148,12 @@ check "idempotent sorted rewrite" "$h2" "$h1"
 # Argument validation.
 # ---------------------------------------------------------------------------
 echo "-- argument validation"
-expect_error "reject non-columnar table"   "SELECT pgcolumnar.vacuum_sorted('t_heap', 'k');"
-expect_error "reject unknown column"        "SELECT pgcolumnar.vacuum_sorted('t_col', 'nope');"
-expect_error "reject no sort columns"       "SELECT pgcolumnar.vacuum_sorted('t_col');"
+expect_error "reject non-columnar table"   "SELECT pgcolumnar.vacuum_sorted('t_heap', 'k');" 42809
+expect_error "reject unknown column"        "SELECT pgcolumnar.vacuum_sorted('t_col', 'nope');" 42703
+expect_error "reject no sort columns"       "SELECT pgcolumnar.vacuum_sorted('t_col');" 22023
 q "DROP TABLE IF EXISTS t_js;" >/dev/null
 q "CREATE TABLE t_js (a int, j json) USING pgcolumnar;" >/dev/null
 q "INSERT INTO t_js SELECT g, '{}'::json FROM generate_series(1,10) g;" >/dev/null
-expect_error "reject non-sortable type"     "SELECT pgcolumnar.vacuum_sorted('t_js', 'j');"
+expect_error "reject non-sortable type"     "SELECT pgcolumnar.vacuum_sorted('t_js', 'j');" 42883
 
 pgc_summary

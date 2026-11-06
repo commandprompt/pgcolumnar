@@ -94,28 +94,20 @@ fail=0
 # return nothing on this log, it REFUSED it: "no RESULT records, so there is
 # nothing to reconcile".
 #
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
+# lib.sh's own `check` (#1341), as smoke.sh did. This suite used to define its own
+# `check` around pgc_record, to keep a `: $got` suffix on PASS lines. A PASS
+# line's value is the wanted value, which the call already states, and a FAIL line
+# carries both either way. A suite-local recorder is also what the pytest twin's
+# grading cannot read (test_compare_to_bash's seed arm), so the shared one is used
+# and `fail` is taken from lib.sh's own PGC_FAIL before the verdict. The verdict
+# line stays: under `set -euo pipefail` a failing command aborts the suite, and
+# the verdict is what distinguishes finished from stopped.
 #
 # The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
 # the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
 # because it emits no accounting line. The line is still correct and wanted --
-# it is the total the records reconcile against -- so the remaining step is a gate
+# it is the total the records reconcile against, so the remaining step is a gate
 # flip rather than new work (@jdatcmd, #969 review).
-check() {
-	local name="$1" got="$2" want="$3"
-	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
-	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
 
 q "CREATE EXTENSION pgcolumnar;" >/dev/null
 
@@ -152,9 +144,14 @@ for codec in none pglz lz4 zstd; do
 	check "$codec sum(id)"     "$(q 'SELECT sum(id) FROM c;')"                  "200010000"
 	check "$codec payload ok"  "$(q "SELECT payload = repeat('x',100) FROM c WHERE id = 12345;")" "t"
 	check "$codec distinct pl" "$(q 'SELECT count(DISTINCT payload) FROM c;')"  "1"
-	# The native writer records the per-vector encoding cascade and the optional
-	# block codec in the column-chunk descriptor; that choice is exercised by the
-	# native_encoding suite. Here the round-trip above proves each codec decodes.
+	# AND THE CODEC ASKED FOR IS THE ONE STORED (#1341). The round-trip alone
+	# proves only that what was stored decodes: with the session's setting ignored
+	# (every write zstd), or with no block codec ever applied, all four codecs
+	# passed every check above, and $code was computed for nothing since the
+	# native conversion dropped the 2.2 catalog's check. The payload column, whose
+	# 20000 identical values compress under every codec, is read; codec none is the
+	# control that 0 is what an unrequested codec stores.
+	check "$codec block codec" "$(q "SELECT string_agg(DISTINCT block_codec::text, ',') FROM pgcolumnar.column_chunk WHERE storage_id = pgcolumnar.get_storage_id('c') AND column_index = 1;")" "$code"
 
 	q "DROP TABLE c;" >/dev/null
 done
@@ -222,6 +219,13 @@ check "between count"  "$(q 'SELECT count(*) FROM s WHERE id BETWEEN 15000 AND 1
 check "range min/max"  "$(qq 'SELECT min(id) || CHR(124) || max(id) FROM s WHERE id > 24990;')" "24991|25000,"
 check "point lookup"   "$(q 'SELECT count(*) FROM s WHERE id = 20005;')" "1"
 check "empty range"    "$(q 'SELECT count(*) FROM s WHERE id > 30000;')" "0"
+# AND THE SKIP LIST SKIPS (#1341). The four results above hold whether or not a
+# vector was skipped, so with the zone maps ruling out nothing every check here
+# passed. id > 24990 lies wholly in vector 2 (20001-25000), so the qual column
+# decodes one of the three. Read as Vectors Decoded, not Vectors Skipped: exact
+# selection rules the other two out by value after decoding them, and still
+# reports them skipped (measured: 2 skipped, 3 decoded with the zone maps off).
+check "range decodes 1 of 3 vectors" "$(q 'SET max_parallel_workers_per_gather = 0; EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id FROM s WHERE id > 24990;' | grep -oP 'Columnar Vectors Decoded: \K[0-9]+')" "1"
 q "DROP TABLE s;" >/dev/null
 
 # ---------------------------------------------------------------------------
@@ -229,6 +233,8 @@ q "DROP TABLE s;" >/dev/null
 # ---------------------------------------------------------------------------
 check "orphan row groups" "$(q 'SELECT count(*) FROM pgcolumnar.row_group;')"   "0"
 check "orphan chunks"     "$(q 'SELECT count(*) FROM pgcolumnar.column_chunk;')" "0"
+
+fail="$PGC_FAIL"
 
 echo
 if [ "$fail" = "0" ]; then

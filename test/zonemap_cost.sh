@@ -128,7 +128,9 @@ SEQ_REMOVED=$(removed_for seq)
 SCAT_REMOVED=$(removed_for scat)
 echo "-- groups removed: seq = ${SEQ_REMOVED:-?}, scat = ${SCAT_REMOVED:-?}"
 
-check_num "premise: the correlated arm actually removes chunk groups (#477)" \
+# Named as an arm, not a premise: a reader that drops the cross-type key (#477)
+# turns it red, and the ledger gate refuses a premise a mutation has reddened.
+check_num "the correlated arm actually removes chunk groups (#477)" \
 	"$([ -n "$SEQ_REMOVED" ] && awk "BEGIN{exit !($SEQ_REMOVED > 0)}" && echo 1 || echo 0)" "1"
 
 # And the control removes none, which is what makes the discount's absence there
@@ -160,8 +162,14 @@ FULL_COL=$(cost_for scat "SET enable_indexscan=off; SET enable_bitmapscan=off; S
 echo "-- scattered: columnar=$SCAT_COL"
 check_num "premise: the scattered columnar cost is a measurement" \
 	"$([ -n "$SCAT_COL" ] && awk "BEGIN{exit !($SCAT_COL > 0)}" && echo 1 || echo 0)" "1"
+# A MARGIN, as in the #461 check below, and for the same reason. Written as a bare
+# `>` this passed under a blanket discount (every restriction priced at a fifth):
+# 921.01 against 919.29, two equal prices apart by the sampling noise in ANALYZE.
+# The control exists to catch exactly that, so it must demand the gap pruning makes:
+# the scattered arm removes none of 20 groups and the correlated arm 16, about 4.6x
+# in cost on this fixture, and twice is far above the noise.
 check_num "an uncorrelated restriction gets no pruning discount (#434)" \
-	"$(awk "BEGIN{print ($SCAT_COL > $SEQ_COL) ? 1 : 0}")" "1"
+	"$(awk "BEGIN{print ($SCAT_COL > $SEQ_COL * 2) ? 1 : 0}")" "1"
 
 # ---- #461: locally tight, globally uncorrelated -----------------------------
 #

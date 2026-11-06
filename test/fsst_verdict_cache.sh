@@ -100,6 +100,11 @@ fsst_vectors() {  # fsst_vectors <table>
 fsst_or_none() { local v; v="$(fsst_vectors "$1")"; pgc_is_number "$v" && echo "$v" || echo none; }
 
 rows_of()  { q "SELECT count(*) FROM $1;"; }
+# A decline is read with the table's row count: an empty table has no vector to
+# choose FSST, so its 0 is not a decline (measured, with the cached load failed).
+rows_fsst() { echo "$(rows_of "$1")/$(fsst_or_none "$1")"; }
+# Values, carrying the row count, so two empty tables cannot hash-match.
+counted_hash() { echo "$(q "SELECT count(*) FROM ($1) _c;"):$(pgc_set_hash "$1")"; }
 groups_of() { q "SELECT count(DISTINCT group_number) FROM pgcolumnar.column_chunk c
 		JOIN pgcolumnar.storage s ON s.storage_id = c.storage_id
 		WHERE s.relation_oid = '$1'::regclass;"; }
@@ -120,7 +125,7 @@ check_num "premise: the md5 fixture loaded" "$(rows_of fv_md5_off)" "$ROWS"
 check "premise: the prose corpus KEEPS fsst, so the HELPS branch is exercised" \
 	"$(v=$(fsst_or_none fv_prose_off); [ "$v" != none ] && [ "$v" -gt 0 ] && echo yes || echo "no ($v)")" "yes"
 check "premise: and the md5 corpus DROPS it, so the two arms are different branches" \
-	"$(fsst_or_none fv_md5_off)" "0"
+	"$(rows_fsst fv_md5_off)" "$ROWS/0"
 
 # --- 1. a cached verdict must not change one stored byte ------------------------
 
@@ -133,7 +138,7 @@ check "and it still keeps fsst, rather than silently dropping it" \
 load fv_md5_on "$MD5" 16
 check_text "a reused HURTS verdict stores byte-identical chunks" \
 	"$(fingerprint fv_md5_on)" "$(fingerprint fv_md5_off)"
-check "and it still declines fsst" "$(fsst_or_none fv_md5_on)" "0"
+check "and it still declines fsst" "$(rows_fsst fv_md5_on)" "$ROWS/0"
 
 # --- 2. the data, which is a different question from the bytes ------------------
 #
@@ -142,9 +147,9 @@ check "and it still declines fsst" "$(fsst_or_none fv_md5_on)" "0"
 psql_run "DROP TABLE IF EXISTS fv_heap;
 	CREATE TABLE fv_heap (t text);
 	INSERT INTO fv_heap SELECT $PROSE FROM generate_series(1,$ROWS) g;" >/dev/null
-check "the cached load returns the same values as heap" \
-	"$(pgc_set_hash 'SELECT t FROM fv_prose_on')" \
-	"$(pgc_set_hash 'SELECT t FROM fv_heap')"
+check_text "the cached load returns the same values as heap" \
+	"$(counted_hash 'SELECT t FROM fv_prose_on')" \
+	"$ROWS:$(pgc_set_hash 'SELECT t FROM fv_heap')"
 
 # --- 3. the age bound, tested rather than assumed -------------------------------
 #
@@ -194,14 +199,20 @@ echo "-- distance from the uncached decision: bounded=$_d_bounded unbounded=$_d_
 
 # Without this the comparison below could hold with both distances zero, which
 # is what a fixture that does not actually change character would produce.
-check "premise: an unbounded cache really does diverge on this fixture" \
+check "an unbounded cache really does diverge on this fixture" \
 	"$([ "$_d_unbounded" -gt 0 ] && echo yes || echo "no (the fixture does not change character)")" "yes"
 
 check "a bounded cache tracks the change more closely than an unbounded one" \
 	"$([ "$_d_bounded" -lt "$_d_unbounded" ] && echo yes || echo "no ($_d_bounded vs $_d_unbounded)")" "yes"
 
-check "and the changing column still returns its values" \
-	"$(q "SELECT count(*) FROM fv_chg_bounded;")" "$ROWS"
+# Its VALUES, against a heap loaded from the same generator. This read only the
+# row count, and an FSST decoder that wrote the wrong symbol passed it (measured).
+psql_run "DROP TABLE IF EXISTS fv_chg_heap;
+	CREATE TABLE fv_chg_heap (t text);
+	INSERT INTO fv_chg_heap SELECT $CHANGING FROM generate_series(1,$ROWS) g;" >/dev/null
+check_text "and the changing column still returns its values" \
+	"$(counted_hash 'SELECT t FROM fv_chg_bounded')" \
+	"$ROWS:$(pgc_set_hash 'SELECT t FROM fv_chg_heap')"
 
 # --- 4. the win, in this suite rather than from a standalone probe --------------
 #
@@ -213,8 +224,13 @@ t_off=$LOAD_MS
 load fv_time_on "$MD5" 16
 t_on=$LOAD_MS
 echo "-- md5 load: uncached=${t_off} ms cached=${t_on} ms"
+# Both loads must have loaded: a load that errored at once is fast too, and with
+# the cached load failed this passed (measured).
 check "caching the verdict makes the load measurably faster" \
-	"$([ "${t_on:-0}" -lt "$(( ${t_off:-0} * 90 / 100 ))" ] && echo yes || echo "no ($t_on vs $t_off ms)")" \
+	"$(if [ "$(rows_of fv_time_on)" != "$ROWS" ] || [ "$(rows_of fv_time_off)" != "$ROWS" ]; then
+		echo "a timed load did not load ($(rows_of fv_time_on) / $(rows_of fv_time_off) rows)"
+	   elif [ "$t_on" -lt "$(( t_off * 90 / 100 ))" ]; then echo yes
+	   else echo "no ($t_on vs $t_off ms)"; fi)" \
 	"yes"
 
 pgc_summary

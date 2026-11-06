@@ -46,6 +46,7 @@ WAREHOUSES = {
     "ev":  ("warehouse",            "events",  "id bigint, region text, amount int"),
     "evd": ("warehouse_datepart",   "byday",   "id bigint, dt date, amount int"),
     "evb": ("warehouse_bucket",     "byid",    "id bigint, val text, amount int"),
+    "evs": ("warehouse_bucket_text", "bystr",  "id bigint, s text"),
     "evt": ("warehouse_trunc",      "bytr",    "id bigint, amount int"),
     "evy": ("warehouse_day",        "byday",   "id bigint, dt date"),
     "ty":  ("warehouse_temporal",   "byyear",   "id bigint, ts timestamp"),
@@ -58,6 +59,15 @@ WAREHOUSES = {
     "mz":  ("warehouse_temporal_xt", "bymonth_tz", "id bigint, tt timestamptz"),
     "dz":  ("warehouse_temporal_xt", "byday_tz",   "id bigint, tt timestamptz"),
     "hz":  ("warehouse_temporal_xt", "byhour_tz",  "id bigint, tt timestamptz"),
+    # the same two hour() tables declared as the OTHER timestamp type (#1706)
+    "hw":  ("warehouse_temporal",   "byhour",     "id bigint, ts timestamptz"),
+    "hn":  ("warehouse_temporal_xt", "byhour_tz",  "id bigint, tt timestamp"),
+    # declared typmods the reader applies to every value (#1790)
+    "ev_v1": ("warehouse",          "events",       "id bigint, region varchar(1), amount int"),
+    "pad2":  ("warehouse_typmod",   "byregion_pad", "id bigint, region varchar(2)"),
+    "frac0": ("warehouse_typmod",   "byhour_frac",  "id bigint, ts timestamp(0)"),
+    "bkt2":  ("warehouse_typmod",   "byregion_bucket", "id bigint, region varchar(2)"),
+    "th6":   ("warehouse_temporal", "byhour",       "id bigint, ts timestamp(6)"),
 }
 
 
@@ -363,8 +373,10 @@ BUCKET_PRUNE = [
     (5, "id = 5 bucket-prunes past metrics (Files Pruned: 4)"),
 ]
 
+# id = 1 compares the value too, as the shell twin does (#1339): an id alone passes a
+# read that keeps the right row and returns the wrong data in it.
 BUCKET_ROWS = [
-    (1, "1", "id = 1 returns row 1"),
+    (1, "1|v1", "id = 1 returns row 1"),
     (4, "4", "id = 4 returns row 4"),
     (5, "5", "id = 5 returns row 5"),
 ]
@@ -383,7 +395,9 @@ def test_a_bucket_pruned_equality_returns_its_row(ice, expect, probe, ids, name)
     conn, meta = ice
     if not _need(expect, meta, "evb"):
         return
-    expect.text(_ids(conn, "evb", f"id = {probe}"), ids, name)
+    got = (_one(conn, f"SELECT string_agg(id::text || '|' || val, ',' ORDER BY id) FROM evb WHERE id = {probe}")
+           if "|" in ids else _ids(conn, "evb", f"id = {probe}"))
+    expect.text(got, ids, name)
 
 
 def test_the_bucket_table_reads_whole_and_matches_the_murmur3_oracle(ice, expect):
@@ -412,6 +426,107 @@ def test_a_range_predicate_cannot_bucket_prune(ice, expect):
                "id > 4 prunes by metrics not bucket, correctly (Files Pruned: 2)")
     expect.text(_ids(conn, "evb", "id > 4"), "5,6,7,8",
                 "id > 4 still returns the right rows")
+
+
+# ------------------------------------- bucket[N] on a string, and the collation (#1818)
+#
+# warehouse_bucket_text/db/bystr is bucket[16](s), one row per file: 1 abc, 2 ABC,
+# 3 Abc, 4 aBc, 5 x, 6 y, in buckets 10, 5, 0, 7, 11, 6. Iceberg hashes the UTF-8
+# BYTES, so under a case-insensitive collation four rows equal 'ABC' while sitting in
+# four buckets. Pruning by bucket('ABC') there skips three files of matching rows and
+# returns one row where iceberg_scan returns four -- no error, just fewer rows. So
+# the wrapper must read every file under a nondeterministic collation, and must keep
+# pruning under a deterministic one, or the guard has merely switched text off.
+
+def test_a_text_bucket_prunes_under_a_deterministic_collation(ice, expect):
+    """THE CONTROL THE GUARD MUST NOT BREAK. The default collation and "C" are both
+    deterministic: equal means byte-equal there, so bucket('ABC') names the only file
+    that can hold a match. A guard that refused every collatable qual would pass the
+    nondeterministic arms below and red these.
+    """
+    conn, meta = ice
+    if not _need(expect, meta, "evs"):
+        return
+    expect.num(int(_one(conn, "SELECT count(*) FROM evs")), 6,
+               "text bucket: the FDW reads the whole table (6 rows)")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC'"), 5,
+               "text bucket: s = 'ABC' under the default collation prunes 5 files")
+    expect.text(_ids(conn, "evs", "s = 'ABC'"), "2",
+                "text bucket: s = 'ABC' under the default collation returns row 2")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC' COLLATE \"C\""), 5,
+               "text bucket: s = 'ABC' under the deterministic C collation still prunes 5 files")
+
+
+def _ice_ci(expect, conn, meta):
+    """-> True once the ICU collation `ice_ci` and the foreign table `evs_ci`, whose
+    column is declared with it, exist; otherwise records ONE refusal and -> False.
+
+    Idempotent, so each test below can call it: `cannot_run` declines a whole test,
+    while the shell suite's `check_skip` declines only this block, so every test that
+    needs the collation refuses on its own.
+    """
+    import psycopg
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE COLLATION IF NOT EXISTS ice_ci (provider = icu, "
+                        "locale = 'und-u-ks-level2', deterministic = false)")
+            cur.execute(f"CREATE FOREIGN TABLE IF NOT EXISTS evs_ci "
+                        f"(id bigint, s text COLLATE ice_ci) SERVER ice "
+                        f"OPTIONS (metadata_path '{meta['evs']}')")
+    except psycopg.Error:
+        expect.cannot_run(
+            "MISSING_DEPENDENCY",
+            "a case-insensitive collation needs a nondeterministic ICU collation, "
+            "and a server built without ICU cannot create one",
+            name="text bucket: the nondeterministic collation case")
+        return False
+    return True
+
+
+def test_a_nondeterministic_collation_on_the_qual_does_not_bucket_prune(ice, expect):
+    """`s = 'ABC' COLLATE ice_ci`: four rows match, in four buckets. The oracle is
+    iceberg_scan, which receives no predicate and so cannot prune."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "evs", "s = 'ABC' COLLATE ice_ci"), "1,2,3,4",
+                "text bucket: s = 'ABC' COLLATE ice_ci returns all four case variants")
+    expect.text(
+        _one(conn, "SELECT string_agg(id::text || '|' || s, ',' ORDER BY id) FROM evs "
+                   "WHERE s = 'ABC' COLLATE ice_ci"),
+        _one(conn, f"SELECT string_agg(id::text || '|' || s, ',' ORDER BY id) FROM "
+                   f"pgcolumnar.iceberg_scan('{meta['evs']}') AS t(id bigint, s text) "
+                   f"WHERE s = 'ABC' COLLATE ice_ci"),
+        "text bucket: s = 'ABC' COLLATE ice_ci matches iceberg_scan (same oracle)")
+    expect.num(_pruned(conn, "SELECT * FROM evs WHERE s = 'ABC' COLLATE ice_ci"), 0,
+               "text bucket: s = 'ABC' COLLATE ice_ci prunes no file (Files Pruned: 0)")
+
+
+def test_a_nondeterministic_collation_on_the_column_does_not_bucket_prune(ice, expect):
+    """The column is declared `COLLATE ice_ci` and the query names no collation. It
+    reaches the scan only as the comparison's input collation, so a guard that read
+    anything else -- the literal, or the Var -- would see nothing to refuse here, or
+    refuse the wrong thing in the arm above."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "evs_ci", "s = 'ABC'"), "1,2,3,4",
+                "text bucket: a column declared COLLATE ice_ci returns all four case variants")
+    expect.num(_pruned(conn, "SELECT * FROM evs_ci WHERE s = 'ABC'"), 0,
+               "text bucket: a column declared COLLATE ice_ci prunes no file (Files Pruned: 0)")
+
+
+def test_an_identity_partition_prunes_under_the_quals_own_collation(ice, expect):
+    """Identity pruning evaluates the qual itself, against the file's partition value,
+    under the qual's own collation. So 'EU' COLLATE ice_ci keeps the eu file and prunes
+    only the us one: the collation that breaks bucket pruning is honoured here."""
+    conn, meta = ice
+    if not _need(expect, meta, "evs", "ev") or not _ice_ci(expect, conn, meta):
+        return
+    expect.text(_ids(conn, "ev", "region = 'EU' COLLATE ice_ci"), "1,2",
+                "identity: region = 'EU' COLLATE ice_ci returns the eu rows")
+    expect.num(_pruned(conn, "SELECT * FROM ev WHERE region = 'EU' COLLATE ice_ci"), 1,
+               "identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)")
 
 
 # ----------------------------------------------------------- truncate[W] partitioning
@@ -641,6 +756,108 @@ def test_a_year_on_date_equality_prunes_to_one_file(ice, expect):
                "year()-on-date equality prunes to one file (Files Pruned: 2)")
     expect.text(_ids(conn, "yd", "dt = DATE '2021-06-01'"), "2",
                 "year()-on-date equality returns id 2")
+
+
+# ------------------------------- a temporal transform read into the OTHER timestamp type
+#
+# The reader converts a naive (timestamp) source read into timestamptz, and a
+# timestamptz source read into timestamp, as PostgreSQL's casts do in the session zone
+# (#1706). The writer computed each partition cell in the source's own kind, so a cell
+# does not bound the converted rows and the FDW must not prune on it. In New York,
+# byhour's naive 2021-03-01 00:00, 01:00, 05:00 are 05:00Z, 06:00Z and 10:00Z; byhour_tz's
+# 00:00Z, 01:00Z, 05:00Z are the wall times 2021-02-28 19:00, 20:00 and 2021-03-01 00:00.
+# Measured before the guard: the FDW returned no rows where iceberg_scan returned two.
+
+def _in_new_york(conn, read):
+    """-> read(), with the shared connection's zone set to New York for that read only."""
+    with conn.cursor() as cur:
+        cur.execute("SET TimeZone = 'America/New_York'")
+    try:
+        return read()
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("RESET TimeZone")
+
+
+def test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "hw"):
+        return
+    where = "ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'"
+    got, want = _in_new_york(conn, lambda: (
+        _ids(conn, "hw", where),
+        _scan_ids(conn, meta["hw"], "id bigint, ts timestamptz", where)))
+    expect.text(got, want,
+                "hour() on a naive source read as timestamptz in New York matches iceberg_scan")
+
+
+def test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "hn"):
+        return
+    where = "tt <= TIMESTAMP '2021-02-28 20:00:00'"
+    got, want = _in_new_york(conn, lambda: (
+        _ids(conn, "hn", where),
+        _scan_ids(conn, meta["hn"], "id bigint, tt timestamp", where)))
+    expect.text(got, want,
+                "hour() on a timestamptz source read as timestamp in New York matches iceberg_scan")
+
+
+# ------------------------------------------------- a declared typmod, and pruning (#1790)
+#
+# The foreign table returns each value as its declared type, typmod included. A typmod
+# can change a value: varchar(2) reads the stored 'eu  ' as 'eu', and timestamp(0)
+# reads 00:59:59.7 as 01:00:00. The manifest's partition value is the stored one, so
+# a file pruned on it could hold a row the query must return. warehouse_typmod
+# (fixtures/iceberg/gen_iceberg_typmod.py) holds those two values, each in its own
+# partition.
+
+def test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value(ice, expect):
+    import psycopg
+    conn, meta = ice
+    if not _need(expect, meta, "ev_v1"):
+        return
+    try:
+        got = "no error (" + _one(conn, "SELECT string_agg(region, ',' ORDER BY region) FROM ev_v1") + ")"
+    except psycopg.Error as e:
+        got = e.sqlstate
+    expect.text(got, "22001", "typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)")
+
+
+def test_a_varchar_2_identity_partition_keeps_a_row_stored_with_trailing_spaces(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "pad2"):
+        return
+    expect.text(_ids(conn, "pad2", "region = 'eu'") or "none", "1",
+                "typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '")
+
+
+def test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "frac0"):
+        return
+    expect.text(_ids(conn, "frac0", "ts >= TIMESTAMP '2021-03-01 01:00:00'") or "none", "1,2",
+                "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2")
+
+
+def test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces(ice, expect):
+    """'eu  ' (id 1) and 'eu' (id 3) sit in different buckets but both read 'eu'. Today
+    the planner casts a varchar column to text for "=", so the qual never reaches
+    bucket pruning; the typmod guard in ice_fdw_bucket_quals keeps id 1 if that changes."""
+    conn, meta = ice
+    if not _need(expect, meta, "bkt2"):
+        return
+    expect.text(_ids(conn, "bkt2", "region = 'eu'") or "none", "1,3",
+                "typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3")
+
+
+def test_a_timestamp_6_hour_partition_still_prunes(ice, expect):
+    """Microsecond precision changes no value, so the column keeps hour pruning."""
+    conn, meta = ice
+    if not _need(expect, meta, "th6"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'"), 1,
+               "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)")
 
 
 # ------------------------------------------------------------------- option validation

@@ -63,8 +63,8 @@ GROUP=1000
 DEL_LO=6001
 DEL_HI=24000
 GEN="SELECT g AS id, (g % 100) AS v, md5(g::text) AS payload FROM generate_series(1, $ROWS) g"
-psql_run "CREATE TABLE h (id int, v int, payload text);"
-psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar;"
+psql_run "CREATE TABLE h (id int, v int, payload text) WITH (autovacuum_enabled = false);"
+psql_run "CREATE TABLE n (id int, v int, payload text) USING pgcolumnar WITH (autovacuum_enabled = false);"
 psql_run "SELECT pgcolumnar.set_options('n', stripe_row_limit => $GROUP, chunk_group_row_limit => $GROUP);"
 psql_run "INSERT INTO h $GEN;"
 psql_run "INSERT INTO n $GEN;"
@@ -87,10 +87,20 @@ check "premise: the table has several row groups to rewrite" \
 
 # Free a large CONTIGUOUS block of whole groups and compact, which is what puts
 # many separate reusable ranges on the free list.
+#
+# WAIT FOR THE HORIZON (#1979). compact retires a dead group only when no
+# transaction in the database is older than the DELETE. With one call, a snapshot
+# held by another session left the free list empty, and the cycles below then
+# started from no reusable space. So compact runs again until it has retired all
+# 18 groups, for up to 30 s, and the count is checked. The fixture tables have
+# autovacuum off, because an autovacuum would retire the groups itself.
 psql_run "DELETE FROM h WHERE id BETWEEN $DEL_LO AND $DEL_HI;"
 psql_run "DELETE FROM n WHERE id BETWEEN $DEL_LO AND $DEL_HI;"
-psql_run "SELECT pgcolumnar.compact('n');"
+_dead=$(( (DEL_HI - DEL_LO + 1) / GROUP ))
+_retired="$(pgc_retry_past_horizon "$_dead" "SELECT pgcolumnar.compact('n');")"
 _free="$(free_rows)"
+echo "  (compact retired/calls: $_retired, of $_dead)"
+check_num "compact retired every dead group" "${_retired%/*}" "$_dead"
 
 # THE PRECONDITION FOR #84, ASSERTED RATHER THAN HOPED FOR, AND IT IS THE GUC.
 # Read back from the SERVER, because the value is set in the cluster config: a
@@ -119,6 +129,14 @@ for r in 1 2 3 4 5; do
 	# a healthy call returns an integer group count; the bug returned an ERROR line
 	check "compact_rewrite cycle $r returns a count (no self-conflict)" \
 		"$(grep -Eq '^[0-9]+$' <<<"$rw" && echo ok || echo "bad:$rw")" "ok"
+	# THE COUNT IS READ, NOT ONLY ITS SHAPE (#1339). Zero is a count, so a
+	# compact_rewrite that returned 0 without rewriting anything passed the arm above,
+	# and so did every other arm here: parity holds while deletes stay masked, and a
+	# file nothing writes never grows. Each cycle deletes one row in eight from every
+	# group, which every group's 0.02 threshold admits, and #84 needs more than one
+	# group rewritten in one command to reach the defect.
+	check "compact_rewrite cycle $r rewrites several groups in one command, the shape #84 needs" \
+		"$(grep -Eq '^[0-9]+$' <<<"$rw" && [ "$rw" -ge 2 ] && echo "several" || echo "only:$rw")" "several"
 	check "parity after compact_rewrite cycle $r" "$(hash_n)" "$(hash_h)"
 	sizes[$r]="$(fsize)"
 done
@@ -126,6 +144,7 @@ echo "  (file sizes by cycle: ${sizes[*]})"
 
 # Cycles 2..5 reuse the prior cycle's frees; the file must not grow past cycle 2.
 check "file reaches steady state (cycle 5 <= cycle 2)" \
-	"$([ "${sizes[5]}" -le "${sizes[2]}" ] && echo yes || echo no)" "yes"
+	"$([ "${sizes[5]}" -le "${sizes[2]}" ] && echo yes \
+		|| echo "no (cycle 5 size ${sizes[5]}, cycle 2 size ${sizes[2]})")" "yes"
 
 pgc_summary

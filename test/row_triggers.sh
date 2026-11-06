@@ -61,24 +61,36 @@ fired() {  # table
 		FROM tr_log WHERE src = '$1';" | tail -1
 }
 
-both() {  # label, suffix
-	check "$1" "$(fired "tr_c$2")" "$(fired "tr_h$2")"
+# same_as_heap SUFFIX -> "same", the two summaries, or "no reading" when the heap
+# twin's trigger fired nothing: a pair whose tables or triggers were never created
+# fired nothing on either side, and "0/0/0" agreed with "0/0/0" -- with every trigger
+# created against a missing function, all six of these comparisons passed.
+same_as_heap() {
+	local c h
+	c="$(fired "tr_c$1")"; h="$(fired "tr_h$1")"
+	if [ -z "$c" ] || [ -z "$h" ] || [ "${h%%/*}" = "0" ]; then echo "no reading: columnar [$c], heap [$h]"
+	elif [ "$c" = "$h" ]; then echo same
+	else echo "differ: columnar [$c], heap [$h]"; fi
 }
+
+# succeeded OUTPUT -> "succeeded", or the error the statement raised. It used to count
+# one message, "failed to fetch", so any other error -- a missing table's included --
+# read as success.
+succeeded() { grep -m1 'ERROR' <<<"$1" || echo succeeded; }
 
 # --- 1. after insert, one row and many --------------------------------------
 
 pair 1 "AFTER INSERT"
 err="$(psql_run "INSERT INTO tr_c1 VALUES (1, 10);" 2>&1 || true)"
-check "a single-row insert with an after-row trigger succeeds" \
-	"$(echo "$err" | grep -c 'failed to fetch')" "0"
+check "a single-row insert with an after-row trigger succeeds" "$(succeeded "$err")" "succeeded"
 psql_run "INSERT INTO tr_h1 VALUES (1, 10);" >/dev/null
 check "and the row itself landed" "$(q "SELECT count(*) FROM tr_c1;")" "1"
-both "the trigger saw the same row heap did" 1
+check "the trigger saw the same row heap did" "$(same_as_heap 1)" "same"
 
 pair 2 "AFTER INSERT"
 psql_run "INSERT INTO tr_c2 SELECT g, g * 2 FROM generate_series(1, $ROWS) g;" >/dev/null
 psql_run "INSERT INTO tr_h2 SELECT g, g * 2 FROM generate_series(1, $ROWS) g;" >/dev/null
-both "a multi-row insert fires once per row with the right values" 2
+check "a multi-row insert fires once per row with the right values" "$(same_as_heap 2)" "same"
 
 # A mid-statement stripe flush rescues the whole statement, and that bounds the
 # defect, so it gets a case of its own.
@@ -121,7 +133,7 @@ psql_run "CREATE TABLE tr_h3 (id int, val int);
 psql_run "SET pgcolumnar.stripe_row_limit = 1000;
 	INSERT INTO tr_c3 SELECT g, g FROM generate_series(1, 4500) g;" >/dev/null 2>&1 || true
 psql_run "INSERT INTO tr_h3 SELECT g, g FROM generate_series(1, 4500) g;" >/dev/null
-both "an insert crossing a stripe boundary fires for every row" 3
+check "an insert crossing a stripe boundary fires for every row" "$(same_as_heap 3)" "same"
 
 # The discriminating multi-row case: more than one row and fewer than the stripe
 # limit, so nothing flushes mid-statement and every trigger has to reach a
@@ -136,7 +148,7 @@ psql_run "CREATE TABLE tr_h7 (id int, val int);
 psql_run "SET pgcolumnar.stripe_row_limit = 100000;
 	INSERT INTO tr_c7 SELECT g, g FROM generate_series(1, 1500) g;" >/dev/null 2>&1 || true
 psql_run "INSERT INTO tr_h7 SELECT g, g FROM generate_series(1, 1500) g;" >/dev/null
-both "1500 rows with no mid-statement flush all fire" 7
+check "1500 rows with no mid-statement flush all fire" "$(same_as_heap 7)" "same"
 
 # --- 2. the other row events ------------------------------------------------
 
@@ -145,14 +157,14 @@ psql_run "INSERT INTO tr_c4 SELECT g, g FROM generate_series(1, 50) g;" >/dev/nu
 psql_run "INSERT INTO tr_h4 SELECT g, g FROM generate_series(1, 50) g;" >/dev/null
 psql_run "UPDATE tr_c4 SET val = val + 1 WHERE id % 3 = 0;" >/dev/null 2>&1 || true
 psql_run "UPDATE tr_h4 SET val = val + 1 WHERE id % 3 = 0;" >/dev/null
-both "after-update fires with the new row" 4
+check "after-update fires with the new row" "$(same_as_heap 4)" "same"
 
 pair 5 "AFTER DELETE"
 psql_run "INSERT INTO tr_c5 SELECT g, g FROM generate_series(1, 50) g;" >/dev/null 2>&1 || true
 psql_run "INSERT INTO tr_h5 SELECT g, g FROM generate_series(1, 50) g;" >/dev/null
 psql_run "DELETE FROM tr_c5 WHERE id % 4 = 0;" >/dev/null 2>&1 || true
 psql_run "DELETE FROM tr_h5 WHERE id % 4 = 0;" >/dev/null
-both "after-delete fires with the old row" 5
+check "after-delete fires with the old row" "$(same_as_heap 5)" "same"
 
 # insert and update in one transaction, so the update re-fetches a row that is
 # still buffered from the insert
@@ -165,7 +177,7 @@ psql_run "BEGIN;
 	INSERT INTO tr_h6 SELECT g, g FROM generate_series(1, 30) g;
 	UPDATE tr_h6 SET val = 0 WHERE id <= 10;
 	COMMIT;" >/dev/null
-both "insert then update in one transaction" 6
+check "insert then update in one transaction" "$(same_as_heap 6)" "same"
 
 # --- 3. what must not have changed ------------------------------------------
 
@@ -207,8 +219,7 @@ psql_run "DROP TABLE IF EXISTS tr_imp;
 	CREATE TRIGGER tr_imp_t AFTER INSERT ON tr_imp
 		FOR EACH ROW EXECUTE FUNCTION tr_f();" >/dev/null
 imperr="$(psql_run "SELECT pgcolumnar.import_arrow('tr_imp', '$ARROW');" 2>&1 || true)"
-check "an import into a table with an after-row trigger succeeds" \
-	"$(echo "$imperr" | grep -c 'failed to fetch')" "0"
+check "an import into a table with an after-row trigger succeeds" "$(succeeded "$imperr")" "succeeded"
 check "the imported rows landed" "$(q "SELECT count(*) FROM tr_imp;")" "40"
 check "and the trigger fired once per imported row" \
 	"$(q "SELECT count(*) FROM tr_log WHERE src = 'tr_imp';")" "40"

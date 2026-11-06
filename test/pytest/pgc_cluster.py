@@ -92,22 +92,56 @@ def port_is_free(port, host="127.0.0.1"):
     return True
 
 
-def pick_port(slot, floor=None, is_free=port_is_free):
-    """A free port in the AUX band for this worker slot.
+# THE PORT DEPENDS ON THE WORKER AS WELL AS THE SLOT (#1742). A module fixture that
+# starts its own server (an S3 fixture, a private cluster) asks for a fixed slot,
+# and under `-n` a module's tests are split across workers, so every worker runs
+# that fixture. When the start depended on the slot only, two workers probed the
+# same free port at the same moment, and the second bind failed with "Address
+# already in use" (#1635, #1714, #1721). Each worker now starts in its own block of
+# WORKER_STRIDE ports, and a slot is an offset inside that block. Slot 0 is the
+# worker's own cluster (make_cluster); fixtures use 1 and up.
+#
+# 96, not 64 (#1749 review): main's twins already ask for slots 32 to 35 and the
+# stack up to 41, and a block of 64 ports holds slots 0 to 31. 96 holds 0 to 47, and
+# the AUX band's 2000 ports still give 20 workers, more than any -n here. The guard
+# test_every_literal_fixture_slot_fits_a_workers_block keeps the two from drifting.
+WORKER_STRIDE = 96
+
+
+def worker_slot(worker_id=None):
+    """The xdist worker's number: 3 for `gw3`, and 0 outside xdist.
+
+    Read from PYTEST_XDIST_WORKER when no id is given, which xdist sets in every
+    worker, so a fixture calling pick_port needs no argument to be worker-aware.
+    """
+    if worker_id is None:
+        worker_id = os.environ.get("PYTEST_XDIST_WORKER")
+    if worker_id in (None, "", "master"):
+        return 0
+    digits = str(worker_id).lstrip("gw")
+    return int(digits) if digits.isdigit() else 0
+
+
+def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
+    """A free port in the AUX band for this slot of this worker.
 
     Walks on collision instead of trusting the band, because the band only makes
     a collision unlikely and this harness has already been broken once by a port
     that something else was holding.
     """
+    if not 0 <= slot * 2 < WORKER_STRIDE:
+        raise ValueError(f"slot {slot} does not fit in a worker's block of "
+                         f"{WORKER_STRIDE} ports")
     lo, hi = aux_band(floor if floor is not None else read_ephemeral_floor())
     span = hi - lo
-    start = slot * 2
+    start = worker_slot(worker_id) * WORKER_STRIDE + slot * 2
     for step in range(span):
         port = lo + ((start + step) % span)
         if is_free(port):
             return port
     raise RuntimeError(
-        f"no free port in the AUX band [{lo}, {hi}) for worker slot {slot}")
+        f"no free port in the AUX band [{lo}, {hi}) for slot {slot} of worker "
+        f"{worker_slot(worker_id)}")
 
 
 class Cluster:
@@ -136,6 +170,8 @@ class Cluster:
             so, pm = float(so_mtime), float(postmaster_epoch)
         except (TypeError, ValueError):
             return "unknown"
+        if so == pm:
+            return "unknown"  # an equal pair says nothing about order (#1969)
         return "predates" if so > pm else "fresh"
 
     def require_server_loaded_this_binary(self):
@@ -407,13 +443,15 @@ def build_and_install(srcdir, pg_config, major, runner=None):
     compile" is the last thing that may be said quietly.
     """
     srcdir = str(srcdir)
-    script = (
-        f'. "{srcdir}/test/lib.sh" || exit 1; '
-        f'pgc_build_and_install "{srcdir}" "{pg_config}" "{major}"'
-    )
+    # THE VALUES GO IN AS ARGUMENTS, NOT INTO THE SCRIPT TEXT (#1339). Spliced into
+    # double quotes, a `$` in the path was expanded by bash: a tree under
+    # "broken tree $HOME" sourced "broken tree /root/test/lib.sh". As positional
+    # parameters nothing in them is ever parsed as shell.
+    script = ('. "$1/test/lib.sh" || exit 1; '
+              'pgc_build_and_install "$1" "$2" "$3"')
     run = runner or (lambda argv: subprocess.run(
         argv, capture_output=True, text=True))
-    proc = run(["bash", "-c", script])
+    proc = run(["bash", "-c", script, "bash", srcdir, str(pg_config), str(major)])
     if proc.returncode != 0:
         raise RuntimeError(
             f"pgcolumnar failed to build or install from {srcdir}; refusing to "
@@ -540,6 +578,36 @@ def installed_library(pg_config):
         return "absent"
 
 
+def library_change_report(so_path, recorded):
+    """-> None when the library at `so_path` still has digest `recorded`, else why.
+
+    On a shared box another session can install into this prefix while a run is
+    under way (#1915): measured on PG18, /usr/local/pgsql/lib/pgcolumnar.so was
+    replaced at 14:45:10 between one session's install and its test. The session
+    records the digest it started with and asks this at the end. An empty
+    `recorded` means nothing was recorded, so there is nothing to compare.
+    """
+    if not recorded:
+        return None
+    try:
+        now = _md5_of(so_path)
+    except Exception:
+        now = "absent"
+    if now == recorded:
+        return None
+    return (f"the installed library changed during this run: {recorded} at the "
+            f"session start, {now} now ({so_path}). Another session installed into "
+            f"this prefix, so the tests may have measured its code. Build, install "
+            f"and test in one lock hold.")
+
+
+def require_library_unchanged(so_path, recorded):
+    """Raise when the library changed since `recorded`; the session then fails."""
+    report = library_change_report(so_path, recorded)
+    if report:
+        raise RuntimeError(report)
+
+
 def build_once(srcdir, pg_config, major, lock_path=None, runner=None):
     """build_and_install, but at most once across xdist workers.
 
@@ -615,6 +683,14 @@ def build_once(srcdir, pg_config, major, lock_path=None, runner=None):
                 pass
             build_and_install(srcdir, pg_config, major, runner=runner)
             lib = installed_library(pg_config)
+            # AN INSTALL THAT LEAVES NO LIBRARY IS A BROKEN INSTALL (#1339). It used to
+            # be written into the marker as "absent" and certified, so the next call
+            # skipped the build over a prefix holding nothing. Raised, not skipped, for
+            # the reason build_and_install raises.
+            if lib == "absent":
+                raise RuntimeError(
+                    f"pgcolumnar's install from {srcdir} reported success but left no "
+                    f"library in {pg_config}'s pkglibdir; refusing to certify it.")
             # AFTER the install, because the install is what writes the library: a
             # fingerprint taken before it would record the previous one and certify
             # exactly the state this guard exists to refuse.
@@ -771,8 +847,8 @@ def make_cluster(pg_config, worker_id):
     inside `stop()`; failing to stop it must not mask the original error, so the
     cleanup is itself guarded.
     """
-    slot = 0 if worker_id in (None, "master") else int(str(worker_id).lstrip("gw") or 0)
-    port = pick_port(slot)
+    slot = worker_slot(worker_id)
+    port = pick_port(0, worker_id=worker_id)
     root = pathlib.Path(tempfile.mkdtemp(prefix=f"pgc-pytest-{slot}-"))
     cluster = None
     try:

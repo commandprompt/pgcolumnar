@@ -66,6 +66,7 @@ check "no free space yet" "$(freerows)" "0"
 # With no reusable space yet it appends, so the file grows and free_space fills.
 psql_run "SELECT pgcolumnar.recluster('n', 'id');"
 size2="$(fsize)"
+free2="$(freerows)"
 check "free space recorded after first recluster" \
 	"$([ "$(freerows)" -gt 0 ] && echo yes || echo no)" "yes"
 check "data intact after first recluster" \
@@ -74,16 +75,41 @@ check "data intact after first recluster" \
 # Repeated reclusters must REUSE the previous cycle's freed space (its freeing
 # transaction has committed and the horizon has passed it), so the file plateaus
 # instead of growing every cycle. Without reuse it would grow by ~size1 each time.
-for i in 1 2 3 4; do
-	psql_run "SELECT pgcolumnar.recluster('n', 'id');"
+#
+# The key ALTERNATES (#1341). Measured: four more recluster('n', 'id') calls each
+# returned 0, because recluster self-gates on a table already in that key's order,
+# so they wrote nothing and the file "plateaued" with reuse disabled too. With v and
+# id in turn every call rewrites all six groups; without reuse the file then grows
+# 311296 -> 901120 and free_space gains a row per cycle.
+#
+# WAIT FOR THE HORIZON FIRST (#2010). A recluster reuses a freed range only when
+# no transaction is older than the one that freed it. Under a snapshot another
+# session held from before the loop, each recluster appended, the file grew
+# 311296 -> 753664 and free_space went from 1 row to 4. So each recluster first
+# waits until nothing holds the horizon at the newest range freed in n, and a
+# check per recluster wants that count to be 0.
+recs=""
+i=0
+for key in v id v id; do
+	i=$((i + 1))
+	blockers="$(pgc_wait_freed_range_past_horizon n)"
+	echo "  (repeated recluster $i horizon blockers/calls: $blockers)"
+	check_num "repeated recluster $i: no transaction older than the newest freed range was open before it" \
+		"${blockers%/*}" "0"
+	recs="$recs$(q "SELECT pgcolumnar.recluster('n', '$key');")|"
 done
 size3="$(fsize)"
+check "each repeated recluster rewrote the table, so none was skipped as already ordered" \
+	"$(awk -F'|' '{ ok = (NF == 5); for (i = 1; i <= 4; i++) if ($i + 0 <= 0) ok = 0; print ok ? "yes" : "no (" $0 ")" }' <<<"$recs")" "yes"
 echo "  (file size: initial=$size1 after-1-recluster=$size2 after-5-reclusters=$size3; free_space rows=$(freerows))"
 
 check "repeated recluster reuses space (file plateaus)" \
 	"$([ "$size3" -le "$((size2 + size1))" ] && echo yes || echo no)" "yes"
+# Against the count after the first cycle, not "> 0" (#1341): that was the arm
+# above again, and held with nothing reused.
+free3="$(freerows)"
 check "free space is being reused (bounded, not growing per cycle)" \
-	"$([ "$(freerows)" -gt 0 ] && echo yes || echo no)" "yes"
+	"$([ -n "$free3" ] && [ "$free3" -gt 0 ] && [ "$free3" -le "$free2" ] && echo yes || echo "no ($free2 -> $free3 rows)")" "yes"
 
 # The reused blocks hold correct data.
 check "reused-block data matches heap mirror" \
@@ -211,5 +237,31 @@ check "maintenance_due ACCEPTS the boundary thresholds 1.0, 1.0" \
 # ... and the defaults, which the daemon uses, still resolve.
 check "maintenance_due ACCEPTS its own defaults" \
 	"$(sqlstate "SELECT * FROM pgcolumnar.maintenance_due('nd')")" "OK"
+
+# ---- max_groups caps one call, and the call returns what it rewrote (#1341) ---
+#
+# docs/sql-reference.md: "max_groups caps how many groups a single call rewrites;
+# 0 means no cap. Returns the number of groups rewritten." Ten row groups, each
+# half deleted, so all ten qualify at 0.1. A capped call must stop at three and
+# say three, and an uncapped one then finds the seven it left. The live rows are
+# the same throughout, so the rewrites dropped only dead rows.
+psql_run "DROP TABLE IF EXISTS ncap;
+	  CREATE TABLE ncap (id int, v text) USING pgcolumnar;
+	  SELECT pgcolumnar.set_options('ncap', stripe_row_limit => 1000);
+	  INSERT INTO ncap SELECT g, 'v'||g FROM generate_series(1, 10000) g;
+	  DELETE FROM ncap WHERE id % 2 = 0;"
+# A check, not a premise (#1236; #1374 review): ten groups only if stripe_row_limit
+# is honoured. And per group, as the name says: each holds 500 live rows and 500
+# deleted, read from row_group and delete_vector, not only the table's total.
+check "ten row groups, every one half deleted" \
+	"$(q "SELECT count(*) || '|' || count(*) FILTER (WHERE g.row_count - coalesce(d.deleted_count, 0) = 500
+	                                         AND coalesce(d.deleted_count, 0) = 500)
+	   FROM pgcolumnar.row_group g LEFT JOIN pgcolumnar.delete_vector d
+	     ON d.storage_id = g.storage_id AND d.group_number = g.group_number
+	  WHERE g.storage_id = pgcolumnar.get_storage_id('ncap');")|$(q "SELECT count(*) FROM ncap;")" "10|10|5000"
+check "compact_rewrite with max_groups 3 rewrites three, then an uncapped call the other seven" \
+	"$(q "SELECT pgcolumnar.compact_rewrite('ncap', 0.1, 3);")|$(q "SELECT pgcolumnar.compact_rewrite('ncap', 0.1, 0);")|$(q "SELECT pgcolumnar.compact_rewrite('ncap', 0.1, 0);")" "3|7|0"
+check "and every live row is still there, once" \
+	"$(q "SELECT count(*) || '|' || count(DISTINCT id) || '|' || sum(id) FROM ncap;")" "5000|5000|25000000"
 
 pgc_summary

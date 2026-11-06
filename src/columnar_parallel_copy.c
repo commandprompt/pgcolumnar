@@ -48,6 +48,7 @@
 #define PCOPY_FINGERPRINT_BUFSZ	(256 * 1024)
 
 #include "columnar.h"
+#include "columnar_objstore.h"
 
 #include "columnar_write_state.h"
 #include "access/relation.h"
@@ -310,6 +311,9 @@ pgcolumnar_file_split_offsets(PG_FUNCTION_ARGS)
 				 errhint("Anyone can COPY from a file if they are a member of the "
 						 "pg_read_server_files role.")));
 
+	/* a local file only (#1886): refuse a URL rather than fail it as ENOENT */
+	PgColumnarRefuseRemotePath("file_split_offsets", path);
+
 	fd = pcopy_open_regular_file(path, &size);
 	offs = pcopy_line_offsets(fd, size, workers, path);
 	CloseTransientFile(fd);
@@ -388,7 +392,10 @@ typedef struct PcopyWorkerSlot
 typedef struct PcopyHeader
 {
 	Oid			dbid;
-	Oid			roleid;
+	Oid			roleid;			/* the caller's user id, with secContext */
+	int			secContext;
+	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
+	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
 	Oid			relid;			/* target relation (partitioned parent, or a single columnar table) */
 	int			nworkers;
 	bool		single_table;	/* target is one columnar table (not partitioned):
@@ -816,7 +823,6 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 	PcopyWorkerSlot *slots;
 	PcopyWorkerSlot *me;
 	int			widx;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
 
@@ -837,10 +843,8 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 	slots = (PcopyWorkerSlot *) shm_toc_lookup(toc, PCOPY_KEY_WORKERS, false);
 	me = &slots[widx];
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
 
 	/*
 	 * Single-table load: this loader writes the one shared storage concurrently
@@ -870,6 +874,8 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		StartTransactionCommand();
 		BeginTransactionBlock();
 		CommitTransactionCommand();		/* TBLOCK_BEGIN -> in progress */
+		/* the caller's security context, now that a transaction is open (#1612) */
+		columnar_worker_take_context(hdr->roleid, hdr->secContext);
 
 		fd = pcopy_open_regular_file(hdr->filename, NULL);
 		if (lseek(fd, (off_t) me->start_off, SEEK_SET) < 0)
@@ -951,6 +957,27 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		 * loader holds no transaction, so writing the result slot is a plain
 		 * shared-memory store.
 		 */
+		/*
+		 * PREPARE only as the caller (#1612 review). A trigger can change role
+		 * inside this transaction (SET ROLE to a role the caller belongs to, or a
+		 * transaction-local set_config('role')), and a transaction prepared as
+		 * another user is one the coordinator, running as the caller, cannot
+		 * finish: it would stay prepared, holding its locks, until someone ran
+		 * ROLLBACK PREPARED. Refused here it aborts like any other error, and the
+		 * coordinator rolls the load back.
+		 */
+		{
+			Oid			nowUser;
+			int			nowContext;
+
+			GetUserIdAndSecContext(&nowUser, &nowContext);
+			if (nowUser != hdr->roleid || nowContext != hdr->secContext)
+				ereport(ERROR,
+						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+						 errmsg("pgcolumnar parallel_copy worker is no longer running as the role that called parallel_copy"),
+						 errdetail("A trigger changed the role during the load, so its transaction cannot be prepared for the caller to finish.")));
+		}
+
 		if (!PrepareTransactionBlock(me->gid))
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
@@ -1142,7 +1169,6 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 	PcopyHeader *hdr;
 	PcopyWorkerSlot *slots;
 	int			nworkers;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
 	int			i;
@@ -1165,10 +1191,8 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 	slots = (PcopyWorkerSlot *) shm_toc_lookup(toc, PCOPY_KEY_WORKERS, false);
 	nworkers = hdr->nworkers;
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
 
 	/*
 	 * Single-table load: pre-create and COMMIT the storage catalog row before any
@@ -1555,6 +1579,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 
 		}
 
+		/*
+		 * A local file only (#1886): refuse a URL after the INSERT and RLS
+		 * checks, as import_arrow does, so a caller who may not write the target
+		 * gets 42501 for a URL as for a local path. Before both the partitioned
+		 * and the single-table branch, so both are covered, and before a heap
+		 * target is refused.
+		 */
+		PgColumnarRefuseRemotePath("parallel_copy", path);
+
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
 			/* each worker loads a DISTINCT partition (distinct storage) */
@@ -1623,7 +1656,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;
-	hdr->roleid = GetUserId();
+	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
+	hdr->authid = GetAuthenticatedUserId();
+	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
 	hdr->relid = relid;
 	hdr->nworkers = workers;
 	hdr->single_table = single_table;

@@ -89,7 +89,9 @@ echo "-- pgcolumnar.index_min_blocks=$(q "SHOW pgcolumnar.index_min_blocks;")  (
 # ranges stay; without it, 3 blocks and one.
 TARGET_PROJ=1
 make_target() {
-	q "CREATE TABLE $1 (a int, b text) USING pgcolumnar;
+	# NO AUTOVACUUM ON THE TARGET (#1979): an autovacuum would retire the dead
+	# groups itself, and compact below would then find none to retire.
+	q "CREATE TABLE $1 (a int, b text) USING pgcolumnar WITH (autovacuum_enabled = false);
 	   SELECT pgcolumnar.set_options('$1', stripe_row_limit => 1000);
 	   INSERT INTO $1 SELECT g, md5(g::text) FROM generate_series(1,7000) g;
 	   DELETE FROM $1 WHERE a <= 1000 OR a > 6000;" >/dev/null
@@ -100,8 +102,17 @@ make_target() {
 	# were deleted by a transaction that has not committed. In one q with the
 	# DELETE it retired nothing and every free_space arm measured an empty
 	# table's free list: the premises below are what caught it.
-	q "SELECT pgcolumnar.compact('$1');" >/dev/null
+	#
+	# AND IT WAITS FOR THE HORIZON (#1979). compact retires a dead group only when
+	# no transaction in the database is older than the DELETE. With one call, a
+	# snapshot held by another session left both ranges unretired, and every
+	# free_space arm then measured an empty free list. pgc_retry_past_horizon calls
+	# compact again until it has retired both groups, for up to 30 s.
+	local retired
+	retired="$(pgc_retry_past_horizon 2 "SELECT pgcolumnar.compact('$1');")"
+	echo "-- $2 target: compact retired/calls=$retired"
 	q "DELETE FROM $1 WHERE a BETWEEN 5001 AND 6000 AND a % 2 = 0;" >/dev/null
+	check_num "the $2 target: compact retired both dead groups" "${retired%/*}" "2"
 	check_num "premise: the $2 target holds two free ranges, one of them trailing" \
 		"$(q "SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('$1');")" "2"
 }
@@ -145,16 +156,41 @@ work() {
 # that could not retire, a truncate() that refused a transaction block), and
 # this premise and the next are what caught each.
 N_ARM=0
+ARM_RETRY=0
+N_MEASURED=0	# arms whose catalog statistics came back as numbers
 arm() {
 	local name="$1" cat="$2" tmpl="$3" effect="$4" want="$5"
 	N_ARM=$((N_ARM + 1))
 	local t="arm${N_ARM}" r bufs seq idx
 	make_target "$t" "$name"
-	r="$(work "$cat" "$min_blocks" "${tmpl//@T/$t}")"
+	# AN ARM WITH ARM_RETRY=1 WAITS FOR THE HORIZON (#1979). truncate removes the
+	# trailing range only when no transaction is older than the compact that
+	# freed it, and returns 0 while one is open. So the arm runs again every
+	# 0.5 s, up to 60 times (30 s), until the effect shows. work resets the
+	# statistics each time, so the reading is the run that took effect. When the
+	# wait runs out, what holds the horizon back is printed.
+	local runs=0
+	while :; do
+		r="$(work "$cat" "$min_blocks" "${tmpl//@T/$t}")"
+		runs=$((runs + 1))
+		[ "$ARM_RETRY" = 1 ] || break
+		[ "$(q "${effect//@T/$t}")" = "$want" ] && break
+		if [ "$runs" -ge 60 ]; then
+			echo "  [$name] no effect after $runs runs. What holds the horizon back:" >&2
+			pgc_horizon_holders | sed 's/^/    /' >&2
+			break
+		fi
+		sleep 0.5
+	done
+	[ "$ARM_RETRY" = 1 ] && echo "-- $name: ran $runs times"
 	read -r bufs seq idx <<<"$r"
+	pgc_is_number "$seq" && pgc_is_number "$idx" && N_MEASURED=$((N_MEASURED + 1))
 	echo "-- $name: pgcolumnar.$cat buffers=$bufs seq_scan=$seq idx_scan=$idx"
-	check_text "premise: $name took effect" "$(q "${effect//@T/$t}")" "$want"
-	check_num "premise: $name reached pgcolumnar.$cat" \
+	# Not premises (#1339): each operation, and the catalog access it makes, is
+	# pgcolumnar's own, so a change to it reddens these -- with compact_rewrite a no-op,
+	# "an online rewrite took effect" went red.
+	check_text "$name took effect" "$(q "${effect//@T/$t}")" "$want"
+	check_num "$name reached pgcolumnar.$cat" \
 		"$(at_least "$((${seq:-0} + ${idx:-0}))" 1)" "1"
 	check_num "$name does not read pgcolumnar.$cat whole" "${seq:-x}" "0"
 }
@@ -183,6 +219,26 @@ SELECT pgcolumnar.compact('noise_$i');
 SQL
 done
 psql_file "$G" >/dev/null
+
+# EVERY NOISE TABLE HOLDS ITS TWO FREE RANGES (#1979). The free_space premise
+# below counts on them: without them the catalog stays under index_min_blocks
+# pages, and the free_space arms read it whole by design. The one compact per
+# table above retires nothing while another session holds an older snapshot.
+# So compact runs again on each noise table that still lacks its ranges, 50
+# tables per call, until it has retired both groups of each.
+NOISE_SHORT="SELECT c.oid::regclass FROM pg_class c
+              WHERE c.relname ~ '^noise_[0-9]+$'
+                AND (SELECT count(*) FROM pgcolumnar.free_space f
+                      WHERE f.storage_id = pgcolumnar.get_storage_id(c.oid)) < 2"
+noise_short="$(q "SELECT count(*) FROM ($NOISE_SHORT) s;")"
+noise_retired="$(pgc_retry_past_horizon "$((2 * ${noise_short:-0}))" \
+	"SELECT coalesce(sum(pgcolumnar.compact(t)), 0) FROM ($NOISE_SHORT LIMIT 50) s(t);")"
+echo "-- noise tables short of their free ranges: ${noise_short:-?}; compact retired/calls=$noise_retired"
+noise_ranges="$(q "SELECT count(*) FROM pgcolumnar.free_space
+                   WHERE storage_id IN (SELECT pgcolumnar.get_storage_id(c.oid)
+                                          FROM pg_class c WHERE c.relname ~ '^noise_[0-9]+$');")"
+echo "-- noise tables: $noise_ranges free ranges"
+check_num "premise: every noise table holds two free ranges" "$noise_ranges" "$((2 * NOISE))"
 
 # EACH PREMISE IS THE CONDITION ITS ARMS NEED. A catalog still below the
 # threshold in the big database is read whole by design (#1213), it grows by
@@ -226,9 +282,11 @@ arm "an online rewrite" free_space \
 	"SELECT sum(deletedrows) FROM pgcolumnar.stats('@T');" "0"
 # Two free ranges before (groups 0 and 6); the trailing one is removed.
 TARGET_PROJ=0
+ARM_RETRY=1
 arm "an end truncation" free_space \
 	"SET pgcolumnar.enable_end_truncation = on;;SELECT pgcolumnar.truncate('@T');" \
 	"SELECT count(*) FROM pgcolumnar.free_space WHERE storage_id = pgcolumnar.get_storage_id('@T');" "1"
+ARM_RETRY=0
 TARGET_PROJ=1
 arm "a sorted rewrite" storage \
 	"SELECT pgcolumnar.vacuum_sorted('@T', 'a');" \
@@ -248,6 +306,8 @@ arm "dropping a projected table" projection_declaration \
 
 # The arms are eleven calls of one function; a refactor that dropped one would
 # leave every remaining arm green.
-check_num "premise: eleven operations are measured" "$N_ARM" "11"
+# Arms MEASURED, not arms called (#1339): N_ARM counted calls, so an arm whose
+# statistics never came back still made eleven.
+check_num "premise: eleven operations are measured" "$N_MEASURED" "11"
 
 pgc_summary

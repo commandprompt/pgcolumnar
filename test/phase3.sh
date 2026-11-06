@@ -103,28 +103,20 @@ fail=0
 # return nothing on this log, it REFUSED it: "no RESULT records, so there is
 # nothing to reconcile".
 #
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
+# lib.sh's own `check` (#1341), as smoke.sh did. This suite used to define its own
+# `check` around pgc_record, to keep a `: $got` suffix on PASS lines. A PASS
+# line's value is the wanted value, which the call already states, and a FAIL line
+# carries both either way. A suite-local recorder is also what the pytest twin's
+# grading cannot read (test_compare_to_bash's seed arm), so the shared one is used
+# and `fail` is taken from lib.sh's own PGC_FAIL before the verdict. The verdict
+# line stays: under `set -euo pipefail` a failing command aborts the suite, and
+# the verdict is what distinguishes finished from stopped.
 #
 # The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
 # the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
 # because it emits no accounting line. The line is still correct and wanted --
 # it is the total the records reconcile against -- so the remaining step is a gate
 # flip rather than new work (@jdatcmd, #969 review).
-check() {
-	local name="$1" got="$2" want="$3"
-	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
-	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
 
 q "CREATE EXTENSION pgcolumnar;" >/dev/null
 
@@ -160,6 +152,10 @@ q "DROP TABLE ryw;" >/dev/null
 echo "-- delete"
 q "CREATE TABLE d (id int, v text) USING pgcolumnar;" >/dev/null
 q "INSERT INTO d SELECT g, 'r'||g FROM generate_series(1,25000) g;" >/dev/null
+# AND IT DOES STRADDLE ONE (#1341). Nothing read the boundaries, so with a
+# 16384-row vector every check below passed on a delete that straddled nothing.
+# Each vector's maximum id, decoded from the zone map's little-endian int4.
+check "the deleted range straddles vectors 0 and 1" "$(q "SELECT string_agg(((get_byte(maximum,3)::bigint<<24)|(get_byte(maximum,2)<<16)|(get_byte(maximum,1)<<8)|get_byte(maximum,0))::text, chr(44) ORDER BY vector_index) FROM pgcolumnar.zone_map WHERE storage_id = pgcolumnar.get_storage_id('d') AND column_index = 0 AND vector_index >= 0;")" "10000,20000,25000"
 q "DELETE FROM d WHERE id BETWEEN 9995 AND 10005;" >/dev/null
 check "delete count"       "$(q 'SELECT count(*) FROM d;')"                       "24989"
 check "delete gone"        "$(q 'SELECT count(*) FROM d WHERE id BETWEEN 9995 AND 10005;')" "0"
@@ -227,7 +223,71 @@ SPRES="$(q "BEGIN;
 # before savepoint: added 11, removed 1 -> {2..11}. after-savepoint work undone.
 check "savepoint in-txn"  "$SPRES" "2,3,4,5,6,7,8,9,10,11"
 check "savepoint final"   "$(qq 'SELECT a FROM sp ORDER BY a;')" "2,3,4,5,6,7,8,9,10,11,"
+# AND A STATEMENT THAT FAILS PARTWAY INSIDE A SAVEPOINT (#1341). The two checks
+# above cannot reach the savepoint's own discard: executor end flushes each
+# COMPLETED statement's buffers under its subtransaction, so the abort's ordinary
+# xmin verdict hides them (#1441). Measured: with the subxact abort discarding
+# neither pending writes nor pending deletes, both stayed green and so did every
+# other check here. An INSERT whose 2001st row divides by zero leaves 2000 rows
+# pending, and a DELETE that fails at a = 9 leaves 2..8 pending; ROLLBACK TO must
+# discard both, in the transaction and after it. ON_ERROR_STOP is lifted for the
+# one statement meant to fail, and each must fail with division by zero and
+# nothing else: one that failed before writing anything would leave both discard
+# checks nothing to discard. If either failed otherwise, every reading is blanked,
+# as the twin's 22012-only allowance ends its session there. A later ERROR (the
+# COMMIT, say) already stops psql, and the readings before it stand.
+SPERR="$WORKDIR/spfail.err"
+SPFAIL="$(q 'BEGIN;
+	SAVEPOINT s2;
+	\set ON_ERROR_STOP 0
+	INSERT INTO sp SELECT CASE WHEN g < 2100 THEN g ELSE 1 / (g - g) END FROM generate_series(100, 3000) g;
+	\set ON_ERROR_STOP 1
+	ROLLBACK TO s2;
+	SELECT count(*) FROM sp WHERE a >= 100;
+	SAVEPOINT s3;
+	\set ON_ERROR_STOP 0
+	DELETE FROM sp WHERE a < 11 AND 1 / (a - 9) IS NOT NULL;
+	\set ON_ERROR_STOP 1
+	ROLLBACK TO s3;
+	SELECT string_agg(a::text, chr(44) ORDER BY a) FROM sp;
+	COMMIT;' 2>"$SPERR" || true)"
+sed 's/^/spfail stderr: /' "$SPERR"
+[ "$(grep ERROR "$SPERR" | head -2 | grep -c 'division by zero')" = 2 ] || SPFAIL=""
+check "savepoint failed insert discarded" "$(sed -n 1p <<<"$SPFAIL")" "0"
+check "savepoint failed delete discarded" "$(sed -n 2p <<<"$SPFAIL")" "2,3,4,5,6,7,8,9,10,11"
+check "savepoint failed final" "$(qq 'SELECT a FROM sp ORDER BY a;')" "2,3,4,5,6,7,8,9,10,11,"
 q "DROP TABLE sp;" >/dev/null
+# AND A READ IN A BLOCK THAT COMMITS INTO ONE THAT ABORTS (#1341). A DELETE's
+# RETURNING calls spn_rd once per deleted row. spn_rd reads the table in an inner
+# EXCEPTION block that commits into an outer one, which raises. The read writes the
+# outer DELETE's marks so far under the inner block. Its commit hands them to the
+# outer block, whose rollback takes them away. The next read must write them again.
+# With the inner block's commit leaving them attributed to itself, no later read
+# writes them, so each later read counts the deleted rows as live. The statement's
+# end still writes every mark, so only the reads show it; their sum is pinned here,
+# with the table's shape after. Heap runs the same statement on the same rows.
+q "CREATE FUNCTION spn_rd(t text) RETURNS int LANGUAGE plpgsql AS \$\$
+DECLARE n int;
+BEGIN
+	BEGIN
+		BEGIN
+			EXECUTE format('SELECT count(*) FROM %s', t) INTO n;
+		EXCEPTION WHEN no_data_found THEN NULL;
+		END;
+		PERFORM 1 / 0;
+	EXCEPTION WHEN division_by_zero THEN NULL;
+	END;
+	RETURN n;
+END \$\$;" >/dev/null
+spn() {
+	q "CREATE TABLE spn_$1 (id int) USING $1;
+	   INSERT INTO spn_$1 SELECT g FROM generate_series(1, 200) g;
+	   WITH d AS (DELETE FROM spn_$1 WHERE id % 2 = 0 RETURNING spn_rd('spn_$1') AS n)
+	   SELECT sum(n) FROM d;
+	   SELECT count(*) || chr(124) || sum(id) FROM spn_$1;" | paste -sd'|'
+}
+check "savepoint nested read in a delete sees its deleted rows, as on heap" "$(spn pgcolumnar)" "$(spn heap | grep . || echo "heap gave no reading")"
+q "DROP TABLE spn_pgcolumnar, spn_heap; DROP FUNCTION spn_rd(text);" >/dev/null
 
 # ---------------------------------------------------------------------------
 # Temporary columnar table: create, insert, scan, delete, update all work.
@@ -253,6 +313,8 @@ check "durable odd only"  "$(q 'SELECT count(*) FROM dur WHERE a % 2 = 0;')" "0"
 q "DROP TABLE dur;" >/dev/null
 check "delete_vector cleaned"  "$(q 'SELECT count(*) FROM pgcolumnar.delete_vector;')" "0"
 check "row group cleaned" "$(q 'SELECT count(*) FROM pgcolumnar.row_group;')" "0"
+
+fail="$PGC_FAIL"
 
 echo
 if [ "$fail" = "0" ]; then

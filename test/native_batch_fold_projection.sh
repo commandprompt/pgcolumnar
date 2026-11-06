@@ -56,6 +56,18 @@ check "the ungrouped batch fold actually ran (Batch Fold: yes)" \
 	"yes"
 check "ref is a non-empty result (not a vacuous empty compare)" \
 	"$(case "$ref" in ''|'<none>') echo no ;; *) echo yes ;; esac)" "yes"
+# The reference is only a reference if the fold did not compute it too (#1341): a
+# FOLDOFF that left the fold on made the arm below compare the fold with itself, and
+# with the payload list missing v both sides read the same wrong sum. So the
+# reference's plan is read, and the reference is checked against the generator
+# itself, with no table in it at all.
+ref_plan="$(env PATH="$PGC_BINDIR:$PATH" psql -h "127.0.0.1" -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA \
+	-c "$FOLDOFF" -c "EXPLAIN (ANALYZE, COSTS OFF, VERBOSE, TIMING OFF) $INNER" 2>&1)"
+check "premise: the reference runs without the batch fold" \
+	"$(printf '%s' "$ref_plan" | grep -ciE 'Batch Fold: yes')" "0"
+oracle="$(q "SELECT count(*), sum(CASE WHEN g % 50 = 0 THEN NULL ELSE ((g % 13) - 6)::float8 END)
+	FROM generate_series(1, 400000) g WHERE g % 1000 < 400" | tail -1)"
+check "the non-fold aggregate equals the generator's own answer" "$ref" "$oracle"
 check "the folded aggregate equals the non-fold aggregate (payload columns correct)" "$got" "$ref"
 check "backend alive" "$(q 'SELECT 1')" "1"
 pgc_summary

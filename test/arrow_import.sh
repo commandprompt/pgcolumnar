@@ -41,6 +41,17 @@ SQLEOF
 	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
 }
 fifo_release() { exec 9<>"$1" 2>/dev/null; exec 9>&- 2>/dev/null; }
+# ai_outcome SQL -> what the statement printed, or "SQLSTATE message" of its
+# error. Either way the check shows what the server did, not just pass or fail.
+ai_outcome() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
+		*) printf '%s\n' "$out";;
+	esac
+}
 
 # WITHOUT pyarrow THIS SUITE SHRANK IN SILENCE (#1159). The three blocks below
 # need a file a foreign producer wrote, so they cannot run without pyarrow. They
@@ -114,15 +125,6 @@ fifo_release() { exec 9<>"$1" 2>/dev/null; exec 9>&- 2>/dev/null; }
 have_pyarrow=1
 python3 -c 'import pyarrow' 2>/dev/null || have_pyarrow=0
 
-expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
-	else
-		check "$label" "error" "error"
-	fi
-}
-
 ARROW="$PGC_WORKDIR/rt.arrows"
 
 # --- 1. round trip through pgColumnar's own writer ---------------------------
@@ -178,10 +180,67 @@ PY
 	check "pyarrow import rows" "$nf" "4"
 	vals="$(q "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM ri_for;")"
 	check "pyarrow values" "$vals" "1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+
+	# The Arrow IPC FILE format (#1806): the "ARROW1" magic and 2 bytes of
+	# padding, then a stream, then a footer, its 4-byte length and "ARROW1"
+	# again. Feather v2 is the same format. The reader took "ARRO" as a message
+	# length (1330795073) and failed in palloc with "invalid memory alloc
+	# request size". It must read the stream inside the file instead.
+	PYFILE="$PGC_WORKDIR/foreign.arrow"
+	PYFEATHER="$PGC_WORKDIR/foreign.feather"
+	python3 - "$PYFILE" "$PYFEATHER" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc, pyarrow.feather as feather
+t = pa.table({
+    'a': pa.array([1, 2, None, 4], pa.int64()),
+    'b': pa.array([1.5, None, 3.5, 4.5], pa.float64()),
+    'c': pa.array(['x', 'y', 'z', None], pa.string()),
+})
+with ipc.new_file(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
+    w.write_table(t)
+feather.write_feather(t, sys.argv[2], compression='uncompressed')
+PY
+	ai_file_rows() {	# ai_file_rows TABLE PATH -> "<import result>|<values>"
+		psql_run "CREATE TABLE $1 (a bigint, b float8, c text) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$1', '$2')")" \
+			"$(q "SELECT string_agg(coalesce(a::text,'-')||'/'||coalesce(b::text,'-')||'/'||coalesce(c,'-'), ',' ORDER BY a NULLS LAST) FROM $1;")"
+	}
+	check "an Arrow IPC file (ARROW1 magic) imports its rows (#1806)" \
+		"$(ai_file_rows ri_ipcfile "$PYFILE")" "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+	check "a Feather v2 file imports its rows too (#1806)" \
+		"$(ai_file_rows ri_feather "$PYFEATHER")" "4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
+	# The same file with its last 10 bytes (footer length and trailing magic)
+	# cut off: the reader cannot tell where the stream ends, so it refuses.
+	head -c "$(( $(stat -c %s "$PYFILE") - 10 ))" "$PYFILE" > "$PGC_WORKDIR/nofooter.arrow"
+	chmod 644 "$PGC_WORKDIR/nofooter.arrow"
+	psql_run "CREATE TABLE ri_nofooter (a bigint, b float8, c text) USING pgcolumnar;"
+	check "an Arrow IPC file without its trailing magic is refused as malformed (#1806)" \
+		"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_nofooter', '$PGC_WORKDIR/nofooter.arrow')")|$(q 'SELECT count(*) FROM ri_nofooter')" \
+		"XX001 columnar: malformed Arrow IPC file: the file starts with ARROW1 but does not end with it|0"
+	# The same file without the 8-byte end-of-stream marker before its footer
+	# (#1806). The marker is optional, so the reader must stop at the footer by
+	# counting the bytes it read, not by finding the marker. The builder prints
+	# the 8 bytes it removed, which must be the marker (ffffffff00000000).
+	NOEOS="$PGC_WORKDIR/noeos.arrow"
+	_ai_eos="$(python3 - "$PYFILE" "$NOEOS" <<'PY'
+import sys, struct
+d = open(sys.argv[1], 'rb').read()
+flen = struct.unpack_from('<i', d, len(d) - 10)[0]
+fstart = len(d) - 10 - flen
+open(sys.argv[2], 'wb').write(d[:fstart - 8] + d[fstart:])
+print(d[fstart - 8:fstart].hex())
+PY
+)"
+	chmod 644 "$NOEOS"
+	check "an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)" \
+		"$_ai_eos|$(ai_file_rows ri_noeos "$NOEOS")" "ffffffff00000000|4|1/1.5/x,2/-/y,4/4.5/-,-/3.5/z"
 else
 	for _ai_foreign in \
 			"pyarrow import rows" \
-			"pyarrow values"; do
+			"pyarrow values" \
+			"an Arrow IPC file (ARROW1 magic) imports its rows (#1806)" \
+			"a Feather v2 file imports its rows too (#1806)" \
+			"an Arrow IPC file without its trailing magic is refused as malformed (#1806)" \
+			"an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)"; do
 		check_skip "$_ai_foreign" \
 			"SKIP  $_ai_foreign (pyarrow not available)" \
 			"pyarrow not available"
@@ -332,10 +391,80 @@ fi
 
 # --- 4. error cases ---------------------------------------------------------
 echo "-- argument validation"
+# BY SQLSTATE (#1341). These accepted any error at all, and a check that failed
+# was recorded under a different name, "<label> (expected error)", so its red
+# never reached the name the ledger keeps. 42809 is wrong_object_type, 42804
+# datatype_mismatch; an empty state is a success.
 psql_run "CREATE TABLE ri_heap (a bigint, b float8, c text) USING heap;"
-expect_error "reject non-columnar target" "SELECT pgcolumnar.import_arrow('ri_heap', '$ARROW');"
+check "reject non-columnar target" \
+	"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_heap', '$ARROW')")" "42809"
 psql_run "CREATE TABLE ri_wrong (a int) USING pgcolumnar;"
-expect_error "reject column-count mismatch" "SELECT pgcolumnar.import_arrow('ri_wrong', '$ARROW');"
+check "reject column-count mismatch" \
+	"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ri_wrong', '$ARROW')")" "42804"
+
+# What export_arrow writes (#1806): the IPC STREAM format, whose first message
+# starts with the 0xFFFFFFFF continuation marker. The IPC FILE format would
+# start with "ARROW1" (41 52 52 4f 57 31). docs/how-to.md names this format.
+check "export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)" \
+	"$(head -c 4 "$ARROW" | od -An -tx1 | tr -d ' \n')" "ffffffff"
+
+# Lengths larger than the file (#1806). The reader allocated whatever length
+# the file claimed before it read a byte, so a length of 1 GB or more failed in
+# palloc ("invalid memory alloc request size"), and a smaller one allocated
+# that much memory and only then found the file truncated. Both must be
+# refused as malformed before the allocation.
+BIGMETA="$PGC_WORKDIR/bigmeta.arrows"
+printf '\xff\xff\xff\xff\x00\x00\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00' > "$BIGMETA"
+chmod 644 "$BIGMETA"
+psql_run "CREATE TABLE ri_len (a int) USING pgcolumnar;"
+check "a metadata length larger than the file is refused before it is allocated (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_len', '$BIGMETA')")" \
+	"XX001 columnar: malformed Arrow IPC file: metadata length 1048576 is larger than the 8 bytes left in the file"
+# A one-row export, cut halfway through its only record-batch body: the batch's
+# bodyLength now claims more bytes than the file holds. With one batch, the
+# body runs from the end of its metadata to the 8-byte end-of-stream marker,
+# which gives the bodyLength the error must name.
+psql_run "CREATE TABLE ri_one (a int) USING pgcolumnar; INSERT INTO ri_one VALUES (7);"
+ONE="$PGC_WORKDIR/one.arrows"
+psql_run "SELECT pgcolumnar.export_arrow('ri_one', '$ONE');"
+BIGBODY="$PGC_WORKDIR/bigbody.arrows"
+BODYLEN="$(python3 -c '
+import sys, struct
+d = open(sys.argv[1], "rb").read()
+p = 0
+for _ in range(2):	# the Schema message, then the RecordBatch metadata
+    cont, mlen = struct.unpack_from("<Ii", d, p)
+    assert cont == 0xFFFFFFFF, cont
+    p += 8 + mlen
+body = len(d) - 8 - p
+open(sys.argv[2], "wb").write(d[:p + body // 2])
+print(body, body // 2)' "$ONE" "$BIGBODY")" || BODYLEN="(fixture-builder-failed) (fixture-builder-failed)"
+chmod 644 "$BIGBODY"
+psql_run "CREATE TABLE ri_body (a int) USING pgcolumnar;"
+check "a body length larger than the rest of the file is refused before it is allocated (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_body', '$BIGBODY')")|$(q 'SELECT count(*) FROM ri_body')" \
+	"XX001 columnar: malformed Arrow IPC file: body length ${BODYLEN% *} is larger than the ${BODYLEN#* } bytes left in the file|0"
+
+# An IPC file whose footer length is larger than the file, or negative (#1806).
+# Either one puts the end of the stream before its start. A reader that
+# accepts it reads nothing and returns 0 with no error, so a corrupt file
+# looks like an empty one. The files wrap the one-row export in the IPC file
+# layout: "ARROW1", 2 padding bytes, the stream, a 4-byte footer, the footer
+# length and "ARROW1". The builder prints the file size, which is the length.
+FOOTLONG="$PGC_WORKDIR/footlong.arrow"
+FOOTNEG="$PGC_WORKDIR/footneg.arrow"
+FOOTSIZE="$(python3 -c '
+import sys, struct
+w = b"ARROW1\0\0" + open(sys.argv[1], "rb").read() + bytes(4)
+size = len(w) + 10
+for path, flen in ((sys.argv[2], size), (sys.argv[3], -1)):
+    open(path, "wb").write(w + struct.pack("<i", flen) + b"ARROW1")
+print(size)' "$ONE" "$FOOTLONG" "$FOOTNEG")" || FOOTSIZE="(fixture-builder-failed)"
+chmod 644 "$FOOTLONG" "$FOOTNEG"
+psql_run "CREATE TABLE ri_foot (a int) USING pgcolumnar;"
+check "an Arrow IPC file whose footer length is negative or larger than the file is refused as malformed (#1806)" \
+	"$(ai_outcome "SELECT pgcolumnar.import_arrow('ri_foot', '$FOOTLONG')") / $(ai_outcome "SELECT pgcolumnar.import_arrow('ri_foot', '$FOOTNEG')")|$(q 'SELECT count(*) FROM ri_foot')" \
+	"XX001 columnar: malformed Arrow IPC file: footer length $FOOTSIZE is out of range / XX001 columnar: malformed Arrow IPC file: footer length -1 is out of range|0"
 
 if [ "$have_pyarrow" = 1 ]; then
 	DICTF="$PGC_WORKDIR/dict.arrows"
@@ -347,7 +476,39 @@ with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema) as w:
     w.write_table(t)
 PY
 	psql_run "CREATE TABLE ri_d (c text) USING pgcolumnar;"
-	expect_error "reject dictionary-encoded file" "SELECT pgcolumnar.import_arrow('ri_d', '$DICTF');"
+	# BY SQLSTATE AND MESSAGE (#1341). expect_error accepted any error, and a
+	# dictionary column's int32 indices into a text target can fail on their own, so
+	# the refusal of the DictionaryBatch itself was never what the arm saw.
+	ai_refusal() {	# ai_refusal SQL -> "SQLSTATE message" of its error, or "ok"
+		local out
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+			-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+		case "$out" in *ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;; *) echo ok;; esac
+	}
+	check "reject dictionary-encoded file" \
+		"$(ai_refusal "SELECT pgcolumnar.import_arrow('ri_d', '$DICTF')")" \
+		"0A000 columnar.import_arrow does not support dictionary-encoded Arrow files"
+
+	# A compressed record-batch body (#1341): the reader takes uncompressed bodies
+	# only, and must say so rather than decode compressed bytes as values.
+	ZIPF="$PGC_WORKDIR/compressed.arrows"
+	ZIPCODEC="$(python3 - "$ZIPF" <<'PY'
+import sys, pyarrow as pa, pyarrow.ipc as ipc
+codec = next((c for c in ('zstd', 'lz4') if pa.Codec.is_available(c)), None)
+if codec:
+    t = pa.table({'a': pa.array(range(1000), pa.int64())})
+    opts = ipc.IpcWriteOptions(compression=codec)
+    with ipc.new_stream(pa.OSFile(sys.argv[1], 'wb'), t.schema, options=opts) as w:
+        w.write_table(t)
+print(codec or 'none')
+PY
+)"
+	psql_run "CREATE TABLE ri_z (a bigint) USING pgcolumnar;"
+	check "premise: this pyarrow writes a compressed body (zstd or lz4)" \
+		"$(case "$ZIPCODEC" in zstd|lz4) echo codec;; *) echo "none ($ZIPCODEC)";; esac)" "codec"
+	check "reject a compressed record-batch body" \
+		"$(ai_refusal "SELECT pgcolumnar.import_arrow('ri_z', '$ZIPF')")|$(q 'SELECT count(*) FROM ri_z')" \
+		"0A000 columnar.import_arrow does not support compressed Arrow bodies|0"
 
 	# ---- temporal carriers and units (#864, #865) -----------------------------
 	#
@@ -392,6 +553,10 @@ cases = {
     'tu_ts_ns_trunc':(pa.timestamp('ns'), S2000 * 10**9 + 1500),  # 1.5us past the epoch
     'tu_t64_ns_neg': (pa.time64('ns'),    -500),              # narrows to 0us: not midnight
     'tu_ts_ns_neg':  (pa.timestamp('ns'), -1500),             # 1.5us BEFORE the epoch
+    # dates outside PostgreSQL's range, each valid in its own carrier (#1341)
+    'tu_d32_far':    (pa.date32(),        2**31 - 1),         # ~5.88 million years on
+    'tu_d32_past':   (pa.date32(),        -2**31),            # before 4713 BC
+    'tu_d64_far':    (pa.date64(),        2**62),             # milliseconds, far past 5874897 AD
     # a temporal carrier whose tag no other temporal target can hold
     'tu_t64_plain':  (pa.time64('us'),    NOON * 10**6),
 }
@@ -545,6 +710,16 @@ PY
 	check "a negative nanosecond time is refused, not narrowed into midnight" \
 		"$(tu_import_state tu_t64_ns_neg time)" "22008"
 
+	# A date outside PostgreSQL's range, in either carrier and at either end (#1341).
+	# Without the range check the day count is cast to DateADT and stored, so the
+	# import succeeds with a date nothing can read back as the one in the file.
+	check "a date32 past PostgreSQL's last date is refused" \
+		"$(tu_import_state tu_d32_far date)" "22008"
+	check "a date32 before PostgreSQL's first date is refused" \
+		"$(tu_import_state tu_d32_past date)" "22008"
+	check "a date64 past PostgreSQL's last date is refused" \
+		"$(tu_import_state tu_d64_far date)" "22008"
+
 	# ---- the file's declared type must match the target's -------------------
 	#
 	# n->width is both the decode stride and the divisor in the row-count bounds
@@ -631,6 +806,8 @@ PY
 else
 	for _ai_types in \
 			"reject dictionary-encoded file" \
+			"premise: this pyarrow writes a compressed body (zstd or lz4)" \
+			"reject a compressed record-batch body" \
 			"premise: the exporter's own timestamp unit still imports correctly" \
 			"premise: and its own time unit does too" \
 			"premise: and a date32 carrier, which shares Arrow's tag 8 with date64" \
@@ -642,6 +819,9 @@ else
 			"a time32 in seconds decodes to the time it holds (#865)" \
 			"a time32 in milliseconds decodes to the time it holds (#865)" \
 			"premise: a well-formed import reports 00000, so the probe reads success" \
+			"a date32 before PostgreSQL's first date is refused" \
+			"a date32 past PostgreSQL's last date is refused" \
+			"a date64 past PostgreSQL's last date is refused" \
 			"a second count that overflows on scaling is refused, not wrapped" \
 			"a timestamp before PostgreSQL's range is refused" \
 			"a time past midnight is refused" \
@@ -742,8 +922,8 @@ check "import into an indexed table: a point lookup finds its row" \
 psql_run "CREATE TABLE ix_uq (id int, v text) USING pgcolumnar;"
 psql_run "CREATE UNIQUE INDEX ix_uq_id ON ix_uq (id);"
 psql_run "SELECT pgcolumnar.import_arrow('ix_uq', '$IXFILE');"
-expect_error "importing the same keys twice raises unique_violation" \
-	"SELECT pgcolumnar.import_arrow('ix_uq', '$IXFILE');"
+check "importing the same keys twice raises unique_violation" \
+	"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ix_uq', '$IXFILE')")" "23505"
 check "the failed second import left the row count alone" \
 	"$(q 'SELECT count(*) FROM ix_uq;')" "3000"
 
@@ -765,5 +945,174 @@ check "import_arrow on a FIFO is refused, not a hang (XX001)" \
 	"$(sqlstate_or_hang "SELECT pgcolumnar.import_arrow('ia_fifo', '$IAFIFO')")" \
 	"XX001"; fifo_release "$IAFIFO"
 check "backend still up after the import_arrow FIFO refusal" "$(q 'SELECT 1')" "1"
+
+
+# --- #1886: a remote URL is refused up front, not opened as a local file -------
+# import_arrow reads local files only. Before #1886 an s3:// or http:// URL went
+# to open(2) and failed with ENOENT ("could not open file "s3://..."), which says
+# the object does not exist -- even right after export_arrow wrote it there. It
+# now refuses every scheme PgColumnarPathIsRemote recognises with 0A000, naming
+# itself and the URL, with a hint that it reads local files only. It refuses
+# after the INSERT check (test/import_export_privilege.sh pins that order) and
+# before it checks the target's kind, so a heap target gets the refusal, not
+# 42809. The control holds the other side: a LOCAL path that carries "s3://"
+# past its first byte is still read.
+echo "-- remote URL refusal"
+remote_refusal() {	# SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
+	local out msg hint
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)"
+	case "$out" in
+		*ERROR:*)
+			msg="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")"
+			hint="$(sed -n '/^HINT:/{s/^HINT: *//p;q;}' <<<"$out")"
+			printf '%s | %s\n' "$msg" "${hint:-no hint}";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
+want_refusal() {	# URL -> the refusal #1886 promises
+	printf '0A000 columnar: import_arrow does not read "%s" | import_arrow reads local files only. Use a local filesystem path.\n' "$1"
+}
+REMOTE_S3="s3://pgc-test/f1886/m.arrow"
+REMOTE_HTTP="http://127.0.0.1:9/f1886/m.arrow"
+REMOTE_OTHER="https://127.0.0.1:9/f1886/m.arrow gs://pgc-test/f1886/m.arrow az://pgc-test/f1886/m.arrow S3://pgc-test/f1886/m.arrow"
+psql_run "CREATE TABLE ia_rem (a int) USING pgcolumnar;"
+psql_run "CREATE TABLE ia_rem_heap (a int) USING heap;"
+other_refusals="" other_wants=""
+for u in $REMOTE_OTHER; do
+	other_refusals="$other_refusals${other_refusals:+ ; }$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$u')")"
+	other_wants="$other_wants${other_wants:+ ; }$(want_refusal "$u")"
+done
+check "import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$REMOTE_S3')")" "$(want_refusal "$REMOTE_S3")"
+check "import_arrow refuses an http:// URL with 0A000, naming itself and the URL (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$REMOTE_HTTP')")" "$(want_refusal "$REMOTE_HTTP")"
+check "import_arrow refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)" \
+	"$other_refusals" "$other_wants"
+check "import_arrow refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)" \
+	"$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem_heap', '$REMOTE_S3')")" "$(want_refusal "$REMOTE_S3")"
+
+# "$PGC_WORKDIR/s3:" is a directory, so "$PGC_WORKDIR/s3://ctl.arrows" is a local
+# file whose path holds "s3://" past its start.
+mkdir -p "$PGC_WORKDIR/s3:"; chmod 777 "$PGC_WORKDIR/s3:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$PGC_WORKDIR/s3:"; fi
+psql_run "CREATE TABLE ia_ctl_src (a int) USING pgcolumnar;"
+psql_run "INSERT INTO ia_ctl_src SELECT g FROM generate_series(1, 300) g;"
+psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3://ctl.arrows');" >/dev/null
+check "control: import_arrow still reads a local path that holds s3:// past its start (#1886)" \
+	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3://ctl.arrows')")" 300
+
+# --- #1918: s3a:// and s3n:// are refused too ----------------------------------
+# s3a:// and s3n:// are the Hadoop names for S3, and the Iceberg reader accepts
+# them (#1825). PgColumnarPathIsRemote does not list them, so before #1918 they
+# went to open(2) and failed with 58P01. The refusal now covers them in any
+# case. The control: a LOCAL path with "s3a://" past its start is still read.
+echo "-- s3a:// and s3n:// refusal"
+joined_refusals() {	# URL... -> remote_refusal per URL, joined by " ; "
+	local u acc=""
+	for u in "$@"; do acc="$acc${acc:+ ; }$(remote_refusal "SELECT pgcolumnar.import_arrow('ia_rem', '$u')")"; done
+	printf '%s\n' "$acc"
+}
+joined_wants() {	# URL... -> want_refusal per URL, joined by " ; "
+	local u acc=""
+	for u in "$@"; do acc="$acc${acc:+ ; }$(want_refusal "$u")"; done
+	printf '%s\n' "$acc"
+}
+HADOOP="s3a://pgc-test/f1918/m.arrow s3n://pgc-test/f1918/m.arrow"
+HADOOP_CASE="S3A://pgc-test/f1918/m.arrow S3n://pgc-test/f1918/m.arrow"
+# shellcheck disable=SC2086
+check "import_arrow refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals $HADOOP)" "$(joined_wants $HADOOP)"
+# shellcheck disable=SC2086
+check "import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals $HADOOP_CASE)" "$(joined_wants $HADOOP_CASE)"
+mkdir -p "$PGC_WORKDIR/s3a:"; chmod 777 "$PGC_WORKDIR/s3a:"
+if [ "$(id -u)" = "0" ]; then chown postgres "$PGC_WORKDIR/s3a:"; fi
+psql_run "SELECT pgcolumnar.export_arrow('ia_ctl_src', '$PGC_WORKDIR/s3a://ctl.arrows');" >/dev/null
+check "control: import_arrow still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT pgcolumnar.import_arrow('ia_rem', '$PGC_WORKDIR/s3a://ctl.arrows')")" 300
+
+# --- #1932: a nested Arrow type the target column cannot hold -----------------
+# A list of lists into bigint[] was refused with XX001 "value buffer too small
+# for the row count", which says the file is damaged when it is a valid file of
+# the wrong type: the schema walk compared a node's tag only with temporal and
+# numeric kinds, so the inner List tag under the bigint element was ignored and
+# the batch was read with the wrong buffer layout. A large list into bigint[]
+# was worse: it IMPORTED, as {} and {1,2} for [[1,2],[3]], because its 64-bit
+# offsets were read as 32-bit ones. Each is now refused with 42804, naming the
+# column, as import_parquet refuses the same shape (#1917). The controls are a
+# list<int64> file and a map file that must still import, and a list<int64>
+# file whose last offset runs past its value buffer, which is genuinely damaged
+# and must still be XX001: the refusal is by type, not a weaker bounds check.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #1932: nested types the target cannot hold"
+	_ai_nest_hits="$(python3 - "$PGC_WORKDIR" <<'PY'
+import os, struct, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+def write(name, arr):
+    t = pa.table({'l': arr, 'n': pa.array([1, 2], pa.int32())})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), t.schema) as w:
+        w.write_table(t)
+write('nl_lol', pa.array([[[1], [2, 3]], [[4]]], pa.list_(pa.list_(pa.int64()))))
+write('nl_lstruct', pa.array([[{'a': 1}, {'a': 2}], [{'a': 3}]], pa.list_(pa.struct([('a', pa.int64())]))))
+write('nl_lmap', pa.array([[[('k', 1)]], [[('j', 2), ('i', 3)]]], pa.list_(pa.map_(pa.string(), pa.int64()))))
+write('nl_large', pa.array([[1, 2], [3]], pa.large_list(pa.int64())))
+write('nl_int', pa.array([5, 6], pa.int64()))
+write('nl_list', pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+write('nl_map', pa.array([[('k', 1)], [('j', 2), ('i', 3)]], pa.map_(pa.string(), pa.int64())))
+# nl_list with its last list offset raised from 3 to 1000: the offsets stay
+# non-decreasing, but 1000 elements do not fit the 24-byte value buffer. The
+# number of places the offsets [0, 2, 3] were found leads the reading, so a
+# builder that patched the wrong bytes, or none, fails the check.
+d = open(os.path.join(out, 'nl_list.arrows'), 'rb').read()
+pat = struct.pack('<3i', 0, 2, 3)
+hits = d.count(pat)
+i = d.find(pat)
+open(os.path.join(out, 'nl_trunc.arrows'), 'wb').write(d[:i] + struct.pack('<3i', 0, 2, 1000) + d[i + 12:])
+print(hits)
+PY
+)"
+	chmod 644 "$PGC_WORKDIR"/nl_*.arrows
+	psql_run "CREATE TYPE nl_kv AS (k text, v bigint);"
+	nl_import() {	# nl_import FIXTURE PGTYPE [TABLE] -> "<import result or SQLSTATE message>|<rows stored>"
+		local t="${3:-nl_t_$1}"
+		psql_run "CREATE TABLE $t (l $2, n int) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	check "import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)" \
+		"$(nl_import nl_lol 'bigint[]')" \
+		'42804 Arrow column for array "l" is nested 2 lists deep, but pgcolumnar.import_arrow reads one list level into an array|0'
+	check "import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)" \
+		"$(nl_import nl_lstruct 'bigint[]') / $(nl_import nl_lmap 'bigint[]')" \
+		'42804 Arrow column "l" holds a struct, which pgcolumnar.import_arrow cannot read into type bigint|0 / 42804 Arrow column "l" holds a map, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)" \
+		"$(nl_import nl_large 'bigint[]') / $(nl_import nl_large bigint nl_t_nl_large_scalar)" \
+		'42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read into type bigint[]|0 / 42804 Arrow column "l" holds a large list, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)" \
+		"$(nl_import nl_int 'bigint[]')" \
+		'42804 Arrow column "l" holds an integer, which pgcolumnar.import_arrow cannot read into type bigint[]|0'
+	check "control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)" \
+		"$(nl_import nl_list 'bigint[]')|$(q "SELECT sum(e) FROM nl_t_nl_list, unnest(l) e;")" "2|2|6"
+	check "control: a map file still imports into an array of a composite (#1932)" \
+		"$(nl_import nl_map 'nl_kv[]')|$(q "SELECT string_agg(l::text, ';' ORDER BY n) FROM nl_t_nl_map;")" \
+		'2|2|{"(k,1)"};{"(j,2)","(i,3)"}'
+	check "a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)" \
+		"$_ai_nest_hits|$(nl_import nl_trunc 'bigint[]')" \
+		"1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0"
+else
+	for _ai_nest in \
+			"import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)" \
+			"import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)" \
+			"import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)" \
+			"import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)" \
+			"control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)" \
+			"control: a map file still imports into an array of a composite (#1932)" \
+			"a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)"; do
+		check_skip "$_ai_nest" \
+			"SKIP  $_ai_nest (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
 
 pgc_summary

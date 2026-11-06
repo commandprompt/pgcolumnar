@@ -261,7 +261,8 @@ as the 4b follow-up backlog:
   resolution.
 - **int->long / float->double type promotion**: a pre-promotion file's physical
   INT32 vs the current schema's `long` errors in the binder; a reader-wide
-  promotion feature, not 4b-specific.
+  promotion feature, not 4b-specific. Done in #1789: the field-id binder widens
+  both, so the probe and the delete-file read bind an old file too.
 
 ## 4c design - v3 deletion vectors (Puffin)
 

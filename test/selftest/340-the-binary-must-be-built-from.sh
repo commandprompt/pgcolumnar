@@ -43,8 +43,21 @@ check "and an uncomputable current fingerprint is unknown, not stale" \
 
 check "a server started after the binary is fresh" \
 	"$(pgc_running_binary_verdict 1000 2000)" "fresh"
-check "a server started at the same second is fresh" \
-	"$(pgc_running_binary_verdict 1000 1000)" "fresh"
+# SUB-SECOND, BOTH SIDES (#1956). Both readings used to be cut to whole
+# seconds, and an equal pair read `fresh`. So a library installed in the same
+# second AFTER the postmaster started passed, while the backends ran the old
+# code. The readings now keep their fractions. An exactly equal pair says
+# nothing about which came first, so it is `unknown`, never `fresh`.
+check "a server started at the same instant as the install is unknown, not fresh" \
+	"$(pgc_running_binary_verdict 1000 1000)" "unknown"
+check "and trailing zeros in a fraction do not change an equal reading" \
+	"$(pgc_running_binary_verdict 1000.5 1000.500000)" "unknown"
+check "a server started a fraction of a second before the install, in the same second, predates it" \
+	"$(pgc_running_binary_verdict 1000.5 1000.25)" "predates"
+check "a server started a fraction of a second after the install, in the same second, is fresh" \
+	"$(pgc_running_binary_verdict 1000.25 1000.5)" "fresh"
+check "and a fraction is compared as a number, not as text" \
+	"$(pgc_running_binary_verdict 1000.10 1000.9)" "fresh"
 check "a server older than the binary predates it" \
 	"$(pgc_running_binary_verdict 2000 1000)" "predates"
 check "a missing binary timestamp is unknown, not predates" \
@@ -301,6 +314,30 @@ check "a library older than the running server is accepted" "$_rb_rc2" "0"
 check "and it says so rather than staying silent" \
 	"$(printf '%s\n' "$_rb_out2" | grep -c 'started after the binary was installed')" "1"
 
+# THE SAME-SECOND RACE, LIVE (#1956). Stamp the library a few hundred
+# nanoseconds after the real postmaster start, inside the same whole second.
+# Whole-second readings call both sides equal and answer fresh; the server
+# really is older than the library, so the guard must refuse it.
+_rb_pm="$(psql_admin_scalar "SELECT extract(epoch from pg_postmaster_start_time());" 2>/dev/null)"
+_rb_pm_int="${_rb_pm%%.*}"
+_rb_pm_frac="${_rb_pm#"$_rb_pm_int"}"; _rb_pm_frac="${_rb_pm_frac#.}000000"
+_rb_pm_us="${_rb_pm_frac:0:6}"
+: > "$_rb_so"
+touch -d "@${_rb_pm_int}.${_rb_pm_us}500" "$_rb_so"
+echo "-- note: postmaster started at [$_rb_pm], library stamped at [$(stat -c %y "$_rb_so")]"
+check "premise: the filesystem keeps the library's sub-second mtime" \
+	"$(stat -c %y "$_rb_so" | grep -o '\.[0-9]*')" ".${_rb_pm_us}500"
+_rb_out4="$(pgc_check_running_binary "$_rb_so" 2>&1)"; _rb_rc4=$?
+check "a library installed a fraction of a second after the server start, in the same second, is REFUSED" \
+	"$_rb_rc4" "1"
+
+# The same instant on both sides: the order is unknown, so it is not fresh.
+touch -d "@${_rb_pm_int}.${_rb_pm_us}000" "$_rb_so"
+_rb_out5="$(pgc_check_running_binary "$_rb_so" 2>&1)"; _rb_rc5=$?
+check "a library stamped at the exact server start instant is accepted" "$_rb_rc5" "0"
+check "but it is not reported as fresh" \
+	"$(printf '%s\n' "$_rb_out5" | grep -c 'started after the binary was installed')" "0"
+
 # A path that does not exist must read unknown, not fresh and not a crash.
 rm -f "$_rb_so"
 _rb_out3="$(pgc_check_running_binary "$_rb_so" 2>&1)"; _rb_rc3=$?
@@ -410,6 +447,16 @@ check "and two pg_configs for one prefix share a stamp, keyed on pkglibdir" \
 # the aliasing defect one level down.
 printf '#!/bin/sh\nexit 1\n' > "$_fs_cfg/pg_config.broken"; chmod 755 "$_fs_cfg/pg_config.broken"
 printf '#!/bin/sh\nexit 1\n' > "$_fs_cfg/pg_config.broken2"; chmod 755 "$_fs_cfg/pg_config.broken2"
+# AND NOT ONE TIME IN 4096 (#1478). The check above uses a random directory, so a
+# key cut too short aliases the two only now and then: three hex characters failed
+# it once in about 4096 runs. These two paths collide on their first three md5 hex
+# characters (235) and differ at eight, so a three-character key aliases them on
+# every run. They need not exist: the key hashes the path string, and a pg_config
+# that cannot run is exactly the unreadable case.
+check "two unreadable pg_configs whose short hashes collide still get different stamps" \
+	"$([ "$(pgc_source_stamp_path /tree /tmp/pgc-collide-870/pg_config.broken)" \
+	    != "$(pgc_source_stamp_path /tree /tmp/pgc-collide-870/pg_config.broken2)" ] \
+	    && echo different || echo SAME)" "different"
 check "two unreadable pg_configs do not alias onto one stamp" \
 	"$([ "$(pgc_source_stamp_path /tree "$_fs_cfg/pg_config.broken")" \
 	    != "$(pgc_source_stamp_path /tree "$_fs_cfg/pg_config.broken2")" ] \
@@ -430,7 +477,7 @@ unset _fs_bad _fs_ok _fs_rp _fs_before _fs_cfg _fs_n _fs_pa _fs_pb
 # What the mismatch costs, measured by driving the real function both ways:
 #
 #     correct (PG_CONFIG):     /t/.pgc_source_stamp.18.603d6145
-#     a major passed instead:  /t/.pgc_source_stamp.0.nolib6f4
+#     a major passed instead:  /t/.pgc_source_stamp.0.nolib6f4922f4
 #
 # `pgc_major_of 18` finds no version in the string "18", so the major becomes 0
 # and the id becomes a hash of the literal "18". The writer and the reader then

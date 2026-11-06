@@ -22,6 +22,22 @@ $1;
 SQLEOF
 }
 
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read. A fresh connection answers again after crash recovery, so
+# "SELECT 1" alone passed after a backend died on a bad file; the survival checks
+# below also require that this count has not moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
 FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 [ -f "$FX/manifest-0.avro" ] || pgc_skip fixture "iceberg manifest fixtures are missing"
 python3 -c 'import json' 2>/dev/null || pgc_skip python "python3 is needed to read the oracle"
@@ -50,7 +66,7 @@ PY
 DECODED="$(q "SELECT record_count || '|' || file_size_in_bytes || '|' ||
                      split_part(partition, '=', 2)
               FROM pgcolumnar.read_avro_manifest('$M0') ORDER BY 1")"
-check "decoded entries == oracle (record_count|file_size|region)" \
+check_text "decoded entries == oracle (record_count|file_size|region)" \
 	"$DECODED" "$ORACLE"
 
 # the partition is rendered name=value; confirm the field name came from the
@@ -67,10 +83,12 @@ check "all entries are ADDED data files (status=1, content=0)" \
 # ---- the entry's data sequence number (#388 phase 4) ------------------------
 # The committed manifest was a first append: its entries carry a NULL
 # sequence_number (inherited from the manifest's, per the v2 spec).
+# Against the oracle's count: the expected side was read from the same call, so a
+# failed read compared empty with empty and an empty one 0/0 with 0/0.
 check "the committed entries have a NULL (inherited) sequence_number" \
 	"$(q "SELECT count(*) FILTER (WHERE sequence_number IS NULL) || '/' || count(*)
 	      FROM pgcolumnar.read_avro_manifest('$M0')")" \
-	"$(q "SELECT count(*)::text || '/' || count(*) FROM pgcolumnar.read_avro_manifest('$M0')")"
+	"$EXP_N/$EXP_N"
 # A crafted manifest_entry with an EXPLICIT sequence_number = 42, so the decode of
 # a present (non-null) value is proven, not just the null case. Reduced schema
 # (the decoder projects by field name and skips the rest).
@@ -132,33 +150,40 @@ PY
 LPATH="$(python3 -c "import json;print(json.load(open('$FX/expected_list.json'))['manifest_files'][0]['manifest_path_basename'])")"
 check "manifest-list entry count == oracle (1)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$ML')")" "1"
-check "manifest-list entry == oracle (all scalar fields)" \
+check_text "manifest-list entry == oracle (all scalar fields)" \
 	"$(q "SELECT manifest_length || '|' || content || '|' || partition_spec_id || '|' ||
 	             added_files_count || '|' || existing_files_count || '|' ||
 	             deleted_files_count || '|' || added_rows_count || '|' ||
 	             existing_rows_count || '|' || deleted_rows_count || '|' ||
 	             sequence_number || '|' || min_sequence_number || '|' || added_snapshot_id
 	      FROM pgcolumnar.read_manifest_list('$ML')")" "$LORACLE"
-check "manifest-list manifest_path basename == oracle" \
+check_text "manifest-list manifest_path basename == oracle" \
 	"$(q "SELECT (regexp_match(manifest_path, '[^/]+\$'))[1]
 	      FROM pgcolumnar.read_manifest_list('$ML')")" "$LPATH"
 
 # ---- privilege: needs pg_read_server_files ---------------------------------
-psql_run "DROP ROLE IF EXISTS avro_unpriv; CREATE ROLE avro_unpriv LOGIN;"
+# USAGE on the schema, so the refusal is the function's own: without it the role
+# was refused 42501 for the schema, before the pg_read_server_files gate, and with
+# that gate removed this still passed. The gate's message is read too.
+psql_run "DROP ROLE IF EXISTS avro_unpriv; CREATE ROLE avro_unpriv LOGIN; GRANT USAGE ON SCHEMA pgcolumnar TO avro_unpriv;"
+unpriv_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U avro_unpriv -d "$PGC_DB" \
+		-qtA -c "\\set VERBOSITY verbose" -c "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$M0');" 2>&1)"
 check "an unprivileged role is refused (42501)" \
-	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U avro_unpriv -d "$PGC_DB" \
-		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
-\\set VERBOSITY sqlstate
-SELECT count(*) FROM pgcolumnar.read_avro_manifest('$M0');
-SQL
-)" "42501"
+	"$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$unpriv_out" | head -1)$(grep -q 'pg_read_server_files' <<<"$unpriv_out" && echo ' by the pg_read_server_files gate')" \
+	"42501 by the pg_read_server_files gate"
 
 # ---- a non-Avro file is refused cleanly, not crashed -----------------------
+CRASHES_BEFORE="$(crashes)"
 printf 'this is not avro at all, not even close, just some bytes' > "$PGC_WORKDIR/notavro.bin"
 chmod 644 "$PGC_WORKDIR/notavro.bin"
+# The magic is read, not inferred from the SQLSTATE: the file is garbage throughout,
+# so with the magic check removed a later parse still raised XX001 and this passed.
+badmagic_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qtA -c "\\set VERBOSITY verbose" -c "SELECT * FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/notavro.bin');" 2>&1)"
 check "a non-Avro file is rejected (bad magic), backend survives" \
-	"$(sqlstate_of "SELECT * FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/notavro.bin')")" "XX001"
-check "backend still up after the bad file" "$(q 'SELECT 1')" "1"
+	"$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' <<<"$badmagic_out" | head -1)$(grep -q 'bad magic' <<<"$badmagic_out" && echo ' (bad magic)')" \
+	"XX001 (bad magic)"
+check "backend still up after the bad file" "$(survived "$CRASHES_BEFORE")" "1"
 
 # the file_format decodes to the bare Iceberg enum name (matches the normalized
 # oracle, not pyiceberg's Python repr)
@@ -198,6 +223,122 @@ PY
 chmod 644 "$PGC_WORKDIR/bomb.avro"
 check "a deflate zip-bomb is refused by the cumulative cap (54000)" \
 	"$(sqlstate_of "SET statement_timeout='60s'; SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/bomb.avro')")" "54000"
-check "backend still up after the zip-bomb" "$(q 'SELECT 1')" "1"
+check "backend still up after the zip-bomb" "$(survived "$CRASHES_BEFORE")" "1"
+
+# ---- #1913: a remote URL is refused up front, not opened as a local file -----
+# read_avro_manifest and read_manifest_list read local files only. Before #1913
+# an s3:// or http:// URL went to open(2) and failed with 58P01 ("could not open
+# file "s3://..." for reading"), which says the object does not exist. They now
+# refuse every scheme PgColumnarPathIsRemote recognises with 0A000, naming the
+# function and the URL, with a hint that it reads local files only -- the
+# refusal #1886 gave import_arrow. Each refusal is read whole: SQLSTATE, message
+# and hint. The refusal comes after the pg_read_server_files gate, so a role
+# without it gets 42501 for a URL as for a local path. The controls hold the
+# other side: a LOCAL path that carries "s3://" past its first byte is still read.
+echo "-- remote URL refusal"
+remote_refusal() {	# role SQL -> "SQLSTATE message | hint" of its error, or "no error (...)"
+	local out msg hint
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$2" 2>&1)"
+	case "$out" in
+		*ERROR:*)
+			msg="$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")"
+			hint="$(sed -n '/^HINT:/{s/^HINT: *//p;q;}' <<<"$out")"
+			printf '%s | %s\n' "$msg" "${hint:-no hint}";;
+		*) printf 'no error (%s)\n' "$out";;
+	esac
+}
+want_refusal() {	# function URL -> the refusal #1913 promises
+	printf '0A000 columnar: %s does not read "%s" | %s reads local files only. Use a local filesystem path.\n' "$1" "$2" "$1"
+}
+REMOTE_S3="s3://pgc-test/f1913/m.avro"
+REMOTE_HTTP="http://127.0.0.1:9/f1913/m.avro"
+REMOTE_OTHER="https://127.0.0.1:9/f1913/m.avro gs://pgc-test/f1913/m.avro az://pgc-test/f1913/m.avro S3://pgc-test/f1913/m.avro"
+GATE_REFUSAL="42501 must be superuser or a member of the pg_read_server_files role to read a server file | no hint"
+for fn in read_avro_manifest read_manifest_list; do
+	other_refusals="" other_wants=""
+	for u in $REMOTE_OTHER; do
+		other_refusals="$other_refusals${other_refusals:+ ; }$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.$fn('$u')")"
+		other_wants="$other_wants${other_wants:+ ; }$(want_refusal "$fn" "$u")"
+	done
+	printf -v "OTHER_GOT_$fn" '%s' "$other_refusals"
+	printf -v "OTHER_WANT_$fn" '%s' "$other_wants"
+done
+check "read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_S3')")" \
+	"$(want_refusal read_avro_manifest "$REMOTE_S3")"
+check "read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_HTTP')")" \
+	"$(want_refusal read_avro_manifest "$REMOTE_HTTP")"
+check "read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)" \
+	"$OTHER_GOT_read_avro_manifest" "$OTHER_WANT_read_avro_manifest"
+check "read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_S3')")" \
+	"$(want_refusal read_manifest_list "$REMOTE_S3")"
+check "read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913)" \
+	"$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_HTTP')")" \
+	"$(want_refusal read_manifest_list "$REMOTE_HTTP")"
+check "read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913)" \
+	"$OTHER_GOT_read_manifest_list" "$OTHER_WANT_read_manifest_list"
+
+# The gate first: avro_unpriv (above) holds USAGE on the schema and no
+# pg_read_server_files, so with the refusal moved ahead of the gate it read 0A000.
+check "read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913)" \
+	"$(remote_refusal avro_unpriv "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$REMOTE_S3')")" \
+	"$GATE_REFUSAL"
+check "read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913)" \
+	"$(remote_refusal avro_unpriv "SELECT count(*) FROM pgcolumnar.read_manifest_list('$REMOTE_S3')")" \
+	"$GATE_REFUSAL"
+
+# "$PGC_WORKDIR/s3:" is a directory, so "$PGC_WORKDIR/s3://m0.avro" is a local
+# file whose path holds "s3://" past its start.
+mkdir -p "$PGC_WORKDIR/s3:"; chmod 777 "$PGC_WORKDIR/s3:"
+cp "$M0" "$PGC_WORKDIR/s3://m0.avro"; cp "$ML" "$PGC_WORKDIR/s3://ml.avro"
+chmod 644 "$PGC_WORKDIR/s3://m0.avro" "$PGC_WORKDIR/s3://ml.avro"
+if [ "$(id -u)" = "0" ]; then chown -R postgres "$PGC_WORKDIR/s3:"; fi
+check "control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/s3://m0.avro')")" "$EXP_N"
+check "control: read_manifest_list still reads a local path that holds s3:// past its start (#1913)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$PGC_WORKDIR/s3://ml.avro')")" "1"
+
+# ---- #1918: s3a:// and s3n:// are refused too -------------------------------
+# s3a:// and s3n:// are the Hadoop names for S3, and the Iceberg reader accepts
+# them (#1825). PgColumnarPathIsRemote does not list them, so before #1918 they
+# went to open(2) and failed with 58P01. The refusal now covers them in any
+# case. The controls: a LOCAL path with "s3a://" past its start is still read.
+echo "-- s3a:// and s3n:// refusal"
+joined_refusals() {	# function URL... -> remote_refusal per URL, joined by " ; "
+	local fn=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(remote_refusal postgres "SELECT count(*) FROM pgcolumnar.$fn('$u')")"; done
+	printf '%s\n' "$acc"
+}
+joined_wants() {	# function URL... -> want_refusal per URL, joined by " ; "
+	local fn=$1 u acc=""; shift
+	for u in "$@"; do acc="$acc${acc:+ ; }$(want_refusal "$fn" "$u")"; done
+	printf '%s\n' "$acc"
+}
+HADOOP="s3a://pgc-test/f1918/m.avro s3n://pgc-test/f1918/m.avro"
+HADOOP_CASE="S3A://pgc-test/f1918/m.avro S3n://pgc-test/f1918/m.avro"
+# shellcheck disable=SC2086
+check "read_avro_manifest refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals read_avro_manifest $HADOOP)" "$(joined_wants read_avro_manifest $HADOOP)"
+# shellcheck disable=SC2086
+check "read_avro_manifest refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals read_avro_manifest $HADOOP_CASE)" "$(joined_wants read_avro_manifest $HADOOP_CASE)"
+# shellcheck disable=SC2086
+check "read_manifest_list refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)" \
+	"$(joined_refusals read_manifest_list $HADOOP)" "$(joined_wants read_manifest_list $HADOOP)"
+# shellcheck disable=SC2086
+check "read_manifest_list refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)" \
+	"$(joined_refusals read_manifest_list $HADOOP_CASE)" "$(joined_wants read_manifest_list $HADOOP_CASE)"
+
+mkdir -p "$PGC_WORKDIR/s3a:"; chmod 777 "$PGC_WORKDIR/s3a:"
+cp "$M0" "$PGC_WORKDIR/s3a://m0.avro"; cp "$ML" "$PGC_WORKDIR/s3a://ml.avro"
+chmod 644 "$PGC_WORKDIR/s3a://m0.avro" "$PGC_WORKDIR/s3a://ml.avro"
+if [ "$(id -u)" = "0" ]; then chown -R postgres "$PGC_WORKDIR/s3a:"; fi
+check "control: read_avro_manifest still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$PGC_WORKDIR/s3a://m0.avro')")" "$EXP_N"
+check "control: read_manifest_list still reads a local path that holds s3a:// past its start (#1918)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.read_manifest_list('$PGC_WORKDIR/s3a://ml.avro')")" "1"
 
 pgc_summary

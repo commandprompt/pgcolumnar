@@ -74,8 +74,14 @@ def test_tdigest_over_columnar(pgc_conn, expect):
     exact = _one(conn, "SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY v) FROM ax_heap")
     expect.text(repr(col), repr(heap), "tdigest over a columnar table gives exactly what it gives over heap")
     expect.text(_within(col, exact, 0.001), "ok", "premise: and its p99 is within 0.1% of the exact percentile")
+    # Built once into heap and stored from there, as the shell does: a tdigest depends on
+    # the order its inputs arrive in, so only a copy isolates the round trip (#1339).
+    conn.execute("CREATE TABLE ax_td_src USING heap AS SELECT day, tdigest(v, 100) AS t FROM ax GROUP BY day")
     conn.execute("CREATE TABLE ax_td (day int, t tdigest) USING pgcolumnar")
-    conn.execute("INSERT INTO ax_td SELECT day, tdigest(v, 100) FROM ax GROUP BY day")
+    conn.execute("INSERT INTO ax_td SELECT day, t FROM ax_td_src")
+    expect.text(_one(conn, "SELECT ((SELECT string_agg(t::text, ',' ORDER BY day) FROM ax_td) "
+                           "= (SELECT string_agg(t::text, ',' ORDER BY day) FROM ax_td_src))::text"), "true",
+                "a tdigest stored in a columnar table comes back byte for byte")
     expect.text(_within(_one(conn, "SELECT tdigest_percentile(t, 0.99) FROM ax_td"), exact, 0.001), "ok",
                 "premise: a tdigest stored in a columnar table still answers: "
                 "the union of daily digests is within 0.1% at p99")

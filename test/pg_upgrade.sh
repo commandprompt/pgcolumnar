@@ -231,8 +231,20 @@ check "per-table options preserved" \
 # Compared against the value captured on the OLD cluster, not against another
 # query on the new one -- the first version of this line compared the new answer
 # with itself and would have passed whatever the index did.
+# The plan premise is what makes the next arm about the INDEX (#1341): the columnar
+# scan is not disabled by enable_seqscan, and with the index dropped after the
+# upgrade the same range count still came back right.
+# Right after pg_upgrade there are no planner statistics, and the planner then took
+# the columnar scan for this range even with seqscan off: measured, the arm below
+# never touched the index. So the custom scan is turned off for the premise and the
+# lookup alike, and any index scan of c_id (a bitmap one too) counts.
+IDXOFF="SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off;"
+up_plan="$(nq "$IDXOFF EXPLAIN (COSTS off) SELECT count(*) FROM c WHERE id BETWEEN 100 AND 200")"
+echo "-- range plan after the upgrade:"; sed 's/^/     /' <<<"$up_plan"
+check "premise: the range lookup takes the upgraded index" \
+	"$(grep -cE 'Index (Only )?Scan (using|on) c_id' <<<"$up_plan")" "1"
 check "the index still answers the same range" \
-	"$(nq "SET enable_seqscan=off; SELECT count(*) FROM c WHERE id BETWEEN 100 AND 200" | tail -1)" \
+	"$(nq "$IDXOFF SELECT count(*) FROM c WHERE id BETWEEN 100 AND 200" | tail -1)" \
 	"$old_range"
 
 # The upgraded relation must still be writable, not merely readable: a table that

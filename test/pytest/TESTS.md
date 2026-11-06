@@ -70,7 +70,7 @@ behaviour, the source of that number is named.
 - [22. test_writes_wrote_rows.py: a write that wrote nothing](#22-test_writes_wrote_rowspy-a-write-that-wrote-nothing)
 - [23. test_mutation_ledger.py: which checks have ever been red](#23-test_mutation_ledgerpy-which-checks-have-ever-been-red)
 - [24. test_loop_coverage_premise.py: a loop that never ran asserted nothing](#24-test_loop_coverage_premisepy-a-loop-that-never-ran-asserted-nothing)
-- [25. test_join_runtime_filter.py: serial join runtime filter](#25-test_join_runtime_filterpy-serial-join-runtime-filter)
+- [25. test_native_join_runtime_filter.py: serial join runtime filter](#25-test_native_join_runtime_filterpy-serial-join-runtime-filter)
 - [26. test_check_records.py: every counted assertion is a record](#26-test_check_recordspy-every-counted-assertion-is-a-record)
 - [27. test_skip_loop_arms.py: a skipped arm records under its own name](#27-test_skip_loop_armspy-a-skipped-arm-records-under-its-own-name)
 - [28. test_docs_join_clustering.py: the runtime filter's layout precondition](#28-test_docs_join_clusteringpy-the-runtime-filters-layout-precondition)
@@ -149,6 +149,258 @@ behaviour, the source of that number is named.
 - [101. test_prepared_writes.py: a write prepared and finished in one session leaves the backend alive](#101-test_prepared_writespy-a-write-prepared-and-finished-in-one-session-leaves-the-backend-alive)
 - [102. test_column_extent.py: the per-column extent is a true bound, recomputed whenever groups go](#102-test_column_extentpy-the-per-column-extent-is-a-true-bound-recomputed-whenever-groups-go)
 - [103. test_collation_change.py: a collation change without a rewrite leaves columnar answering as heap does](#103-test_collation_changepy-a-collation-change-without-a-rewrite-leaves-columnar-answering-as-heap-does)
+- [104. test_build_needs_pg_config.py: a build with no pg_config refuses, it does not wait on stdin](#104-test_build_needs_pg_configpy-a-build-with-no-pg_config-refuses-it-does-not-wait-on-stdin)
+- [105. test_import_export_privilege.py: import and export check the table's privilege, serial and parallel](#105-test_import_export_privilegepy-import-and-export-check-the-tables-privilege-serial-and-parallel)
+- [106. test_every_suite_job_installs_the_extensions.py: every job that runs the suites installs the extension packages](#106-test_every_suite_job_installs_the_extensionspy-every-job-that-runs-the-suites-installs-the-extension-packages)
+- [107. test_fdw_plan_privilege.py: planning a foreign table reads no server file for a role the scan would refuse](#107-test_fdw_plan_privilegepy-planning-a-foreign-table-reads-no-server-file-for-a-role-the-scan-would-refuse)
+- [108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode](#108-test_arrow_importpy-import_arrow-round-trips-reads-a-foreign-file-and-refuses-what-it-cannot-decode)
+- [109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar](#109-test_entry_point_privilegepy-every-relation-taking-entry-point-has-a-decided-privilege-bar)
+- [110. test_am_contracts.py: contracts the access method owes core DML and transactions](#110-test_am_contractspy-contracts-the-access-method-owes-core-dml-and-transactions)
+- [111. test_objstore_credentials.py: object-store credentials live on a user mapping, and the environment is a privilege](#111-test_objstore_credentialspy-object-store-credentials-live-on-a-user-mapping-and-the-environment-is-a-privilege)
+- [112. test_debug_hook_privilege.py: the debug metadata mutators are owner-only](#112-test_debug_hook_privilegepy-the-debug-metadata-mutators-are-owner-only)
+- [113. test_vacuum_lock_privilege.py: maintenance refuses a non-owner before taking its lock](#113-test_vacuum_lock_privilegepy-maintenance-refuses-a-non-owner-before-taking-its-lock)
+- [114. test_vm_privilege.py: the visibility-map entry points are owner-only and refuse heap](#114-test_vm_privilegepy-the-visibility-map-entry-points-are-owner-only-and-refuse-heap)
+- [115. test_alter_table_scans.py: ALTER TABLE forms see the live rows and only those](#115-test_alter_table_scanspy-alter-table-forms-see-the-live-rows-and-only-those)
+- [116. test_settings_reference.py: the settings reference matches the server](#116-test_settings_referencepy-the-settings-reference-matches-the-server)
+- [117. test_large_values.py: megabyte-scale values are stored exactly](#117-test_large_valuespy-megabyte-scale-values-are-stored-exactly)
+- [118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash](#118-test_recovery_minimal_walpy-tables-that-skip-wal-survive-a-crash)
+- [119. test_statement_self_visibility.py: a statement does not see its own writes](#119-test_statement_self_visibilitypy-a-statement-does-not-see-its-own-writes)
+- [120. test_maintenance_rollback.py: a maintenance function that rolls back leaves the table as it was](#120-test_maintenance_rollbackpy-a-maintenance-function-that-rolls-back-leaves-the-table-as-it-was)
+- [121. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent](#121-test_partition_rowspy-rows-cross-columnar-partitions-and-keys-hold-through-the-parent)
+- [122. test_prepared_across_sessions.py: a prepared transaction, seen from other sessions and across a crash](#122-test_prepared_across_sessionspy-a-prepared-transaction-seen-from-other-sessions-and-across-a-crash)
+- [123. test_maintenance_crash.py: a crash part-way through maintenance loses nothing](#123-test_maintenance_crashpy-a-crash-part-way-through-maintenance-loses-nothing)
+- [124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table](#124-test_serializablepy-serializable-refuses-a-write-skew-on-a-columnar-table)
+- [125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts](#125-test_rls_direct_storagepy-the-direct-storage-paths-refuse-a-caller-a-policy-restricts)
+- [126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent](#126-test_objstore_crlfpy-a-cr-or-lf-in-an-object-store-url-is-refused-before-it-is-sent)
+- [127. test_objstore_allowlist.py: the endpoint allow-list, empty by default](#127-test_objstore_allowlistpy-the-endpoint-allow-list-empty-by-default)
+- [128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point](#128-test_objstore_userinfopy-userinfo-in-a-url-is-refused-on-every-entry-point)
+- [129. test_savepoint_flush.py: a savepoint rolled back after a flush](#129-test_savepoint_flushpy-a-savepoint-rolled-back-after-a-flush)
+- [130. test_rls_query_paths.py: row-level security holds on every read path](#130-test_rls_query_pathspy-row-level-security-holds-on-every-read-path)
+- [131. test_type_matrix.py: types the differential matrix never stored answer as heap](#131-test_type_matrixpy-types-the-differential-matrix-never-stored-answer-as-heap)
+- [132. test_iceberg_data_files.py: an Iceberg table's live data files, listed inside its location](#132-test_iceberg_data_filespy-an-iceberg-tables-live-data-files-listed-inside-its-location)
+- [133. test_native_skip.py: a type binary-coercible to its opclass's type prunes](#133-test_native_skippy-a-type-binary-coercible-to-its-opclasss-type-prunes)
+- [134. test_unique_conc.py: concurrent inserters of one unique key serialize](#134-test_unique_concpy-concurrent-inserters-of-one-unique-key-serialize)
+- [135. test_update_conc.py: two writers of one row serialize](#135-test_update_concpy-two-writers-of-one-row-serialize)
+- [136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing](#136-test_recoverypy-committed-writes-survive-a-crash-uncommitted-ones-leave-nothing)
+- [137. test_native_backend_crash.py: one backend dies and committed data is intact](#137-test_native_backend_crashpy-one-backend-dies-and-committed-data-is-intact)
+- [138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies](#138-test_corruptionpy-a-corrupt-catalog-row-is-refused-cleanly-and-no-backend-dies)
+- [139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused](#139-test_inheritancepy-an-inherits-parent-plans-an-append-a-partitioned-columnar-parent-is-refused)
+- [140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes](#140-test_parquet_importpy-import_parquet-round-trips-both-page-versions-and-keeps-the-indexes)
+- [141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum](#141-test_phase5py-the-custom-scan-pushdown-projection-options-and-vacuum)
+- [142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row](#142-test_drop_cleanuppy-drop-takes-a-tables-whole-metadata-with-it-and-a-matviews-options-row)
+- [143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it](#143-test_native_upgrade_convergepy-every-release-upgrades-to-a-fresh-catalog-and-the-window-before-it)
+- [144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen](#144-test_fk_referencingpy-a-foreign-key-referencing-a-columnar-table-is-refused-where-it-is-chosen)
+- [145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must](#145-test_truncate_cleanuppy-truncate-leaves-no-catalog-rows-behind-and-keeps-what-it-must)
+- [146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap](#146-test_native_dmlpy-delete-update-and-merge-on-a-native-table-agree-with-heap)
+- [147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies](#147-test_native_dict_underfillpy-an-under-filled-dict-chunk-is-refused-and-no-backend-dies)
+- [148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector](#148-test_native_decode_gatingpy-an-unprunable-qual-gates-payload-decode-per-vector)
+- [149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay](#149-test_native_decode_gate_widthpy-decode-gating-runs-only-on-a-projection-wide-enough-to-pay)
+- [150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore](#150-test_pg_dump_roundtrippy-a-columnar-table-survives-pg_dump-and-restore)
+- [151. test_pg_upgrade.py: a columnar table survives pg_upgrade](#151-test_pg_upgradepy-a-columnar-table-survives-pg_upgrade)
+- [152. test_replication.py: physical replication and standby redo](#152-test_replicationpy-physical-replication-and-standby-redo)
+- [153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock](#153-test_native_reclusterpy-online-reclustering-under-shareupdateexclusivelock)
+- [154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up](#154-test_alter_am_cleanuppy-drop-after-set-access-method-heap-cleans-up)
+- [155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards](#155-test_native_reclaimpy-physical-page-reclaim-and-the-compaction-threshold-guards)
+- [156. test_native_repack.py: REPACK on a columnar table](#156-test_native_repackpy-repack-on-a-columnar-table)
+- [157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join](#157-test_native_join_vector_aggpy-the-vectorized-aggregate-over-a-unique-key-inner-join)
+- [158. test_native_writer.py: the native writer by its catalog rows](#158-test_native_writerpy-the-native-writer-by-its-catalog-rows)
+- [159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table](#159-test_native_batch_fold_projectionpy-the-batch-folds-column-lists-on-a-wide-table)
+- [160. test_native_encdesc_golden.py: the encoding descriptor's wire layout](#160-test_native_encdesc_goldenpy-the-encoding-descriptors-wire-layout)
+- [161. test_native_parquet_schema.py: parquet_schema round trip](#161-test_native_parquet_schemapy-parquet_schema-round-trip)
+- [162. test_native_vecskip.py: per-vector skipping by the zone maps](#162-test_native_vecskippy-per-vector-skipping-by-the-zone-maps)
+- [163. test_native_index_projection.py: CREATE INDEX projects only what it needs](#163-test_native_index_projectionpy-create-index-projects-only-what-it-needs)
+- [164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups](#164-test_native_saop_pushdownpy-in-lists-and--anyarray-prune-row-groups)
+- [165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time](#165-test_native_groupagg_batchpy-the-grouped-aggregate-folds-column-at-a-time)
+- [166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs](#166-test_native_fetch_projectionpy-a-fetch-by-row-number-decodes-only-what-its-caller-needs)
+- [167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group](#167-test_native_fetch_positionpy-a-fetch-by-row-number-costs-the-same-anywhere-in-its-group)
+- [168. test_native_fetch_cache.py: the fetch-by-row-number cache](#168-test_native_fetch_cachepy-the-fetch-by-row-number-cache)
+- [169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out](#169-test_native_parquet_pushdownpy-the-parquet-fdw-skips-row-groups-its-statistics-rule-out)
+- [170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays](#170-test_native_parquet_flbapy-uuid-and-decimal-read-from-fixed-length-byte-arrays)
+- [171. test_native_parquet_multifile.py: directories and globs read as one relation](#171-test_native_parquet_multifilepy-directories-and-globs-read-as-one-relation)
+- [172. test_native_index.py: index lookups and unique enforcement fetch by row number](#172-test_native_indexpy-index-lookups-and-unique-enforcement-fetch-by-row-number)
+- [173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap](#173-test_native_fetch_bigcappy-fetching-from-a-row-group-above-the-cache-cap)
+- [174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer](#174-test_sorted_projectionpy-vacuum_sorted-reorders-storage-and-changes-no-answer)
+- [175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups](#175-test_native_iospy-an-index-only-scan-skips-the-fetch-on-all-visible-row-groups)
+- [176. test_native_truncate.py: end-truncation shrinks the file and loses no row](#176-test_native_truncatepy-end-truncation-shrinks-the-file-and-loses-no-row)
+- [177. test_native_gap.py: a write beyond EOF fills the gap and loses no row](#177-test_native_gappy-a-write-beyond-eof-fills-the-gap-and-loses-no-row)
+- [178. test_native_roundtrip.py: a native table reads back what the heap holds](#178-test_native_roundtrippy-a-native-table-reads-back-what-the-heap-holds)
+- [179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot](#179-test_native_bloompy-a-bloom-filter-prunes-the-equality-probe-minmax-cannot)
+- [180. test_native_toasted_write.py: a toasted value is written once and read back whole](#180-test_native_toasted_writepy-a-toasted-value-is-written-once-and-read-back-whole)
+- [181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer](#181-test_native_varlena_boundpy-a-corrupt-varlena-length-is-refused-not-read-past-its-buffer)
+- [182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold](#182-test_native_agg_addcolumnpy-a-metadata-aggregate-over-an-added-column-reads-what-the-metadata-cannot-hold)
+- [183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does](#183-test_native_groupagg_wide_costpy-the-grouped-fold-prices-its-own-input-scan-as-the-scan-node-does)
+- [184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted](#184-test_hardeningpy-corrupted-native-metadata-is-refused-or-ignored-never-trusted)
+- [185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV](#185-test_dependency_estimatepy-a-functional-dependency-estimate-is-not-collapsed-by-a-truncated-extended-mcv)
+- [186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted](#186-test_batch_fold_explainpy-explain-analyze-reports-the-fold-that-ran-not-the-one-predicted)
+- [187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that](#187-test_zonemap_costpy-a-scan-is-priced-for-what-the-zone-maps-let-it-skip-and-only-for-that)
+- [188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle](#188-test_concurrent_diffpy-concurrent-writers-to-one-columnar-relation-end-equal-to-a-heap-oracle)
+- [189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds](#189-test_write_minmax_fastpathpy-zone-minmax-through-the-direct-comparison-path-are-the-true-bounds)
+- [190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes](#190-test_catalog_nattspy-every-natts_-constant-equals-the-width-of-the-catalog-it-sizes)
+- [191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor](#191-test_write_fsst_compressedpy-fsst-is-kept-only-where-it-wins-after-the-block-compressor)
+- [192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column](#192-test_zonemap_estimate_samplepy-the-planners-zone-map-sample-is-one-based-complete-and-per-column)
+- [193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope](#193-test_wal_envelopepy-pgcolumnar-emits-only-cores-wal-inside-relationtruncates-envelope)
+- [194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow](#194-test_arrow_nested_importpy-arrays-and-composites-round-trip-through-arrow)
+- [195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct](#195-test_arrow_nestedpy-arrays-and-composites-export-as-arrow-list-and-struct)
+- [196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered](#196-test_vm_clear_on_renumberpy-the-visibility-map-is-cleared-wherever-live-rows-are-renumbered)
+- [197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals](#197-test_arrow_exportpy-every-exported-value-equals-the-heap-oracle-and-only-the-documented-refusals)
+- [198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates](#198-test_vector_agg_tlist_shapepy-the-vectorized-aggregate-accepts-a-target-list-that-contains-aggregates)
+- [199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type](#199-test_alter_column_typepy-alter-column-type-converts-every-value-and-the-column-really-changes-type)
+- [200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory](#200-test_vector_agg_rescan_memorypy-rescanning-a-columnar-aggregate-does-not-grow-query-memory)
+- [201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed](#201-test_analyze_statspy-analyze-collects-statistics-that-agree-with-heap-and-the-planner-prices-what-they-feed)
+- [202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it](#202-test_vacuum_stripe_countpy-pgcolumnarvacuum-refuses-a-stripe_count-bound-rather-than-ignoring-it)
+- [203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips](#203-test_bloom_sizingpy-a-bloom-filter-is-sized-by-its-distinct-count-and-still-skips)
+- [204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do](#204-test_vacuum_sorted_gatepy-pgcolumnarvacuum_sorted-skips-its-rewrite-only-when-there-is-nothing-to-do)
+- [205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns](#205-test_ungrouped_vector_aggpy-the-ungrouped-vectorized-aggregate-returns-what-core-agg-returns)
+- [206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000](#206-test_tablesamplepy-tablesample-on-a-columnar-table-raises-0a000)
+- [207. test_bloom_setting.py: enable_bloom_filter governs the write side too](#207-test_bloom_settingpy-enable_bloom_filter-governs-the-write-side-too)
+- [208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename](#208-test_sorted_mark_renamepy-a-tables-ordering-mark-follows-a-column-rename)
+- [209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them](#209-test_sort_status_privilegepy-sort_status-answers-whoever-may-select-the-table-and-only-them)
+- [210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines](#210-test_bloom_lazypy-a-scan-reads-the-bloom-filters-of-the-groups-and-columns-it-examines)
+- [211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run](#211-test_sort_statuspy-sort_status-reports-how-much-of-an-ordered-table-is-still-in-its-run)
+- [212. test_smoke.py: a columnar table stores rows and gives them back](#212-test_smokepy-a-columnar-table-stores-rows-and-gives-them-back)
+- [213. test_server_file_privilege.py: every server-file function is gated like COPY](#213-test_server_file_privilegepy-every-server-file-function-is-gated-like-copy)
+- [214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on](#214-test_autovacuumpy-the-maintenance-daemon-compacts-and-reclusters-only-while-it-is-on)
+- [215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session](#215-test_autovacuum_yieldpy-the-maintenance-daemon-yields-its-lock-to-a-waiting-session)
+- [216. test_projection_rewrite.py: a declared projection survives a rewrite](#216-test_projection_rewritepy-a-declared-projection-survives-a-rewrite)
+- [217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must](#217-test_avro_manifestpy-iceberg-avro-manifests-and-manifest-lists-decode-and-refuse-what-they-must)
+- [218. test_column_projection.py: column projection reads only the columns a query references](#218-test_column_projectionpy-column-projection-reads-only-the-columns-a-query-references)
+- [219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open](#219-test_local_open_race_freepy-local-file-opens-are-race-free-no-stat-before-open)
+- [220. test_encode_effort.py: the per-table encode_effort option](#220-test_encode_effortpy-the-per-table-encode_effort-option)
+- [221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group](#221-test_doc_parallel_premisepy-the-parallel-scan-pages-narrow-query-reads-every-chunk-group)
+- [222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running](#222-test_maintenance_duepy-pgcolumnarmaintenance_due-reports-which-online-verb-is-worth-running)
+- [223. test_eager_ordering_record.py: eager rewrites record the ordering they applied](#223-test_eager_ordering_recordpy-eager-rewrites-record-the-ordering-they-applied)
+- [224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits](#224-test_int8_agg_int128py-sum-and-avg-over-bigint-accumulate-in-128-bits)
+- [225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound](#225-test_fsst_verdict_cachepy-the-fsst-keepdrop-verdict-is-cached-with-an-age-bound)
+- [226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not](#226-test_import_exclusionpy-import_arrow-enforces-an-exclusion-constraint-and-a-rewrite-does-not)
+- [227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone](#227-test_import_deferredpy-imports-honour-a-deferrable-constraint-and-the-check-is-deferred-not-gone)
+- [228. test_index_only.py: index-only scans on a columnar table, served from the visibility map](#228-test_index_onlypy-index-only-scans-on-a-columnar-table-served-from-the-visibility-map)
+- [229. test_isolation.py: deterministic isolation specs for the compaction and truncation races](#229-test_isolationpy-deterministic-isolation-specs-for-the-compaction-and-truncation-races)
+- [230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive](#230-test_concurrencypy-concurrent-deletes-into-one-chunk-group-serialize-and-both-survive)
+- [231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate](#231-test_iceberg_scanpy-iceberg_scan-reads-by-field-id-behind-the-server-file-gate)
+- [232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot](#232-test_iceberg_catalogpy-the-iceberg-catalog-reader-resolves-the-named-current-snapshot)
+- [233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry](#233-test_iceberg_name_mapping_memorypy-the-iceberg-name-mapping-parse-does-not-allocate-per-entry)
+- [234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests](#234-test_iceberg_fdw_estimatepy-the-iceberg-fdw-estimates-rows-from-the-manifests)
+- [235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result](#235-test_iceberg_fdw_projectionpy-the-iceberg-fdws-projection-pushdown-never-changes-a-result)
+- [236. test_estimate_deleted.py: the planner's row estimate follows deletes](#236-test_estimate_deletedpy-the-planners-row-estimate-follows-deletes)
+- [237. test_generated_columns.py: a columnar table with a generated column returns what heap does](#237-test_generated_columnspy-a-columnar-table-with-a-generated-column-returns-what-heap-does)
+- [238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name](#238-test_export_sinkpy-the-export-byte-sink-checks-every-write-and-never-leaves-a-partial-file-under-the-final-name)
+- [239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded](#239-test_groupagg_table_sizingpy-the-vectorized-grouped-aggregate-sizes-its-table-from-the-estimate-bounded)
+- [240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content](#240-test_fsst_marginpy-the-fsst-keepdrop-margin-decides-and-never-changes-content)
+- [241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row](#241-test_index_delete_livenesspy-nbtrees-deletion-passes-never-destroy-an-entry-for-a-live-row)
+- [242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row](#242-test_rewrite_group_scanpy-a-rewrite-reads-each-row-group-once-not-once-per-row)
+- [243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run](#243-test_recluster_gatepy-recluster-skips-its-rewrite-when-the-table-is-already-this-keys-run)
+- [244. test_recluster_extent.py: an online recluster records only the extent it rewrote](#244-test_recluster_extentpy-an-online-recluster-records-only-the-extent-it-rewrote)
+- [245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer](#245-test_reader_buffer_reusepy-the-reader-reuses-one-group-buffer-and-the-reuse-never-shows-in-an-answer)
+- [246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role](#246-test_nologin_workerspy-a-nologin-roles-background-workers-connect-and-act-as-that-role)
+- [247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer](#247-test_scan_directionpy-a-scrollable-cursor-over-a-columnar-table-never-invents-a-backward-answer)
+- [248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first](#248-test_qual_order_selectivitypy-skip-predicates-are-probed-most-selective-first)
+- [249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node](#249-test_pushdown_reportpy-explain-reports-what-qual-pushdown-did-the-same-way-on-every-columnar-node)
+- [250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row](#250-test_row_triggerspy-row-level-triggers-on-a-columnar-table-fire-once-per-row-with-the-right-row)
+- [251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore](#251-test_projection_rename_restorepy-a-projections-declaration-follows-a-column-rename-so-it-rebuilds-after-restore)
+- [252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for](#252-test_preimage_rewritepy-a-predicate-on-date_trunc-of-a-column-prunes-like-the-range-it-stands-for)
+- [253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing](#253-test_pg19_vacuum_optionspy-postgresql-19s-parallel-autovacuum-parameter-is-accepted-on-a-columnar-table-and-changes-nothing)
+- [254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with](#254-test_cost_written_geometrypy-the-cost-model-describes-the-geometry-a-table-was-written-with)
+- [255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations](#255-test_encode_invariantspy-encoding-invariants-for-the-155-bulk-load-optimisations)
+- [256. test_read_stream.py: reads through a read stream return what the synchronous path returns](#256-test_read_streampy-reads-through-a-read-stream-return-what-the-synchronous-path-returns)
+- [257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded](#257-test_parquet_level_widthpy-the-parquet-level-width-helper-is-single-sourced-unsigned-and-bounded)
+- [258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values](#258-test_parquet_nestedpy-parquet-nested-export-writes-lists-and-groups-that-read-back-as-the-generators-values)
+- [259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites](#259-test_parquet_nested_importpy-nested-parquet-import-round-trips-arrays-and-composites)
+- [260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use](#260-test_parquet_count_boundspy-file-declared-parquet-counts-are-bounded-before-use)
+- [261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree](#261-test_parallel_degreepy-identical-data-in-heap-and-columnar-is-granted-the-same-parallel-degree)
+- [262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes](#262-test_parallel_flush_optinpy-parallel_flush-stays-opt-in-and-the-dispatch-metric-cannot-separate-the-shapes)
+- [263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics](#263-test_parquet_export_statspy-the-parquet-files-we-export-carry-correct-per-row-group-statistics)
+- [264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once](#264-test_catalog_filter_readspy-stats-and-sort_status-read-a-tables-storage-id-once)
+- [265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging](#265-test_iceberg_malformedpy-the-iceberg-reader-refuses-crafted-metadata-cleanly-never-crashing-or-hanging)
+- [266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping](#266-test_iceberg_name_mappingpy-an-iceberg-data-file-with-no-field-ids-binds-by-name-mapping)
+- [267. test_iceberg_objstore.py: Iceberg tables read over object storage](#267-test_iceberg_objstorepy-iceberg-tables-read-over-object-storage)
+- [268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must](#268-test_iceberg_dvpy-iceberg-v3-deletion-vectors-apply-supersede-and-refuse-what-they-must)
+- [269. test_logical_decoding_source.py: a columnar table is not a logical decoding source](#269-test_logical_decoding_sourcepy-a-columnar-table-is-not-a-logical-decoding-source)
+- [270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must](#270-test_iceberg_deletespy-iceberg-position-and-equality-deletes-apply-scope-and-refuse-what-they-must)
+- [271. test_logical_subscriber.py: columnar as a logical replication apply target](#271-test_logical_subscriberpy-columnar-as-a-logical-replication-apply-target)
+- [272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes](#272-test_logical_decoding_cdc_recipepy-the-documented-cdc-recipe-captures-transacts-and-decodes)
+- [273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must](#273-test_iceberg_restpy-the-iceberg-rest-catalog-resolves-a-table-keeps-its-token-out-of-every-log-and-refuses-what-it-must)
+- [274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table](#274-test_iceberg_rest_scanpy-the-iceberg-rest-catalog-reads-a-table-as-iceberg_scan-does-lists-and-refuses-an-unknown-table)
+- [275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does](#275-test_iceberg_rest_vendedpy-an-iceberg-rest-catalogs-vended-credentials-sign-the-reads-and-nothing-else-does)
+- [276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else](#276-test_iceberg_rest_serverpy-an-iceberg-rest-catalog-foreign-server-authenticates-by-its-user-mapping-and-by-nothing-else)
+- [277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes](#277-test_hilbert_curvepy-the-hilbert-clustering-curve-pinned-by-its-properties-and-by-frozen-bytes)
+- [278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them](#278-test_bench_guardspy-the-benchmarks-own-guards-refuse-what-they-must-and-the-report-asks-them)
+- [279. test_docs_style.py: the documentation's measurable rules and the facts it states](#279-test_docs_stylepy-the-documentations-measurable-rules-and-the-facts-it-states)
+- [280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's](#280-test_auditpy-the-bug-audit-regressions-hold-and-each-refusal-is-its-own-guards)
+- [281. test_fuzz.py: randomized differential runs against a heap oracle](#281-test_fuzzpy-randomized-differential-runs-against-a-heap-oracle)
+- [282. test_fuzz_avro.py: the Avro manifest decoder survives malformed input](#282-test_fuzz_avropy-the-avro-manifest-decoder-survives-malformed-input)
+- [283. test_fuzz_listing.py: the ListObjectsV2 listing parser survives malformed input](#283-test_fuzz_listingpy-the-listobjectsv2-listing-parser-survives-malformed-input)
+- [284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input](#284-test_fuzz_arrowpy-the-arrow-ipc-decoder-survives-malformed-input)
+- [285. test_fuzz_parquet.py: the Parquet decoder survives malformed input](#285-test_fuzz_parquetpy-the-parquet-decoder-survives-malformed-input)
+- [286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead](#286-test_native_compactpy-online-compaction-retires-only-what-every-snapshot-agrees-is-dead)
+- [287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap](#287-test_native_agg_deletespy-metadata-aggregates-over-a-table-with-deletes-answer-right-and-stay-cheap)
+- [288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on](#288-test_native_clusterpy-z-order-clustering-reorders-storage-tightens-the-zone-maps-and-refuses-what-it-cannot-cluster-on)
+- [289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound](#289-test_native_exact_selectionpy-exact-selection-rules-out-vectors-no-zone-map-can-and-loses-no-row-on-a-bound)
+- [290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes](#290-test_native_ctaspy-create-table-as-into-a-columnar-table-works-with-a-parallel-source-plan-and-a-committed-tables-first-write-still-serializes)
+- [291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec](#291-test_native_encodingpy-native-cascade-encoding-engages-picks-alp-and-fsst-and-round-trips-on-every-codec)
+- [292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump](#292-test_native_fastdecodepy-the-inlined-byval-decode-returns-what-the-call-path-returns-through-every-encoding-and-a-vector-jump)
+- [293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context](#293-test_native_fetch_sort_contextpy-a-merge-join-over-sorted-index-fetched-columnar-rows-decodes-outside-the-sorts-context)
+- [294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping](#294-test_native_fold_skipguardpy-the-batch-fold-is-reachable-for-a-shape-that-skips-vectors-and-accounts-for-the-skipping)
+- [295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not](#295-test_native_fetch_group_memopy-the-by-row-number-fetch-resolves-its-row-group-from-a-memo-and-the-memo-never-serves-a-group-it-should-not)
+- [296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done](#296-test_parallel_copy_deduppy-pgcolumnarparallel_copy-can-refuse-a-load-it-has-already-done)
+- [297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically](#297-test_parallel_copypy-parallel_copy-splits-a-file-on-record-boundaries-and-loads-it-atomically)
+- [298. test_parallel.py: a parallel columnar scan returns what the heap returns](#298-test_parallelpy-a-parallel-columnar-scan-returns-what-the-heap-returns)
+- [299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once](#299-test_parallel_vector_aggpy-the-parallel-vectorized-aggregates-fold-every-row-group-once)
+- [300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source](#300-test_parallel_export_parquetpy-parallel-parquet-export-equals-serial-export-equals-the-source)
+- [301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured](#301-test_native_fold_deferralpy-the-batch-fold-defers-payload-until-a-row-passes-its-keys-and-the-work-is-measured)
+- [302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one](#302-test_native_lazy_slotpy-the-index-fetch-decodes-only-the-prefix-the-executor-asks-for-and-never-a-stale-one)
+- [303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly](#303-test_native_metadata_flushpy-a-stripe-flush-opens-each-metadata-table-once-and-the-flushs-writes-read-back-correctly)
+- [304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change](#304-test_native_late_materializationpy-a-row-the-qual-rejects-is-not-materialized-and-the-answers-do-not-change)
+- [305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row](#305-test_native_reclaim_reconcilepy-a-reuse-op-drops-the-free_space-row-that-overlaps-a-live-group-and-only-that-row)
+- [306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads](#306-test_native_page_offset_boundpy-a-corrupt-page_offset-is-refused-by-the-containment-guard-on-both-reads-and-an-intact-table-still-reads)
+- [307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen](#307-test_native_param_pushdownpy-a-parameterized-qual-prunes-chunk-groups-and-a-correlated-one-is-never-frozen)
+- [308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's](#308-test_native_sort_bypy-the-declared-sort_by-key-orders-the-rows-it-says-and-each-refusal-is-its-own-guards)
+- [309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable](#309-test_native_rewritepy-compact_rewrite-reclaims-partially-deleted-groups-online-and-vacuums-rewrite-keeps-every-row-reachable)
+- [310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value](#310-test_native_zonemappy-zone-map-rows-carry-exact-counts-sums-and-the-right-bounds-by-value)
+- [311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session](#311-test_native_zonemap_sessionpy-a-scan-resolves-zone_map-once-and-each-scan-holds-its-own-session)
+- [312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes](#312-test_native_zonemap_narrowpy-group-skipping-reads-only-the-predicate-columns-zone-maps-and-still-prunes)
+- [313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values](#313-test_native_vecdecodepy-decode-honours-the-skip-vector-and-the-fold-reads-neither-holes-nor-nulls-as-values)
+- [314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard](#314-test_native_parquet_fieldidpy-read_parquet-binds-output-columns-by-parquet-field-id-and-refuses-each-misuse-by-its-own-guard)
+- [315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused](#315-test_native_parquet_codecspy-gzip-zstd-and-lz4_raw-pages-decode-to-the-generators-rows-an-all-null-columns-empty-dictionary-page-decodes-and-a-crafted-page-size-is-refused)
+- [316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly](#316-test_native_parquet_unitspy-time-and-timestamp-units-decode-to-the-right-instant-and-their-stats-skip-correctly)
+- [317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows](#317-test_native_parquet_projectionpy-a-projected-parquet-scan-decodes-only-the-columns-it-references-and-reads-the-generators-rows)
+- [318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, a row group with too few chunks, and a malformed footer](#318-test_native_parquet_hardeningpy-the-parquet-reader-refuses-values-that-do-not-fit-their-column-a-row-group-with-too-few-chunks-and-a-malformed-footer)
+- [319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend](#319-test_native_parquet_stackpy-a-crafted-parquet-footer-trips-the-recursion-guard-instead-of-crashing-the-backend)
+- [320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time](#320-test_native_parquet_streamingpy-external-parquet-reads-stream-an-oversized-file-describes-itself-crafted-pages-are-refused-the-fdw-decodes-one-row-group-at-a-time)
+- [321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly](#321-test_native_parquet_partitionpy-hive-style-partition-columns-materialize-and-prune-whole-files-and-a-tree-that-does-not-match-fails-loudly)
+- [322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard](#322-test_native_parquet_fdwpy-the-parquet-fdw-reads-an-exported-file-as-a-foreign-table-prunes-what-it-can-and-refuses-each-misuse-by-its-own-guard)
+- [323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate](#323-test_native_read_parquetpy-read_parquet-returns-the-rows-that-were-written-refuses-what-it-must-and-keeps-its-file-gate)
+- [324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused](#324-test_objstore_listingpy-a-remote-prefix-or-glob-is-listed-page-by-page-an-exact-key-is-not-listed-and-a-listing-that-cannot-advance-or-fails-is-refused)
+- [325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them](#325-test_native_rewrite_concpy-the-online-rewrite-runs-alongside-writers-without-losing-a-row-and-without-blocking-them)
+- [326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received](#326-test_objstore_addressingpy-gs-and-s3-virtual-host-addressing-checked-by-the-request-path-the-server-received)
+- [327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left](#327-test_objstore_stash_recoverypy-recovery-from-a-stash-an-interrupted-objstore_module-run-left)
+- [328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause](#328-test_objstore_s3_readpy-sigv4-signed-s3-reads-every-refusal-naming-its-cause)
+- [329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused](#329-test_objstore_tls_readpy-tls-for-object-store-reads-every-verification-proven-by-a-certificate-that-must-be-refused)
+- [330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard](#330-test_objstore_http_readpy-the-http-ranged-byte-source-with-request-counts-and-each-refusals-own-guard)
+- [331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload](#331-test_objstore_sink_writepy-exports-to-s3-go-as-one-put-or-a-completed-multipart-upload-read-back-as-the-generator-and-a-failed-export-leaves-no-key-and-no-open-upload)
+- [332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable](#332-test_native_fetch_interruptpy-the-by-row-number-fetch-is-cancellable)
+- [333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned](#333-test_objstore_modulepy-the-object-store-modules-packaging-and-loader-every-refusal-pinned)
+- [334. test_phase2.py: compression, projection, zone maps and chunk-group filtering](#334-test_phase2py-compression-projection-zone-maps-and-chunk-group-filtering)
+- [335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables](#335-test_phase3py-read-your-writes-delete-update-rollback-savepoints-and-temporary-tables)
+- [336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE](#336-test_phase4py-btree-and-hash-index-reads-through-the-index-fetch-and-refusals-by-sqlstate)
+- [337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves](#337-test_phase6py-vectorized-aggregates-and-scans-against-a-heap-oracle-not-only-against-themselves)
+- [338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it](#338-test_cancel_decodepy-a-cancel-lands-inside-one-large-row-groups-decode-and-the-session-it-lands-in-survives-it)
+- [339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards](#339-test_decode_interruptspy-the-decode-paths-interrupt-checks-each-inside-the-loop-it-guards)
+- [340. test_decode_skip_interrupts.py: the Thrift skip of a hostile footer stops at the footer's end, and both skip loops keep an interrupt check](#340-test_decode_skip_interruptspy-the-thrift-skip-of-a-hostile-footer-stops-at-the-footers-end-and-both-skip-loops-keep-an-interrupt-check)
+- [341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop](#341-test_native_cancelpy-a-scans-row-group-load-yields-to-statement_timeout-inside-the-decode-loop)
+- [342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error](#342-test_objstore_export_double_cancelpy-a-second-cancel-during-a-remote-exports-cleanup-keeps-the-exports-own-error)
+- [343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts](#343-test_parquet_timestamp_zonepy-a-parquet-timestamp-read-into-the-other-timestamp-type-follows-postgresqls-casts)
+- [344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family](#344-test_parquet_skip_cross_typepy-parquet-row-group-skipping-uses-a-constant-of-another-type-in-the-operator-family)
+- [345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap](#345-test_parquet_exportpy-pgcolumnarexport_parquet-writes-a-file-two-readers-read-back-equal-to-the-heap)
+- [346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined](#346-test_planner_choice_qualitypy-the-planners-chosen-plan-is-not-far-slower-than-the-plans-it-declined)
+- [347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open](#347-test_objstore_export_open_uploadspy-a-cancelled-remote-export-leaves-none-of-its-multipart-uploads-open)
+- [348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation](#348-test_native_agg_collationpy-min-and-max-under-a-collate-override-answer-under-that-collation)
+- [349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does](#349-test_native_sketchpy-a-named-column-gets-one-distinct-count-sketch-per-row-group-and-nothing-else-does)
+- [350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory](#350-test_native_sketch_aggpy-approx_count_distinct-estimates-what-countdistinct-counts-within-its-theory)
+- [351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options](#351-test_native_sketch_rewritepy-every-rewrite-rebuilds-the-distinct-count-sketches-and-keeps-the-tables-options)
+- [352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe](#352-test_native_sketch_foldpy-approx_count_distinct-folds-the-stored-sketches-and-scans-only-what-they-cannot-describe)
+- [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
+- [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
+- [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
 
 ## 1. How to read a test in here
 
@@ -241,7 +493,18 @@ one of those eight measurements exited 0.
 | `test_an_expected_unrunnable_test_leaves_the_run_green` | #1163. The same declaration the three arms above exit 67 for, listed for this major, exits 0, so the difference is the list and not the declaration |
 | `test_an_unlisted_unrunnable_test_is_named_and_refused` | the control beside it: an empty list refuses the same run, and names the test rather than counting it |
 | `test_a_listed_test_that_runs_makes_the_list_stale` | the other direction. A feature arriving is a fact the list must stop claiming, and nothing else would notice: the test simply starts passing |
+| `test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet` | a row `MAJOR NODEID unless-env VAR=VALUE` covers an opt-in arm's decline while VAR does not have VALUE (#1767); the inner arm is `test_optin_flag` |
+| `test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met` | with the condition met, the arm runs and the run exits 0, not as a stale list |
+| `test_a_conditional_row_refuses_a_decline_once_its_condition_is_met` | the control: with the condition met, an arm that still declines is refused (67); the inner arm is `test_optin_declines` |
+| `test_a_bare_variable_condition_is_met_by_any_value` | `unless-env VAR` is met by any non-empty value, for an opt-in variable that names an endpoint; the inner arm is `test_optin_endpoint` |
+| `test_a_row_with_any_other_suffix_is_refused` | fail closed: an unknown suffix raises, naming the forms a row may take, rather than leaving the row dead |
 | `test_a_listed_test_the_run_never_collected_is_not_a_stale_row` | and the premise that direction owes (#1204). `allowed - actual` reads as "listed, did not decline", which is only answerable for a test the run COLLECTED. A one-file run on PG 15-17 collected none of the others and exited 67 while its own file passed, telling the reader to edit a list that was correct |
+| `test_a_listed_decliner_under_xdist_leaves_the_run_green` | #1892. Under `-n 2` a listed decline exits 0, as the serial run does, and no process reports it as unexpected or stale. A second listed row names a file the run never collects; mutant M6, which skips the #1204 intersection when the workers report ids, calls it stale (`got 1 want 0`). Before the fix the controller judged against an empty collection and exited 67; the inner arms are `test_xdist_inner_decliner`, `test_xdist_inner_one`, `test_xdist_inner_two` and `test_xdist_inner_three` |
+| `test_a_stale_row_under_xdist_is_still_refused` | #1892, the other direction: under `-n 2` a listed test that ran is reported as stale exactly once, by the controller, and the run exits 67. Before the fix both workers reported it |
+| `test_a_listed_test_that_fails_is_not_a_stale_row` | #1914: a listed test that failed is not reported as stale, and the run exits 1 for the failure. Before the fix the message told the reader to delete a correct row (`got 1 want 0`) |
+| `test_a_listed_test_lost_to_a_crashed_worker_is_not_a_stale_row` | #1914: under `-n 2 --max-worker-restart=0` a listed test whose worker crashes (`os._exit(3)`) is not reported as stale, and the run exits 1 for the lost test. Before the fix: `got 1 want 0` |
+| `test_an_unlisted_decliner_under_xdist_is_still_refused` | #1892: under `-n 2` an unlisted decline is reported exactly once and the run exits 67. Before the fix the worker that ran it reported it too |
+| `test_the_unrunnable_collector_registers_without_xdist` | #1892 review: the collector's `pytest_xdist_node_collection_finished` hook is optional, so a plugin manager with no xdist hook specs registers it without an "unknown hook" error. Before the fix: `got 1 want 0` |
 | `test_the_list_is_read_for_the_running_major_only` | a row for 15 does not excuse a decline on 18, which is what a flat set would do |
 | `test_an_unreadable_pg_config_fails_closed` | no major means no judgement, and no judgement means the old behaviour. The dangerous reading is the other one: unknown major treated as expect-anything |
 | `test_a_run_with_nothing_unrunnable_still_exits_zero` | **control**: a green run is untouched | — |
@@ -672,14 +935,15 @@ is where a wrong quote would hide.
 | `test_the_shell_path_really_refuses` | the shell's own `FATAL` reaches the Python caller, through real bash |
 | `test_the_shell_path_accepts_a_good_build` | **control** for the arm above, through the same plumbing |
 | `test_a_missing_lib_sh_is_a_refusal_not_a_pass` | an unsourceable `lib.sh` means no guard at all, so it must refuse rather than proceed ungated |
-| `test_build_once_builds_once_and_then_skips` | the workers share one prefix, so the install is serialised rather than skipped |
+| `test_build_once_builds_once_and_then_skips` | the first call builds, the second finds the marker, and the build ran once |
+| `test_build_once_serialises_concurrent_callers` | two callers at once, with a build slow enough to overlap: one builds and the other waits on the lock and finds its marker (without the lock both build; #1339) |
 | `test_build_once_rebuilds_for_a_different_prefix` | running against two majors in turn rebuilds for each |
 | `test_editing_the_source_rebuilds` | the marker is keyed on the source fingerprint, not just the prefix |
 | `test_the_fingerprint_reads_content_not_mtime` | `touch` does not move the fingerprint; an edit does |
 | `test_an_unfingerprintable_tree_always_rebuilds` | no fingerprint means no key, and no key must mean rebuild |
 | `test_a_server_older_than_the_library_is_refused` | `predates` |
 | `test_a_server_started_after_the_library_is_fresh` | `fresh` |
-| `test_equal_timestamps_are_fresh_not_predates` | the exact boundary: the same second is not stale |
+| `test_equal_timestamps_are_unknown_not_fresh_or_predates` | the exact boundary: an equal pair, whole or below the second, is `unknown`, not `fresh` and not stale |
 | `test_an_unreadable_side_is_unknown_not_fresh` | three unreadable shapes all give `unknown` |
 | `test_the_fingerprint_covers_a_separately_built_module` | an `objstore/` edit moves the hash |
 | `test_an_objstore_edit_forces_a_second_build` | and forces a rebuild, end to end |
@@ -809,8 +1073,9 @@ happens to be complete today.
 Three of the verdict arms exist to keep that true. `server_binary_verdict` returns
 one of `fresh`, `predates` or `unknown`, and `unknown` is what an unreadable mtime,
 an unreadable postmaster start time, or a non-numeric epoch all produce. The
-boundary arm is separate on purpose: mtime resolution is one second, so a run fast
-enough to install and start within the same second must not refuse itself.
+boundary arm is separate on purpose. Both times are read below the second, so an
+exactly equal pair cannot say which came first: it is `unknown`, as in `test/lib.sh`
+(#1956, #1969). It must not read as stale either, or a fast run would refuse itself.
 
 ### The fingerprint's own integrity, and why it needed six more arms
 
@@ -1054,6 +1319,7 @@ fix; noticing is.
 | --- | --- |
 | `test_build_once_rebuilds_when_another_process_replaced_the_library` | a third party overwriting the library rebuilds instead of certifying, and the build actually runs |
 | `test_build_once_rebuilds_when_the_library_was_deleted` | absent is not fresh |
+| `test_an_install_that_leaves_no_library_is_refused` | an install that reports success and leaves no library is refused, and writes no marker; it used to be certified as "absent" (#1339) |
 | `test_a_prefix_that_cannot_be_observed_never_certifies` | a prefix that cannot be seen is never certified: no marker, so the next call builds |
 
 **Why a per-source constant cannot work.** The library's digest is not a function of the
@@ -1254,6 +1520,7 @@ written.
 | `test_the_cluster_refuses_a_foreign_server` | the identity check can return False |
 | `test_the_connection_the_tests_use_is_watched` | writes through `pgc_conn` reach the zero-row guard, on both the connection and a handed-out cursor |
 | `test_the_acknowledgement_is_by_cursor_against_the_real_driver` | the write is stamped on the object the caller holds, which a stub cannot prove |
+| `test_setting_autocommit_on_the_connection_the_tests_use_is_refused` | the wiring arm for #1420: `pgc_conn` itself refuses `autocommit = False` and stays in autocommit, against the real driver |
 
 Two of these deserve their reasoning stated.
 
@@ -1387,6 +1654,10 @@ than a single test, which is why they were built before the rest of the backlog.
 | `test_layer_rejects_a_parametrize_over_an_empty_list` | an empty parameter set fails the run | `1 skipped`, exit 0 |
 | `test_layer_accepts_a_parametrize_with_cases` | **positive control** | a real parameter set is untouched |
 | `test_layer_rejects_a_fixture_that_skips` | a skip arriving during setup fails the run | every dependent test skips, exit 0 |
+| `test_layer_rejects_a_skip_in_the_test_body` | `pytest.skip()` in the body fails the run (#1339) | the test reads as skipped, exit 0 |
+| `test_layer_rejects_an_xfail_in_the_test_body` | `pytest.xfail()` in the body fails the run | "xfailed", which pytest counts as success |
+| `test_layer_rejects_an_importorskip_in_the_test_body` | `pytest.importorskip()` in the body fails the run | a skip that bypasses `expect.cannot_run`'s closed list of reasons |
+| `test_layer_rejects_an_xfail_marker` | an `xfail` marker is refused at collection, as `skip` is | `xfail_strict` catches an XPASS, but a failing test under xfail is still exit 0 |
 | `test_layer_allows_a_declared_unrunnable_test` | **escape hatch and control** | `expect.cannot_run` records a counted assertion instead of skipping |
 | `test_layer_allows_a_deliberately_selected_subset` | `-k` is a deliberate act, not tests lost | the guard reported 15 deselected tests as never reported and failed a healthy run |
 | `test_layer_allows_an_explicitly_deselected_test` | `--deselect` reaches the same hook by another route | pinned separately so one fix cannot cover only one spelling |
@@ -1445,6 +1716,20 @@ This closes the part of `guard-as-teardown-fixture-still-reports-passed`
 (`VACUITY_MODES.md` 3.7) that is about **this layer's own guard placement**. It does not
 close the family: a guard anyone adds later in a teardown is still a guard that cannot
 fail its test, and nothing refuses that shape in general.
+
+### Two workers must not get one fixture port
+
+A twin that starts its own S3 or HTTP fixture server takes the port from
+`pick_port(slot)` in a module fixture. Under `-n`, a module's tests are split across
+workers, so every worker runs that fixture. When the port depended on the slot only,
+two workers probed the same free port and the second bind failed with `Address
+already in use` (#1742). CI runs the cluster files serially, so only `-n` runs met it.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_two_workers_taking_a_fixture_port_do_not_collide` | an inner `-n 2` run where each worker takes `pick_port(27)`, waits for the other, then binds it: two workers, two ports, inner run green | with the port independent of the worker (main before #1742), both workers get one port and the second bind fails |
+| `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
+| `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
 
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
@@ -1563,7 +1848,9 @@ design exists to avoid.
 ### `test_the_accounting_line_is_read_on_every_exit_path`
 
 Pass, failure, skip and incomplete all carry the line, which is what makes it the
-runtime twin of the declaration rather than a synonym for PASSED.
+runtime twin of the declaration rather than a synonym for PASSED. Typed logs show only
+that the reader accepts four shapes, so a real suite is also driven down each path and
+the reader is fed what `pgc_summary` printed (#1339).
 
 ### `test_the_reconciliation_names_both_directions`
 
@@ -1610,9 +1897,10 @@ the population and that both buckets are occupied.
 ### `test_the_accounted_reader_takes_either_runtime_mechanism`
 
 Two runtime-observable mechanisms exist: `pgc_summary`'s accounting line, used by 239
-suites, and a suite's own `checks run:` line, which `bench_guards` and `docs_style`
-print from private counters without ever sourcing `lib.sh`. A reader that knew only the
-first would call those two unaccounted, which is false.
+suites, and a suite's own `checks run:` line, which `bench_guards` prints from private
+counters without ever sourcing `lib.sh` (`docs_style` did too, until #1341 moved it onto `lib.sh`). A reader that knew only the
+first would call those two unaccounted, which is false. Both alternatives are anchored,
+and an indented or extended line of either shape is refused (#1339).
 
 ### `test_a_registered_suite_accounted_by_nothing_fails_by_name`
 
@@ -1633,7 +1921,8 @@ Debt is recorded by name rather than as a count, which is what makes it a burn-d
 new unaccounted suite fails while the known ones are excused. Debt that is no longer
 debt — a suite that now accounts, or one no longer registered — is reported, so the
 burn-down cannot stall silently. Those two are reported rather than fatal: a gate that
-reddens the moment someone *fixes* something teaches people not to fix things.
+reddens the moment someone *fixes* something teaches people not to fix things. Each case
+reads the exit code as well as the names: 1 for the new suite, 0 for both reports (#1339).
 
 ### `test_the_population_partitions_and_prints_its_identity`
 
@@ -1647,8 +1936,9 @@ buckets that are not a partition at all.
 ### `test_the_debt_file_is_tracked_and_holds_only_registered_suites`
 
 `test/suites_without_accounting.txt` is tracked so that adding a name is a diff a
-reviewer sees — the whole reason it is a file and not a number in the environment. Every
-name in it must be a registered suite.
+reviewer sees — the whole reason it is a file and not a number in the environment. git
+must track it, not merely find it on disk (#1339). Every name in it must be a registered
+suite.
 
 ### `test_the_declaration_reader_survives_pipefail_on_a_long_suite`
 
@@ -1705,7 +1995,7 @@ fixtures are read off `conftest.py` rather than named in the classifier.
 | test | asserts |
 | --- | --- |
 | `test_the_guard_half_of_the_corpus_runs_without_a_database_driver` | the no-cluster files collect and pass with `import psycopg` shimmed to raise |
-| `test_a_cluster_test_still_needs_the_driver` | **control**: deferring made the IMPORT lazy, not the database optional |
+| `test_a_cluster_test_still_needs_the_driver` | **control**: deferring made the IMPORT lazy, not the database optional; its premise checks the `pg_config` it hands the child resolves to an executable, a bare name looked up on `PATH` (#1933) |
 | `test_conftest_imports_no_database_driver_at_module_scope` | the regression named in one line, for whoever edits conftest next |
 | `test_the_declaration_is_exactly_the_database_free_half` | `NO_CLUSTER` equals the property, both ways, so an undeclared database-free file is named |
 | `test_the_declaration_names_each_file_once` | the list's cardinality, which `membership_report`'s set comparison cannot see. Measured: pytest deduplicates the paths, so the cost is the job's own printed file count, not a double run |
@@ -1714,11 +2004,13 @@ fixtures are read off `conftest.py` rather than named in the classifier.
 | `test_the_membership_report_names_a_database_free_file_left_undeclared` | the hole itself, on a fixture, with the control beside it |
 | `test_the_membership_report_names_a_declared_file_that_needs_a_cluster` | the other direction: a listed file that starts using a cluster fixture |
 | `test_the_membership_report_names_a_declared_file_that_is_gone` | a rename is still caught, and as its own kind rather than as a cluster need |
+| `test_a_declared_file_that_needs_the_driver_is_named_as_such` | the `needs-the-driver` kind, on a fixture corpus, because no file in the real tree reaches that branch (#1339) |
+| `test_the_partition_mode_prints_both_halves` | `--partition` prints each file in the half it belongs to; before this, nothing ran that mode |
 | `test_the_gate_runs_the_membership_decision_rather_than_only_this_file` | selftest 350 runs the decision, and the command line it uses works |
 | `test_ci_derives_the_file_list_rather_than_repeating_it` | the CI job asks this module for `NO_CLUSTER`, names no file literally, and states no count |
 | `test_the_job_installs_no_database_driver` | the job asserts psycopg is absent rather than assuming it |
 | `test_the_cluster_job_runs_the_other_half_and_derives_it` | the complement of `NO_CLUSTER` is RUN, derived not listed, and asserts the driver IS present |
-| `test_both_pytest_jobs_assert_how_many_tests_they_collected` | both jobs pass `--pgc-expect-tests` from the tracked file, and each guards the read |
+| `test_both_pytest_jobs_assert_how_many_tests_they_collected` | each job, in its own code lines rather than a count over the file, passes `--pgc-expect-tests` from the tracked file and guards the read |
 | `test_each_expected_count_is_stated_exactly_once` | `expected_tests.txt` states each key on one line — a keep-both merge duplicates it, `awk` then hands the flag a multi-line value, and the arm above could not see it because it builds a dict |
 | `test_a_duplicated_count_is_caught_and_the_dict_form_is_not` | **removal proof**: the same fixture read both ways, so the dict form is shown keeping the LAST line while the line form names the duplicate |
 | `test_the_shell_reference_detector_sees_code_and_not_prose` | the premise: a docstring is prose, a string passed to bash is a reference, an f-string counts once |
@@ -1866,6 +2158,19 @@ over tests nothing ran.
 | `test_a_file_whose_generated_tests_import_the_driver_is_driver_dependent` | cluster-free and still unrunnable where there is no driver, so the job's list is the intersection of two properties |
 | `test_a_file_that_only_PARSES_a_driver_import_is_job_runnable` | the control: a driver import in a string nothing runs is not a dependency, and reading only the string would exclude this very file |
 | `test_prose_naming_the_driver_is_not_a_driver_dependency` | a docstring naming psycopg is a sentence about code |
+
+### The default pg_config (#1933)
+
+With neither `--pg-config` nor `PGC_PG_CONFIG` set, conftest picks the first executable
+`pg_config` from `PG_CONFIG_CANDIDATES`, then the one on `PATH`. It used to be a fixed
+path, `/usr/local/pg18a/bin/pg_config`, which the dev container does not have. Every
+cluster fixture then failed at setup, and the driver control reported a missing shim name.
+
+| test | what it asserts |
+| --- | --- |
+| `test_the_default_pg_config_is_one_this_box_has` | `PG_CONFIG_CANDIDATES` holds every prefix in `bench/provision.sh`'s `WANT_PG_MATRIX` and the dev container's five, naming any it lacks; the default is executable whenever a candidate or the `PATH` one is, listing the ones it found |
+| `test_the_default_pg_config_takes_the_first_candidate_that_exists` | the resolver's order over files the test writes: a missing or non-executable candidate is passed over, then `PATH`, then the first candidate stays named |
+| `test_the_run_reports_which_pg_config_it_used_and_why` | a run prints `pg_config: <path> (from <source>) -- <pg_config --version>` exactly once: in the header at default verbosity, in the closing summary under `-q` or `--no-header`, and once only under `-n 2`. The source is `--pg-config`, `PGC_PG_CONFIG`, `candidate`, `PATH` or `first candidate, none found`; the option wins over the variable. With neither set, the child must print the parent's resolved default and source; with `/usr/local` hidden by a `-p` plugin and only the interpreter's directory on `PATH`, it must print `PATH` or `first candidate, none found`. A `pg_config` that exits non-zero is printed as `pg_config --version failed: ...`. The child runs one database-free test with `pg_config` scripts the test writes |
 
 ## 17. Adding a test
 
@@ -2197,6 +2502,8 @@ parameter is `cur` is excluded for the same reason `wrote` is.
 | `test_a_hardcoded_sentinel_survives_the_same_rewrite` | a sentinel no producer minted — the corpus writes three, one from inside SQL — is still refused after a rewrite | a matcher reading a rewritable global would stop seeing them |
 | `test_the_ordering_premise_refuses_a_failed_reading` | `ordering_observable` refuses a failed reading on either side | with the old shared constant two failed readings were identical and it went RED; unique sentinels differ, so it passed and greenlit every ordered assertion resting on it |
 | `test_a_legitimate_comparison_is_untouched` | equal text, rows, sets and numbers still pass | a refusal that also refuses real data is not a refusal |
+| `test_the_minted_failure_scan_sees_the_shape` | the scan finds an except handler returning `f'error: {exc}'`, and not `query_error()`, a SQLSTATE, or the shape inside a string literal | a scan that sees nothing would make the corpus arm below vacuous |
+| `test_no_test_mints_its_own_failure_text` | no except handler under test/pytest builds an "error..." string from the error's message (#1525 review) | a helper that mints its own failure text is not the producer's prefix, so no refusal fires and two failures with the same message compare equal; on main it finds 32 sites in 22 files |
 
 **Each refusal is proved load-bearing.** Removing the one call from each assertion,
 one at a time, with `__pycache__` cleared between runs:
@@ -2251,18 +2558,21 @@ separately, so a reader sees a green test beside an error.
 | test | asserts |
 | --- | --- |
 | `test_a_write_that_wrote_nothing_is_recorded` | an `INSERT 0 0` is recorded, with its count and its tag |
-| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT |
+| `test_update_and_delete_are_writes_too` | `UPDATE 0` and `DELETE 0` are writes, not only INSERT, each recorded with its zero count and its own tag |
 | `test_a_select_matching_nothing_is_not_a_write` | `SELECT 0` is not a write; **the arm a count-only guard fails** |
 | `test_ddl_is_not_a_write` | `CREATE TABLE`, `SET`, `TRUNCATE TABLE`, `DROP SCHEMA` are not writes |
-| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded and needs no naming |
+| `test_a_write_that_wrote_rows_needs_no_acknowledgement` | a write that moved rows is recorded, with the count it reported |
+| `test_a_write_that_wrote_rows_passes_unacknowledged` | the inner run passes with a write that moved rows and was never named: **the guard refuses a zero, not a write** |
 | `test_an_unacknowledged_zero_row_write_fails_the_test` | the inner run fails, and the message names the mode and the command |
 | `test_expect_wrote_acknowledges_the_zero` | naming the zero lets a negative control pass |
 | `test_expect_wrote_refuses_a_count_that_is_not_a_count` | `rowcount == -1` is refused rather than compared |
 | `test_expect_wrote_still_compares` | acknowledging a count does not excuse a wrong one |
-| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one |
+| `test_several_writes_and_only_the_empty_one_is_named` | with three writes and one empty, the refusal names the empty one, `#2 UPDATE`, and neither INSERT |
 | `test_wrote_refuses_a_statement_that_is_not_a_write` | `expect.wrote` on a `SELECT 0` is refused, not compared |
 | `test_the_acknowledgement_names_one_write_and_not_its_twin` | naming one zero does not acknowledge a different identical zero |
 | `test_acknowledging_both_identical_zeros_passes` | the control for that arm: naming both is legitimate |
+| `test_a_setting_on_the_watched_connection_is_refused_not_dropped` | setting `autocommit` on the watched connection raises, naming the attribute and BEGIN/ROLLBACK, and the real connection keeps its value (#1420) |
+| `test_a_setting_on_a_watched_cursor_is_refused_not_dropped` | the same refusal for an attribute set on a watched cursor |
 
 ### Two properties, two files, on purpose
 
@@ -2413,6 +2723,26 @@ observation — otherwise an ordinary CI run retires the debt the ledger exists 
 Last-write-wins records the most recent attack rather than the catalogue the column
 exists to become. One `--mutation` copied across several logs attributes a deliberate
 change to failures it had nothing to do with, and is refused.
+
+### `test_a_mutation_named_with_a_semicolon_is_refused_rather_than_split`
+
+The mutation column is a `;`-separated set, written back sorted, so a `--mutation`
+whose text held `; ` was stored as two mutations, one a fragment starting with a space.
+Every later merge re-sorted it, and three branches in a row carried the same eight
+recovery_minimal_wal rows as a change of their own. `merge` now refuses such a text with
+rc 2 and leaves the ledger as it was; the same text with `, and` is recorded whole.
+
+### `test_a_ledger_row_whose_mutation_holds_a_fragment_is_refused`
+
+The writer joins the set with a bare `;`, so a piece with whitespace at an end is a
+fragment of a split sentence, never a mutation it wrote. The reader refuses the ledger
+by line. Two whole mutations separated by a bare `;` still read.
+
+### `test_the_committed_ledger_names_no_mutation_fragment`
+
+The committed ledger, read by the same reader. Red on the tree before this change at
+line 1783, the first of the 12 rows it rewords: 8 from #1427's recovery_minimal_wal
+mutation and 4 older harness_selftest rows.
 
 ### `test_a_mutation_with_two_targets_can_be_recorded_when_both_are_named`
 
@@ -2652,6 +2982,14 @@ If they disagree, one was edited by hand. `suites_not_covered` is 250 of 251, so
 gate cannot refuse a new check in 250 suites — a real limit, counted rather than hidden,
 which falls as suites are seeded.
 
+### `test_the_budget_holds_no_history`
+
+`check_ledger_budget.txt` holds its header, the two numbers and nothing after the census line (#1431). A derivation line (`ledger rows`, or a `never`/`dated` arithmetic line) anywhere refuses, and so does a paragraph that opens with `# #NNNN` or `# MERGED`. The derivation belongs in the commit message's `Ledger-census` trailer. Same three check names as `test/selftest/410-a-check-must-have-been-red.sh`.
+
+### `test_each_ledger_commit_carries_its_census`
+
+`pgc_ledger.py census-commits` over a throwaway repository, one branch per case (#1431). It passes a commit whose `Ledger-census` trailer matches its tsv and a commit that leaves the tsv alone. It refuses a stale trailer (naming the commit and both censuses), a missing one, one outside the final trailer block, two, and one whose `dated` is not `rows - never`. A range with no merge base is an integrity failure. The runner must call it. Same check names as `test/selftest/410-a-check-must-have-been-red.sh`.
+
 ### `test_the_gate_refuses_a_census_that_contradicts_its_own_ledger`
 
 The arm above asserts the two committed files agree. This one asserts the **tool
@@ -2832,6 +3170,37 @@ warned unconditionally, which would train the warning out of being read.
 The shell twin is `test/selftest/520-a-merged-row-must-cover-the-majors.sh`. Same
 properties, own fixtures, and neither file names the other.
 
+### A premise the ledger has seen go red is refused (#1236)
+
+A check named `premise:` claims no repository change can redden it. A date in its
+last-observed-red column says a mutation did. One of the two is false, so the gate
+refuses the row and names it. The reviewer then decides: drop the prefix, because the
+check is an arm, or move the date to the check that earned it.
+
+The gate decides this from the ledger alone, so it covers every row, not only the rows
+the run observed.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_gate_refuses_a_premise_the_ledger_has_seen_go_red` | a dated `premise:` row makes the gate fail, and the output names the row once |
+| `test_a_premise_never_observed_red_passes_the_gate` | the control: the same fixture with `never` passes, so the refusal above is this rule and not another route to rc=1 |
+
+The shell twin is the last section of `test/selftest/410-a-check-must-have-been-red.sh`.
+
+### A row's majors, and the prior a ceiling is compared against (#1339)
+
+Two arms the shell twin, part 410, had and this file did not. A ledger row naming a
+major that is not one, or none, is an integrity failure: the major decides where a
+check exists. And the ceiling comparison reads a PRIOR that every route to must decide
+on: an absolute budget path resolves against its repository, a budget the prior lacks
+is a note, `--against auto` without a base ref or upstream refuses, an unresolvable base
+ref says what to fetch, and a resolvable one is named and a raise against it refused.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_ledger_row_must_name_a_real_major` | a row naming `eighteen`, or no major, is refused with rc 2; the control with `18` reads clean |
+| `test_the_prior_ceiling_is_resolved_rather_than_assumed` | the five prior-resolution outcomes above, each with its own message and status |
+
 ## 24. test_loop_coverage_premise.py: a loop that never ran asserted nothing
 
 **Why this file exists.** `assert-inside-a-loop-over-zero-rows` in VACUITY_MODES.md 3.5
@@ -2852,26 +3221,28 @@ non-zero, the test passes, and the loop's assertions simply never ran. Nothing n
 That is the shape a query returning no rows produces, and the shape a glob matching
 nothing produces.
 
-**The population, measured before the arm was written:**
+**The population**, measured when the arm was written and again on 2026-10-16 over 170
+files (#1339):
 
-| shape | loops | state |
-| --- | ---: | --- |
-| non-empty by construction (literal, `range`, local literal) | 20 | cannot be zero-trip |
-| derived, loop holds the only assertions | 0 | already refused |
-| derived, **with** assertions outside the loop | 2 | at risk, now guarded |
+| shape | when written | 2026-10-16 | state |
+| --- | ---: | ---: | --- |
+| non-empty by construction (literal, `range`, local literal) | 20 | 112 | cannot be zero-trip |
+| derived, loop holds the only assertions | 0 | 1 | already refused |
+| derived, **with** assertions outside the loop | 2 | 15 | at risk, now guarded |
 
-Both at-risk loops already carried a premise, so this arm is **green on arrival**. That
-is the point rather than a weakness: the property was true of the corpus and nothing was
-holding it there, so what this catches is the third one. It is not insurance against an
-imagined shape — it has a population of two and locks it in.
+Every at-risk loop carried a premise both times, so this arm was **green on arrival**.
+That is the point rather than a weakness: the property was true of the corpus and nothing
+was holding it there, so what this catches is the next loop added without one. The arms
+read these numbers live, so this table records them and does not bound them.
 
 | test | asserts |
 | --- | --- |
 | `test_every_at_risk_loop_carries_a_coverage_premise` | the corpus itself: every derived loop carrying an assertion has a cardinality premise |
-| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either |
+| `test_the_sweep_finds_the_loops_it_is_meant_to_police` | **premise**: the sweep classified loops, because one that parses nothing reports no offenders either. It counts the sweep's own classification (`classify_loops`), not a second walk of its own, so a sweep reading no file reddens it. And the sweep parsed every `test_*.py` in the directory: a sweep reading every fourth file cleared the loop-count floors, and a count tied to the directory does not go out of date (#1339) |
 | `test_a_loop_with_no_premise_is_caught` | **removal proof**: the real shape with the premise removed, with the clean control beside it |
+| `test_a_premise_in_name_only_is_still_caught` | a name bound to a literal and later rebound to a query is not exempt, and a premise pinning the length at 0 is not a premise, in any argument order (#1339) |
 | `test_a_bounded_loop_needs_no_premise` | a literal, a `range` and a local dict's `.items()` are all exempt, because demanding a premise there would be noise a reader edits away |
-| `test_the_layer_already_refuses_a_loop_holding_every_assertion` | the measured half, so this file does not claim the whole mode — and that the sweep deliberately skips that shape rather than double-reporting it |
+| `test_the_layer_already_refuses_a_loop_holding_every_assertion` | the measured half, so this file does not claim the whole mode: a planted test in a child pytest is refused, and the sweep classifies a planted loop of that shape as already refused rather than double-reporting it. Both run the behaviour; neither reads source (#1339) |
 
 ### Why the rule is looser than the property, and what is left
 
@@ -2884,8 +3255,14 @@ a preceding loop. A rule that demanded the names match would reject correct code
 is how a guard gets switched off. **So the residual is a loop whose premise bounds the
 wrong collection**, which a reviewer catches and a sweep does not. 3.5 names it.
 
+Two narrower holes are closed (#1339). A name counts as non-empty by construction only
+when **every** binding of it in the function is a non-empty literal. And a `len(...)`
+assertion that pins the length at 0 does not count as a premise, because it says the
+loop runs no times: `num` against `0` in either order, `at_most(x, 0)`, and
+`at_least(0, x)`.
 
-## 25. test_join_runtime_filter.py: serial join runtime filter
+
+## 25. test_native_join_runtime_filter.py: serial join runtime filter
 
 Pytest twin of `test/native_join_runtime_filter.sh`. The two files are independent:
 each builds its own fixtures and expected values. They share only the public
@@ -2947,6 +3324,35 @@ crash on this shape when it drained the tap through `ExecProcNode`.
 A non-key fact-table qual with late materialization off. The attach used to
 force the two-pass path with only the join key decoded, so the qual dropped
 every row. Heap is the oracle. Independent of the shell conjunction arm.
+
+### `test_a_gating_qual_over_the_join_matches_heap`
+
+A WHERE that names no column, `(SELECT false)` or `(SELECT true)`, over a join to a
+heap and to a columnar dimension (#1437). The planner puts a gating Result over such
+a join, and the coordinator expected a Hash Join there: a release build raised an
+ERROR and an assert build aborted the backend. Each answer must be heap's, with
+premises that the same join with no gate takes the coordinator and that heap's
+true-gate answer holds rows. Independent of the shell arms.
+
+### `test_an_empty_build_reads_no_fact_group`
+
+An empty build from a large dimension filtered to nothing (#1447). With a dimension
+that large, the hash join fetches its first outer row before it builds, so the fact
+scan runs. An inner join with an empty build has no rows, so the fact table must not
+be read; it was read whole, every row rejected one at a time. Premises check that the
+coordinator ran and that the build was empty, and the answer must be heap's.
+
+### `test_an_empty_build_on_one_rescan_does_not_empty_the_next`
+
+A LATERAL whose first outer row builds nothing and whose second builds every key
+(#1447). An empty build now ends the join at once, so state left over from the first
+execution would answer the second with no rows. Premises check the coordinator and
+that heap's answer holds the keys.
+
+### `test_a_fact_qual_conjunction_with_late_materialization_matches_heap`
+
+The shell's fact-qual arms on the default path, late materialization on: a conjunction that also names a non-key column (`k > 100 AND n % 3 <> 0`) must still return heap's rows under the runtime filter coordinator. A premise first shows the qual removes matching rows on heap (100 of 150), so an answer that ignored it would not equal heap's. The late-mat-off test above covers the same shape with late materialization off. Added when this file was renamed to pair with `native_join_runtime_filter.sh` and aligned to the shell's names (#1341).
+
 
 ## 26. test_check_records.py: every counted assertion is a record
 
@@ -3093,6 +3499,7 @@ code runs in the reverse of call order, so `trylast` made the injector run *befo
 the layer attached anything, the inner run passed, and the arm read exactly like a
 reconciliation that does not fire.
 
+A REFUSED COMPARISON IS COUNTED AND NAMED, AND STILL MARKS NOTHING (#1613). `test_a_refused_comparison_is_counted_and_named`, serial and under `-n 2`: a refusal that failed its test prints `REFUSED  <name>: <reason>` and joins the accounting line as `N refused`, so the twin's FAIL names plus its REFUSED names equal the shell's FAIL names. A refusal its test caught on purpose (the layer's own guard tests do this) is not reported; dropping that identity test is caught by the same arm. The fixture refuses through `num`, through `row_set` (which refuses a failed query itself, before delegating to `rows`) and through `wrote` (which raises its refusals directly); both of the latter are wrapped by `_resolving` since OffgridwithJD's review of #1735.
 
 ## 27. test_skip_loop_arms.py: a skipped arm records under its own name
 
@@ -3540,13 +3947,20 @@ Four selectivities from one row to most. `wide nomatch` is the second arm in the
 cannot fail alone, and gets the same treatment as `empty scan`: a stated reason and a positive
 control at a value that is present.
 
-### `test_a_covering_count_agrees_with_the_path_on_and_off`
+### `test_the_delete_and_update_leave_a_count_neither_gives_alone`, `test_each_count_mode_takes_the_path_it_names`, `test_the_covering_count_agrees_with_the_heap`
 
 An UPDATE appends the new row and masks the old, so the stored per-group count and the visible
 count diverge -- which is the arithmetic the metadata path has to get right and a plain scan
 gets right for free. Run both ways through `enable_vectorization`, which is what distinguishes
-"the fast path is correct" from "the fast path was not taken". `SET` on the connection rather
-than the bash suite's `ALTER DATABASE`, which exists because each psql there is a new session.
+"the fast path is correct" from "the fast path was not taken". A fallback returns the same
+count, so each mode also checks the plan: `on` must show the metadata node ("Columnar
+Vectorized Aggregates"), and `off` must show `Custom Scan (PgColumnarScan)` without it.
+
+One check per test: the `covering` module fixture takes each mode's path and count pair as
+values, so an inverted switch reddens both path checks, as it does in the shell, rather than
+stopping at the first. `SET` on the connection rather than the bash suite's `ALTER DATABASE`,
+which exists because each psql there is a new session.
+
 ## 32. test_stats_privilege.py: stats is readable only by a caller who may read the table
 
 Port of `test/stats_privilege.sh` (#560, ported for #432).
@@ -3577,6 +3991,8 @@ property this suite tests, so `SET ROLE` would assert it away. Each role connect
 | `test_the_premises_each_role_is_what_the_suite_assumes` | each premise run BY the role it is about |
 | `test_who_may_read_the_stats` | owner, GRANTed reader and superuser all succeed |
 | `test_a_role_with_no_privilege_is_refused` | the bar: 42501 **and** the table named |
+| `test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read_by_stats` | a heap table the caller may not read is refused for privilege, not called non-columnar: the caller check runs before the storage id is read |
+| `test_a_superuser_is_told_a_heap_table_is_not_columnar_by_stats` | control: a caller who may read it is told "not a columnar table" |
 
 ### A helper that turned a driver detail into a product claim
 
@@ -4051,15 +4467,16 @@ the tool grades THIS tree.
 | `test_the_grader_itself_refuses_the_suite_it_cannot_read` | `main` exits 2 and prints no verdict, with a readable suite as the control |
 | `test_a_helper_reaching_only_the_primitive_is_found` | the closure is seeded from `pgc_record`, not the `check` family; four suites turn on it |
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
-| `test_the_suite_local_helpers_are_known_and_excluded` | the four suite-local helpers, and that none of their suites is graded |
+| `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
+| `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt` or declared in `SHELL_HARNESS`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
+| `test_a_shell_harness_suite_is_declared_both_ways` | a `SHELL_HARNESS` stem (a suite that tests the shell harness itself, today `harness_selftest`) has no twin, is a registered suite, is not also listed unported, and says why: held both ways, so the declaration cannot become a one-way exemption (#1341) |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
 
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
-Ports `test/iceberg_fdw.sh`. 74 of its 76 check names, one for one; the two it cannot
-carry are `pgc_skip`'s refusal names, which are structural and declared in
-`INCOMPLETE` with their reason.
+Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
+89 literal matches and 0 missing (#1818's twelve included).
 
 | test | asserts |
 | --- | --- |
@@ -4074,6 +4491,10 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_a_bucket_partition_keeps_only_the_matching_bucket` | `bucket[8]`: our murmur3 agrees with the one pyiceberg wrote |
 | `test_a_bucket_pruned_equality_returns_its_row` | and the kept file holds the row |
 | `test_a_range_predicate_cannot_bucket_prune` | the hash destroys order, so a range prunes by metrics only |
+| `test_a_text_bucket_prunes_under_a_deterministic_collation` | #1818's control: `bucket[16](s)` on a string, one row per file; `s = 'ABC'` under the default and the `C` collation still prunes 5 of 6 files, so the collation guard has not switched text bucket pruning off |
+| `test_a_nondeterministic_collation_on_the_qual_does_not_bucket_prune` | #1818: `s = 'ABC' COLLATE ice_ci` (ICU, level 2) returns `abc`, `ABC`, `Abc`, `aBc` from four buckets, as `iceberg_scan` does, and prunes no file |
+| `test_a_nondeterministic_collation_on_the_column_does_not_bucket_prune` | #1818: the same with the column declared `COLLATE ice_ci` and no collation in the query, so the guard must read the comparison's input collation |
+| `test_an_identity_partition_prunes_under_the_quals_own_collation` | identity pruning evaluates the qual under its own collation: `region = 'EU' COLLATE ice_ci` keeps the eu file and prunes the us one |
 | `test_a_truncate_partition_prunes_by_range` | `truncate[100]` with metrics disabled, so the transform is the only mechanism |
 | `test_a_truncate_pruned_scan_still_returns_its_rows` | and the rows survive |
 | `test_the_bucket_table_reads_whole_and_matches_the_murmur3_oracle` | the bucket table's premise and its same-oracle read |
@@ -4087,6 +4508,13 @@ carry are `pgc_skip`'s refusal names, which are structural and declared in
 | `test_the_year_table_reads_whole_and_keeps_the_boundary_file` | the boundary case stated alone |
 | `test_a_year_equality_prunes_to_one_file` | an equality narrows to the constant's own bucket |
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
+| `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
+| `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
+| `test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value` | typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001) |
+| `test_a_varchar_2_identity_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  ' |
+| `test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range` | typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2 |
+| `test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3 |
+| `test_a_timestamp_6_hour_partition_still_prunes` | typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1) |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -4112,10 +4540,11 @@ surface of `pgcolumnar.cluster_hilbert` and `recluster_hilbert`, the recorded
 `sorted_kind`, the self-gate and the daemon. `test/hilbert_curve.sh` pins the CURVE itself
 in C and neither file re-tests the other; this port keeps that division.
 
-**45 collected tests, 184 checks, over the bash suite's eight arms.** Graded one-for-one:
-`compare_to_bash.py` reports **0 MISSING** both as the tool ships (124 bash checks) and
-with #1044's widened extractor (133), the difference being the suite's nine
-`check_unrunnable` sites, all of which are twinned.
+**69 collected tests, 191 checks, over the bash suite's eight arms.** Graded one-for-one:
+`compare_to_bash.py` reports **0 MISSING** (127 bash checks: 117 literal, 10 template),
+and the suite's `check_unrunnable` sites are all twinned. #1339's batch split S1 into one
+check per test, so a red premise no longer hides the comparison after it, and added the
+daemon arm on a decayed zorder table.
 
 ### Where the port asserts something the original gets for free
 
@@ -4167,7 +4596,9 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_two_digests_are_the_instruments_this_file_thinks_they_are` | the ordered oracle is order-sensitive and the set oracle is not; invisible to the parity tool because the bash names live in `lib.sh` |
 | `test_parallelism_is_off_so_a_scan_order_is_a_fact_about_the_layout` | a digest is about the layout and not about scheduling |
 | `test_the_refusal_fixture_and_its_roles_are_this_runs` | the fixture holds rows, the role owns nothing, can open a session, and holds EXECUTE and schema USAGE -- so a 42501 can only be the owner check |
-| `test_each_new_verb_refuses_what_its_sibling_refuses` | four inputs x two verb pairs, each new verb's SQLSTATE compared against the established verb's on the identical input |
+| `test_each_established_verb_refuses_the_input` | four inputs x two verb pairs: the established verb's own refusal, one check per test |
+| `test_each_new_verb_refuses_what_its_sibling_refuses` | the new verb's refusal against the literal |
+| `test_each_new_verbs_state_is_the_one_its_sibling_raises` | and against the established verb's on the identical input; it compares only a raised SQLSTATE, so two verbs that both ran clean do not agree (#1339) |
 | `test_the_probe_can_report_both_success_and_an_unreachable_session` | the probe can say noerror, and can say it never reached the server |
 | `test_the_reorder_fixture_is_measurable_before_anything_moves` | 20 groups, the set matches the heap mirror, the order digest is stable, the plan is the columnar scan |
 | `test_cluster_hilbert_reorders_without_changing_the_row_set` | same rows, different order -- neither half stands alone |
@@ -4179,7 +4610,13 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_the_three_kinds_stand_for_three_physical_orders` | the eager verb's curve defence, UNRUN unless both legs moved |
 | `test_the_gate_is_closed_on_an_already_hilbert_table` | (a) 0 groups, kind untouched |
 | `test_the_gated_call_left_the_layout_byte_identical` | UNRUN unless the return really was 0 |
+| `test_s4a_carries_an_appended_tail_for_the_gate` | premise: the tail is there |
 | `test_the_same_call_does_work_once_a_tail_is_appended` | the positive control: the fifth direction, and what the daemon depends on |
+| `test_the_a2_rewrite_moved_the_layout` | (a2), one check per test (#1339) |
+| `test_the_a2_rewrite_folded_the_appended_tail_back_in` | (a2) |
+| `test_after_the_a2_rewrite_it_is_still_hilbert_on_the_same_key` | (a2) |
+| `test_the_a2_rewrite_lost_no_row` | (a2) |
+| `test_the_a2_rewrite_kept_the_same_rows_only_reordered` | (a2) |
 | `test_the_gate_closes_again_on_the_refolded_table` | (a3) |
 | `test_the_refolded_layout_is_byte_identical_again` | (a3), gated the same way |
 | `test_the_gate_opens_for_a_zorder_table_over_the_same_columns` | (b), with the label asserted WITH the bytes |
@@ -4191,6 +4628,8 @@ the surface and the recorded kind and must never be read as evidence of Hilbertn
 | `test_vacuum_sorted_leaves_a_hilbert_table_alone` | S6, the reading of the ruling this suite pins |
 | `test_vacuum_sorted_still_works_on_a_table_with_no_recorded_kind` | the removal proof: it must not no-op on everything |
 | `test_the_daemon_fixtures_are_built_with_the_daemon_off` | the launcher is up, the daemon is off, and the thresholds took |
+| `test_the_zorder_table_is_decayed_and_due_for_the_daemon` | av_zd, a zorder table left decayed for the daemon |
+| `test_the_daemon_reclusters_a_decayed_zorder_table_on_its_own_curve` | the other half of the dispatch: folded, and still zorder on its key (#1339) |
 | `test_the_two_hand_driven_references_are_built_and_folded` | both references folded, and av_hi does not yet match |
 | `test_the_two_references_are_two_different_layouts` | UNRUN unless both folded |
 | `test_the_daemon_reclustered_the_decayed_hilbert_table` | THE RULING through the daemon, with its own log line naming the dispatch |
@@ -4362,6 +4801,7 @@ failing for a reason that has nothing to do with projections.
 | `test_the_first_add_records_the_base_and_the_new_projection` | both rows appear at once, with the base's columns, empty sort key, name and shared storage id |
 | `test_a_second_projection_may_have_no_sort_key` | a projection without a sort key, and three distinct storage ids |
 | `test_a_bad_projection_is_refused_by_its_own_code` | seven refusals, each by its measured SQLSTATE rather than by "it errored" |
+| `test_a_sort_key_with_no_ordering_is_refused` | #1341: a projection sorted on `json`, which has no btree ordering, is refused `0A000` when the back-fill builds its writer, and nothing of it is declared |
 | `test_a_projection_on_a_heap_table_is_refused` | the refusal that is about the ACCESS METHOD, not the arguments |
 | `test_drop_removes_one_projection_and_leaves_the_rest` | drop is surgical, and the table is still readable after the DDL |
 | `test_a_projection_added_late_is_back_filled_from_the_existing_rows` | a projection added after the rows exist is populated from them, not left empty |
@@ -4619,12 +5059,15 @@ and neither file names the other.
 | --- | --- |
 | `test_the_residual_names_the_suites_that_ran_and_did_not_account` | the debt is a set of names, and the reader exits clean |
 | `test_a_skipped_suite_that_accounted_does_not_become_a_debt` | on the live shape the residual is empty while the same reader still finds a real debt, and the skipped-but-accounted suites are their own named category |
-| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed |
+| `test_the_old_subtraction_goes_negative_on_that_same_input` | the control: three ran minus five accounted is the `-2` the runner printed, counted from the same fixture files the live-shape arm reads |
 | `test_the_readers_sort_their_own_inputs` | `comm` on unsorted input yields a wrong set silently, so the sort lives inside the reader |
 | `test_the_two_buckets_partition_the_suites_that_ran` | `inputs == sum(buckets)`, and neither bucket is the other's leftover |
 | `test_the_summary_block_was_extracted_rather_than_an_empty_range` | an empty extraction runs nothing and reports clean, so the block is asserted before it is used |
 | `test_the_printed_breakdown_takes_a_count_a_count_can_take` | the line a reader sees carries no negative, and names the skipped-but-accounted category |
 | `test_the_same_block_counts_and_names_a_real_debt` | the same block still counts and names a genuine debt, so it is not printing `0 did not` unconditionally |
+| `test_a_ran_count_the_names_do_not_support_fails_the_major` | told 4 ran while the names say 3, the block reports that the breakdown does not add up and fails the major; a block deriving the debt by subtraction would make it add up by construction (#1339) |
+| `test_the_tally_function_records_every_suite_that_ran_or_skipped` | `pgc_tally_suite` writes every ran name to `$_acc_ranfile` (three sites) and every skipped name to `$_acc_skipfile`, read inside the function |
+| `test_every_comm_in_the_runner_pins_its_collation` | every `comm` on a code line carries `LC_ALL=C`, and no `<(sort ` feeds one on the caller's locale |
 | `test_no_code_path_subtracts_the_wide_population_from_the_ran_count` | the defect's shape is refused at the source, over CODE lines only -- the comment explaining it quotes it verbatim |
 
 The load-bearing assertion is that the printed breakdown takes a count a count
@@ -4659,6 +5102,7 @@ implementation, own planted probes, and neither file names the other.
 | `test_every_comm_pins_its_own_comparison` | and the `comm` itself is pinned, which is a separate claim |
 | `test_the_detector_catches_the_process_substituted_form` | the hole #1112 names: not a pipeline, so a pipe pattern cannot see it |
 | `test_the_detector_still_catches_the_piped_form` | widening did not trade #552's case away |
+| `test_a_sort_into_a_file_that_comm_reads_is_caught` | an unpinned `sort` at the start of a command, sorting into a file that `comm` then reads, is caught, and the same sorts pinned are not (#1339) |
 | `test_a_line_with_one_of_two_sorts_pinned_is_caught` | the half-pinned form, which is what a partial fix produces |
 | `test_pinning_only_the_comm_does_not_pin_its_substitutions` | a pinned `comm` over unpinned sorts is still a breach, while its comm half is satisfied |
 | `test_a_fully_pinned_line_is_not_flagged` | without which the detector could be "flag everything" and every arm above still passes |
@@ -5047,9 +5491,12 @@ already past it. Measured, penalty on:
 | 20 | 7 | Index Scan | **Custom Scan** |
 
 With four rungs below 20, `FW` is a measured 5 rather than a floor, and the arm gained
-`premise: and the wide table fetches by index somewhere on it too`. The shell suite has
-the same one-sidedness; it is reported rather than changed here, because this pull
-request adds no bash check and so moves no ledger row.
+`and the wide table fetches by index somewhere on it too`. The shell suite now has the
+same four rungs and the same arm (#1339): before, it read `FW` as 0 on every run and
+its ordering arm passed for the wrong reason. That arm and "the penalty is what moves
+this plan" and "the narrow table does fetch by index somewhere on the ladder" are not
+premises: they read pgcolumnar's own costing, and the penalty switched off in the
+source reddens the first.
 
 **The row-group limit is a per-table option here, not a cluster setting.** The shell suite
 pins `pgcolumnar.stripe_row_limit=20000` in the cluster config, because the writing and
@@ -5095,11 +5542,19 @@ own source and printing its own `.so` hash:
 Row sets are compared as sorted tuples in Python rather than through `pgc_set_hash`, so
 the two harnesses stay independent by construction.
 
+`compact` retires a dead group only when no transaction in the database is older than
+the `DELETE` (#1979). With one call, a session that held a snapshot across it left the
+free list empty. The cycles then started with no reusable space, and `file reaches
+steady state (cycle 5 <= cycle 2)` went red. Both harnesses now call `compact` again every
+0.5 s, for up to 30 s, through the shared helper (`pgc_retry_past_horizon` in
+`lib.sh`, `retry_past_horizon` in `pgc_horizon.py`). Then `compact retired every dead
+group` must read 18. The fixture tables have autovacuum off.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
-| `test_native_reclaim_cycles` | every arm: the fixture's groups and its fragmented free list, initial parity, then per cycle that `compact_rewrite` returned a count and parity held, and that the file reaches a steady state |
+| `test_native_reclaim_cycles` | every arm: the fixture's groups, `compact retired every dead group` (18), the coalescing premise, initial parity, then per cycle that `compact_rewrite` returned a count and parity held, and that the file reaches a steady state |
 
 ## 62. test_native_reclaim_frag.py: coalescing must merge, stay correct, and cost nothing
 
@@ -5114,11 +5569,30 @@ state a successful one does, and the arms below would compare two empty tables a
 report parity. The port asserts the row count per mode before anything is compared, so
 "both modes agree" cannot be satisfied by both modes having done nothing.
 
+`compact` retires a dead group only after every transaction older than the `DELETE`
+in the same database is gone. CI once counted 0 `free_space` rows in the coalesce-off
+run (#1975), and a session that holds a snapshot across `compact` reproduces exactly
+that. So the fixture tables have autovacuum turned off, and both harnesses call
+`compact` again every 0.5 s, for up to 30 s, until it has retired all 18 groups. Then
+`coalesce on: compact retired every dead group` and `coalesce off: compact retired
+every dead group` must each read 18, and `coalesce off: compact leaves more than one
+free_space row` must hold, before the on/off comparison is read. Without the first
+check, a snapshot held across the coalesce-on run left the on side with 0 rows, and
+"fewer rows with coalescing on" passed as 0 < 18.
+
+When the wait runs out, the helper prints what holds the horizon back (#1981). It lists
+each session with a snapshot or a transaction ID, and any prepared transaction or
+replication slot. For a session it prints the pid, backend type, database, state,
+`backend_xmin`, `backend_xid`, transaction start and query. `the horizon report names a
+session that holds a snapshot` holds a snapshot in a second session, runs a wait that
+cannot reach its count (`SELECT 0`, 2 calls), and checks that what the wait printed
+names the holder's pid.
+
 ### Every arm
 
 | test | what it holds |
 | --- | --- |
-| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, parity with the heap mirror in both modes, that coalescing leaves fewer free_space rows, and that it never costs file size |
+| `test_native_reclaim_frag` | every arm: the row counts per mode before and after the block delete, `coalesce on: parity with heap`, `coalesce off: parity with heap`, `coalesce on: compact retired every dead group`, `coalesce off: compact retired every dead group`, `coalesce off: compact leaves more than one free_space row`, `coalesce merges adjacent frees (fewer free_space rows)`, `coalesce never larger than whole-range reuse`, `coalesce on: reuse splits an oversized freed range, so no byte between ranges is lost`, and `the horizon report names a session that holds a snapshot` |
 
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
@@ -5222,12 +5696,23 @@ its row in place, so the in-transaction arm cannot be satisfied by a delete that
 | test | what it holds |
 | --- | --- |
 | `test_native_delete_visibility_paths` | every arm: the row count and group span, then the live set through a Seq Scan, an Index Scan, an Index Only Scan and the columnar aggregate — each with its plan asserted — then one deleted and one live row through the index, and a delete read back inside its own transaction |
+| `test_a_delete_whose_qual_deletes_another_row_matches_heap` | a DELETE whose qual calls a function that deletes the next row of the same table succeeds and leaves heap's rows (#1394). Its inner DELETE writes the outer marks at scan start and its own at statement end, in one command, and the second write failed with "attempted to update invisible tuple" |
 
 ## 66. test_temporal.py: a columnar table enforces temporal constraints like a heap
 
-Port of `temporal.sh` (#432). PostgreSQL 18 adds `WITHOUT OVERLAPS` primary keys, 19 adds
-`UPDATE ... FOR PORTION OF`, and both run through the index and constraint machinery
-pgColumnar integrates with. The suite builds a heap/columnar pair and asserts they agree.
+Port of `temporal.sh` (#432). PostgreSQL 18 adds `WITHOUT OVERLAPS` primary keys, 19beta2 had
+`UPDATE ... FOR PORTION OF` (19beta4 removed it, #1337), and both run through the index and
+constraint machinery pgColumnar integrates with. The suite builds a heap/columnar pair and
+asserts they agree.
+
+**FOR PORTION OF is gated on the grammar, not the major (#1337).** A version gate ran those
+arms on 19beta4, which cannot parse them, and failed both storage types alike. Worse,
+`for portion of result matches` passed there: it compared the two tables, and two updates
+that both failed leave them equal. Both twins now probe the grammar with an `EXPLAIN` that
+writes nothing. The result arm also requires the portion under its new key, so a failed
+update fails it. The shell suite records the three arms as SKIPs where the clause is
+absent. Here they are `test_for_portion_of`, unrunnable there and listed per major in
+`expected_unrunnable.txt`.
 
 **This is the first pair unblocked by #1131.** `temporal.sh` gates on `btree_gist` — a
 `WITHOUT OVERLAPS` key needs a GiST index over the scalar part — and records that refusal
@@ -5254,7 +5739,8 @@ table alone, and `overlapping insert rejected (columnar)` reddens with `got 'ok'
 
 | test | what it holds |
 | --- | --- |
-| `test_temporal` | every arm: heap and columnar agree on accepting non-overlapping rows and rejecting an overlapping one, the accepted rows are really there, the PK contents match, and on 19 the FOR PORTION OF update and its result set match |
+| `test_temporal` | heap and columnar agree on accepting non-overlapping rows and rejecting an overlapping one, the accepted rows are really there, and the PK contents match |
+| `test_for_portion_of` | where the grammar has `UPDATE ... FOR PORTION OF`: the update applies on both, the tables match, and the portion is in the columnar table under its new key. Its own fixture; unrunnable where the clause is absent (15 to 18, and 19 from beta4) |
 
 ## 67. test_native_parquet_dict_oob.py: a crafted dictionary index must not read out of bounds
 
@@ -5340,7 +5826,11 @@ regardless.
 | --- | --- |
 | `test_the_lock_an_insert_takes_is_not_in_a_sql_reachable_class` | the lock is enabled, the insert's locks are visible, none is SQL-reachable, and the discovering session leaves nothing held |
 | `test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert` | a user session holding every addressable tag in class 2 does not block a columnar insert |
-| `test_a_duplicate_key_is_still_rejected` | the lock still does its job, so removing the collision by removing the lock does not pass |
+| `test_an_insert_takes_the_unique_key_lock_only_while_it_is_enabled` | an insert into `u` takes an advisory class with `enable_unique_insert_lock` on that it does not take with it off, read from its own session (the unique-key lock never taken no longer passes; #1339) |
+| `test_a_duplicate_key_is_still_rejected` | a duplicate key is rejected -- this does not assert the lock: with the lock never taken, even a concurrent duplicate waits on the first insert and gets 23505, because the btree's uniqueness check waits on the winner (#1339) |
+| `test_the_row_identity_lock_and_its_settings` | an UPDATE holds a class-104 row-identity lock with `enable_row_update_lock` on and none with it off; `row_lock_buckets` refuses `SET` (55P02) because it is fixed at server start; a 200000-row UPDATE holds `row_lock_buckets` class-104 locks, one per bucket, not one per row (#1341 item 16) |
+| `test_the_row_identity_lock_cannot_be_reached_from_sql` | every advisory lock an open UPDATE holds is outside field4 1 and 2, and a second session holding each of those tags through `pg_advisory_xact_lock(int4, int4)` does not block an UPDATE of the same row (#1341 item 56) |
+| `test_bulk_parallel_writer_set_by_hand_still_serialises_a_first_write` | two sessions with `bulk_parallel_writer` on each make the first write to a committed, empty table; the second waits for the first, and both rows land (#1341 item 55) |
 ## 69. test_index_am_support.py: the index methods the page claims must work
 
 `docs/features.md` said "`CREATE INDEX` builds btree and hash indexes over a
@@ -5360,8 +5850,8 @@ So the failure modes are proven by mutating the DOCUMENT rather than the code:
 | mutation | result |
 | --- | --- |
 | add `gin` to the sentence, with no probe for it | `premise: gin, which the page claims, has a probe in this suite` fails |
-| remove every method name from the sentence | `premise: the features page names at least one index access method` fails; the loop runs zero times and cannot pass vacuously |
-| **`builds btree, hash and gist but NOT spgist`** | `premise: the claim bullet holds the claim and nothing else` fails, in both harnesses |
+| remove every method name from the sentence | `the features page names at least one index access method` fails; the loop runs zero times and cannot pass vacuously |
+| **`builds btree, hash and gist but NOT spgist`** | `the claim bullet holds the claim and nothing else` fails, in both harnesses |
 | **the denial written after `columnar table`** | the same premise fails, in both harnesses |
 | **`...though spgist cannot be chosen`** | the same premise fails — see below |
 | **legitimate prose added to the claim bullet** | the same premise fails, on purpose |
@@ -5457,14 +5947,14 @@ awk. Neither file names the other.
 
 | arm | what it holds |
 | --- | --- |
-| `premise: the features page names at least one index access method` | the extractor found something, so a green loop means work happened |
-| `premise: the claim bullet holds the claim and nothing else` | the bullet is the one form a name-reader can read, so the names ARE the claim |
+| `the features page names at least one index access method` | the extractor found something, so a green loop means work happened |
+| `the claim bullet holds the claim and nothing else` | the bullet is the one form a name-reader can read, so the names ARE the claim |
 | `premise: the fixture holds every row` | the corpus is what the probes assume |
 | `premise: <am>, which the page claims, has a probe in this suite` | a claim on the page without evidence here is a failure, not a skip |
 | `<am> builds an index over a columnar table` | the method builds |
 | `premise: the <am> predicate matches rows at all` | the comparison below is not two empty sets agreeing |
 | `<am> answers its operator with the same rows the scan returns` | the index path and the scan path agree |
-| `premise: an overlap query reaches the row through a GiST index` | the plan, asserted, for the claim that ranges have an index path |
+| `an overlap query reaches the row through a GiST index` | the plan, asserted, for the claim that ranges have an index path |
 
 ### Every test
 
@@ -5654,6 +6144,7 @@ every major for this pair, which is the designed third state and not a failure.
 | `test_an_output_built_on_a_key_falls_back_and_still_answers` | `f(key)` output and a bare `GROUP BY` with no aggregate both fall back, and the answer is still right |
 | `test_a_non_deterministic_collation_key_falls_back` | the fallback happens and the grouping is case-insensitive; declines under the shell suite's own name where ICU is absent |
 | `test_sum_real_matches_heap_rather_than_returning_zero` | blocker 1: the node fires, matches heap, and is not zero |
+| `test_a_float_sum_that_overflows_raises_as_core_does` | two finite float8s, or reals, whose sum is infinite raise `22003` through the node, as core's `float8pl` and `float4pl` do with it off (#1341 item 50) |
 | `test_a_gating_where_is_honoured_rather_than_dropped` | blocker 2: a one-time filter makes the node decline, and both the false and true gates answer as heap does |
 | `test_avg_float8_overflows_the_way_core_overflows` | the node fires and raises out of range, which a row comparison cannot express |
 | `test_degenerate_inputs_produce_no_groups` | a predicate matching nothing, and an empty table |
@@ -5661,7 +6152,19 @@ every major for this pair, which is the designed third state and not a failure.
 | `test_the_group_estimate_bound_is_accurate_and_narrow` | the bound is 12 and is an upper bound; an informed estimate is untouched; with no time bound, with only a lower one, and for `date_bin`, the estimate is between the true group count and four times it, from the zone maps (#1292); a lookalike function and a non-time key get no bound |
 | `test_the_bound_reads_the_zone_maps_in_one_catalog_scan` | planning a bucketed GROUP BY over 50 row groups scans zone_map and its index once in all, not once per group (#1304) |
 | `test_a_mixed_timestamp_predicate_never_narrows_the_bound` | a cross-type predicate under a non-UTC TimeZone never narrows the estimate below the true group count (#1292); the matching-type one still gets a tight bound |
-| `test_on_by_default_and_gated_on_an_upper_bound` | the grouped path is on by default and taken only when an upper bound on the groups (the row count, or the time buckets) is within the cap: a bucket query over more rows than the cap is taken, a plain key over more rows is declined (answering as heap does) until the cap is raised, and a skewed key that fools ANALYZE is declined and answers every group; a cached plan run under a lower cap stops at the runtime cap with its hint (#1292, #1330 review) |
+| `test_on_by_default_and_gated_on_an_upper_bound` | the grouped path is on by default and taken only when an upper bound on the groups (the row count, or the time buckets) is within the cap: a bucket query over more rows than the cap is taken, a plain key over more rows is declined (answering as heap does) until the cap is raised, and a skewed key that fools ANALYZE is declined and answers every group (#1292, #1330 review) |
+| `test_past_the_cap_the_node_hands_off_to_a_core_finalize` | a grouped plan whose aggregates all have a partial state is a Partial node under a core Finalize, so a plan that outlives its bound flushes its table at the cap instead of erroring, and EXPLAIN ANALYZE counts the flushes: a cached plan under a lowered cap and a table grown past the cap under a cached plan both answer what heap answers, min and max included (#1300) |
+| `test_min_and_max_hand_off_over_float8_nan` | min and max across a flush where NaN sorts above every number: each group's ten rows fall in two runs of five on either side of a flush, so the node compares within a run and the Finalize combines the runs; a cached plan under a lowered cap is the grouped node and answers what heap answers (#1764 review) |
+| `test_min_and_max_hand_off_over_text_under_an_icu_collation` | the same over text under `en-x-icu`, where 'a' < 'B'; declines whole on a server without ICU (#1764 review) |
+| `test_the_cap_bounds_the_nodes_memory` | the node's `Columnar Group Table Peak Memory` under a cap of 1,000 stays within twice from 20,000 to 200,000 distinct keys; a flush that kept its keys and states reported ten times as much (#1764 review) |
+| `test_merge_a_group_null_in_early_runs_and_an_all_null_group` | #1300 D': `sum` and `avg` over int8 and numeric keep the serial node, which past the cap sorts each group's accumulators aside and merges each key's runs in flush order at the end; a group NULL in its early runs sums its later ones, an all-NULL group is NULL rather than a division by zero, and the plan is the serial node that reports a flush |
+| `test_merge_numeric_nan_and_infinity_across_runs` | NaN in one run and Infinity in another merge to NaN, and +Infinity with -Infinity to NaN, for sum and avg |
+| `test_merge_int8_runs_past_2_63` | int8 runs whose total passes 2^63 sum exactly, as core's numeric sum does |
+| `test_merge_numeric_scales_across_runs` | runs of different numeric scales give core's scale for sum, and avg's scale comes from the merged total |
+| `test_merge_avg_int4_beside_numeric` | a query mixing avg over int4 with sum, min and max over numeric goes through the merge whole and answers as core does |
+| `test_merge_exact_float_sums` | float sums of exactly representable values merge to core's; non-dyadic sums could differ in the last bits, as core's parallel plans can |
+| `test_merge_a_key_equal_but_not_identical` | numeric keys 3 and 3.00 are one group, shown as core shows the first one seen, because runs merge in flush order |
+| `test_merge_a_key_with_no_btree_ordering_gets_no_serial_node` | an xid key, which hashes but does not order, gets no serial grouped node, so a release build never reaches a merge it cannot sort |
 | `test_a_null_key_counts_as_a_group_in_the_bucket_bound` | three minute buckets fill the bucket bound and NULL rows add a fourth group; under a cap of 3 the path is declined and all four groups answer, where a bound without the NULL group errors (#1330 review) |
 
 ## 72. test_analyze_function.py: statistics collected by reading, not by sampling
@@ -5758,7 +6261,8 @@ THE FIX IS NOT ONE LINE, AND A GREP IS WHY IT LOOKED LIKE ONE. `pgcolumnar."anal
 
 | test | what it holds |
 | --- | --- |
-| `test_analyze_function` | the 500,000-row fixture: null_frac exact on a fraction core's sample cannot express, n_distinct exact from one column, the statistics it does not compute left in place, the histogram's true maximum and its smallest non-most-common bound, no most-common value inside the histogram, every bound a value the column holds, the three MCV frequencies over total rows rather than non-null rows, the per-column statistics target honoured, and a column at `SET STATISTICS 0` left alone |
+| `test_analyze_function` | the 500,000-row fixture: null_frac exact on a fraction core's sample cannot express, n_distinct exact from one column and as the negated fraction past core's 10% rule (#1339), the statistics it does not compute left in place with core's values (#1339), the histogram's true maximum and its smallest non-most-common bound, no most-common value inside the histogram, every bound a value the column holds, the three MCV frequencies over total rows rather than non-null rows, the per-column statistics target honoured, with exactly that many most-common values (#1339), and a column at `SET STATISTICS 0` left alone |
+| `test_a_named_column_that_does_not_exist_is_refused` | #1341: `analyze(rel, ARRAY['a','nosuch'])` is refused, naming `nosuch`, and writes no statistics, not even for `a`; naming `a` alone does |
 | `test_histogram_bounds_are_a_positional_stride` | eleven distinct rows at target 3, where core's `values[floor(i*(nv-1)/(nhist-1))]` and `percentile_disc`'s `ceil(p*nv)-1` land on different values; the expectation comes from an independent oracle AND a hand-worked figure that must agree first |
 | `test_null_frac_counts_live_rows_not_ones_a_delete_left` | #485: null_frac came from the zone maps, which count what was WRITTEN, so one pg_stats row carried two statistics normalised against different populations; both must imply the same table |
 | `test_the_documented_statistics_are_the_ones_written` | the list in `docs/sql-reference.md` parsed and compared against what the function populates, plus the two negatives the doc states in prose |
@@ -5821,12 +6325,11 @@ diagnostics, and no comparison of two independent implementations ever will.
 ### The shell twin is shaped differently, on purpose
 
 `test/selftest/540-an-arm-must-carry-its-measurement.sh` asserts a tracked list
-(`test/lossy_arms.tsv`, 77 rows across 52 suites) rather than zero, because that
-corpus is not at zero. The gate refuses both directions: an unlisted offender fails
-by name, and a repaired arm fails until its row is removed, so the list may only
-shrink. **The asymmetry is the honest answer**: the two corpora are in different
-states, and a guard asserting zero over both would claim a property this tree does
-not have.
+(`test/lossy_arms.tsv`) rather than zero, because that corpus is not at zero. The
+gate refuses both directions: an unlisted offender fails by name, and a repaired arm
+fails until its row is removed, so the list may only shrink. **The asymmetry is the
+honest answer**: the two corpora are in different states, and a guard asserting zero
+over both would claim a property this tree does not have.
 
 ### What it does not catch, and why each is left open
 
@@ -5872,37 +6375,48 @@ Assertion names match.
 
 ## 75. test_range_pruning.py: a range prunes on overlap, containment, and under its own collation
 
-    SELECT id FROM rp_col WHERE span && tstzrange('2024-03-01', '2024-03-01 06:00')
+    SELECT count(*) FROM r_col WHERE span && tstzrange('2020-01-02 00:00+00','2020-01-02 01:00+00')
 
 A zone map recorded `minimum` and `maximum` only. Those are the range type's btree
 ordering, which sorts by lower bound and then upper bound, so the largest range is
 not the one reaching furthest right: a unit holding `[1,2)` and `[3,100)` has the
 same `maximum` as one holding `[1,2)` and `[3,4)`. Neither `&&` nor `@>` can be
-answered from that, and both read every chunk group. `zone_map.max_upper` records
-the greatest upper bound, and the scan skips a unit only when the summary proves it
-cannot match.
+answered from that. `zone_map.max_upper` records the greatest upper bound in three
+states: a bound, NULL for no bound (an empty range), and present but empty for an
+unbounded range. The scan skips a unit only when the summary proves it cannot match.
 
-**THE HEAP IS THE ORACLE.** A pruning defect returns FEWER rows rather than an
-error, so every predicate is answered by a heap table built from the same generator
-and the row IDENTIFIERS are compared, not the counts.
+The port of `test/range_pruning.sh`, by name, one check per test (#1341, #1339). The
+fixture is the shell's: 50,000 rows in one stripe, which is one row group of five
+vectors, so pruning shows at both levels. Module fixtures build the tables once.
 
-**THE SCATTERED ZERO IS AN ASSERTION, NOT AN OMISSION.** On a column whose spans are
-not clustered, every group holds a bound near the maximum and no summary can exclude
-any of them, so `Columnar Chunk Groups Read` equals `Columnar Chunk Groups Total`.
+| test | what it holds |
+| --- | --- |
+| `test_the_clustered_fixture_holds_the_rows`, `test_the_heap_mirror_holds_the_same_rows` | both tables hold 50,000 rows |
+| `test_the_range_column_is_summarised_in_several_units`, `test_every_unit_carries_an_upper_bound`, `test_a_non_range_column_carries_none` | the range column has at least 4 units, each with an upper bound; no other column has one |
+| `test_the_columnar_side_returns_the_heaps_rows` | 8 heap-oracle arms, compared by count and two sums: the one-hour, week, point, never-met and late windows, the scattered table, and the two unbounded-range probes |
+| `test_the_first_three_oracle_probes_are_not_vacuously_empty` | the window, week and point probes match rows on the heap |
+| `test_the_overlap_qual_is_pushed_down`, `test_the_zone_map_is_probed_for_it` | the overlap qual is pushed down and probes the zone map |
+| `test_a_clustered_overlap_skips_vectors`, `test_a_containment_probe_skips_vectors` | overlap and containment skip vectors |
+| `test_a_late_overlap_skips_the_four_vectors_only_upper_bounds_rule_out` | the late window skips exactly the 4 vectors only upper bounds rule out |
+| `test_a_window_no_row_can_meet_reads_no_chunk_group` | the never-met window reads no chunk group |
+| `test_a_scattered_column_skips_nothing` | the documented zero |
+| `test_the_unbounded_row_really_is_matched` | the unbounded row is matched on the heap |
+| `test_the_all_empty_table_is_summarised`, `test_an_empty_range_contributes_no_bound` | the all-empty table is summarised, and records NULL |
+| `test_an_unbounded_range_records_a_present_but_empty_bound` | the unbounded unit records a present but empty bound |
+| `test_a_discriminating_collation_was_found`, `test_the_collated_pair`, `test_a_collated_overlap_returns_the_heaps_rows` | a range compares under its declared collation: the type's collation differs from text's, the pair holds the same rows and is summarised, four overlaps and the row ids agree with the heap |
 
-**AND A RANGE COMPARES UNDER THE COLLATION IT WAS DECLARED WITH**, which the type
-cache carries as `rng_collation`. Reading the ELEMENT type's `typcollation` instead
-made the writer summarise under one ordering and the reader prune under another, and
-the scan MISSED ROWS. Not reachable with a built-in range type, so it needs a
-user-defined range over a collatable subtype with an explicit non-default
-`COLLATION`. Found by @jdatcmd reviewing #1144.
+**THE UNBOUNDED ARMS COULD NOT FAIL UNTIL #1341.** In the shell, the unbounded tables
+lacked the `payload` column the fingerprint sums, so both sides errored and `check`
+compared "" with "". Once that was fixed, an empty row in the same unit kept them
+green: an empty range sorts first, and a unit whose minimum is empty is never
+pruned. And a separate `INSERT` put the unbounded row in a row group of its own.
+With all three fixed, a writer that ignores unbounded ranges reddens both arms in
+both twins.
 
-`test_range_pruning` asserts the counters, the heap oracle and the scattered zero.
-`test_a_range_prunes_under_its_declared_collation` asserts the collation property,
-on a user-defined range type it creates for the purpose.
+**THE COLLATION IS DISCOVERED, NOT ASSUMED.** A host with no collation ordering
+differently from the database default declines the collation tests by name.
 
-Independent of `test/range_pruning.sh`: same public seam, own fixture, own row
-counts, own observations. Neither file reads or runs the other.
+Independent of `test/range_pruning.sh`: neither file reads or runs the other.
 
 ## 76. test_docs_upgrade_chain.py: the documented upgrade chain must be the one that ships
 
@@ -6191,12 +6705,15 @@ restored byte-identical.
 | test | what it pins |
 | --- | --- |
 | `test_expire_retires_expired_groups_and_keeps_the_straddling_one` | the feature, and the straddling group that constrains it |
+| `test_expire_refuses_what_it_cannot_honour` | #1341: a non-owner holding DELETE (`42501`), a retention column that is not a time type (`42804`) and a dropped one (`42703`) are refused with every row still there, on tables whose rows are all past retention; the owner's `expire` is the control that retires them |
+| `test_a_half_declaration_is_no_retention` | #1341: a retention column without an interval, or an interval without a column, is accepted by `set_options` and refused by `expire` with `55000`, every aged row kept |
 | `test_a_null_retention_value_keeps_its_group` | a live NULL the maximum cannot speak for |
 | `test_an_index_only_scan_does_not_return_retired_rows` | the visibility-map bits over a group `expire` removed |
 | `test_a_non_positive_retention_is_refused` | a cutoff in the future would retire live groups: `22023`, with a positive control |
 | `test_a_deleted_null_stops_pinning_its_group` | `null_count` is a write-time record, not a live count |
 | `test_a_date_retention_column_truncates_toward_keeping` | the rounding, which only this arm notices |
-| `test_the_cutoff_is_the_sessions_own_date` | the cutoff is the session's, asserted as an identity rather than as a difference |
+| `test_the_cutoff_is_the_sessions_own_date` | the cutoff is the session's, asserted as an identity rather than as a difference, in UTC and in a zone chosen at run time to be on another date (#1339) |
+| `test_a_timestamp_retention_column_uses_the_sessions_local_time` | a `timestamp` column's cutoff is the session's local now: in UTC+14, exactly the groups wholly before it are retired (#1339) |
 | `test_expire_records_what_it_retires_and_nothing_else` | `expire` writes exactly the groups it retires to `pgcolumnar.retired_group` (#1294); a rolled-back `expire` and a `compact_rewrite` record nothing; dropping the table drops its rows |
 | `test_a_no_op_expire_reads_the_extent_not_every_zone_map` | #1310: with the retention column's extent (#1304 option 5) past the cutoff, a no-op `expire` makes 0 zone-map scans where it made one per group; the same groups retire with or without the extent; aged rows written in `expire`'s own transaction retire; a column left with only NULLs needs no reads. Counted in a fresh connection, with the test schema's `search_path` carried over. Seen red first: 40 scans |
 
@@ -6257,6 +6774,8 @@ ON A PRIVATE DATABASE for this test too, and for a reason the other two share: `
 
 Measured on the unfixed tree in this harness's own database, 6 pages: 6 blocks for the newest relation with `seq_scan = 1`, against 2 for the oldest. With the fix, 3 and 3.
 
+COUNTED IN THE PLAN'S OWN TRANSACTION (#1298). The block counts and the `storage` scan counts come from `pg_stat_get_xact_blocks_fetched` and `pg_stat_get_xact_numscans`, read before and after the plans in one transaction, not from the shared `pg_statio_all_tables`, which takes in other sessions' reads. Section 81 has the measurement.
+
 ### Every test
 
 | test | what it holds |
@@ -6266,6 +6785,7 @@ Measured on the unfixed tree in this harness's own database, 6 pages: 6 blocks f
 | `test_planning_still_probes_a_populated_catalog` | that `projection` is larger than the threshold so the two paths differ, that the measured table owns a small share of it, that reading it whole costs something, and that planning costs less than reading it whole |
 | `test_the_written_limit_lookup_does_not_sweep_the_storage_catalog` | that the newest relation's storage row is far enough into the catalog to tell the two routes apart, that the two relations are far enough apart, that both plans reached `pgcolumnar.storage`, that planning over the newest did **not** sequentially scan it, and that the newest costs no more catalog work than the oldest |
 | `test_the_written_limit_does_not_depend_on_heap_order` | that a covering projection gave the table a second storage row, that the two rows disagree about `row_group_limit`, that this query shape is priced differently under the two limits, that the no-op update moved the base row, that the base row was first before it and the projection's row after, and that the planned cost does **not** change |
+| `test_a_storage_reading_takes_in_none_of_another_sessions_reads` | that a statement which reads no catalog itself, inside which a second session scans `pgcolumnar.storage` and exits, reads zero blocks of it; and, as its control, that the second session's reads do reach the shared view (#1298) |
 
 ## 81. test_catalog_delete_index.py: retiring a row group costs no more for a bigger database
 
@@ -6273,7 +6793,7 @@ Port of `catalog_delete_index.sh`. `delete_group_rows()` opens its catalog from 
 
 THE FIX IS NOT "USE THE INDEX", so the test cannot be "was the index used". A probe is a btree descent plus a heap fetch plus two catcache lookups, which on a catalog of a few pages is MORE work than reading the whole thing and far less on a large one. Both sizes occur in one installation. So these arms measure at three catalog sizes and each carries only the claim its size can support.
 
-THEY ASSERT THE WORK AND NEVER THE ACCESS PATH: buffers out of `pg_statio_all_tables`, heap and index both. An earlier version asserted `seq_scan == 0` and `idx_scan >= 1` per catalog; run against the build that chooses by catalog size -- cheaper at every size measured -- it failed 13 of 21 arms, the same 13 a full revert reddens. A test that cannot tell a revert from an improvement fires on correct code, and a guard that fires on correct code gets switched off.
+THEY ASSERT THE WORK AND NEVER THE ACCESS PATH: buffers counted in the measured statement's own transaction, heap and index both (#1298). An earlier version asserted `seq_scan == 0` and `idx_scan >= 1` per catalog; run against the build that chooses by catalog size -- cheaper at every size measured -- it failed 13 of 21 arms, the same 13 a full revert reddens. A test that cannot tell a revert from an improvement fires on correct code, and a guard that fires on correct code gets switched off.
 
 NOT A CONSTANT ANYWHERE. Every buffer count is compared against another taken in the same run from the same build, because the numbers are not the same on every major: the same fixture reads 848 buffers on PG17, 845 on PG15 and 895 on PG19. `pgcolumnar.index_min_blocks` decides the path, so the same work is measured two or three ways and the readings are compared to each other.
 
@@ -6295,17 +6815,20 @@ THE PORT RUNS ON A PRIVATE DATABASE, not the private schema `pgc_conn` gives eve
 
 The two halves share no code and no fixture. The shell suite uses ten- and forty-group tables, retires every OTHER group and adds 200,000 rows of deep noise; this one uses twelve and forty-five, retires the LAST half, and adds 150,000. The shell suite sums the work in SQL; this one reads it per catalog and sums in Python, and prints the per-catalog breakdown for every setting -- which is how the drift was traced to `row_group` alone, the one catalog a compaction writes to.
 
-THE ONE THING THIS HALF HAS TO DO THAT THE SHELL HALF DOES NOT is flush the statistics before resetting them. This harness holds one connection for the whole file, so the writes leave pending statistics in the backend that `pg_stat_reset()` does not clear; they are flushed afterwards and land on top of the reading. Measured on an otherwise identical single-session fixture: `row_group idx=36 seq=15` without the flush, `idx=32 seq=0` with it. The fifteen were the test's own `DELETE`. The shell half runs every statement in a fresh backend, which flushes on exit, so it cannot reach this state.
+COUNTED IN THE STATEMENT'S OWN TRANSACTION, NOT FROM `pg_statio_all_tables` (#1298). That view is shared: another session's reads reach it whenever that session flushes or exits, and `pg_stat_force_next_flush()` flushes only the caller's own counts, so no reset or flush keeps them out. Measured on PG18 with a second session scanning the catalogs during one compaction: the shared reading rose by 28 to 120 buffers, the transaction's own reading by -3 to +18. `_cat_blocks` reads `pg_stat_get_xact_blocks_fetched` before and after the statements in one transaction, so pending counts left by the fixture's writes cancel out as well. The vacuum test still reads the shared view: VACUUM cannot run in a transaction block.
 
 `pg_stat_reset()` is database-wide. The corpus runs serially within a worker.
+
+compact retires nothing while a transaction older than the `DELETE` is open, and each compaction is measured once (#2010). So each phase first waits up to 30 s per target, up to 90 s per phase, until nothing holds the horizon at each target's `DELETE`, and checks the count of what still holds it, which must be 0: `no transaction older than the phase ... deletes was open before the compactions`. The vacuum test waits the same way before its vacuums, because the vacuum reads a group's deletes only past the horizon: `no transaction older than the vacuumed table's delete was open before the vacuums`.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
-| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
+| `test_retiring_a_group_costs_no_more_for_a_bigger_database` | per phase: three identical targets, `no transaction older than the phase ... deletes was open before the compactions`, the emptied groups retired, every survivor kept, all six catalogs read, and two compactions at the same setting agreeing well inside the floor. Then that the default does less work than probing every catalog at six pages, less than reading every one whole at twenty-two and at seventy-six, and that its cost grows far less with the database than reading whole does |
+| `test_vacuum_reads_less_of_row_group_than_reading_it_whole` | `no transaction older than the vacuumed table's delete was open before the vacuums`, after waiting up to 30 s for the horizon (#2010); that the vacuum walked this table's groups, that two vacuums at the same setting agree, and that its `row_group` work is below what reading that catalog whole costs -- the `PgColumnarComputeAllVisibleGroups` read, which the compaction path never reaches |
 | `test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole` | that a DROP costs less catalog work than reading the seven catalogs whole, and -- below the threshold -- less than forcing a probe. The subject is `delete_rows_by_storage_id`, one parameterised line serving seven catalogs on the DROP/TRUNCATE path, which nothing covered before (#1207). Measured in buffers, never the access path, and on a fixture sixty tables wide because `pgc_own_db` gives this file a private database where the shell twin shares a cluster |
+| `test_a_catalog_reading_takes_in_none_of_another_sessions_reads` | that a statement which reads no catalog itself, inside which a second session (run by `COPY ... TO PROGRAM`) scans `row_group` and `column_chunk` and exits, reads zero; and, as its control, that the second session's reads do reach the shared view (#1298) |
 
 ## 82. test_rewrite_storage_oid.py: a type rewrite keeps the storage row on the live table
 
@@ -6324,6 +6847,8 @@ THE `REFRESH` ARM GUARDS THE PATH THAT ALREADY WORKED. It repaired this before t
 | `test_rewrite_storage_oid` | the storage row matches the live regclass before the rewrite, the row count survives, an unrewritten table still matches itself, and the rewritten table's storage row matches the live regclass afterwards |
 | `test_a_matview_created_with_data_points_at_itself` | that the matview and the `CREATE TABLE AS` table both hold their rows, that `CREATE TABLE ... AS` points at itself (the control that narrows the fix), that a matview created `WITH DATA` points at itself, and that `REFRESH` still does |
 | `test_the_repair_gate_leaves_untouched_partitions_alone` | on a parent with two columnar partitions, that `ALTER TABLE ONLY`, `ATTACH`, `DETACH` and `DETACH CONCURRENTLY` read no block of the partition they did not name, against a control that a real read of it is visible. The gate used to open that partition with `NoLock`, an Assert on assert builds and an unlocked open on release builds; the fix skips any relation the statement holds no lock on. A session the ALTER aborted reports `None`, which the arm refuses. Also that a type rewrite through the parent still repoints both partitions' storage rows, so the skip does not skip what it must repair |
+| `test_other_rewriting_forms_keep_the_storage_row` | one case per form (#1339): `ADD COLUMN` with a volatile default, a type change to `varchar(20)`, `SET ACCESS METHOD heap` and back, `SET UNLOGGED`, `SET UNLOGGED` then `SET LOGGED`, `VACUUM FULL`, `CLUSTER USING` an index, and `TRUNCATE`. After the form and one more insert, one value per case: the server survived (no new "terminated by signal" in its log), what each statement did, the storage row names the live table, the row count (after `TRUNCATE`, only the new row), and an md5 of every id and note equal to the same md5 over the generator. A form that must rewrite must succeed, change the storage id and show what it changed (the new column, the new type, `relam` back to pgcolumnar). `SET UNLOGGED`, `VACUUM FULL` and `CLUSTER` are refused today; their cases accept the exact refusal (`0A000` and its message) or success, and nothing else. Every reading is on a fresh connection in a module fixture, so a backend that dies is read by name, not lost to `OperationalError` |
+| `test_select_into_a_columnar_table_keeps_the_storage_row` | that `SELECT INTO` with `default_table_access_method = pgcolumnar` succeeds, makes a pgcolumnar table, leaves its storage row on it, and holds every row and value after one more insert |
 
 ## 83. test_catalog_scan_index.py: twelve metadata scans do not read their catalog whole
 
@@ -6335,6 +6860,10 @@ TWO COST MEASURES WERE TRIED FIRST, AND A REVERT SURVIVED BOTH. Comparing the de
 
 EVERY ARM HAS AN EFFECT PREMISE, AND BOTH SILENT FAILURES IT GUARDS AGAINST HAPPENED. `compact()` cannot retire rows deleted by a transaction that has not committed, so a fixture that deleted and compacted in one transaction left no free range to measure. `pgcolumnar.truncate()` refuses a transaction block, so a multi-statement call raised and read zero. "No sequential scan" is exactly what an operation that never ran reports. Each arm therefore asserts what the operation changed, and that it reached the catalog at all.
 
+EACH TARGET WAITS FOR THE HORIZON (#1979). `compact` retires a dead group only when no transaction in the database is older than the `DELETE`. A session that held a snapshot across the single `compact` left every target with no free range. Each premise read 0, and `an online rewrite took effect` and `an end truncation took effect` went red. Both harnesses now call `compact` again every 0.5 s, for up to 30 s, through the shared helper, and check `the <operation> target: compact retired both dead groups` as a number. The targets have autovacuum off.
+
+THE NOISE TABLES AND THE END TRUNCATION WAIT TOO (#1979). The noise fixture called `compact` once per table. Under a held snapshot it retired nothing, `free_space` stayed under `index_min_blocks` pages, and the `free_space` arms read it whole by design. Measured on PG 18 with a snapshot held across the noise load: `premise: every noise table holds two free ranges` read 0 of 800 (shell) and 0 of 700 (pytest). Both harnesses now call `compact` again, 50 tables per call, on each noise table that still lacks its two free ranges. `truncate` removes the trailing range only when no transaction is older than the `compact` that freed it. A session that started between the `DELETE` and the `compact` made `an end truncation took effect` read 2 instead of 1. That arm now runs again every 0.5 s, for up to 30 s, until the effect shows, and the reading is the run that took effect.
+
 THE END-TRUNCATION TARGET HAS NO PROJECTION. A projection is its own storage in the same file, written after the base's groups, so its live data sits behind the base's last group and there is no tail to reclaim. Measured: with the projection, `truncate()` returns 0 and both free ranges stay; without it, 3 blocks are reclaimed and one range is left.
 
 Removal proof, on the shell twin at PG 17: the full revert reddens all eleven path arms, and reverting each of the twelve sites ALONE reddens at least one arm named for the operation that reaches it. This twin aborts at its first failure, so under the revert it reports the first arm (`storage seq_scan=2`).
@@ -6345,11 +6874,15 @@ The two halves share no code and no fixture. The shell suite adds 400 tables wit
 
 | test | what it holds |
 | --- | --- |
-| `test_catalog_scans_do_not_read_their_catalog_whole` | each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
+| `test_catalog_scans_do_not_read_their_catalog_whole` | `premise: every noise table holds two free ranges`; each of the four catalogs at or above `index_min_blocks`; then, for eleven operations (an insert into an existing table, into a table created in the same transaction, a `parallel_copy` load, a one-row delete, `compact_rewrite`, `truncate()`, `vacuum_sorted`, renaming a projected column, `TRUNCATE`, `drop_projection`, `DROP TABLE`), `the <operation> target: compact retired both dead groups`, that the target held two free ranges, that the operation took effect, that it reached its catalog, and that it made no sequential scan of it |
 
 ## 84. test_native_format.py: the format stamp is a range, and an append raises it
 
-A partial port of `native_format.sh`: the arms #1137 added and the format-version pin. #1130 stopped writing a validity bitmap for a chunk with no nulls, and an alpha4 binary misreads such a chunk without refusing it. Measured with the real alpha4 `.so`, 40 single-row fetches gave 9 NULL values for rows that hold one. So this build stamps `format_version` 2, and alpha4, which refuses any stamp but 1, refuses the table. The check became a range, `1 <= v <= 2`, so this build still reads what alpha4 wrote.
+The port of `native_format.sh`, by name, one check per test (#1341). The `nf` module fixture runs the shell's sequence once, in its order, and records every reading; each test asserts one of them.
+
+THE METAPAGE VERSION IS PLANTED THROUGH A C HOOK BOUND AT TEST TIME, `pgcolumnar_debug_set_metapage_version`, as the shell binds it and `test_native_gap.py` binds its own. Re-stamping the current major must read cleanly; a major of 99 must be refused by `PgColumnarReadMetapage`, naming `99.0`.
+
+#1130 stopped writing a validity bitmap for a chunk with no nulls, and an alpha4 binary misreads such a chunk without refusing it. Measured with the real alpha4 `.so`, 40 single-row fetches gave 9 NULL values for rows that hold one. So this build stamps `format_version` 2, and alpha4, which refuses any stamp but 1, refuses the table. The check became a range, `1 <= v <= 2`, so this build still reads what alpha4 wrote.
 
 THE FIRST WRITE RAISES THE STAMP, AND A READ DOES NOT. A table stamped 1 that this build appends to holds chunks alpha4 misreads, so the stamp has to move on that write. The arms set a stamp of 1 by catalog `UPDATE`, which is what an alpha4 table looks like, and check that reading leaves it at 1 and appending raises it to 2.
 
@@ -6361,13 +6894,21 @@ REFUSED BY SQLSTATE, `0A000`, not by the absence of a wrong answer. Stamps 3 and
 
 Removal proof, on this twin: making the append path skip the raise reddens `appending to a table stamped 1 raises its stamp` (got 1, want 2).
 
-Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the metapage-version arms, which need a C hook bound at test time, and the diverse-type round trip against a heap mirror.
+THE PART-4 INDEX ARMS NEED THE CUSTOM SCAN OFF TOO (#1341). The shell ran that query with it on, so with the fetch path's stamp check deleted, "an index-scan fetch of a decoded column fails" and the two message arms on the same query stayed green: the scan-open guard refused it instead. Both twins now turn it off, and that mutant reddens all three.
+
+"Backend survives" is read on a new connection, as the shell's `q` reads it.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_format_stamp_is_a_range_and_an_append_raises_it` | this build stamps 2; a table stamped 1 is read on all four entry points and returns its rows; reading leaves its stamp at 1 and appending raises it to 2; stamps 3 and 0 are refused with `0A000` on all four; the backend survives |
+| `test_the_native_format_version_is_2`, `test_the_native_vector_length_is_1024` | the stamped identifiers |
+| `test_a_diverse_type_round_trip_matches_heap` | eight storage classes read back in order, as the heap returns them |
+| `test_the_table_reads_at_the_version_this_build_wrote`, `test_the_metapage_major_this_build_writes_is_still_2` | the metapage version this build writes reads cleanly, re-stamped or not |
+| `test_a_read_of_the_bumped_version_fails`, `test_the_failure_is_the_format_version_guard`, `test_the_error_names_the_offending_version`, `test_the_backend_survives_the_rejection` | a metapage major of 99 is refused by its guard, by name, and the server survives |
+| `test_the_table_reads_at_the_native_format_version_this_build_writes`, `test_a_future_native_format_version_is_refused`, `test_the_failure_is_the_native_format_version_guard`, `test_the_native_format_error_names_the_offending_version`, `test_the_backend_survives_the_native_format_rejection` | a format_version of 99 is refused on the seq scan, the aggregate and the row fetch, by its guard, and the server survives |
+| `test_the_fixture_was_stamped_by_this_build`, `test_a_table_stamped_1_is_read_on_all_four_paths`, `test_a_table_stamped_1_returns_its_rows`, `test_reading_a_table_stamped_1_does_not_raise_its_stamp`, `test_appending_to_a_table_stamped_1_raises_its_stamp`, `test_the_appended_table_still_reads_whole` | the range's lower end, and an append raising the stamp |
+| `test_a_stamp_above_this_builds_is_refused`, `test_a_stamp_below_min_readable_is_refused`, `test_the_backend_survives_the_range_rejections` | stamps 3 and 0 are refused with `0A000` on all four paths |
 
 ## 85. test_native_agg.py: min/max over timestamptz read no data
 
@@ -6379,13 +6920,32 @@ THE ROW COUNT IS A PREMISE because the shell twin's first draft overflowed `int`
 
 Removal proof, on this twin: forcing every group dirty reddens `max(ts) reads under a tenth of the blocks a decode of ts reads` (got -1487, wanted at least 1).
 
-Not ported, and declared INCOMPLETE in `test_compare_to_bash.py`: the `int4`/`text` parity, `sum`/`avg`, parallel-plan and fallback arms.
+The rest of the shell suite was ported for #1341, every check by its name: the `int4`, `text` and `sum`/`avg` parity arms with the metadata node asserted first, the node winning against a parallel plan with no Gather (#133), `count(*)` reading no zone maps against an aggregate that must read them, and the filtered, `sum(bigint)` and empty-table fallbacks. Removal proof for those: `count(col)` folded from the row count instead of the value count reddens `count(col,nulls)` in both twins.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_min_max_over_timestamptz_read_no_data` | the table holds every row; `max(ts)` plans the metadata node; a decode reads at least 10 blocks; `max` and `min` each read under a tenth of that; parity with heap before and after deleting rows at both ends |
+| `test_the_timestamptz_table_holds_every_row` | **premise**: the table holds every row inserted |
+| `test_max_ts_plans_the_metadata_agg_node` | `max(ts)` over timestamptz plans the metadata node |
+| `test_decoding_ts_reads_the_tables_blocks` | **control**: a decode of `ts` reads at least 10 blocks |
+| `test_min_max_ts_read_under_a_tenth_of_a_decode` | `max(ts)` and `min(ts)` each read under a tenth of the decode's blocks (parametrized) |
+| `test_timestamptz_parity` | `max` and `min` equal heap's, before and after deleting rows at both ends (parametrized) |
+| `test_the_deletes_removed_the_same_rows_at_both_ends` | the deletes removed rows, the same rows from each table |
+| `test_count_min_max_with_no_where_are_the_vectorized_aggregate` | **premise**: with no WHERE, the aggregate is the vectorized node |
+| `test_a_where_with_no_column_in_it_gives_heaps_answer` | `(SELECT false)`, `now() < ...` and `current_user = ...` each give heap's answer (#1435) (parametrized) |
+| `test_heaps_answer_to_a_false_gate_is_no_rows` | **premise**: heap's answer to a false gate is no rows |
+| `test_the_aggregate_uses_the_metadata_node` | `count(*)` and sum/min/max plan the metadata node (parametrized) |
+| `test_the_aggregate_answers_as_heap` | count, sum, avg, min and max over int4 and text, the multi-aggregate, the filtered aggregate and the `sum(bigint)` fallback each equal heap (parametrized, 13 names) |
+| `test_the_metadata_node_beats_a_parallel_plan` | the node wins against a parallel plan, for `count(*)` and the multi-aggregate (#133) (parametrized) |
+| `test_the_metadata_plan_has_no_gather` | neither plan has a Gather (parametrized) |
+| `test_count_reads_no_zone_maps` | `count(*)` reads no zone maps |
+| `test_an_aggregate_that_needs_zone_maps_reads_them` | `count(*), sum(id)` reads at least one: the measured delta, so the zero above cannot pass on a counter that never moves |
+| `test_a_filtered_aggregate_is_not_the_metadata_node` | a filtered aggregate falls back |
+| `test_an_empty_table_counts_zero` | an empty table counts 0 |
+| `test_an_empty_table_aggregates_to_null` | an empty table's `sum` and `min` are NULL (parametrized) |
+
+ONE CHECK PER TEST (#1339). Three module fixtures take every reading in order, and each test asserts one, so a red cannot stop the next check from running. Measured with #133 restored (the metadata path priced at the scan's cost) on PG17: the shell reddens 4 arms, the parallel-plan and no-Gather pairs. The earlier twin, three tests holding 40 checks, reported 1. This one reports the same 4.
 
 ## 86. test_format_downgrade.py: an alpha4 binary refuses what this build wrote
 
@@ -6416,7 +6976,7 @@ A ZERO IS NOT A MEASUREMENT. On the shell twin, the red run before the section e
 
 THE FIXTURE NEEDS MANY ROWS PER DEVICE. The `LATERAL` form costs about a block per device whatever the table's size, so at 5,000 rows per device it read 45 blocks of a 177-page table and "a tenth" failed. Here it is 36,000 rows per device.
 
-On a private database, because the document names its tables, `readings` and `devices`.
+On a private database, built once by a module fixture, because the document names its tables, `readings` and `devices`.
 
 Removal proof: the document's `LATERAL` edited to `ORDER BY ts` (ascending) returns each device's first reading, and `the LATERAL form returns what DISTINCT ON returns` fails. On the shell twin that is the only red, on every major.
 
@@ -6424,7 +6984,17 @@ Removal proof: the document's `LATERAL` edited to `ORDER BY ts` (ascending) retu
 
 | test | what it holds |
 | --- | --- |
-| `test_the_latest_reading_recipe_does_what_the_document_says` | the document's three blocks are found; the table holds its rows; without the btree the `LATERAL` form reads the table about once per device; the `GROUP BY` form and, with the document's index, the `LATERAL` form return the rows `DISTINCT ON` returns; the indexed `LATERAL` reads at least one block and under a tenth of the table |
+| `test_the_documents_three_recipe_blocks_were_found` | **premise**: the document's three recipe blocks are found |
+| `test_the_table_holds_every_row` | **premise**: the table holds every row |
+| `test_without_the_btree_the_lateral_form_reads_the_table_once_per_device` | the trap the document warns about: without the btree, the `LATERAL` form reads the table about once per device |
+| `test_the_group_by_form_returns_what_distinct_on_returns` | the `GROUP BY` form returns the rows `DISTINCT ON` returns |
+| `test_the_group_by_form_reads_the_table_once` | the `GROUP BY` form reads at least one block and no more than the table, as the document says (#1339) |
+| `test_the_documents_index_exists` | **premise**: the document's index exists |
+| `test_the_lateral_form_returns_what_distinct_on_returns` | with the index, the `LATERAL` form returns the rows `DISTINCT ON` returns |
+| `test_the_indexed_lateral_form_read_the_table_at_all` | **premise**: the indexed `LATERAL` form read at least one block |
+| `test_with_the_btree_the_lateral_form_reads_under_a_tenth_of_the_table` | with the index, the `LATERAL` form reads under a tenth of the table |
+
+ONE CHECK PER TEST (#1339). A module fixture runs every step in the shell's order, the trap before the document's index exists, and records each reading; each test asserts one. Measured with the document's index statement replaced by `SELECT 1` on PG17: the shell reddens "the document's index exists" and "reads under a tenth of the table". The earlier one-test twin reported only the first. This one reports both.
 
 ## 88. test_storage_row_repair.py: the alpha5 release notes' repair procedure works as written
 
@@ -6501,6 +7071,10 @@ Written red first: all seven failed before `pgc_vacuity` had the methods. The fo
 | `test_a_missing_dependency_of_pyarrow_fails_rather_than_declines` | a `pyarrow` that cannot import its own dependency raises `ModuleNotFoundError` naming that dependency, and fails rather than declines; shown red with `require_module`'s `.name` check deleted (OffgridwithJD, review of #1286) |
 | `test_every_unguarded_import_spelling_is_refused` | each of six spellings, `__import__` among them, is named and refused; a file using `require_module` is not |
 | `test_an_unguarded_import_is_refused_under_xdist_too` | under `-n 2` the controller names the unguarded import once and the run is refused, as the serial run is: workers ship their sites back through `workeroutput` (#1305) |
+| `test_the_declinable_capabilities_are_exactly_pyarrow_and_duckdb` | the closed list is `pyarrow` and `duckdb`, and nothing else; `duckdb` joined on OffgridwithJD's decision on #1341 |
+| `test_a_missing_duckdb_declines_by_name_and_the_run_stays_green` | a missing `duckdb` declines by name, with its capability, and the inner run exits 0 |
+| `test_pgc_require_turns_a_duckdb_decline_into_a_failure` | with `PGC_REQUIRE=pyarrow,duckdb` a missing `duckdb` fails, and says duckdb is required |
+| `test_an_unguarded_duckdb_import_is_refused` | a file that imports `duckdb` outside `require_module` is named and the run is refused |
 
 ## 92. test_tid_range_scan.py: a ctid range reads only the row groups that hold it
 
@@ -6551,16 +7125,17 @@ Removal proofs, each red in both twins: the prototype's zone handling; `CREATE T
 | --- | --- |
 | `test_partition_create_ahead` | from nothing it reaches now plus the lead, columnar, contiguous and one width wide; a second call creates nothing, and asking further ahead creates only the difference; rows land in columnar partitions; the parent is never held ACCESS EXCLUSIVE; west of UTC, for both key types, partitions continue a hand-made one contiguously and a row at every boundary routes; east of UTC, a timestamp parent covers the local now and starts on the width's boundary; inputs that broke the first version (a generated column, a 63-character name, more than 1000 partitions, a MAXVALUE bound) are handled or refused before any DDL; a DEFAULT partition is refused and nothing is created |
 | `test_partition_drop_plan` | the drop half: `partition_drop_plan` lists `DETACH ... CONCURRENTLY` and `DROP` for the partitions wholly before the cutoff, in range order, from partitions created newest first. A cutoff on an upper bound includes the partition, and one before them all plans nothing. Running the plan, each statement top-level, leaves the rest with their rows and drops the storage rows. A `timestamp` key with a `timestamp` cutoff plans the same in Tokyo and Denver, and a cutoff of the other type is refused (`42804`). MINVALUE is listed once past, and MAXVALUE never. Quoted schema and partition names run as returned. A sub-partitioned partition is planned whole and dropped with its children. A tiered partition is planned with `DROP FOREIGN TABLE`, and its Parquet file stays. A partition whose name holds the drop block's dollar-quote tag drops as planned. A detach cancelled in its second phase is planned as `FINALIZE` and dropped. The DEFAULT and non-timestamp parents are refused (`55000`) |
+| `test_partition_create_ahead_runs_on_the_callers_own_privileges` | not SECURITY DEFINER: a role that does not own the parent, holding USAGE and CREATE on the schema, is refused `42501` and creates nothing; a non-superuser owner creates partitions ahead on a parent of its own |
 
 ## 94. test_approx_aggregates.py: hll and tdigest over columnar tables, the compatibility statement
 
 Port of `approx_aggregates.sh` (#1296 phase 2). Phase 0 on #1296 decided that approximate distinct counts and percentiles come from the `hll` and `tdigest` extensions for 1.0, so this pair is the tested compatibility statement for them; docs/how-to.md names the versions.
 
-Independent of the shell suite: its own generator (other multipliers, the same 200,000 rows and 50,000 devices, because the check names state them), its own SQL. `compare_to_bash` grades the pair 14 literal matches, 0 missing.
+Independent of the shell suite: its own generator (other multipliers, the same 200,000 rows and 50,000 devices, because the check names state them), its own SQL. `compare_to_bash` grades the pair 15 literal matches, 0 missing.
 
 THE HEAP MIRROR IS WRITTEN FROM THE GENERATOR, never copied from the columnar table. The shell suite first built it by `CREATE TABLE ... AS SELECT * FROM ax`, which reads through the scan under test: with a mutation dropping one row in a thousand, every equality stayed green on all five majors. Writing both sides from the generator turned seven checks red under the same mutation.
 
-The bounds against the exact answer are premises, as pg_partman's are: they state the extension's own error, and a change here that broke them would break the equalities first.
+The bounds against the exact answer are premises, as pg_partman's are: they state the extension's own error, and a change here that broke them would break the equalities first. That holds for the stored tdigest only since #1339 added "a tdigest stored in a columnar table comes back byte for byte": before it, nothing compared the stored digests, and a reader returning each long value as the previous one passed every tdigest check. The digests are built once into a heap table and stored from there, because a tdigest depends on the order its inputs arrive in.
 
 hll 2.19 does not build against PostgreSQL 19, so `test_hll_over_columnar` is `UNSUPPORTED_MAJOR` there and listed in `expected_unrunnable.txt`. CI installs both extensions from PGDG for 15 to 18.
 
@@ -6605,6 +7180,7 @@ Written red first: on main the fixture raises `unrecognized configuration parame
 | `test_a_failing_expire_does_not_undo_the_compaction` | `expire` on a table whose retention column was dropped fails with `42703`, and the compaction due on that table still lands |
 | `test_the_daemon_yields_the_lock_it_holds_inside_expire` | the worker holds ShareUpdateExclusiveLock inside `expire`; a session's ACCESS EXCLUSIVE is granted within 8 s of a 30 s hold, and the log shows the cancel |
 | `test_a_table_dropped_mid_pass_is_skipped_and_the_pass_goes_on` | while the worker holds `ex_hold`, `ex_gone` is dropped; after the cancel the same pass logs `ex_gone` as skipped and still expires `ex_after` |
+| `test_the_daemon_cuts_a_date_retention_at_its_databases_time_zone` | one row group per day: the first surviving day is the daemon's cutoff in the server's TimeZone, then in a changed one after a reload, and in a database-level TimeZone, which overrides the server's; two zones 25 hours apart, read before and after the passes so a midnight between cannot flake it |
 
 ## 97. test_rollup.py: incremental rollups fold appended row groups, recompute changed ones, and equal a full recompute
 
@@ -6632,7 +7208,11 @@ Phase 1 removal proofs, each red on its arm: no `OFFSET 0` (the cost arm), no is
 
 | test | what it holds |
 | --- | --- |
-| `test_rollup_phase_one` | the rollup equals a full recompute after the first refresh, appends with late rows, a bulk append, and a rebase; a refresh with nothing new folds nothing; rows committed during a refresh are folded by the next, once; two concurrent refreshes fold each row once; zones agree; a refresh after a small append reads under a fifth of the source; a rewritten source is refused until `rebase_rollup`; after a delete, an update, a straddling append, `compact_rewrite` or a deleted NULL-ts row the rollup equals a full recompute, rewriting no partial outside the changed groups' range; a recompute that would reach retained history is refused with `0A000` and changes nothing; a day bucket is recomputed whole across a DST switch; a heap rollup behaves the same; REPEATABLE READ is refused; an owner who is not a superuser creates and refreshes a rollup, and another role sees none of it; bad definitions are refused with `22023` |
+| `test_rollup_phase_one` | the rollup equals a full recompute after the first refresh, appends with late rows, a bulk append, and a rebase; a refresh with nothing new folds nothing; rows committed during a refresh are folded by the next, once; two concurrent refreshes fold each row once; zones agree; a refresh after a small append reads under a fifth of the source; a rewritten source is refused until `rebase_rollup`; after a delete, an update, a straddling append, `compact_rewrite` or a deleted NULL-ts row the rollup equals a full recompute, rewriting no partial outside the changed groups' range; a recompute that would reach retained history is refused with `0A000` and changes nothing; a day bucket is recomputed whole across a DST switch; a heap rollup behaves the same; REPEATABLE READ is refused; an owner who is not a superuser creates and refreshes a rollup, and another role sees none of it; bad definitions are refused with `22023`; each group's TID range holds exactly its rows |
+| `test_a_rollup_and_its_source_are_dropped_together` | the view depends on its source, as a view over it would (#1376): `DROP TABLE` of the source is refused (`2BP01`), `CASCADE` takes the view, its partials table and its catalog rows, and `DROP VIEW` takes the partials and the rows. A role that cannot read a table cannot tie a rollup row to it (`42501`), so it cannot block that table's drop. Nor can it name another role's table as its partials (`42501`, and that table survives its view's drop), or a non-view as its rollup (`42809`); and a written row's view, partials and source cannot be changed (`0A000`) |
+| `test_rollup_dump_and_restore` | a dump carries a rollup's definition; after a restore into another database, and into the same one after DROP EXTENSION, the restored source has the recorded storage id, and the owner's refresh is refused with `55000` naming `rebase_rollup`, the rollup untouched; after the rebase a refresh folds nothing, then exactly the rows appended since, and the rollup equals a full recompute (#1377) |
+| `test_min_and_max_keep_each_columns_collation` | #1341: min and max over a `"C"` column and an en_US column equal a recompute after a refresh that folds new rows into an existing bucket, where the two collations disagree; the partials columns carry the default collation, so the fold's own comparison is what is tested. No en_US collation: `cannot_run` |
+| `test_row_tid_refuses_a_row_number_below_one` | `row_tid(0)` and `row_tid(-1)` are refused with `22003` and `row_tid(1)` is accepted. A test of its own, last in the file: without the floor `row_tid(0)` crashed the backend |
 
 ## 98. test_timeseries_recipes.py: the gap-fill, LOCF and interpolation recipes answer what they claim
 
@@ -6692,9 +7272,12 @@ On a private database, because foreign servers are per database. A local path st
 
 | test | what it holds |
 | --- | --- |
-| `test_tier_partition_moves_a_partition_exactly_once` | the move returns the rows moved; the parent's answers are the same; the cold range is a foreign partition with the same name and bound, reading the exported file; no pgcolumnar catalog rows are left; pruning keeps the ranges apart; an insert into the tiered range is refused; five refusals move nothing; the parent is held ACCESS EXCLUSIVE until commit, and a rollback leaves the rows local; a write in flight is exported; a fault after each of the five steps leaves the rows exactly once, still local |
+| `test_tier_partition_moves_a_partition_exactly_once` | the move returns the rows moved; the parent's answers are the same; the cold range is a foreign partition with the same name and bound, reading the exported file; no pgcolumnar catalog rows are left; pruning keeps the ranges apart; an insert into the tiered range is refused; the refusals move nothing, among them a path a foreign table reads as s3a:// is refused like the identical s3:// spelling, a path a foreign table reads as S3:// is refused like the identical s3:// spelling (#1936), a path a foreign table reads as s3n:// is refused like the identical s3:// spelling, an S3:// path is refused when a foreign table reads the identical s3:// spelling, a path a foreign table reads as GS:// is refused like the identical gs:// spelling, a path a foreign table reads as Az:// is refused like the identical az:// spelling, a path a foreign table reads as HTTP:// is refused like the identical http:// spelling, a path a foreign table reads as HTTPS:// is refused like the identical https:// spelling, and a NULL path is refused as null, not as a file a foreign table reads (#1937 review); a foreign table on a directory, a glob or a host in another case blocks the paths it reads (#1941): a path under a directory a foreign table reads as s3://b/dir/ is refused, a path two levels under a directory a foreign table reads is refused, a path matching a glob a foreign table reads as s3a://b/g/*.parquet is refused, a path matching a glob with ? and a [class] a foreign table reads is refused, an http path is refused when a foreign table reads the same URL with its host in another case, a local path under a directory a foreign table reads without a trailing slash is refused, a local path matching a glob a foreign table reads is refused, the refusal's detail names the foreign table and the path it reads; a bracket follows fnmatch (#1946 review): an unterminated [ in a glob is a literal [, so a path holding it is refused, a [!] with no closing bracket in a glob is literal, so a path holding it is refused, a backslash in a glob [class] escapes a ], so a path the class matches is refused, a glob POSIX class such as [[:digit:]] is one class, so a path it matches is refused, a [^ in a glob negates like [!, so a path the class [^]x] matches is refused, a local glob splits at a slash before a [class], so a path holding the [ literally is refused, a backslash in a glob escapes a star, so a path holding a literal star is refused, a ] right after [ in a glob is a class member, so a path the class []a] matches is refused, a [ whose only ] is escaped in a glob is a literal [, so a path holding it is refused, a [ left open before a POSIX class in a glob is a literal [, so a path holding it is refused, an equivalence class [=]=] in a glob holds a ], so a path the class matches is refused, a [:z:] in a glob is not a POSIX class to fnmatch, so a path that reads it as members is refused, a [ that ends a range in a glob is a plain member, so a path the shorter class matches is refused, a session that asks for standard_conforming_strings off still has a path a glob matches refused, a [^] with no closing bracket in a glob is literal, so a path holding it is refused, an s3:// glob [class] may span a slash, so a path the class matches is refused, a collating symbol [.].] in a glob holds a ], so a path the class matches is refused; a rare bracket is read as glibc reads it (#1951): a [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused, a [ that ends a range before an equivalence class lets fnmatch close the class later, so a path it then matches is refused, a local glob [ that ends a range before a POSIX class lets fnmatch close the class later, so a path it then matches is refused, a - after a POSIX class in a glob is a member, not a range, so a path the class matches is refused, a - after a range in a glob is a member, so the POSIX class after it is one member and a path the class matches is refused, an empty [::] in a glob class is one unit to fnmatch, so a path the class matches is refused, a collating symbol [.ab.] in a glob class is one unit to fnmatch, so a path the class matches is refused, a ! or ^ after [ in a glob always negates, so a path the negated class matches is refused, a ! or ^ after [ in a local glob always negates, so a path the negated class matches is refused (#1953 review), a widened bracket followed by a slash still refuses the deeper key, a - after a POSIX class in a negated glob class is a member, so a path the class matches is refused, a - after a POSIX class in a negated local glob class is a member, so a path the class matches is refused (#1953 review, third round), the refusal's detail prints a path holding a backslash as written, not as an E'' string, the refusal's detail doubles a quote in the path, so the path cannot close its quotes early (#1953 review); the check matches with the reader's own fnmatch and glob(3) through path_glob_matches (#1957, #1962): a negated glob class that glibc cannot close is a literal [, so a path holding it is refused, a negated local glob class that glibc cannot close is a literal [, so a path holding it is refused, a local glob splits at a backslash-escaped slash in a bracket, so a path of [ and ] is refused, a local glob that ends in // matches the directory with one slash, so that path is refused, a glob * does not match a leading dot in an s3:// key, so a hidden key is not refused, a local glob * does not match a leading dot, so a hidden file is not refused, path_glob_matches lets an s3:// class span a slash but splits a local glob there; the helper is honest about its answer (#1964 review): path_glob_matches is VOLATILE, STRICT and PARALLEL SAFE, path_glob_matches lists . and .. in a local directory, so .* matches both, path_glob_matches counts only the path asked about, not another path the glob returns; an input too large for glob(3) is bounded before it runs (#1964 review, second round): path_glob_matches matches a pattern of 128 */ levels and refuses 129 with an error, path_glob_matches counts every level after the first *, so one * and 129 more levels are refused with an error, path_glob_matches counts a level after a ? or a [, so 129 of either are refused with an error (#1964 review, third round), path_glob_matches refuses a pattern of 4096 bytes with an error, path_glob_matches matches an s3:// pattern of 128 * and refuses 129 with an error, path_glob_matches matches an s3:// pattern of 4095 bytes and refuses one of 4096 with an error (#1964 review, third round), path_glob_matches matches a path of 4095 bytes but not one of 4096, which no file can have, path_glob_matches answers false for a path of 400000 parts before a 1 s statement_timeout, path_glob_matches never answers false for a walk an interrupt that raises no error cut short (#1964 review, third round); a control character in the path or the name cannot add a line (#1960, #1964 review): the refusal's detail prints a newline in the path as an escape, on one line, a newline in a foreign table's path adds no HINT line under the refusal, the refusal's detail prints a newline in the foreign table's name as an escape, on one line, the refusal's detail escapes a literal backslash before an x, so it differs from an escaped newline, the refusal's detail escapes the LATIN1 control NEL in a path, the refusal's detail prints the WIN1252 euro sign in a path as written; and the rule refuses no more than the table reads: a glob * does not cross a slash, so a path one level deeper is not refused, a glob [class] does not match a slash, so a path with a slash in its place is not refused, a class fnmatch may close at either ] still does not match a slash, so a path with a slash in its place is not refused, an escaped star in a glob matches only a literal star, so another name is not refused, a remote key without a trailing slash is one object, so a path under it is not refused, a path that only starts with a remote directory's name is not refused, a path that only starts with a local directory's name is not refused, a glob ? does not match a slash, so a path with a slash in its place is not refused, a glob matches the whole name, so a path with more after it is not refused, a glob . is a literal dot, so a path with another character in its place is not refused, an http path is refused only for the same key, so a key in another case is not refused, an http path holding * is one object, not a glob, so another name is not refused, a gs:// path holding * is one object, not a glob, so another name is not refused, a local glob splits at a slash inside an equivalence class, so a path the pieces do not match is not refused; an Iceberg foreign table blocks the paths under its location (#1949): a local path under an Iceberg foreign table's location is refused, an s3:// path under an Iceberg foreign table's location is refused, the Iceberg refusal's detail names the foreign table and its location, a local path that only starts with an Iceberg location's name is not refused, an s3:// path beside an Iceberg foreign table's location is not refused; the location is cut from metadata_path as the reader cuts it (#1955 review): an Iceberg table whose metadata file sits at the root refuses a local path, the root Iceberg refusal's detail names the location '/', an Iceberg table with a relative metadata_path refuses a path under '.'; only pgcolumnar's Parquet handler has its path option read (#1949): a path option of '/' under another wrapper does not refuse a local path, a path option under another wrapper does not refuse the same path, a path a wrapper with the Parquet handler under another name reads is refused; the Iceberg reader is also chosen by its handler (#1955 review): a path under the location of a table on a wrapper with the Iceberg handler under another name is refused, the refusal under a wrapper with the Iceberg handler under another name names that table and its location, a path option under a wrapper with the Iceberg handler does not refuse the same path, a path option under a wrapper with a handler pgcolumnar does not know does not refuse the same path; a local path is also compared in the form the kernel reads it (#1965, #1959): a local glob spelled with // reads the file spelled plainly, a local glob spelled with /./ reads the file spelled plainly, a path a local glob spelled with // reads is refused, the refusal under a glob spelled with // names the glob as written, a path a local glob spelled with /./ reads is refused, a target spelled with // is refused when a foreign table reads the plain spelling, a target spelled with /./ is refused when a foreign table reads the plain spelling, a target spelled with a name and .. is refused when a foreign table reads the plain spelling, a target spelled with .. at the root is refused when a foreign table reads the plain spelling (#1978 review), an s3:// key with // is another key, so the key with one / is not refused, the Iceberg reader reads a table whose metadata_path holds a name and .., the Iceberg reader reads a table whose metadata_path goes through a symbolic link, a path under an Iceberg location reached through a name and .. is refused, the refusal under an Iceberg location with .. names the location as written, a path under an Iceberg location reached through a symbolic link is not refused, as documented; the target server is chosen by its wrapper's handler (#1963): a server on a wrapper with the Parquet handler under another name is accepted as the target, a server on a wrapper without the Parquet handler is refused as the target, export_parquet through a server on a wrapper with the Parquet handler under another name writes the file (#1978 review); a glob too large to match fails closed and names its table (#1974): a foreign table whose glob is too large to match blocks the move with an error that names it, a path another foreign table reads is still refused as read beside a glob too large to match, a foreign table whose glob is too large to match does not block a remote target; the loop over the readers is held (#1978 review): a path a glob reads is refused as read when a glob too large to match comes first, a glob over the limit as written but not once folded reads the file spelled plainly, a path a glob reads once folded is refused as read although the glob as written is too large to match, a foreign table whose s3:// glob is too large to match blocks a remote target with an error that names it, premise: the counter of matcher calls counts each call, a path a foreign table reads as written is refused without a call of the glob matcher; a glob's escaped name is read as glob(3) reads it (#1978 review): a local glob spelled with an escaped . reads the file spelled plainly, a local glob spelled with an escaped .. reads the file spelled plainly, a path a local glob spelled with an escaped . reads is refused, a path a local glob spelled with an escaped .. reads is refused; a glob name that matches . or .. is read as glob(3) reads it (#1982): premise: a local glob through a .* name reads the file spelled plainly, premise: a local glob through a .? name reads the file one .. above, a path a local glob reads through a .* name is refused, and the detail names that table, a path a local glob reads through a .? name that matches .. is refused, and the detail names that table, a path no table reads is not refused beside globs through .* and .? names, a path a local glob * reaches only through . or .. is not refused; a wildcard directory and then a name that matches .. (#1991): premise: a local glob through a * name and then a .? name reads the file one .. above, a path a local glob reads through a * name and then a .? name is refused, and the detail names that table, a path no table reads is not refused beside a glob through a * name and then a .? name, a path above a local glob * with no later name that matches .. is not refused; a relative glob that climbs above the data directory (#2001): premise: export_parquet writes a relative path in the data directory, and a relative glob that climbs above it reads that file, a path a relative glob reads through a .. above the data directory and a * name is refused, spelled in full or relative, and the detail names that table, a path no table reads is not refused beside a relative glob through a .. above the data directory; a relative path compared without a glob, resolved against the data directory (#2004): premise: a foreign table on a relative path without a glob reads the file export_parquet wrote under that name in the data directory, a path a foreign table reads as a relative path without a glob is refused spelled in full under the data directory, and the detail names that table, a relative target is refused when a foreign table reads it spelled in full under the data directory, and the detail names that table, a path under a directory a foreign table reads is refused when one of the two is relative and the other is spelled in full under the data directory, a relative path whose .. climbs out of the data directory and back into it is refused against the file it names, spelled in full or relative, a path under the location of an Iceberg table on a relative metadata_path is refused spelled in full under the data directory, and the detail names that location, a relative path no table reads is not refused beside tables on relative paths and on paths in full under the data directory, a remote key is not resolved against the data directory, so a local path that spells it there is not refused and the key itself still is, a NULL path is refused as null beside foreign tables on relative paths; the parent is held ACCESS EXCLUSIVE until commit, and a rollback leaves the rows local; a write in flight is exported; a fault after each of the five steps leaves the rows exactly once, still local |
 | `test_tier_partition_refuses_what_it_cannot_move_and_survives_concurrency` | at each isolation level a row committed between the snapshot and the lock survives, and only READ COMMITTED moves; a UNIQUE parent and four kinds of dependent are refused with no file left, and the partition moves once they are gone; grants and comment carry over; a racing insert leaves every row once; lock_wait times a held parent out with nothing attached; the caller's lock_timeout survives; a retry over a failed attempt's file moves the partition |
 | `test_tier_partition_moves_a_virtual_generated_column` | PostgreSQL 18+: a partition whose parent has a virtual generated column moves and reads back the same; below 18, `UNSUPPORTED_MAJOR`, listed in `expected_unrunnable.txt` |
+| `test_tier_partition_runs_on_the_callers_own_privileges` | not SECURITY DEFINER: a role that does not own the table, holding both server-file roles (the write and the read-back of #1795), USAGE on the server, CREATE on the schema and SELECT on the partition, is refused `42501` before any file is written, and the partition stays local and attached with no foreign table behind it; a non-superuser owner tiers a partition of its own table; a caller without pg_read_all_settings (#2004): premise: tier_own cannot read data_directory, a caller who cannot read data_directory is refused a path in full beside a table on a relative path, and the detail names that table, a caller who cannot read data_directory is refused a relative target beside tables on paths in full, a caller who cannot read data_directory still moves a path in full no table reads beside tables on paths in full ; beside a table on a glob (#2013): a caller who cannot read data_directory still moves a path in full no table reads beside a table on a relative glob, a caller who cannot read data_directory is refused a path in full a relative glob matches, and the detail names that table, beside a table on a relative glob, a caller who cannot read data_directory is still refused a path no table reads beside a table on a relative path without a glob, and the detail names that table, a caller who cannot read data_directory is refused a relative target beside a table on a glob in full, a caller who cannot read data_directory is refused a path under a relative path with a glob character, spelled in full, as under a directory |
+| `test_tier_partition_writes_through_the_named_server` | #1795, on a private cluster whose postmaster environment names SigV4 fixture A with A's valid keys: premise: both SigV4 fixture servers are up; premise: the postmaster environment writes to fixture A; a mapping the object store rejects refuses the move (28000), not the environment's keys; and the refused move leaves the rows local and attached, every row once; and the environment's keys wrote no object; a move through a server writes with its endpoint and the caller's mapping (the object lands in fixture B, which only the mapping's secret opens); and the parent reads every row back through the foreign partition; premise: the PUBLIC mapping on tier_s3pub writes to fixture B; export_parquet through a server of another wrapper is refused (42809); export_parquet through a server that does not exist is refused (42704); export_parquet through a null server is refused (22004); export_parquet by a role without USAGE on the server is refused (42501) (on tier_s3pub, whose PUBLIC mapping holds B's valid secret); export_parquet to a local path through a server whose mapping holds half a credential is refused (28000); and no refused export wrote an object to A or B; and no refused export crashed a backend; premise: neither owner is a superuser, and neither has a mapping on the server; a non-superuser with no mapping is refused the export (28000), not given the environment's keys; a non-superuser owner with no mapping is refused the move (28000); and its refused move leaves the rows local and attached, every row once, with no object written; a non-superuser owner moves its partition through its own mapping; and the owner reads every row back through the foreign partition; an owner without pg_read_server_files is refused the move before anything is written (42501); and the move refused for want of pg_read_server_files leaves the rows local and attached; a key that can write but not read refuses the move (28000) (fixture hook `__deny_reads__`); and the move refused at the read-back leaves the rows local and attached, every row once |
+| `test_tier_partition_path_glob_matches_errors_where_glibc_would_crash` | the patterns that crashed the server before #1964's bounds, last in the file so a crash fails only these: path_glob_matches refuses a pattern of 4000 */ levels with an error, and the server stays up; path_glob_matches refuses one * and 2045 more levels with an error near max_stack_depth, and the server stays up; path_glob_matches refuses an s3:// pattern of 1000 */ levels with an error in a UTF-8 database, and the server stays up; then, as new C code, the lexical fold of #1982: path_glob_matches answers true for a path a local glob reaches through a .* or a .? name; path_glob_matches answers true for a path a local glob reaches through a .[.] or an escaped .* name; path_glob_matches answers true for a target spelled with . or a name and .. that a .* glob reaches; a local glob * or ?? does not match . or .., so path_glob_matches answers false for a path reached only through them; path_glob_matches does not fold an s3:// key, so s3://b/x/*.parquet does not match s3://b/x/./a.parquet; then the stand-ins of #1991: path_glob_matches answers true for a path a local glob reaches through a * name and then a .? name; path_glob_matches answers true for a path a local glob reaches through a ? name and then .., or a [class] name and then .*; path_glob_matches answers true for a path a local glob reaches through a * name, a .? name and a directory it names after them; path_glob_matches answers false for a path above a * name that no later name climbs back from, or that the last name does not match; then relative paths, resolved against the data directory (#2001): path_glob_matches answers true for a relative glob whose .. climbs above its start and comes back down through a * name, to a relative path or that path in full; path_glob_matches answers true for a relative glob whose .* or .? name climbs above its start and comes back down through a * or a [class] name; path_glob_matches matches a relative glob against a path in full under the data directory, and a glob in full against a relative path; path_glob_matches answers false for a relative glob that climbs into another directory than the path's, or whose last name does not match |
 
 ## 101. test_prepared_writes.py: a write prepared and finished in one session leaves the backend alive
 
@@ -6754,3 +7337,6853 @@ Independent of the shell suite: its own values (`c`, `Q`, `x`, `q` against the s
 | test | what it holds |
 | --- | --- |
 | `test_a_collation_change_without_a_rewrite` | after the change, columnar answers as heap does for: `min`/`max`, a range, an equality, rows written afterwards, a columnar partition reached through its parent, a `vacuum_sorted` table under `ORDER BY ... LIMIT`, and a projection sorted on the column. The extent is never the old collation's bound. The relfilenode is unchanged (premise) |
+| `test_a_type_change_without_a_rewrite` | after int4 to oid, a binary-coercible change that keeps the relfilenode, columnar answers as heap does for `min`/`max`, a range above every int4 value and an equality on a value that was negative; the extent is not int4's bound; a table sorted on the column and a projection sorted on it answer as heap does (#1341 item 19) |
+
+## 104. test_build_needs_pg_config.py: a build with no pg_config refuses, it does not wait on stdin
+
+The pytest half of selftest part 630 (#1344). With no `pg_config` that answers, `$(PGXS)` was empty and the Makefile's CC probe ran `sed` with no file, so it read make's stdin. With stdin left open, as in a background job or a CI step, the build waited forever. With stdin closed, `make clean` exited 0 having cleaned nothing. The Makefile now refuses as soon as `PGXS` is empty, and says what to set.
+
+DRIVEN, NOT READ. `make -n clean` runs on the real Makefile with `PG_CONFIG` naming nothing. `-n` does the parse in full, where the probe and the refusal both live, and builds or removes nothing. stdin is a pipe the test holds open and never writes to, and the process group is killed at 20 seconds, so a hung `sed` does not outlive the test. Its own driver (subprocess and `os.pipe`), where the shell part uses a FIFO and `timeout(1)`. The check names match.
+
+Needs no cluster and no driver.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_with_stdin_open_it_ends_and_names_pg_config` | with stdin open and silent, make ends within 20 seconds, and its own `*** ... Stop.` error names `PG_CONFIG`. The pipe really is one a reader waits on (premise) |
+| `test_with_stdin_closed_it_still_refuses` | with stdin closed, make exits non-zero rather than 0 |
+
+## 105. test_import_export_privilege.py: import and export check the table's privilege, serial and parallel
+
+The pytest twin of `test/import_export_privilege.sh` (#559, #566), with the parallel twins' arms both halves gained in #1341. The attacker role holds every outer layer: USAGE on schema pgcolumnar, EXECUTE, and both server-file roles. It holds no privilege on `victim`, so the table ACL is the only refuser. A refusal is SQLSTATE 42501 with a message naming the table, where the shell twin greps "permission denied for table". Real logins, not `SET ROLE`, and every file is in `server_dir`.
+
+`parallel_copy` and `parallel_export_parquet` always checked INSERT and SELECT, and nothing asked them. Their loaders and workers skip the executor's permission check, so that check is the only one.
+
+`import_arrow` and `parallel_copy` refuse an object-storage URL with 0A000 (#1886), but only after the INSERT check, so the attacker gets 42501 for an `s3://` URL as for a local path.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_premises_isolate_the_table_acl` | the attacker logs in, holds both server-file roles, schema USAGE and EXECUTE, and nothing on `victim`; `victim` has its rows; the attacker's own source files exist |
+| `test_a_table_the_caller_holds_no_grant_on_is_refused` | the seven deny arms, serial and parallel, in the shell's order; then `victim` keeps exactly its rows and no file of it was written |
+| `test_a_remote_url_is_refused_only_after_the_insert_check` | (#1886) `import_arrow checks INSERT before it refuses a remote URL (#1886)` and `parallel_copy checks INSERT before it refuses a remote URL (#1886)`: the attacker gets "42501 permission denied for table victim" for an `s3://` URL, not 0A000 |
+| `test_the_owner_is_not_refused` | the owner's own exports, storage id and import are not refused |
+| `test_the_owner_runs_the_parallel_twins` | the owner's `parallel_copy` loads its 50 rows, and its `parallel_export_parquet` writes some |
+
+## 106. test_every_suite_job_installs_the_extensions.py: every job that runs the suites installs the extension packages
+
+The pytest half of selftest part 640 (#1382). Suites such as `partman_columnar` and `approx_aggregates` need a PGDG extension package (`postgresql-N-partman`, `-hll`, `-tdigest`) and record a FAIL without it. The nightly's coverage job ran those suites without the packages, and the nightly went red. So the list is derived, not trusted: every job that runs the suites must install every extension package any such job installs.
+
+READ, WITH ITS OWN READER. Python reads `ci.yml` and `nightly.yml` line by line, where the part uses awk. A job runs the suites when a line that is not a comment calls `run_all_versions.sh` or `run_coverage.sh`, or runs `pytest -q` in a job whose key names a cluster. The detector names a workflow it cannot read or finds no suite job in, so an empty answer can only mean nothing is missing. The check names match the part's.
+
+Needs no cluster and no driver.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_both_workflows_are_present` | both workflow files exist (premise) |
+| `test_the_detector_names_what_it_finds_and_what_it_cannot_read` | on workflows written to fail, the detector names the job that lacks a package, a workflow it cannot read, and a workflow with no suite job |
+| `test_the_suite_jobs_are_the_five_known` | the suite-running jobs are exactly `ci.yml`'s `pytest-cluster` and `suites`, and `nightly.yml`'s `coverage`, `pytest-cluster` and `suites`, so a rename is red |
+| `test_every_suite_job_installs_every_extension_package` | no suite job lacks a package another installs |
+
+## 107. test_fdw_plan_privilege.py: planning a foreign table reads no server file for a role the scan would refuse
+
+The pytest twin of `test/fdw_plan_privilege.sh`. A planner estimate is visible through EXPLAIN, so a wrapper that reads its file at plan time for anyone tells a role without `pg_read_server_files` how many rows a server-side table holds. If the path doesn't exist, the planning error tells it that instead. The Iceberg wrapper's planner read `metadata_path` for every role: the unprivileged planner saw the true row count (5), and a missing path failed planning with `58P01`. Its planner now reads only for a role the scan would admit, as the Parquet wrapper's has since #330. That gate had no test either.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_fdw_planning_reads_no_server_file_for_an_unprivileged_role` | a role without `pg_read_server_files` gets the flat estimate from both wrappers and plans a missing Iceberg path the same as a real one, while the scan still refuses it (42501); a privileged role gets the manifest count and the size estimate (controls) |
+
+## 108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode
+
+The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886), and so are `s3a://` and `s3n://` URLs in any case (#1918). A nested Arrow type whose shape the target cannot hold is refused 42804, naming the column, before any buffer is bounds-checked (#1932): a list of lists, a list of structs, a list of maps, a large list and a plain int64 into `bigint[]`, and a large list into `bigint`. Before, the first four were refused as malformed (XX001) and the large list imported wrong arrays. The controls are a `list<int64>` into `bigint[]` and a map into an array of a composite, which still import, and a `list<int64>` whose last offset runs past its value buffer, which is still XX001. The ten pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_round_trip_and_the_documented_lossy_mapping` | export and import counts, the identical round trip, the non-finite mapping, the two argument refusals, and (#1806) `export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)`, `a metadata length larger than the file is refused before it is allocated (#1806)`, `a body length larger than the rest of the file is refused before it is allocated (#1806)` and `an Arrow IPC file whose footer length is negative or larger than the file is refused as malformed (#1806)` |
+| `test_a_file_pyarrow_wrote` | a foreign file's row count and values, and (#1806) `an Arrow IPC file (ARROW1 magic) imports its rows (#1806)`, `an Arrow IPC file without its trailing magic is refused as malformed (#1806)`, `an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)` and `a Feather v2 file imports its rows too (#1806)` |
+| `test_nanosecond_narrowing_is_reported_never_refused` | every row kept, the loss counted in values (8, then 12 through time64 and a list), no report on the two controls, and the floor |
+| `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, an empty target after a refusal, and nested units |
+| `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
+| `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
+| `test_a_remote_url_is_refused_up_front` | (#1886) `import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)`, the same for `http://`, then `https://`, `gs://`, `az://` and `S3://` in one check, each by SQLSTATE, message and hint; a heap target gets the refusal too, because it comes before the target's kind is checked; and the control: a local path that holds `s3://` past its start still imports its 300 rows |
+| `test_s3a_and_s3n_urls_are_refused_too` | (#1918) `import_arrow refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918)`, both in one check, each by SQLSTATE, message and hint |
+| `test_s3a_and_s3n_are_refused_in_any_case` | (#1918) `import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)` |
+| `test_a_local_path_holding_s3a_is_still_read` | (#1918) the control: a local path that holds `s3a://` past its start is still read, all 300 rows |
+| `test_a_list_of_lists_is_refused_by_type_naming_the_column` | (#1932) `import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)`, by SQLSTATE, message (the column and its depth, worded as import_parquet's) and an empty table |
+| `test_a_list_of_structs_or_of_maps_is_refused_by_type` | (#1932) `import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)`, both in one check |
+| `test_a_large_list_is_refused_by_type` | (#1932) `import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)`; unpatched, both imported 2 rows |
+| `test_a_plain_int64_is_refused_by_type_for_an_array_column` | (#1932) `import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)` |
+| `test_a_list_or_map_the_target_can_hold_still_imports` | (#1932) the controls: `control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)` and `control: a map file still imports into an array of a composite (#1932)` |
+| `test_a_list_whose_offset_runs_past_its_values_is_still_malformed` | (#1932) `a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)`, led by the count of places the offsets were patched |
+
+## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
+
+The pytest twin of `test/entry_point_privilege.sh` (#569, ported for #1341), every check by the shell's name. The population comes from the catalog, never the script: `prosrc` is the C symbol and `proargtypes[0] = regclass` is "takes a relation", and the install script's symbols are checked against the catalog as a set. Every entry point lands in exactly one bucket (exempt, relation-taking, relation by other means), the exempt list may not hold a relation-taking name, and the relation-taking class splits into catalog-governed (the six from #560) and claimed-guarded with none pinned as ungated. Then behaviourally: a login role holding EXECUTE, so the C check is the only refuser, is refused 42501 by the five guarded names after the owner's identical call succeeds, and the four file siblings refuse it at the table before touching the file.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_relation_taking_entry_point_has_a_decided_bar` | the enumeration premises, the symbol-set agreement, the bucket and class counts, every claimed-guarded entry point named with the pytest file that asserts its bar (#1386), the nine 42501 refusals with their owner calls, and the four file siblings refused at the table |
+
+## 110. test_am_contracts.py: contracts the access method owes core DML and transactions
+
+The pytest twin of `test/am_contracts.sh` (#1341). Each section is a promise from `docs/` or from core's table-AM interface that no test exercised. The first is `INSERT ... ON CONFLICT`: `docs/limitations.md` said `DO NOTHING` works, and on any table with a unique index it raised `0A000`, because the access method refused speculative insertion. Speculative insertion now inserts the row as an ordinary row, and withdraws it with a delete mark when a concurrent inserter won the key.
+
+THE WITHDRAWAL IS REACHED ONLY BY A RACE. When one session holds a key uncommitted, the executor's pre-check sees it and waits, so it never inserts. A row is withdrawn only when another session inserts the key between this one's pre-check and its insert. So the third test races eight sessions on clock-derived keys. Measured: 0 duplicate keys clean; 407 to 507 with the withdrawal disabled.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_insert_on_conflict` | `DO NOTHING` skips a duplicate and inserts the rest, with and without a conflict target; a key twice in one statement goes in once; `DO UPDATE` is refused (`0A000`) on a conflicting row and changes nothing, and inserts when nothing conflicts |
+| `test_insert_on_conflict_withdraws_a_row_a_concurrent_insert_beat` | a `DO NOTHING` racing another session's uncommitted insert of the same key waits, then skips it: one row, the holder's, by scan and by the unique index |
+| `test_insert_on_conflict_racing_sessions_leave_each_key_once` | eight sessions racing `DO NOTHING` on the same keys leave each key once, with no error; a premise requires that they contended |
+| `test_a_truncate_that_rolls_back_restores_every_row` | a `TRUNCATE` rolled back at transaction level, and one rolled back to a savepoint, restore every row, with the primary key still answering and refusing; rows the parent buffered before the savepoint survive too |
+| `test_an_aborted_inner_block_keeps_the_outer_statements_rows` | an outer `INSERT` and an outer `DELETE` whose expression calls a function with an aborted EXCEPTION block keep heap's answer. Before #1341's fix the INSERT kept 1 row of 5000. The same loss through a read inside the block is #1360 |
+| `test_a_read_inside_an_aborted_inner_block_keeps_the_outer_statements_rows` | a read of the table inside an EXCEPTION block writes out the enclosing INSERT's or DELETE's buffered rows and marks, and keeps them until the block resolves (#1360). On abort the rows, the read's own count and the index's view all match heap; so do a read in a nested block that commits into an aborted one, and a block that deletes a row by index before its read. A block that commits keeps every outer row once. The cost is linear: at twice the rows, the file is under 2.5 times the size; and one read early in a 5000-row insert leaves at most 3 row groups |
+| `test_an_insert_racing_an_uncommitted_delete_of_its_key` | an insert of a key whose delete (or key-changing update) is uncommitted waits, then fails with 23505 if the delete rolls back and succeeds if it commits: never two rows with the key. Before #1341's fix the rollback left two |
+| `test_an_index_built_after_a_delete_serves_an_older_snapshot` | a REPEATABLE READ snapshot from before a committed DELETE still finds the row through an index built after it (an Index Scan, asserted), and a new snapshot does not; a UNIQUE index still builds over a key whose other holder is deleted. Before #1341's fix the old snapshot's lookup found 0 |
+| `test_reindex_reclaims_the_entries_of_rows_no_snapshot_sees` | after a committed delete of 9 rows in 10, with no older snapshot, `REINDEX` takes the index under half its size, as it does on heap, and the index still finds the 10,000 live rows (#1407) |
+| `test_the_documented_refusals_change_nothing` | `CREATE UNLOGGED TABLE` and `SET UNLOGGED` are refused (`0A000`) and leave nothing changed; `SET TABLESPACE` is refused and the table stays where it was; `CREATE INDEX CONCURRENTLY` is refused and leaves its index marked invalid, as core does (#1341 items 44, 51, 77) |
+
+## 111. test_objstore_credentials.py: object-store credentials live on a user mapping, and the environment is a privilege
+
+The pytest twin of `test/objstore_credentials.sh` (#393 M4, ported for #1341), every check by the shell's name. Its fixture server is its own: an http.server in a thread that verifies every request's AWS Signature Version 4 from the spec with the standard library, so a green read proves the C signer and an independent implementation agree, and that records every request. A private cluster, because phase 2 restarts the postmaster with `AWS_*` in its environment; phase 1 starts it with every `AWS_*` of the test process removed. Secrets misplaced on a server, table or (for an endpoint) a mapping are refused `HV00D`; only a superuser may set `credentials_required 'false'`; each role's own mapping decides its read (a wrong secret is `28000` from the server); a mapping with half a credential is refused `28000` by its own message before any request; no secret reaches an error, `EXPLAIN VERBOSE` or `srvoptions`; and with the environment present, only a superuser or a `credentials_required 'false'` mapping may use it.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_object_store_credentials` | placement, per-user resolution, the half-credential refusals and the request count behind them, no leak, and ambient credentials as a privilege across the restart; and (#1887) `a pgcolumnar_iceberg server refuses an endpoint option (#1887)`, `a pgcolumnar_iceberg user mapping refuses an access_key_id option (#1887)`, `premise: carol has no user mapping on either server (#1887)`, `ambient: carol, with no mapping, is refused on the pgcolumnar_parquet table: no credentials (#1887)` and `ambient: carol, with no mapping, reads 5 rows through the pgcolumnar_iceberg table (#1887)` |
+
+## 112. test_debug_hook_privilege.py: the debug metadata mutators are owner-only
+
+The pytest twin of `test/debug_hook_privilege.sh` (#707, ported for #1341), every check by the shell's name. The two debug hooks that mutate storage metadata are bound as the test suites bind them and probed by a non-owner on its own login: each is refused 42501 with "must be owner", which tells the owner gate from an EXECUTE denial, and the table still reads. The mirrors show the gate is ownership: the same role may mutate its own tables. A private database, because the last mirror leaves a table that cannot be dropped.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_debug_mutators_are_owner_only` | the premises, both refusals by SQLSTATE and message, the gated table intact, and both mirrors |
+
+## 113. test_vacuum_lock_privilege.py: maintenance refuses a non-owner before taking its lock
+
+The pytest twin of `test/vacuum_lock_privilege.sh` (#749, ported for #1341), every check by the shell's name. A superuser connection holds ACCESS EXCLUSIVE on `victim`, and a non-owner calls vacuum, vacuum_sorted, cluster, add_projection, drop_projection, recluster, compact_rewrite and compact with lock_timeout 4s. Refused by ownership first is 42501 at once; an ownership check after the lock request is a wait that ends 55P03. A non-owner asking about a heap relation learns only that it is not the owner, and a refused vacuum is watched in `pg_locks` while it runs: it never queues. The lock is still held after the last probe. The owner's own calls are the controls. The role holds USAGE on the test's schema, so no 42501 is a schema refusal.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_maintenance_refuses_a_non_owner_before_its_lock` | the premises, the nine refusals under contention (`truncate` among them, #1384), the three heap-relation refusals, no lock request queued while a refused probe runs, the lock still held, and the owner controls, `truncate`'s by its block count |
+
+## 114. test_vm_privilege.py: the visibility-map entry points are owner-only and refuse heap
+
+The pytest twin of `test/vm_privilege.sh` (#748, ported for #1341), every check by the shell's name. `vm_selftest` sets an all-visible bit, which on a block holding dead rows makes an index-only scan return them. A role holding only schema USAGE is stopped by the REVOKE; a role granted EXECUTE reaches the C ownership check and is refused there, on every block. No bit is set, and the index-only scan still agrees with a sequential scan. On a heap relation both functions refuse even the owner with 42809, and a sweep over every heap block leaves its index-only scan correct. A scan of the install script checks every `vm_*` function is one this test probes.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_visibility_map_entry_points` | the premises, the two refusal layers and the damage they prevent, the owner controls, the heap refusals and sweep, and the coverage scan |
+
+## 115. test_alter_table_scans.py: ALTER TABLE forms see the live rows and only those
+
+The pytest twin of `test/alter_table_scans.sh` (#1341), every check by the shell's name. A columnar table keeps a deleted row in its file until compaction, so every ALTER TABLE form that reads the existing rows must see the live ones and only those. `SET NOT NULL`, `ADD PRIMARY KEY` and `VALIDATE CONSTRAINT` run on a columnar table and on heap with the same rows. First a row violates each form, and both tables refuse it with the same SQLSTATE (23502, 23505, 23514). Then that row is deleted, and both accept the form. `ALTER COLUMN TYPE` and `ADD COLUMN` with a volatile default rewrite the table: each keeps the live rows and leaves the deleted ones gone. After both rewrites the primary key still finds id 1 once, through the index.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_alter_table_forms_see_the_live_rows_and_only_those` | the three refusals and three acceptances against heap, both rewrites, and the index lookup after them |
+
+## 116. test_settings_reference.py: the settings reference matches the server
+
+The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), every check by the shell's name. It reads each `pgcolumnar.*` row of `docs/configuration.md` and compares it with `pg_settings` both ways. Every setting the server defines is documented, except the ones the server marks `NOT_IN_SAMPLE` (developer hooks and internal switches). Every documented setting exists. Each documented default is the server's `boot_val`. Each row's condition ("superuser", "only at server start", "Reloadable", or none of these) is the server's context. A role that is not a superuser, on its own login, is refused `enable_end_truncation` with 42501; a superuser sets it. `compression_level` reaches the zstd codec: the same text stores smaller at level 19 than at level 1. A build without zstd cannot run that test.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reference_and_the_server_name_the_same_settings` | at least thirty documented settings, none undocumented, none documented that the server lacks |
+| `test_each_documented_default_and_condition_is_the_servers` | each documented default and condition matches `boot_val` and `context` |
+| `test_only_a_superuser_sets_enable_end_truncation` | the 42501 refusal on a real login, and the superuser control |
+| `test_compression_level_reaches_the_zstd_codec` | level 19 stores less than level 1 |
+
+## 117. test_large_values.py: megabyte-scale values are stored exactly
+
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
+| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
+
+## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
+
+The pytest twin of `test/recovery_minimal_wal.sh` (#1341), every check by the shell's name. A private cluster at `wal_level=minimal`, stopped with `-m immediate` for each crash. A columnar table and a heap mirror are created and loaded in one transaction, and later truncated and reloaded in one, so PostgreSQL skips WAL for them and makes them durable at COMMIT. Each arm reads the committed row count before the crash, so a load that failed cannot pass as two empty tables that agree, then checks that the server came back through crash recovery and that the columnar table holds what its heap mirror holds. Both commit-time branches run: `wal_skip_threshold` 0 (fsync) and 64MB (the new pages written to WAL).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_tables_skipping_wal_survive_a_crash` | the premise, and create-and-load and truncate-and-reload at both thresholds, each across a crash |
+
+## 119. test_statement_self_visibility.py: a statement does not see its own writes
+
+The pytest twin of `test/statement_self_visibility.sh` (#1341), every check by the shell's name. A scan reads its row-group list once, when it starts, so the groups its own statement flushes later are not in it. With row groups of 1000 rows, `INSERT INTO t SELECT FROM t`, an `UPDATE` of every row, both in one transaction after an earlier write, and an `INSERT` in a `WITH` clause each run on a columnar table and on heap, and heap is the answer. An arm checks that the `INSERT` really flushed row groups while its scan was reading. Every statement runs under a `statement_timeout`, because a scan that fed on its own output would never end. Both tables run every statement, so a columnar failure cannot make the comparison vacuous.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_statement_does_not_see_its_own_writes` | the four shapes run to completion and answer as heap does, and the mid-statement flush |
+
+## 120. test_maintenance_rollback.py: a maintenance function that rolls back leaves the table as it was
+
+The pytest twin of `test/maintenance_rollback.sh` (#1341), every check by the shell's name. `compact_rewrite`, `recluster`, `compact`, `vacuum` and `vacuum_sorted` each retire row groups, and most write new ones. Each runs inside a transaction on a table with row groups of 1000 rows, two rows in five deleted, and one group deleted whole. Its effect on the row groups is read inside the transaction, and the transaction rolls back. The table must then hold the same rows by content and the same row groups, and an index scan must agree. The same then runs under a savepoint, later writes commit, and every function runs for real. The rollback is issued as SQL statements, because `pgc_conn` is a watching wrapper and an autocommit flag set on it does not reach the connection.
+
+`compact` retires the deleted group only when no transaction is older than the `DELETE`, and it runs once, inside the transaction that rolls back (#2010). So before `compact` both harnesses wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_maintenance_function_that_rolls_back_leaves_the_table_as_it_was` | `no transaction older than the DELETE from mr was open before compact ran inside its transaction`; each function's effect inside its transaction, the table after each rollback by scan and by index, the savepoint case, and the real runs |
+
+## 121. test_partition_rows.py: rows cross columnar partitions, and keys hold through the parent
+
+The pytest twin of `test/partition_rows.sh` (#1341, #1421), every check by the shell's name. A parent with a PRIMARY KEY and two columnar partitions, and the same with heap partitions; heap is the answer. An `UPDATE` moves 49 rows to the other partition: each partition and the parent then hold what heap's do, and the key finds a moved row at its new key only. A duplicate key through the parent is refused (23505), a key a moved row gave up is free again, and a duplicate of a moved row's new key is refused in its new partition. Three races, ordered by a gate connection rather than by sleeps: a second insert of the same key waits and gets 23505; a second session moving the row the first is moving waits and gets 40001, which columnar used to answer with 23505 (#1421); and an in-place `UPDATE` of a row being moved waits and gets 40001.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_rows_cross_columnar_partitions_and_keys_hold_through_the_parent` | the row-moving update against heap, the three key arms, and the three races with each contender seen waiting |
+| `test_a_keyed_update_keeps_its_memory_bounded` | an UPDATE of 25,000 keyed rows, in place and moving partition, over a row group with deletes, grows the backend's memory by under 32 MB (#1422 review) |
+
+## 122. test_prepared_across_sessions.py: a prepared transaction, seen from other sessions and across a crash
+
+The pytest twin of `test/prepared_across_sessions.sh` (#1341), every check by the shell's name, on a private cluster because the last arm crashes the postmaster. While a transaction is prepared, another session does not see its insert and still sees the rows its DELETE removed. A second insert of a key it holds waits and gets 23505 after COMMIT PREPARED; an UPDATE of a row it updated waits and gets 40001, which needs #1421's fix (it got 23505 before, the table having a primary key). ROLLBACK PREPARED of a DELETE and of an UPDATE leaves every row as it was. A prepared insert survives an immediate stop, is still listed in `pg_prepared_xacts`, and after COMMIT PREPARED its rows equal a heap table's.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_prepared_transaction_across_sessions_and_a_crash` | visibility while prepared, the two waits and their errors, both ROLLBACK PREPAREDs, and the crash |
+
+## 123. test_maintenance_crash.py: a crash part-way through maintenance loses nothing
+
+The pytest twin of `test/maintenance_crash.sh` (#1341), every check by the shell's name. A private cluster, because each arm crashes the postmaster: the shell kills its process group, and this side stops it with `-m immediate`, which leaves the same redo for the next start. `compact_rewrite`, `recluster`, `compact` and `vacuum` each run twice on a fresh table with row groups of 1000 rows, two rows in five deleted, one group deleted whole, and an index. First the function runs in an open transaction, another session checkpoints, and the server crashes: after recovery the table is as it was. Then the function commits and the server crashes before any checkpoint: after recovery the table is as the function left it. Each arm also checks that the server logged a crash recovery. After each recovery an index scan through `mc_id` must read the rows a scan reads: the as-before arms compare two by-index readings with each other, so an index already wrong before the crash agrees with itself there.
+
+`compact` retires the deleted group only when no transaction is older than the `DELETE`, and each `compact` runs once (#2010). So before each `compact` both harnesses wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_crash_part_way_through_maintenance_loses_nothing` | for each function, the uncommitted crash and the committed crash, each with its recovery logged and the index agreeing with a scan after it; before `compact`, `no transaction older than the DELETE from mc was open before compact ran in its open transaction` and `no transaction older than the DELETE from mc was open before compact committed` |
+
+## 124. test_serializable.py: SERIALIZABLE refuses a write skew on a columnar table
+
+The pytest twin of `test/serializable.sh` (#1341), every check by the shell's name. Two serializable transactions each read what the other is about to change, then each write; SSI must refuse the second with 40001 ("read/write dependencies") and the invariant must hold, on a columnar table as on heap. Each error is tagged with its step: columnar raises at the second write, which waits for the first commit, and heap at the second COMMIT, so the checks hold the refusal, not the step. At REPEATABLE READ the same interleavings must commit both transactions, on both tables, so a 40001 from anything but SSI cannot pass. Four shapes: two doctors taken off call in one row group and in two, and someone put on call in an empty ward after a scan of the whole table and after an index scan. The protection comes from heap SSI on pgColumnar's catalog tables, and an arm pins the SIRead locks a serializable read takes on `row_group` and `delete_vector`. The second write runs in a thread, because on columnar a write to a row group another session is changing waits for that session to commit.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_serializable_refuses_a_write_skew` | the catalog SIRead locks, the four write skews refused by SSI with 40001 against heap, and the REPEATABLE READ controls |
+
+## 125. test_rls_direct_storage.py: the direct-storage paths refuse a caller a policy restricts
+
+The pytest twin of `test/rls_direct_storage.sh` (#563, ported for #1341), every check by the shell's name. Row-level security is applied by the rewriter, and these functions read and write storage with no query to rewrite, so each refuses a relation whose policies apply to the caller. The caller HOLDS SELECT, INSERT, EXECUTE and the server-file roles, so the RLS check is the only refuser left. Eight entry points are refused and nothing was written or imported; a role with no privilege is told "permission denied" and not that RLS exists; a table with no policy, the owner without FORCE, and the owner's export (read back, row for row) stay allowed; and under FORCE a non-superuser owner is refused too.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_direct_storage_paths_refuse_a_policy_restricted_caller` | the premises, the eight refusals and their absent effects, the no-privilege caller's ACL error, the not-over-refusing controls, and the FORCE pair |
+
+## 126. test_objstore_crlf.py: a CR or LF in an object-store URL is refused before it is sent
+
+The pytest twin of `test/objstore_crlf.sh` (ported for #1341), every check by the shell's name. A URL path is written into the request line, so a CR/LF in it would split the request. The guard is in the single connect path, so read_parquet and the REST catalog client's request are both refused, naming CR or LF; and a listener of the file's own records that nothing carrying the injected line reached it.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_cr_or_lf_in_a_url_is_refused_before_it_is_sent` | read_parquet and a REST `catalog_uri` with a CR/LF in the path are refused naming CR or LF, the listener receives no injected line, and the backend is alive after each |
+
+## 127. test_objstore_allowlist.py: the endpoint allow-list, empty by default
+
+The pytest twin of `test/objstore_allowlist.sh` (#393, ported for #1341), every check by the shell's name. An empty `pgcolumnar.objstore_allowed_endpoints` refuses all remote reads with 42501 and names the setting; a local read is untouched. A list admits exactly what it names, host or host:port, any entry of several. Only a superuser may change it (SUSET), and a superuser session SET is the admin override, asserted with the configured list empty so only the SET can admit the read. A link-local address is refused even when listed, before any connection, naming the range. Alibaba Cloud's metadata address 100.100.100.200 is refused the same way, and the detail names it (#1848). The next address, 100.100.100.201, is not refused: a connect is tried, so the guard did not take all of 100.64.0.0/10. The IPv6 forms of the metadata addresses are refused too (#1808, #1848), and an IPv6 address just outside those ranges is not.
+
+The list is changed by ALTER SYSTEM and a reload, and reset in a `finally`. The fixture server is the file's own Range-capable `http.server`, serving one Parquet file from `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_endpoint_allow_list` | the default deny, the list's matching, SUSET and the admin override, the link-local refusal, and the 100.100.100.200 refusal with its 100.100.100.201 control |
+| `test_metadata_addresses_behind_ipv6_forms` | a listed name resolving to `fd00:ec2::254`, `fd20:ce::254`, `64:ff9b::a9fe:a9fe`, `64:ff9b:1::a9fe:a9fe`, `::ffff:169.254.169.254` or `::169.254.169.254` is refused 42501 and the detail names `fd00:ec2::/32` (#1808). 169.254.169.254 at each local-use position (/48, /56, /64) is refused, and so is `169.254.0.1` at /48, which matches the /48 position alone; `10.169.254.5` at /48 is refused too, the documented over-refusal; `10.0.0.5` at /96 is not refused, so a connect is tried. Eight near misses, each just outside a refused range, are not refused: `::ffff:127.0.0.1` reads the fixture over IPv6, and `fd00:ec3::254`, `fd20:ce::253`, `64:ff9b::a9ff:a9fe`, `64:ff9b::aafe:a9fe` (170.254.169.254), `64:ff9b::1:a9fe:a9fe`, `64:ff9b:2::a9fe:a9fe` and `::1:0:a9fe:a9fe` each reach connect() (08006 or 57014), so a guard that refuses too much fails. `100.100.100.200` in the mapped, compatible, well-known NAT64 and local-use /96, /48, /56 and /64 forms is refused 42501 (#1848), and `64:ff9b::6464:64c9` (100.100.100.201) is not refused, so a connect is tried. A private cluster loads a `getaddrinfo()` shim with LD_PRELOAD; a shim name mapped to 127.0.0.1 reads the fixture, so the shim is proven live |
+
+## 128. test_objstore_userinfo.py: userinfo in a URL is refused on every entry point
+
+The pytest twin of `test/objstore_userinfo.sh` (#706, #995, #997, ported for #1341), every check by the shell's name. `user@host` is refused with the parse guard's 22023 on the http read and write paths, in an s3 or gs bucket authority, and in an endpoint a foreign server configures. 22023 comes only from the parse guards and 42501 only from the allow-list, so the SQLSTATE says which layer refused, and the message pins the guard. `test_objstore_endpoint_userinfo.py` covers the endpoint half independently and is not this file's pair.
+
+The controls are what make the arms mean anything. With no endpoint configured every s3 URL is refused 28000, the clean one included, and 28000 has three causes, so each control names the refusal it expects.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_userinfo_in_a_url_is_refused_by_the_parse_guard` | read_parquet and export_parquet over http, export_arrow, and the s3 and gs bucket authority, read and write: 22023, naming userinfo |
+| `test_a_clean_url_reaches_the_refusal_it_should` | a clean s3 URL demands an endpoint (naming `AWS_ENDPOINT_URL`), gs demands a credential, a malformed URL and an `@` in a key are not userinfo, a clean non-allowed endpoint is still 42501, and the backend is alive |
+| `test_userinfo_in_a_configured_endpoint_is_refused` | both endpoint shapes, `u:p@` and `user@`, are 22023 naming userinfo and the endpoint; a clean endpoint gets past the parse |
+
+## 129. test_savepoint_flush.py: a savepoint rolled back after a flush
+
+The pytest twin of `test/savepoint_flush.sh` (#1341), every check by the shell's name. A row group flushed inside a savepoint is a catalog row written under the subtransaction, so the abort must hide it; rows still buffered, and buffered delete marks, must be thrown away. With row groups of 1000 rows, each shape runs on a columnar table and on heap, and heap is the answer: a flushed `INSERT` rolled back to a savepoint, at READ COMMITTED and at REPEATABLE READ; the same unique keys inserted again after `ROLLBACK TO`; an `UPDATE` of every row rolled back to a savepoint; and an `INSERT` and an `UPDATE` that fail after flushing, alone and inside a savepoint. Four readers compare each result, inside the transaction and after `COMMIT`: a plain sequential scan, the custom scan, the vectorized count and the primary key's index. Every shape starts from fresh tables, so one that goes wrong cannot fail the ones after it. Premises check that each reader takes its path and that each write really flushed: row groups for the INSERTs, and for both UPDATEs the inserts into `row_group` and `delete_vector` that `pg_stat_xact_all_tables` counts between `BEGIN` and `ROLLBACK TO`, two or more of each. The failing UPDATE reads its own table half-way through, through `sp_probe`, which flushes its delete marks before it fails. Each transaction runs one statement at a time and goes on after an error, as `psql` does with `ON_ERROR_STOP` off.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_savepoint_rolled_back_after_a_flush` | the reader paths, the flushes, and every shape answering as heap does inside the transaction and after it |
+
+## 130. test_rls_query_paths.py: row-level security holds on every read path
+
+The pytest twin of `test/rls_query_paths.sh` (#1341), every check by the shell's name. A columnar table and a heap mirror hold the same 20000 rows, half owned by each of two roles, under a policy that shows a role only its own rows. One role, on its own login, queries both by the custom scan, the vectorized and grouped aggregates, with vectorization and the custom scan off, by a parallel scan, an index-only scan and a covering projection; each answer must be heap's, and plan premises check each path was taken. A cheap function that is not leakproof must see only that role's rows, by the custom scan, with it off, and in parallel; a notice handler counts what it saw. Each vectorized node also gets a leak arm, with a premise that the same query with a leakproof filter is answered by that node, and `column_extent`, which reads the stored extent of every row, must refuse a caller the policy restricts.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_row_level_security_holds_on_every_read_path` | the read paths against heap (the custom scan, both vectorized aggregates, parallel, index-only, the covering projection), their plan premises, and the leak arms, including one through each vectorized node |
+
+## 131. test_type_matrix.py: types the differential matrix never stored answer as heap
+
+The pytest twin of `test/type_matrix.sh` (#1341), every check by the shell's name. The encoder has fast paths for fixed widths 1, 2, 4 and 8, and every other width and every varlena takes a generic path. This matrix stores what no test had: by-reference fixed widths 6, 8, 12, 16 and 64 (macaddr, macaddr8, timetz, point, name), the 1-byte `"char"`, time, money, inet, cidr, bit, varbit, tsvector, xml, json, an enum, a composite, a domain, and numeric NaN and ±Infinity with timestamp and date ±infinity. 12000 rows in row groups of 1000, each column NULL on its own pattern, are generated once into heap and copied. Every row as text, each column's counts, a range on every ordered column with literal bounds read from heap, json, point and tsvector matches, the special-value aggregates, and the composite's fields must all equal heap's.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_types_the_matrix_never_stored_answer_as_heap` | the 21 columns against heap: rows, counts, sixteen ranges, the three non-btree matches, and the special values |
+
+## 132. test_iceberg_data_files.py: an Iceberg table's live data files, listed inside its location
+
+The port of `test/iceberg_data_files.sh`, by name, one check per test (#1341). The `ice` module fixture copies the committed warehouse away from its recorded root (`/tmp/pgc_ice_wh`), so rebasing is exercised for real. It stages every tampered and crafted table once and records every reading.
+
+- **The oracle is pyiceberg's own view,** committed as `expected_files.json`, so pyiceberg is not needed at test time.
+- **A manifest list outside the table's location is refused with 22023, by four routes:** a foreign absolute path, a `..` traversal, a sibling sharing the byte prefix, and a symlink under the location that targets a file outside it. XX001 would mean the backend opened the file.
+- **Deletes are refused, not ignored:** a delete manifest in the list, and a delete entry inside a data manifest (#1341 item 49), whether ADDED or EXISTING (status 0, a delete file a later commit carried forward). Each table is crafted Avro, because no available writer emits these shapes. The added and the EXISTING data entry must be listed, so a refusal comes from the entry, and a lister that keeps only ADDED entries fails.
+- **A removed entry is skipped, not refused (#1791).** A DELETED (status 2) entry is a data file the current snapshot took out, so it is not live. A crafted entry shows it alone. A real pyiceberg table after a copy-on-write delete (`warehouse_cow`, written by `gen_iceberg_cow.py`) shows it against pyiceberg's own `plan_files`, and a second table whose delete removed every row lists nothing. A premise counts the status-2 entries of both tables in the committed Avro manifests, read with json and zlib only, and in the oracle, and shows both counts, so an oracle that drifted from the fixture fails it.
+- **A delete manifest of removed entries is skipped (#1829).** A rewrite that removes every old delete file leaves a delete manifest whose entries all have status 2. Crafted tables hold one live data file and such a manifest, with and without file counts in the manifest list; both list the data file. Without counts, a live delete entry, ADDED or EXISTING, is still refused (0A000), and a live data entry in a delete manifest is refused as corrupt (XX001).
+- **Partition values render exactly, as valid text (#1816, #1791).** A real pyiceberg warehouse (`warehouse_partvals`, written by `gen_iceberg_partvals.py`) holds one identity-partitioned table per type: decimal(10,2) (including -2.56, whose unscaled low byte is 0x00), decimal(38,10), decimal(9,0), float, double, binary and string. Each listing must equal the oracle's rendering of the written values: exact decimals (no point at scale 0), shortest exact floats, binary as hex, strings with `%`, `,` and `=` percent-encoded, NULL as the bare field name. The binary partitions must pass `convert_from(..., 'UTF8')`, and `read_avro_manifest` must render them the same way.
+- **The rest of the documented format, on a crafted manifest (#1816).** One entry read with `read_avro_manifest`, whose partition record has a field named `a,b=c%`, a string with a TAB and a DEL, a string whose bytes are not UTF-8, a plain `fixed(3)` and a uuid. The field name is escaped as a string is, the control byte and DEL are percent-encoded, the invalid string's high bytes are percent-encoded, and the fixed and uuid are hex.
+- **The privilege** is read under `SET ROLE` to a role without `pg_read_server_files`.
+
+The shell's two skip names, "iceberg warehouse fixture is missing" and "python3 (json, zlib) is needed", are carried as the same declines.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_warehouse_fixture_is_present`, `test_python_json_and_zlib_are_available` | the shell's skip names; when present, the oracle lists data files and zlib round-trips |
+| `test_the_data_files_match_pyicebergs_oracle`, `test_every_data_file_is_parquet` | the live data files, by record count, region and file name, all PARQUET |
+| `test_returned_paths_are_rebased_under_the_actual_location`, `test_no_returned_path_leaks_the_recorded_root` | the rebasing |
+| `test_a_manifest_list_outside_the_location_is_refused`, `test_the_backend_survives_the_traversal_attempts` | the four escapes, refused with 22023 |
+| `test_a_snapshot_with_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_refusal` | a delete manifest in the list, refused with 0A000 |
+| `test_the_control_entry_is_listed`, `test_an_existing_entry_is_listed`, `test_a_delete_entry_is_refused`, `test_the_backend_survives_the_entry_refusals` | an added and an existing entry are listed; a position-delete and an equality-delete entry, and an EXISTING (status 0) position-delete entry, are refused with 0A000 |
+| `test_a_deleted_entry_is_skipped` | a DELETED (status 2) entry is neither listed nor refused (#1791) |
+| `test_the_copy_on_write_fixture_carries_a_deleted_entry` | **premise**: both copy-on-write tables carry a DELETED (status 2) data entry, counted in the committed Avro manifests and in the oracle |
+| `test_a_copy_on_write_delete_lists_the_live_files`, `test_a_copy_on_write_delete_of_every_row_lists_nothing` | after a copy-on-write delete, the live files equal pyiceberg's `plan_files`; after deleting every row, nothing is listed (#1791) |
+| `test_a_delete_manifest_of_removed_entries_is_skipped`, `test_a_delete_manifest_without_counts_of_removed_entries_is_skipped` | a delete manifest whose entries are all removed (status 2) is skipped, with and without file counts in the list; the live data file is listed (#1829) |
+| `test_a_delete_manifest_without_counts_with_a_live_entry_is_refused`, `test_a_delete_manifest_without_counts_with_an_existing_entry_is_refused` | a delete manifest without file counts that holds a live delete entry, ADDED or EXISTING (status 0), is refused with 0A000 |
+| `test_a_live_data_entry_in_a_delete_manifest_is_refused`, `test_the_backend_survives_the_delete_manifest_arms` | a live data entry inside a delete manifest is refused as corrupt (XX001); the backend survives |
+| `test_a_partition_value_renders_by_the_documented_format` | decimal(10,2), decimal(38,10), decimal(9,0), float, double, binary and string partitions equal the oracle's rendering (#1816, #1791) (parametrized) |
+| `test_every_binary_partition_is_valid_utf8` | the binary partitions are valid UTF-8 and keep every byte (#1816) |
+| `test_read_avro_manifest_renders_binary_partitions_as_hex` | `read_avro_manifest` renders the binary partitions as hex too (#1816) |
+| `test_a_crafted_partition_renders_by_the_documented_format` | on a crafted manifest: an escaped field name, control bytes and DEL, a string that is not UTF-8, a plain fixed and a uuid render by the documented format (#1816) (parametrized) |
+| `test_a_table_with_no_current_snapshot_yields_no_data_files`, `test_an_unprivileged_role_is_refused` | no current snapshot lists nothing; a caller without `pg_read_server_files` gets 42501 |
+
+## 133. test_native_skip.py: a type binary-coercible to its opclass's type prunes
+
+The pytest twin of `test/native_skip.sh`, every check by the shell's name (#1433, completed for #1341). A comparison on a cidr column resolves to inet's operator, and a varchar column's to text's. The reader called such a key cross-type and asked the opfamily for an ordering proc over the pair, which `network_ops` and `text_ops` do not register, so the key was dropped and the column pruned nothing. inet and text hold the same values and are the controls. Each arm asserts heap's answer, then that chunk groups were removed. A premise checks that heap's answer holds the rows the arm expects. The rest of the suite covers scalar ranges and equality, including a bigint column against an integer literal (#477) and domains (#483); an anchored LIKE as a range under the C collation, with its refusals under the default and a discovered non-C collation (#426); a default-collation column in a `--locale=C` database, which must derive the bounds; and a columnar partition taking the custom scan (#436). The port found the shell's non-C half had never run: its collation probe closed a quoted identifier with a single quote.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_heaps_range_on_a_coercible_type_holds_121_rows` | **premise**: heap's range on each of inet, cidr, a domain over cidr, text, varchar and a domain over varchar holds 121 rows (parametrized) |
+| `test_a_range_on_a_coercible_type_returns_heaps_rows` | the columnar range returns heap's rows, for each of the six types (#1433) (parametrized) |
+| `test_a_range_on_a_coercible_type_skips_groups` | and removes chunk groups, for each of the six types (#1433) (parametrized) |
+| `test_equality_on_a_coercible_type_returns_heaps_rows` | equality on cidr and on varchar, which also takes the bloom probe, returns heap's row (parametrized) |
+| `test_heaps_equality_on_a_coercible_type_finds_the_row` | **premise**: heap's equality finds row 11009 (parametrized) |
+| `test_equality_on_a_coercible_type_skips_groups` | and the columnar equality removes chunk groups (parametrized) |
+| `test_the_scalar_plan_is_a_columnar_custom_scan` | the plan under test is the columnar custom scan |
+| `test_scalar_rows_agree_with_heap` | ranges on int, bigint (with and without casts, #477) and domains over both (#483) return heap's rows (parametrized) |
+| `test_scalar_counts_agree_with_heap` | counts under equality, one-sided and non-selective predicates equal heap's (parametrized) |
+| `test_scalar_counts_are_known` | the row count, absent values, out-of-range values and a present boundary give known counts (parametrized) |
+| `test_a_scalar_predicate_skips_groups` | each selective predicate, cast or not, on a column or a domain, removes chunk groups (#477, #483) (parametrized) |
+| `test_a_non_selective_scan_skips_nothing` | a non-selective scan removes none |
+| `test_a_like_or_range_prunes` | under COLLATE "C" an anchored LIKE, a trailing `_` and a low-end prefix prune, and the equivalent ranges do on both tables (#426) (parametrized) |
+| `test_a_like_does_not_prune` | an unanchored LIKE, and an anchored one under this cluster's non-C default, remove nothing (#426) (parametrized) |
+| `test_a_like_returns_heaps_rows` | every LIKE form, escaped and `_` wildcards included, returns heap's rows (#426) (parametrized) |
+| `test_a_default_collation_in_a_locale_c_database_derives_the_bounds` | in a database created with LC_COLLATE 'C', a default-collation column derives both bounds (#426) |
+| `test_and_it_returns_the_right_rows` | and it returns the right row (#426) |
+| `test_a_range_still_prunes_under_a_non_c_collation` | **premise**: under a discovered non-C collation a range still prunes; declares unrunnable when the build has none |
+| `test_an_anchored_like_does_not_prune_under_a_non_c_collation` | but an anchored LIKE does not (#426) |
+| `test_a_non_c_collation_like_returns_heaps_rows` | and its rows match heap's (#426) |
+| `test_both_partitions_are_columnar` | **premise**: both partitions are columnar (#436) |
+| `test_a_partitioned_columnar_table_returns_heaps_rows` | the partitioned table returns heap's rows (#436) |
+| `test_a_partition_takes_the_columnar_custom_scan` | it plans the columnar custom scan (#436) |
+| `test_a_partition_prunes_row_groups` | and it prunes row groups (#436) |
+| `test_heap_finds_rows_across_the_gap` | **premise**: heap finds rows for each of `>`, `>=`, `=`, `<`, `<=` against a timestamptz constant across the 2024-03-10 New York gap (#1738) (parametrized) |
+| `test_a_timestamptz_constant_across_the_gap_returns_heaps_rows` | a timestamp column against a timestamptz constant across a spring-forward gap returns heap's rows, for each operator (#1738) (parametrized) |
+| `test_across_the_fall_back_hour_returns_heaps_rows` | across the fall-back hour, where the conversion stays monotonic, the rows match heap's (#1738) |
+| `test_the_reverse_pair_in_the_gap_returns_heaps_rows` | the reverse pair, a timestamptz column against a timestamp constant in the gap, returns heap's rows (#1738) |
+| `test_a_same_type_constant_still_skips` | a timestamp column against a timestamp constant still removes a group (#1738) |
+| `test_the_reverse_pair_still_skips` | the reverse pair still removes a group: the refusal covers only (timestamp, timestamptz) (#1738) |
+
+ONE CHECK PER TEST (#1339): module fixtures build each data set once, and each test asserts one reading. Measured with zone-map skipping disabled in the scan on PG17: the shell reddens 21 checks. The earlier twin, 13 tests holding 76 checks, reported 10. This one reports the same 21.
+
+A TIMESTAMP COLUMN AGAINST A TIMESTAMPTZ CONSTANT (#1738) is not skipped on: the cross-type proc reads each group's min/max wall time as an instant in the session zone, which is not order-preserving across a spring-forward gap (02:30 is 07:30Z, 03:00 is 07:00Z in New York on 2024-03-10). Main's reader fails the five gap arms on PG15-19, in shell and twin alike; refusing the reverse pair as well fails only `the reverse pair, tz against a timestamp constant, still skips groups (#1738)`.
+
+## 134. test_unique_conc.py: concurrent inserters of one unique key serialize
+
+The pytest twin of `test/unique_conc.sh` (#5, ported for #1341), every check by the shell's name. A columnar row's btree entry is written at once while its data waits for the stripe to flush, so a second inserter of the same key could not see the first's row and would insert a duplicate. The table AM takes a transaction-scoped advisory lock per unique key, hashed with the key type's default hash. So the second inserter waits for the first to commit and gets 23505, asserted by SQLSTATE and the index's name. T1 is held mid-INSERT, its key row indexed and unflushed, by a second row that waits in `cq_block` on a lock a holder session has. Every barrier polls `pg_stat_activity` for a lock wait.
+
+The shapes: one key, with the lock off in T2 as the control that shows the bug; keys equal under the opclass with different bytes (numeric 1.0 and 1.00, and citext by case); different keys, which must not wait; a multi-column key, equal and differing in its second column; a partial index, inside and outside its predicate; NULL keys under NULLS DISTINCT and NULLS NOT DISTINCT; a duplicate within one statement; and a first inserter that aborts. A private cluster runs `pgcolumnar.unique_lock_buckets` at 100003, which is fixed at server start, so unrelated keys do not share a bucket.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_bucket_count_is_fixed_at_server_start` | `SET` of the bucket count is refused 55P02, and the cluster runs 100003 |
+| `test_one_key_serializes_and_the_lock_is_what_does_it` | with the lock off in T2 both inserts commit; with it on T2 waits, gets 23505, and one row is left |
+| `test_keys_equal_under_the_opclass_serialize` | numeric 1.0 and 1.00: the same pair, lock off and on |
+| `test_citext_keys_equal_by_case_serialize` | citext 'ABC' and 'abc' serialize and conflict; unrunnable without citext |
+| `test_different_keys_do_not_block_each_other` | T2's different key returns at once, and both rows are kept |
+| `test_a_multi_column_key` | (1,2) twice serializes and conflicts; (5,6) and (5,7) do not wait |
+| `test_a_partial_unique_index` | inside the predicate the keys serialize and conflict; outside it neither waits and both rows are kept |
+| `test_null_keys` | two NULLs never wait under NULLS DISTINCT; under NULLS NOT DISTINCT they serialize and conflict |
+| `test_a_duplicate_within_one_statement` | one INSERT of the same key twice raises 23505 and inserts nothing |
+| `test_an_aborted_first_inserter` | T2 waits behind T1's flushed, uncommitted row; T1 rolls back and T2's insert succeeds |
+
+## 135. test_update_conc.py: two writers of one row serialize
+
+The pytest twin of `test/update_conc.sh` (#5, ported for #1341), every check by the shell's name. A columnar UPDATE marks the old row deleted and appends a new one, so without a lock on the row identity two transactions updating one row each kept their own new version, and the row was duplicated. `columnar_row_lock.c` takes a transaction-scoped advisory lock per row at the delete-vector flush, re-reads the latest committed state, and gives the loser a retryable 40001. A table with a unique index takes the lock during the UPDATE, so the unique check cannot answer 23505 first (#1421).
+
+Each concurrent case runs one interleaving on a heap table, the oracle, and on a columnar one: s1 writes and holds its transaction, s2's statement waits on a lock, which a poll of `pg_stat_activity` confirms, and s1 commits. At READ COMMITTED a heap re-applies s2's update where columnar fails it, so the columnar value is compared with the heap's only at REPEATABLE READ. A private database; each session runs at a 30s `lock_timeout`, as the shell's cluster does.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_update_vs_update_read_committed` | one row is left and the loser gets 40001; the heap composes both updates into one row |
+| `test_update_vs_update_repeatable_read` | count and values match the heap, and both losers get 40001 |
+| `test_update_vs_update_serializable` | the count matches the heap and the loser gets 40001, which held before the row lock too |
+| `test_update_vs_delete_read_committed` | the heap's DELETE removes the updated row; columnar's loser gets 40001 |
+| `test_delete_vs_update_read_committed` | the committed DELETE stands on both, and columnar's loser gets 40001 |
+| `test_a_row_updated_twice_by_one_statement` | `UPDATE ... FROM (VALUES (1), (1))` leaves one row on both |
+| `test_overlapping_multi_row_updates` | 41 overlapping rows: 200 rows remain, and the loser gets 40001 |
+| `test_serial_updates_control` | the same two updates without overlap leave one row with the last writer's value |
+| `test_a_covering_unique_index` | with a unique index the loser still gets 40001, not 23505; the heap composes |
+| `test_a_savepoint_rolled_back` | an UPDATE rolled back to a savepoint leaves the pre-savepoint value, as on the heap |
+| `test_a_statement_failing_inside_a_savepoint` | an UPDATE that fails partway inside a savepoint leaves nothing behind: its buffered mark and row are discarded |
+
+## 136. test_recovery.py: committed writes survive a crash, uncommitted ones leave nothing
+
+The pytest twin of `test/recovery.sh` (ported for #1341), every check by the shell's name. Columnar stripes are written through the buffer manager with a full-page WAL record each, and the metadata lives in WAL-logged heap catalogs. So rows committed after the last checkpoint come back from WAL, a transaction open at the crash leaves nothing visible, and a visibility-map bit cleared after the checkpoint does not come back set from the page on disk. A heap mirror is the oracle.
+
+A private cluster, stopped with `-m immediate` for each crash. Each crash is proven by the server log gaining a "database system was not properly shut down" line, counted before that crash, so one recovered crash cannot vouch for a later one. The open transaction's INSERT is proven to have run by its session holding an xid.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_pair_through_three_crashes` | rows committed after a checkpoint survive; an open transaction's checkpointed INSERT leaves no row; committed deletes survive; each against the heap pair |
+| `test_a_cleared_visibility_bit_stays_cleared` | a bit set and checkpointed, then cleared by a DELETE, stays cleared after the crash; a clean block's bit stays set; the rows match heap |
+| `test_a_projection_survives_a_crash` | a projection copy committed after the checkpoint replays, and reproduces the base's rows and a scan through it |
+
+## 137. test_native_backend_crash.py: one backend dies and committed data is intact
+
+The pytest twin of `test/native_backend_crash.sh` (#217, ported for #1341), every check by the shell's name. A SIGSEGV in one backend makes the postmaster drop every session and reinitialize, with crash recovery, while it stays up itself. Committed columnar rows must then match a heap mirror, and an INSERT killed before its commit must leave no row and no row group.
+
+The kill lands mid-write, once the INSERT has written pages to the relation and before it reaches its trailing `pg_sleep`, and after every stripe has flushed, while it sleeps; both are asserted. A sentinel session opened before each kill must be dropped by the reinit, which proves the crash happened. A private cluster, since the reinit drops every session on the server.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_kill_mid_write` | a 3,000,000-row INSERT killed after it has grown the relation: the cluster reinitialized, the postmaster kept its pid, and c holds exactly its committed rows and row groups |
+| `test_a_kill_after_the_stripes_flushed` | the same for a 100,000-row INSERT killed in its trailing `pg_sleep` |
+| `test_a_kill_with_a_second_reader` | the mid-write kill with a second parked reader, which the reinit drops too |
+
+## 138. test_corruption.py: a corrupt catalog row is refused cleanly and no backend dies
+
+The pytest twin of `test/corruption.sh` (ported for #1341), every check by the shell's name. The reader trusts the lengths, counts, offsets and descriptors the catalog stores. Each test corrupts one field on a fresh table and asserts that a read raises XX001, or, for a field the reader tolerates, that it does not crash.
+
+A crash is read from the server log, counted from the test's start, since a client error cannot tell a refusal from a crash and a liveness probe passes once crash recovery has finished. Each corrupting UPDATE must change a catalog row. The bloom test also looks up a value the table holds, since an absent value answers 0 even when a corrupt filter wrongly says "absent". A private cluster, since a crash drops every session.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_corrupt_byte_length` | `row_group.byte_length` inflated: the read raises XX001, and no backend died |
+| `test_a_corrupt_row_count` | `row_group.row_count` inflated: XX001, no crash |
+| `test_a_corrupt_page_length` | `column_chunk.page_length` inflated: XX001, no crash |
+| `test_a_corrupt_value_count_degrades_safely` | `column_chunk.value_count` inflated: the read may answer or refuse, and no backend died |
+| `test_a_corrupt_encoding_descriptor` | a descriptor of `\xffffffff`: XX001, no crash |
+| `test_a_negative_column_index` | `column_index = -1`: no crash |
+| `test_a_corrupt_bloom_header_is_no_filter` | a huge nbits over a short buffer: an absent value is 0 rows, a held value is still found, no crash |
+
+## 139. test_inheritance.py: an INHERITS parent plans an Append, a partitioned columnar parent is refused
+
+The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432; the #1259 arms were ported for #1341). A legacy INHERITS parent is a RELKIND_RELATION with `rte->inh` set, and the custom scan and the ungrouped vector aggregate both ran on that appendrel and read only the parent's storage: a one-row parent over a 5000-row child counted 1. A heap INHERITS tree beside the columnar one is the oracle, for counts, `ONLY`, row identities and a filtered read, and both plans must be an Append; a declarative partition must still get the custom scan (#436). The fixture is built once per module in a private database and each check is its own test, so one red does not hide the next. From PostgreSQL 17 a partitioned table may carry relam = pgcolumnar and has no storage. `get_storage_id` and `add_projection` on it must be refused with 42809, not any error: with the fix reverted a release build fails with 58P01 opening relfilenode 0. Liveness is read from the server log. PostgreSQL 15 and 16 cannot build that fixture, so that test declines there.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_heap_parent_includes_its_child` | INHERITS parent includes the child (heap oracle) |
+| `test_the_columnar_parent_includes_its_child` | INHERITS parent includes the child (columnar) |
+| `test_only_the_parent_is_just_the_parent` | ONLY parent is still just the parent |
+| `test_the_child_is_visible_through_the_parent` | the child is visible through the parent -- no row is a reading to fail on, not a failed query |
+| `test_the_row_identities_match_the_heap` | row identities match the heap |
+| `test_select_star_from_the_parent_plans_an_append` | SELECT * from an INHERITS parent plans an Append |
+| `test_count_from_the_parent_plans_an_append` | count(*) from an INHERITS parent plans an Append |
+| `test_a_large_child_is_visible_through_the_parent` | a large child is still visible through the parent |
+| `test_the_filtered_rows_match_the_heap` | filtered rows match the heap |
+| `test_ungrouped_vector_aggregation_sees_the_child_rows` | ungrouped vector aggregation also sees the child rows |
+| `test_a_partitioned_parent_returns_every_row` | a partitioned parent still returns every row |
+| `test_the_partition_is_still_a_pgcolumnar_scan` | and the partition is still a PgColumnarScan (#436) |
+| `test_a_partitioned_parent_is_refused_and_its_leaf_is_not` | the server major is a number; the parent is refused with 42809 by both calls and no backend crashed; its leaf is accepted by both |
+| `test_a_columnar_materialized_view_is_still_columnar` | a columnar matview is still recognised and returns its rows |
+
+## 140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes
+
+The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#432; the #1263 arms were ported for #1341). pyarrow writes the files from data this module generates, and the same data is loaded into a heap table by COPY FROM STDIN as the oracle: nine types with nulls in five, a snappy dictionary file per data-page version, and an uncompressed PLAIN one. A file that is not Parquet and a target with a column the file lacks are refused, each by its SQLSTATE and message; the shell read "psql failed", which passed on a crash. Imported rows must reach the indexes (#153): an index scan, asserted to be one, agrees with a sequential scan, a unique index refuses a second import and leaves the count alone, and a partial index holds its rows. The fixture is built once per module in a private database and each check is its own test. Without pyarrow every test but the last declines. Handed a partitioned parent, import_parquet used to SIGSEGV; it must be refused with 42809 and no backend may crash, read from the server log. That test declines on PostgreSQL 15 and 16.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_row_is_imported[v1]` | v1 rows imported |
+| `test_every_row_is_imported[v2]` | v2 rows imported |
+| `test_the_row_count_matches_the_oracle[v1]` | v1 row count matches oracle |
+| `test_the_row_count_matches_the_oracle[v2]` | v2 row count matches oracle |
+| `test_the_contents_match_the_heap_oracle[v1]` | v1 contents match heap oracle |
+| `test_the_contents_match_the_heap_oracle[v2]` | v2 contents match heap oracle |
+| `test_a_plain_file_imports_every_row` | plain import rows |
+| `test_a_plain_file_imports_its_ids` | plain import sum(id) |
+| `test_a_plain_file_imports_its_text` | plain import first s -- no row is a reading to fail on, not a failed query |
+| `test_a_file_that_is_not_parquet_is_refused_by_import` | reject non-parquet file -- XX001 and its message |
+| `test_a_target_with_a_column_the_file_lacks_is_refused` | reject column-count mismatch -- 42804 and its message |
+| `test_the_index_scan_check_uses_the_index` | the index-scan check really uses the index |
+| `test_the_index_and_sequential_scans_agree` | import into an indexed table: both scans agree |
+| `test_the_imported_rows_are_there` | import into an indexed table: the rows are there |
+| `test_an_index_point_lookup_finds_its_row` | import into an indexed table: a point lookup finds its row |
+| `test_a_unique_index_refuses_the_second_import` | importing the same keys twice raises unique_violation -- 23505 and its message |
+| `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
+| `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
+| `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
+
+## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
+
+The pytest twin of `test/phase5.sh`, every check by the shell's name (#432; the #1265 arms were ported for #1341). The custom scan is the plan for a plain and a filtered SELECT; a narrow range reads one chunk group of five and skips four, while an unfiltered count(*) or sum is answered from zone-map metadata; results agree with qual pushdown on and off; only the referenced columns are projected; the compression, chunk_group_row_limit and stripe_row_limit options take effect for later writes and reset_options restores the default; vacuum compacts five stripes into one and rebuilds the index, whose lookups switch off both the sequential and the custom scan and assert an index-scan plan (with enable_seqscan alone the point lookup was a PgColumnarScan and could not see a missing reindex); vacuum_full keeps the data; the default plan is the serial custom scan, and disabling it falls back to a sequential scan with the same answer. The fixture is built once per module in a private database and each check is its own test. set_options and reset_options must reach the same verdict on every relkind, with the settled verdicts named: both accept a columnar matview and refuse a partitioned parent.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_set_and_reset_options_agree` | the four fixtures' kinds, the control, parity on each, and the matview and partitioned-parent verdicts |
+| `test_a_plain_select_uses_the_custom_scan` | plain select uses custom scan |
+| `test_a_filtered_select_uses_the_custom_scan` | filtered select uses custom scan |
+| `test_a_covering_count_skips_the_scan` | covering count(*) skips the scan |
+| `test_an_unfiltered_sum_is_answered_from_metadata` | unfiltered sum answered from metadata |
+| `test_a_narrow_range_reads_one_group` | filtered reads one group |
+| `test_a_narrow_range_skips_four_groups` | filtered skips four groups |
+| `test_a_filtered_count_also_scans_one_group` | filtered count(*) also scans one group |
+| `test_the_pushdown_on_count` | pushdown-on count |
+| `test_the_pushdown_count_matches_off` | pushdown matches off |
+| `test_the_pushdown_sum_matches_off` | pushdown-on sum matches off |
+| `test_an_equality_on_a_low_cardinality_column_returns_every_match` | equality full result |
+| `test_one_referenced_column_is_projected` | projects one column |
+| `test_the_table_has_three_columns` | table has three columns |
+| `test_select_star_projects_every_column` | select star projects all |
+| `test_two_referenced_columns_are_projected` | projects two columns |
+| `test_the_default_compression_is_zstd` | default uses zstd |
+| `test_compression_none_stores_uncompressed` | option none disables compression |
+| `test_the_chunk_group_limit_applies` | chunk group limit applied |
+| `test_reset_restores_the_default_limit` | reset restores default limit |
+| `test_the_vacuum_table_starts_with_five_stripes` | v starts with five stripes |
+| `test_the_live_rows_after_delete` | v live rows after delete |
+| `test_the_deleted_rows_are_tracked` | v deleted rows tracked |
+| `test_vacuum_compacts_to_one_stripe` | v compacts to one stripe |
+| `test_vacuum_leaves_no_deleted_rows` | v no deleted rows after vacuum |
+| `test_the_rows_are_right_after_vacuum` | v rows correct after vacuum |
+| `test_the_sum_is_right_after_vacuum` | v sum correct after vacuum |
+| `test_a_value_is_intact_after_vacuum` | v value intact after vacuum |
+| `test_the_indexed_table_count_after_vacuum` | vi count after vacuum |
+| `test_the_point_lookup_uses_the_index` | the vi point lookup really uses the index |
+| `test_an_index_point_lookup_after_vacuum` | vi index point after vacuum |
+| `test_the_index_sees_the_deletion_after_vacuum` | vi index sees deletion after vacuum |
+| `test_the_index_finds_the_survivors_after_vacuum` | vi index survivor after vacuum |
+| `test_vacuum_full_keeps_the_data` | vacuum_full keeps data |
+| `test_the_default_plan_is_the_custom_scan` | columnar default uses custom scan, not seqscan |
+| `test_the_default_plan_is_not_parallel` | columnar default plan is not parallel |
+| `test_disabling_the_custom_scan_falls_back_to_a_seq_scan` | disable custom scan -> seq scan |
+| `test_the_seq_scan_fallback_returns_the_right_rows` | seq-scan fallback returns correct rows |
+
+## 142. test_drop_cleanup.py: DROP takes a table's whole metadata with it, and a matview's options row
+
+The pytest twin of `test/drop_cleanup.sh` (#1265, #1341, #432), every check by the shell's name. A projection keeps its own storage, so a drop hook that deleted only the relation's own storage id left the projection's row groups, chunks, zone maps, blooms and projection rows behind. Each storage arm counts every catalog that hangs off a storage id, re-captured just before its own step, so it measures that step's increment; the last is absolute, for a standing leak no step increases. They run in a private database, so the absolute arm counts nothing another module left. A live table with a projection must still read correctly. The drop hook skipped anything that was not an ordinary table, so a matview's options row outlived it. The row is planted directly, so the hook is the only subject. REFRESH must keep the row, and an unrelated table's row is the control against a hook that deletes every row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_columnar_matview_takes_its_options_row_with_it` | a planted options row is gone after DROP MATERIALIZED VIEW |
+| `test_refresh_keeps_a_matviews_options_row` | a REFRESH that rewrote the matview leaves its set_options row in place |
+| `test_an_unrelated_options_row_survives` | another table's row survives a matview's DROP, and an ordinary columnar table still takes its own |
+| `test_a_plain_table_leaves_nothing_behind` | a plain table, with deletes, leaves every storage-keyed catalog where it was |
+| `test_the_projection_did_add_metadata` | premise-like: adding a projection and rows did grow the catalogs, so the next arm can fail |
+| `test_dropping_it_takes_the_projections_metadata_too` | dropping a table with a projection takes the projection's metadata too |
+| `test_two_projections_one_dropped_by_hand_leave_nothing` | two projections, one dropped by hand first, leave nothing |
+| `test_ten_create_and_drop_cycles_leave_nothing` | ten create-and-drop cycles leave nothing, where a leak of a few rows per drop shows |
+| `test_no_storage_row_refers_to_a_missing_relation` | absolute: no storage row names a relation pg_class no longer has |
+| `test_a_live_table_with_a_projection_still_reads_correctly` | a too-eager cleanup would break a live table: its count and sum match the generator |
+| `test_and_its_projection_is_still_readable` | and read_projection still returns all 3000 rows |
+
+## 143. test_native_upgrade_converge.py: every release upgrades to a fresh catalog, and the window before it
+
+The pytest twin of `test/native_upgrade_converge.sh` (#1341), every check by the shell's name, so the pair is declared COMPLETE. `ALTER EXTENSION pgcolumnar UPDATE` must bring a database on any released version to a catalog identical to a fresh install of the current `default_version`: every function's definition, ACL and comment; every relation, column, type and foreign-data wrapper; and every column default, index, constraint, row-level-security flag and policy. The released starting points are the install scripts in `test/fixtures`. They are staged into the extension directory once for the module, under a lock that makes a second stager wait, and whatever was there is put back after. A backup already there means an earlier run died, so it holds the original and is kept.
+
+Between installing a new library and running the update, a database runs the new library over its previous release's catalog (#1341 item 66). Reads and writes must work there. `DROP TABLE`, `TRUNCATE` and `pgcolumnar.vacuum()` need a catalog table the old one lacks, so they must be refused with 42P01, change nothing, and carry a hint naming the update. After the update all three succeed on the same rows.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_run_after_one_that_died_keeps_the_original` | with a died run's state in a temporary directory, staging and restoring leave the prefix's own file, not the fixture |
+| `test_two_stagings_at_once_keep_the_original` | a second staging that starts inside the first, as another `pytest -n` worker's would, waits for it under the staging lock, and the prefix's own file survives both |
+| `test_the_staged_fixtures_are_the_committed_ones` | the control's `default_version`; no backup was already staged; every fixture was staged, and each staged script is the committed fixture |
+| `test_each_release_upgrades_to_a_fresh_catalog` | parametrized by the four fixtures: a fresh install of the target has more than 100 objects to compare, the upgrade applies, the extension is at the target, and its catalog equals the fresh install's |
+| `test_the_upgrade_window` | at the previous catalog: rows written, deleted and read; the three operations refused with the hint and nothing changed; after the update the rows are intact and all three succeed |
+| `test_the_fixture_sweep_found_fixtures` | the fixtures on disk, less the synthetic `1.0-alpha`, are not an empty list: an empty sweep would compare nothing and report clean |
+| `test_each_fixture_is_what_its_tag_shipped` | parametrized by those fixtures: each one's blob id equals `v<version>:pgcolumnar--<version>.sql`'s; with no git repository or no release tags it cannot run (UNMET_PRECONDITION) rather than pass. CI fetches the tags for it |
+
+## 144. test_fk_referencing.py: a foreign key referencing a columnar table is refused where it is chosen
+
+The pytest twin of `test/fk_referencing.sh` (ported for #1341), every check by the shell's name. Enforcing a foreign key locks the referenced row, and columnar tables cannot lock rows, so a constraint referencing one would make every insert into the referencing table fail. It is refused at DDL by either route into that state: creating the constraint against a columnar table, or converting a referenced table (or partitioned parent) to columnar. Only the referenced side is refused, and the controls hold everything else steady, including converting the referenced table itself to a row store.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_referenced_side_is_refused_at_ddl` | CREATE TABLE and ALTER TABLE ADD CONSTRAINT referencing a columnar table are refused, saying why, and nothing is left behind |
+| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one |
+| `test_constraints_that_need_no_row_lock_are_unaffected` | primary key, unique, check and not-null on a columnar table, and a heap-to-heap foreign key, are unaffected |
+| `test_converting_a_referenced_table_is_refused_and_nothing_else_is` | SET ACCESS METHOD pgcolumnar on a referenced table and the helper are refused, the table stays heap and its child writable; an unreferenced table, the referencing side, an unrelated ALTER, a conversion back to heap and the referenced table to a row store all still work |
+| `test_a_partitioned_referenced_parent` | a columnar partition and setting the parent's access method are refused, the parent does not become columnar, an ordinary partition still works; an unreferenced partitioned table converts from PG17, and before 17 core refuses it |
+
+## 145. test_truncate_cleanup.py: TRUNCATE leaves no catalog rows behind, and keeps what it must
+
+The pytest twin of `test/truncate_cleanup.sh` (ported for #1341), every check by the shell's name. TRUNCATE installs a new storage id, and the old storage's catalog rows used to stay behind, so each truncate-and-reload cycle leaked one storage's worth and a later DROP removed only the empty current one. Retiring them made a cached write state stale, which is dropped with them. A relation created in the current transaction is truncated in place, on a different path, which must clear each projection's storage too. A private database, since the snapshot counts every pgcolumnar catalog row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_truncate_and_drop_leave_the_catalog_as_they_found_it` | one TRUNCATE and three truncate-and-reload cycles return the catalog to the baseline, and a DROP of a reloaded table leaves nothing |
+| `test_a_projection_is_not_leaked_by_truncate` | no projection row names a retired storage id, the declaration survives, and a DROP of the reloaded table leaves nothing |
+| `test_repeated_truncates_accumulate_nothing` | ten transactional truncates of one table, and its DROP, leave the baseline |
+| `test_insert_truncate_insert_in_one_transaction` | the transaction commits and holds exactly the rows written after the TRUNCATE |
+| `test_a_rewrite_that_is_not_a_truncate_loses_nothing` | a type-changing rewrite keeps all 5000 rows readable |
+| `test_an_in_place_truncate_clears_the_projection_too` | the in-place truncate commits, the later rows are all there, the projection reads them back and its storage holds one group of exactly them |
+
+## 146. test_native_dml.py: DELETE, UPDATE and MERGE on a native table agree with heap
+
+The pytest twin of `test/native_dml.sh` (ported for #1341), every check by the shell's name. Each statement runs on a heap table and on a columnar one with 1000-row stripes, and every result is compared. After deletes an aggregate must not come from zone maps that still describe the deleted rows: the deletes include the smallest and largest ids, so min and max move, and they are taken over `k`, a column the primary key does not order. A deleted row's index lookup finds nothing, and the lookups are asserted to take the index.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_delete_update_and_merge_match_heap` | after DELETE, UPDATE and MERGE, counts, rows, sum and min/max match heap; the index finds a live row and skips a deleted one; the primary key still rejects a duplicate |
+
+## 147. test_native_dict_underfill.py: an under-filled DICT chunk is refused and no backend dies
+
+The pytest twin of `test/native_dict_underfill.sh` (ported for #1341), every check by the shell's name. A DICT chunk's `value_raw_length` is inflated in its descriptor, so the codes decode to fewer bytes than declared; without the fill check the raw buffer's tail is uninitialized and a varlena length is read out of it. The read must raise XX001, and survival is read from the server log's crash count, not from a fresh connection, which succeeds once crash recovery has finished.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_under_filled_dict_chunk_is_refused` | the column is DICT-encoded, the inflation rewrites its descriptor, the read is refused with XX001, and no backend died |
+
+## 148. test_native_decode_gating.py: an unprunable qual gates payload decode per vector
+
+The pytest twin of `test/native_decode_gating.sh` (#452 phase 2, ported for #1341), every check by the shell's name. A leading-wildcard LIKE is no skip predicate, so phase 2 evaluates the qual per 1024-row vector between the decode passes, and a vector no row passes is never decoded for its payload columns; "Columnar Vector Decodes" makes the saving exact arithmetic. The filter counters stay exact: a rejection is counted once, inside a surviving vector too, and a deleted row is not counted. The width gate is set off for the session.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_unprunable_qual_gates_payload_decode` | the premises (no skip predicate, the late-materialization path); the control decodes all 192 (vector, column) pairs, a zero-match LIKE 32 and the needle 37; every filter counter is exact, including rejections inside the surviving vector; the answers match heap |
+| `test_deleted_rows_across_several_groups` | with deletes over several groups the answers match heap, and Rows Removed by Filter counts only live rows |
+
+## 149. test_native_decode_gate_width.py: decode gating runs only on a projection wide enough to pay
+
+The pytest twin of `test/native_decode_gate_width.sh` (#595, ported for #1341), every check by the shell's name. Phase-2 gating runs only when the projection has at least `pgcolumnar.qual_skipvec_min_payload_cols` non-qual columns (default 20). The policy is pinned by moving the threshold across a fixed projection: a 24-payload `SELECT *` gates at the default, stops above 24 and gates again at exactly 24, and a three-column projection gates only once the setting is 0. The gate is output-invariant: the answers match heap with it on or off. The setting is held per session, where the shell sets it per database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_width_gate` | the premises, including that the two rejected probe settings are undefined (42704); the decode counts at the default, with the gate off, above the width and at it; and correctness against heap with the gate on and off |
+
+## 150. test_pg_dump_roundtrip.py: a columnar table survives pg_dump and restore
+
+The pytest twin of `test/pg_dump_roundtrip.sh` (ported for #1341), every check by the shell's name. A source database holds a columnar table with data, an option, an index and a projection, and a second table whose declared `sort_by` names columns after a dropped one (#288). It is dumped as plain SQL and as a custom archive and restored into fresh databases, where the rows, the access method, the option, the `sort_by` and the projection declaration survive, and `rebuild_projections()` recovers the projection whose storage pg_dump cannot carry (#266). The point lookup must take the restored index, and the restored `sort_by` must leave the rows in its order.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_dropping_a_projection_forgets_its_declaration` | a dropped projection's declaration goes with it, so a rebuild builds nothing |
+| `test_a_plain_dump_round_trips` | pg_dump and psql exit 0, and the restored database passes every survival arm |
+| `test_a_custom_archive_round_trips` | the same through `pg_dump -Fc` and `pg_restore --exit-on-error` |
+
+## 151. test_pg_upgrade.py: a columnar table survives pg_upgrade
+
+The pytest twin of `test/pg_upgrade.sh` (ported for #1341), every check by the shell's name. A cluster on an older major gets a columnar table with non-default options, deletes and an index; it is upgraded with pg_upgrade into an empty cluster on the new major, and the row count, the content byte for byte, the options, the index and writability must all survive. The index arm runs with the columnar scan off and must take the index: right after pg_upgrade there are no planner statistics, the planner took the columnar scan for the range, and the arm passed with the index dropped.
+
+Like the shell it needs TWO majors: the new one is `--pg-config`, the old one `PGC_UPGRADE_FROM_PG_CONFIG`, and the test builds and installs the extension for the old one from a copy of the tree. The matrix runs one major at a time, so there it declines, and `expected_unrunnable.txt` lists it for every major.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pg_upgrade_preserves_a_columnar_table` | pg_upgrade exits 0, and the upgraded table keeps its rows, content, options and index, and takes writes |
+
+## 152. test_replication.py: physical replication and standby redo
+
+The pytest twin of `test/replication.sh` (ported for #1341), every check by the shell's name. A private primary gets a columnar table and a projection. pg_basebackup makes a streaming standby of it, and a second backup is brought up alone with no upstream, so what it holds came from the backup bytes. Inserts, deletes, updates, vacuum, compact and an SMGR end truncation are replayed and compared with the primary. A standby running without the module must still replay, because every record the extension emits is a core type.
+
+Each replay arm is about a write the primary made. Vacuum must have rewritten the table into a new relfilenode. Compact must have retired a row group; after vacuum it had none to retire until the fixture gave it one. The truncate must have shrunk the primary.
+
+A session that holds a snapshot across `compact` or `truncate` makes the call do nothing (#1987). Both harnesses call `compact('r')`, `compact('t')` and `truncate('t')` through the shared helper, which retries every 0.5 s for up to 30 s, and `r` and `t` have autovacuum off from the compact arm on. `compact retired the 15 trailing row groups of t on the primary` checks the count before `truncate` runs.
+
+A standby holds the primary's horizon back too, once `hot_standby_feedback` is on (#1999). The primary keeps the standby's oldest xmin in the replication slot the standby streams through, or, with no slot, in the walsender's own `backend_xmin`. A walsender has no database. The last arm opens a snapshot on the standby after a `DELETE` from table `hs`, first with the slot and then with the slot dropped. For each one it checks that the xmin reaches the primary that way, that truncate returns 0 while the snapshot is open, that the horizon helper counts the slot or the walsender, and that truncate reclaims once the snapshot ends. Without these checks, a helper that left out the slot term or the walsender term passed both harnesses.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_streaming_standby_and_a_restore_replay_columnar_tables` | the standby and the isolated restore hold the primary's rows and projections, every write path replays identically (`compact retired the 15 trailing row groups of t on the primary` before the truncate), and a module-less standby replays; through the slot and then through the walsender: `premise: the standby's feedback reaches the primary through ...`, `premise: truncate is held while the standby snapshot is open, through ...`, `the horizon helper counts a replication slot that holds a standby's xmin`, `the horizon helper counts a walsender that holds a standby's xmin`, `truncate reclaims once the standby snapshot held through ... ends` |
+
+## 153. test_native_recluster.py: online reclustering under ShareUpdateExclusiveLock
+
+The pytest twin of `test/native_recluster.sh` (ported for #1341, item 70), every check by the shell's name. `pgcolumnar.recluster()` rewrites a table's live rows in Z-order online. It writes them back as fresh row groups, inserts their index entries, clears the visibility map over the row numbers it retires, and retires the old groups. A 2D box skips more groups afterwards, results match a heap mirror, the unique index still enforces by SQLSTATE 23505, and the lock is ShareUpdateExclusiveLock, never AccessExclusiveLock.
+
+The index arm counts through an index-only scan of the unique index, after a VACUUM has set the visibility map, so a recluster that left the old entries' VM bits set counts them twice. The plan is asserted too: with only seqscan and the custom scan off, the count came back right with the index dropped.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_online_recluster` | recluster tightens 2D skipping, keeps the rows, keeps the index exact through an index-only scan and the unique constraint enforced, and holds only ShareUpdateExclusiveLock |
+
+## 154. test_alter_am_cleanup.py: DROP after SET ACCESS METHOD heap cleans up
+
+The pytest twin of `test/alter_am_cleanup.sh` (ported for #1341, item 70), every check by the shell's name. `pgcolumnar.options` and `projection_declaration` are keyed by relid, so a table converted to heap still has rows there, and the drop hook must clear them although the table is heap by then (#304). The hook is armed in every database, because the library is preloaded. Where the extension was never installed, or has been dropped, it must not open a catalog that isn't there: an ERROR in an object-access hook aborts the statement, and every table rewrite drops a transient relation through it. It gates on `pgcolumnar.options` resolving, not on the schema, and skips only the extension's own members.
+
+Each cleanup arm compares the catalogs with their state just before its own table was made, so one leak can't redden the arms after it. The REFRESH arm has a matview of its own, made WITH NO DATA, so it can't inherit the CREATE arm's failure.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_drop_after_converting_to_heap_cleans_up` | a converted, a round-tripped and an in-schema table each leave no relid-keyed rows on DROP, and a never-columnar heap is left alone |
+| `test_the_hook_is_harmless_where_the_extension_never_was` | DROP, temp tables and every rewrite path succeed in a database without the extension |
+| `test_a_relation_older_than_the_extension_is_cleaned_up` | a table that predates CREATE EXTENSION isn't a member, so its options row goes on DROP |
+| `test_the_gate_is_on_the_options_table_not_the_schema` | DROP EXTENSION succeeds with populated catalogs, and afterwards, with only the schema left, every path still works |
+
+## 155. test_native_reclaim.py: physical page reclaim and the compaction threshold guards
+
+The pytest twin of `test/native_reclaim.sh` (ported for #1341, item 70), every check by the shell's name. Retiring a row group records its byte range in `pgcolumnar.free_space`, and a later online compaction reserves from a freed range instead of growing the file. So repeated reclusters plateau the file, free_space stays bounded, and the reused blocks read back the heap mirror's rows. The reclusters alternate their key, because recluster self-gates on a table already in that key's order: four more `recluster('n', 'id')` calls each returned 0, and the file "plateaued" with reuse disabled.
+
+A recluster reuses a freed range only when no transaction is older than the one that freed it (#2010). Under a snapshot held from before the loop, each recluster appended and the file grew. So before each of the four repeated reclusters both harnesses wait up to 30 s until nothing holds the horizon at the newest range freed in `n`, and check the count of what still holds it, which must be 0: `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`.
+
+`compact_rewrite()` and `maintenance_due()` refuse NaN, negative, above-1 and (for maintenance_due) NULL thresholds with 22023, and accept the boundaries 0.0 and 1.0. Controls pin that other failures carry other SQLSTATEs. `max_groups` caps one `compact_rewrite` call, which returns what it rewrote.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_repeated_recluster_reuses_space_and_compact_rewrite_is_guarded` | before each repeated recluster, `repeated recluster <1..4>: no transaction older than the newest freed range was open before it`; every repeated recluster rewrites, the file plateaus, free_space doesn't grow, reused blocks read back correctly, and compact_rewrite's threshold guard holds in both directions |
+| `test_maintenance_due_validates_both_thresholds` | each threshold is refused out of range or NULL by 22023 and accepted on its boundaries, and the verdict follows the deleted fraction |
+| `test_max_groups_caps_one_compact_rewrite` | a capped call rewrites three of ten half-deleted groups and an uncapped one the other seven, with every live row kept |
+
+## 156. test_native_repack.py: REPACK on a columnar table
+
+The pytest twin of `test/native_repack.sh` (ported for #1341), every check by the shell's name. PostgreSQL 19 and later only. REPACK replaces CLUSTER and VACUUM FULL in 19 and dispatches through `relation_copy_for_cluster`, which pgColumnar registers as a stub that raises. So every spelling errors, the message names REPACK, and the table keeps its rows, content, options and access method. REPACK (CONCURRENTLY) needs two fixtures: without an identity index core refuses it before the access method is reached, and with one heap succeeds while columnar is refused.
+
+The alternative must reclaim, not only return. With `vacuum()` returning before it rewrote anything, every arm stayed green, so the deleted rows are counted at fixture time and again after it. The twin runs on a private cluster at `wal_level=logical`, which the concurrent form needs. Below 19 it declines with `UNSUPPORTED_MAJOR`, listed in `expected_unrunnable.txt`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_repack_on_a_columnar_table` | every REPACK spelling is refused naming REPACK, the concurrent form is refused for a stated reason, the table is unharmed, and `pgcolumnar.vacuum()` reclaims the deleted rows |
+
+## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
+
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
+
+## 158. test_native_writer.py: the native writer by its catalog rows
+
+The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_native_writer_by_its_catalog_rows` | the writer's storage, row-group and column-chunk rows match the fixture, and DROP deletes all three |
+
+## 159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table
+
+The pytest twin of `test/native_batch_fold_projection.sh` (ported for #1341), every check by the shell's name. The ungrouped batch fold steps over compact key and payload column lists, and a short list would silently return a wrong aggregate (#10). So a 47-column table sums its last column under a selective pushed key, and the folded answer must equal the unfolded one. The fold must really have run, which EXPLAIN ANALYZE shows and a plain EXPLAIN's prediction doesn't. The reference must really be unfolded, or the comparison is of the fold with itself. And the reference must equal the generator's own answer, computed with no table at all.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_batch_fold_gathers_the_right_columns_on_a_wide_table` | the fold runs and sums the right column on a wide table, against an unfolded reference that itself matches the generator |
+
+## 160. test_native_encdesc_golden.py: the encoding descriptor's wire layout
+
+The pytest twin of `test/native_encdesc_golden.sh` (ported for #1341), every check by the shell's name. The encoding descriptor is the writer-to-reader contract for a column chunk's per-vector encoding, and a deterministic 300-row table pins its version 3 bytes at their offsets: version, flags, vectorCount, each entry's valueCount and rawLen, the length, and the trailer. A read that decodes closes it. `count(*)` and `sum(a)` are answered from the catalog and the zone maps, so only every row's text, compared with the generator's, needs the pages. That's what sees a reader that parses rawLen and encLen from each other's offsets.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_descriptor_layout` | the descriptor's bytes sit at their fixed offsets with the expected values, and every row decodes to what the generator wrote |
+
+## 161. test_native_parquet_schema.py: parquet_schema round trip
+
+The pytest twin of `test/native_parquet_schema.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parquet_schema(path)` reports a Parquet file's columns, one row per column `read_parquet` declares, with the PostgreSQL type each maps to. A columnar table covering every exported type is exported, and each source type must come back, every column nullable. A file that isn't Parquet must be refused by the magic check itself: any error was the old arm, and with the magic check gone the same file is still refused, as a corrupt footer. pyarrow supplies what the exporter can't: a REQUIRED column, and field ids out of order, with absence reported as NULL. The timestamp tests (#1706) export a `timestamp` and a `timestamptz` column and read the file back with pyarrow, the independent reader: a `timestamp` must carry no time zone and read back as its wall time, a `timestamptz` must be UTC-adjusted and read back as its instant. pgcolumnar's own `read_parquet` must return both unchanged under a non-UTC session. Each is one check, and a failed export or read is a `query_error()` that fails that check by name. The nested tests (#1893) check that a list and a struct report under their top-level names, not as their leaves. The files from `test/craft_parquet_nested.py` (a map, lists of structs, structs of structs and of lists, a list of lists, a legacy two-level list made by a footer rewrite, REQUIRED nested columns) check that other nesting lists one row per leaf by its path, that the reported rows read as a column list, that a REQUIRED list or struct is not nullable, that a leaf row is nullable only when an OPTIONAL element sits above its first repeated level, and that a struct field name that needs quotes comes quoted, so `CREATE TYPE` takes the composite text. The #1917 tests check that `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table refuse a leaf under two repeated levels (the list of lists, the list of maps) declared as a one-dimensional array, with SQLSTATE 42804, instead of flattening it. The list-of-maps file holds two maps in one row, so a flattening read shows the lost boundary. The foreign table is refused also for a query that leaves the column out, since it binds every leaf by position. Each reading is the SQLSTATE and message, or the rows that came back.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_exported_schema_round_trips` | every exported type and its nullability come back from `parquet_schema`, and bad magic is refused by the magic check |
+| `test_required_columns_and_field_ids` | a pyarrow REQUIRED column reports nullable=f, and field ids report as written or as NULL when absent |
+| `test_read_parquet_returns_exported_timestamps_unchanged` | read_parquet returns the exported timestamp and timestamptz unchanged |
+| `test_an_exported_timestamp_is_not_utc_adjusted` | an exported timestamp column is not UTC-adjusted (pyarrow reads no time zone) |
+| `test_an_exported_timestamptz_is_utc_adjusted` | an exported timestamptz column is UTC-adjusted (pyarrow reads UTC) |
+| `test_pyarrow_reads_an_exported_timestamp_as_its_wall_time` | pyarrow reads an exported timestamp back as its wall time |
+| `test_pyarrow_reads_an_exported_timestamptz_as_its_instant` | pyarrow reads an exported timestamptz back as its instant |
+| `test_nested_columns_report_by_top_level_name` | a nested file lists its top-level column names (#1893): a list reports `bigint[]`, a struct reports `composite (a bigint, b text)`, and read_parquet reads the file with those names and types |
+| `test_a_map_column_lists_one_row_per_leaf` | parquet_schema lists a map column one row per leaf, each an array (#1893) |
+| `test_a_list_of_a_two_field_struct_lists_one_row_per_leaf` | parquet_schema lists a list of a two-field struct one row per leaf (#1893) |
+| `test_a_list_of_a_one_field_struct_lists_by_its_leaf_path` | parquet_schema lists a list of a one-field struct by its leaf path (#1893) |
+| `test_a_struct_holding_a_list_lists_by_its_leaf_path` | parquet_schema lists a struct holding a list by its leaf path (#1893) |
+| `test_a_struct_of_a_struct_lists_one_scalar_row_per_leaf` | parquet_schema lists a struct of a struct one scalar row per leaf (#1893) |
+| `test_a_struct_holding_a_map_lists_one_row_per_leaf` | parquet_schema lists a struct holding a map one row per leaf (#1893) |
+| `test_a_list_of_maps_reports_null_for_its_leaves` | parquet_schema reports NULL for the leaves of a list of maps, repeated twice (#1893) |
+| `test_a_list_of_lists_reports_null_for_its_leaf` | parquet_schema reports NULL for the leaf of a list of lists, repeated twice (#1893) |
+| `test_a_legacy_two_level_list_reports_by_its_name_as_an_array` | parquet_schema reports a legacy two-level list by its name as an array (#1893) |
+| `test_read_parquet_reads_each_nested_file_with_the_reported_column_list` | read_parquet reads each nested file with the column list parquet_schema reports (#1893) |
+| `test_read_parquet_refuses_a_list_of_lists_as_a_one_dimensional_array` | read_parquet refuses a list of lists declared as a one-dimensional array (#1917) |
+| `test_read_parquet_refuses_a_list_of_maps_as_one_dimensional_arrays` | read_parquet refuses a list of maps declared as one-dimensional arrays (#1917) |
+| `test_import_parquet_refuses_a_list_of_lists_for_a_one_dimensional_array` | import_parquet refuses a list of lists for a one-dimensional array column (#1917) |
+| `test_the_parquet_foreign_table_refuses_a_list_of_lists_even_when_left_out` | the pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out (#1917) |
+| `test_a_required_list_or_struct_is_not_nullable` | parquet_schema reports a REQUIRED list or struct as not nullable, an OPTIONAL list as nullable (#1893) |
+| `test_a_leaf_row_is_nullable_only_above_its_first_repeated_level` | parquet_schema reports a leaf row nullable only when an OPTIONAL element sits above its first repeated level (#1893) |
+| `test_a_struct_field_name_that_needs_quotes_comes_quoted` | parquet_schema quotes a struct field name that needs quotes, so CREATE TYPE takes the composite text (#1893) |
+
+## 162. test_native_vecskip.py: per-vector skipping by the zone maps
+
+The pytest twin of `test/native_vecskip.sh` (ported for #1341), every check by the shell's name. Inside a row group the predicate can't prune whole, the 1024-value vectors its zone maps rule out are neither decoded nor emitted. One row group of eight vectors and a range inside vector 0: exactly seven are skipped and no whole group is removed, and the rows equal a heap mirror's. The count alone can't say which mechanism skipped, because without the zone-map rule #452's by-value refinement rules the same seven out. So the decodes (1) and the by-value count (0) are read too. The vectorized aggregate must report the same seven.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_per_vector_skipping` | the zone maps skip exactly the seven vectors outside the range without decoding them, on the scalar scan and the vectorized aggregate, and every range returns the heap's rows |
+
+## 163. test_native_index_projection.py: CREATE INDEX projects only what it needs
+
+The pytest twin of `test/native_index_projection.sh` (ported for #1341), every check by the shell's name. CREATE INDEX projects only the columns the index needs (#413), serial and parallel: each build's own DEBUG1 line says which branch ran and how many columns its reader decodes. The built indexes must then answer as a sequential scan does: point lookups through the index, and the full ordered result of an index scan against a sequential scan. The index side runs with the columnar scan off, and each oracle asserts the index its own query reads. Before that, three of the oracles ran as the columnar scan on both sides.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_built_indexes_answer_as_a_sequential_scan_does` | each serial index finds its rows, and its full ordered result equals a sequential scan's, read through that index |
+| `test_each_build_projects_only_what_it_needs` | every serial and parallel build projects only its key, expression and predicate columns |
+| `test_the_parallel_built_index_agrees_and_holds_each_row_once` | the parallel-built index agrees with a sequential scan and holds each row once |
+| `test_amcheck_finds_every_index_sound` | `bt_index_check` finds all eleven indexes sound |
+
+## 164. test_native_saop_pushdown.py: IN-lists and = ANY(array) prune row groups
+
+The pytest twin of `test/native_saop_pushdown.sh` (ported for #1341), every check by the shell's name. The scan-key builder keeps an IN-list or `= ANY(array)` of up to 128 non-NULL elements as one set predicate (#704), and a group survives when any element can lie in its zone map and bloom filter. Larger sets keep the bounded [min,max] hull. The fixture is 40000 rows in 20 monotonic groups, plus an overlap column whose every group has the range [10,88] and only even values, so only the bloom filter can prune an odd probe. NOT IN builds no keys. An empty or all-NULL array neither crashes nor mis-counts. A generic plan's array parameter is frozen at Begin, and a correlated one is not. The batch fold never takes the conservative set keys as its exact filter.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_set_prunes_by_element_and_keeps_the_exact_answer` | an IN-list pushes one usable set filter that removes 19 groups, a scattered set prunes by element rather than by its hull, and both sides of the 128-element bound |
+| `test_nulls_types_and_collations_prune_exactly` | NULL elements, a by-reference text set, a cross-type array, a C-collated list and a domain-element array each prune and count exactly |
+| `test_only_the_bloom_filter_can_prune_the_overlap_column` | with 25 inside every group's range, the bloom filter alone removes all 20 groups for a set, a single value and a single distinct value |
+| `test_the_conservative_arms_build_nothing_wrong` | a range-spanning list prunes between its elements, NOT IN builds no range, and empty and all-NULL arrays count zero |
+| `test_a_parameter_array_is_frozen_at_begin` | a generic plan's array parameter and a mixed literal-and-parameter list prune |
+| `test_the_batch_fold_never_takes_the_set_keys_as_exact` | the batch fold refuses the IN-list but accepts the equivalent range, and the vectorized count stays exact |
+| `test_a_correlated_array_is_not_frozen_and_the_backend_lives` | a correlated LATERAL array is not frozen, and the session's backend is still alive; a crash is a named red |
+| `test_the_reader_refuses_every_special_flag_but_the_array_one` | the reader's reject expression names every special scan-key flag, and SK_SEARCHARRAY reaches its own arm |
+
+## 165. test_native_groupagg_batch.py: the grouped aggregate folds column-at-a-time
+
+The pytest twin of `test/native_groupagg_batch.sh` (ported for #1341), every check by the shell's name. The grouped vectorized aggregate folds a whole row group at a time (#708), and two things are proved separately. The answers must be unchanged: each shape agrees with a heap mirror, and with the same rows when the path is off. The work must happen: "Columnar Batch Fold: yes" under EXPLAIN ANALYZE is the only check that goes red when the fold stops running. Each shape the fold must decline is read off the grouped node, so a shape the node stops taking is a red, not a skip.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_takes_every_eligible_shape_and_answers_as_the_heap_does` | seven shapes (plain, filtered, two keys, float8, count(*), timestamp and date keys) plan the grouped node, fold, and match the heap |
+| `test_the_fold_declines_every_ineligible_shape_and_still_answers` | a text key, an expression key, min/max and a `<>` filter make the fold decline on the grouped node, and each still matches the heap |
+| `test_the_fold_honours_the_delete_mask` | after deletes the fold still runs and matches the heap |
+| `test_the_fold_equals_the_row_path_over_the_same_rows` | three shapes answer the same with the path off and on, and the off arm really is not the grouped node |
+| `test_float8_keys_group_by_the_types_equality_not_by_bits` | a stored -0.0 and 0.0 are one group on the fold, as on the heap |
+| `test_the_fold_steps_over_skipped_vectors` | a scan that really skips vectors folds, and its one-column and four-column sums match the heap |
+| `test_the_parallel_partial_fold_equals_the_serial_one` | our parallel-aware node launches workers and folds, and equals the serial fold and the heap |
+| `test_a_column_added_after_some_row_groups_runs_the_row_path` | plain EXPLAIN predicts the fold, ANALYZE reports the row path that ran, and the answer is right |
+
+## 166. test_native_fetch_projection.py: a fetch by row number decodes only what its caller needs
+
+The pytest twin of `test/native_fetch_projection.sh` (ported for #1341), every check by the shell's name. A row fetched by number decoded every column whatever the caller wanted (#157). Two narrower entry points exist beside it: one decodes a given set of columns, and one answers visibility and decodes nothing. Neither has a SQL surface, so they are exercised through `pgcolumnar.read_projection` and `pgcolumnar.reconstruct_via_projection` on a 41-column table, against the base table as the oracle. The source arms read code with its comments blanked, as the shell's `code_of` does.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_projected_fetch_returns_the_base_tables_rows_and_sees_deletes` | every reconstructed row matches the base table, a deleted row stops being read or reconstructed, and an uncovered column still reads right |
+| `test_a_projection_covering_every_column_decodes_nothing_and_is_right` | with the computed base-column set empty, every row is reconstructed with the right values |
+| `test_no_caller_decodes_every_column_and_index_deletion_reads_no_row` | the projection path calls no full decode, and index deletion asks no row whether it is live |
+| `test_every_needed_set_test_consults_the_all_columns_flag` | every needed-set membership test in the reader consults the explicit all-columns flag |
+
+## 167. test_native_fetch_position.py: a fetch by row number costs the same anywhere in its group
+
+The pytest twin of `test/native_fetch_position.sh` (ported for #1341), every check by the shell's name. A cached row group still walked to the row: it counted the validity bits below the row, then decoded and discarded that many values (#143). A rank prefix over the validity bitmap and an offset table for varying-length columns make each fetch O(1). Every fetch here runs with the columnar custom scan off, and each measurement first asserts that its plan reads the index. With only `enable_seqscan=off`, every query scanned instead and none fetched by row number. The timing ratios read the same ranges three times. An UPDATE would write its rows into a new group, so later passes would fetch elsewhere.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_fetched_value_matches_the_heap_mirror` | the group is one row group, and fixed, varying-length and heavily-null columns fetched through the index match a heap mirror, at every probed position |
+| `test_the_cost_does_not_depend_on_the_position` | fetching the last twentieth of the group costs under three times the first |
+| `test_a_bigger_group_does_not_cost_more_per_fetch` | the same far-end fetches in a group twice the size cost under 1.8 times as much |
+| `test_the_indexes_that_make_it_constant_are_in_the_fetch` | `pgcolumnar_fetch_row` takes the rank from the prefix and a varying-length value from the offset table |
+
+## 168. test_native_fetch_cache.py: the fetch-by-row-number cache
+
+The pytest twin of `test/native_fetch_cache.sh` (ported for #1341), every check by the shell's name. A fetch by row number decoded a whole row group per row (#143), and a statement-scoped cache of the decoded group removes the repeat. The cache is timed as a ratio: the same index fetches from one big row group and from ten small ones. Each reading runs on a freshly built fixture, because an UPDATE moves the rows it reads into a new group (#801). Then come the scoping guards in the source, a wide group's decode scratch (#353), and crossing the cache cap (#359).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_cache_makes_one_big_group_cost_what_ten_small_ones_do` | each reading measured the geometry it meant to, one big group costs under three times ten small ones, and the updated rows are right |
+| `test_the_scoping_guards_are_in_the_source` | the cache key includes the storage id, an earlier command's entry is rejected, a hit re-checks four fields, and the cache is discarded at executor end and transaction end |
+| `test_a_wide_groups_decode_scratch_does_not_blow_the_cap` | a wide group's point query drives the fetch path, costs under five times a small group's, and answers the same |
+| `test_crossing_the_cap_costs_per_column` | four and five projected columns drive the fetch path, five costs under twelve times four, and every over-cap column reads back its value |
+
+## 169. test_native_parquet_pushdown.py: the Parquet FDW skips row groups its statistics rule out
+
+The pytest twin of `test/native_parquet_pushdown.sh` (ported for #1341), every check by the shell's name. The FDW reads each row group's min/max and skips a group that a pushable col-op-const clause proves empty. The executor still rechecks every row, so a sound skip can only save work. The checks run against a heap oracle, and the skips themselves are read from EXPLAIN ANALYZE's "Row Groups Skipped". The soundness cases follow. A NaN row sits outside the statistics, so a float `>`, `>=` or `= 'NaN'` must never skip. An inverted interval must never drive a skip. An INT64-backed DECIMAL is skippable. pyarrow writes every file.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_skipping_never_changes_the_answer_and_really_skips` | eight predicates agree with the heap, each confining range skips the groups it should, float `>=` is not pushed, and `read_parquet` reads the same rows |
+| `test_a_nan_row_is_never_skipped` | seven float predicates over a file with one NaN agree with the heap |
+| `test_inverted_statistics_never_drive_a_skip` | an INT32 column whose footer's min and max are swapped agrees with the heap under six predicates and skips nothing (a UINT_32 column before #1814, which now decodes unsigned and no longer inverts) |
+| `test_an_int64_backed_decimal_is_skippable` | a range inside one of four DECIMAL groups skips the other three without dropping rows; #1790: declared `numeric(18,1)`, which rounds, returns all 10 rows that round to 100.0 and skips no group, and declared `numeric(18,2)`, the file's own typmod, still skips 3 of 4 groups |
+| `test_a_time_type_at_full_precision_keeps_skipping` | #1790: a timestamp(6) column still skips 3 of 4 groups; a timestamp(3) column skips no group for t >= 03:00 and returns the row that rounds up to 03:00 (1001 rows) |
+
+## 170. test_native_parquet_flba.py: uuid and DECIMAL read from fixed-length byte arrays
+
+The pytest twin of `test/native_parquet_flba.sh` (ported for #1341), every check by the shell's name. The reader handles uuid as a 16-byte FLBA, and DECIMAL as big-endian two's complement at the column's scale, in FLBA, BYTE_ARRAY or a little-endian INT32/INT64. Our own export is read back through `read_parquet`, `import_parquet` and the FDW and compared with the source table. pyarrow-written files serve as the foreign producer. A footer whose DECIMAL scale has been patched out of range must be refused at bind (42804), before any decoding. An unannotated FLBA, which is how Iceberg writes `fixed(L)`, reads as the `bytea` that `parquet_schema` advises for it, through `read_parquet` by position and by field id, `iceberg_scan`, and both FDWs (#1792). The file is a committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`, with a `fixed(3)` and a `fixed(16)` column. uuid still binds to the 16-byte column, and a 3-byte column declared uuid is refused at bind (42804) by both bind steps, not by the decoder (XX001). Each of those checks is its own test, so a red on one surface does not hide the others.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_our_export_reads_back_through_every_surface` | uuid, numeric and whole rows round-trip through `read_parquet`, `import_parquet` and the FDW |
+| `test_pyarrow_written_flba_reads_exactly` | both pyarrow uuids read in order, decimal128 values are exact, and a crafted scale is refused at bind with the backend alive |
+| `test_a_decimal_held_in_an_integer_reads_as_numeric` | INT32 and INT64 DECIMALs read at their scale with their null, `parquet_schema` advises numeric, and bigint still binds to the unscaled integer |
+| `test_parquet_schema_advises_bytea_for_fixed3` | parquet_schema advises bytea for Iceberg fixed(3) and uuid for fixed(16) |
+| `test_fixed3_reads_as_bytea_through_read_parquet` | fixed(3) reads as bytea through read_parquet |
+| `test_fixed16_reads_as_bytea_through_read_parquet` | fixed(16) reads as bytea through read_parquet |
+| `test_fixed3_reads_as_bytea_through_field_ids` | fixed(3) reads as bytea through read_parquet field ids |
+| `test_fixed3_reads_as_bytea_through_iceberg_scan` | fixed(3) reads as bytea through iceberg_scan |
+| `test_fixed3_reads_as_bytea_through_the_parquet_fdw` | fixed(3) reads as bytea through the parquet FDW |
+| `test_fixed3_reads_as_bytea_through_the_iceberg_fdw` | fixed(3) reads as bytea through the iceberg FDW |
+| `test_fixed16_still_reads_as_uuid` | fixed(16) still reads as uuid |
+| `test_uuid_over_fixed3_is_refused_at_bind` | uuid over fixed(3) is refused at bind (42804) |
+| `test_uuid_over_fixed3_is_refused_at_field_id_bind` | uuid over fixed(3) is refused at field-id bind (42804) |
+
+## 171. test_native_parquet_multifile.py: directories and globs read as one relation
+
+The pytest twin of `test/native_parquet_multifile.sh` (ported for #1341), every check by the shell's name. A directory reads every `*.parquet` file below it as one relation, and a glob expands the same way. The union must equal a single-file oracle through `read_parquet`, `import_parquet` and the FDW. Pushdown and the EXPLAIN counters aggregate across files.
+
+Several inputs must fail: an empty directory, a glob matching nothing, a schema-mismatched file, a dangling symlink, and a tree past the depth bound. A FIFO and a directory named `*.parquet` are skipped. The walk skips names that start with `_` or `.`, and it does not follow a symlinked directory, so a loop terminates. It still follows a symlinked file, and it orders files by full path. Reads that could block are bounded, as the shell's `timeout` bounds them. A local glob too deep or too long for `glob(3)` is refused with 54000 instead of crashing the server (#1968), and `path_glob_matches` stops a walk of repeated `/.*` with 54000 (#1973). One session runs a refused walk and then two that answer, so a step count left over from the refused walk fails a check. The reader bounds and globs a local pattern in a folded form, with each run of `/` as one `/` and without a `.` name followed by `/`, so a glob over 128 levels only as written reads the same rows as the plain path; a `.` at the end, a `.` that only `/` follow, and a name followed by `..` are kept, and a glob over `PATH_MAX` only as written is read with the server up (#1977 review).
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_directories_and_globs_read_as_one_relation` | a directory and a glob equal the oracle on every surface, pushdown and counters aggregate, and every error case fails |
+| `test_a_fifo_named_parquet_is_skipped_not_opened` | a FIFO named `*.parquet` is skipped rather than opened, within a bound; declined as "the FIFO case" where mkfifo is unavailable |
+| `test_the_recursive_walk` | a nested tree reads as one relation in sorted path order, `_`/`.` names and symlinked directories are not walked, a symlinked file is read, and the depth bound errors |
+| `test_a_local_glob_is_bounded_and_read_in_its_folded_form` | read_parquet reads a local glob over 128 levels as written but not once its '.' names are dropped, the same rows as the plain path; read_parquet reads a local glob over 128 levels as written but not once its runs of '/' are folded, the same rows as the plain path; read_parquet keeps a '.' name at the end of a local glob, so a file followed by /. matches nothing; read_parquet keeps a '.' name that only '/' follow at the end of a local glob, so a file followed by /./ matches nothing; read_parquet does not fold a name followed by '..' in a local glob, so it reads past a symbolic link as the kernel does; read_parquet reads a local glob of 1990 '.' levels in its folded form, and the server stays up; read_parquet reads a local glob over PATH_MAX as written but not once folded, and the server stays up (#1977 review) |
+| `test_a_glob_too_deep_or_too_long_for_glob3_is_an_error` | read_parquet looks for a local glob of 128 */ levels and refuses 129 with 54000; read_parquet refuses a local glob of 4096 bytes with 54000; path_glob_matches refuses repeat('/.*', 40) with 54000 inside a 1 s statement_timeout; path_glob_matches still matches repeat('/.*', 10) against its own path; after a refused walk, path_glob_matches still answers true in the same session; read_parquet refuses a local glob of 4000 */ levels with 54000, and the server stays up; a pgcolumnar_parquet foreign table over a local glob of 4000 */ levels raises 54000, and the server stays up (#1968, #1973) |
+| `test_the_readers_local_glob_walk_is_bounded` | read_parquet refuses a local glob of 18 .*/ levels with 54000 inside a 10 s statement_timeout; a 20 ms statement_timeout stops read_parquet's local glob walk with 57014; without it the walk ends with 58P01; pg_cancel_backend stops read_parquet's local glob walk with 57014; after a refused walk, read_parquet still reads a local glob in the same session; after a walk a statement_timeout cut, read_parquet still reads a local glob in the same session; 10 refused and 10 cut local glob walks leave the backend's open file count unchanged; read_parquet reads all 2000 files a local glob matches among 12000 names; read_parquet reads all 200 matches of a local glob under client_connection_check_interval = 10ms (#1984) |
+
+## 172. test_native_index.py: index lookups and unique enforcement fetch by row number
+
+The pytest twin of `test/native_index.sh` (ported for #1341), every check by the shell's name. An index scan, unique enforcement and primary-key enforcement all fetch rows by number (Phase D6a). Before that, an index scan on a native table returned no rows, and unique was silently unenforced. Lookups are compared with a heap mirror under a forced index path. The columnar custom scan is off as well as seqscan, because with only seqscan off the range aggregate planned as the custom scan. Each lookup first asserts that its plan is an Index Scan through `n_pkey`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_index_lookups_match_the_heap` | four lookups plan as Index Scans and match the heap, and a duplicate primary key is refused with the row count unchanged |
+| `test_a_standalone_unique_index_enforces` | a standalone unique index refuses a duplicate and admits a new key |
+
+## 173. test_native_fetch_bigcap.py: fetching from a row group above the cache cap
+
+The pytest twin of `test/native_fetch_bigcap.sh` (ported for #1341), every check by the shell's name. Above the 32 MB fetch-cache cap, the entry used to be dropped whole after every fetch, so each fetched row re-read the whole group (#433). The measure is buffers, a count rather than a time. The fixture's premise is its on-disk size, read back from `pgcolumnar.row_group`. Every measured query is forced onto the index path with the custom scan off, and asserts its plan. A payload wider than the cap re-decodes per fetch by design (#359). A narrow projection, and columns that fit, must still be cached.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_group_above_the_cap_is_read_once_for_what_fits` | the fixture has a group above the cap, every measured query is an index fetch, and ten rows of a narrow or a fitting projection cost under three times one row |
+| `test_caching_changes_no_row` | the first ten rows equal the same rows read in key order, and every payload is full length |
+
+## 174. test_sorted_projection.py: vacuum_sorted reorders storage and changes no answer
+
+The pytest twin of `test/sorted_projection.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.vacuum_sorted()` rewrites a columnar table physically sorted on a key. It must never change an answer: every query shape agrees with a heap oracle before and after, order-independently, and in order where the query orders. It must also reorder storage for real, so a narrow range on the sort key skips vectors it could not skip before. The rest covers a multi-column key, the reclaim of deleted rows with the index rebuilt, idempotence, and argument validation. Each index lookup is forced with the custom scan off and asserts that it reads the index. Each refusal must be the function's own, identified by its SQLSTATE.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_sorted_rewrite_changes_no_answer_and_really_reorders` | five query shapes match the heap before and after the sort, the ordered oracle is order-sensitive, and the sort makes the range skip vectors |
+| `test_a_multi_key_sort_reclaims_and_rebuilds_the_index` | a two-column sort matches, deletes are reclaimed, the rebuilt index finds and hides the right rows, and a second sort changes nothing |
+| `test_vacuum_sorted_refuses_what_it_cannot_sort` | a heap table, an unknown column, no sort key and a json key are each refused with their own SQLSTATE |
+
+## 175. test_native_ios.py: an index-only scan skips the fetch on all-visible row groups
+
+The pytest twin of `test/native_ios.sh` (ported for #1341), every check by the shell's name. Once VACUUM has marked a native table's all-visible row groups in the visibility map, an index-only scan over an all-visible range skips the fetch (Heap Fetches: 0) and returns a heap mirror's rows. VACUUM also records the all-visible pages in `pg_class` (#507). They must be in pages, not the VM's synthetic blocks, because core prices an index-only scan by `relallvisible / relpages`. A delete clears the VM bit, so the scan falls back to the fetch there and never returns a deleted row.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_all_visible_range_needs_no_fetch_and_vacuum_records_it` | the index-only scan is chosen, fetches nothing, matches the heap, and VACUUM records a page count no larger than the relation and most of it, as the heap's is |
+| `test_a_delete_clears_the_bit_and_is_never_returned` | after a delete the scan matches the heap and fetches where the bit was cleared |
+
+## 176. test_native_truncate.py: end-truncation shrinks the file and loses no row
+
+The pytest twin of `test/native_truncate.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.truncate()` returns trailing reclaimed blocks to the OS. After the trailing half is deleted and compacted, the file shrinks and the rows still match a heap mirror. A second truncate has nothing to do, and the table stays usable: reinsert, index, and an indexed lookup forced through the index and asserted to read it. With `pgcolumnar.enable_end_truncation` off, truncate must return 0 and leave the file alone. The call is a statement of its own on both sides, because sent with the `SET` as one string it ran in an implicit transaction block and was refused, which passed whatever the GUC did. Inside a transaction block truncate is refused and changes nothing, because its shrink is not transactional, and a truncate followed by reinsert and compaction keeps parity.
+
+`compact` retires a dead group only when no transaction in the database is older than the `DELETE` (#1979). `truncate` removes a freed range only when no transaction is older than the `compact` that freed it. With one call each, a session that held a snapshot across them left nothing to truncate. Both harnesses now call each one through the shared helper, which retries every 0.5 s for up to 30 s. They check how many groups each `compact` retired. The fixture tables have autovacuum off.
+
+The setting-off arm has the opposite problem (#1988). While a transaction older than the `compact` is open, `truncate` returns 0 and leaves the file alone whatever the setting says, so the arm passed with the setting ignored. It now waits until nothing holds the horizon at the freed range. `GUC off: no transaction older than the compact was open` checks the count of what still holds it, which must be 0. A snapshot with no transaction ID in another database does not hold truncate back, and the count leaves it out (#1992). So the arm opens such a snapshot in database `postgres` before the compact and keeps it open through both calls. `premise: a snapshot older than the compact is open in another database` shows that snapshot is older than the freed range, and `the other-database snapshot was still open after the GUC-on truncate` shows truncate reclaimed while it lived. `a table with no freed range gives the horizon helper no count` checks that the helper gives no count, rather than 0, for a table with nothing freed.
+
+`truncate` also returns 0, and leaves the file alone, when it cannot take its ACCESS EXCLUSIVE lock at once (#1994). That happens while another session holds a lock weaker than SHARE UPDATE EXCLUSIVE on the table, or waits for any lock on it. That too passed the arm whatever the setting said, and it passed every other check that wants 0. So each call that wants 0 counts the other sessions' locks on `n` in its own session, just before and just after the call, and the check wants `0|0`: `truncate before any delete: no other session held a lock on n before or after the call`, `second truncate: no other session held a lock on n before or after the call` and `GUC off: no other session held a lock on n before or after the call`.
+
+A transaction ID in another database does hold truncate back, because truncate's own snapshot takes the oldest running transaction ID from every database as its xmin (#1992). The last test opens three holders on table `xw`, one at a time, each after a `DELETE` and before the `compact`: a writer in database `postgres`, a prepared transaction in database `postgres`, and a snapshot in this database taken just before the `compact`, whose xmin equals the freed range's `freed_xid`. For each one it checks that truncate returns 0 while the holder is open, that the helper counts it, and that truncate reclaims once it ends.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_truncate_shrinks_the_file_and_keeps_every_row` | `truncate before any delete: no other session held a lock on n before or after the call`; a truncate with nothing freed returns 0; `compact retired the 15 trailing groups`; then truncate returns blocks, the file shrinks, the rows match the heap; `second truncate: no other session held a lock on n before or after the call`; and a second truncate returns 0 |
+| `test_the_table_stays_usable_and_the_guc_turns_it_off` | reinsert and an index lookup through the index after truncation; `compact retired the 5 groups above id 35000`; `premise: a snapshot older than the compact is open in another database`; `GUC off: no transaction older than the compact was open`; `GUC off: no other session held a lock on n before or after the call`; with the GUC off truncate returns 0 and the file keeps its size, with it on the file shrinks; `the other-database snapshot was still open after the GUC-on truncate`; `a table with no freed range gives the horizon helper no count` |
+| `test_truncate_refuses_a_transaction_block_and_reuse_stays_clean` | `compact retired the 3 groups from id 30001 to 33000`; refused inside BEGIN with the file and rows unchanged; truncate, reinsert and compaction keep parity |
+| `test_the_horizon_helper_counts_what_holds_truncate` | for a writer in another database, a prepared transaction in another database, and a snapshot from just before the compact: `premise: truncate is held while ... is open`, `the horizon helper counts ...`, `truncate reclaims once ... ends` |
+
+## 177. test_native_gap.py: a write beyond EOF fills the gap and loses no row
+
+The pytest twin of `test/native_gap.sh` (ported for #1341), every check by the shell's name. The metapage highwater can sit ahead of the physical EOF, which is the state an aborted or crash-interrupted end-truncation leaves. A write whose target block lies beyond EOF must fill the gap with empty pages and succeed. A test-only hook, bound by the test as the shell binds it, pushes the highwater 50 pages past EOF. The next insert must keep every row against a heap mirror and grow the file by at least 40 pages. The table then stays usable: another insert, an index lookup forced through the index and asserted to read it, and a delete.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order and records each reading, so one red cannot stop the checks after it.
+
+| test | what it holds |
+| --- | --- |
+| `test_baseline_row_count` | 3000 rows before the gap |
+| `test_baseline_parity` | and they match the heap |
+| `test_row_count_after_gapped_insert` | 6000 rows after the insert across a 50-page gap |
+| `test_parity_after_gapped_insert` | and they match the heap |
+| `test_gap_was_physically_materialized` | the file grew by more than 40 pages |
+| `test_parity_after_post_gap_insert` | a later insert keeps parity |
+| `test_the_indexed_lookup_reads_n_id` | the forced lookup plans an Index Scan on `n_id` |
+| `test_indexed_lookup_after_gap` | and finds all 7000 rows |
+| `test_parity_after_delete_on_gapped_layout` | a delete keeps parity |
+
+## 178. test_native_roundtrip.py: a native table reads back what the heap holds
+
+The pytest twin of `test/native_roundtrip.sh` (ported for #1341), every check by the shell's name. A native-format table with nulls in a text and a float column is read back through the native reader and compared with a heap mirror holding the same rows. Its 5000 rows are split into five row groups, and a check asserts the count. The row count is answered from metadata, so only the hashed reads see a lost row group. The comparisons cover every column, a filtered scan, a projection, the null counts, an aggregate and a filtered count. Rows are hashed order-independently, so the heap is the oracle.
+
+### Every test
+
+Each check is its own test, parametrized by the shell's name, so one red cannot stop the others.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_row_count` | 5000 rows, as metadata counts them |
+| `test_the_native_table_holds_five_row_groups` | five row groups, so the read crosses them |
+| `test_a_read_matches_the_heap[...]` | every column, a filtered scan and a projection match the heap, one test per shell name |
+| `test_a_null_count_or_aggregate_matches_the_heap[...]` | the null counts of the text and float columns, `sum(k)` and `count(*) WHERE b` match the heap, one test per shell name |
+
+## 179. test_native_bloom.py: a bloom filter prunes the equality probe min/max cannot
+
+The pytest twin of `test/native_bloom.sh` (ported for #1341), every check by the shell's name. A native table carries a bloom filter per column chunk over each hashable column. An equality probe on an unsorted column can then skip row groups that provably lack the value, even where the min/max zone map cannot. The fixture spreads its values so that every group's range spans the domain. Groups are therefore skipped only with `pgcolumnar.enable_bloom_filter` on, and the probe's answer matches a heap mirror. The skip counter reads -1 when the plan has none, so a plan without the columnar scan can't pass as "skipped nothing".
+
+### Every test
+
+Each check is its own test, so one red cannot stop the next.
+
+| test | what it holds |
+| --- | --- |
+| `test_row_count` | 20480 rows |
+| `test_bloom_rows_written` | one filter per row group for the tag column |
+| `test_the_plan_under_test_is_a_columnar_custom_scan` | the probe plans the columnar scan, the only source of the skip counter |
+| `test_equality_probe_parity` | the probe for a present value matches the heap |
+| `test_bloom_on_skips_groups` | the probe skips groups with the bloom on |
+| `test_bloom_off_skips_nothing` | and none with it off |
+| `test_absent_value_parity` | a value outside every group's range matches the heap |
+
+## 180. test_native_toasted_write.py: a toasted value is written once and read back whole
+
+The pytest twin of `test/native_toasted_write.sh` (ported for #1341), every check by the shell's name. The writer flattens each varlena once per row and reuses the flat value for the encoder, the bloom hash and the min/max (#445). The source is a heap table whose wide column is stored pglz-compressed (named, since PG19 defaults to lz4), so the columnar writer is handed already-toasted values. The columnar table is six row groups, so a zone map or a bloom can prune a group. The checks cover byte-identity with a heap mirror, two ranges that each select some rows but not all, one bounded below so the max is asked and one bounded above so the min is, and an equality probed with the value itself, so it is a usable skip predicate and the bloom is asked.
+
+### Every test
+
+Each check is its own test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_source_values_are_toasted` | the source column reads back pglz |
+| `test_toasted_values_are_byte_identical` | the wide column's digest matches the heap |
+| `test_each_range_selects_some_rows_and_not_all` | both ranges are selective on the heap |
+| `test_the_min_max_zone_map_is_correct` | `big >= 'e'`, pruned by the max, matches the heap |
+| `test_the_min_max_zone_map_is_correct_below_a_bound` | `big < '1'`, pruned by the min, matches the heap |
+| `test_the_equality_probe_reaches_the_bloom` | the probe is a usable skip predicate |
+| `test_equality_on_a_toasted_value_matches_heap` | and its count matches the heap |
+| `test_the_non_toasted_column_is_byte_identical` | the short column's digest matches the heap |
+
+## 181. test_native_varlena_bound.py: a corrupt varlena length is refused, not read past its buffer
+
+The pytest twin of `test/native_varlena_bound.sh` (ported for #1341), every check by the shell's name. Every decode site reads a varlena's stored length through `PgColumnarVarSizeAnyUnalignedBounded`, which refuses a length, or an external-TOAST tag, that would read past the value stream. The zone map's min/max is a catalog bytea, so a plain UPDATE reaches it: a 5-byte value whose header claims ~1 GB, then a predicate that consults it. The text column is corrupted, since the int id's min/max is no varlena. A length far past the stream cannot tell a correct bound from an off-by-one, so the boundary is planted too: a length that fits exactly, one that runs one byte past, and a 4-byte header with fewer than 4 bytes left. The minimum is restored before the maximum is corrupted, because the zone map decodes the minimum first and a corrupt minimum left in place would answer for the maximum. A crash is read from the server log, counted from each corruption, since a liveness probe alone passes once crash recovery finishes. It runs on a private cluster, because a crash drops every session on the server.
+
+### Every test
+
+Each check is its own test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_txt_column_has_a_whole_chunk_zone_map_to_corrupt` | there is one zone-map row to corrupt |
+| `test_a_min_with_an_over_long_varlena_length_is_refused` | a ~1 GB minimum raises XX001 |
+| `test_backend_survived_the_corrupt_minimum` | and no backend died |
+| `test_with_the_minimum_restored_the_range_read_is_clean` | the restored minimum reads back all 2000 rows |
+| `test_a_max_with_an_over_long_varlena_length_is_refused` | a ~1 GB maximum raises XX001 |
+| `test_backend_survived_the_corrupt_maximum` | and no backend died |
+| `test_an_external_toast_tagged_min_value_is_refused` | an external-TOAST tag raises XX001 |
+| `test_backend_survived_the_external_tagged_minimum` | and no backend died |
+| `test_a_min_whose_length_exactly_fits_its_buffer_reads_cleanly` | an exact-fit length reads all 2000 rows |
+| `test_a_min_whose_length_runs_one_byte_past_its_buffer_is_refused` | one byte past raises XX001 |
+| `test_a_4_byte_header_cut_off_by_the_buffers_end_is_refused` | a header with fewer than 4 bytes left raises XX001 |
+
+## 182. test_native_agg_addcolumn.py: a metadata aggregate over an added column reads what the metadata cannot hold
+
+The pytest twin of `test/native_agg_addcolumn.sh` (ported for #1341), every check by the shell's name. An ungrouped, unfiltered aggregate is answered from row-group metadata, but a column added by ALTER TABLE ADD COLUMN has no chunk, and so no zone map, in a row group written before it. The fold must send such a group to be read, where the reader supplies the attribute's missing value. Each aggregate is compared with the same bare query on a second connection that starts with `pgcolumnar.enable_vectorization` off, as the shell's PGOPTIONS does. The aggregates run over a column added with a constant default, one added with none, groups on both sides of the ALTER, and the same after a delete in the newer group (a group with deletes goes whole to the scan, so a delete in the only pre-ALTER group would keep it from the fold under test).
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order and records each reading, so one red cannot stop the checks after it. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_metadata_aggregate_path_is_the_one_under_test` | `count(d)` plans the metadata node |
+| `test_the_oracle_reads_the_rows` | premise: the oracle's connection plans `Custom Scan (PgColumnarScan)`, so the two sides take different paths; an empty or other plan cannot pass |
+| `test_the_scan_reads_an_added_columns_default_for_the_rows_written_before_it` | the oracle's own `count(d)` and `sum(d)` are 3000 and 21000: both paths read old groups through the reader's missing value, so agreement alone cannot see it lost |
+| `test_the_metadata_path_agrees_with_the_scan` | parametrized by the shell's 16 names: count, sum, min, max and avg over the added columns, count(*), and the same across both sides of the ALTER and after a delete |
+
+## 183. test_native_groupagg_wide_cost.py: the grouped fold prices its own input scan as the scan node does
+
+The pytest twin of `test/native_groupagg_wide_cost.sh` (ported for #1341), every check by the shell's name. The grouped vector aggregate prices the scan it performs from the cheapest serial scan path that survived add_path. When none survived, because a Gather over the partial path dominated it, it prices that scan itself, and must do so as the columnar scan node does, not with the bare seqscan formula (#12). On the suite's 40,000-row wide table a serial scan survives, so the fold and result readings never reach that fallback. Free parallelism (`parallel_setup_cost`, `parallel_tuple_cost` and `min_parallel_table_scan_size` at 0) lets a Gather displace it, and with `enable_hashagg` and `enable_sort` off the parallel finalize cannot win, so the fold node is the plan and its cost can be read. Each reading's settings ride in the connection's options, as the shell's PGOPTIONS do.
+
+### Every test
+
+Each check is its own test over a module fixture that takes every reading in the shell's order, each on a connection of its own. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_path_is_used_on_the_wide_grouped_aggregate` | the plan carries `Columnar Batch Fold: yes`, not merely a custom scan, which the reference plan's input is too |
+| `test_the_fold_result_matches_a_plain_aggregate_on_a_wide_table` | the folded per-group sums and counts equal the plan without vectorized grouping |
+| `test_with_parallelism_free_a_gather_displaces_the_serial_scan` | premise: with parallelism free the plan is a Gather, the state in which the fallback prices the scan |
+| `test_the_fallback_prices_the_fold_as_a_surviving_serial_scan_does` | the fold node's cost through the fallback equals its cost when a serial scan survives (800.19 on PG17; 503.01 with the bare seqscan formula) |
+| `test_backend_alive` | the backend still answers |
+
+## 184. test_hardening.py: corrupted native metadata is refused or ignored, never trusted
+
+The pytest twin of `test/hardening.sh` (ported for #1341), every check by the shell's name. A plain UPDATE corrupts a chunk's encoding descriptor, then a bloom filter, both catalog byteas. The descriptor must be refused with a clean XX001 and a surviving backend; the malformed bloom must be read as "may match", so the probe for a present value still finds it. An empty result is not read as the error, since a crash and a missing table give one too, and a crash is counted from the server log: a liveness probe alone passes once recovery has finished. On a private cluster, because a crash drops every session on the server.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading on a connection of its own opened once any recovery is over. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_corrupt_descriptor_replaces_one_chunks` | premise: the descriptor UPDATE reports `UPDATE 1` |
+| `test_an_invalid_descriptor_raises_an_error` | reading the table raises XX001 |
+| `test_the_backend_is_alive_after_an_invalid_descriptor` | the server answers and no backend died since the corruption |
+| `test_the_malformed_bloom_replaces_ks_filter` | premise: the bloom UPDATE reports `UPDATE 1` |
+| `test_a_corrupt_bloom_still_finds_a_present_value` | the equality probe returns the heap's rows |
+| `test_a_corrupt_bloom_still_counts_an_absent_value` | the absent probe's count equals the heap's |
+| `test_the_backend_is_alive_after_a_corrupt_bloom` | the server answers and no backend died since the corruption |
+
+## 185. test_dependency_estimate.py: a functional-dependency estimate is not collapsed by a truncated extended MCV
+
+The pytest twin of `test/dependency_estimate.sh` (ported for #1341), every check by the shell's name. Core applies a capacity-truncated extended MCV before the functional dependency, which clamps the joint estimate of `a=5 AND b=10` to 1 against an actual 300 (#438); the columnar path recomputes a dependency-consistent estimate and raises the row count to it when core's is lower. Three tables of 300,000 rows: the #438 case, probed at a pair outside its truncated extended MCV (1000 values, `b = a*2`, full extended statistics), a case core already gets right (10 values, each an MCV), and one with no extended statistic.
+
+### Every test
+
+A module fixture builds the three tables on a private database and takes every reading in the shell's order. An estimate is the top plan node's `rows=`, or a `query_error()` when EXPLAIN fails or prints none, so a missing estimate is never read as 0 (the shell's `${EST:-0}` did, which passed "bounded" and "untouched" with every EXPLAIN failing).
+
+| test | what it holds |
+| --- | --- |
+| `test_the_438_probe_is_outside_the_truncated_mcv` | premise: the probe is the first pair the extended MCV does not hold (the clamp happens only then; a fixed `a=5` sat in the MCV in 1 run of 6, and the arm then passed with the correction off) |
+| `test_the_438_case_really_matches_about_300_rows` | premise: the #438 probe matches 300 rows |
+| `test_the_dependency_estimate_is_not_collapsed` | the #438 estimate is at least 100, not clamped to the floor |
+| `test_and_it_is_not_an_over_correction` | and at most twice the actual count |
+| `test_a_case_core_already_estimates_well_is_unchanged` | the 10-value table's estimate is within 20% of its actual count |
+| `test_a_table_with_no_dependency_statistic_is_untouched` | with no extended statistic the estimate stays at core's (at most 10) |
+
+## 186. test_batch_fold_explain.py: EXPLAIN ANALYZE reports the fold that ran, not the one predicted
+
+The pytest twin of `test/batch_fold_explain.sh` (ported for #1341), every check by the shell's name. A column added after some row groups exist is predicted fold-eligible, but the first old group lacks it, so the ungrouped vectorized aggregate refuses before claiming a group and the scan runs the row path. EXPLAIN ANALYZE must say `Columnar Batch Fold: no` for that run (#602), plain EXPLAIN keeps the prediction, a control table whose columns exist from the start genuinely folds, and the parallel partial fold, which cannot take the fallback, refuses the relation with an error.
+
+### Every test
+
+A module fixture builds `bfe_old` (50,000 rows before `ADD COLUMN v`, 10,000 after) and `bfe_ctrl` on a private database and takes every reading in the shell's order, each on a connection of its own with the suite's settings in its options. A plan with no `Columnar Batch Fold` line reads `""`, which `expect.text` refuses; a failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_loaded_every_row` | premise: `bfe_old` holds 60,000 rows |
+| `test_the_fallback_table_returns_the_right_sum` | premise: the fallback table's sum equals an oracle over `generate_series` |
+| `test_the_control_table_returns_the_right_sum` | premise: so does the control table's |
+| `test_analyze_reports_the_fold_that_ran` | ANALYZE on the control reports `yes` |
+| `test_plain_explain_still_reports_the_prediction` | plain EXPLAIN on the fallback table reports `yes` |
+| `test_analyze_reports_the_row_path_that_ran` | ANALYZE on the fallback table reports `no` |
+| `test_the_planner_gives_the_parallel_partial_fold` | premise: with parallelism free the plan is a Gather over the fold (planned on 15-19; the shell used to print a note and drop the next check when it was not) |
+| `test_the_parallel_partial_fold_refuses_the_fallback` | the parallel partial fold errors with "cannot fold a relation with a column added" |
+
+## 187. test_zonemap_cost.py: a scan is priced for what the zone maps let it skip, and only for that
+
+The pytest twin of `test/zonemap_cost.sh` (ported for #1341), every check by the shell's name. The cost model used to quote a full columnar scan whatever the zone maps excluded, so an index scan priced at its best case won a plan it ran 11.6 times slower (#434). One 200,000-row table holds three keys over the same values: `seq` ascends with physical order and prunes 16 of 20 row groups; `scat` is scattered and prunes none, the control a blanket discount would fail; `saw` is uncorrelated globally but tight inside each group, so it prunes as hard as `seq` while its correlation says otherwise (#461). Pruning is measured from EXPLAIN ANALYZE's chunk-groups-removed counter before any price is compared (#477). Plans and cost relations only, never wall clock. On a private database, because `pg_stats` is read by table name.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading's SETs on the connection that runs it. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_row_loaded` | premise: 200,000 rows |
+| `test_the_ordered_key_really_is_correlated`, `test_the_scattered_key_really_is_not` | premise: \|correlation\| above 0.9 for `seq`, below 0.2 for `scat` |
+| `test_the_correlated_arm_actually_removes_chunk_groups` | `seq` removes chunk groups: an arm, since a cross-type scan key the reader drops removes none (#477) |
+| `test_the_scattered_arm_removes_none` | premise: `scat` removes none, so the two differ physically |
+| `test_the_columnar_cost_is_a_measurement`, `test_the_index_cost_is_a_measurement` | premise: both costs on `seq` were read and are positive |
+| `test_a_correlated_restriction_picks_the_columnar_scan` | the plan for `seq` is the columnar scan |
+| `test_it_is_priced_below_the_index_scan_it_used_to_lose_to` | and costs less than the index scan |
+| `test_the_scattered_columnar_cost_is_a_measurement` | premise: the cost on `scat` was read |
+| `test_an_uncorrelated_restriction_gets_no_pruning_discount` | `scat` costs more than twice what `seq` costs: a margin, because a bare comparison passed under a blanket discount |
+| `test_the_sawtooth_column_is_uncorrelated`, `test_it_prunes_as_hard_as_the_correlated_column` | premise: `saw` has \|correlation\| below 0.2 and removes at least as many groups as `seq` |
+| `test_the_sawtooth_columnar_cost_is_a_measurement` | premise: the cost on `saw` was read |
+| `test_a_demonstrably_pruning_restriction_is_discounted` | `saw` costs under 0.8 of `scat` |
+| `test_it_is_priced_close_to_the_correlated_arm` | and under 1.5 times `seq` |
+| `test_the_planner_picks_the_columnar_scan_for_it` | the plan for `saw` is the columnar scan |
+| `test_the_correlated_query_returns_the_same_rows_either_way` | the grouped counts agree with the custom scan on and off |
+| `test_the_correlated_query_returns_the_right_count` | 40,000 rows match `seq` |
+
+## 188. test_concurrent_diff.py: concurrent writers to one columnar relation end equal to a heap oracle
+
+The pytest twin of `test/concurrent_diff.sh` (ported for #1341), every check by the shell's name. Six backends run the same INSERT/DELETE/UPDATE workload over disjoint id ranges against a heap table and a columnar one (`chunk_group_row_limit` 500, `stripe_row_limit` 2000), so the final state is deterministic whatever the interleaving and the columnar table must end equal to the heap. It exercises stripe and row-number reservation, the delete vector and the encoding and bloom write paths under concurrent writers.
+
+### Every test
+
+A module fixture runs six threads, each on a connection of its own sending its workload as one simple-protocol query (one implicit transaction, as `psql -c`), then takes every reading. Each comparison hashes both sides on the server as lib.sh's `pgc_set_hash` does; a failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_workers_succeeded` | every worker's transaction committed |
+| `test_every_worker_started_before_any_finished` | premise: the workers overlapped (the latest start precedes the earliest end), or this is a serial differential |
+| `test_the_whole_row_agrees` | every row equals the heap's |
+| `test_count_and_sum_agree` | count, sum(v) and count(distinct cat) agree |
+| `test_the_price_aggregates_agree` | min, max and count of the float8 column agree |
+| `test_the_bloom_equality_agrees` | the count for `v = 900` agrees |
+| `test_the_range_agrees` | the count for `id BETWEEN 4000 AND 12000` agrees |
+| `test_the_row_count_is_sane` | the columnar table is not empty |
+
+## 189. test_write_minmax_fastpath.py: zone min/max through the direct comparison path are the true bounds
+
+The pytest twin of `test/write_minmax_fastpath.sh` (ported for #1341), every check by the shell's name. The writer tracks each chunk's minimum and maximum, comparing integer-family values directly (#155) and testing the maximum first. A bound that is wrong skips a group holding matching rows, so the query silently returns fewer. So the checks compare a columnar table with a heap mirror, over predicates on chunk-group bounds. Floats stay off the direct path: btree orders NaN above every value, and a C comparison never would. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order. A failed query is a `query_error()`, and a comparison counts a failure on either side as a mismatch, never as agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_column_returns_the_same_rows_as_heap` | sixteen range and equality predicates on every column type return heap's counts |
+| `test_min_and_max_match_heap_on_every_column` | each column's min and max, answered from the zone maps, equal heap's |
+| `test_the_narrow_range_plan_is_a_columnar_custom_scan` | premise: the narrow-range query plans the columnar scan |
+| `test_a_narrow_range_still_skips_row_groups` | that query removes chunk groups, so the bounds were not widened |
+| `test_the_float_fixture_is_one_chunk_group` | premise: the float table is one group, with NaN and the infinities at its end |
+| `test_a_float_reading_matches_heap` | parametrized by the shell's five names: NaN as the float8 and real maximum, NaN by equality, and each infinity by an equality of its own (an OR never prunes a group) |
+| `test_float_types_are_not_on_the_direct_comparison_list` | the writer's source names no float direct-comparison kind |
+
+## 190. test_catalog_natts.py: every Natts_ constant equals the width of the catalog it sizes
+
+The pytest twin of `test/catalog_natts.sh` (ported for #1341), every check by the shell's name. The `Natts_*` constants in `src/columnar_metadata.c` size the stack arrays handed to `heap_modify_tuple`, which iterates the live tuple descriptor, so a constant smaller than its catalog is a stack overflow (`Natts_options` stayed at 7 when `options` grew to 9, and a RENAME COLUMN on a sorted table aborted the backend). Each constant is compared with the width the LIVE SERVER reports, not the shipped `.sql`, since an upgrade script changes the server without changing any CREATE TABLE text.
+
+### Every test
+
+The source is read with the shell's own patterns; the widths come from `pg_attribute` on the cluster. A failed query is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_metadata_source_is_where_we_think_it_is` | premise: `src/columnar_metadata.c` exists |
+| `test_the_source_defines_natts_constants` | premise: it defines `Natts_*` constants |
+| `test_those_constants_size_arrays` | premise: they size arrays (`[Natts_...]`), so a wrong one is a real overflow |
+| `test_heap_modify_tuple_is_still_called_here` | premise: `heap_modify_tuple`, the consumer, is still called there |
+| `test_each_constant_matches_its_catalogs_width` | parametrized by the constants: each equals its catalog's live width (`Natts_native_storage` addresses `storage`); a catalog absent from the server fails its own premise |
+| `test_every_constant_found_was_swept` | premise: every constant found was compared |
+
+## 191. test_write_fsst_compressed.py: FSST is kept only where it wins after the block compressor
+
+The pytest twin of `test/write_fsst_compressed.sh` (ported for #1341), every check by the shell's name. FSST used to be picked per vector against the raw length, but what reaches disk is the stream after the codec, and FSST turns repetitive text into codes that compress worse than the text did. The writer now keeps FSST only when it is smaller after the codec. Three shapes of 300,000 rows: short `'s' || g` and a repeated md5, where FSST loses under zstd, and an e-mail-like control, where it must be kept. The choice is read from the chunk descriptor (type 8 per vector), which does not depend on the zstd build. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order. A failed query is a `query_error()`. A round-trip reading is `mismatches/rows` over a full join against a heap mirror built from the same generator, never copied from the columnar table, and a vector count says `no vectors` for a column with none, so neither an empty table nor a consistently wrong decoder can read as agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_value_round_trips_where_fsst_is_dropped` | a table with nulls, empty strings and short values matches its heap mirror: `0/300000` |
+| `test_the_null_and_empty_values_survive` | the null, empty and row counts equal the heap's, which holds every row |
+| `test_every_value_round_trips_where_fsst_is_kept` | the e-mail table matches its heap mirror: `0/300000` |
+| `test_fsst_is_not_chosen_for_text_the_codec_compresses_better_alone` | no vector of the short shape under zstd is FSST |
+| `test_fsst_is_not_chosen_where_it_cost_more_write_time_for_a_larger_file` | none of the md5 shape is either |
+| `test_fsst_is_still_chosen_where_it_genuinely_wins` | every vector of the e-mail shape under zstd is FSST: the control a fix that removed FSST, or a wrongly reused verdict, would fail |
+| `test_with_compression_off_fsst_is_still_chosen` | parametrized by the shell's two names: with no codec, the short and md5 shapes keep FSST |
+| `test_values_round_trip_with_compression_off` | the short shape uncompressed matches its heap mirror: `0/300000` |
+
+## 192. test_zonemap_estimate_sample.py: the planner's zone-map sample is one-based, complete and per-column
+
+The pytest twin of `test/zonemap_estimate_sample.sh` (ported for #1341), every check by the shell's name. The zone-map survival estimator prices a restricted columnar scan by sampling row groups and asking the reader's own skip predicates how many survive. Its stride ran over groups 0 to ngroups-1, but group numbers start at 1, so the first probe hit a group that cannot exist and the newest group was never probed, and the same predicate was priced by where its groups sat. Each probe also fetched every column's zone-map rows to read one column's. And the estimate followed the planning session's `stripe_row_limit` rather than the limit the table was written at (#817). The instrument is `idx_tup_fetch` on `pgcolumnar.zone_map`, split into planning (EXPLAIN) and execution, and the estimator's own DEBUG1 report. On a private database, because `pg_stat_reset()` resets the whole database's counters.
+
+### Every test
+
+Each check is its own test over a module fixture that runs every step in the shell's order, each reading on a connection of its own. A failed query is a `query_error()`, refused on either side by name.
+
+| test | what it holds |
+| --- | --- |
+| `test_w_loaded_20000_rows`, `test_n_loaded_20000_rows` | premise: each table holds its 20000 rows |
+| `test_w_carries_the_per_table_stripe_row_limit` | premise: `w` carries the 2000-row option, not the session GUC |
+| `test_w_has_10_row_groups_numbered_1_to_10` | premise: the zone map has groups 1 to 10, so there is no group 0 |
+| `test_the_whole_chunk_row_sorts_first` | premise: the whole-chunk row (vector -1) is the first a per-column probe meets |
+| `test_planning_probes_the_zone_map_at_all` | EXPLAIN fetches zone-map tuples; a failed statement is a failed reading, never a count of 0 |
+| `test_census_planning_reads_one_column_across_all_10_groups_w`, `test_census_planning_reads_one_column_across_all_10_groups_n` | planning fetches exactly 10 tuples on each table: one column, every group |
+| `test_width_the_planners_reads_do_not_scale_with_table_width` | the 30-column and 2-column tables cost planning the same fetches |
+| `test_the_executors_reads_stay_width_independent_too` | so do the executor's |
+| `test_the_estimator_reports_a_session_of_its_own` | the estimator's DEBUG1 report appears |
+| `test_it_probes_once_per_group_across_all_10_groups` | it reports 10 probes |
+| `test_it_opens_zone_map_once_for_the_whole_sample` | and one open of `zone_map` |
+| `test_a_predicate_matches_its_rows` | parametrized by the shell's four names: each predicate returns its rows |
+| `test_a_cost_was_extracted` | premise: all four scan costs were read |
+| `test_the_mirror_pair_shares_a_row_estimate`, `test_the_narrow_pair_shares_a_row_estimate` | premise: each pair has one row estimate, so only survival differs |
+| `test_mirror_the_six_newest_groups_cost_what_the_six_oldest_cost` | the newest and oldest six groups cost the same |
+| `test_narrow_the_two_newest_groups_cost_what_the_two_oldest_cost` | so do the newest and oldest two |
+| `test_a_predicate_matching_nothing_is_floored` | a predicate matching no group costs at least 1 |
+| `test_matching_only_the_last_group_costs_the_one_group_share` | the last group alone costs the same floor |
+| `test_a_pruning_predicate_still_returns_the_right_rows`, `test_a_predicate_matching_nothing_still_returns_no_rows` | the pruned scans return 1000 and 0 rows |
+| `test_gsess_carries_no_per_table_option`, `test_gsess_was_written_at_2000` | premise: `gsess` has no option and 10 groups, written under the session GUC |
+| `test_a_cost_was_extracted_from_both_arms` | premise: both GUC readings gave a cost |
+| `test_the_estimate_does_not_move_with_the_planning_sessions_guc` | planned at the default 150000 and at the written 2000, the cost is the same |
+| `test_the_discount_is_real` | two of ten groups are priced below a full scan |
+| `test_gsess_reads_back_correctly` | `gsess` returns its 4000 rows |
+
+## 193. test_wal_envelope.py: pgColumnar emits only core's WAL, inside RelationTruncate's envelope
+
+The pytest twin of `test/wal_envelope.sh` (ported for #1341), every check by the shell's name. An extension that registers a resource manager or record type of its own ties the WAL stream to its build, so a standby or recovery without that build cannot replay it. Both halves read the source and run no server: the shell with grep and awk, the twin with Python's `re`. The one direct record, `XLOG_SMGR_TRUNCATE` in `PgColumnarTruncateMainFork`, must keep core's crash-safety order.
+
+### Every test
+
+Each check is its own test. Every "none found" count reads `no .c files under ...` when there was no source to scan, and every reading inside the function reads `PgColumnarTruncateMainFork not found` when the function is missing, so an empty or misplaced `src/` cannot pass as "no custom WAL".
+
+| test | what it holds |
+| --- | --- |
+| `test_no_custom_resource_manager_is_registered` | no file under `src/` calls `RegisterCustomRmgr` or defines an `RmgrData` |
+| `test_no_rmgr_id_other_than_the_smgr_truncate_is_used` | every `XLogInsert(RM_...` names `RM_SMGR_ID` |
+| `test_exactly_one_direct_xloginsert_in_the_tree` | one line of `src/*.c` calls `XLogInsert(` |
+| `test_every_other_wal_emitter_is_a_core_full_page_image_helper` | no `GenericXLogFinish` or `XLogRegisterBuffer` in `src/*.c` |
+| `test_pgcolumnartruncatemainfork_was_found` | the function the envelope checks read is there |
+| `test_envelope_step_present` | parametrized by the shell's seven names: each step of the envelope is in the function |
+| `test_envelope_steps_are_ordered` | parametrized by the shell's six names: delay set, critical section entered, record, flush, truncate, delay cleared, critical section left, in that order |
+| `test_the_truncate_record_covers_the_main_fork_only` | the record's flags are `SMGR_TRUNCATE_HEAP`, once |
+| `test_no_fork_mask_other_than_the_heap_fork_is_used_here` | no `SMGR_TRUNCATE_VM`, `_FSM` or `_ALL` in the function |
+
+## 194. test_arrow_nested_import.py: arrays and composites round-trip through Arrow
+
+The pytest twin of `test/arrow_nested_import.sh` (ported for #1341), every check by the shell's name. A table with `int[]`, `text[]` and composite columns is exported with `pgcolumnar.export_arrow` and imported with `pgcolumnar.import_arrow` into a fresh table, which must equal the original: the arrays and composites are rebuilt from the Arrow List and Struct buffers, with NULL arrays, empty arrays, NULL elements and NULL composites all in the fixture. After a DELETE on the source, a fresh export and import must carry the live rows alone.
+
+### Every test
+
+A module fixture on a private database takes every reading in the shell's order; each test asserts one. Each comparison hashes both sides on the server as `pgc_set_hash` does, a failed query is a `query_error()`, the source's side of each agreement reads a sentence unless the source holds the rows it should, and the file lives in `server_dir`, since the backend writes and reads it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_export_writes_every_row` | the export reports 5000 rows |
+| `test_the_import_reads_every_row` | the import reports 5000 rows |
+| `test_the_nested_import_round_trips` | the imported table equals the source, every column as text, read only while the source holds its 5000 rows |
+| `test_the_import_count_matches` | both row counts are numbers and equal, with the source at 5000 (two failed counts, or two empty tables, no longer pass) |
+| `test_the_delete_left_the_live_rows` | premise: the DELETE left 3999 live rows in the source, so the next check has deleted rows to leave out |
+| `test_a_fresh_round_trip_after_a_delete` | a fresh export and import after the DELETE equals the live source, read only while it holds its 3999 rows |
+
+## 195. test_arrow_nested.py: arrays and composites export as Arrow List and Struct
+
+The pytest twin of `test/arrow_nested.sh` (ported for #1341), every check by the shell's name. A columnar table with `int[]`, `text[]` and composite columns, with NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported with `pgcolumnar.export_arrow`. pyarrow reads the file back: the fields must be List, List and Struct, and every one of the 5000 rows must equal the value recomputed from the generator. A table with nested columns and no rows still writes a readable schema-only stream, and a multi-dimensional array is refused rather than flattened.
+
+### Every test
+
+A module fixture on a private database runs the SQL in the shell's order; each test reads the file it needs and asserts one reading. The shell skips whole without pyarrow, so every test declines by the shell's skip name first. The files live in `server_dir`, since the backend writes them, and a file that cannot be read is a failed reading.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_export_writes_every_row` | the export reports 5000 rows |
+| `test_the_fields_are_list_list_struct` | `ia` and `ta` are Lists of int32 and string; `c` is a Struct of `x int32, y string` |
+| `test_every_value_matches_the_generator` | the file holds every id 1..5000 once, and each row equals the generator's (a file short of rows no longer passes) |
+| `test_the_empty_table_writes_no_rows` | the empty table's export reports 0 rows |
+| `test_the_empty_table_writes_a_readable_schema` | its file reads back with 0 rows, a List and a Struct |
+| `test_a_multidimensional_array_is_refused` | the export of a 2-D array fails with the multi-dimensional message (another error no longer passes) |
+
+## 196. test_vm_clear_on_renumber.py: the visibility map is cleared wherever live rows are renumbered
+
+The pytest twin of `test/vm_clear_on_renumber.sh` (ported for #1341), every check by the shell's name. `compact_rewrite` and `recluster` give live rows new row numbers, so each must clear the all-visible bits over the old numbers; otherwise an index-only scan answers from the index for a TID whose group no longer exists. Both halves read the bits with `pgcolumnar.vm_is_visible`, which makes the same call the index-only-scan executor makes. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. Every "cleared" reading is the transition `before->after` and wants `t->f`, so a VACUUM that set no bit cannot pass as a clear. The shell's geometry premises, which exit rather than record, refuse the fixture, so every test errors rather than passes.
+
+A private database does not keep VACUUM's horizon clear (#1875). Any session connected to it whose snapshot is older than the INSERT holds the all-visible marking back, such as an autovacuum worker's ANALYZE whose snapshot starts below an xid open in another database. So each VACUUM repeats until the blocks the arms read are set, up to 100 times, 0.2 s apart.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_vacuum_of_cw_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: VACUUM, retried up to 100 times, set every block Part 1 reads; otherwise names the sessions holding an xmin here (#1875) |
+| `test_vacuum_set_all_visible_on_group_3s_late_block` | premise: VACUUM set group 3's late block all-visible |
+| `test_and_on_the_untouched_control_groups_block` | premise: and group 5's block |
+| `test_the_delete_cleared_the_block_holding_the_deleted_rows` | deleting the front of group 3 takes its first block `t->f` |
+| `test_but_left_group_3s_late_block_all_visible` | premise: the delete left the late block set |
+| `test_and_left_the_control_block_all_visible` | premise: and the control block |
+| `test_compact_rewrite_rewrote_exactly_the_one_qualifying_group` | `compact_rewrite('cw', 0.2)` reports 1 |
+| `test_group_3_is_gone_from_the_catalog` | premise: group 3 has no `row_group` row |
+| `test_rewrite_one_group_cleared_the_retired_groups_late_block` | the late block goes `t->f` through the rewrite alone |
+| `test_a_group_the_rewrite_did_not_touch_keeps_its_all_visible_bit` | control: group 5's block stays `t`, which fails a clear widened to the relation |
+| `test_a_vacuum_of_rc_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: the same for `rc`'s early and late blocks (#1875) |
+| `test_a_vacuum_of_rcctl_set_its_arms_blocks_all_visible_within_the_retry_budget` | premise: and for `rcctl`'s (#1875) |
+| `test_vacuum_set_all_visible_early_in_rc` | premise: an interior early block of `rc` is set |
+| `test_and_late_in_rc` | premise: and an interior late block |
+| `test_and_on_the_control_relation` | premise: and the control relation's block |
+| `test_recluster_reported_reclustering_groups` | `recluster('rc', 'x', 'y')` reports at least one group |
+| `test_recluster_online_cleared_the_old_numbers_early_block` | the early block goes `t->f` |
+| `test_recluster_online_cleared_the_old_numbers_late_block` | the late block goes `t->f` |
+| `test_a_relation_that_was_not_reclustered_keeps_its_all_visible_bits` | control: `rcctl`'s early block stays `t`, which fails a clear that escapes its relation |
+| `test_and_its_late_block_too` | control: and its late block |
+
+## 197. test_arrow_export.py: every exported value equals the heap oracle, and only the documented refusals
+
+The pytest twin of `test/arrow_export.sh` (ported for #1341), every check by the shell's name. A mixed-type columnar table copied from a heap table (NULLs, integer boundaries, NaN and infinities, empty and unicode text, bytea) is exported across more than one record batch, and pyarrow must read every value equal to the heap's. An empty table writes a readable schema-only stream. A heap table and an unsupported column type are refused, each by its own message. Date, time, timestamps, uuid, numeric and json export to the representation each maps to.
+
+### Every test
+
+A module fixture on a private database runs the SQL in the shell's order and reads the heap oracle over the driver with the shell's own expressions; each test asserts one reading. Each file reading requires the oracle to hold the fixture's rows, so two empty sides cannot agree, and the file's row count to equal the oracle's, because rows are compared by id and a row written twice would otherwise collapse into one. The shell skips whole without pyarrow, so every test declines by the shell's skip name first.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_arrow_reports_every_row` | the export reports 20003 rows |
+| `test_arrow_values_match_the_heap_oracle` | the heap holds its 20003 rows, the file as many, and each equals the heap's (NaN equal to NaN) |
+| `test_the_arrow_schema_has_the_expected_types` | int32, int16, int32, int64, float, double, bool, string, binary |
+| `test_an_empty_table_reports_no_rows` | the empty table's export reports 0 rows |
+| `test_an_empty_table_writes_a_readable_stream` | its file reads back with 0 rows and both fields |
+| `test_a_heap_table_is_refused` | a heap table fails with `is not a columnar table` (another error no longer passes) |
+| `test_an_unsupported_column_type_is_refused` | a `point` column fails with its own message |
+| `test_the_extended_export_reports_every_row` | the extended table's export reports 4 rows |
+| `test_extended_values_match_the_heap_oracle` | the heap holds its 4 rows, the file as many, and each extended value equals its canonical form; non-finite dates and timestamps and NaN numerics are null |
+| `test_the_extended_schema_has_the_expected_types` | date32, time64, timestamp with and without UTC, fixed_size_binary(16), decimal128(20, 4), and strings |
+| `test_a_record_batch_is_cut_at_the_byte_cap` | a record batch is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1811) |
+| `test_the_byte_cut_arrow_stream_reads_back_exactly` | and the byte-cut stream reads back every row exactly, by id, length and md5 |
+| `test_a_record_batch_cut_counts_an_int4s_validity_byte` | the byte cut counts an int4's validity byte: 1000 int4 rows under a 1024-byte cap make batches of 204,204,204,204,184 (#1843 review) |
+| `test_a_record_batch_cut_counts_a_numerics_text_form` | the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 batches of 1 |
+| `test_a_record_batch_cut_counts_a_lists_elements_as_written` | the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 batches of 1 |
+| `test_a_record_batch_cut_counts_a_composites_fields_as_written` | the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1843 review) |
+| `test_a_record_batch_cut_counts_a_text_lists_elements_as_written` | the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1843 review) |
+| `test_a_record_batch_cut_counts_an_int_lists_elements_as_written` | the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make batches of 6,6,6,6,6,6,4 (#1843 review) |
+| `test_a_row_larger_than_the_byte_cap_goes_in_a_batch_of_its_own` | a row larger than the byte cap goes in a batch of its own: 3 rows of 2000 bytes under a 1024-byte cap make batches of 1,1,1 (#1843 review) |
+| `test_every_kept_text_reaches_its_own_value_in_the_stream` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them (#1843 review) |
+| `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+
+## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
+
+The pytest twin of `test/vector_agg_tlist_shape.sh` (ported for #1341), every check by the shell's name. Since #755 the ungrouped vectorized path accepts `count(*)::text`, `avg(a)+avg(b)`, `round(avg(a), 2)` and other expressions over aggregates: the node emits bare aggregates and a projection above it computes the expressions. The risk is a wrong answer, so every shape is asserted twice, once for the plan and once for the answer against a heap table holding the same 20,000 rows. On a private database.
+
+### Every test
+
+A plan reads `vectorized`, `not vectorized`, or the failed EXPLAIN as a `query_error()`, so an EXPLAIN that errors cannot read as a decline. An answer is the repr of the row list, which is order-sensitive. The grouped vectorized path is pinned off for the plan readings, because it prints the same marker.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_ordered_oracle_is_order_sensitive` | the three oracle checks: an ordered digest tells two orders apart and agrees with itself, and the set digest does not |
+| `test_both_tables_hold_the_same_rows` | premise: the columnar and heap tables hold the same count |
+| `test_the_sort_column_has_nulls` | premise: column `a` has NULLs for the aggregates to skip |
+| `test_the_shape_takes_the_fast_path` | parametrized by the shell's 17 `...: vectorized` names: each shape plans the vectorized node |
+| `test_the_answer_matches_heap` | parametrized by the shell's 25 answer names: each shape, and each refused shape, answers as the heap does |
+| `test_the_scan_fold_guc_is_off_by_default` | premise: a filtered aggregate declines with the scan-fold GUC at its default |
+| `test_a_bare_aggregate_takes_the_scan_fold_path_with_the_guc_on` | premise: and takes it once the GUC is on |
+| `test_a_wrapped_aggregate_takes_the_scan_fold_path_too` | a wrapped filtered aggregate takes it too |
+| `test_the_shape_still_declines` | parametrized by the shell's 7 `REFUSE:` names: a bare column, an unsupported aggregate, FILTER, DISTINCT, ORDER BY inside an aggregate, and an aggregate over an expression decline |
+| `test_empty_then_all_null_relations_answer_as_heap_does` | an empty pair, then the same pair filled with 500 all-NULL rows, answer the wrapped shape as the heap does, with a premise for each state |
+| `test_a_bare_aggregate_on_the_scan_fold_path_goes_parallel` | premise: the plan has a Gather, a planned worker and the vectorized node |
+| `test_parallel_accepts_a_wrapped_target_list` | parametrized by the shell's three names: wrapped target lists go parallel too |
+| `test_the_parallel_answer_matches_heap` | parametrized by the shell's three names: and their parallel answers equal the heap's |
+
+## 199. test_alter_column_type.py: ALTER COLUMN TYPE converts every value, and the column really changes type
+
+The pytest twin of `test/alter_column_type.sh` (ported for #1341), every check by the shell's name. Phase 2 of ATRewriteTable updates `pg_attribute` before phase 3 scans the old relation, so the scan must decode against the slot core builds from `tab->oldDesc`, not the relation's new descriptor (#178). Each conversion runs on a columnar table and on a heap table of the same shape, and the heap is the oracle.
+
+### Every test
+
+A module fixture on a private database runs every conversion in the shell's order, each statement on a connection of its own; each test asserts one reading. A conversion's reading is `mismatches/rows/type`, so an ALTER that failed and rolled back no longer passes; a corrupt chunk or a lost backend reads `failed: …`. The conversion that crashed the backend runs last, as in the shell.
+
+| test | what it holds |
+| --- | --- |
+| `test_int_to_bigint` | int to bigint: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_bigint_to_int` | bigint to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_smallint_to_int` | smallint to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_smallint` | int to smallint: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_float4_to_float8` | float4 to float8: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_float8_to_float4` | float8 to float4: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_date_to_timestamp` | date to timestamp: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_numeric` | int to numeric: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_int_to_text` | int to text: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_bool_to_int` | bool to int: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_numeric_to_text` | numeric to text: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_to_varchar_64` | text to varchar(64): every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_to_bytea` | text to bytea: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_text_rewritten_by_using` | text rewritten by `USING`: every row matches heap converted the same way, all 20000 rows survive, and the column has the new type |
+| `test_the_column_really_is_bigint_now` | the indexed table's column is `bigint` after its ALTER |
+| `test_an_index_scan_still_finds_a_row_after_the_rewrite` | a scan through `at_ix_i` finds row 10000 with its converted value (a plan with no index scan no longer passes) |
+| `test_an_index_scan_finds_every_row_after_the_rewrite` | a scan through `at_ix_i` over the whole id range finds all 20000 rows (an index missing rows, or no index at all, no longer passes) |
+| `test_the_aggregate_over_the_converted_column_is_right` | `sum(v)` equals the generator's, both numbers |
+| `test_every_row_survived_the_rewrite` | the indexed table still holds 20000 rows |
+| `test_the_nullable_column_really_is_bigint_now` | the nullable column is `bigint` after its ALTER |
+| `test_nulls_stay_on_the_same_rows_through_a_conversion` | no row differs from heap, and the columnar table still holds all 20000 rows |
+| `test_text_to_int_the_crash` | the varlena-to-fixed conversion that dereferenced an integer as a pointer, run last |
+
+## 200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory
+
+The pytest twin of `test/vector_agg_rescan_memory.sh` (ported for #1341), every check by the shell's name. A LATERAL sub-scan re-executes its node once per outer row, and whatever the node leaves in query memory stays there until ExecutorEnd. Three such growths were fixed: an IN-list's scan keys rebuilt per rescan (#717), the vectorized aggregate's own per-rescan arrays (#727), and the plain scan's row-group list (#734). Each claim compares a growth per rescan, a slope across two rescan counts, with a control: the same query without the IN-list, or over a heap table. On a private database.
+
+### Every test
+
+For #717 the twin samples `pg_log_backend_memory_contexts()` from a second connection while the query runs, and takes the largest `ExecutorState` total from the server log. For #727 and #734 it reads the backend's peak RSS (`VmHWM`) before and after each run. A claim reads `no reading` unless both of its slopes were measured, so readers that measured nothing cannot pass as "no growth".
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_loaded` | premise: `vam` holds 50,000 rows |
+| `test_the_in_list_becomes_pushdown_scan_keys` | premise: EXPLAIN ANALYZE shows pushed-down filters for the IN-list |
+| `test_each_arm_produced_a_reading` | parametrized by the shell's four names: each #717 arm logged an ExecutorState peak |
+| `test_an_in_list_does_not_add_per_rescan_query_memory` | the IN-list adds less than 20,000 bytes per rescan over the control (#717) |
+| `test_the_driver_has_enough_rows` | premise: the driver holds 40,000 rows |
+| `test_the_two_rescan_counts_differ` | premise: the two driver limits really give 40,000 and 5,000 rescans |
+| `test_the_heap_mirror_has_the_same_rows` | premise: `vam_heap` and `vam_rs` hold the same count |
+| `test_the_columnar_rescan_arm_is_the_vectorized_aggregate` | premise: the #727 arm plans the vectorized aggregate |
+| `test_both_rescan_slopes_were_measured` | premise: both #727 slopes were read |
+| `test_the_vectorized_aggregate_does_not_grow_query_memory_per_rescan` | the vectorized aggregate grows less than 100 bytes per rescan above the heap floor (#727) |
+| `test_the_rescanned_aggregate_still_returns_the_heaps_answer` | and answers as the heap does |
+| `test_with_the_aggregate_off_the_arm_is_the_plain_columnar_scan` | premise: with the aggregate off, the arm is the plain columnar scan |
+| `test_and_it_is_not_the_vectorized_aggregate_node` | premise: and not the vectorized aggregate |
+| `test_both_plain_scan_slopes_were_measured` | premise: both #734 slopes were read |
+| `test_the_plain_columnar_scan_does_not_grow_query_memory_per_rescan` | the plain scan grows less than 100 bytes per rescan above the heap floor (#734) |
+| `test_the_rescanned_plain_scan_still_returns_the_heaps_answer` | and answers as the heap does |
+| `test_the_pruning_arm_is_on_the_row_path` | premise: the pruning query is on the row path, not the fold |
+| `test_and_it_is_the_vectorized_aggregate_node` | premise: and is the vectorized aggregate |
+| `test_the_row_paths_scan_keys_still_prune` | the row path's scan keys remove at least one chunk group, as work done |
+| `test_the_pruned_query_still_answers_correctly` | and the answer is 10,000 |
+
+## 201. test_analyze_stats.py: ANALYZE collects statistics that agree with heap, and the planner prices what they feed
+
+The pytest twin of `test/analyze_stats.sh` (ported for #1341), every check by the shell's name. The sampler maps each block core chooses to the slice of its row group that the block stands for, and offers that slice's live rows (#154). The statistics are compared with a heap table on identical data; reltuples discriminates against cluster sampling; correlation needs the sampled tuples' item pointers. The fetch-penalty (#355, #362, #376), decode-prefix (#363) and all-visible (#507) checks read plans and costs built from those statistics, and the ANALYZE time cap is checked as a function and on a wide table.
+
+### Every test
+
+A module fixture on a private database builds every table in the shell's order, each statement on a connection of its own; each test asserts one reading. A missing reading never agrees with another: survival also reads the server log's count of killed backends, a statistic ANALYZE did not record is a failed query, and each negative plan check first requires a plan of the table it names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_server_survived_analyze` | the server survived ANALYZE -- and the server log's count of killed backends is unchanged, an unreadable log failing it (a backend SIGKILLed mid-ANALYZE no longer passes) |
+| `test_analyze_now_collects_statistics_at_all` | ANALYZE now collects statistics at all |
+| `test_null_frac_matches_heap` | null_frac matches heap within 0.02 -- both are numbers (two missing statistics no longer agree) |
+| `test_n_distinct_on_status_matches_heap` | n_distinct on status matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_n_distinct_on_v_matches_heap` | n_distinct on v matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_n_distinct_on_nullable_matches_heap` | n_distinct on nullable matches heap -- a missing statistic is a failed query, so two of them no longer agree |
+| `test_most_common_vals_holds_the_same_set_as_heap` | most_common_vals holds the same set as heap |
+| `test_correlation_on_an_ascending_column_is_near_1` | correlation on an ascending column is near 1 |
+| `test_the_sampled_tuples_carry_a_valid_item_pointer` | the sampled tuples carry a valid item pointer |
+| `test_no_row_is_offered_to_the_sampler_twice` | no row is offered to the sampler twice |
+| `test_reltuples_is_within_2_percent_of_the_true_row_count` | reltuples is within 2% of the true row count |
+| `test_n_distinct_on_a_clustered_column_is_within_10_percent` | n_distinct on a clustered column is within 10% of the truth |
+| `test_the_join_plans_as_a_join_rather_than_degenerating` | the join plans as a join rather than degenerating |
+| `test_a_selective_equality_is_estimated_from_the_data` | a selective equality is estimated from the data, not the 0.5% default |
+| `test_a_point_lookup_still_uses_the_index_after_analyze` | a point lookup on an indexed column still uses the index after ANALYZE |
+| `test_having_an_index_available_saves_the_point_lookup_real_work` | having an index available saves the point lookup real work -- both counts were read from a plan (a failed EXPLAIN ANALYZE, which read as 0 rows discarded with the index, no longer passes; found by jdatcmd) |
+| `test_the_cap_is_exposed_as_a_function` | premise: the cap is exposed as a function, not written inline |
+| `test_a_fast_machine_still_gets_the_floor` | a fast machine still gets the floor, not a bound that shrinks with it |
+| `test_a_slow_machine_gets_a_budget_proportional_to_its_insert` | and a slow one gets a budget proportional to its own insert |
+| `test_the_floor_and_the_derived_bound_meet` | the floor and the derived bound meet where they should |
+| `test_one_millisecond_past_the_floor_the_derived_bound_takes_over` | and one millisecond past it the derived bound takes over |
+| `test_a_zero_insert_time_still_yields_the_floor` | a missing or zero insert time still yields the floor, not zero |
+| `test_a_malformed_insert_time_yields_the_floor` | a malformed insert time yields the floor rather than an arithmetic error |
+| `test_an_insert_time_past_int64_yields_the_floor` | and an insert time past int64 yields the floor rather than a cap that cannot fail |
+| `test_analyze_on_a_wide_table_completes_inside_its_cap` | ANALYZE on a wide table completes well inside its derived cap -- and ANALYZE succeeded (a failing one, fast, no longer passes) |
+| `test_without_the_penalty_an_unclustered_order_by_takes_the_index` | without the fetch penalty an unclustered ORDER BY takes the index (#355 premise) |
+| `test_the_penalty_makes_an_unclustered_order_by_sort` | the fetch penalty makes an unclustered ORDER BY sort rather than fetch per row (#355) |
+| `test_the_penalty_leaves_a_clustered_order_by_on_its_index` | the fetch penalty leaves a clustered ORDER BY on its index (#355 must not over-fire) |
+| `test_the_penalty_leaves_a_selective_point_lookup_on_the_index` | the fetch penalty leaves a selective point lookup on the index (#355 vs #171) |
+| `test_without_the_penalty_a_scattered_condition_takes_the_index` | without the penalty a selective scattered condition takes the index (#362 premise) |
+| `test_the_penalty_is_applied_before_the_columnar_path_is_offered` | the penalty is applied before the columnar path is offered, so it can still win (#362) |
+| `test_an_early_columns_short_decode_prefix_stays_on_the_index` | an early column's short decode prefix leaves it on the index (#363) |
+| `test_a_late_columns_wide_decode_prefix_costs_it_off_the_index` | a late column's wide decode prefix costs it off the index (#363) -- in a plan that scans o363 (a failed EXPLAIN no longer passes) |
+| `test_a_small_limit_still_reaches_the_index` | a small LIMIT still reaches the index through the fetch penalty (#376) |
+| `test_the_bound_does_not_disable_the_penalty_for_a_full_read` | the bound does not disable the penalty for a full ordered read (#376) |
+| `test_vacuum_recorded_all_visible_pages` | premise: VACUUM recorded all-visible pages to price with (#507) |
+| `test_the_selective_range_has_its_rows` | premise: the selective range has its rows (#507) |
+| `test_a_vacuumed_columnar_table_can_reach_an_index_only_scan` | a vacuumed columnar table can reach an index-only scan (#507) |
+| `test_the_all_visible_fraction_does_not_hand_every_query_to_the_index` | the all-visible fraction does not hand every query to the index (#507) |
+| `test_both_all_visible_estimates_were_taken` | premise: both estimates were taken (#507) |
+| `test_the_all_visible_pages_buy_the_index_only_scan_a_saving` | the all-visible pages buy the index-only scan a saving (#507) -- the index scan's cost minus the index-only scan's is positive after VACUUM (a fraction hardcoded to zero, which still gets the index-only plan here, no longer passes) |
+| `test_growth_without_vacuum_does_not_inflate_the_saving` | growth without vacuum does not inflate the all-visible saving (#507) -- both estimates were taken (a missing grown estimate no longer passes) |
+
+## 202. test_vacuum_stripe_count.py: pgcolumnar.vacuum refuses a stripe_count bound rather than ignoring it
+
+The pytest twin of `test/vacuum_stripe_count.sh` (ported for #1341), every check by the shell's name. `stripe_count` was documented as bounding how many row groups one vacuum combines, but the code never read it. It cannot simply be honoured, because the compaction swaps the relation to a new relfilenode, so a non-default value is refused, with a hint naming `pgcolumnar.compact_rewrite`, which does bound its work. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. A call reads `noerror`, `connfail` or `SQLSTATE <code>: <message>`, so an unreachable server cannot read as success. A refusal reads `refused` only for pgcolumnar's own message, so any other error reads as itself. The bounded rewrite is read as work: how many groups it rewrote, and how many still hold deleted rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_err_reports_a_clean_call` | premise: the reader says `noerror` for `SELECT 1` |
+| `test_err_reports_a_real_error` | premise: and `SQLSTATE 22012: division by zero` for `SELECT 1/0` |
+| `test_err_cannot_mistake_an_unreachable_server_for_success` | premise: and `connfail` for port 1 |
+| `test_the_fixture_constants_are_non_zero` | premise: six groups of 1,000 rows |
+| `test_the_whole_fixture_fits_in_one_stripe` | premise: so combining them is possible |
+| `test_the_fixture_has_several_row_groups` | premise: the table has six row groups |
+| `test_the_fixture_has_its_rows` | premise: and 6,000 rows |
+| `test_the_one_argument_form_still_vacuums` | `vacuum('vsc')` succeeds |
+| `test_it_combined_the_groups` | and leaves one group |
+| `test_it_preserved_every_row` | and 6,000 rows |
+| `test_the_explicit_default_zero_is_still_accepted` | `vacuum('vsc', 0)` succeeds |
+| `test_zero_also_did_the_work` | and leaves one group |
+| `test_a_non_default_stripe_count_is_refused` | `vacuum('vsc', 4)` fails with pgcolumnar's own refusal |
+| `test_the_refusal_names_compact_rewrite` | one diagnostic field names `compact_rewrite` |
+| `test_the_name_is_offered_as_a_hint` | and it is the HINT |
+| `test_the_refused_call_did_no_work` | the six groups are untouched |
+| `test_no_rows_were_lost_to_it` | and the 6,000 rows |
+| `test_vacuum_full_inherits_the_refusal` | `vacuum_full('public', 0.0, 4)` fails with the same refusal |
+| `test_the_refused_vacuum_full_did_no_work` | the six groups are untouched |
+| `test_vacuum_fulls_default_form_still_works` | `vacuum_full('public', 0.0)` succeeds |
+| `test_vacuum_full_combined_the_groups` | and leaves one group |
+| `test_compact_rewrites_bounded_form_is_accepted` | premise: `compact_rewrite('vsc', 0.1, 2)` succeeds |
+| `test_the_named_alternative_rewrote_exactly_its_bound` | it rewrote 2 of 6 groups, and 4 still hold deleted rows |
+## 203. test_bloom_sizing.py: a bloom filter is sized by its distinct count, and still skips
+
+The pytest twin of `test/bloom_sizing.sh` (ported for #1341), every check by the shell's name. Two columns of one row group differ only in cardinality, so a difference in their stored filter sizes can only be cardinality (#467). A smaller filter must still skip: a scattered fixture where zone maps exclude nothing must report groups removed by the probe, and the answer must not change with the filter off. Above the distinct cap a column is refused a filter, while a five-value column of the same row group keeps its own.
+
+### Every test
+
+A module fixture on a private database builds the three tables in the shell's order; each test asserts one reading. A reading is a value or a failed query, never a default: a missing filter row is not a size.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_row_of_the_sizing_table_loaded` | premise: every row loaded |
+| `test_the_sizing_table_is_one_row_group` | premise: the whole table is one row group |
+| `test_the_low_cardinality_column_really_is_low` | premise: the low-cardinality column really is low |
+| `test_the_high_cardinality_column_really_is_high` | premise: the high-cardinality column really is high |
+| `test_the_low_cardinality_filter_size_is_a_measurement` | premise: the low-cardinality filter size is a measurement |
+| `test_the_high_cardinality_filter_size_is_a_measurement` | premise: the high-cardinality filter size is a measurement |
+| `test_a_five_value_column_does_not_get_a_unique_columns_filter` | a five-value column does not get a unique column's filter (#467) |
+| `test_a_value_that_is_absent_is_still_reported_absent` | a value that is absent is still reported absent |
+| `test_a_value_that_is_present_is_still_found` | and a value that is present is still found |
+| `test_results_are_identical_with_the_bloom_filter_and_without_it` | results are identical with the filter and without it |
+| `test_the_skip_fixture_has_many_row_groups` | premise: the skip fixture has many row groups to skip |
+| `test_the_skip_counter_is_reported_with_the_probe_on` | premise: the skip counter is reported with the probe on |
+| `test_the_skip_counter_is_reported_with_the_probe_off` | premise: the skip counter is reported with the probe off |
+| `test_zone_maps_alone_skip_nothing_on_the_bloom_fixture` | premise: zone maps alone skip nothing on this fixture |
+| `test_the_bloom_filter_still_skips_groups_it_can_prove_empty` | the filter still skips groups it can prove empty (#467) |
+| `test_one_row_group_holds_more_than_the_refusal_threshold` | premise: one row group holds more than the refusal threshold |
+| `test_the_values_above_the_threshold_really_are_distinct` | premise: those values really are distinct |
+| `test_a_column_above_the_distinct_cap_is_refused_a_filter` | a column above the distinct cap is refused a filter, not given a bad one -- read as refused/kept against a five-value column in the same row group (a build that writes no filter no longer passes) |
+| `test_the_large_load_itself_succeeded` | and the load itself succeeded, rather than erroring on the way |
+
+## 204. test_vacuum_sorted_gate.py: pgcolumnar.vacuum_sorted skips its rewrite only when there is nothing to do
+
+The pytest twin of `test/vacuum_sorted_gate.sh` (ported for #1341), every check by the shell's name. vacuum_sorted both orders the live rows and reclaims deleted rows' space, so its gate (#760) may skip only when the relation is already one lexicographic run over exactly this key, with nothing appended and nothing deleted. The check this suite exists for is that deleted rows defeat the gate. On a private database.
+
+### Every test
+
+Each check is its own test over a module fixture that runs the shell's steps in order. A rewrite is read from the storage id, which moves on a rewrite and not on a skip; the no-op checks also require the row-group layout to be unchanged. A call that fails, or a reading that is missing, reads as itself, never as "no-op". The heap mirror for the last check is built from the generator, not copied from the table under test.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_first_vacuum_sorted_does_real_work` | premise: the first `vacuum_sorted('vg_t','k','j')` rewrites |
+| `test_it_recorded_a_lexicographic_run` | premise: the mark is `lexicographic` |
+| `test_over_exactly_the_requested_key` | premise: over `{k,j}` |
+| `test_the_run_covers_the_whole_relation` | premise: 0 appended groups |
+| `test_nothing_is_deleted_yet` | premise: 0 deleted rows |
+| `test_a_second_call_on_the_same_key_does_not_rewrite` | the second call succeeds and moves neither storage nor layout |
+| `test_a_third_identical_call_is_also_a_no_op` | and so does the third |
+| `test_the_relation_is_still_in_order_after_the_skips` | the rows are still in (k,j) order |
+| `test_the_delete_left_dead_rows_inside_the_run` | premise: deleting the even ids leaves dead rows and appends nothing |
+| `test_an_ordering_only_gate_would_see_nothing_to_do` | premise: the mark still reads `lexicographic/{k,j}` |
+| `test_dead_rows_force_a_rewrite` | with dead rows, the call rewrites |
+| `test_it_reclaimed_the_space` | and 0 deleted rows remain |
+| `test_without_losing_a_live_row` | and the live row count is unchanged |
+| `test_the_call_after_the_reclaim_is_a_no_op_again` | the next call is a no-op again |
+| `test_the_insert_appended_groups_outside_the_run` | premise: inserting 5,000 rows appends groups |
+| `test_an_append_forces_a_rewrite` | after an append, the call rewrites |
+| `test_the_tail_is_folded_back_into_the_run` | and 0 appended groups remain |
+| `test_a_different_key_rewrites` | `vacuum_sorted` by (j,k) rewrites |
+| `test_the_new_key_is_recorded` | and records `{j,k}` |
+| `test_a_prefix_of_the_key_rewrites` | `vacuum_sorted` by (k) alone rewrites |
+| `test_cluster_recorded_a_zorder_run` | premise: `cluster('vg_z','k','j')` records `zorder/{k,j}` |
+| `test_the_zordered_table_is_not_in_k_order` | premise: and the rows are not in k order |
+| `test_a_zorder_run_forces_a_rewrite` | `vacuum_sorted` over that run rewrites |
+| `test_the_result_is_in_kj_order` | and the rows come out in (k,j) order |
+| `test_the_kind_is_now_lexicographic` | and the mark is `lexicographic` |
+| `test_a_plain_vacuum_leaves_no_mark` | premise: a plain `vacuum()` clears the mark |
+| `test_vacuum_sorted_after_a_plain_vacuum_rewrites` | so the next `vacuum_sorted` rewrites |
+| `test_the_tail_is_smaller_than_the_chunk_group_limit` | premise: the 500-row tail is below the 1,000-row group limit |
+| `test_an_insert_in_the_same_transaction_defeats_the_gate` | an insert then `vacuum_sorted` in one transaction leaves the rows in order |
+| `test_every_row_is_still_there` | and 20,500 rows remain |
+| `test_nothing_is_deleted_before_the_transaction` | premise: 0 deleted rows |
+| `test_a_delete_in_the_same_transaction_defeats_the_gate` | a delete then `vacuum_sorted` in one transaction leaves 0 deleted rows |
+| `test_the_rewrite_really_happened` | and 10,000 rows are stored |
+| `test_the_gated_calls_preserved_the_exact_row_set` | `vg_t` holds exactly the rows the generator says it should |
+
+## 205. test_ungrouped_vector_agg.py: the ungrouped vectorized aggregate returns what core Agg returns
+
+The pytest twin of `test/ungrouped_vector_agg.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.enable_ungrouped_vector_agg` routes an ungrouped aggregate that a zone map cannot answer to a single-pass scan-fold node (#289). On a private database, with serial execution pinned in both arms.
+
+### Every test
+
+A module fixture runs the shell's steps in order. An on/off pair reads `same (VALUE)` only when both sides returned a value; an error or empty side reads `no reading`. Every fixture is held to its row count first, since over an empty table every aggregate agrees with itself. A plan counts as "no vectorized node" only when it has an Aggregate at all.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_holds_its_rows` | premise: `t` has 60,000 rows |
+| `test_the_node_is_used_with_the_setting_on` | premise: the plan has the vectorized node with the setting on |
+| `test_core_agg_runs_with_the_setting_off` | premise: with it off, the plan is a core Agg |
+| `test_the_filter_is_pushed_into_the_scan` | premise: EXPLAIN shows the pushed-down filter |
+| `test_an_eligible_shape_uses_the_batch_fold` | premise: `Batch Fold: yes` for float sum/avg/count |
+| `test_min_max_falls_back_off_the_batch_fold` | premise: `Batch Fold: no` for min/max |
+| `test_the_fold_matches_core_agg` | 19 on/off pairs over `t`: filtered and unfiltered sum/avg over int, int8, float and numeric, count, min/max, all rows filtered out, a NULL-heavy column, and the metadata path |
+| `test_the_all_null_fixture_holds_its_rows` | premise: `t_allnull` has 5,000 rows |
+| `test_an_all_null_column_matches_core_agg` | sum and avg over an all-NULL column read `same (NULL)` |
+| `test_the_fold_matches_core_agg_after_deletes` | avg and count still match after three deletes |
+| `test_the_fold_prunes_groups_on_a_clustered_filter` | EXPLAIN ANALYZE shows groups removed by the fold (#349) |
+| `test_the_fold_prunes_the_same_groups_as_the_row_path` | the same number as the row path |
+| `test_the_clustered_fold_matches_core_agg` | and the same answer |
+| `test_the_server_is_still_up` | `SELECT 1` answers |
+| `test_uuid_is_fixed_width_but_not_by_value` | premise: uuid is `16/false` |
+| `test_the_varlena_fixture_holds_its_rows` | premise: `vfold` and its heap mirror have 200,000 rows each |
+| `test_the_varlena_fixture_is_columnar` | premise: `vfold` uses pgcolumnar |
+| `test_a_shape_agrees_with_heap` | 10 shapes over text, uuid and name columns, and the `<>` clause (#715), each equal to the heap mirror |
+| `test_the_batch_fold_decision` | a fixed-width filter folds; text, uuid, name and `<>` fall back, and EXPLAIN says so (#423, #715) |
+| `test_the_numeric_fixture_holds_its_rows` | premise: `vnum` and `vnumc` have 20,000 rows each |
+| `test_the_vectorized_node_count` | premise: float8 takes the node; sum(numeric), avg(numeric) and a mixed query do not (#785) |
+| `test_a_refused_numeric_aggregate_matches_heap` | the refused queries still equal the heap mirror |
+
+## 206. test_tablesample.py: TABLESAMPLE on a columnar table raises 0A000
+
+The pytest twin of `test/tablesample.sh` (ported for #1341), every check by the shell's name. The planner hooks used to replace Sample Scan with the custom scan or a vectorized aggregate, which answered every row; the contract is the error. On a private database, with serial planning pinned as the shell's cluster pins it.
+
+### Every test
+
+A statement reads as the SQLSTATE it raised, `00000` when it ran, or `no reading` when the server could not be reached.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_holds_its_rows` | premise: `n` has 10,000 rows |
+| `test_a_sampled_shape_raises_0a000` | count, sum, SYSTEM, a projection and a grouped query over `TABLESAMPLE` each raise 0A000 |
+| `test_a_control_raises_nothing` | an unsampled count, and the same sample on a heap table, raise nothing |
+## 207. test_bloom_setting.py: enable_bloom_filter governs the write side too
+
+The pytest twin of `test/bloom_setting.sh` (ported for #1341), every check by the shell's name. The setting was consulted only by the reader, so turning it off still hashed every value and stored a filter for every chunk. With it off nothing is written, a chunk written with no filter still answers equality in both directions, and a projection, written through its own write state, gets its own filters.
+
+### Every test
+
+A module fixture on a private database builds the tables in the shell's order; each test asserts one reading. A reading carries what it was read over, so a load that failed cannot pass as "no filters" or "no mismatch".
+
+| test | what it holds |
+| --- | --- |
+| `test_filters_are_written_when_the_setting_is_on` | filters are written when the setting is on |
+| `test_no_filters_are_written_when_the_setting_is_off` | no filters are written when the setting is off -- over the 20000 rows the table holds (a load that failed no longer passes) |
+| `test_written_off_read_on_finds_a_present_value` | written off, read with the setting on: present value found |
+| `test_written_off_read_on_does_not_find_an_absent_value` | written off, read with the setting on: absent value not found |
+| `test_written_off_read_off_finds_a_present_value` | written off, read with the setting off: present value found |
+| `test_written_off_read_off_does_not_find_an_absent_value` | written off, read with the setting off: absent value not found |
+| `test_written_on_read_off_finds_a_present_value` | written on, read with the setting off: present value found |
+| `test_a_full_scan_of_the_unfiltered_table_is_complete` | a full scan of the unfiltered table is complete |
+| `test_the_filtered_and_unfiltered_tables_hold_identical_data` | the two tables hold identical data -- read as mismatches of rows compared (two empty tables no longer pass) |
+| `test_a_projection_still_gets_filters_when_the_setting_is_on` | a projection still gets filters when the setting is on -- counted on the projection's own storage (a projection written without filters no longer passes) |
+| `test_the_projected_table_reads_correctly` | the projected table reads correctly |
+
+## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
+
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+A module fixture runs the shell's steps in order. A vacuum_sorted call is read by the storage id: `noop`, `rewrote`, `call failed`, or `no reading`. A plan with no scan in it is `no plan`. Every fixture is held to its row count.
+
+| test | what it holds |
+| --- | --- |
+| `test_vr_ctl_loaded_every_row` | premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_before_sorting_a_is_not_in_order` | premise: before sorting, a is not in order |
+| `test_vacuum_sorted_really_ordered_it` | premise: vacuum_sorted really ordered it by a |
+| `test_a_second_identical_call_is_a_no_op` | CONTROL: a second identical call is a no-op, so the gate does fire |
+| `test_vr_t_loaded_every_row` | premise: vr_t loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_vr_t_is_ordered_by_a` | premise: vr_t is ordered by a |
+| `test_vr_t_is_not_ordered_by_b` | premise: and NOT by b |
+| `test_the_mark_records_a` | premise: the mark records key {a} |
+| `test_after_the_swap_b_is_ordered` | premise: after the swap the ordered column is the one now named b |
+| `test_after_the_swap_a_is_not_ordered` | premise: and the column now named a is NOT ordered |
+| `test_the_mark_follows_the_rename` | the mark FOLLOWS the rename, so it still names the ordered column |
+| `test_vacuum_sorted_after_the_swap_does_the_work` | THE POINT: vacuum_sorted('a') after the swap does the work |
+| `test_the_table_is_ordered_by_a_afterwards` | and the table really is ordered by a afterwards |
+| `test_the_gate_still_fires_for_the_right_key` | the gate still fires for the right key after all that |
+| `test_vr_o_loaded_every_row` | premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_an_unrelated_rename_leaves_the_mark` | renaming an unrelated column does not disturb the mark |
+| `test_an_unrelated_rename_does_not_rewrite_the_storage_row` | and does not rewrite the storage row at all (xmin unchanged) |
+| `test_xmin_can_move` | premise: xmin CAN move, so the arm above is not comparing two constants |
+| `test_the_gate_still_fires_after_an_unrelated_rename` | and the gate still fires |
+| `test_the_partition_holds_every_row` | premise: the partition holds every row |
+| `test_the_partition_is_ordered_and_marked` | premise: the partition is ordered by k and its mark says so |
+| `test_the_parent_is_not_columnar` | premise: the parent is NOT itself columnar, so gating on it would skip the child |
+| `test_after_the_swap_the_partitions_ordered_column_is_j` | premise: after the swap the partition's ordered column is named j |
+| `test_after_the_swap_the_partitions_k_is_not_ordered` | premise: and the column now named k is NOT ordered |
+| `test_the_partitions_mark_follows_a_rename_on_the_parent` | the PARTITION's mark follows a rename issued on the parent |
+| `test_vacuum_sorted_on_the_partition_does_the_work` | so vacuum_sorted on the partition does the work |
+| `test_the_partition_is_ordered_by_k_afterwards` | and the partition really is ordered by k afterwards |
+| `test_the_inheritance_child_is_ordered` | premise: the inheritance child is ordered by k |
+| `test_the_childs_mark_follows_a_rename_on_the_parent` | the CHILD's mark follows a rename issued on the parent |
+| `test_vacuum_sorted_on_the_child_does_the_work` | so vacuum_sorted on the child does the work |
+| `test_with_the_mark_true_order_by_needs_no_sort` | premise: with the mark true, ORDER BY k needs no Sort |
+| `test_after_the_swap_order_by_plans_a_sort` | after the swap, ORDER BY on the now-unordered column plans a Sort |
+| `test_the_rows_come_back_ordered` | THE WRONG-ANSWER ARM: and the rows really do come back ordered |
+| `test_order_by_on_the_ordered_column_needs_no_sort` | and ORDER BY on the column that IS ordered still needs no Sort |
+| `test_sb_loaded_every_row` | premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate) |
+| `test_a_bare_vacuum_sorted_used_the_declared_key` | premise: a bare vacuum_sorted() used the declared key |
+| `test_the_declared_key_follows_the_rename` | the DECLARED key follows the rename too |
+| `test_the_two_catalogs_still_agree` | so the two catalogs still agree after the rename |
+| `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
+| `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
+| `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
+| `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |
+| `test_rr_t_loaded_every_row` | premise: rr_t loaded every row |
+| `test_the_mark_records_a_zorder_run` | premise: the mark records {a,b} as zorder |
+| `test_the_mark_follows_both_renames` | the mark follows both renames |
+| `test_recluster_on_the_new_key_is_not_skipped` | recluster on the NEW (a,b) is not skipped as already done |
+
+## 209. test_sort_status_privilege.py: sort_status answers whoever may SELECT the table, and only them
+
+The pytest twin of `test/sort_status_privilege.sh` (ported for #1341), every check by the shell's name. sort_status reads catalogs that carry no GRANT, so it runs with definer rights and gates the real caller itself (#608). Run as three non-superuser roles created for the module: the owner, a role granted SELECT, and a role with nothing. On a private database.
+
+### Every test
+
+A call made as a role reads the first column of its first row, or its failure as `SQLSTATE <code>: <message>`, so a refusal is matched on its message as in the shell.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_owner_can_open_a_session` | premise: the owner can open a session |
+| `test_the_no_privilege_role_can_open_a_session` | premise: the no-privilege role can open a session |
+| `test_the_owner_really_owns_the_table` | premise: t_ssowner really owns the table |
+| `test_none_of_the_roles_is_a_superuser` | premise: none of these roles is a superuser |
+| `test_the_owner_can_read_its_table` | premise: the owner can read its own table by ordinary SQL |
+| `test_the_no_privilege_role_cannot_read_the_table` | premise: the no-privilege role cannot read it by ordinary SQL |
+| `test_the_catalogs_are_not_readable` | premise: the catalog tables are NOT readable by these roles, so a GRANT is not the fix |
+| `test_the_owner_can_read_its_sort_status` | the OWNER of the table can read its sort status |
+| `test_a_grantee_can_read_the_sort_status` | a role merely GRANTed select can read it too |
+| `test_the_owner_sees_its_sorted_run` | the owner sees its sorted run, not a false empty |
+| `test_a_role_with_no_privilege_is_refused_its_sort_status` | a role with no privilege on the table is refused |
+| `test_the_refusal_names_the_table` | and the refusal names the TABLE, not a catalog table it never asked about |
+| `test_a_superuser_still_reads_the_sort_status` | a superuser still reads sort status |
+| `test_a_heap_table_is_refused_for_privilege_before_its_kind_is_read` | a role with no privilege on a heap table is refused for privilege, not told it is not columnar |
+| `test_a_superuser_is_told_a_heap_table_is_not_columnar` | a superuser asking about a heap table is told it is not columnar |
+## 210. test_bloom_lazy.py: a scan reads the bloom filters of the groups and columns it examines
+
+The pytest twin of `test/bloom_lazy.sh` (ported for #1341), every check by the shell's name. Two tables differ only in how many groups a one-group equality scan skips (6 and 30), so the bloom blocks they fetch, read from `pg_stat_get_blocks_fetched` on `pgcolumnar.bloom`, must not grow with the skipped groups (#310); on a wide table where no group is excluded, six equality predicates must fetch more than one (#314). The answers are compared with a heap mirror, with and without bloom filters.
+
+### Every test
+
+A module fixture on a private database builds the tables in the shell's order, with no parallel workers as the shell's cluster has; each test asserts one reading. A missing block count is a failed query rather than 0, and the kept group must have read a block, so "nothing was read" cannot pass as "nothing extra was read".
+
+| test | what it holds |
+| --- | --- |
+| `test_the_small_table_has_the_groups_it_should` | the small table has the groups it should |
+| `test_the_large_table_has_the_groups_it_should` | the large table has the groups it should |
+| `test_the_small_scan_keeps_one_group` | the small scan keeps one group |
+| `test_the_large_scan_keeps_one_group` | the large scan keeps one group |
+| `test_bloom_reads_do_not_follow_the_skipped_groups` | bloom reads do not follow the skipped groups -- the 24 groups the large table adds read fewer than 12 bloom blocks, and the kept group read at least one (the bloom fetched for every skipped group, or never, no longer passes) |
+| `test_the_control_query_really_does_keep_every_group` | the control query really does keep every group |
+| `test_a_scan_that_keeps_every_group_reads_more` | a scan that keeps every group reads more |
+| `test_equality_on_the_segment_key_agrees_with_the_heap` | equality on the segment key agrees with the heap |
+| `test_equality_that_no_group_holds_agrees_with_the_heap` | equality that no group holds agrees with the heap |
+| `test_equality_on_a_scattered_column_agrees_with_the_heap` | equality on a scattered column agrees with the heap |
+| `test_two_equality_predicates_agree_with_the_heap` | two equality predicates agree with the heap |
+| `test_a_range_predicate_still_agrees_with_the_heap` | a range predicate still agrees with the heap |
+| `test_full_set_parity_with_the_heap_mirror` | full set parity |
+| `test_results_agree_with_bloom_filters_disabled` | results agree with bloom filters disabled |
+| `test_an_absent_value_agrees_with_bloom_filters_disabled` | an absent value agrees with bloom filters disabled |
+| `test_no_wide_group_is_excluded` | no group is excluded, so every predicate is reached |
+| `test_bloom_reads_follow_the_columns_a_query_filters_on` | bloom reads follow the columns a query filters on |
+| `test_one_predicate_costs_well_less_than_six` | one predicate costs well less than six |
+| `test_the_filtered_answers_agree_with_a_heap_mirror` | the filtered answers agree with a heap mirror |
+| `test_six_predicates_give_the_same_answer_as_one_here` | six predicates give the same answer as one here |
+
+## 211. test_sort_status.py: sort_status reports how much of an ordered table is still in its run
+
+The pytest twin of `test/sort_status.sh` (ported for #1341), every check by the shell's name. sort_status splits a table's row groups into the sorted run, recorded by the last vacuum_sorted, cluster or recluster, and the groups appended since (#301). Followed through one table's life: unsorted, sorted, with a tail, re-sorted, rewritten unsorted, clustered, reclustered, with groups retired by compact_rewrite, and after a delete. On a private database.
+
+### Every test
+
+Each value is the first column as text, or a failed query, so two failed reads never agree. A check comparing two sort_status readings is numeric.
+
+| test | what it holds |
+| --- | --- |
+| `test_groups_written` | groups written |
+| `test_an_unsorted_table_reports_no_sorted_groups` | unsorted table reports no sorted groups |
+| `test_an_unsorted_table_reports_every_group_appended` | unsorted table reports every group appended |
+| `test_an_unsorted_table_reports_no_sorted_rows` | unsorted table reports no sorted rows |
+| `test_an_unsorted_table_reports_every_row_appended` | unsorted table reports every row appended |
+| `test_no_declared_sort_key_yet` | no declared sort key yet |
+| `test_the_sort_rewrote_into_a_new_storage` | the sort rewrote into a new storage |
+| `test_rows_survived_the_sort` | rows survived the sort |
+| `test_the_table_is_physically_ordered_on_k` | the table is physically ordered on k |
+| `test_a_fresh_sort_reports_every_group_sorted` | a fresh sort reports every group sorted |
+| `test_a_fresh_sort_reports_no_decay` | a fresh sort reports no decay |
+| `test_a_fresh_sort_reports_every_row_sorted` | a fresh sort reports every row sorted |
+| `test_a_fresh_sort_reports_no_appended_rows` | a fresh sort reports no appended rows |
+| `test_the_sorted_extent_did_not_move` | the sorted extent did not move |
+| `test_appended_groups_appeared` | appended groups appeared |
+| `test_appended_rows_are_counted` | appended rows are counted |
+| `test_sorted_rows_are_unchanged` | sorted rows are unchanged |
+| `test_the_totals_add_up` | the totals add up |
+| `test_the_table_is_no_longer_fully_ordered` | the table is no longer fully ordered |
+| `test_re_sorting_clears_the_appended_tail` | re-sorting clears the appended tail |
+| `test_re_sorting_counts_every_row_as_sorted` | re-sorting counts every row as sorted |
+| `test_re_sorting_reports_no_appended_rows` | re-sorting reports no appended rows |
+| `test_an_unsorted_rewrite_reports_no_sorted_groups` | an unsorted rewrite reports no sorted groups |
+| `test_an_unsorted_rewrite_reports_no_sorted_rows` | an unsorted rewrite reports no sorted rows |
+| `test_an_unsorted_rewrite_reports_every_row_appended` | an unsorted rewrite reports every row appended |
+| `test_cluster_reports_no_decay` | cluster reports no decay |
+| `test_cluster_counts_every_row_as_sorted` | cluster counts every row as sorted |
+| `test_the_unsorted_rewrite_cleared_the_mark_again` | the unsorted rewrite cleared the mark again |
+| `test_recluster_records_its_extent` | recluster records its extent |
+| `test_recluster_reports_no_decay` | recluster reports no decay |
+| `test_recluster_counts_every_row_as_sorted` | recluster counts every row as sorted |
+| `test_recluster_reports_no_appended_rows` | recluster reports no appended rows |
+| `test_rows_inserted_after_recluster_are_appended` | rows inserted after recluster are appended |
+| `test_the_reclustered_rows_are_still_counted_as_sorted` | the reclustered rows are still counted as sorted |
+| `test_a_group_was_rewritten_out_of_the_run` | a group was rewritten out of the run |
+| `test_the_run_lost_the_retired_groups` | the run lost the retired groups |
+| `test_the_replacement_counts_as_appended` | the replacement counts as appended |
+| `test_the_totals_still_add_up` | the totals still add up |
+| `test_the_declared_sort_key_is_reported` | the declared sort key is reported |
+| `test_an_empty_table_reports_no_groups` | an empty table reports no groups |
+| `test_an_empty_table_reports_no_sorted_groups` | an empty table reports no sorted groups |
+| `test_an_empty_table_reports_no_appended_rows` | an empty table reports no appended rows |
+| `test_the_delete_removed_rows` | the delete removed rows |
+| `test_a_delete_leaves_the_sorted_extent_alone` | a delete leaves the sorted extent alone |
+| `test_a_delete_leaves_no_appended_tail` | a delete leaves no appended tail |
+| `test_live_rows_dropped_by_the_deleted_count` | live rows dropped by the deleted count |
+| `test_the_mark_covers_the_runs_last_group` | the mark covers the run's last group |
+| `test_the_storage_the_sort_abandoned_is_gone` | the storage the sort abandoned is gone |
+| `test_dropping_the_table_removes_the_storage_row` | dropping the table removes the storage row |
+
+## 212. test_smoke.py: a columnar table stores rows and gives them back
+
+The pytest twin of `test/smoke.sh` (ported for #1341), every check by the shell's name. The shell starts a throwaway cluster with pgcolumnar preloaded; the twin uses the harness cluster, which preloads it too, on a private database, so the orphan count reads only this module's tables.
+
+### Every test
+
+A failed step stops the fixture, as `set -e` stops the shell, and every reading is a value or a failed query.
+
+| test | what it holds |
+| --- | --- |
+| `test_count_star` | count(*) |
+| `test_count_where_a_lt_50` | count where a<50 |
+| `test_order_by_a_limit_3` | order by a limit 3 |
+| `test_no_nulls_in_t_b` | no nulls in t.b |
+| `test_null_table_rows` | null table rows |
+| `test_null_table_nulls` | null table nulls |
+| `test_null_table_value` | null table value |
+| `test_orphan_stripes` | orphan stripes |
+| `test_native_catalog_tables` | native catalog tables |
+
+## 213. test_server_file_privilege.py: every server-file function is gated like COPY
+
+The pytest twin of `test/server_file_privilege.sh` (ported for #1341), every check by the shell's name. Each of 25 entry points is called as a role with neither server-file role, which must be refused by the gate its direction needs, and as a role with both, which must get past it. Then every function in the install script that takes a path or filename must be one of them. On a private database.
+
+### Every test
+
+A call reads `refused` when the reply names the gate role, `passed` when it does not, and `no reading` when `SET ROLE` never took effect.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_role_with_nothing_is_refused_by_the_gate` | one test per row of `REFUSED` (25 rows, four of them the text[] namespace forms and the level listing of #1865), each by the shell's name |
+| `test_the_privileged_role_gets_past_the_gate` | one test per row of `PASSED` (25 rows, four of them the text[] namespace forms and the level listing of #1865), each by the shell's name |
+| `test_a_file_function_is_covered_by_the_boundary_test` | one test per row of `COVERED` (15 rows), each by the shell's name |
+| `test_the_install_script_defines_no_unnamed_file_function` | the install script defines no file function this suite does not name |
+| `test_the_coverage_check_found_the_file_functions` | coverage check found the file functions (not an empty scan) |
+| `test_path_glob_matches_needs_no_server_file_role` | path_glob_matches reads no file, so a role with no server-file role may call it (#1957) |
+## 214. test_autovacuum.py: the maintenance daemon compacts and reclusters only while it is on
+
+The pytest twin of `test/autovacuum.sh` (ported for #1341), every check by the shell's name. With `pgcolumnar.autovacuum` off a deleted-heavy table is left alone; turned on, the daemon compacts it without changing its survivors and folds a reclustered table's appended groups back into its run; turned off again, a new deleted table is left alone. The settings arrive by ALTER SYSTEM and a reload and are reset at teardown, and "off by default" is the setting's boot value.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_maintenance_launcher_is_running_for_the_daemon` | the maintenance launcher is running |
+| `test_the_daemon_is_off_by_default` | the daemon is OFF by default |
+| `test_av_off_starts_with_dead_rows_above_the_threshold` | premise: av_off starts with dead rows above the threshold |
+| `test_off_the_daemon_did_not_touch_the_table` | OFF: the daemon did not touch the table (dead rows unchanged) -- over dead rows that stayed (a table with none to leave, or a failed read, no longer passes) |
+| `test_av_on_starts_with_dead_rows_above_the_threshold` | premise: av_on starts with dead rows above the threshold |
+| `test_the_daemon_is_now_on` | the daemon is now ON |
+| `test_on_the_daemon_compacted_the_deleted_heavy_table` | ON: the daemon compacted the deleted-heavy table (dead rows now 0) |
+| `test_on_the_surviving_rows_are_unchanged` | ON: the surviving rows are unchanged |
+| `test_av_rc_has_a_recorded_key_and_appended_decay` | premise: av_rc has a recorded key and appended decay |
+| `test_on_the_daemon_reclustered_the_decayed_table` | ON: the daemon reclustered the decayed table (appended groups folded to 0) |
+| `test_off_again_a_new_deleted_table_is_left_alone` | OFF-again: a new deleted table is left alone after disabling -- over dead rows that stayed |
+
+## 215. test_autovacuum_yield.py: the maintenance daemon yields its lock to a waiting session
+
+The pytest twin of `test/autovacuum_yield.sh` (ported for #1341), every check by the shell's name. With the daemon holding ShareUpdateExclusiveLock for a 30s maintenance hold, an ACCESS EXCLUSIVE request is granted within seconds, because the worker marks itself autovacuum and core cancels it, and the daemon logs the cancellation.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_launcher_is_running_for_the_yield` | the launcher is running |
+| `test_the_daemon_is_on_with_a_30s_maintenance_hold` | premise: the daemon is on with a 30s maintenance hold |
+| `test_the_daemon_is_holding_its_lock_on_the_table` | the daemon is holding SUEL on the table (the hold window is open) |
+| `test_yield_the_access_exclusive_lock_was_granted` | yield: the AccessExclusive lock was granted (no timeout -> daemon yielded) -- the statement returning, not the absence of an error (a session that never connected no longer passes) |
+| `test_yield_and_it_was_granted_fast` | yield: and it was granted FAST (<= 8s, far under the 30s hold) |
+| `test_the_daemon_logged_cancelling_its_maintenance_op` | the daemon logged cancelling its maintenance op |
+
+## 216. test_projection_rewrite.py: a declared projection survives a rewrite
+
+The pytest twin of `test/projection_rewrite.sh` (ported for #1341), every check by the shell's name. After any rewrite, read_projection must answer with exactly the base table's rows (P1), no projection row may name a retired storage (P2), and the declaration must survive (P3) (#876, #887). The rewrites: TRUNCATE in four shapes, including through a foreign-key CASCADE and a trigger that re-enters the utility hook; ALTER COLUMN TYPE on a covered and an uncovered column; ADD COLUMN with a volatile default; a type change on a partitioned parent; REFRESH MATERIALIZED VIEW; and the extension's own vacuum, vacuum_sorted and cluster. Also: the repair adds nothing when nothing was rewritten, a stale declaration warns instead of aborting the statement, and rebuild_projections rebuilds an absent projection. Each arm first asserts what the operation did, because a failed or no-op operation leaves the projection answering. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_projection_rewrite_premise_holds` | one test per row of `PREMISES` (17 rows), each by the shell's name |
+| `test_a_rewrite_keeps_the_projection` | one test per row of `REWRITES` (53 rows), each by the shell's name |
+| `test_the_projection_repair_guards_hold` | one test per row of `GUARDS` (14 rows), each by the shell's name |
+## 217. test_avro_manifest.py: Iceberg Avro manifests and manifest lists decode, and refuse what they must
+
+The pytest twin of `test/avro_manifest.sh` (ported for #1341), every check by the shell's name. `read_avro_manifest` and `read_manifest_list` decode the pyiceberg-written fixtures under `test/fixtures/iceberg`, checked against the JSON oracles beside them; a hand-built manifest pins an explicit sequence number; a role without `pg_read_server_files` is refused by that gate; a file with no Avro magic is rejected as corrupt; and a deflate zip-bomb is refused by the cumulative cap. Both readers refuse an object-storage URL with 0A000, naming themselves and the URL, after the `pg_read_server_files` gate, and still read a local path that holds `s3://` past its start (#1913). They refuse `s3a://` and `s3n://` URLs too, in any case (#1918).
+
+### Every test
+
+A module fixture on a private database runs the shell's sequence; each test asserts one reading. Survival also reads the server log's count of killed backends, and each refusal reads its message as well as its SQLSTATE.
+
+| test | what it holds |
+| --- | --- |
+| `test_decoded_entry_count_equals_the_oracle` | decoded entry count == oracle |
+| `test_decoded_entries_equal_the_oracle` | decoded entries == oracle (record_count|file_size|region) |
+| `test_the_partition_renders_the_schemas_field_name` | partition renders the schema's field name |
+| `test_every_entrys_file_path_ends_in_parquet` | every entry's file_path ends in .parquet |
+| `test_all_entries_are_added_data_files` | all entries are ADDED data files (status=1, content=0) |
+| `test_the_committed_entries_inherit_their_sequence_number` | the committed entries have a NULL (inherited) sequence_number |
+| `test_an_explicit_entry_sequence_number_is_decoded` | an explicit entry sequence_number is decoded (42) |
+| `test_the_manifest_list_entry_count_equals_the_oracle` | manifest-list entry count == oracle (1) |
+| `test_the_manifest_list_entry_equals_the_oracle` | manifest-list entry == oracle (all scalar fields) |
+| `test_the_manifest_list_path_basename_equals_the_oracle` | manifest-list manifest_path basename == oracle |
+| `test_an_unprivileged_role_is_refused_the_manifest` | an unprivileged role is refused (42501) -- by the function's own gate, the role holding USAGE on the schema |
+| `test_a_non_avro_file_is_rejected` | a non-Avro file is rejected (bad magic), backend survives -- the message names the bad magic |
+| `test_the_backend_is_still_up_after_the_bad_file` | backend still up after the bad file -- and no backend died since (crash recovery no longer passes) |
+| `test_file_format_decodes_to_the_iceberg_enum_name` | file_format decodes to the Iceberg enum name |
+| `test_a_deflate_zip_bomb_is_refused_by_the_cap` | a deflate zip-bomb is refused by the cumulative cap (54000) |
+| `test_the_backend_is_still_up_after_the_zip_bomb` | backend still up after the zip-bomb -- and no backend died since |
+| `test_read_avro_manifest_refuses_an_s3_url` | read_avro_manifest refuses an s3:// URL with 0A000, naming itself and the URL (#1913) -- by SQLSTATE, message and the local-files-only hint |
+| `test_read_avro_manifest_refuses_an_http_url` | read_avro_manifest refuses an http:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_avro_manifest_refuses_the_other_remote_schemes` | read_avro_manifest refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913) -- in one check |
+| `test_read_manifest_list_refuses_an_s3_url` | read_manifest_list refuses an s3:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_manifest_list_refuses_an_http_url` | read_manifest_list refuses an http:// URL with 0A000, naming itself and the URL (#1913) |
+| `test_read_manifest_list_refuses_the_other_remote_schemes` | read_manifest_list refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1913) |
+| `test_read_avro_manifest_checks_the_gate_before_refusing_a_url` | read_avro_manifest checks pg_read_server_files before it refuses a remote URL (#1913) -- the role without it gets the gate's 42501 for an `s3://` URL, not 0A000 |
+| `test_read_manifest_list_checks_the_gate_before_refusing_a_url` | read_manifest_list checks pg_read_server_files before it refuses a remote URL (#1913) |
+| `test_read_avro_manifest_still_reads_a_local_path_holding_a_scheme` | control: read_avro_manifest still reads a local path that holds s3:// past its start (#1913) -- the oracle's entry count |
+| `test_read_manifest_list_still_reads_a_local_path_holding_a_scheme` | control: read_manifest_list still reads a local path that holds s3:// past its start (#1913) -- its one entry |
+| `test_read_avro_manifest_refuses_s3a_and_s3n_urls` | read_avro_manifest refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918) -- both in one check, by SQLSTATE, message and hint |
+| `test_read_avro_manifest_refuses_s3a_and_s3n_in_any_case` | read_avro_manifest refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918) |
+| `test_read_manifest_list_refuses_s3a_and_s3n_urls` | read_manifest_list refuses s3a:// and s3n:// URLs with 0A000, naming itself and the URL (#1918) |
+| `test_read_manifest_list_refuses_s3a_and_s3n_in_any_case` | read_manifest_list refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918) |
+| `test_read_avro_manifest_still_reads_a_local_path_holding_s3a` | control: read_avro_manifest still reads a local path that holds s3a:// past its start (#1918) -- the oracle's entry count |
+| `test_read_manifest_list_still_reads_a_local_path_holding_s3a` | control: read_manifest_list still reads a local path that holds s3a:// past its start (#1918) -- its one entry |
+| `test_the_manifest_fixtures_are_present` | the committed fixture is present; without it the test declines under the shell's skip name, iceberg manifest fixtures are missing |
+| `test_python_can_read_the_oracle` | the oracle lists manifest entries; without json the test declines under the shell's skip name, python3 is needed to read the oracle |
+## 218. test_column_projection.py: column projection reads only the columns a query references
+
+The pytest twin of `test/column_projection.sh` (ported for #1341), every check by the shell's name. A fourteen-column columnar table and its heap copy: one column must cost a fraction of reading them all, SELECT * must read what projection-off reads, every query must answer the same with `pgcolumnar.enable_column_projection` on and off and the same as the heap -- through an added column, deletes, updates and a parallel scan -- and the cost model must price a narrow projection below a wide one.
+
+### Every test
+
+A module fixture on a private database replays the shell's steps in order, with no parallel workers outside the parallel checks; each test asserts one reading. A comparison reads "same" only over two values, so two identical errors or two empty results cannot agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_columnar_and_heap_hold_the_same_rows` | premise: columnar and heap hold the same rows |
+| `test_the_unprojected_read_is_large_enough_to_measure` | premise: the unprojected read is large enough to measure |
+| `test_one_column_costs_less_than_a_third_of_all` | one column costs less than a third of reading all of them |
+| `test_a_qual_only_column_still_produces_the_right_count` | qual-only column still produces the right count |
+| `test_select_star_reads_as_much_as_projection_off` | SELECT * reads as much as projection-off does |
+| `test_single_column_agg_on_off` | single column agg :: on==off |
+| `test_two_columns_on_off` | two columns :: on==off |
+| `test_qual_column_not_selected_on_off` | qual column not selected :: on==off |
+| `test_qual_and_target_disjoint_on_off` | qual and target disjoint :: on==off |
+| `test_varlena_projected_alone_on_off` | varlena projected alone :: on==off |
+| `test_all_null_column_on_off` | all-NULL column :: on==off |
+| `test_count_on_off` | count(*) :: on==off |
+| `test_select_star_hash_on_off` | select star hash :: on==off |
+| `test_whole_row_var_on_off` | whole-row var :: on==off |
+| `test_ctid_system_column_on_off` | ctid system column :: on==off |
+| `test_order_by_unselected_col_on_off` | order by unselected col :: on==off |
+| `test_min_max_mixed_types_on_off` | min/max mixed types :: on==off |
+| `test_join_on_projected_column_on_off` | join on projected column :: on==off |
+| `test_single_column_agg_columnar_heap` | single column agg :: columnar==heap |
+| `test_qual_and_target_disjoint_columnar_heap` | qual and target disjoint :: columnar==heap |
+| `test_varlena_alone_columnar_heap` | varlena alone :: columnar==heap |
+| `test_select_star_hash_columnar_heap` | select star hash :: columnar==heap |
+| `test_all_null_column_columnar_heap` | all-NULL column :: columnar==heap |
+| `test_min_max_mixed_types_columnar_heap` | min/max mixed types :: columnar==heap |
+| `test_added_column_alone_on_off` | added column alone :: on==off |
+| `test_added_column_alone_columnar_heap` | added column alone :: columnar==heap |
+| `test_added_column_with_others_columnar_heap` | added column with others :: columnar==heap |
+| `test_added_column_across_the_boundary_columnar_heap` | added column across the boundary :: columnar==heap |
+| `test_added_column_across_the_boundary_on_off` | added column across the boundary :: on==off |
+| `test_after_deletes_projected_column_columnar_heap` | after deletes, projected column :: columnar==heap |
+| `test_after_deletes_projected_column_on_off` | after deletes, projected column :: on==off |
+| `test_after_updates_projected_column_columnar_heap` | after updates, projected column :: columnar==heap |
+| `test_after_updates_select_star_hash_columnar_heap` | after updates, select star hash :: columnar==heap |
+| `test_a_parallel_scan_of_a_projected_column_matches_the_heap` | parallel scan, projected column |
+| `test_a_parallel_scan_with_a_qual_on_an_unselected_column_matches_the_heap` | parallel scan, qual on unselected column |
+| `test_the_narrow_projection_reads_far_fewer_buffers` | the narrow projection really does read far fewer buffers -- not a premise: it measures the projection itself |
+| `test_both_scan_costs_are_measurements` | premise: both scan costs are measurements |
+| `test_the_cost_model_prices_a_narrow_projection_below_a_wide_one` | the cost model prices a narrow projection below a wide one |
+
+## 219. test_local_open_race_free.py: local file opens are race-free: no stat-before-open
+
+The twin of `test/local_open_race_free.sh` (#644/#686). The shape of PgColumnarOpenLocalRegularFile and the parallel-copy partition coordinator: each opens with O_NONBLOCK in the open call and stats nothing before it, and the racy stat-before-open helper is gone from a tree the sweep read. Functionally, read_parquet and read_avro_manifest refuse a FIFO with the opener's own XX001 rather than hang.
+
+### Every test
+
+The shape readings come from the shell's own function-body extraction, in Python, run in the fixture; a body that was not read is a failed reading. The FIFO lives in `server_dir`, and a statement still running after 5s is a HANG, after which the FIFO's write end is opened non-blocking so the backend's open(2) returns.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_race_free_opener_exists` | the race-free opener exists |
+| `test_the_opener_opens_o_nonblock` | the opener opens O_NONBLOCK (a FIFO cannot block the open) |
+| `test_the_opener_fstats_the_fd_it_holds` | the opener fstats the fd it holds (checks what it opened) |
+| `test_the_opener_never_stats_a_path_before_opening_it` | the opener never stats a path before opening it (no TOCTOU) |
+| `test_the_recursive_sweep_read_source_files` | premise: the recursive sweep read source files under src/ |
+| `test_the_racy_stat_before_open_helper_is_gone` | the racy stat-before-open helper is gone |
+| `test_the_partition_coordinator_opens_o_nonblock` | the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open) |
+| `test_the_partition_coordinator_never_stats_a_path_before_opening_it` | the partition coordinator never stats a path before opening it (no TOCTOU) |
+| `test_read_parquet_on_a_fifo_is_a_clean_error` | read_parquet on a FIFO is a clean error, not a hang |
+| `test_read_avro_manifest_on_a_fifo_is_a_clean_error` | read_avro_manifest on a FIFO is a clean error, not a hang |
+| `test_backend_still_up_after_the_fifo_refusals` | backend still up after the FIFO refusals |
+
+## 220. test_encode_effort.py: the per-table encode_effort option
+
+The twin of `test/encode_effort.sh` (#155). encode_effort and compression are validated and stored; on md5 text, where FSST wins, fast stores more bytes than full, and where FSST loses they store the same; rows, a filtered read and an index fetch agree either way; a table with no option stores what an explicit 'full' stores; reset_options clears the option.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with pgcolumnar.fsst_min_gain_percent held at 0 on that database. A size is a reading only when it is a positive number, and each content reading carries its row count against the fixture's.
+
+| test | what it holds |
+| --- | --- |
+| `test_an_unknown_encode_effort_is_refused` | an unknown encode_effort is refused |
+| `test_the_refused_value_was_not_stored` | and the refused value was not stored |
+| `test_a_valid_encode_effort_is_stored` | a valid encode_effort is stored |
+| `test_an_unknown_compression_name_is_refused` | an unknown compression name is refused |
+| `test_the_compression_set_before_it_is_still_the_one_stored` | and the compression set before it is still the one stored |
+| `test_fast_stores_more_than_full_where_fsst_wins` | fast stores more than full on a shape where FSST wins |
+| `test_and_is_identical_where_fsst_does_not_win` | and is identical where FSST does not win |
+| `test_the_rows_are_identical_either_way` | the rows are identical either way |
+| `test_a_filtered_read_agrees` | and a filtered read agrees |
+| `test_an_index_fetch_finds_a_fast_written_row` | and an index fetch finds a fast-written row |
+| `test_a_table_with_no_option_set_matches_full` | a table with no option set matches full |
+| `test_reset_options_clears_it` | reset_options clears it |
+
+## 221. test_doc_parallel_premise.py: the parallel-scan page's narrow query reads every chunk group
+
+The twin of `test/doc_parallel_premise.sh`. The narrow query's filter column is extracted from docs/limitations.md as the shell extracts it; on the page's fixture shape, that query must read every chunk group the catalog holds, filtering the ordered column must prune, the documented column must not be the ordered one, and it must cost more.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every plan is read with max_parallel_workers_per_gather = 0. Where the shell stops (no filter column on the page) or skips its cost block (the page names sel), those tests decline unnamed.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_page_still_names_a_narrow_query` | the page still names a narrow query |
+| `test_that_query_has_an_extractable_filter_column` | and that query has an extractable filter column |
+| `test_the_fixture_holds_several_row_groups` | the fixture holds several row groups, so pruning can be seen |
+| `test_the_documented_columns_plan_is_one_columnar_scan` | the documented column's plan is exactly one columnar scan node |
+| `test_the_sel_plan_is_one_columnar_scan` | the sel plan is exactly one columnar scan node |
+| `test_the_group_counters_were_read` | the group counters were read, not blank |
+| `test_the_documented_narrow_query_reads_every_chunk_group` | the documented narrow query reads every chunk group |
+| `test_filtering_the_ordered_column_prunes` | and filtering the ordered column instead prunes some away |
+| `test_the_documented_column_is_not_the_ordered_one` | the documented column is not the one stored in order |
+| `test_both_costs_were_extracted` | both costs were extracted, not blank |
+| `test_the_documented_column_is_costed_above_the_ordered_one` | and the documented column is costed above the ordered one |
+
+## 222. test_maintenance_due.py: pgcolumnar.maintenance_due reports which online verb is worth running
+
+The twin of `test/maintenance_due.sh` (#415). Five fixtures -- clean and ordered, 40% deleted and never ordered, ordered then appended, never ordered in two batches (the sorted-run guard), and both decays at once -- each with its verdicts and recommendation, the thresholds shown to be live parameters; a SELECT-holder gets a verdict and a role without SELECT is refused with 42501.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The two roles log in on their own, as the shell's do, and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_md_clean_has_no_deleted_rows` | md_clean has no deleted rows |
+| `test_md_clean_is_fully_in_its_sorted_run` | md_clean is fully in its sorted run (0 appended groups) |
+| `test_md_clean_has_a_sorted_run` | md_clean has a sorted run |
+| `test_clean_compact_rewrite_not_due` | clean: compact_rewrite not due |
+| `test_clean_recluster_not_due` | clean: recluster not due |
+| `test_clean_recommendation_is_null` | clean: recommendation is null |
+| `test_md_deleted_deleted_fraction_is_about_0_40` | premise: md_deleted deleted fraction ~0.40 |
+| `test_delete_maintenance_due_reports_the_same_deleted_fraction` | delete: maintenance_due reports the same deleted_fraction |
+| `test_delete_compact_rewrite_due` | delete: compact_rewrite due (0.40 >= 0.2 default) |
+| `test_delete_recluster_not_due` | delete: recluster NOT due (table was never ordered) |
+| `test_delete_recommendation_names_compact_rewrite_only` | delete: recommendation names compact_rewrite only |
+| `test_delete_raising_the_compact_threshold_makes_it_not_due` | delete: raising the compact threshold above 0.40 makes it not due |
+| `test_md_appended_has_appended_groups` | md_appended has appended groups |
+| `test_md_appended_still_has_a_sorted_run` | md_appended still has a sorted run |
+| `test_appended_recluster_due` | appended: recluster due |
+| `test_appended_compact_rewrite_not_due` | appended: compact_rewrite not due (no deletes) |
+| `test_appended_recommendation_names_recluster_only` | appended: recommendation names recluster only |
+| `test_appended_raising_the_recluster_threshold_makes_it_not_due` | appended: raising the recluster threshold above the fraction makes it not due |
+| `test_never_ordered_table_has_no_sorted_run` | never-ordered table has NO sorted run |
+| `test_yet_sort_status_still_counts_appended_groups` | yet sort_status still counts appended groups (> 0) |
+| `test_guard_recluster_not_due_on_a_never_ordered_table` | GUARD: recluster NOT due on a never-ordered table |
+| `test_guard_recommendation_is_null_on_a_never_ordered_table` | GUARD: recommendation is null on a never-ordered table |
+| `test_both_compact_rewrite_due` | both: compact_rewrite due |
+| `test_both_recluster_due` | both: recluster due |
+| `test_both_recommendation_names_both_verbs` | both: recommendation names both verbs |
+| `test_positive_a_select_holder_gets_a_verdict` | positive: a SELECT-holder gets a verdict, not a false deny |
+| `test_deny_a_role_without_select_is_refused` | deny: a role without SELECT on the relation is refused (42501) |
+
+## 223. test_eager_ordering_record.py: eager rewrites record the ordering they applied
+
+The twin of `test/eager_ordering_record.sh` (#758, #761). vacuum_sorted records a lexicographic run, cluster a Z-order run over its two columns, and the two are told apart in the catalog and through sort_status; the recluster self-gate skips exactly an eagerly clustered table on the same key; an unsorted rewrite claims no ordering; and vacuum_sorted with no columns records the declared key.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, reading each layout at the same point the shell does. Distinguishable and moved are read only over two readings that were both taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_lexicographic_rewrite_ordered_the_rows_on_k` | the lexicographic rewrite really ordered the rows on k |
+| `test_it_left_no_unsorted_tail` | it left no unsorted tail |
+| `test_eager_vacuum_sorted_records_the_kind_it_applied` | eager vacuum_sorted records the kind it applied |
+| `test_sort_status_reports_that_kind_to_the_owner` | and sort_status reports that kind to the table's owner (#761) |
+| `test_eager_vacuum_sorted_records_the_key_it_applied` | eager vacuum_sorted records the key it applied |
+| `test_the_z_ordered_table_is_not_ordered_on_k` | the Z-ordered table is NOT ordered on k |
+| `test_it_too_reports_a_full_run_with_no_tail` | it too reports a full run with no tail |
+| `test_eager_cluster_records_the_kind_it_applied` | eager cluster records the kind it applied |
+| `test_sort_status_reports_that_kind_not_the_lexicographic_one` | and sort_status reports THAT kind, not the lexicographic one (#761) |
+| `test_eager_cluster_records_the_key_it_applied` | eager cluster records the key it applied |
+| `test_the_two_eager_layouts_are_distinguishable_in_the_catalog` | the two eager layouts are now distinguishable in the catalog |
+| `test_sort_status_reports_the_applied_key_on_the_z_ordered_table` | sort_status reports the APPLIED key on the Z-ordered table, not the declared {k} |
+| `test_sort_status_still_reports_k_on_the_sorted_table` | sort_status still reports {k} on the lexicographically sorted table |
+| `test_the_two_layouts_are_distinguishable_through_sort_status_alone` | the two layouts are distinguishable through sort_status alone (#761) |
+| `test_the_gate_fixture_has_more_than_one_group` | the gate fixture has more than one group |
+| `test_and_live_rows_in_them` | premise: and live rows in them |
+| `test_recluster_on_the_applied_key_does_nothing` | recluster on the key the eager cluster already applied does nothing |
+| `test_it_rewrote_no_group` | and it rewrote no group: the physical layout is unchanged |
+| `test_recluster_on_a_different_key_still_rewrites_every_group` | control: recluster on a DIFFERENT key still rewrites every group |
+| `test_that_rewrite_really_moved_the_layout` | control: and that rewrite really moved the layout |
+| `test_the_insert_appended_past_the_recorded_run` | the insert appended past the recorded run |
+| `test_recluster_with_an_appended_tail_does_not_skip` | control: recluster with an appended tail does not skip |
+| `test_it_moved_the_tailgate_layout` | control: and it moved the tailgate layout |
+| `test_recluster_does_not_skip_a_lexicographic_run` | control: recluster does not skip a LEXICOGRAPHIC run of the same lead column |
+| `test_it_moved_the_lexgate_layout` | control: and it moved the lexgate layout |
+| `test_the_mark_is_set_before_the_unsorted_rewrite` | the mark is set before the unsorted rewrite |
+| `test_an_unsorted_rewrite_claims_no_ordering` | an unsorted rewrite claims no ordering |
+| `test_sort_status_reports_no_kind_either` | and sort_status reports no kind either, rather than a stale one (#761) |
+| `test_and_records_no_key` | and records no key |
+| `test_vacuum_sorted_with_no_columns_records_the_declared_key` | vacuum_sorted with no columns records the DECLARED key it applied |
+| `test_and_records_it_as_a_lexicographic_run` | and records it as a lexicographic run |
+
+## 224. test_int8_agg_int128.py: sum and avg over bigint accumulate in 128 bits
+
+The twin of `test/int8_agg_int128.sh` (#785, #786). Every value arm runs vectorized, scalar and on heap and requires all three to agree, including sums past int64 in both directions, empty and all-NULL columns, and numeric; two timing arms bound the vectorized path at 1.10x the scalar one as a ratio of interleaved minima; and a LATERAL rescan must match the heap.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The heap oracle is loaded from the same generator as the columnar table, never copied out of it. A NULL answer reads <NULL>, and a rescan reading must return its four rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vectorized_node_really_runs_for_sum` | premise: the vectorized node really runs for sum(v) |
+| `test_and_for_avg` | premise: and for avg(v) |
+| `test_sum_bigint_agrees_with_the_scalar_path_and_with_heap` | sum(bigint) agrees with the scalar path and with heap |
+| `test_avg_bigint_agrees_too` | avg(bigint) agrees too |
+| `test_the_fixture_really_holds_nulls_and_negatives` | premise: the fixture really holds NULLs and negatives |
+| `test_sum_over_a_column_with_nulls_and_negatives_agrees` | sum over a column with NULLs and negatives agrees |
+| `test_avg_over_the_same_agrees` | avg over the same agrees |
+| `test_the_sum_really_exceeds_what_int64_can_hold` | premise: the sum really exceeds what int64 can hold |
+| `test_the_vectorized_node_runs_on_this_table_too` | premise: the vectorized node runs on this table too |
+| `test_a_sum_past_int64_agrees` | a sum past int64 agrees with the scalar path and with heap |
+| `test_and_its_avg_agrees` | and its avg agrees |
+| `test_this_sum_is_past_int64_in_the_negative_direction` | premise: this sum is past int64 in the negative direction |
+| `test_a_large_negative_sum_agrees` | a large NEGATIVE sum agrees |
+| `test_mixed_signs_summing_back_into_int64_range_agree` | mixed signs summing back into int64 range agree |
+| `test_sum_over_an_empty_table_is_null` | sum over an empty table is NULL, as on heap |
+| `test_avg_over_an_empty_table_is_null_too` | avg over an empty table is NULL too |
+| `test_sum_over_an_all_null_column_is_null` | sum over an all-NULL column is NULL |
+| `test_avg_over_an_all_null_column_is_null` | avg over an all-NULL column is NULL |
+| `test_sum_numeric_keeps_its_scale_and_still_agrees` | sum(numeric) keeps its scale and still agrees |
+| `test_avg_numeric_too` | avg(numeric) too |
+| `test_the_timing_fixture_loaded_every_row` | premise: the timing fixture loaded every row |
+| `test_the_vectorized_node_really_runs_so_the_ratio_compares_two_paths` | premise: and the vectorized node really runs, so the ratio compares two paths |
+| `test_the_vectorized_path_is_not_slower_than_the_scalar_one` | the vectorized path is not slower than the scalar one |
+| `test_the_filtered_fixture_loaded_every_row` | premise: the filtered fixture loaded every row |
+| `test_its_values_are_not_low_cardinality` | premise: its values are NOT low-cardinality, so the fold is not answered from runs |
+| `test_the_vectorized_node_runs_on_the_filtered_query_too` | premise: the vectorized node runs on the FILTERED query too |
+| `test_the_filtered_vectorized_path_is_not_slower` | the FILTERED vectorized path is not slower than the scalar one |
+| `test_the_rescan_shape_still_takes_the_vectorized_node` | premise: the rescan shape still takes the vectorized node |
+| `test_the_node_really_is_re_executed` | premise: the node really is re-executed, so a stale accumulator can show |
+| `test_the_rescan_query_returns_a_row_per_driver_row` | premise: the rescan query returns a row per driver row, not an error |
+| `test_sum_bigint_across_a_rescan_matches_the_heap` | sum(bigint) across a rescan matches the heap |
+| `test_avg_bigint_across_a_rescan_matches_the_heap` | avg(bigint) across a rescan matches the heap |
+| `test_sum_bigint_across_a_rescan_on_the_big_fixture_matches_the_heap` | sum(bigint) across a rescan on the >int64 fixture matches the heap |
+| `test_count_across_the_same_rescan_matches_the_heap` | control: count(*) across the same rescan matches the heap |
+
+## 225. test_fsst_verdict_cache.py: the FSST keep/drop verdict is cached with an age bound
+
+The twin of `test/fsst_verdict_cache.sh` (#472). Cached HELPS and HURTS verdicts store byte-identical chunks, a bound of one row group re-decides every time, a bounded cache tracks a column that changes character more closely than an unbounded one, values match a heap loaded from the same generator, and caching makes an md5 load at least 10% faster.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. A decline and a value comparison carry their row counts, and a timed load must have loaded.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_prose_fixture_loaded` | premise: the prose fixture loaded |
+| `test_it_spans_several_row_groups` | premise: and it spans several row groups, so caching has something to reuse |
+| `test_the_md5_fixture_loaded` | premise: the md5 fixture loaded |
+| `test_the_prose_corpus_keeps_fsst` | premise: the prose corpus KEEPS fsst, so the HELPS branch is exercised |
+| `test_the_md5_corpus_drops_it` | premise: and the md5 corpus DROPS it, so the two arms are different branches |
+| `test_a_reused_helps_verdict_stores_byte_identical_chunks` | a reused HELPS verdict stores byte-identical chunks |
+| `test_and_it_still_keeps_fsst` | and it still keeps fsst, rather than silently dropping it |
+| `test_a_reused_hurts_verdict_stores_byte_identical_chunks` | a reused HURTS verdict stores byte-identical chunks |
+| `test_and_it_still_declines_fsst` | and it still declines fsst |
+| `test_the_cached_load_returns_the_same_values_as_heap` | the cached load returns the same values as heap |
+| `test_a_reuse_bound_of_one_row_group_is_byte_identical_to_no_caching` | a reuse bound of one row group is byte-identical to no caching |
+| `test_the_three_changing_column_loads_all_produced_bytes` | premise: the three changing-column loads all produced bytes to compare |
+| `test_an_unbounded_cache_really_does_diverge` | an unbounded cache really does diverge on this fixture |
+| `test_a_bounded_cache_tracks_the_change_more_closely` | a bounded cache tracks the change more closely than an unbounded one |
+| `test_the_changing_column_still_returns_its_values` | and the changing column still returns its values |
+| `test_caching_the_verdict_makes_the_load_measurably_faster` | caching the verdict makes the load measurably faster |
+
+## 226. test_import_exclusion.py: import_arrow enforces an exclusion constraint, and a rewrite does not
+
+The twin of `test/import_exclusion.sh` (follow-up to #153). A clean import into a table with EXCLUDE USING btree (k WITH =) succeeds and reaches the index; a violating import raises and leaves the row count alone, as an ordinary INSERT does; and a rewrite that really moves rows does not check the constraint against the rows it replaces.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The arrow file lives in `server_dir`, because the backend writes and reads it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_constraint_is_an_exclusion_constraint_not_a_unique_index` | the constraint is an exclusion constraint, not a unique index |
+| `test_importing_rows_that_violate_nothing_succeeds` | importing rows that violate nothing succeeds |
+| `test_and_the_rows_are_there` | and the rows are there |
+| `test_an_index_scan_finds_an_imported_row` | an index scan finds an imported row |
+| `test_importing_rows_that_violate_the_constraint_raises` | importing rows that violate the constraint raises |
+| `test_the_failed_import_left_the_row_count_alone` | and the failed import left the row count alone |
+| `test_an_ordinary_insert_of_the_same_violation_also_raises` | an ordinary INSERT of the same violation also raises |
+| `test_a_rewrite_of_the_same_table_still_succeeds` | a rewrite of the same table still succeeds |
+| `test_and_the_rows_survived_it` | and the rows survived it |
+
+## 227. test_import_deferred.py: imports honour a DEFERRABLE constraint, and the check is deferred, not gone
+
+The twin of `test/import_deferred.sh` (#168). A transient collision commits under a deferred unique constraint through import_arrow and import_parquet as on heap; a duplicate that survives to commit, an IMMEDIATE constraint, SET CONSTRAINTS IMMEDIATE mid-transaction and an exclusion constraint each still fail with their own SQLSTATE; a partial unique index is maintained for exactly the rows it covers; and compact_rewrite over a uniquely indexed table enforces nothing.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order; heap is the oracle where the shell uses it. The export files live in `server_dir`.
+
+| test | what it holds |
+| --- | --- |
+| `test_heap_allows_a_transient_collision` | premise: heap allows a transient collision under a deferred constraint |
+| `test_an_ordinary_columnar_insert_still_allows_it` | an ordinary columnar INSERT still allows it |
+| `test_import_arrow_allows_it` | import_arrow allows it |
+| `test_import_parquet_allows_it` | import_parquet allows it |
+| `test_heap_rejects_a_duplicate_still_there_at_commit` | premise: heap rejects a duplicate that is still there at commit |
+| `test_import_arrow_rejects_a_duplicate_that_survives_to_commit` | import_arrow rejects a duplicate that survives to commit |
+| `test_the_import_rolled_back` | and the import rolled back rather than leaving the row |
+| `test_an_immediate_constraint_still_rejects_at_insert_time` | an IMMEDIATE constraint still rejects at insert time |
+| `test_set_constraints_immediate_is_honoured_mid_transaction` | SET CONSTRAINTS IMMEDIATE is honoured mid-transaction |
+| `test_an_exclusion_constraint_is_still_enforced_on_import` | an exclusion constraint is still enforced on import |
+| `test_a_partial_unique_index_accepts_rows_it_does_not_cover` | a partial unique index accepts rows it does not cover |
+| `test_rows_outside_the_partial_index_are_all_present` | rows outside the partial index are all present |
+| `test_a_rewrite_of_a_uniquely_indexed_table_still_succeeds` | a rewrite of a uniquely-indexed table still succeeds |
+| `test_and_the_surviving_rows_are_intact` | and the surviving rows are intact |
+
+## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
+
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open.
+
+| test | what it holds |
+| --- | --- |
+| `test_rows_loaded` | rows loaded |
+| `test_vm_bit_round_trips_block_0` | vm bit round-trips on columnar rel (block 0) |
+| `test_vm_bit_round_trips_block_3` | vm bit round-trips on columnar rel (block 3) |
+| `test_vm_bit_round_trips_block_50` | vm bit round-trips on columnar rel (block 50) |
+| `test_vm_bit_round_trips_block_171` | vm bit round-trips on columnar rel (block 171) |
+| `test_first_set_on_fresh_block_succeeds` | first set on fresh block succeeds |
+| `test_second_set_on_same_block_sees_prior_bit` | second set on same block sees prior bit |
+| `test_iv_row_count` | iv row count |
+| `test_before_vacuum_block_50_not_all_visible` | before vacuum: block 50 not all-visible |
+| `test_after_vacuum_block_10_all_visible` | after vacuum: block 10 all-visible |
+| `test_after_vacuum_block_50_all_visible` | after vacuum: block 50 all-visible |
+| `test_after_vacuum_block_120_all_visible` | after vacuum: block 120 all-visible |
+| `test_after_delete_block_50_cleared_by_write` | after delete: block 50 cleared by write |
+| `test_after_delete_vacuum_deleted_block_50_not_all_visible` | after delete+vacuum: deleted block 50 not all-visible |
+| `test_after_delete_vacuum_clean_block_10_still_all_visible` | after delete+vacuum: clean block 10 still all-visible |
+| `test_after_delete_vacuum_clean_block_120_still_all_visible` | after delete+vacuum: clean block 120 still all-visible |
+| `test_iv_contents_match_heap_oracle_after_vacuum_delete` | iv contents match heap oracle after vacuum/delete |
+| `test_guc_off_no_index_only_scan` | GUC off: no index-only scan |
+| `test_guc_on_index_only_scan_chosen` | GUC on: index-only scan chosen |
+| `test_all_visible_interior_zero_heap_fetches` | all-visible interior: zero heap fetches |
+| `test_index_only_results_match_heap_oracle_all_visible` | index-only results match heap oracle (all-visible) |
+| `test_index_only_results_match_heap_oracle_after_delete` | index-only results match heap oracle after delete (fallback) |
+| `test_after_delete_some_heap_fetches_occur` | after delete: some heap fetches occur |
+| `test_session_a_baseline_sees_batch_1_only` | session A baseline sees batch 1 only |
+| `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
+| `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
+| `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
+
+## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
+
+The twin of `test/isolation.sh` (Phase F3). pg_isolation_regress runs seven exact interleavings -- delete against compact_rewrite, an old snapshot against a delete and compaction, a reader against compaction, recluster against delete, and end-truncation against a reader, a writer and another truncation -- and each spec is its own check.
+
+### Every test
+
+The fixture runs pg_isolation_regress once over all seven specs in a private database, with --use-existing as the shell runs it, and reads each spec's verdict from its line; a spec with no line is "not run". Without the binary every test declines unnamed.
+
+| test | what it holds |
+| --- | --- |
+| `test_isolation_spec_delete_vs_rewrite` | isolation spec delete_vs_rewrite |
+| `test_isolation_spec_old_snapshot_compact` | isolation spec old_snapshot_compact |
+| `test_isolation_spec_compact_vs_reader` | isolation spec compact_vs_reader |
+| `test_isolation_spec_recluster_vs_delete` | isolation spec recluster_vs_delete |
+| `test_isolation_spec_truncate_vs_reader` | isolation spec truncate_vs_reader |
+| `test_isolation_spec_truncate_vs_writer` | isolation spec truncate_vs_writer |
+| `test_isolation_spec_truncate_vs_truncate` | isolation spec truncate_vs_truncate |
+
+## 230. test_concurrency.py: concurrent deletes into one chunk group serialize and both survive
+
+The twin of `test/concurrency.sh` (#4). Two sessions deleting different rows of one chunk group serialize on the chunk-group lock, and both deletes survive -- with the group's delete_vector row present and absent; deletes into different chunk groups do not wait and finish in a live transaction.
+
+### Every test
+
+One module fixture runs the three scenarios in a private database; session 2's blocking DELETE runs in a thread while the controller polls pg_stat_activity as the shell does, every wait bounded at 60s.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_same_group_second_deleter_blocks` | A same-group second deleter blocks |
+| `test_a_both_concurrent_deletes_survived` | A both concurrent deletes survived (ids 1,2,6 gone) |
+| `test_a_row_count_after_concurrent_deletes` | A row count after concurrent deletes |
+| `test_b_first_delete_second_deleter_blocks` | B first-delete second deleter blocks |
+| `test_b_both_first_deletes_survived` | B both first deletes survived (ids 1,2 gone) |
+| `test_c_different_group_deleter_does_not_block` | C different-group deleter does not block |
+| `test_c_both_different_group_deletes_survived` | C both different-group deletes survived (ids 1,5 gone) |
+| `test_every_bounded_wait_completed` | a bounded wait for a session to reach idle-in-transaction completed -- the shell's four wait_timeout names, recorded only where a wait timed out; declines on a green run, where the shell records nothing |
+
+## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
+
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir`, writes the renamed and nested metadata and the variants of `fixtures/iceberg/gen_iceberg_variants.py` beside it, and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_data_file_carries_field_ids` | premise: the data file carries field ids (id=1,region=2,amount=3) |
+| `test_iceberg_scan_reads_the_current_snapshots_rows` | iceberg_scan reads the current snapshot's rows |
+| `test_iceberg_scan_projects_and_reorders_by_field_id` | iceberg_scan projects and reorders by field id (amount, id) |
+| `test_iceberg_scan_reads_a_subset` | iceberg_scan reads a subset (region only) |
+| `test_iceberg_scan_type_refusal_names_iceberg_scan` | iceberg_scan's type refusal names iceberg_scan |
+| `test_a_renamed_column_still_reads_by_field_id` | a column renamed in the schema still reads by field id (amt2 = amount) |
+| `test_an_output_column_not_in_the_schema_is_refused` | an output column not in the schema is refused (42703) |
+| `test_an_unprivileged_role_is_refused_the_scan` | an unprivileged role is refused (42501) |
+| `test_a_pg_read_server_files_member_may_scan` | a pg_read_server_files member who is not superuser may scan |
+| `test_iceberg_scan_refuses_eu_as_varchar_1` | typmod: iceberg_scan refuses 'eu' as varchar(1) (22001) |
+| `test_iceberg_scan_reads_region_as_varchar_2_unchanged` | typmod: iceberg_scan reads region as varchar(2) unchanged |
+| `test_iceberg_scan_drops_excess_trailing_spaces_as_varchar_2` | typmod: iceberg_scan drops the excess trailing spaces of 'eu  ' as varchar(2) |
+| `test_iceberg_scan_rounds_to_whole_seconds_as_timestamp_0` | typmod: iceberg_scan rounds 00:59:59.7 to 01:00:00 as timestamp(0) |
+| `test_iceberg_current_snapshot_reads_a_gz_metadata_json_file` | iceberg_current_snapshot reads a .gz.metadata.json file as it reads the plain file |
+| `test_iceberg_current_snapshot_reads_a_metadata_json_gz_file` | iceberg_current_snapshot reads a .metadata.json.gz file as it reads the plain file |
+| `test_iceberg_scan_reads_a_table_whose_metadata_is_gz_metadata_json` | iceberg_scan reads the rows of a table whose metadata is .gz.metadata.json |
+| `test_iceberg_scan_reads_a_table_whose_metadata_is_metadata_json_gz` | iceberg_scan reads the rows of a table whose metadata is .metadata.json.gz |
+| `test_a_gzip_metadata_file_past_the_cap_is_refused` | a gzip metadata file that inflates past the 64 MiB cap is refused (54000) |
+| `test_a_cut_short_gzip_metadata_file_is_refused` | a cut-short gzip metadata file is refused as corrupt gzip (XX001) |
+| `test_iceberg_current_snapshot_reads_a_two_member_gzip_file` | iceberg_current_snapshot reads a gzip metadata file of two members as it reads the plain file |
+| `test_iceberg_current_snapshot_reads_a_zero_padded_gzip_file` | iceberg_current_snapshot reads a gzip metadata file followed by zero padding |
+| `test_iceberg_scan_refuses_a_data_file_format_that_is_not_parquet` | iceberg_scan refuses a data file whose file_format is not Parquet (0A000) |
+| `test_iceberg_current_snapshot_reads_a_gzip_file_that_outgrows_the_first_buffer` | iceberg_current_snapshot reads a gzip metadata file that outgrows the first inflate buffer |
+| `test_iceberg_current_snapshot_reads_a_two_member_gzip_file_that_grows_in_its_second_member` | iceberg_current_snapshot reads a two-member gzip file that grows the buffer in its second member |
+| `test_an_az_metadata_path_is_refused_as_remote` | an az:// metadata path is refused as a remote URL it cannot read (0A000) |
+| `test_iceberg_scan_reads_a_lowercase_parquet_file_format` | iceberg_scan reads a data file whose file_format is lowercase parquet |
+| `test_iceberg_scan_reads_mixed_s3_and_s3a_paths` | iceberg_scan reads a table whose location is s3:// and whose recorded paths are s3a:// |
+| `test_iceberg_scan_reads_the_scalars_beside_nested_fields` | iceberg_scan still reads the scalar columns beside nested fields |
+| `test_iceberg_scan_refuses_a_struct_column_declared_text` | iceberg_scan refuses a struct column declared text (0A000) |
+| `test_iceberg_scan_refuses_a_list_column_declared_int4` | iceberg_scan refuses a list column declared int4 (0A000) |
+| `test_iceberg_scan_refuses_a_map_column_declared_int8` | iceberg_scan refuses a map column declared int8 (0A000) |
+| `test_an_iceberg_foreign_table_refuses_a_struct_column_declared_text` | a pgcolumnar_iceberg foreign table refuses a struct column declared text (0A000) |
+| `test_the_promotion_fixture_stores_the_old_and_new_physical_types` | premise: the old files store k, f, d as INT32, FLOAT and decimal(10,2), the new file as INT64, DOUBLE and decimal(20,2) |
+| `test_a_promoted_int_column_reads_old_files_as_bigint` | a promoted int -> long column reads the pre-promotion files as bigint |
+| `test_a_promoted_float_column_reads_old_files_as_double` | a promoted float -> double column reads the pre-promotion files as double precision |
+| `test_a_promoted_decimal_column_reads_old_files` | a promoted decimal(10,2) -> decimal(20,2) column reads the pre-promotion files |
+| `test_old_and_new_files_bind_to_the_promoted_types` | old and new files both bind to the promoted types in one snapshot |
+| `test_an_equality_delete_on_a_promoted_column_applies` | an equality delete on a promoted column applies to old and new files |
+| `test_an_equality_delete_on_an_unprojected_promoted_column_applies` | an equality delete on a promoted column applies when that column is not projected |
+| `test_a_foreign_table_reads_the_promoted_types` | a pgcolumnar_iceberg foreign table reads old and new files as the promoted types |
+| `test_a_foreign_table_applies_an_equality_delete_on_a_promoted_column` | a pgcolumnar_iceberg foreign table applies an equality delete on a promoted column |
+| `test_a_column_declared_int_over_an_int64_file_is_refused` | a column declared int over a post-promotion INT64 file is refused (42804) |
+| `test_a_column_declared_real_over_a_double_file_is_refused` | a column declared real over a post-promotion DOUBLE file is refused (42804) |
+| `test_a_date_column_declared_bigint_is_refused` | a date column declared bigint is refused, not widened (42804) |
+| `test_read_parquet_by_field_id_widens_an_int32_column` | read_parquet by field id reads an INT32 column as bigint |
+| `test_positional_read_parquet_keeps_its_exact_type_map` | positional read_parquet still refuses bigint over an INT32 column (42804) |
+
+## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
+
+The twin of `test/iceberg_catalog.sh` (#388 phase 3a). Against pyiceberg's own view of a real table, the reader returns the current snapshot, exactly one row with no parent, the snapshot the table names rather than snapshots[0], zero rows with no current snapshot, and refuses a dangling id, non-Iceberg JSON and malformed JSON; a role without pg_read_server_files is refused and a non-superuser member reads the catalog.
+
+### Every test
+
+One module fixture writes every metadata file into `server_dir` and reads every value from a private database; the two roles log in on their own and are dropped at teardown.
+
+| test | what it holds |
+| --- | --- |
+| `test_current_snapshot_matches_the_oracle` | current snapshot == oracle (id|seq|op|schema|manifest-list) |
+| `test_exactly_one_current_snapshot_row` | exactly one current snapshot row |
+| `test_the_first_snapshot_has_no_parent` | the first snapshot has no parent (NULL) |
+| `test_resolves_the_named_current_snapshot` | resolves the named current snapshot, not snapshots[0] |
+| `test_the_decoy_snapshot_is_not_returned` | the decoy snapshot is not returned |
+| `test_a_table_with_no_current_snapshot_returns_zero_rows` | a table with no current snapshot returns zero rows |
+| `test_a_dangling_current_snapshot_id_is_refused` | a dangling current-snapshot-id is refused (data_corrupted XX001) |
+| `test_a_non_iceberg_json_object_is_refused` | a non-Iceberg JSON object is refused (invalid_parameter_value 22023) |
+| `test_malformed_json_is_rejected` | malformed JSON is rejected (22P02), backend survives |
+| `test_backend_still_up_after_the_bad_metadata` | backend still up after the bad file |
+| `test_an_unprivileged_role_is_refused_the_catalog` | an unprivileged role is refused (42501) |
+| `test_a_pg_read_server_files_member_may_read_the_catalog` | a pg_read_server_files member who is not superuser may read the catalog |
+
+## 233. test_iceberg_name_mapping_memory.py: the Iceberg name-mapping parse does not allocate per entry
+
+The twin of `test/iceberg_name_mapping_memory.sh` (#731). The peak memory of a scan over a padded name mapping, less core's own parse of the byte-identical mapping, as a slope across two sizes, stays under 30 bytes an entry, and the padded mapping still binds every row with the same values.
+
+### Every test
+
+Each peak is VmHWM from /proc for the backend of the connection that ran the one statement, before and after it; a statement that errored has no peak. The fixtures live in `server_dir`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_small_arm_produced_three_readings` | the small arm produced three readings |
+| `test_the_large_arm_produced_three_readings` | the large arm produced three readings |
+| `test_cores_own_parse_is_the_larger_part` | core's own parse is the larger part of the scan's peak |
+| `test_the_two_sizes_give_different_peaks` | the two sizes give different peaks |
+| `test_the_name_mapping_parse_does_not_allocate_per_entry` | the name-mapping parse does not allocate per entry (#731) |
+| `test_the_padded_mapping_still_binds_every_row` | the padded mapping still binds every row |
+| `test_the_mapped_values_are_still_correct` | and the mapped values are still correct |
+
+## 234. test_iceberg_fdw_estimate.py: the Iceberg FDW estimates rows from the manifests
+
+The twin of `test/iceberg_fdw_estimate.sh`. The FDW's row estimate is positive, equals the live record count summed from the manifests rather than the old flat 1000, and still has the scan's selectivity applied.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir` and reads every value from a private database.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fdw_estimates_a_positive_row_count` | the FDW estimates a positive row count from the manifests |
+| `test_the_estimate_is_the_real_record_count` | the estimate is the real record count, not the old constant 1000 |
+| `test_a_filtered_scan_estimates_fewer_rows` | a filtered scan estimates fewer rows than the whole table (selectivity applied) |
+| `test_backend_alive_after_the_estimates` | backend alive |
+
+## 235. test_iceberg_fdw_projection.py: the Iceberg FDW's projection pushdown never changes a result
+
+The twin of `test/iceberg_fdw_projection.sh`. Over a 13-column fixture, every projection shape the FDW decodes -- one column, three, the whole row, none, a filter on an unselected column, one selected and another filtered -- answers what bare iceberg_scan answers.
+
+### Every test
+
+One module fixture copies the warehouse into `server_dir` and reads both sides of each shape from a private database; the two are compared only when both were taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_one_column` | one column : FDW projection matches iceberg_scan |
+| `test_three_columns` | three columns : FDW projection matches iceberg_scan |
+| `test_whole_row` | whole row : FDW projection matches iceberg_scan |
+| `test_count_only` | count only (no column referenced) : FDW projection matches iceberg_scan |
+| `test_filter_references_an_unselected_column` | filter references an unselected column : FDW projection matches iceberg_scan |
+| `test_select_one_filter_another` | select one, filter another : FDW projection matches iceberg_scan |
+| `test_backend_alive_after_the_projections` | backend alive |
+
+## 236. test_estimate_deleted.py: the planner's row estimate follows deletes
+
+The pytest twin of `test/estimate_deleted.sh` (ported for #1341), every check by the shell's name. After deleting 99% of a table and analysing it, EXPLAIN must estimate the live rows, as heap does, not the physical occupancy; with reltuples left stale on a table of several row groups, the estimate must still follow the deletes, while an undeleted table of the same shape estimates its full size.
+
+### Every test
+
+A module fixture on a private database runs the shell's sequence; each test asserts one reading. An estimate that is not a number is a failed reading, never zero.
+
+| test | what it holds |
+| --- | --- |
+| `test_columnar_holds_its_rows_before_the_delete` | premise: columnar holds 100000 rows before delete |
+| `test_the_estimate_before_the_delete_is_the_full_table` | the estimate before delete is the full table |
+| `test_a_thousand_live_rows_remain` | premise: 1000 live rows remain |
+| `test_analyze_recorded_the_live_count_in_reltuples` | ANALYZE recorded the live count in reltuples |
+| `test_the_estimate_after_the_delete_is_the_live_count` | the planner estimate after delete is the live count, not the physical occupancy |
+| `test_heap_is_near_the_live_count_too` | control: heap is also near the live count, so the probe reads EXPLAIN |
+| `test_the_fixture_spans_several_row_groups` | premise: the fixture spans several row groups, not one |
+| `test_reltuples_is_full_before_the_delete` | reltuples is 100000 before the delete |
+| `test_the_estimate_follows_the_deletes_with_a_stale_reltuples` | the estimate follows the deletes with a stale reltuples and several groups |
+| `test_the_live_count_really_is_60000` | control: and the live count really is 60000 |
+| `test_an_undeleted_table_estimates_its_full_size` | control: an undeleted table of the same shape estimates its full size |
+
+## 237. test_generated_columns.py: a columnar table with a generated column returns what heap does
+
+The twin of `test/generated_columns.sh`. STORED generated columns, on every major, read, filter and aggregate as the heap copy does and get a column chunk. VIRTUAL ones, on PostgreSQL 18+, read and filter as heap does, equal their expression on every row, and store no chunk while the base column still gets one.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every columnar reading carries its row count against the constant the fixture loads, and the heap oracle must hold the fixture's aggregate. Before 18 the virtual tests decline; only the row-count test names the shell's skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_stored_generated_row_count` | stored generated: row count |
+| `test_stored_generated_values_match` | stored generated: values match |
+| `test_stored_generated_filtered_scan_matches` | stored generated: filtered scan matches |
+| `test_stored_generated_aggregate_matches` | stored generated: aggregate matches |
+| `test_stored_generated_chunk_present_for_attr_2` | stored generated: chunk present for attr 2 |
+| `test_virtual_generated_row_count` | virtual generated: row count -- before 18, declines as `virtual generated columns`, the shell's skip |
+| `test_virtual_generated_values_match` | virtual generated: values match |
+| `test_virtual_generated_filtered_scan_matches` | virtual generated: filtered scan matches |
+| `test_virtual_generated_recomputed_correctly` | virtual generated: recomputed correctly |
+| `test_virtual_generated_no_chunk_stored_for_the_virtual_columns` | virtual generated: no chunk stored for the virtual columns |
+| `test_virtual_generated_base_column_still_stored` | virtual generated: base column still stored |
+
+## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
+
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. The files live in `server_dir`, because the backend writes them. Each round-trip reading carries its row count, a directory that cannot be listed is a failed reading, and the intact-file reading carries the re-export's SQLSTATE, so a re-export that never ran cannot pass.
+
+| test | what it holds |
+| --- | --- |
+| `test_census_zero_fwrite_remain_in_columnar_parquet_c` | census: zero fwrite remain in columnar_parquet.c |
+| `test_census_zero_fwrite_remain_in_columnar_arrow_c` | census: zero fwrite remain in columnar_arrow.c |
+| `test_parquet_export_succeeds_through_the_sink` | parquet export succeeds through the sink |
+| `test_arrow_export_succeeds_through_the_sink` | arrow export succeeds through the sink |
+| `test_no_temp_debris_after_successful_exports` | no temp debris after successful exports |
+| `test_parquet_round_trip_hash_matches_the_source` | parquet round-trip hash-matches the source |
+| `test_arrow_round_trip_hash_matches_the_source` | arrow round-trip hash-matches the source |
+| `test_the_arrow_size_supports_a_mid_batch_injection_point` | measured arrow size supports a mid-batch injection point |
+| `test_inject_parquet_export_fails_as_disk_full` | inject: parquet export fails as disk-full (53100) |
+| `test_inject_nothing_exists_at_the_parquet_final_path` | inject: nothing exists at the parquet FINAL path |
+| `test_inject_a_failed_re_export_leaves_the_previous_parquet_file_intact` | inject: a failed re-export leaves the previous parquet file intact |
+| `test_inject_no_parquet_temp_debris` | inject: no parquet temp debris |
+| `test_inject_arrow_export_fails_inside_write_record_batch` | inject: arrow export fails inside write_record_batch (53100) |
+| `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
+| `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
+| `test_after_reset_exports_work_again` | after RESET, exports work again |
+
+## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
+
+The twin of `test/groupagg_table_sizing.sh` (#403 item 6, #810 review). On 2,000,000 rows in 200,000 groups the node rehashes at most a quarter of the doubling ladder in at most four allocations and never allocates more than the real group count needs; an over-estimated expression key never inflates a table that does not grow, and a key that does grow never jumps past eight times its need. Every answer is read through the vectorized node.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. A counter that was not printed is a failed reading, and a real group count must be a positive number.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vectorized_grouped_aggregate_is_the_node_that_ran` | the vectorized grouped aggregate is the node that ran |
+| `test_it_built_the_group_count_this_suite_is_sized_for` | premise: it built the group count this suite is sized for |
+| `test_the_work_done_counter_is_reported` | the work-done counter is reported at all |
+| `test_the_declared_n_distinct_reached_the_planner` | premise: the declared n_distinct reached the planner, so the estimate is not a sample |
+| `test_a_sized_table_removes_most_of_the_rehashing` | a sized table removes most of the rehashing (#403 item 6) |
+| `test_it_gets_there_in_a_few_allocations` | and it gets there in a few allocations, not a ladder (#403 item 6) |
+| `test_the_table_is_never_larger_than_the_real_group_count_needs` | the table is never larger than the real group count needs (#810 review) |
+| `test_the_planner_really_over_estimates_an_expression_key` | premise: the planner really over-estimates an expression key, or there is nothing to guard |
+| `test_a_wrong_estimate_cannot_inflate_a_table_that_never_needed_to_grow` | a wrong estimate cannot inflate a table that never needed to grow (#810 review) |
+| `test_the_expression_key_still_answers_correctly` | and the expression key still answers correctly |
+| `test_this_key_really_does_force_the_table_to_grow` | premise: this key really does force the table to grow, or the bound is untested |
+| `test_a_grow_cannot_jump_to_a_wrong_estimate` | a grow cannot jump to a wrong estimate, only toward it (#810 review) |
+| `test_the_minute_key_answers_correctly_too` | and the minute key answers correctly too |
+| `test_the_answer_is_the_same_under_a_small_work_mem` | and the answer is the same under a small work_mem |
+| `test_the_aggregate_itself_is_still_right` | the aggregate itself is still right |
+
+## 240. test_fsst_margin.py: the FSST keep/drop margin decides, and never changes content
+
+The twin of `test/fsst_margin.sh` (#155, #271). Margin 0 keeps FSST on a marginal corpus and margin 90 drops it; the shipped default drops it; with no codec it is kept even at the maximum margin; and tables loaded at margin 0, at 90 and at the default read back what a heap mirror holds, NULLs and empty strings included, over a corpus whose margin-0 copy is FSST.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Each drop carries its table's row count, and the content readings are compared only when both were taken.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_heap_mirror_has_content_to_compare_against` | the heap mirror has content to compare against |
+| `test_at_margin_0_this_corpus_keeps_fsst` | at margin 0 this corpus keeps FSST |
+| `test_at_margin_90_the_same_corpus_drops_fsst` | at margin 90 the same corpus drops FSST |
+| `test_the_margin_is_what_changed_the_decision` | so the margin is what changed the decision, not the corpus |
+| `test_the_shipped_default_drops_fsst_on_a_marginal_corpus` | the shipped default drops FSST on a marginal corpus |
+| `test_and_0_still_keeps_it` | and 0 still keeps it, so the default is a decision and not a rewrite |
+| `test_the_paired_arm_dropped_fsst_at_this_margin_with_a_codec` | the paired arm dropped FSST at this margin with a codec |
+| `test_with_no_codec_the_same_corpus_keeps_fsst_at_the_same_margin` | with no codec the same corpus keeps FSST at the same margin |
+| `test_and_at_the_maximum_margin_too` | and at the maximum margin too, because the test returns before reading it |
+| `test_the_margin_0_content_copy_really_is_stored_as_fsst` | the margin-0 content copy really is stored as FSST, so the invariant reads FSST |
+| `test_fm_c0_reads_back_exactly_what_the_heap_holds` | fm_c0 reads back exactly what the heap holds |
+| `test_fm_c90_reads_back_exactly_what_the_heap_holds` | fm_c90 reads back exactly what the heap holds |
+| `test_fm_cd_reads_back_exactly_what_the_heap_holds` | fm_cd reads back exactly what the heap holds |
+| `test_fm_c0_preserves_nulls` | fm_c0 preserves NULLs |
+| `test_fm_c0_preserves_empty_strings` | fm_c0 preserves empty strings |
+| `test_fm_c90_preserves_nulls` | fm_c90 preserves NULLs |
+| `test_fm_c90_preserves_empty_strings` | fm_c90 preserves empty strings |
+
+## 241. test_index_delete_liveness.py: nbtree's deletion passes never destroy an entry for a live row
+
+The twin of `test/index_delete_liveness.sh`. After twelve rounds of churn on a non-indexed column over 400 live rows, rolled back or committed, an index scan must still reach all 400; churn on the indexed column and a heap table under the same hint are the controls, and at shipped defaults count(*) and count(b) must agree.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every churn reports the rows it updated, and each arm's reading carries that count.
+
+| test | what it holds |
+| --- | --- |
+| `test_arm_a_holds_n_rows_before_the_churn` | premise: arm A holds 400 rows before the churn |
+| `test_arm_a_really_plans_an_index_scan` | premise: arm A really plans an Index Scan, so the arm measures the index |
+| `test_arm_a_a_rollback_leaves_every_live_row_reachable` | arm A: a ROLLBACK leaves every live row reachable through the index |
+| `test_control_b_indexed_column_churn_loses_nothing` | control B: indexed-column churn triggers no bottom-up pass and loses nothing |
+| `test_control_c_the_heap_loses_nothing` | control C: the heap loses nothing under the same churn |
+| `test_arm_d_a_commit_leaves_every_live_row_reachable` | arm D: a COMMIT leaves every live row reachable through the index |
+| `test_at_shipped_defaults_count_star_is_right` | at shipped defaults count(*) is right |
+| `test_at_shipped_defaults_count_star_and_count_b_agree` | at shipped defaults the table answers the same to count(*) and count(b) |
+| `test_oracle_the_heap_answers_count_star_correctly` | oracle: the heap answers count(*) correctly after the same churn |
+
+## 242. test_rewrite_group_scan.py: a rewrite reads each row group once, not once per row
+
+The pytest twin of `test/rewrite_group_scan.sh` (ported for #1341), every check by the shell's name. A group whose decoded form exceeds the fetch cache cap used to be re-decoded once per row during a rewrite (#196). The fixture crosses the cap, and the rewrite must finish within a generous statement_timeout, keep every surviving row, agree with a heap mirror, and keep the rows reachable through an index built before it. On a private database.
+
+### Every test
+
+A rewrite reads `finished` only when compact_rewrite returned a positive count. The fixture is held to its survivors first. The index `rgs_id` is built before the rewrite, so the rewrite has to insert the moved rows' index entries itself.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_holds_its_survivors` | premise: the fixture holds the rows that survive the delete |
+| `test_a_rewrite_over_the_cache_cap_finishes` | a rewrite of a group over the cache cap finishes |
+| `test_the_rewrite_preserved_every_surviving_row` | the rewrite preserved every surviving row |
+| `test_the_rewrite_agrees_with_a_heap_mirror` | and it agrees with a heap mirror |
+| `test_a_group_under_the_cap_still_rewrites_correctly` | a group under the cap still rewrites correctly |
+| `test_the_index_lookup_reads_the_index` | the index lookup's plan reads rgs_id |
+| `test_an_index_lookup_finds_a_rewritten_row` | an index lookup finds a rewritten row |
+
+## 243. test_recluster_gate.py: recluster skips its rewrite when the table is already this key's run
+
+The pytest twin of `test/recluster_gate.sh` (ported for #1341), every check by the shell's name. recluster returns the number of row groups it rewrote, and its self-gate (#415) makes a repeat on an unchanged table rewrite nothing; an append or a new key makes it work again. On a private database.
+
+### Every test
+
+The row-set check reads a heap mirror built from the generator, not copied from the table under test. A layout comparison needs both readings.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_first_gate_recluster_does_real_work` | the first recluster does real work (>0 groups) |
+| `test_sort_status_reports_the_clustering_key` | sort_status now reports the clustering key (was NULL before #415) |
+| `test_the_recluster_run_covers_the_whole_relation` | the run covers the whole relation (0 appended groups) |
+| `test_a_repeat_on_an_unchanged_table_reclusters_nothing` | recluster by the same key on an unchanged table reclusters 0 groups |
+| `test_the_layout_is_byte_identical` | and it leaves the physical layout byte-identical (group offsets unmoved) |
+| `test_a_third_identical_recluster_is_a_no_op` | a third identical recluster is also a no-op |
+| `test_the_insert_appended_unsorted_groups` | premise: the insert appended unsorted groups |
+| `test_a_recluster_after_appends_does_work` | recluster after appends does real work again (>0) |
+| `test_recluster_folds_the_tail_back_into_the_run` | and it folds the new data back into the run (0 appended after) |
+| `test_a_recluster_by_a_new_key_does_work` | recluster by a NEW key is NOT a no-op -- it re-clusters (>0) |
+| `test_sort_status_reports_the_new_key` | and sort_status now reports the new key |
+| `test_a_repeat_by_the_new_key_is_a_no_op` | a repeat recluster by the new key is a no-op |
+| `test_the_no_op_reclusters_preserved_the_row_set` | no-op recluster preserved the exact row set (columnar == heap mirror) |
+
+## 244. test_recluster_extent.py: an online recluster records only the extent it rewrote
+
+The pytest twin of `test/recluster_extent.sh` (ported for #1341), every check by the shell's name. The online recluster runs while other sessions write, and its run must cover the groups it wrote and nothing else: not rows inserted during it (#311), and not a group whose id another writer drew below the rewrite's (#342). The races run in threads, as the shell runs them in background jobs. On a private database.
+
+### Every test
+
+Whether the insert ran during the rewrite is asked of the server before the insert begins. The run must claim at least one row and no more than the base. The projection arm first reads its projection back from the catalog, so a failed `add_projection` cannot turn it into a second arm without one.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_loaded` | the table loaded |
+| `test_the_insert_ran_during_the_rewrite` | the insert ran while the rewrite was still running |
+| `test_the_rewrite_reported_groups_reclustered` | the rewrite reported groups reclustered |
+| `test_the_concurrent_insert_was_not_in_the_work_set` | premise: the concurrent insert was not in the rewrite's work set |
+| `test_every_row_is_present_afterwards` | every row is present afterwards |
+| `test_no_row_was_rewritten_and_also_kept` | no row was rewritten and also kept (#1633) |
+| `test_a_row_deleted_during_the_rewrite_stays_deleted` | a row deleted during the rewrite stays deleted (#1633) |
+| `test_the_run_does_not_claim_rows_written_during_the_rewrite` | the run does not claim rows written during the rewrite |
+| `test_the_counts_still_cover_every_stored_row` | the counts still cover every stored row |
+| `test_the_concurrent_rows_are_reported_as_appended` | the concurrent rows are reported as appended |
+| `test_a_group_numbered_below_the_run_is_not_ordered` | a group numbered below the run is not counted as ordered |
+| `test_the_rows_below_the_run_are_appended` | the rows written below the run are reported as appended |
+| `test_the_id_drawn_below_counts_cover_every_row` | the id-drawn-below counts still cover every stored row |
+| `test_noproj_a_full_recluster_claims_every_row` | noproj: a full recluster claims every row |
+| `test_noproj_a_full_recluster_leaves_nothing_appended` | noproj: a full recluster leaves nothing appended |
+| `test_withproj_add_projection_created_the_projection` | withproj: add_projection created the projection |
+| `test_withproj_a_full_recluster_claims_every_row` | withproj: a full recluster claims every row |
+| `test_withproj_a_full_recluster_leaves_nothing_appended` | withproj: a full recluster leaves nothing appended |
+| `test_an_uncontended_rewrite_claims_the_whole_relation` | an uncontended rewrite claims the whole relation |
+| `test_an_uncontended_rewrite_counts_every_row_as_sorted` | an uncontended rewrite counts every row as sorted |
+
+## 245. test_reader_buffer_reuse.py: the reader reuses one group buffer, and the reuse never shows in an answer
+
+The pytest twin of `test/reader_buffer_reuse.sh` (ported for #1341), every check by the shell's name. Reading every group costs well under one group's worth of minor faults per extra group (log_executor_stats), and the full scan, projected scans, whole-group reads, a short group, added and dropped columns and a rescan all match heap mirrors. On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+The heap mirrors are built from the generators, not copied from the tables under test. A differential comparison refuses an empty side.
+
+A read that names its columns fills only their ranges of the reused buffer. A read with no projection reads the whole group into it in one call: a whole-row read, and every read with `pgcolumnar.enable_column_projection = off`. Four tests compare that read with the mirror, before and after the short group.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reuse_fixture_has_several_row_groups` | premise: the fixture has several row groups, or reuse cannot matter |
+| `test_the_one_group_arm_reads_one_group` | premise: the one-group arm really reads exactly one row group |
+| `test_the_all_groups_arm_reads_every_group` | premise: the all-groups arm really reads every row group |
+| `test_the_instrument_reports_faults` | premise: the instrument reports a nonzero fault count at all |
+| `test_reading_every_group_reuses_the_buffer` | reading every group does not cost per-group faults (ratio well under the group count) |
+| `test_the_full_scan_matches_the_mirror` | the full scan matches a heap mirror exactly |
+| `test_a_projected_scan_matches_too` | a PROJECTED scan (one column of two) matches too |
+| `test_the_full_scan_with_projection_off_matches_the_mirror` | the full scan with column projection off (a whole-group read) matches a heap mirror |
+| `test_a_whole_row_read_matches_the_mirror` | a whole-row read (a whole-group read) matches a heap mirror |
+| `test_a_smaller_group_was_added` | premise: that really added a group smaller than the ones before it |
+| `test_a_short_group_after_a_full_one_reads_correctly` | a short group after a full one still reads correctly |
+| `test_a_short_group_reads_correctly_with_projection_off` | a short group after a full one reads correctly with column projection off |
+| `test_a_short_group_reads_correctly_in_a_whole_row_read` | a short group after a full one reads correctly in a whole-row read |
+| `test_the_differential_fixture_spans_several_groups` | premise: the differential fixture spans several row groups |
+| `test_a_projected_subset_matches_the_heap_twin` | one test per row of `PROJECTIONS` (8 rows), each by the shell's name |
+| `test_an_added_column_reads_back_null` | a column ADDED after the groups exist reads back NULL, as on heap |
+| `test_an_all_null_column_beside_a_wide_one_matches` | an all-NULL column beside a wide one matches |
+| `test_reads_after_drop_column_match` | reads after DROP COLUMN match |
+| `test_a_rescan_returns_the_same_rows` | a rescan (nested loop) returns the same rows |
+
+## 246. test_nologin_workers.py: a NOLOGIN role's background workers connect and act as that role
+
+The pytest twin of `test/nologin_workers.sh` (#1585), every check by the shell's name. As a NOLOGIN role reached by SET ROLE and holding both server-file roles: `parallel_export_parquet` and `parallel_copy` return every row, a row trigger inside the copy worker records that role and not the authenticated user, the parallel flush encodes every column in a worker, and the server log holds no refused login for the role beyond the one the premise provokes. Before #1585 the workers connected as the calling role, which PostgreSQL 15 and 16 refuse for a role without LOGIN. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nologin_role_cannot_open_a_session` | premise: the NOLOGIN role cannot open a session |
+| `test_the_server_log_records_the_refused_login` | premise: the server log records the NOLOGIN role's refused login -- the positive control for the log reading the last test relies on |
+| `test_set_role_to_the_nologin_role_takes` | premise: SET ROLE to the NOLOGIN role takes |
+| `test_a_nologin_roles_parallel_export_exports_every_row` | a NOLOGIN role's parallel_export_parquet exports every row |
+| `test_a_nologin_roles_parallel_copy_loads_every_row` | a NOLOGIN role's parallel_copy loads every row |
+| `test_parallel_copys_workers_wrote_as_the_nologin_role` | parallel_copy's workers wrote every row as the NOLOGIN role -- a worker that connected as the authenticated user and never took the caller's id writes `postgres` here |
+| `test_the_flush_is_dispatched_to_workers` | the flush is dispatched to workers |
+| `test_a_nologin_roles_parallel_flush_encodes_every_column_in_a_worker` | a NOLOGIN role's parallel flush encodes every column in a worker -- read from the flush's own DEBUG1 split, because a refused worker falls back to serial and stores the same rows |
+| `test_the_table_holds_every_row_it_flushed` | and the table holds every row it flushed |
+| `test_no_worker_was_refused_a_login` | no worker was refused a login as the NOLOGIN role |
+| `test_a_role_resetting_copy_trigger_writes_as_the_nologin_role` | a copy trigger that resets the role still writes every row as the NOLOGIN role -- the worker's session user is the caller on every major (#1612 review) |
+| `test_the_role_resetting_copy_leaves_nothing_prepared` | and that copy leaves no prepared transaction behind |
+| `test_a_role_switching_copy_trigger_is_refused_before_prepare` | a copy trigger that switches to another role is refused before the worker prepares: a transaction prepared as another user is one the caller cannot finish |
+| `test_the_refused_copy_leaves_nothing_prepared` | and the refused copy leaves no prepared transaction behind |
+| `test_a_definer_copy_keeps_its_restriction_in_the_workers` | a copy run by a SECURITY DEFINER function keeps the definer's restriction in its workers: the worker takes the caller's security context, inside its transaction |
+
+## 247. test_scan_direction.py: a scrollable cursor over a columnar table never invents a backward answer
+
+The pytest twin of `test/scan_direction.sh` (ported for #1341), every check by the shell's name. At shipped defaults the custom scan serves a cursor and PostgreSQL materializes under SCROLL, so a backward fetch matches heap; with the custom scan off, the access method must raise 0A000 for a backward fetch and for FETCH LAST. On a private database, with serial planning as the shell's cluster runs.
+
+### Every test
+
+A cursor's rows are compared with heap's only when both returned rows. A statement reads as its SQLSTATE, `00000` when it ran, or `no reading` when the server could not be reached.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_pair_holds_the_same_row_count` | premise: the pair holds the same row count |
+| `test_at_shipped_defaults_the_cursor_matches_heap` | at shipped defaults the cursor matches heap |
+| `test_with_the_custom_scan_off_the_plan_is_a_seq_scan` | with the custom scan off the plan really is a Seq Scan on the AM |
+| `test_a_forward_only_fetch_matches_heap_through_the_am` | forward-only fetch still matches heap through the AM |
+| `test_a_backward_fetch_through_the_am_raises_0a000` | a backward fetch through the AM raises 0A000 rather than answering |
+| `test_fetch_last_through_the_am_raises_0a000` | FETCH LAST through the AM raises 0A000 rather than returning nothing |
+| `test_the_same_cursor_on_heap_raises_nothing` | control: the same cursor on a heap table raises nothing |
+| `test_a_forward_only_fetch_reports_success` | control: a forward-only fetch reports success, so the probe is not stuck on 0A000 |
+
+## 248. test_qual_order_selectivity.py: skip predicates are probed most-selective-first
+
+The pytest twin of `test/qual_order_selectivity.sh` (ported for #1341), every check by the shell's name. With an unselective predicate written before a selective one, the reader moves the excluding predicate to the front, so a pruned group costs one zone-map probe rather than two (#403 item 4). On a private database, with serial planning.
+
+### Every test
+
+A probe count is a number or `no reading`. The heap mirror is built from the generator.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_columnar_scan_ran` | premise: the columnar scan ran, so these are its counters |
+| `test_both_predicates_are_usable` | both predicates were pushed down and are usable |
+| `test_the_fixture_has_its_groups` | premise: the fixture has the groups this suite is sized for |
+| `test_the_selective_predicate_still_prunes` | the selective predicate still prunes what it always did |
+| `test_the_probe_counter_is_reported` | the probe counter is reported at all |
+| `test_a_pruned_group_is_not_probed_through_every_column` | a pruned group is not probed through every predicate's column (#403 item 4) |
+| `test_the_order_the_predicates_are_written_in_does_not_matter` | and it does not depend on the order the predicates are written in |
+| `test_the_answer_matches_the_heap_oracle` | the answer matches the heap oracle |
+| `test_a_range_selective_predicate_matches` | and so does a query where the selective predicate is a range |
+| `test_nothing_selective_still_answers_correctly` | and one where NOTHING is selective, which must still answer correctly |
+| `test_no_selective_predicate_prunes_nothing` | a query with no selective predicate prunes nothing, as before |
+
+## 249. test_pushdown_report.py: EXPLAIN reports what qual pushdown did, the same way on every columnar node
+
+The pytest twin of `test/pushdown_report.sh` (ported for #1341), every check by the shell's name. Pushed-down filters, usable skip predicates and the chunk groups they remove are reported with pushdown on and off, for a usable qual and one whose operator builds no skip predicate, on the scalar scan and both vectorized aggregates, under plain EXPLAIN and EXPLAIN ANALYZE (#191, #479, #493, #495, #726). On a private database, with serial planning.
+
+### Every test
+
+A comparison of two EXPLAIN fields is numeric, so a field missing from both plans is not agreement.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_plan_is_a_columnar_custom_scan` | the plan under test is a columnar custom scan |
+| `test_it_is_still_one_with_pushdown_off` | and it is still one with pushdown off |
+| `test_pushdown_on_reports_a_filter` | pushdown on reports a pushed-down filter |
+| `test_pushdown_off_reports_none` | pushdown off reports none |
+| `test_pushdown_on_skips_chunk_groups` | pushdown on skips chunk groups |
+| `test_pushdown_off_skips_none` | pushdown off skips none |
+| `test_the_executor_filters_more_with_pushdown_off` | the executor filters far more rows with pushdown off |
+| `test_pushdown_off_examines_every_row` | pushdown off examines every row |
+| `test_the_answer_is_unchanged_with_pushdown_on` | the answer is unchanged with pushdown on |
+| `test_the_answer_is_unchanged_with_pushdown_off` | the answer is unchanged with pushdown off |
+| `test_two_quals_report_two_filters` | two quals report two pushed-down filters |
+| `test_integer_ops_has_no_ordering_proc_for_the_pair` | premise: integer_ops has no ordering proc for (bigint, oid) |
+| `test_core_has_no_such_pair` | premise: and core has no such pair of its own, which is why this is built |
+| `test_the_usable_arm_is_a_custom_scan` | the usable arm is a columnar custom scan |
+| `test_the_unusable_arm_is_a_custom_scan` | the unusable arm is a columnar custom scan |
+| `test_the_usable_arm_removes_chunk_groups` | the usable arm removes chunk groups |
+| `test_the_unusable_arm_removes_none` | the unusable arm removes none |
+| `test_the_unusable_arm_returns_the_right_answer` | and the unusable arm still returns the right answer |
+| `test_both_arms_report_the_filter_pushed_down` | both arms report the filter as pushed down |
+| `test_the_usable_arm_reports_one_usable_predicate` | the usable arm reports one usable skip predicate |
+| `test_the_unusable_arm_reports_no_usable_predicate` | the unusable arm reports none |
+| `test_pushdown_off_reports_no_usable_predicates` | pushdown off reports no usable skip predicates |
+| `test_the_ungrouped_node_ran_usable` | the ungrouped vectorized aggregate node ran (usable arm) |
+| `test_the_ungrouped_node_ran_unusable` | the ungrouped vectorized aggregate node ran (unusable arm) |
+| `test_ungrouped_the_usable_arm_removes_groups` | ungrouped: the usable arm removes chunk groups |
+| `test_ungrouped_the_unusable_arm_removes_none` | ungrouped: the unusable arm removes none |
+| `test_the_plain_explain_arm_is_the_ungrouped_node` | the plain EXPLAIN arm is the ungrouped vectorized aggregate |
+| `test_the_analyze_arm_reports_a_nonzero_count` | the same query under ANALYZE reports a non-zero count |
+| `test_plain_explain_reports_the_ungrouped_filters` | plain EXPLAIN reports the ungrouped node's pushed-down filters (#726) |
+| `test_plain_explain_reports_the_ungrouped_vector_predicates` | plain EXPLAIN reports the ungrouped node's vector predicates (#726) |
+| `test_the_grouped_node_is_planned_for_the_cross_node_arm` | the grouped node IS planned for the cross-node arm |
+| `test_plain_explain_the_grouped_node_agrees` | plain EXPLAIN: the grouped node agrees with the ungrouped one (#493, #726) |
+| `test_ungrouped_the_usable_arm_reports_one_of_each` | ungrouped: the usable arm reports one of each, agreeing |
+| `test_ungrouped_the_unusable_arm_builds_no_predicate` | ungrouped: and the unusable arm builds no skip predicate |
+| `test_the_grouped_node_ran_usable` | the grouped vectorized aggregate node ran (usable arm) |
+| `test_the_grouped_node_ran_unusable` | the grouped vectorized aggregate node ran (unusable arm) |
+| `test_grouped_the_usable_arm_removes_groups` | grouped: the usable arm removes chunk groups |
+| `test_grouped_the_unusable_arm_removes_none` | grouped: the unusable arm removes none |
+| `test_grouped_the_usable_arm_reports_one_of_each` | grouped: the usable arm reports one of each, agreeing |
+| `test_grouped_the_unusable_arm_builds_no_predicate` | grouped: and the unusable arm builds no skip predicate |
+| `test_each_counter_has_one_emitter` | one test per row of `EMITTERS` (6 rows), each by the shell's name |
+| `test_the_scalar_arm_is_the_scalar_scan` | the scalar arm really is the scalar scan (#493) |
+| `test_scalar_and_ungrouped_agree` | scalar and ungrouped agree on Pushed-Down Filters (#493) |
+| `test_scalar_and_grouped_agree` | scalar and grouped agree on Pushed-Down Filters (#493) |
+| `test_the_ungrouped_node_reports_vector_predicates_separately` | the ungrouped node reports its vector-predicate count separately (#493) |
+| `test_it_is_the_count_that_used_to_be_mislabelled` | and it is the count that used to be mislabelled (#493) |
+
+## 250. test_row_triggers.py: row-level triggers on a columnar table fire once per row with the right row
+
+The pytest twin of `test/row_triggers.sh` (ported for #1341), every check by the shell's name. An AFTER INSERT row trigger re-fetches its row by TID before the stripe is flushed, so the access method answers from its write buffer (#179); deferred, UPDATE and DELETE triggers fetch rows on disk. Each shape runs on a columnar table and its heap twin, and the two trigger logs must agree. On a private database.
+
+### Every test
+
+The two logs agree only when the heap twin's trigger fired at all. A statement succeeds only when it raised nothing.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_single_row_insert_with_an_after_row_trigger_succeeds` | a single-row insert with an after-row trigger succeeds |
+| `test_the_single_row_landed` | and the row itself landed |
+| `test_the_trigger_saw_the_same_row_heap_did` | the trigger saw the same row heap did |
+| `test_a_multi_row_insert_fires_once_per_row` | a multi-row insert fires once per row with the right values |
+| `test_an_insert_crossing_a_stripe_boundary_fires_for_every_row` | an insert crossing a stripe boundary fires for every row |
+| `test_1500_rows_with_no_mid_statement_flush_all_fire` | 1500 rows with no mid-statement flush all fire |
+| `test_after_update_fires_with_the_new_row` | after-update fires with the new row |
+| `test_after_delete_fires_with_the_old_row` | after-delete fires with the old row |
+| `test_insert_then_update_in_one_transaction` | insert then update in one transaction |
+| `test_a_before_row_trigger_still_fires_once_per_row` | a before-row trigger still fires once per row |
+| `test_a_deferred_constraint_trigger_still_fires_at_commit` | a deferred constraint trigger still fires at commit |
+| `test_an_import_into_a_table_with_an_after_row_trigger_succeeds` | an import into a table with an after-row trigger succeeds |
+| `test_the_imported_rows_landed` | the imported rows landed |
+| `test_the_trigger_fired_once_per_imported_row` | and the trigger fired once per imported row |
+
+## 251. test_projection_rename_restore.py: a projection's declaration follows a column rename, so it rebuilds after restore
+
+The pytest twin of `test/projection_rename_restore.sh` (ported for #1341), every check by the shell's name. A projection is declared by column names and restore rebuilds it from the declaration, so a column renamed afterwards, on the table or on a partition through its parent, must be renamed in the declaration too (#888). On two private databases: the source and the restore target.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_live_projection_reads_after_the_rename` | the live projection still reads after the rename |
+| `test_the_child_projection_reads_after_a_parent_rename` | the child projection still reads after a parent rename |
+| `test_pg_dump_succeeds` | pg_dump succeeds |
+| `test_restore_succeeds` | restore succeeds |
+| `test_the_renamed_projection_rebuilds_after_restore` | the renamed projection rebuilds after restore |
+| `test_the_rebuilt_projection_holds_every_row` | the rebuilt projection contains every restored row |
+| `test_the_descendant_declaration_follows_the_parent_rename` | the descendant declaration follows the parent rename |
+| `test_the_rebuilt_child_projection_holds_every_row` | the rebuilt child projection contains every restored row |
+
+## 252. test_preimage_rewrite.py: a predicate on date_trunc of a column prunes like the range it stands for
+
+The pytest twin of `test/preimage_rewrite.sh` (ported for #1341), every check by the shell's name. A predicate on `date_trunc(unit, ts)` is rewritten to a range on `ts`, so the zone maps can prune it (#403 item 1). The answers cannot see the rewrite, so the work checks compare the chunk groups each form removes with the explicit range it stands for: equality, and the four ordered operators in both operand orders and with constants that are not truncated. The answer checks catch a rewrite that prunes wrongly, against the range and against heap mirrors, by count and by rows. Near the end of the timestamp range and on the infinities the rewrite must answer rather than raise; the shapes that must decline still answer as heap does; and the keys stay conservative, so the batch fold declines them. The heap mirrors are built from the generators, never copied from the columnar tables, and the server must not have lost a backend since setup. On a private database, with serial planning.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_spans_many_chunk_groups` | premise: the fixture spans many chunk groups |
+| `test_the_explicit_range_prunes` | the explicit range prunes, so there IS something to remove |
+| `test_date_trunc_equality_prunes` | date_trunc('day', ts) = const prunes chunk groups (#403) |
+| `test_date_trunc_equality_prunes_as_well_as_the_range` | ...and prunes as well as the equivalent explicit range |
+| `test_the_rewritten_predicate_returns_the_ranges_answer` | the rewritten predicate returns the range's answer |
+| `test_the_rewritten_predicate_returns_the_heaps_answer` | and the heap mirror's answer |
+| `test_the_rewritten_predicate_returns_the_heaps_rows` | the actual ROWS match the heap, not just the count |
+| `test_the_range_for_an_ordered_arm_prunes` | one test per ordered arm (8): the range for [arm] prunes, so there is something to remove |
+| `test_an_ordered_arm_prunes` | one test per ordered arm (8): [arm] prunes chunk groups |
+| `test_an_ordered_arm_prunes_as_well_as_the_range` | one test per ordered arm (8): [arm] prunes as well as the equivalent explicit range |
+| `test_an_ordered_arm_returns_the_ranges_answer` | one test per ordered arm (8): [arm] returns the range's answer |
+| `test_an_ordered_arm_returns_the_heaps_answer` | one test per ordered arm (8): [arm] returns the heap's answer |
+| `test_an_ordered_arm_returns_the_heaps_rows` | one test per ordered arm (8): [arm] returns the heap's ROWS, not just its count |
+| `test_the_near_maximum_row_is_there` | premise: the near-maximum row is really there |
+| `test_an_edge_arm_answers_as_heap_does` | one test per edge predicate (11): [arm] answers instead of raising, and agrees with the heap |
+| `test_the_fixture_holds_one_positive_infinity` | premise: the fixture holds one +infinity row |
+| `test_the_fixture_holds_one_negative_infinity` | premise: the fixture holds one -infinity row |
+| `test_a_non_truncated_constant_returns_no_rows` | a non-truncated constant returns no rows |
+| `test_the_heap_agrees_it_is_unsatisfiable` | ...and the heap agrees it is unsatisfiable |
+| `test_timestamptz_is_correct_under_utc` | timestamptz: correct under UTC |
+| `test_timestamptz_is_correct_under_another_zone` | timestamptz: and still correct under a different zone |
+| `test_a_non_constant_unit_answers_correctly` | a non-constant unit still answers correctly |
+| `test_the_rewritten_predicate_does_not_engage_the_batch_fold` | the rewritten predicate does not engage the batch fold |
+| `test_the_rewritten_predicate_answers_with_the_fold_enabled` | ...and still answers correctly with the fold enabled |
+| `test_a_unit_returns_the_heaps_answer` | one test per unit (month, week, quarter, year): unit 'u' returns the heap's answer |
+| `test_a_unit_matches_some_rows` | one test per unit: unit 'u': premise: it matches some rows |
+| `test_an_unlisted_unit_answers_correctly` | an unlisted unit (millennium) still answers correctly |
+| `test_the_backend_is_still_up` | backend still up -- the server answers AND the log shows no backend killed since setup |
+
+## 253. test_pg19_vacuum_options.py: PostgreSQL 19's parallel-autovacuum parameter is accepted on a columnar table and changes nothing
+
+The pytest twin of `test/pg19_vacuum_options.sh` (ported for #1341), every check by the shell's name. `autovacuum_parallel_workers` is accepted on a columnar table and recorded in reloptions as on heap, and it changes nothing: VACUUM, VACUUM (PARALLEL 2) and `pgcolumnar.vacuum` succeed with it set and leave the rows and their content unchanged, and VACUUM VERBOSE reports on heap but not on the columnar table, whose vacuum path is pgcolumnar's (#398). A statement's success is read from the driver, not from output lacking "ERROR". Each test declines before PostgreSQL 19 under the shell's skip name, `parallel autovacuum`, and is listed per older major in `expected_unrunnable.txt`. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_server_variable_exists` | autovacuum_max_parallel_workers exists on this server |
+| `test_the_parameter_is_accepted_on_columnar` | autovacuum_parallel_workers is accepted on av_c |
+| `test_the_parameter_is_recorded_on_columnar` | and it is recorded in reloptions for av_c |
+| `test_the_parameter_is_accepted_on_heap` | autovacuum_parallel_workers is accepted on av_h |
+| `test_the_parameter_is_recorded_on_heap` | and it is recorded in reloptions for av_h |
+| `test_vacuum_with_the_parameter_succeeds` | VACUUM on a columnar table with the parameter set succeeds |
+| `test_parallel_vacuum_succeeds` | VACUUM (PARALLEL 2) on a columnar table succeeds |
+| `test_pgcolumnar_vacuum_succeeds` | pgcolumnar.vacuum with the parameter set succeeds |
+| `test_the_rows_are_unchanged` | the rows are unchanged by any of it |
+| `test_the_content_is_unchanged` | and the content is unchanged |
+| `test_vacuum_verbose_reports_on_heap` | control: VACUUM VERBOSE reports on the heap table |
+| `test_vacuum_verbose_is_silent_on_columnar` | columnar VACUUM VERBOSE reports nothing, because the AM path is ours |
+
+## 254. test_cost_written_geometry.py: the cost model describes the geometry a table was written with
+
+The twin of `test/cost_written_geometry.sh` (#806). Two 400,000-row tables, gb written at the default stripe_row_limit and ga at 20,000: varying only the planning session's stripe_row_limit must not reprice gb's index fetch, ga must cost less than gb by a margin and under a third of it, and a never-written table must still plan.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order. Every plan is read with max_parallel_workers_per_gather = 0 in the session that sets the plan-time GUC. A cost that cannot be read is a failed reading, so two missing costs cannot agree, and the row counts are compared against the constant.
+
+| test | what it holds |
+| --- | --- |
+| `test_both_tables_hold_the_same_number_of_rows` | premise: both tables hold the same number of rows |
+| `test_gb_was_written_at_the_default_limit_in_few_groups` | premise: gb was written at the default limit, in few groups |
+| `test_ga_was_written_at_20000_in_many_more_groups` | ga was written at 20000, in many more groups |
+| `test_the_catalog_recorded_both_limits` | and the catalog recorded both limits |
+| `test_gb_is_costed_as_an_index_scan_at_plan_time_limit_150000` | premise: gb is costed as an index scan at plan-time limit 150000 |
+| `test_gb_is_costed_as_an_index_scan_at_plan_time_limit_20000` | premise: gb is costed as an index scan at plan-time limit 20000 |
+| `test_the_planning_sessions_limit_does_not_reprice_a_written_table` | the planning session's stripe_row_limit does not reprice a written table |
+| `test_a_table_written_in_smaller_groups_is_costed_cheaper` | a table written in smaller groups is costed cheaper than one in larger |
+| `test_the_index_fetch_penalty_sees_the_written_geometry` | the index-fetch penalty sees the written geometry: ga costs under a third of gb |
+| `test_a_never_written_table_still_produces_a_plan` | a never-written table still produces a plan |
+
+## 255. test_encode_invariants.py: encoding invariants for the #155 bulk-load optimisations
+
+The twin of `test/encode_invariants.sh` (#155). The C self-test matches each rewritten primitive against its reference implementation over a real case count; bit packing at every reachable width, full-range 64-bit values, Gorilla float patterns and dictionary text around the distinct cap round-trip against a heap mirror, each with a control that its encoder ran; a high-cardinality corpus selects FSST and nothing at or below the cap does; and the block compression default is zstd at level 3.
+
+### Every test
+
+Every test reads one value from a module fixture that builds a private database in the shell's order, with enable_post_codec_encoding_choice off on that database. A round-trip agrees only over a non-empty columnar hash, and every FSST-premise table must hold its 20,000 rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_encoding_primitives_match_their_reference_implementations` | the encoding primitives match their reference implementations byte for byte |
+| `test_the_self_test_compared_a_meaningful_number_of_cases` | and the self-test actually compared a meaningful number of cases |
+| `test_every_reachable_bit_pack_width_round_trips` | every reachable bit-pack width round-trips |
+| `test_full_range_64_bit_values_round_trip` | full-range 64-bit values round-trip whatever encoding is chosen |
+| `test_the_width_fixtures_chose_frame_of_reference_packing` | and the width fixtures actually chose frame-of-reference packing |
+| `test_gorilla_float_patterns_round_trip` | gorilla float patterns round-trip, including all-zero XOR |
+| `test_at_least_one_pattern_chose_gorilla` | and at least one of them actually chose gorilla |
+| `test_dictionary_round_trips_around_the_distinct_cap` | dictionary round-trips at, below and above the distinct cap |
+| `test_the_low_cardinality_fixture_chose_dictionary` | and the low-cardinality fixture actually chose dictionary |
+| `test_a_high_cardinality_corpus_does_select_fsst` | control: a high-cardinality corpus does select FSST |
+| `test_no_vector_selects_fsst_at_or_below_the_distinct_cap` | no vector selects FSST at or below the distinct cap, so skipping its build cannot change output |
+| `test_the_block_compression_default_is_zstd` | the block compression default is zstd, pinned to #890 phase 1 |
+| `test_its_level_is_3` | and its level is 3 |
+
+## 256. test_read_stream.py: reads through a read stream return what the synchronous path returns
+
+The pytest twin of `test/read_stream.sh` (ported for #1341), every check by the shell's name. Five query shapes over a multi-stripe table are compared with a heap twin, once with `pgcolumnar.enable_read_stream` on and once off. On a private database.
+
+### Every test
+
+Each mode first reads its setting back from a fresh session, since a setting that never took would run both modes down one path. If the setting cannot be applied, the error is the value those two checks compare, so they red by name and the comparisons still run. A comparison is a set hash of each side.
+
+**What the `[off]` arms vouch for.** The read-back checks prove that the setting reached the session. They do not prove which path a read took, and no check here observes the path. With the stream path taken whatever the setting says, all 13 checks pass; with that and the synchronous path copying one byte late, all 13 still pass. So the `[off]` arms vouch for the synchronous path only while the setting routes reads to it.
+
+**On PostgreSQL 15 and 16** the stream path is compiled out, so `[on]` and `[off]` run the same synchronous code. There the `[on]` arms repeat the `[off]` arms.
+
+| test | what it holds |
+| --- | --- |
+| `test_multiple_stripes_present` | multiple stripes present |
+| `test_a_fresh_session_reads_the_setting_on` | [on] a fresh session reads enable_read_stream as on |
+| `test_a_fresh_session_reads_the_setting_off` | [off] a fresh session reads enable_read_stream as off |
+| `test_a_shape_matches_its_heap_twin` | one test per row of `NAMES` (10 rows), each by the shell's name |
+
+## 257. test_parquet_level_width.py: the Parquet level-width helper is single-sourced, unsigned and bounded
+
+The pytest twin of `test/parquet_level_width.sh` (ported for #1341), every check by the shell's name. A source check, needing no cluster: `pq_bits_for` in `columnar_parquet_format.h` is the one definition of the RLE/bit-pack level width, called from the writer and the reader, with an unsigned shift and a loop bounded below 32 shifts (#710). Read in Python with `re`, independently of the shell's grep and awk.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_shared_helper_exists` | the shared level-width helper exists |
+| `test_no_local_copy_survives` | no local copy of the helper survives in the writer or the reader -- read only when both files are, since a count over a missing file is 0 |
+| `test_both_callers_reach_the_shared_helper` | and both callers reach the shared one |
+| `test_the_shift_is_unsigned` | the shift is unsigned |
+| `test_no_signed_shift_remains` | and no signed 1 << remains in it -- read only over a body that was found |
+| `test_the_loop_is_bounded` | the loop is bounded below 32 shifts |
+| `test_a_non_positive_maximum_returns_first` | a non-positive maximum returns before shifting at all |
+
+## 258. test_parquet_nested.py: Parquet nested export writes lists and groups that read back as the generator's values
+
+The pytest twin of `test/parquet_nested.sh` (ported for #1341), every check by the shell's name. A columnar table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet; pyarrow reads it back as list/list/struct with every row equal to the generator's. A 70,000-row table spans several row groups and round-trips whole, and a multi-dimensional array is refused. Every test declines by the shell's skip name without pyarrow. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_parquet_export_writes_every_row` | nested Parquet export rows written |
+| `test_the_parquet_fields_are_list_list_struct` | nested Parquet field types |
+| `test_every_parquet_value_matches_the_generator` | nested Parquet values match expectation -- every id 1..5000 once, then each row equals the generator's; an empty file used to match |
+| `test_the_multi_row_group_export_writes_every_row` | np2 export rows |
+| `test_the_multi_row_group_values_match` | np2 values match |
+| `test_a_multidimensional_array_is_refused_for_parquet` | reject multi-dim array -- the multi-dimensional refusal itself; any error used to count |
+
+## 259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites
+
+The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every check by the shell's name. A table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet and imported into a fresh table, which must equal the original as a set, before and after a DELETE; a nested file written by pyarrow must import as the generator's rows. Sets are hashed in SQL as the shell's `pgc_set_hash` does, a failed query reading as a unique `query_error()`. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_nested_table_exports_every_row` | export rows |
+| `test_the_nested_file_imports_every_row` | import rows |
+| `test_the_nested_parquet_import_round_trips` | nested import round-trips (arrays + composite) |
+| `test_the_parquet_import_count_matches` | import count matches -- compared as numbers, since two failed counts agreed as text |
+| `test_a_fresh_round_trip_after_a_delete_matches` | round-trips after delete |
+| `test_a_pyarrow_nested_file_imports_every_row` | pyarrow import rows; declines by this name without pyarrow |
+| `test_a_pyarrow_nested_file_matches_the_oracle` | pyarrow nested file matches oracle; declines by this name without pyarrow |
+
+## 260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use
+
+The pytest twin of `test/parquet_count_bounds.sh` (ported for #1341), every check by the shell's name. With the shell's crafter, which patches the footer counts of an honest pyarrow file, a column chunk's num_values of 2^62 and a row group's num_rows past its values (scalar and LIST) must each be rejected as a malformed row group whose detail names the count, without phantom rows; the honest files import. A survival check passes only when the server answers AND the log's count of killed backends has not moved since setup, since a fresh connection answers again after crash recovery. Every test declines by the shell's skip name without pyarrow. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_crafter_produced_the_files` | premise: the crafter produced the seven files |
+| `test_the_server_is_up_before_any_malformed_file` | premise: the server is up before any malformed file is read |
+| `test_an_honest_file_imports_its_rows` | an honest file imports its rows |
+| `test_the_server_is_up_after_the_honest_import` | the server is still up after the honest import |
+| `test_a_wrapping_num_values_is_rejected` | num_values 2^62 is rejected, not imported |
+| `test_the_backend_survives_the_wrapping_num_values` | and the backend is still up (it did not wrap-allocate and crash) |
+| `test_num_rows_past_the_values_is_rejected` | num_rows past the chunk's values is rejected, not emitted as phantom rows |
+| `test_num_rows_past_the_values_returns_no_phantom_rows` | and it did not silently return more rows than the file holds -- any count above 8 |
+| `test_a_huge_num_rows_is_rejected` | a huge num_rows is rejected rather than walking off the allocation |
+| `test_the_backend_survives_the_huge_num_rows` | and the backend survived it |
+| `test_the_num_values_rejection_names_num_values` | the num_values rejection names num_values in its detail |
+| `test_the_num_rows_rejection_names_num_rows` | the num_rows rejection names num_rows in its detail |
+| `test_an_honest_list_imports_one_row` | an honest one-record list imports one row |
+| `test_a_valid_three_record_list_imports_three_rows` | a valid three-record list imports three rows (not over-rejected) |
+| `test_num_rows_past_a_lists_records_is_rejected` | num_rows past a list's record count is rejected, not emitted as phantom rows |
+| `test_num_rows_past_a_lists_records_returns_no_phantom_rows` | and it did not silently return more rows than the file's records -- any count above 1 |
+| `test_the_backend_survives_the_list_over_read` | and the backend survived the list over-read |
+
+## 261. test_parallel_degree.py: identical data in heap and columnar is granted the same parallel degree
+
+The pytest twin of `test/parallel_degree.sh` (ported for #1341), every check by the shell's name. The planner sizes a parallel scan from relpages on a log3 ladder; columnar relpages count compressed pages, so the custom scan sizes itself from an uncompressed estimate instead (#451). The same 400,000 rows go into a heap and a columnar table, and both plans must ask for the same number of workers. On a private database, with the planner settings set on it.
+
+### Every test
+
+Every reading must be a measurement: a failed query is a query_error(), and a plan with no Workers Planned line is not a count of 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_degree_heap_and_columnar_hold_the_same_rows` | both tables hold the same rows |
+| `test_degree_columnar_is_smaller_on_disk` | premise: the columnar table really is smaller on disk |
+| `test_degree_the_heap_plan_is_parallel` | premise: the heap plan is parallel |
+| `test_degree_the_columnar_plan_is_parallel` | the columnar plan is parallel |
+| `test_degree_the_worker_cap_decides_neither_arm` | the worker cap is not what decides either arm |
+| `test_degree_identical_data_gets_the_same_workers` | identical data is granted the same parallel degree |
+
+## 262. test_parallel_flush_optin.py: parallel_flush stays opt-in, and the dispatch metric cannot separate the shapes
+
+The pytest twin of `test/parallel_flush_optin.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.parallel_flush` stays off by default (#445): a default flush dispatches serial; with it on, a wide-numeric flush dispatches parallel, workers produce its columns, and the stored chunks and rows equal the serial path's; and a random and a constant bigint table give the same dispatch metric, so no gate over that metric can separate them. The DEBUG1 lines are read as notices on the inserting session. On a private database.
+
+### Every test
+
+The ON check reads the split line ("N of M columns by K worker(s)") as well as the dispatch line, so a flush where no worker produced a column is not parallel. The eight wnum columns have eight different shapes, and the fingerprint adds the rows read back.
+
+| test | what it holds |
+| --- | --- |
+| `test_optin_parallel_flush_is_off_by_default` | parallel_flush is off by default |
+| `test_optin_a_default_flush_dispatches_serial` | a default flush dispatches serial |
+| `test_optin_the_guc_on_flushes_in_workers` | with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back) |
+| `test_optin_stores_the_serial_paths_chunks` | opting in stores byte-identical chunks to the serial path |
+| `test_optin_the_dispatch_metric_cannot_separate_the_shapes` | the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes) |
+| `test_double_cancel_a_worker_is_still_encoding` | premise: a flush worker is still encoding when the second cancel lands |
+| `test_double_cancel_the_cheap_workers_published` | premise: the cheap workers published their segments before the second cancel |
+| `test_double_cancel_reports_the_first_cancel` | a twice-cancelled parallel flush reports the first cancel |
+| `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
+| `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
+| `test_a_flush_worker_raises_nothing_after_its_pin` | a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block |
+
+Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
+
+Arm 6 (#1747) reads `pgcolumnar_parallel_flush_worker` with comments blanked: from `dsm_pin_segment` to the end of its PG_TRY block, only `dsm_detach` and the DONE write may run, because the collect loop unpins only a DONE slot and a worker that raised after its pin left the segment pinned to postmaster restart. The stretch runs past the DONE write because an ERROR there lands in PG_CATCH, which overwrites DONE with FAILED (#1748 review).
+
+## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
+
+The pytest twin of `test/parquet_export_stats.sh` (ported for #1341), every check by the shell's name: 162 tests, three of the functions parametrized over a literal table of the shell's names. A 196609-row table is exported in four row groups and `test/parquet_stats.py` reads the footer with no Parquet library. The bounds, null counts, float rules (#850), column orders and the FDW's row-group skipping on the exported file are asserted. On a private database; the exported files live in `server_dir`.
+
+### Every test
+
+The bound and null-count oracles read the heap built from the generator, not the exported file, so a fold the export applies to both its data and its statistics is red. Each absence check reads "N of M", where M is how many chunks or bounds it examined. The two pyarrow controls decline under their own names when pyarrow is absent.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_stats_leaf_indexes_resolve` | premise: leaf indexes resolved for all ten columns |
+| `test_export_stats_file_is_one_we_wrote` | premise: the file under test is one we wrote |
+| `test_export_stats_footer_declares_four_row_groups` | premise: the footer declares 4 row groups |
+| `test_export_stats_footer_declares_ten_leaves` | premise: the footer declares 10 leaf columns |
+| `test_export_stats_parser_reaches_column_metadata` | premise: the parser reaches ColumnMetaData (num_values sums to the table) |
+| `test_export_stats_oracle_buckets_are_row_groups` | the oracle's buckets are the file's row groups |
+| `test_export_stats_buckets_hold_contiguous_ids` | each bucket holds its own contiguous id range |
+| `test_export_stats_oracle_holds_every_row` | the oracle holds every exported row |
+| `test_export_stats_exported_data_equals_the_heap` | the exported data equals the heap on the columns nothing folds |
+| `test_export_stats_every_chunk_carries_a_minimum` | every value-bearing skippable chunk carries a minimum |
+| `test_export_stats_every_chunk_carries_a_maximum` | every value-bearing skippable chunk carries a maximum |
+| `test_export_stats_no_chunk_is_one_sided` | no chunk carries exactly one bound |
+| `test_export_stats_buckets_account_for_every_chunk` | buckets account for every skippable-type chunk |
+| `test_export_stats_all_null_column_has_no_bounds` | the all-null column carries no bounds |
+| `test_export_stats_bounds_are_physical_width` | every bound is its physical width |
+| `test_export_stats_group_bound_equals_the_heap` | group G min(C) / max(C) equals the oracle: 56 tests, one per bound of id, i2, i8, f4, d, ts and nul in each of the four row groups, against the heap |
+| `test_export_stats_four_distinct_id_minima` | the four groups report four distinct id minima |
+| `test_export_stats_min_le_max` | min <= max in every chunk carrying both |
+| `test_export_stats_null_count_always_written` | null_count is written for every chunk, including where it is zero |
+| `test_export_stats_group_null_count_equals_the_heap` | group G null_count(C) equals the oracle: 20 tests, one per row group of nul, d, ts, alln and id, against the heap with infinities counted as nulls |
+| `test_export_stats_fixture_has_infinite_dates` | premise: the fixture's infinite dates are more than none |
+| `test_export_stats_fixture_has_infinite_timestamps` | premise: the fixture's infinite timestamps are more than none |
+| `test_export_stats_no_infinity_reaches_a_bound` | no date or timestamp bound is an infinity sentinel |
+| `test_export_stats_nan_column_keeps_its_bounds` | a float column holding a NaN still carries both bounds |
+| `test_export_stats_nan_column_minimum` | min(f8a) is the smallest non-NaN value |
+| `test_export_stats_nan_column_maximum` | max(f8a) is the largest non-NaN value |
+| `test_export_stats_all_nan_column_has_no_minimum` | an all-NaN column carries no minimum |
+| `test_export_stats_all_nan_column_has_no_maximum` | an all-NaN column carries no maximum |
+| `test_export_stats_nan_count_always_written` | nan_count is written for every float chunk |
+| `test_export_stats_nan_count_counts` | nan_count counts the NaNs |
+| `test_export_stats_no_nan_bound` | no float bound is a NaN bit pattern |
+| `test_export_stats_zero_maximum_is_positive` | a zero maximum is written as +0.0 |
+| `test_export_stats_zero_minimum_is_negative` | a zero minimum is written as -0.0 |
+| `test_export_stats_one_column_order_per_leaf` | the footer carries one ColumnOrder per leaf column |
+| `test_export_stats_column_orders_are_type_order` | every ColumnOrder is TYPE_ORDER |
+| `test_export_stats_no_deprecated_minimum` | no chunk carries the deprecated minimum (field 2) |
+| `test_export_stats_no_deprecated_maximum` | no chunk carries the deprecated maximum (field 1) |
+| `test_export_stats_byte_array_has_no_bounds` | the BYTE_ARRAY column carries no bounds |
+| `test_export_stats_boolean_has_no_bounds` | the BOOLEAN column carries no bounds |
+| `test_export_stats_fdw_reports_four_groups` | premise: the FDW reports 4 row groups |
+| `test_export_stats_unrestricted_scan_skips_nothing` | an unrestricted scan skips nothing |
+| `test_export_stats_one_group_predicate_skips_three` | a predicate confined to one group skips the other three |
+| `test_export_stats_bigint_predicate_skips` | a bigint predicate skips |
+| `test_export_stats_float_predicate_skips` | a float predicate skips |
+| `test_export_stats_date_predicate_skips` | a date predicate skips |
+| `test_export_stats_timestamp_predicate_skips` | a timestamp predicate skips |
+| `test_export_stats_matching_constant_type_skips` | control: the same column skips when the constant matches its type |
+| `test_export_stats_cross_type_constant_skips_like_the_matching_one` | a cross-type constant skips as the matching one does, on the identical predicate (since #1712; it skipped nothing) |
+| `test_export_stats_float_less_than_skips` | control: a float < predicate below every bound skips |
+| `test_export_stats_float_greater_equal_skips_nothing` | a float >= predicate above every bound still skips nothing |
+| `test_export_stats_quoted_bigint_literal_skips` | a quoted literal takes a bigint column's type and skips |
+| `test_export_stats_unquoted_bigint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well |
+| `test_export_stats_wide_digits_skip_a_bigint` | digits too wide for an integer are a bigint, and skip |
+| `test_export_stats_decimal_literal_casts_the_column` | a decimal-point literal casts the column, not the constant |
+| `test_export_stats_quoted_literal_casts_the_constant` | control: the quoted form casts the constant to the column's type |
+| `test_export_stats_quoted_real_literal_skips` | a quoted literal takes a real column's type and skips |
+| `test_export_stats_unquoted_real_literal_skips_as_well` | the same literal unquoted is double precision, and skips as well |
+| `test_export_stats_quoted_smallint_literal_skips` | a quoted literal takes a smallint column's type and skips |
+| `test_export_stats_unquoted_smallint_literal_skips_as_well` | the same digits unquoted are an integer, and skip as well (int2) |
+| `test_export_stats_adorned_date_skips` | an adorned literal of the column's own type skips |
+| `test_export_stats_unadorned_date_skips` | the same date unadorned is unknown, takes the column's type and skips |
+| `test_export_stats_timestamp_adorned_date_skips_as_well` | the same date adorned as a timestamp skips as well |
+| `test_export_stats_adorned_literal_keeps_its_type` | an adorned literal keeps its own type, not the column's |
+| `test_export_stats_unadorned_literal_takes_the_column_type` | control: the unadorned form resolves to the column's type instead |
+| `test_export_stats_integer_digits_prune_every_group` | control: a digit string that fits an integer prunes every group |
+| `test_export_stats_int4_column_skips_wide_digits` | digits too wide for an integer are a bigint, and an int4 column skips as well |
+| `test_export_stats_fdw_result_equals_the_oracle` | the FDW result equals the oracle for [P]: 23 tests, one per predicate the skip checks use |
+| `test_export_stats_parser_finds_pyarrow_bounds` | control: the parser finds pyarrow's bounds |
+| `test_export_stats_parser_reports_deprecated_fields` | control: the parser reports the deprecated fields where they exist |
+
+## 264. test_catalog_filter_reads.py: stats() and sort_status() read a table's storage id once
+
+The pytest twin of `test/catalog_filter_reads.sh` (#1637), every check by the shell's name. With 20 other columnar tables of 5 row groups each and statistics on the catalog, `pgcolumnar.stats('t')` and `pgcolumnar.sort_status('t')` each read at most 5 blocks of `t`, counted by `pg_stat_get_xact_blocks_fetched` inside the call's own transaction in a fresh session. Before #1637 both filtered a shared catalog on `get_storage_id(rel)`, which a sequential scan calls once per catalog row: 104 and 170 blocks. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_catalog_holds_other_tables_row_groups` | premise: other tables put at least 100 row groups in the catalog |
+| `test_the_catalogs_have_statistics` | premise: pgcolumnar.row_group and pgcolumnar.storage have statistics -- the plan that scans is the one a database with current statistics gets |
+| `test_the_counter_counts_one_call` | premise: one get_storage_id call reads t -- without it, a counter that always read 0 would pass both bounds |
+| `test_stats_reads_the_storage_id_once` | stats() reads the storage id once, not once per catalog row group |
+| `test_stats_reports_only_the_tables_groups` | control: stats() reports t's 3 row groups and no other table's |
+| `test_sort_status_reads_the_storage_id_once` | sort_status() reads the storage id once, not once per catalog row |
+| `test_sort_status_counts_only_the_tables_groups` | control: sort_status() counts t's 3 row groups and no other table's |
+
+## 265. test_iceberg_malformed.py: the Iceberg reader refuses crafted metadata cleanly, never crashing or hanging
+
+The twin of `test/iceberg_malformed.sh` (#388 phase 4a, #644). The hand-crafted fixtures in `test/fixtures/iceberg/warehouse_malformed` are refused with the refusal each arm names, not merely its SQLSTATE: an array-valued Avro `fields` element, a NULL data-file path in the lister and the scan, a NULL manifest_path, a FIFO at every Iceberg-reachable open (a HANG after 5s), a null manifest sequence number an added entry must inherit, a dangling current-schema-id, malformed numbers in edited copies of the `db/events` metadata (#1824: a field id above INT32 or fractional, format-version 99, 4 or 0, a string current-snapshot-id; a null or -1 current-snapshot-id still reads as no snapshot), and a `data_file.content`, `manifest_entry.status` or `manifest_file.content` outside the spec, in both the scan and the lister, each refusal naming the value (#1823), and a manifest list's `partition_spec_id` at 2^32, which read as spec 0 (#1878). A snapshot `schema-id` and a `default-spec-id` outside the 32-bit range are refused naming the value, not cut to 32 bits (#1853). The edges still read: a schema-id of -2147483648, a default-spec-id of 2147483647, and a table with no `default-spec-id`, which means spec 0. Null manifest-list sequence numbers decode as NULL, and every refusal has a control that still reads.
+
+### Every test
+
+One module fixture copies the fixtures into `server_dir`, builds the FIFOs there, and records every reading from a private database. A FIFO read runs in a thread with a 5s deadline. Each survival reading compares the server log's crash count with the one taken just before its arm, and waits out a crash recovery. The first two tests mirror the shell's two skip names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_malformed_iceberg_fixtures_are_present` | premise: the committed malformed fixtures are not empty |
+| `test_python_reads_the_malformed_metadata` | premise: the dangling-schema metadata parses as JSON |
+| `test_an_array_valued_fields_element_is_refused` | an array-valued schema fields element is refused, not crashed (XX001) |
+| `test_the_backend_survives_the_malformed_schema` | backend still up after the malformed-schema refusal |
+| `test_a_well_formed_field_object_still_decodes` | control: a well-formed field object still decodes (0 entries) |
+| `test_the_lister_refuses_a_null_data_file_path` | a NULL data-file path is refused in iceberg_data_files (XX001, not a crash) |
+| `test_the_backend_survives_the_lister_refusal` | backend still up after the lister refusal |
+| `test_the_scan_refuses_a_null_data_file_path` | a NULL data-file path is refused in iceberg_scan (XX001, not a crash) |
+| `test_the_backend_survives_the_scan_refusal` | backend still up after the scan refusal |
+| `test_a_present_file_path_lists_one_data_file` | control: a present file_path lists one data file |
+| `test_a_null_manifest_path_is_refused` | a NULL manifest_path is refused, not a crash (XX001) |
+| `test_the_backend_survives_the_null_manifest_path` | backend still up after the null-manifest_path refusal |
+| `test_iceberg_current_snapshot_refuses_a_fifo` | iceberg_current_snapshot on a FIFO is refused, not a hang (XX001) |
+| `test_iceberg_data_files_refuses_a_fifo` | iceberg_data_files on a FIFO is refused, not a hang (XX001) |
+| `test_iceberg_scan_refuses_a_fifo` | iceberg_scan on a FIFO is refused, not a hang (XX001) |
+| `test_read_avro_manifest_refuses_a_fifo_as_iceberg_input` | read_avro_manifest on a FIFO is refused, not a hang (XX001) |
+| `test_read_manifest_list_refuses_a_fifo` | read_manifest_list on a FIFO is refused, not a hang (XX001) |
+| `test_read_parquet_refuses_a_fifo_beside_iceberg` | read_parquet on a FIFO is refused, not a hang (XX001) |
+| `test_the_backend_survives_the_fifo_refusals` | backend still up after the FIFO refusals |
+| `test_a_manifest_list_that_is_a_fifo_is_refused` | a manifest-list that is a FIFO is refused, not a hang (XX001) |
+| `test_the_backend_survives_the_manifest_list_fifo` | backend still up after the manifest-list FIFO refusal |
+| `test_a_null_manifest_list_sequence_number_reads_null` | a null manifest-list sequence_number decodes as NULL, not 0 |
+| `test_a_present_manifest_list_sequence_number_reads_its_value` | control: a present manifest-list sequence_number decodes to its value |
+| `test_a_null_min_sequence_number_reads_null` | a null manifest-list min_sequence_number decodes as NULL, not 0 (#686) |
+| `test_a_present_min_sequence_number_reads_its_value` | control: a present min_sequence_number decodes to its value (#686) |
+| `test_the_scan_refuses_a_null_sequence_an_added_entry_inherits` | iceberg_scan refuses a null manifest seq an ADDED entry must inherit (XX001, not a silent wrong row) |
+| `test_the_backend_survives_the_null_sequence_refusal` | backend still up after the null-sequence refusal |
+| `test_a_concrete_manifest_sequence_scans_every_row` | control: a concrete manifest seq scans all 5 rows (seq-3 delete is older than seq-5 data) |
+| `test_a_dangling_current_schema_id_is_refused` | a dangling current-schema-id is refused (XX001), not silently stale-read |
+| `test_the_backend_survives_the_dangling_schema_refusal` | backend still up after the dangling-schema refusal |
+| `test_a_resolvable_current_schema_id_reads_amount` | control: a resolvable current-schema-id reads the correct amount column |
+| `test_a_legacy_only_schema_table_still_reads` | control: a legacy-only-schema table still reads (5 rows) |
+| `test_the_legacy_table_binds_amount` | control: the legacy table binds amount correctly (10..50) |
+| `test_the_unedited_events_metadata_reads_amount` | control: the unedited events metadata reads amount 10..50 |
+| `test_a_field_id_above_int32_is_refused` | a field id above INT32 is refused (XX001), not aliased to another field |
+| `test_a_field_id_above_int32_is_named_beside_its_alias` | a field id above INT32 is named even when its alias is also queried |
+| `test_a_fractional_field_id_is_refused` | a fractional field id is refused (XX001), not rounded |
+| `test_format_version_99_is_refused` | format-version 99 is refused (0A000), not read as v2 |
+| `test_a_string_current_snapshot_id_is_refused` | a string current-snapshot-id is refused (XX001), not read as an empty table |
+| `test_the_backend_survives_the_malformed_number_refusals` | backend still up after the malformed-number refusals |
+| `test_current_snapshot_id_minus_one_still_reads_as_no_snapshot` | control: current-snapshot-id -1 still reads as a table with no snapshot (0 rows) |
+| `test_format_version_4_is_refused` | format-version 4 is refused (0A000), one above the newest known |
+| `test_format_version_0_is_refused` | format-version 0 is refused (0A000), one below the oldest known |
+| `test_a_null_current_snapshot_id_still_reads_as_no_snapshot` | control: a null current-snapshot-id still reads as a table with no snapshot (0 rows) |
+| `test_two_valid_data_entries_scan_as_ten_rows` | control: two valid data entries scan as ten rows (ids 1..10) |
+| `test_two_valid_data_entries_list_two_files` | control: two valid data entries list two data files |
+| `test_content_3_on_the_oldest_file_is_refused_by_the_scan` | data_file.content 3 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows |
+| `test_content_minus_1_on_the_oldest_file_is_refused_by_the_scan` | data_file.content -1 on the oldest file is refused by iceberg_scan (XX001), not read as 5 rows |
+| `test_content_3_on_the_newest_file_is_refused_naming_the_value` | data_file.content 3 on the newest file is refused naming the value, not as an equality delete with no ids |
+| `test_the_lister_refuses_content_3_as_corrupt` | iceberg_data_files refuses data_file.content 3 as corrupt (XX001), not as a delete file (0A000) |
+| `test_status_3_is_refused_by_the_scan` | manifest_entry.status 3 is refused by iceberg_scan (XX001), not read as a live entry |
+| `test_the_lister_refuses_status_3` | iceberg_data_files refuses manifest_entry.status 3 (XX001), not listed |
+| `test_manifest_content_5_is_refused_by_the_scan` | manifest_file.content 5 is refused by iceberg_scan (XX001), not read as a data manifest |
+| `test_the_lister_refuses_manifest_content_5_as_corrupt` | iceberg_data_files refuses manifest_file.content 5 as corrupt (XX001), not as a delete manifest (0A000) |
+| `test_content_2_32_on_the_oldest_file_is_refused_not_wrapped` | data_file.content 4294967296 on the oldest file is refused by iceberg_scan (XX001), not wrapped to 0 |
+| `test_status_2_32_plus_1_is_refused_not_wrapped` | manifest_entry.status 4294967297 is refused by iceberg_scan (XX001), not wrapped to 1 |
+| `test_manifest_content_2_32_is_refused_not_wrapped` | manifest_file.content 4294967296 is refused by iceberg_scan (XX001), not wrapped to 0 |
+| `test_partition_spec_id_2_32_is_refused_by_the_scan` | manifest_file.partition_spec_id 4294967296 is refused by iceberg_scan (XX001), not read as spec 0 |
+| `test_read_manifest_list_refuses_partition_spec_id_2_32` | read_manifest_list refuses partition_spec_id 4294967296 (XX001), not shown as 0 |
+| `test_the_backend_survives_the_enum_refusals` | backend still up after the enum refusals |
+| `test_a_snapshot_schema_id_of_int32_max_reads` | control: a snapshot schema-id of 2147483647 reads as 2147483647 |
+| `test_a_snapshot_schema_id_of_2_32_is_refused_not_truncated` | a snapshot schema-id of 4294967296 is refused by iceberg_current_snapshot (XX001), not truncated to 0 |
+| `test_a_snapshot_schema_id_below_int32_is_refused_not_truncated` | a snapshot schema-id of -2147483649 is refused by iceberg_current_snapshot (XX001), not truncated to 2147483647 |
+| `test_a_foreign_table_with_default_spec_id_0_scans` | control: a foreign table with default-spec-id 0 scans ten rows |
+| `test_a_default_spec_id_of_2_32_is_refused_not_truncated` | a default-spec-id of 4294967296 is refused by the Iceberg foreign table scan (XX001), not truncated to 0 |
+| `test_a_default_spec_id_below_int32_is_refused_not_truncated` | a default-spec-id of -2147483649 is refused by the Iceberg foreign table scan (XX001), not truncated to 2147483647 |
+| `test_a_snapshot_schema_id_of_int32_min_reads` | control: a snapshot schema-id of -2147483648 reads as -2147483648 |
+| `test_a_foreign_table_with_default_spec_id_int32_max_scans` | control: a foreign table with default-spec-id 2147483647 scans ten rows |
+| `test_a_foreign_table_with_no_default_spec_id_scans` | control: a foreign table with no default-spec-id scans ten rows |
+| `test_the_backend_survives_the_int32_id_refusals` | backend still up after the int32 id refusals |
+
+## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
+
+The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, and the cap's opening allocation by a source read with comments blanked out.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture on a private database. A refusal reads as its SQLSTATE. A survival check also wants the server log's count of killed backends unchanged since its section began, and waits out crash recovery before the next section reads.
+
+| test | what it holds |
+| --- | --- |
+| `test_name_mapping_data_file_carries_no_field_ids` | premise: the data file carries no field ids |
+| `test_name_mapping_reads_an_id_less_file` | an id-less data file reads by name mapping (all 5 rows) |
+| `test_name_mapping_values_are_correct` | the mapped values are correct |
+| `test_name_mapping_renamed_schema_column` | a renamed schema column still reads via the mapping name |
+| `test_name_mapping_alias_resolves` | an alias name in the mapping resolves the file column |
+| `test_name_mapping_under_projection` | name mapping applies under column projection (id, amount) |
+| `test_name_mapping_backend_up_after_reads` | backend still up after the name-mapping reads |
+| `test_name_mapping_no_mapping_is_refused` | an id-less file with no name mapping is refused (22023) |
+| `test_name_mapping_refusal_names_the_property` | ...and the refusal names schema.name-mapping.default |
+| `test_name_mapping_duplicate_name_is_refused` | a duplicate name in the mapping is refused (XX001) |
+| `test_name_mapping_big_field_id_is_refused` | a mapping field-id beyond int32 is refused (XX001) |
+| `test_name_mapping_backend_up_after_refusals` | backend still up after the name-mapping refusals |
+| `test_name_mapping_unmapped_column_reads_null` | a projected column absent from the mapping reads null, not an error |
+| `test_name_mapping_unmapped_null_mapped_real` | the unmapped column is null and the mapped columns are real |
+| `test_name_mapping_added_column_reads_null` | a column added after the file was written reads null (schema evolution) |
+| `test_name_mapping_evolved_columns_are_real` | ...and its other columns still carry real data |
+| `test_name_mapping_backend_up_after_null_fill` | backend still up after the null-fill reads |
+| `test_name_mapping_at_the_cap_is_accepted` | a mapping with exactly the cap in names is accepted |
+| `test_name_mapping_over_the_cap_is_refused` | one name over the cap is refused |
+| `test_name_mapping_cap_refusal_names_the_cap` | ...and the refusal names the cap |
+| `test_name_mapping_opening_capacity_is_bounded` | the opening capacity is bounded by the cap, not by the declared count |
+| `test_name_mapping_backend_up_after_cap` | backend still up after the cap reads |
+
+## 267. test_iceberg_objstore.py: Iceberg tables read over object storage
+
+The twin of `test/iceberg_objstore.sh` (#388 phase 6). The committed delete and name-mapping warehouses are served over S3 by the shell's own SigV4 fixture server, and read exactly as the filesystem suites read them: position deletes, equality deletes and deletion vectors against the same oracle, and a name-mapped id-less file. A read with no AWS environment is refused 28000; recorded delete paths that leave the table location (outside it, a literal `..`, a percent-encoded `..`, and one behind an encoded NUL) are refused 22023, never fetched; and an endpoint off `pgcolumnar.objstore_allowed_endpoints` is refused 42501 by the allow-list's own message.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture on a private cluster, restarted with AWS_* in the postmaster environment as the shell does. A refusal reads as its SQLSTATE, the allow-list's with its message. A survival check also wants the server log's count of killed backends unchanged since the reads began.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_iceberg_objstore_fixtures_are_present` | premise: sigv4 fixture server is up |
+| `test_an_s3_iceberg_read_with_no_aws_environment_is_refused` | config: an s3 iceberg read with no AWS environment is refused (28000) |
+| `test_position_deletes_read_over_s3` | position deletes read over s3 (surviving == filesystem oracle) |
+| `test_the_position_deleted_ids_are_gone_over_s3` | the position-deleted ids are gone over s3 |
+| `test_equality_deletes_read_over_s3` | equality deletes read over s3 (survivors == oracle) |
+| `test_deletion_vectors_read_over_s3` | deletion vectors read over s3 (survivors == oracle) |
+| `test_a_scan_whose_delete_does_not_apply_reads_all_rows_over_s3` | a scan whose delete does not apply reads all rows over s3 |
+| `test_name_mapping_reads_an_id_less_file_over_s3` | name mapping reads an id-less file over s3 (5 rows) |
+| `test_an_s3a_metadata_path_reads_over_s3_as_s3_does` | an s3a:// metadata path reads over s3 as s3:// does (3 rows) |
+| `test_an_s3n_metadata_path_reads_over_s3_as_s3_does` | an s3n:// metadata path reads over s3 as s3:// does (3 rows) |
+| `test_iceberg_current_snapshot_reads_an_s3_metadata_file` | iceberg_current_snapshot reads an s3:// metadata file: snapshot id and operation (#1887) |
+| `test_the_backend_is_still_up_after_the_s3_reads` | backend still up after the s3 reads |
+| `test_a_delete_path_outside_the_table_location_is_refused_over_s3` | a delete path outside the table location is refused over s3 (22023) |
+| `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
+| `test_a_percent_encoded_dotdot_delete_path_is_refused_over_s3` | a percent-encoded dotdot delete path is refused over s3 (22023) |
+| `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
+| `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
+| `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
+| `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
+
+## 268. test_iceberg_dv.py: Iceberg v3 deletion vectors apply, supersede, and refuse what they must
+
+The twin of `test/iceberg_dv.sh`. Eight hand-crafted snapshots read the oracle's surviving ids, thirteen corrupt or unsupported ones are refused, each by its own guard, and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that guard's own (several guards raise XX001), and a failed reading is a `query_error()`. Each survival check also requires that the server log's count of backends killed by a signal has not moved since its section began, and each refusal first waits for the server to answer, so a crash reddens only its own arm and its section's survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_deletion_vector_at_an_equal_sequence_number_applies` | a deletion vector at an equal sequence number applies (survivors == oracle) |
+| `test_a_deletion_vector_older_than_the_data_does_not_apply` | a deletion vector older than the data does not apply |
+| `test_an_applicable_dv_supersedes_position_delete_files` | an applicable DV supersedes position-delete files for its data file |
+| `test_dv_supersede_is_per_data_file_not_global` | supersede is per data file, not global |
+| `test_a_dv_with_run_containers_and_a_high_bucket_decodes` | a DV with run containers and a high-bucket position decodes |
+| `test_a_run_optimized_dv_decodes` | a run-optimized DV (cookie 12347) decodes |
+| `test_a_bitset_container_dv_decodes` | a bitset-container DV decodes |
+| `test_two_dv_blobs_in_one_puffin_file_each_apply_to_their_own_file` | two DV blobs in one Puffin file each apply to their own data file |
+| `test_the_backend_survives_the_dv_applications` | backend still up after the DV applications |
+| `test_two_dv_entries_for_one_data_file_are_refused` | two DV entries for one data file are refused (XX001) |
+| `test_a_corrupted_dv_crc_is_refused` | a corrupted DV CRC is refused (XX001) |
+| `test_a_wrong_dv_blob_magic_is_refused` | a wrong DV blob magic is refused (XX001) |
+| `test_a_manifest_footer_offset_mismatch_is_refused` | a manifest/footer offset mismatch is refused (XX001) |
+| `test_a_dv_entry_without_referenced_data_file_is_refused` | a DV entry without referenced_data_file is refused (XX001) |
+| `test_a_record_count_disagreeing_with_the_dv_is_refused` | a record_count that disagrees with the DV cardinality is refused (XX001) |
+| `test_a_dv_blob_declaring_a_codec_is_refused` | a DV blob declaring a compression codec is refused (XX001) |
+| `test_a_compressed_puffin_footer_is_refused` | a compressed Puffin footer is refused (0A000) |
+| `test_the_footer_refusal_names_the_compressed_footer` | ...and the refusal names the compressed footer |
+| `test_a_dv_in_a_format_version_2_table_is_refused` | a deletion vector in a format-version 2 table is refused (0A000) |
+| `test_the_v2_refusal_names_the_format_version` | ...and the refusal names the format version |
+| `test_a_puffin_path_outside_the_table_is_refused` | a Puffin path outside the table location is refused (22023) |
+| `test_the_backend_survives_the_dv_refusals` | backend still up after the DV refusals |
+| `test_a_dv_whose_offset_plus_size_overflows_is_refused` | a DV whose offset+size overflows int64 is refused, not read (XX001) |
+| `test_a_run_container_overflowing_its_range_is_refused` | a run container overflowing its 16-bit range is refused (XX001) |
+| `test_an_aliased_duplicate_dv_is_refused` | an aliased duplicate DV (scheme vs no scheme) is refused (XX001) |
+| `test_the_backend_survives_the_audit_arms` | backend still up after the audit arms |
+
+## 269. test_logical_decoding_source.py: a columnar table is not a logical decoding source
+
+The twin of `test/logical_decoding_source.sh` (#754). Through test_decoding slots on a private cluster at `wal_level=logical`: a heap table's inserts decode and a columnar table's do not, although its rows are there; the slot carries pgcolumnar's own catalog writes instead; and those follow groups, not rows (5000 rows give fewer than 10x the records of 50). Each slot has a heap control written in the same window, so a dead slot cannot pass as an exclusion.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private cluster. Without the test_decoding library both harnesses fail one check, the shell's `pgc_skip` name, and the twin's other tests decline MISSING_DEPENDENCY.
+
+| test | what it holds |
+| --- | --- |
+| `test_lds_test_decoding_is_installed` | test_decoding.so is not installed; build contrib/test_decoding |
+| `test_lds_server_runs_at_wal_level_logical` | premise: the server is running at wal_level=logical |
+| `test_lds_slot_exists_and_is_logical` | premise: the slot exists and is logical |
+| `test_lds_both_tables_hold_the_same_rows` | premise: both tables hold the same 50 rows |
+| `test_lds_slot_decoded_something` | premise: the slot decoded something at all |
+| `test_lds_heap_control_is_decoded` | CONTROL: the heap table's 50 inserts ARE decoded |
+| `test_lds_columnar_emits_no_change` | a columnar table emits no decodable change |
+| `test_lds_columnar_rows_are_there` | although the rows are there |
+| `test_lds_slot_carries_internal_catalog` | the slot carries pgcolumnar's internal catalog instead |
+| `test_lds_big_table_holds_its_rows` | premise: the 100x table really holds 100x the rows |
+| `test_lds_second_slot_heap_control_is_decoded` | CONTROL: the second slot decodes the heap table's 5000 inserts |
+| `test_lds_big_columnar_emits_no_change` | and it too emits no decodable change of its own |
+| `test_lds_internal_records_do_not_follow_rows` | 100x the rows does not give 100x the internal records |
+
+## 270. test_iceberg_deletes.py: Iceberg position and equality deletes apply, scope, and refuse what they must
+
+The twin of `test/iceberg_deletes.sh`. Hand-crafted snapshots exercise position deletes (the <= sequence rule, inheritance, per-file scoping, ordinal 0), equality deletes (the strict < rule, multi-column AND, nulls, unions, mixed with position deletes, a hash probe that walks a short chain per data row with thousands of delete rows, and a zero-row delete file, #1817) and partition-scoped equality deletes, against the generator's oracle; fifteen corrupt or unsupported snapshots are refused, each by its own guard (among them a position-delete file recorded as ORC and an equality-delete file recorded as AVRO, #1873), and no backend dies on the way. The warehouse is relocated into `server_dir` so its recorded root differs from where it lies. `fixtures/iceberg/gen_iceberg_variants.py --deletes` then writes delete manifests that spell file_format `parquet`, and two tables with a million position-delete rows recorded under `s3://` and `s3a://`, whose scans must peak within 16 MiB of each other (#1815, #1825), and a table whose delete file names its `s3://` data file once as `s3a://`, which applies, and once as `file://s3://`, which does not (#1868). A further warehouse, `warehouse_posmany` (#1868), has 32 data files and 106 position-delete rows in mixed `file://` and bare spellings; its arms read the scan's DEBUG1 lines and require one index build, and per data file one group-key comparison and only the rows naming that file.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that guard's own (XX001 and 22023 are shared), and a failed reading is a `query_error()`. Each survival check also requires that the server log's count of backends killed by a signal has not moved since its section began, and every reading first waits for the server to answer, so a crash reddens only its own arm and its section's survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_iceberg_deletes_the_data_file_has_five_rows` | the data file has 5 rows before deletes |
+| `test_position_deletes_drop_the_listed_rows` | position deletes drop the listed rows (surviving == oracle) |
+| `test_position_deleted_ids_are_gone` | the deleted ids (2, 4) are gone |
+| `test_position_deletes_remove_exactly_two_rows` | exactly the two deleted rows were removed (5 - 2 = 3) |
+| `test_position_deletes_apply_under_projection` | position deletes apply under column projection (id only -> 1,3,5) |
+| `test_a_position_delete_older_than_the_data_does_not_apply` | a delete older than the data (lower seq) does not apply (5 rows) |
+| `test_older_position_delete_leaves_its_ids` | the would-be-deleted ids survive when the delete is older than the data |
+| `test_a_position_delete_inherits_a_null_sequence_number` | a position delete with an inherited (null-entry) sequence number applies |
+| `test_a_position_delete_naming_another_file_deletes_nothing` | a position delete naming a different data file deletes nothing (5 rows) |
+| `test_a_null_pos_is_refused` | a position delete with a null pos is refused (XX001, not silently dropped) |
+| `test_the_null_pos_refusal_names_pos` | ...and the null-pos refusal names pos |
+| `test_the_backend_survives_the_null_pos_refusal` | backend still up after the null-pos refusal |
+| `test_a_negative_pos_is_refused` | a position delete with a negative pos is refused (XX001, not cast inert) |
+| `test_the_negative_pos_refusal_names_it` | ...and the negative-pos refusal names the negative pos |
+| `test_the_backend_survives_the_negative_pos_refusal` | backend still up after the negative-pos refusal |
+| `test_a_position_delete_of_ordinal_zero_deletes_the_first_row` | a position delete of ordinal 0 deletes the first row (id 1 gone, 4 remain) |
+| `test_a_non_parquet_position_delete_file_is_refused` | a non-Parquet position-delete file is refused (0A000, only PARQUET) |
+| `test_the_backend_survives_the_non_parquet_position_delete_refusal` | backend still up after the non-Parquet position-delete refusal |
+| `test_an_equality_delete_drops_matching_rows` | equality delete drops matching rows (survivors == oracle) |
+| `test_an_equality_delete_at_an_equal_sequence_does_not_apply` | an equality delete at an equal sequence number does not apply |
+| `test_multi_column_equality_is_an_and` | multi-column equality matches all columns (AND, not OR) |
+| `test_columns_beyond_equality_ids_are_ignored` | columns beyond equality_ids are ignored for matching |
+| `test_a_null_equality_value_matches_only_nulls` | a null delete value matches only null data values |
+| `test_the_null_region_row_is_gone` | the null-region row is gone, the non-null rows remain |
+| `test_multiple_equality_delete_files_apply_their_union` | multiple equality-delete files apply their union |
+| `test_position_and_equality_deletes_combine` | position and equality deletes combine |
+| `test_many_equality_delete_rows_drop_exactly_the_matching_rows` | many equality-delete rows drop exactly the matching rows (survivors == oracle) |
+| `test_the_equality_delete_probe_walks_a_short_hash_chain_per_data_row` | the equality-delete probe walks a short hash chain per data row, not every delete row (#1817) |
+| `test_a_zero_row_equality_delete_file_deletes_nothing` | a zero-row equality-delete file deletes nothing and the next file still applies |
+| `test_equality_deletes_apply_to_an_unprojected_column` | equality deletes apply when the delete column is not projected |
+| `test_the_backend_survives_the_equality_applications` | backend still up after the equality applications |
+| `test_an_equality_delete_without_equality_ids_is_refused` | an equality delete without equality_ids is refused (XX001) |
+| `test_a_never_applicable_equality_delete_without_ids_is_skipped` | a never-applicable equality delete without equality_ids is skipped (5 rows) |
+| `test_a_partition_scoped_equality_delete_stays_in_its_partition` | a partition-scoped equality delete applies only to its partition |
+| `test_the_us_partition_survives_an_eu_scoped_delete` | the us-partition rows survive an eu-scoped delete |
+| `test_a_delete_scoped_to_an_empty_partition_deletes_nothing` | a delete scoped to an empty partition deletes nothing (5 rows) |
+| `test_a_data_file_without_partition_spec_id_is_refused` | a data file lacking partition_spec_id is refused under a partitioned delete (XX001) |
+| `test_a_cross_spec_partition_delete_applies_to_nothing` | a cross-spec partition-scoped delete applies to nothing (5 rows) |
+| `test_an_uncomparable_partition_value_is_refused` | a partition-scoped delete with an uncomparable partition value is refused (0A000) |
+| `test_an_equality_delete_on_an_unsupported_type_is_refused` | an equality delete on an unsupported column type is refused (0A000) |
+| `test_the_unsupported_type_refusal_names_the_type` | ...and the refusal names the type |
+| `test_an_equality_column_missing_from_the_data_file_errors` | an equality column missing from the data file errors (22023) |
+| `test_an_equality_delete_path_outside_the_table_is_refused` | an equality-delete path outside the table location is refused (22023) |
+| `test_the_boundary_refusal_names_the_escape` | ...and the boundary refusal names the escape |
+| `test_a_dotdot_escaping_delete_path_is_refused` | a dotdot-escaping delete path is refused (22023) |
+| `test_a_non_parquet_equality_delete_file_is_refused` | a non-Parquet equality-delete file is refused (0A000, only PARQUET) |
+| `test_the_backend_survives_the_equality_refusals` | backend still up after the equality refusals |
+| `test_an_equality_id_beyond_int32_is_refused` | an equality_ids value beyond int32 refuses the manifest (XX001) |
+| `test_a_manifest_list_without_partition_spec_id_is_refused` | a manifest list without partition_spec_id is refused for equality deletes (XX001) |
+| `test_a_partition_spec_without_fields_is_refused` | a partition spec without its fields key is refused (XX001) |
+| `test_a_never_applicable_equality_delete_is_not_validated` | a never-applicable equality delete is skipped, not validated (5 rows) |
+| `test_a_v1_manifest_without_sequence_numbers_reads` | a v1 manifest without a sequence_number column reads (default 0, 5 rows) |
+| `test_the_backend_survives_the_delete_audit_arms` | backend still up after the audit arms |
+| `test_an_existing_entry_with_a_null_sequence_number_is_refused` | an EXISTING entry with a null sequence number is refused (XX001) |
+| `test_the_backend_survives_the_bad_sequence_refusal` | backend still up after the bad-sequence refusal |
+| `test_without_deletes_the_rewritten_file_breaks_varchar_2` | typmod: with no delete applied, 'toolong' breaks varchar(2) (22001) |
+| `test_position_deletes_do_not_coerce_a_deleted_row` | typmod: position deletes do not coerce a deleted row's value |
+| `test_equality_deletes_do_not_coerce_a_deleted_row` | typmod: equality deletes do not coerce a deleted row's value |
+| `test_a_deletion_vector_does_not_coerce_a_deleted_row` | typmod: a deletion vector does not coerce a deleted row's value |
+| `test_the_fdw_does_not_coerce_a_position_deleted_row` | typmod: the Iceberg FDW does not coerce a position-deleted row's value |
+| `test_a_lowercase_parquet_position_delete_file_is_applied` | a position-delete file whose file_format is lowercase parquet is applied |
+| `test_a_lowercase_parquet_equality_delete_file_is_applied` | an equality-delete file whose file_format is lowercase parquet is applied |
+| `test_a_position_delete_naming_s3_data_as_s3a_is_applied` | a position delete naming its s3:// data file as s3a:// is applied |
+| `test_a_position_delete_naming_s3_data_as_file_s3_does_not_apply` | a position delete naming its s3:// data file as file://s3:// does not apply, beside one that does (#1868) |
+| `test_a_million_s3_position_delete_rows_apply` | a million s3:// position-delete rows apply (3 rows left) |
+| `test_a_million_s3a_position_delete_rows_apply` | a million s3a:// position-delete rows apply (3 rows left) |
+| `test_s3a_position_deletes_cost_no_more_memory_than_s3` | s3a:// position deletes cost no more memory than s3:// ones (within 16 MiB) |
+| `test_the_many_file_position_delete_table_has_its_rows` | premise: the many-file position-delete table holds 256 rows in 32 data files before deletes |
+| `test_position_deletes_over_many_files_match_the_oracle` | position deletes over 32 data files drop exactly the oracle's rows (survivors == oracle, #1868) |
+| `test_ordinal_zero_in_the_other_spelling_is_dropped_from_every_file` | ordinal 0, named in the other path spelling (file:// vs bare), is dropped from all 32 data files (#1868) |
+| `test_an_s3_spelled_delete_row_does_not_apply_to_a_local_file` | a delete row naming a data file under s3:// does not apply to the local file (#1868) |
+| `test_each_data_file_visits_only_its_own_position_deletes` | each data file visits only the position-delete rows naming it, not every row (#1868) |
+| `test_the_position_delete_index_is_built_once_per_scan` | the position-delete index is built once per scan, one group per normalized path (#1868) |
+
+## 271. test_logical_subscriber.py: columnar as a logical replication apply target
+
+The twin of `test/logical_subscriber.sh` (#435). A heap publisher and a columnar subscriber, on two private clusters: an INSERT-only publication syncs and streams every row, a publication carrying UPDATE raises the extension's own error (naming logical replication and the insert-only way out) and the apply worker retries it forever, and an ordinary SELECT ... FOR UPDATE / SHARE / NO KEY UPDATE keeps the generic row-locking message.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value from a module fixture. The apply worker's error is read from the subscriber's server log. A reading that would pass on an absence (a skipped UPDATE, a message not said) is taken only once the event it depends on is observed: an INSERT after the UPDATE has arrived, the replication error is in the log, or the statement raised the generic error.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_publisher_has_logical_decoding_on` | premise: the publisher has logical decoding on |
+| `test_the_subscriber_cluster_answers` | premise: the subscriber cluster answers |
+| `test_the_subscriber_loaded_pgcolumnar` | premise: the subscriber loaded pgcolumnar |
+| `test_insert_only_initial_sync_copied_every_row` | insert-only: initial sync copied every row |
+| `test_insert_only_streamed_inserts_applied` | insert-only: streamed INSERTs applied |
+| `test_insert_only_the_update_is_skipped_by_design` | insert-only: the UPDATE is skipped by design, not applied |
+| `test_insert_only_no_apply_errors` | insert-only: no apply errors |
+| `test_the_second_subscription_synced_before_the_update` | the second subscription synced before the UPDATE |
+| `test_the_apply_error_names_logical_replication` | the error names logical replication, not row locking |
+| `test_the_apply_error_does_not_say_only_row_locking` | the error does NOT say only 'row locking is not supported' |
+| `test_the_apply_hint_names_the_insert_only_publication` | the hint names the insert-only publication |
+| `test_the_wedged_row_is_unchanged_on_the_subscriber` | the wedge is real: the row is still unchanged on the subscriber |
+| `test_the_apply_worker_retries_so_the_subscription_is_wedged` | it retries rather than giving up, so the subscription is wedged |
+| `test_the_lock_fixture_is_columnar` | premise: the lock fixture really is columnar |
+| `test_select_for_update_keeps_the_generic_message` | an ordinary SELECT ... FOR UPDATE keeps the generic message |
+| `test_select_for_update_is_not_told_about_replication` | an ordinary SELECT ... FOR UPDATE is not told about replication |
+| `test_select_for_share_keeps_the_generic_message` | an ordinary SELECT ... FOR SHARE keeps the generic message |
+| `test_select_for_share_is_not_told_about_replication` | an ordinary SELECT ... FOR SHARE is not told about replication |
+| `test_select_for_no_key_update_keeps_the_generic_message` | an ordinary SELECT ... FOR NO KEY UPDATE keeps the generic message |
+| `test_select_for_no_key_update_is_not_told_about_replication` | an ordinary SELECT ... FOR NO KEY UPDATE is not told about replication |
+
+## 272. test_logical_decoding_cdc_recipe.py: the documented CDC recipe captures, transacts and decodes
+
+The twin of `test/logical_decoding_cdc_recipe.sh` (#754). The CDC recipe is extracted from docs/user-guide.md at run time and executed on a private cluster at `wal_level=logical`: a row trigger on a columnar table fires once per row and sees the table's values; an UPDATE is captured as one UPDATE, never as the storage's delete and insert; a DELETE captures the OLD row; the capture is transactional (read inside the transaction before the rollback, so the rollback has something to undo); the capture table decodes through a test_decoding slot while the columnar table emits nothing; FOR ALL TABLES includes pgcolumnar's internal tables; and a bulk load writes one capture row per loaded row.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private cluster. Without the test_decoding library both harnesses fail one check, the shell's `pgc_skip` name, and the twin's other tests decline MISSING_DEPENDENCY.
+
+| test | what it holds |
+| --- | --- |
+| `test_ldcr_test_decoding_is_installed` | test_decoding.so is not installed; build contrib/test_decoding |
+| `test_ldcr_server_runs_at_wal_level_logical` | premise: the server is running at wal_level=logical |
+| `test_ldcr_guide_is_where_expected` | premise: the guide is where this suite expects it |
+| `test_ldcr_extraction_is_not_empty` | premise: the extraction is not empty |
+| `test_ldcr_recipe_contains_events` | premise: the extracted recipe contains [CREATE TABLE events] |
+| `test_ldcr_recipe_contains_events_cdc` | premise: the extracted recipe contains [CREATE TABLE events_cdc] |
+| `test_ldcr_recipe_contains_capture_function` | premise: the extracted recipe contains [CREATE FUNCTION events_capture] |
+| `test_ldcr_recipe_contains_trigger` | premise: the extracted recipe contains [CREATE TRIGGER events_cdc_t] |
+| `test_ldcr_recipe_contains_using_pgcolumnar` | premise: the extracted recipe contains [USING pgcolumnar] |
+| `test_ldcr_recipe_contains_delete_branch` | premise: the extracted recipe contains [TG_OP = 'DELETE'] |
+| `test_ldcr_recipe_contains_old_id` | premise: the extracted recipe contains [OLD.id] |
+| `test_ldcr_recipe_is_the_whole_block` | premise: and it is the whole block, not a fragment |
+| `test_ldcr_events_is_columnar` | premise: events is a COLUMNAR table |
+| `test_ldcr_events_cdc_is_heap` | premise: events_cdc is a HEAP table |
+| `test_ldcr_slot_exists_and_is_logical` | premise: the slot exists and is logical |
+| `test_ldcr_trigger_fires_once_per_row` | a row trigger on a COLUMNAR table fires once per inserted row |
+| `test_ldcr_trigger_saw_the_table_values` | and it saw the same values the table holds |
+| `test_ldcr_update_captures_one_row` | an UPDATE captures exactly one row |
+| `test_ldcr_update_recorded_with_new_value` | and it is recorded as UPDATE with the NEW value |
+| `test_ldcr_update_leaks_no_delete` | the update did NOT leak the storage's internal DELETE |
+| `test_ldcr_update_leaks_no_insert` | nor the storage's internal INSERT |
+| `test_ldcr_delete_captures_old_values` | a DELETE captures the OLD values, which are gone from the table |
+| `test_ldcr_deleted_row_is_gone` | and the row really is gone from the columnar table |
+| `test_ldcr_inside_the_transaction_the_row_was_captured` | inside the transaction the row was captured and is in the columnar table, before the rollback |
+| `test_ldcr_rollback_captures_nothing` | a rolled-back transaction captures nothing |
+| `test_ldcr_rollback_leaves_no_row` | and leaves no row in the columnar table either |
+| `test_ldcr_committed_insert_captures` | premise: the identical insert COMMITTED does capture, so the arm above is real |
+| `test_ldcr_slot_decoded_something` | premise: the slot decoded something at all |
+| `test_ldcr_columnar_table_emits_nothing` | CONTROL: the columnar table itself still emits nothing |
+| `test_ldcr_capture_table_is_carried` | the capture table IS carried by the slot |
+| `test_ldcr_one_decoded_row_per_capture` | one decoded capture row per captured change |
+| `test_ldcr_rolled_back_row_not_in_stream` | and the rolled-back row is not in the stream |
+| `test_ldcr_stream_carries_update` | the decoded stream carries the UPDATE as an UPDATE |
+| `test_ldcr_stream_carries_delete` | and the DELETE as a DELETE |
+| `test_ldcr_matcher_finds_inserts` | premise: the same matcher finds the INSERTs, so a 1 above is a real match |
+| `test_ldcr_publication_includes_internal_tables` | premise: FOR ALL TABLES really does include pgcolumnar's internal tables |
+| `test_ldcr_bulk_load_one_capture_per_row` | a bulk load writes exactly one capture row per loaded row |
+
+## 273. test_iceberg_rest.py: the Iceberg REST catalog resolves a table, keeps its token out of every log, and refuses what it must
+
+The twin of `test/iceberg_rest.sh`. A private cluster is restarted with the bearer token in its postmaster environment (and with a wrong one, and with none) against the shell's own REST fixture server, which verifies the Authorization header. The table resolves to its metadata location, also when the catalog ends the reply by closing the connection, the token reaches neither the server log nor the catalog's request log, and each refusal comes from its own guard.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE plus its guard's label only when the message is that guard's own (the allow-list and the link-local refusal both raise 42501), and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer, so a crash reddens only its own arm and the survival check.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_fixture_server_is_up` | premise: rest fixture server is up |
+| `test_loadtable_resolves_the_current_metadata_location` | loadTable resolves the current metadata-location |
+| `test_the_loadtable_request_carried_an_authorization_header` | the loadTable request carried an Authorization header |
+| `test_the_rest_pg_server_log_holds_lines_to_search` | premise: the PG server log holds lines to search |
+| `test_the_rest_token_never_appears_in_the_server_log` | the token never appears in the server (PG) log |
+| `test_the_rest_token_never_appears_in_the_catalog_request_log` | the token value never appears in the catalog request log |
+| `test_a_wrong_bearer_token_is_refused` | a wrong bearer token is refused (28000) |
+| `test_an_anonymous_request_to_a_token_protected_catalog_is_refused` | an anonymous request to a token-protected catalog is refused (28000) |
+| `test_a_catalog_endpoint_off_the_allow_list_is_refused` | a catalog endpoint off the allow-list is refused (42501) |
+| `test_a_link_local_catalog_host_is_refused_even_if_allow_listed` | a link-local catalog host is refused even if allow-listed (42501) |
+| `test_an_over_cap_catalog_response_is_refused` | an over-cap catalog response is refused (54000) |
+| `test_a_close_delimited_loadtable_reply_resolves` | a close-delimited loadTable reply resolves the metadata-location |
+| `test_an_over_cap_close_delimited_catalog_response_is_refused` | an over-cap close-delimited catalog response is refused (54000) |
+| `test_an_unknown_rest_table_surfaces_a_clean_not_found` | an unknown table surfaces a clean not-found (42P01) |
+| `test_a_non_object_catalog_config_is_refused` | a non-object catalog config is refused, not walked (XX001) |
+| `test_the_backend_is_still_up_after_the_rest_refusals` | backend still up after the REST refusals |
+
+## 274. test_iceberg_rest_scan.py: the Iceberg REST catalog reads a table as iceberg_scan does, lists, and refuses an unknown table
+
+The twin of `test/iceberg_rest_scan.sh`. A private cluster is restarted with the bearer token in its postmaster environment against the shell's own REST fixture server, which points loadTable at the committed warehouse relocated into a work directory. iceberg_rest_scan returns the rows iceberg_scan returns for the reported metadata location, projects by field id, reads a table promoted int -> long, float -> double and decimal(10,2) -> decimal(20,2) from a second fixture server as the promoted types (#1789), lists namespaces and tables, and refuses an unknown table, and a namespace the catalog does not serve, with the catalog's own 404: the fixture no longer lists a table for any namespace it is asked about, so a client that ignores its namespace argument fails. The fixture's 404 for a missing namespace says NoSuchNamespaceException, so the error names a namespace (3F000), and the catalog's ErrorModel message reaches the error detail for the namespace 404, a 404, a 403 and a 500 (#1820). An error body nested too deep to parse raises the parser's stack error (54001), not the HTTP status. An error body that starts with `{` and is cut off is not JSON: its parse error is dropped and the HTTP status is reported (08P01).
+
+Four more fixtures cover #1793, one catalog behaviour each. One nests namespaces (db, db.x, db.x.y, aa), advertises the separator `%2E`, answers 400 to a `%1F` path and pages every list one item at a time. One has the prefix `catalogs/main`. One puts its prefix in the config `defaults`. One requires `?warehouse=wh1` on the config request and is reached through a FOREIGN SERVER. A failed reading shows the catalog's error text.
+
+Eleven more fixtures cover the review of PR #1859. Two list nested namespaces at the top level, and one of them also ignores `?parent=`; each namespace must come out once. One answers 400 to `?parent=`, and the call must fail with that status. Two serve a `/v1/config` that sets the prefix in more than one place, and only the winning prefix leads to the table. Two advertise an invalid separator or prefix. Two hold a namespace 64 and 65 levels deep. Two send page tokens that never end: one repeats a token at once, one cycles A, B, A. The paging readings run under a 30-second statement timeout, so a client that walks to the page bound reads as 57014.
+
+Two more fixtures cover #1865, a namespace level that holds a dot. One keeps its table in the single level `db.x` and also has the two levels `db`, `x`, with the default separator. A `text[]` namespace reaches the single level, the level listing keeps the two apart, and a listed row passes back; the dotted text still names `db`, `x`. On the nested fixture (separator `%2E`), `ARRAY['db','x']` names the same namespace as `'db.x'`, and a level that holds the separator is refused (22023). The other lists the single level `db.x` with the separator `%2E`, and the walk must list it without asking for its children. An empty, two-dimensional or NULL-holding array is refused.
+
+Four more tests cover the review of PR #1884. On the `%2E` fixture with the level `db.x`, the documented LATERAL example fails with 22023, and the documented filter keeps it running with no rows. The refusal message shows a control byte in the level as `\xNN`. A further fixture advertises the one-byte separator `%C3` and serves the level `é` (bytes C3 A9); the level must reach the catalog, because the separator matches whole characters of the database encoding only.
+
+Four more tests cover the second review of PR #1884. In a LATIN1 database, `é` is the one byte E9, so in the level `é.x` the dot is a whole character: on the `%2E` fixture it must be refused with 22023. A refused level that holds a newline shows it as `\x0A`, not only 0x1F as `\x1F`. `iceberg_rest_tables` of a NULL `text[]` returns no rows, because the function is STRICT; this test runs last, so a crash reddens only it and the survival test. A further fixture serves the level `db<0x1F>x` with the default separator, and the documented filter `strpos(level, chr(31)) > 0` keeps the LATERAL example running with no rows.
+
+Four more fixtures cover #1948, a table name or namespace that would be a dot segment, `.` or `..`, in the request path. One serves a table named `..`, one the namespace `ARRAY['..']`; neither normalises paths, so either would answer such a request. The table names `.` and `..`, and the namespace arrays `ARRAY['.']` and `ARRAY['..']`, are refused with 22023 and the hint, in the text and `text[]` forms, with the catalog down, and in the OAuth server form before the token request. The walk lists `ARRAY['..']` and asks for its children with `?parent=..`, a query value. A third fixture advertises the separator `%2E` and serves `ARRAY['','']`, whose segment `%2E` a normaliser may decode to `.`; `'.'`, `'..'` and `ARRAY['','']` are refused there too. A fourth serves the table `.hidden` and `a.b` in `ARRAY['...']`, and both must reach the catalog, as must `ARRAY['db','..']`. No request path in the four logs may hold a dot segment, plain or percent-encoded.
+
+### Every test
+
+Every test makes one check under the shell's name. The not-found reads as 42P01, or 3F000 for a namespace, only when the message is the catalog's 404, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and each reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_scan_fixture_server_is_up` | premise: rest fixture server is up |
+| `test_the_catalog_reports_the_relocated_metadata_location` | the catalog reports the relocated metadata location |
+| `test_iceberg_rest_scan_returns_the_five_current_snapshot_rows` | iceberg_rest_scan returns the five current-snapshot rows |
+| `test_iceberg_rest_scan_matches_iceberg_scan_of_the_same_table` | iceberg_rest_scan matches iceberg_scan of the same table (same oracle) |
+| `test_iceberg_rest_scan_projects_and_reorders_by_field_id` | iceberg_rest_scan projects and reorders by field id (amount, id) |
+| `test_the_promoted_table_rest_server_is_up` | premise: the promoted-table rest fixture server is up |
+| `test_iceberg_rest_scan_reads_a_promoted_tables_old_and_new_files` | iceberg_rest_scan reads a promoted table's old and new files as the promoted types |
+| `test_iceberg_rest_namespaces_lists_the_catalogs_namespaces` | iceberg_rest_namespaces lists the catalog's namespaces |
+| `test_iceberg_rest_tables_lists_a_namespaces_tables` | iceberg_rest_tables lists a namespace's tables |
+| `test_iceberg_rest_scan_of_an_unknown_table_is_a_clean_not_found` | iceberg_rest_scan of an unknown table is a clean not-found (42P01) |
+| `test_iceberg_rest_tables_of_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_tables of a namespace the catalog does not have is the catalog's 404 |
+| `test_iceberg_rest_scan_in_an_absent_namespace_is_the_catalogs_404` | iceberg_rest_scan of a table in a namespace the catalog does not have is the catalog's 404 |
+| `test_the_catalogs_404_message_reaches_the_error_detail` | the catalog's 404 message reaches the error detail |
+| `test_the_catalogs_namespace_404_message_reaches_the_error_detail` | the catalog's namespace 404 message reaches the error detail |
+| `test_the_catalogs_403_message_reaches_the_error_detail` | the catalog's 403 message reaches the error detail |
+| `test_the_catalogs_500_message_reaches_the_error_detail` | the catalog's 500 message reaches the error detail |
+| `test_a_catalog_error_body_too_deep_to_parse_raises_its_stack_error` | a catalog error body too deep to parse raises its stack error (54001) |
+| `test_a_malformed_catalog_error_body_still_reports_the_status` | a malformed catalog error body still reports the status (08P01) |
+| `test_the_backend_is_still_up_after_the_rest_read` | backend still up after the REST read |
+| `test_nested_namespaces_iceberg_rest_namespaces_lists_every_level` | nested namespaces: iceberg_rest_namespaces lists every level, page by page |
+| `test_nested_namespaces_iceberg_rest_tables_lists_both_pages` | nested namespaces: iceberg_rest_tables of db.x lists both pages |
+| `test_nested_namespaces_iceberg_rest_scan_returns_the_five_rows` | nested namespaces: iceberg_rest_scan of db.x.events returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_table_location_resolves` | multi-segment prefix: iceberg_rest_table_location resolves the table |
+| `test_multi_segment_prefix_iceberg_rest_scan_returns_the_five_rows` | multi-segment prefix: iceberg_rest_scan returns the five rows |
+| `test_multi_segment_prefix_iceberg_rest_namespaces_lists` | multi-segment prefix: iceberg_rest_namespaces lists the namespaces |
+| `test_multi_segment_prefix_iceberg_rest_tables_lists` | multi-segment prefix: iceberg_rest_tables lists the tables |
+| `test_prefix_in_config_defaults_iceberg_rest_table_location_resolves` | prefix in config defaults: iceberg_rest_table_location resolves the table |
+| `test_prefix_in_config_defaults_iceberg_rest_tables_lists` | prefix in config defaults: iceberg_rest_tables lists the tables |
+| `test_warehouse_server_iceberg_rest_namespaces_sends_the_warehouse` | warehouse server: iceberg_rest_namespaces sends the warehouse and lists |
+| `test_warehouse_server_iceberg_rest_tables_sends_the_warehouse` | warehouse server: iceberg_rest_tables sends the warehouse and lists |
+| `test_top_level_lists_nested_namespaces_iceberg_rest_namespaces_lists_each_once` | top level lists nested namespaces: iceberg_rest_namespaces lists each once |
+| `test_catalog_ignores_parent_iceberg_rest_namespaces_lists_each_once` | catalog ignores ?parent=: iceberg_rest_namespaces lists each once |
+| `test_catalog_refuses_parent_iceberg_rest_namespaces_fails_with_its_http_400` | catalog refuses ?parent=: iceberg_rest_namespaces fails with its HTTP 400 |
+| `test_config_precedence_a_prefix_in_overrides_wins` | config precedence: a prefix in overrides wins over the top-level key and defaults |
+| `test_config_precedence_a_top_level_prefix_wins_over_defaults` | config precedence: a top-level prefix wins over defaults |
+| `test_an_invalid_namespace_separator_is_refused` | an invalid namespace-separator %G1 is refused |
+| `test_an_invalid_prefix_is_refused` | an invalid prefix a/../b is refused |
+| `test_namespace_depth_a_namespace_64_levels_deep_is_listed` | namespace depth: a namespace 64 levels deep is listed |
+| `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
+| `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
+| `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
+| `test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart` | dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x |
+| `test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels` | dotted level: iceberg_rest_namespaces still dot-joins the levels |
+| `test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables` | dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables |
+| `test_dotted_level_iceberg_rest_table_location_of_an_array_resolves` | dotted level: iceberg_rest_table_location of ARRAY['db.x'] resolves the table |
+| `test_dotted_level_iceberg_rest_scan_of_an_array_returns_the_five_rows` | dotted level: iceberg_rest_scan of ARRAY['db.x'] returns the five rows |
+| `test_dotted_level_a_listed_level_array_passes_back` | dotted level: a listed level array passes back to iceberg_rest_tables |
+| `test_dotted_level_the_text_form_still_names_two_levels` | dotted level: the text form 'db.x' still names the two levels db, x |
+| `test_text_array_form_names_the_same_namespace_as_the_dotted_text` | text[] form: ARRAY['db','x'] names the same namespace as 'db.x' |
+| `test_text_array_form_a_level_holding_the_separator_is_refused` | text[] form: a level that holds the catalog's separator is refused |
+| `test_text_array_form_a_listed_level_holding_the_separator_is_not_walked` | text[] form: a listed level that holds the separator is listed, not walked |
+| `test_text_array_form_the_unfiltered_lateral_example_fails_on_a_dotted_level` | text[] form: the unfiltered LATERAL example fails on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running` | text[] form: the documented filter keeps the LATERAL example running on a dot-separator catalog |
+| `test_text_array_form_the_documented_filter_keeps_the_lateral_example_running_by_default` | text[] form: the documented filter keeps the LATERAL example running on a default-separator catalog |
+| `test_separator_refusal_escapes_a_control_byte_in_the_level` | separator refusal: a control byte in the refused level is escaped in the message |
+| `test_separator_refusal_does_not_match_inside_a_utf8_character` | separator refusal: a separator byte above 0x7F does not match inside a UTF-8 character |
+| `test_separator_refusal_in_a_latin1_database_refuses_the_dot_after_e9` | separator refusal: in a LATIN1 database the dot after the byte E9 is refused |
+| `test_separator_refusal_escapes_a_newline_in_the_level` | separator refusal: a newline in the refused level is escaped in the message |
+| `test_text_array_form_an_empty_namespace_array_is_refused` | text[] form: an empty namespace array is refused |
+| `test_text_array_form_a_null_level_is_refused` | text[] form: a NULL level is refused |
+| `test_text_array_form_a_two_dimensional_namespace_array_is_refused` | text[] form: a two-dimensional namespace array is refused |
+| `test_text_array_form_a_null_namespace_array_returns_no_rows` | text[] form: iceberg_rest_tables of a NULL namespace array returns no rows |
+| `test_empty_level_a_missing_doubled_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db..x' gets a hint naming level 2 |
+| `test_empty_level_a_missing_trailing_dot_gets_a_hint_naming_level_2` | empty level: a missing 'db.' gets a hint naming level 2 |
+| `test_empty_level_a_missing_empty_text_gets_a_hint_naming_level_1` | empty level: a missing '' gets a hint naming level 1 |
+| `test_empty_level_a_missing_empty_array_element_gets_a_hint_naming_level_2` | empty level: a missing ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_level_iceberg_rest_scan_of_a_missing_empty_element_gets_a_hint` | empty level: iceberg_rest_scan of a missing ARRAY[''] gets a hint naming level 1 |
+| `test_empty_level_iceberg_rest_table_location_of_a_missing_leading_dot_gets_a_hint` | empty level: iceberg_rest_table_location of a missing '.db' gets a hint naming level 1 |
+| `test_empty_level_a_missing_namespace_with_no_empty_level_gets_no_hint` | empty level: a missing namespace with no empty level gets no empty-level hint |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the namespace db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x of db, '' |
+| `test_empty_level_iceberg_rest_namespace_levels_lists_the_child_of_the_middle_empty_level` | empty level: iceberg_rest_namespace_levels lists the child db, '', x, y of db, '', x |
+| `test_empty_level_iceberg_rest_namespaces_lists_the_text_form_of_each_namespace` | empty level: iceberg_rest_namespaces lists db, db., db..x and db..x.y |
+| `test_empty_level_iceberg_rest_tables_of_the_array_form_lists_its_tables` | empty level: iceberg_rest_tables of ARRAY['db',''] lists its tables |
+| `test_empty_level_iceberg_rest_tables_of_the_text_form_lists_its_tables` | empty level: iceberg_rest_tables of the text form 'db.' lists its tables |
+| `test_empty_level_iceberg_rest_table_location_resolves_the_table` | empty level: iceberg_rest_table_location of ARRAY['db',''] resolves the table |
+| `test_empty_level_iceberg_rest_scan_returns_the_five_rows` | empty level: iceberg_rest_scan of ARRAY['db',''] returns the five rows |
+| `test_empty_level_a_listed_level_array_with_an_empty_level_passes_back` | empty level: a listed level array with an empty level passes back to iceberg_rest_tables |
+| `test_empty_level_the_server_form_reaches_the_empty_level` | empty level: the server form of iceberg_rest_tables reaches ARRAY['db',''] |
+| `test_empty_level_a_missing_table_in_an_empty_level_namespace_gets_a_hint` | empty level: iceberg_rest_table_location of a missing table in ARRAY['db',''] gets a hint naming level 2 |
+| `test_empty_only_level_iceberg_rest_namespace_levels_asks_for_its_children` | empty only level: iceberg_rest_namespace_levels lists ARRAY[''] and asks for its children with an empty parent |
+| `test_empty_only_level_iceberg_rest_tables_of_the_array_form_is_refused` | empty only level: iceberg_rest_tables of ARRAY[''] is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_table_location_of_the_text_form_is_refused` | empty only level: iceberg_rest_table_location of '' is refused naming level 1 |
+| `test_empty_only_level_iceberg_rest_scan_of_the_text_form_is_refused` | empty only level: iceberg_rest_scan of '' is refused naming level 1 |
+| `test_empty_only_level_the_documented_filter_keeps_the_lateral_example_running` | empty only level: the documented filter keeps the LATERAL example running |
+| `test_empty_only_level_iceberg_rest_namespace_levels_lists_the_child` | empty only level: iceberg_rest_namespace_levels lists the child of ARRAY[''] when the catalog reads an empty parent as ARRAY[''] |
+| `test_empty_only_level_iceberg_rest_namespaces_lists_the_child` | empty only level: iceberg_rest_namespaces lists '' and its child '.x' |
+| `test_empty_only_level_the_documented_filter_reaches_the_child` | empty only level: the documented filter lets the LATERAL example reach the child of ARRAY[''] |
+| `test_empty_only_level_location_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_only_level_tables_is_refused_when_the_catalog_cannot_be_reached` | empty only level: iceberg_rest_tables of ARRAY[''] is refused when the catalog cannot be reached |
+| `test_empty_only_level_oauth_server_location_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_only_level_oauth_server_scan_is_refused_before_the_token_request` | empty only level: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_only_level_no_request_has_an_empty_path_segment` | empty only level: no request reaches the catalog with an empty path segment |
+| `test_empty_table_name_location_is_refused` | empty table name: iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_scan_is_refused` | empty table name: iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_array_form_location_is_refused` | empty table name: the text[] form of iceberg_rest_table_location of '' is refused |
+| `test_empty_table_name_array_form_scan_is_refused` | empty table name: the text[] form of iceberg_rest_scan of '' is refused |
+| `test_empty_table_name_location_is_refused_when_the_catalog_cannot_be_reached` | empty table name: iceberg_rest_table_location of '' is refused when the catalog cannot be reached |
+| `test_empty_table_name_oauth_server_location_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_table_location of '' is refused before the token request |
+| `test_empty_table_name_oauth_server_scan_is_refused_before_the_token_request` | empty table name: the OAuth server form of iceberg_rest_scan of '' is refused before the token request |
+| `test_empty_table_name_the_same_catalog_still_resolves_the_table` | empty table name: the same catalog still resolves db.events |
+| `test_empty_table_name_no_request_has_an_empty_table_segment` | empty table name: no request reaches the catalog with an empty table segment |
+| `test_dot_segment_location_of_table_dotdot_is_refused` | dot segment: iceberg_rest_table_location of table '..' is refused |
+| `test_dot_segment_location_of_table_dot_is_refused` | dot segment: iceberg_rest_table_location of table '.' is refused |
+| `test_dot_segment_scan_of_table_dotdot_is_refused` | dot segment: iceberg_rest_scan of table '..' is refused |
+| `test_dot_segment_scan_of_table_dot_is_refused` | dot segment: iceberg_rest_scan of table '.' is refused |
+| `test_dot_segment_array_form_location_of_table_dotdot_is_refused` | dot segment: the text[] form of iceberg_rest_table_location of table '..' is refused |
+| `test_dot_segment_array_form_scan_of_table_dot_is_refused` | dot segment: the text[] form of iceberg_rest_scan of table '.' is refused |
+| `test_dot_segment_location_of_table_dotdot_is_refused_when_the_catalog_cannot_be_reached` | dot segment: iceberg_rest_table_location of table '..' is refused when the catalog cannot be reached |
+| `test_dot_segment_oauth_server_location_of_table_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_table_location of table '..' is refused before the token request |
+| `test_dot_segment_oauth_server_scan_of_table_dot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_scan of table '.' is refused before the token request |
+| `test_dot_segment_tables_of_namespace_dotdot_is_refused` | dot segment: iceberg_rest_tables of ARRAY['..'] is refused |
+| `test_dot_segment_tables_of_namespace_dot_is_refused` | dot segment: iceberg_rest_tables of ARRAY['.'] is refused |
+| `test_dot_segment_location_in_namespace_dot_is_refused` | dot segment: iceberg_rest_table_location of ARRAY['.'] is refused |
+| `test_dot_segment_scan_in_namespace_dotdot_is_refused` | dot segment: iceberg_rest_scan of ARRAY['..'] is refused |
+| `test_dot_segment_tables_of_namespace_dotdot_is_refused_when_the_catalog_cannot_be_reached` | dot segment: iceberg_rest_tables of ARRAY['..'] is refused when the catalog cannot be reached |
+| `test_dot_segment_oauth_server_tables_of_namespace_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_tables of ARRAY['..'] is refused before the token request |
+| `test_dot_segment_oauth_server_location_in_namespace_dot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_table_location of ARRAY['.'] is refused before the token request |
+| `test_dot_segment_oauth_server_scan_in_namespace_dotdot_is_refused_before_the_token_request` | dot segment: the OAuth server form of iceberg_rest_scan of ARRAY['..'] is refused before the token request |
+| `test_dot_segment_tables_of_text_dot_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_tables of '.' is refused when the catalog's separator is %2E |
+| `test_dot_segment_location_in_text_dotdot_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_table_location of '..' is refused when the catalog's separator is %2E |
+| `test_dot_segment_scan_in_two_empty_levels_is_refused_when_the_separator_is_2e` | dot segment: iceberg_rest_scan of ARRAY['',''] is refused when the catalog's separator is %2E |
+| `test_dot_segment_namespace_levels_walks_into_dotdot_by_query_value` | dot segment: iceberg_rest_namespace_levels lists ARRAY['..'] and asks for its children in a query value |
+| `test_dot_segment_namespaces_walks_into_dotdot_by_query_value` | dot segment: iceberg_rest_namespaces lists '..' and asks for its children in a query value |
+| `test_dot_segment_tables_of_a_dotted_namespace_reaches_the_catalog` | dot segment: iceberg_rest_tables of ARRAY['...'] reaches the catalog and lists .hidden and a.b |
+| `test_dot_segment_location_of_a_dotted_table_resolves` | dot segment: iceberg_rest_table_location of .hidden in ARRAY['...'] resolves |
+| `test_dot_segment_a_dotdot_level_among_others_reaches_the_catalogs_404` | dot segment: iceberg_rest_tables of ARRAY['db','..'] reaches the catalog's 404 |
+| `test_dot_segment_no_request_has_a_dot_segment` | dot segment: no request reaches the catalog with a dot segment |
+
+## 275. test_iceberg_rest_vended.py: an Iceberg REST catalog's vended credentials sign the reads, and nothing else does
+
+The twin of `test/iceberg_rest_vended.sh`. A private cluster with no AWS_* in its environment reads a table through the shell's REST catalog, which vends the SigV4 S3 fixture's key; the vended secret never reaches either log, a wrong one is refused by S3's 403, the longest storage-credentials prefix wins over a wrong catch-all and a wrong flat config, an endpoint off the allow-list is refused by the allow-list, a catalog vending nothing falls back to ambient credentials, and no backend dies. Each file gets its own longest-prefix credential (#1820): with split metadata/ and data/ entries, the data/ key signs the data files; the flat config covers a file no prefix matches; the longest prefix wins when it is listed before a broader one; an entry with a key id and no secret vends nothing, so it is ignored and the backend survives it; an entry with a secret and no key id vends nothing either, so it is ignored too; and a file nothing vended covers is refused, even when the server holds ambient keys S3 accepts.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal reads as its SQLSTATE only when the message is that refusal's own (28000 is also "no credentials"), and a failed reading is a `query_error()`. The survival check also requires that the server log's count of backends killed by a signal has not moved, and every reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_vended_suite_can_run_here` | premise: the SigV4 S3 fixture is up |
+| `test_a_rest_scan_reads_via_vended_credentials` | iceberg_rest_scan reads via vended credentials (no ambient creds set) |
+| `test_the_server_log_holds_lines_to_search` | premise: the PG server log holds lines to search |
+| `test_the_vended_secret_is_not_in_the_server_log` | the vended secret never appears in the PG server log |
+| `test_the_vended_secret_is_not_in_the_s3_request_log` | the vended secret never appears in the S3 request log |
+| `test_a_wrong_vended_secret_is_refused_by_s3` | a wrong vended secret is refused by S3, not bypassed (28000) |
+| `test_the_longest_storage_credentials_prefix_wins` | storage-credentials longest-prefix match selects the right creds |
+| `test_split_credentials_each_sign_their_own_files` | split metadata/ and data/ credentials each sign their own files |
+| `test_the_data_credential_signs_a_data_file` | the data/ credential, not the metadata/ one, signs a data file (28000) |
+| `test_the_flat_config_signs_an_uncovered_file` | the flat config signs a file no storage-credentials prefix covers |
+| `test_the_longest_prefix_wins_when_listed_first` | the longest prefix wins when it is listed before a broader one |
+| `test_an_entry_with_a_key_id_and_no_secret_is_ignored` | an entry with a key id and no secret is ignored, not used |
+| `test_an_entry_with_a_secret_and_no_key_id_is_ignored` | an entry with a secret and no key id is ignored, not used |
+| `test_the_backend_survives_an_entry_with_no_secret` | backend still up after an entry with a key id and no secret |
+| `test_a_vended_endpoint_off_the_allow_list_is_refused` | vended creds for an off-allow-list endpoint are refused (42501) |
+| `test_a_catalog_vending_nothing_falls_back_to_ambient` | a table vending no creds still reads with ambient (cfg NULL path) |
+| `test_an_uncovered_file_is_refused_not_read_ambient` | a file no vended credential covers is refused, not read ambient (28000) |
+| `test_the_backend_survives_the_vended_arms` | backend still up after the vended-credential arms |
+
+## 276. test_iceberg_rest_server.py: an Iceberg REST catalog FOREIGN SERVER authenticates by its USER MAPPING, and by nothing else
+
+The twin of `test/iceberg_rest_server.sh`. On a private cluster with no catalog token in its environment, a server-name call reads by the USER MAPPING's token or a minted OAuth2 bearer; secrets reach neither log; wrong, missing and half credentials are each refused by their own message, the half one before any request and even beside a static token; a static token wins over a complete pair, with no token request; the validator keeps secrets off a SERVER and catalog_uri off a mapping; a hostile oauth_token_uri is refused by the endpoint allow-list; a non-superuser borrows the environment token only when a superuser waived its credentials; and a role without USAGE on the server is refused 42501 before any request reaches the catalog, through a PUBLIC mapping and through its own mapping after a REVOKE, by every iceberg_rest_* function, while a foreign table on a catalog server reads nothing and a granted role still reads (#1819).
+
+### Every test
+
+Every test makes one check under the shell's name. An "accepted" arm reads `ok` only when the statement ran, a refusal reads its SQLSTATE only when the message is its own guard's, and a failed reading is a `query_error()`. Survival also requires that the server log's count of backends killed by a signal has not moved, and every reading first waits for the server to answer.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_rest_server_suite_can_run_here` | premise: rest fixture up |
+| `test_a_server_name_call_reads_via_the_mapping_token` | iceberg_rest_table_location('cat',...) reads via the mapping token |
+| `test_the_request_carried_an_authorization_header` | the request carried an Authorization header |
+| `test_the_server_log_holds_lines_for_the_mapping_token` | premise: the PG server log holds lines to search, for the mapping token |
+| `test_the_mapping_token_is_not_in_the_server_log` | the mapping token never appears in the PG server log |
+| `test_a_wrong_mapping_token_is_refused` | a wrong mapping token is refused (28000) |
+| `test_no_mapping_and_no_env_token_is_refused` | no mapping and no env token is refused, not bypassed (28000) |
+| `test_a_token_on_the_server_is_rejected` | a token option on the SERVER is rejected (HV00D) |
+| `test_a_catalog_uri_on_the_mapping_is_rejected` | a catalog_uri option on the USER MAPPING is rejected (HV00D) |
+| `test_a_warehouse_option_on_the_server_is_accepted` | a warehouse option on the SERVER is accepted (not HV00D) |
+| `test_a_warehouse_server_resolves_a_location` | a warehouse-configured server resolves a table location |
+| `test_the_warehouse_is_sent_on_get_config` | the warehouse was sent on GET /v1/config (?warehouse=wh1) |
+| `test_an_oauth_mapping_reads_by_a_minted_bearer` | a server with an OAuth2 mapping reads by a minted bearer |
+| `test_the_oauth_token_endpoint_was_called` | the OAuth2 token endpoint was called (POST /v1/oauth/tokens) |
+| `test_load_table_carried_the_minted_bearer` | loadTable then carried the minted bearer (Authorization present) |
+| `test_the_client_secret_is_not_in_the_fixture_log` | the client secret never appears in the fixture request log |
+| `test_the_server_log_holds_lines_for_the_client_secret` | premise: the PG server log holds lines to search, for the client secret |
+| `test_the_client_secret_is_not_in_the_server_log` | the client secret never appears in the PG server log |
+| `test_a_wrong_oauth_client_secret_is_refused` | a wrong OAuth2 client secret is refused (28000) |
+| `test_a_half_oauth_credential_is_refused_before_any_request` | a half OAuth2 credential (id, no secret) is refused before any request (28000) |
+| `test_a_half_oauth_id_is_refused_even_with_a_static_token` | a half OAuth2 credential (id, no secret) is refused even with a static token (28000) |
+| `test_a_half_oauth_secret_is_refused_even_with_a_static_token` | a half OAuth2 credential (secret, no id) is refused even with a static token (28000) |
+| `test_oauth_options_are_accepted_on_a_mapping` | oauth options are accepted on a USER MAPPING (no error) |
+| `test_a_static_token_wins_over_a_complete_oauth_pair` | a static token and a complete OAuth2 pair read by the token, with no token request |
+| `test_an_oauth_option_on_the_server_is_rejected` | an oauth option on the SERVER is rejected (HV00D) |
+| `test_a_link_local_token_uri_is_refused_by_the_allow_list` | a link-local oauth_token_uri is refused by the allow-list (42501) |
+| `test_an_off_list_token_uri_host_is_refused` | an off-allow-list oauth_token_uri host is refused (42501) |
+| `test_the_uri_form_works_with_the_env_token` | the catalog-URI form still works with the env token |
+| `test_a_non_superuser_does_not_borrow_the_env_token` | a non-superuser with no token mapping is refused (28000) despite the environment token, before any request |
+| `test_a_non_superuser_cannot_waive_its_own_credentials` | and it cannot mark its own mapping credentials_required false (42501) |
+| `test_a_superuser_waiver_lets_the_role_read_by_the_env_token` | control: with credentials_required false set by a superuser, the same role reads by the environment token |
+| `test_the_role_without_usage_holds_no_usage_on_the_server` | premise: ice_n holds no USAGE on server pcat |
+| `test_a_role_without_usage_is_refused_through_a_public_mapping` | a role without USAGE on the server is refused through a PUBLIC mapping (42501), before any request |
+| `test_the_other_rest_functions_refuse_a_role_without_usage` | the namespace, table-list and scan functions refuse it too (42501), before any request |
+| `test_a_revoked_role_is_refused_through_its_own_mapping` | after REVOKE USAGE the role's own mapping is refused (42501), before any request |
+| `test_core_refuses_a_foreign_table_on_the_catalog_server` | control: core refuses that role a foreign table on the catalog server (42501) |
+| `test_a_foreign_table_on_a_catalog_server_reads_nothing` | a foreign table on a catalog server reads nothing (55000, no handler), before any request |
+| `test_a_granted_role_reads_through_the_public_mapping` | control: once granted USAGE the same role reads through the PUBLIC mapping |
+| `test_the_backend_survives_the_rest_server_arms` | backend still up |
+
+## 277. test_hilbert_curve.py: the Hilbert clustering curve, pinned by its properties and by frozen bytes
+
+The pytest twin of `test/hilbert_curve.sh` (#889, #1341). No cluster: `src/columnar_curve.c` is compiled with a small driver into a shared library and called through ctypes. The driver only encodes and counts its calls; every property is checked in Python with its own readers -- the permutation test (C1), the memcmp-order adjacency walk (C2), dyadic contiguity (C3, counted as runs per level along index order, which over a permutation is the shell's max - min + 1 == count), the production-width bridge (C4a), a Python transcription of Skilling's TransposetoAxes with a mutated twin for the round trips (C4b), the goldens and the pack's extent (C5), ncols == 1 (C6) and the frozen Z-order bytes (C7). The INSTRUMENT arms run the serpentine, Z-order and truncating control encoders through the same checkers, so a checker stuck at pass or stuck at fail is named. No compiler declines every arm as MISSING_DEPENDENCY; an absent or unbuildable code under test is a failed reading for every battery arm.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole battery once, and asserts it under the shell's check name. The golden, extent and Z-order families are parametrised one test per member, named by the same template as the shell's loop.
+
+| test | what it holds |
+| --- | --- |
+| `test_hilbert_instrument_control_battery_covered_every_point` | INSTRUMENT C0 premise: the control battery encoded every case and every point |
+| `test_hilbert_instrument_control_encoders_called_once_per_point` | INSTRUMENT C0 premise: the control encoders were called once per point |
+| `test_hilbert_instrument_control_pack_is_the_frozen_zorder` | INSTRUMENT the control's own pack reproduces the frozen Z-order bytes |
+| `test_hilbert_instrument_serpentine_is_a_permutation` | INSTRUMENT C1 control: the serpentine is a permutation of the index range |
+| `test_hilbert_instrument_serpentine_passes_adjacency` | INSTRUMENT C2 control: the serpentine PASSES unit-step adjacency |
+| `test_hilbert_instrument_serpentine_fails_contiguity` | INSTRUMENT C3 control: the serpentine FAILS dyadic contiguity in every nested case |
+| `test_hilbert_instrument_zorder_is_a_permutation` | INSTRUMENT C1 control: Z-order is a permutation of the index range |
+| `test_hilbert_instrument_zorder_fails_adjacency` | INSTRUMENT C2 control: Z-order FAILS unit-step adjacency in every multi-column case |
+| `test_hilbert_instrument_zorder_passes_contiguity` | INSTRUMENT C3 control: Z-order PASSES dyadic contiguity |
+| `test_hilbert_instrument_truncation_fails_permutation` | INSTRUMENT C1 control: a truncating encoder FAILS the permutation test in every case |
+| `test_hilbert_battery_covered_every_point` | C0 premise: the battery encoded every case and every point |
+| `test_hilbert_encoder_called_once_per_point` | C0 premise: the encoder was called once per point |
+| `test_hilbert_index_set_is_the_contiguous_range` | C1 the Hilbert index set is exactly the contiguous range |
+| `test_hilbert_memcmp_order_is_unit_adjacent` | C2 consecutive points in memcmp key order are unit-adjacent |
+| `test_hilbert_dyadic_subcubes_are_contiguous` | C3 every dyadic sub-cube occupies a contiguous run of indices |
+| `test_hilbert_bridge_covered_every_point` | C4a premise: the bridge covered every case and every point |
+| `test_hilbert_full_width_prefix_ignores_low_bits` | C4a the full-width key prefix does not move when the low bits change |
+| `test_hilbert_full_width_prefixes_are_the_index_range` | C4a the full-width key prefixes are exactly the index range |
+| `test_hilbert_distinct_full_width_keys_round_tripped` | C4b premise: 3,000 DISTINCT full-width keys per ncols were round-tripped |
+| `test_hilbert_published_inverse_round_trips` | C4b the published inverse round-trips full-width keys |
+| `test_hilbert_mutated_inverse_breaks_every_round_trip` | C4b control: a mutated inverse breaks every round trip the clean one made |
+| `test_hilbert_consecutive_key_pairs_were_formed` | C4b premise: consecutive key pairs were formed |
+| `test_hilbert_consecutive_keys_decode_to_neighbours` | C4b consecutive keys decode to unit-adjacent points, re-encoded by the code under test |
+| `test_hilbert_golden_key` | C5 golden Hilbert keys: ncols={n} {v} (one test per member) |
+| `test_hilbert_pack_bit_order_column_zero` | C5 the pack bit order: pack(2^63, 0) starts 0x80 |
+| `test_hilbert_pack_bit_order_column_one` | C5 the pack bit order: pack(0, 2^63) starts 0x40 |
+| `test_hilbert_pack_extent` | C5 the pack establishes exactly 8*ncols bytes: ncols={n} (one test per member) |
+| `test_hilbert_pack_tail_untouched` | C5 the pack wrote nothing past the key: ncols={n} (one test per member) |
+| `test_hilbert_pack_sets_every_bit_of_all_ones` | C5 the pack sets every bit of the key for an all-ones vector: ncols={n} (one test per member) |
+| `test_hilbert_one_column_zero` | C6 ncols == 1 is the big-endian ordinal: 0 |
+| `test_hilbert_one_column_one` | C6 ncols == 1 is the big-endian ordinal: 1 |
+| `test_hilbert_one_column_top_bit` | C6 ncols == 1 is the big-endian ordinal: 2^63 |
+| `test_hilbert_one_column_all_ones` | C6 ncols == 1 is the big-endian ordinal: UINT64_MAX |
+| `test_hilbert_one_column_loop_ran` | C6 premise: the comparison loop ran 200,000 times |
+| `test_hilbert_one_column_is_big_endian_over_random_values` | C6 ncols == 1 is the big-endian ordinal over 200,000 random values |
+| `test_hilbert_one_column_agrees_with_zorder` | C6 ncols == 1 agrees with Z-order over 200,000 random values |
+| `test_hilbert_zorder_pack_unchanged` | C7 the Z-order pack is byte-for-byte what it was: ncols={n} {v} (one test per member) |
+
+## 278. test_bench_guards.py: the benchmark's own guards refuse what they must, and the report asks them
+
+The twin of `test/bench_guards.sh`, with no cluster (it is in NO_CLUSTER). Each bench runner's own assert guard is found by this file's reader and run against a stand-in pg_config that reports an assert build, a plain one, or nothing. `bench/cb_guards.sh`'s preflights, row check, cold-run tag and verdict are called through bash, as the benchmark calls them, and the report and `docs/benchmarks.md` are read as text.
+
+### Every test
+
+Every test makes one check under the shell's name; the six runner checks are parametrized over `bench/run_*.sh`, so their names are templates the grader matches against the shell's `[$_bs]` names. A guard that cannot be found whole is run as nothing, which every refusal check refuses, and nothing past the guard is ever run.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_runner_refuses_an_assert_build` | [{runner}] refuses an assert build rather than documenting the requirement |
+| `test_the_runner_offers_a_named_override` | [{runner}] and offers a named override rather than only refusing |
+| `test_the_runner_exits_non_zero_on_an_assert_build` | [{runner}] and exits non-zero rather than warning past it |
+| `test_the_runner_lets_a_plain_build_through` | [{runner}] and lets a non-assert build through |
+| `test_the_runner_refuses_when_it_cannot_tell` | [{runner}] refuses when it CANNOT TELL, rather than treating that as a pass |
+| `test_the_runner_does_not_pipe_configure_into_grep` | [{runner}] and does not decide from an unbuffered pipe into grep -c |
+| `test_every_bench_runner_was_read` | premise: every bench runner was read, not a hand-kept subset |
+| `test_the_guards_file_is_present` | premise: bench/cb_guards.sh is present to be judged |
+| `test_the_stock_zero_is_refused` | the stock 0 is refused for an 8-worker parallel arm |
+| `test_an_exact_prepared_match_is_accepted` | an exact match is accepted |
+| `test_more_than_enough_prepared_is_accepted` | more than enough is accepted |
+| `test_one_prepared_short_is_refused` | one short is refused, which is the off-by-one that would run 7 workers |
+| `test_a_serial_arm_needs_no_prepared_transactions` | a serial arm needs no prepared transactions |
+| `test_the_stock_eight_slots_are_refused` | the stock 8 is refused for an 8-worker arm, which is the case that bit us |
+| `test_n_plus_one_slots_are_refused` | N + 1 is still refused: the coordinator needs a slot too |
+| `test_n_plus_two_slots_are_accepted` | N + 2 is accepted, the measured minimum |
+| `test_more_than_enough_worker_slots_are_accepted` | more than enough worker slots are accepted |
+| `test_four_workers_need_six_slots` | the rule holds at another worker count (4 needs 6) |
+| `test_five_slots_for_four_workers_are_refused` | and one below it does not |
+| `test_a_serial_arm_needs_no_worker_slots` | a serial arm needs no worker slots |
+| `test_a_missing_slot_count_is_refused` | a missing current value is refused, not compared |
+| `test_the_slot_message_names_the_setting` | the worker-slot message names the setting |
+| `test_the_slot_message_names_the_value` | and the value it must reach, not merely the worker count |
+| `test_the_slot_message_says_restart` | and says it needs a restart |
+| `test_the_prepared_message_names_the_setting` | the message names the setting to change |
+| `test_the_prepared_message_names_the_number` | and the number it must reach |
+| `test_the_prepared_message_says_restart` | and says it needs a restart, which is why this runs first |
+| `test_a_short_load_is_refused` | a short load is refused |
+| `test_an_empty_load_is_refused` | an empty load is refused, which is what an errored parallel arm produces |
+| `test_an_exact_load_is_accepted` | an exact load is accepted |
+| `test_two_missing_row_counts_are_refused` | two missing measurements are refused, not called equal |
+| `test_a_missing_row_count_is_refused` | a missing count is refused rather than compared with the expectation |
+| `test_a_missing_row_expectation_is_refused` | and a missing expectation is refused too |
+| `test_the_cold_tag_guard_emits_a_tag` | the guard exists and emitted a tag to judge |
+| `test_a_warm_host_is_not_called_cold` | a host that could not drop the page cache is not called a cold run |
+| `test_the_warm_tag_says_warm` | and the tag says plainly that the run was warm |
+| `test_the_verdict_helpers_are_present` | the verdict helpers are present to be judged |
+| `test_a_clear_win` | a clear win is a win |
+| `test_a_clear_loss` | a clear loss is a loss |
+| `test_a_rounding_win_is_not_a_loss` | columnar ahead by 0.33 percent is not a LOSS, which is the #531 defect |
+| `test_a_gap_inside_the_band_is_a_tie` | and under a band wider than the gap it is a tie, not a win either |
+| `test_a_win_just_outside_the_band` | a gap just outside the band is still called |
+| `test_a_loss_just_outside_the_band` | and a loss just outside it likewise |
+| `test_spread_is_over_the_best` | spread is the fractional range over the best |
+| `test_spread_ignores_order_and_err` | order does not matter, and ERR tries are dropped |
+| `test_one_try_has_no_spread` | a single warm try has no measurable scatter |
+| `test_no_usable_try_has_no_spread` | no usable try yields no spread, not zero |
+| `test_a_zero_best_is_refused` | a zero best is refused rather than divided by |
+| `test_the_band_is_the_wider_arm` | the band is the wider of the two arms |
+| `test_an_unknown_arm_makes_the_band_unknown` | and is unknown if either arm is unknown |
+| `test_an_unknown_band_suppresses_the_verdict` | an unknown band suppresses the verdict, it does not strict-compare |
+| `test_an_errored_arm_has_no_verdict` | an errored arm has no verdict |
+| `test_a_zero_baseline_has_no_verdict` | and neither does a zero baseline |
+| `test_the_benchmark_script_is_present` | premise: the benchmark script is present to be judged |
+| `test_the_report_captures_ratio` | premise: the report still captures ratio() into a display variable |
+| `test_ratio_reaches_only_printf` | ratio()'s output reaches printf and nothing else |
+| `test_the_verdict_is_asked_of_cb_verdict` | and the verdict is asked of cb_verdict rather than recomputed inline |
+| `test_the_benchmark_page_is_present` | premise: the benchmark page is present to be judged |
+| `test_the_extractor_reads_wrapped_ids` | the variation-claim extractor reads ids wrapped across two lines |
+| `test_no_query_is_called_variation_without_a_tie` | no query is called run-to-run variation unless its figures are a measured tie |
+| `test_the_tuned_arm_names_its_settings` | the tuned-arm section names all four settings and the group-cap value |
+
+## 279. test_docs_style.py: the documentation's measurable rules and the facts it states
+
+The pytest twin of `test/docs_style.sh` (#291, #1341). It reads the published pages, `META.json`, the tree's scripts and the release tags as files and through `git`. It needs no server, so it runs in the guards job. Every arm that asks whether a page says something reads the page with its HTML comments removed. The nav check ignores YAML comments.
+
+### Every test
+
+Every test makes one check, by the shell's name. Readings are computed once, in a module fixture, with Python's `re` and `pathlib` rather than the shell's grep and awk. A reading that cannot be taken is a value that fails its own check, never an exception. The four changelog arms decline with UNMET_PRECONDITION in a checkout without the release tags.
+
+| test | what it holds |
+| --- | --- |
+| `test_every_user_facing_document_meets_the_plain_language_rules` | every user-facing document meets the measurable plain-language rules |
+| `test_the_plain_language_checker_examined_the_documents` | and it actually examined the documents |
+| `test_the_roadmap_is_in_the_documentation_nav` | the roadmap is in the documentation nav |
+| `test_the_roadmap_nav_entry_points_at_a_page` | and the page that nav entry points at exists |
+| `test_no_document_carries_a_merge_conflict_marker` | no document carries a merge conflict marker |
+| `test_the_how_to_keeps_its_pg_partman_heading` | the how-to keeps its pg_partman section under its own heading |
+| `test_changelog_carries_no_em_or_en_dash` | CHANGELOG.md carries no em or en dash |
+| `test_how_to_names_clustering_on_the_join_key` | how-to names clustering on the join key for the runtime filter |
+| `test_best_practices_names_clustering_on_the_join_key` | best-practices names clustering on the join key |
+| `test_configuration_states_the_1024_floor` | configuration.md states the 1024 floor where it documents the setting |
+| `test_administration_states_the_floor_beside_its_advice` | administration.md states it in the section that says to lower the setting |
+| `test_best_practices_carries_the_floor` | best-practices.md carries it with the load-sizing advice |
+| `test_the_version_file_has_a_version` | premise: the VERSION file has a version to compare against |
+| `test_some_document_cites_the_version_file` | premise: at least one document cites the VERSION file |
+| `test_every_version_citation_quotes_version` | every document citing VERSION quotes the version VERSION holds |
+| `test_the_version_badge_is_present` | premise: the version badge is present |
+| `test_the_badge_names_no_other_version` | the version badge names no version other than VERSION's |
+| `test_the_badge_names_the_version` | premise: and it names VERSION's version at all |
+| `test_the_readme_badge_alt_text_names_the_version` | README's badge alt text names the version VERSION holds |
+| `test_some_document_names_the_latest_published_pre_release` | premise: at least one document names the latest published pre-release |
+| `test_every_published_claim_is_in_a_readable_form` | every document making the claim states it in a form this rule can read |
+| `test_every_document_names_the_same_published_pre_release` | every document names the same latest published pre-release |
+| `test_the_tree_ships_upgrade_scripts` | premise: the tree ships upgrade scripts to derive the chain from |
+| `test_the_control_file_names_a_default_version` | premise: the control file names a default_version to arrive at |
+| `test_each_version_starts_one_upgrade_script` | each shipped version starts exactly one upgrade script, so the chain is a walk |
+| `test_some_version_reaches_the_default` | premise: some shipped version reaches default_version, so the walk found a chain |
+| `test_some_document_states_the_upgrade_chain` | premise: at least one document states the upgrade chain |
+| `test_every_upgrade_chain_claim_is_readable` | every document stating the upgrade chain states it in a form this rule can read |
+| `test_every_document_names_the_versions_that_reach_the_default` | every such document names the versions that reach default_version in one update |
+| `test_every_document_names_the_default_as_the_destination` | every such document names default_version as the version one UPDATE reaches |
+| `test_meta_json_parses` | premise: META.json is present and parses |
+| `test_the_pgxn_form_was_derived` | premise: the PGXN form was derived from VERSION, not empty |
+| `test_meta_json_version_is_the_version` | META.json version is the version VERSION holds, in PGXN form |
+| `test_meta_json_provides_version_is_the_version` | META.json provides.pgcolumnar.version is the version VERSION holds, in PGXN form |
+| `test_meta_json_names_a_base_script` | premise: META.json names a base install script |
+| `test_the_meta_json_script_ships` | the script META.json names is in the published distribution |
+| `test_meta_json_names_the_base_script_of_the_version` | META.json names the base install script of the version VERSION holds |
+| `test_the_tree_has_install_scripts` | premise: the tree has install scripts to check |
+| `test_every_install_script_ships` | every pgcolumnar--*.sql in the tree is in the published distribution |
+| `test_changelog_has_a_union_merge_driver` | CHANGELOG.md has a union merge driver, so two entries do not conflict |
+| `test_every_dated_section_exists_at_its_tag` | every dated changelog section has its own section at its release tag |
+| `test_every_dated_section_holds_only_what_shipped_or_is_recorded` | every dated changelog section holds what its tag shipped, plus only what is recorded |
+| `test_every_dated_section_keeps_what_shipped` | every dated changelog section still holds every entry its tag shipped |
+| `test_the_changelog_sweep_found_sections` | premise: the changelog sweep found dated release sections |
+| `test_the_post_tag_allowance_file_is_readable` | premise: the post-tag allowance file is present and readable |
+| `test_every_post_tag_entry_carries_a_reason` | every recorded post-tag entry carries a reason |
+| `test_no_post_tag_entry_is_stale` | no recorded post-tag entry is stale, so the allowance cannot widen silently |
+| `test_changelog_still_has_the_union_driver_for_the_instructions` | and CHANGELOG.md still has the union merge driver those instructions are about |
+| `test_context_explains_a_conflicting_badge` | and CONTEXT.md tells a contributor what a CONFLICTING badge means |
+| `test_context_names_the_rebase_command` | and names the command rather than only the problem |
+| `test_context_warns_against_the_update_button` | and warns against the button that reintroduces the conflict |
+| `test_context_says_why_rebasing_works` | and says WHY rebasing works where merging does not |
+| `test_the_scan_read_sql_statements` | premise: the scan read SQL statements from the documents |
+| `test_no_documented_query_tests_pg_extension_across_databases` | no documented query tests pg_extension while listing databases |
+
+## 280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's
+
+The twin of `test/audit.sh` (#965). ADD COLUMN after data exists reads the missing value through every read path; chunk-group skipping does not use a predicate under another collation; set_options refuses out-of-range limits, a heap table and (PostgreSQL 17 and later) a partitioned parent, each with its own guard's message, and records a valid call; a parallel CREATE INDEX completes, leaks no relation reference and indexes each row once; a write buffer opened before ADD COLUMN in the same transaction keeps the values written into the new column; a same-statement duplicate against a unique index is rejected rather than spun on.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private database. On PostgreSQL 15 and 16 the four partitioned-parent tests decline UNSUPPORTED_MAJOR under the shell's skip name.
+
+| test | what it holds |
+| --- | --- |
+| `test_audit_add_column_nullable_is_null` | add-column nullable is null |
+| `test_audit_add_column_const_default` | add-column const default |
+| `test_audit_add_column_text_default` | add-column text default |
+| `test_audit_add_column_projected_only` | add-column projected only |
+| `test_audit_add_column_mixed_rows` | add-column mixed rows |
+| `test_audit_add_column_aggregate` | add-column aggregate |
+| `test_audit_the_add_column_lookup_reads_its_index` | premise: the add-column lookup reads ac_c_idx |
+| `test_audit_add_column_index_scan` | add-column index scan |
+| `test_audit_collation_pushdown_matches_no_pushdown` | collation pushdown == no-pushdown |
+| `test_audit_collation_result_correct` | collation result correct |
+| `test_audit_same_collation_still_pushes` | same-collation still pushes |
+| `test_audit_reject_chunk_group_row_limit_0` | reject chunk_group_row_limit 0 |
+| `test_audit_reject_stripe_row_limit_5` | reject stripe_row_limit 5 |
+| `test_audit_reject_compression_level_99` | reject compression_level 99 |
+| `test_audit_reject_set_options_on_a_heap_table` | reject set_options on a heap table |
+| `test_audit_the_refusal_says_not_columnar` | the refusal says the relation is not columnar |
+| `test_audit_nothing_was_recorded_for_the_heap_table` | nothing was recorded for the heap table |
+| `test_audit_the_sqlstate_probe_reads_a_known_code` | premise: the SQLSTATE probe reads a known code |
+| `test_audit_set_options_on_a_heap_raises_42809` | set_options on a non-columnar relation raises 42809, not P0001 |
+| `test_audit_a_partitioned_parent_carries_the_am` | premise: this major really lets a partitioned parent carry the AM |
+| `test_audit_reject_set_options_on_a_partitioned_parent` | reject set_options on a partitioned parent |
+| `test_audit_nothing_was_recorded_for_the_partitioned_parent` | nothing was recorded for the partitioned parent |
+| `test_audit_the_partition_itself_is_still_accepted` | the partition itself is still accepted |
+| `test_audit_valid_options_delete_works` | valid options delete works |
+| `test_audit_the_same_call_on_a_columnar_table_is_recorded` | the same call on a columnar table is recorded |
+| `test_audit_the_parallel_create_index_completed` | the parallel CREATE INDEX completed |
+| `test_audit_create_index_no_relation_leak` | create index no relation leak |
+| `test_audit_the_indexed_once_count_reads_its_index` | the indexed-once count reads idxleak_a_idx |
+| `test_audit_create_index_rows_indexed_once` | create index rows indexed once |
+| `test_audit_add_column_mid_transaction_keeps_the_inserted_value` | add-column mid-transaction keeps the inserted value |
+| `test_audit_add_column_without_a_default_keeps_the_inserted_value` | add-column without a default keeps the inserted value |
+| `test_audit_add_column_mid_transaction_keeps_a_later_update` | add-column mid-transaction keeps a later UPDATE |
+| `test_audit_same_statement_duplicate_is_rejected` | same-statement duplicate is rejected, not spun on |
+| `test_audit_same_statement_duplicate_inserted_nothing` | same-statement duplicate inserted nothing |
+
+## 281. test_fuzz.py: randomized differential runs against a heap oracle
+
+The twin of `test/fuzz.sh`. Each iteration draws a row count, null density, chunk-group and stripe limits, a codec and level and filter bounds from the shell's own 31-bit LCG, transcribed here so one seed is one run in both harnesses; loads heap from the generator and columnar from heap; and compares a battery of queries by the shell's order-blind set hash.
+
+### Every test
+
+Every test makes one check under the shell's name. Each property is asserted once over the run and a failure names the iterations that broke it; the storage options must read back as set, and the run must cover every iteration.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fuzz_run_covered_every_iteration` | the run covered every iteration |
+| `test_every_fuzz_iterations_storage_options_read_back` | every iteration's storage options read back as set |
+| `test_every_fuzz_iteration_loaded_all_its_rows` | every iteration loaded all its rows |
+| `test_every_fuzz_iterations_whole_rows_agree` | every iteration's whole rows agree with heap |
+| `test_every_fuzz_iterations_counts_agree` | every iteration's counts agree with heap |
+| `test_every_fuzz_iterations_min_and_max_agree` | every iteration's min and max agree with heap |
+| `test_every_fuzz_iterations_sums_and_averages_agree` | every iteration's sums and averages agree with heap |
+| `test_every_fuzz_iterations_integer_range_agrees` | every iteration's integer range agrees with heap |
+| `test_every_fuzz_iterations_date_range_agrees` | every iteration's date range agrees with heap |
+| `test_every_fuzz_iterations_equality_lookup_agrees` | every iteration's equality lookup agrees with heap |
+| `test_every_fuzz_iterations_is_null_count_agrees` | every iteration's IS NULL count agrees with heap |
+| `test_every_fuzz_iterations_compound_filter_agrees` | every iteration's compound filter agrees with heap |
+
+## 282. test_fuzz_avro.py: the Avro manifest decoder survives malformed input
+
+The twin of `test/fuzz_avro.sh`. Each iteration writes one mutant of the committed manifest or manifest list with `test/avro_corpus.py`, a pure function of one integer seed, and reads it; outcomes are classified from the server log first and the client's error second, as the shell classifies them.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run. Two extra tests mirror the shell's pgc_skip names.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_valid_manifest_reaches_the_avro_decoder` | control: the valid manifest reaches the decoder (2 entries) |
+| `test_the_valid_manifest_list_reaches_the_avro_decoder` | control: the valid manifest-list reaches the decoder (1 entry) |
+| `test_no_avro_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_avro_mutant_hung_the_decoder` | no mutant hung the decoder |
+| `test_no_avro_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_avro_mutant_ran` | every mutant ran (errors + clean == iters) |
+| `test_every_avro_iteration_wrote_a_fresh_mutant` | every iteration wrote a fresh mutant |
+| `test_the_avro_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_avro_manifest_fixtures_are_present` | premise: the committed manifest-list fixture is not empty |
+| `test_python_can_hash_the_avro_corpus_seeds` | premise: hashlib digests as the corpus expects, so its mutants are the shell's |
+
+## 283. test_fuzz_listing.py: the ListObjectsV2 listing parser survives malformed input
+
+The twin of `test/fuzz_listing.sh`. A private cluster runs with AWS_* in its environment; the SigV4 fixture server serves each mutant from `test/listing_corpus.py` verbatim as the listing, so it reaches the C parser as a hostile endpoint's response would.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_listing_fixture_is_up` | premise: fixture up |
+| `test_a_valid_listing_reaches_the_parser` | control: a valid listing reaches the parser and reads the object |
+| `test_no_listing_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_listing_mutant_hung_the_parser` | no mutant hung the parser |
+| `test_no_listing_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_listing_mutant_ran` | every mutant ran (errors + clean == iters) |
+| `test_every_listing_iteration_wrote_a_fresh_mutant` | every iteration wrote a fresh mutant |
+| `test_the_listing_corpus_reached_the_parser` | the corpus reached the parser at all (some mutant errored or accepted) |
+
+## 284. test_fuzz_arrow.py: the Arrow IPC decoder survives malformed input
+
+The twin of `test/fuzz_arrow.sh`. Seeds from `test/arrow_corpus.py` are kept only when `import_arrow` accepts them pristine; each iteration mutates one with `test/arrow_mutate.py` and imports it, classified from the server log first and the client's error second.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_arrow_seed_corpus_generator_produced_files` | the seed corpus generator produced files |
+| `test_the_arrow_importer_accepts_some_pristine_seed` | the importer accepts some pristine seed |
+| `test_no_arrow_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_arrow_mutant_hung_the_decode` | no mutant hung the decode |
+| `test_no_arrow_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_arrow_mutant_was_generated_and_imported` | every mutant was generated and ran the import |
+| `test_the_arrow_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+
+## 285. test_fuzz_parquet.py: the Parquet decoder survives malformed input
+
+The twin of `test/fuzz_parquet.sh`. Seeds from `test/parquet_corpus.py` are kept only when `parquet_schema` renders their column list; each iteration mutates one with `test/parquet_mutate.py` and feeds it to parquet_schema, read_parquet and import_parquet, classified from the server log first and the client's error second. A column that `parquet_schema` reports as `composite (...)` is declared with a composite type created from that field list (#1920), and the struct seed must then read the answer computed from the values the corpus writes. Every such type must be created; a failure is a named check that shows the error.
+
+### Every test
+
+Every test makes one check under the shell's name, over counts the module fixture gathers in one run, and declines under the shell's pgc_skip name without pyarrow.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_parquet_seed_corpus_generator_produced_files` | the seed corpus generator produced files |
+| `test_the_parquet_reader_renders_some_pristine_seeds_schema` | the reader renders some pristine seed's schema |
+| `test_no_parquet_mutant_crashed_the_backend` | no mutant crashed the backend |
+| `test_no_parquet_mutant_hung_the_decode` | no mutant hung the decode |
+| `test_no_parquet_mutant_tripped_a_sanitizer` | no mutant tripped a sanitizer |
+| `test_every_parquet_mutant_was_generated_and_ran_its_statements` | every mutant was generated and ran its three statements |
+| `test_the_parquet_corpus_reached_the_decoder` | the corpus reached the decoder at all |
+| `test_the_oracles_rewrite_of_every_pristine_seed_reads_the_seeds_answer` | the oracle's rewrite of every pristine seed reads the seed's answer |
+| `test_every_composite_type_built_from_a_seeds_field_list_is_created` | every composite type built from a seed's field list is created |
+| `test_the_pristine_struct_seed_reads_under_its_own_column_list` | the pristine struct seed reads under its own column list |
+| `test_no_parquet_mutant_that_reads_returned_a_wrong_answer` | no mutant that reads returned a wrong answer |
+| `test_every_read_that_differed_from_the_seed_was_judged` | every read that differed from the seed was judged |
+| `test_every_schema_sweep_copy_ran_its_read` | every schema-sweep copy ran its read |
+| `test_the_result_oracle_compared_some_answers` | the result oracle compared some answers |
+
+## 286. test_native_compact.py: online compaction retires only what every snapshot agrees is dead
+
+The twin of `test/native_compact.sh`. Two fully deleted row groups are retired and a half-deleted one is kept, against a heap mirror built from the same generator; a group deleted under an open REPEATABLE READ snapshot is kept until that snapshot ends; and compact holds ShareUpdateExclusiveLock, never AccessExclusiveLock.
+
+Another session that holds a snapshot across a `compact` makes it retire nothing (#1987). So the two compacts that must retire groups, `compact retired the two fully-deleted groups` and `once that snapshot ends, compact retires the group`, go through the shared helper, which retries every 0.5 s for up to 30 s. The fixture tables have autovacuum off.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree. The held compact runs under a 10 s lock_timeout in both harnesses, so a compact that wanted a stronger lock fails its own check instead of waiting out the holder.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_compacted_table_holds_every_row` | row count |
+| `test_the_table_starts_in_eight_groups` | initial group count |
+| `test_the_table_agrees_with_its_mirror_after_the_deletes` | parity after deletes |
+| `test_compact_retires_the_two_fully_deleted_groups` | compact retired the two fully-deleted groups |
+| `test_the_group_count_drops_by_two` | group count dropped by two |
+| `test_the_table_agrees_with_its_mirror_after_compact` | parity after compact |
+| `test_the_live_row_count_survives_compact` | live row count after compact |
+| `test_the_half_deleted_groups_live_rows_survive_compact` | partial-group rows still present |
+| `test_a_second_compact_retires_nothing` | second compact retires nothing |
+| `test_the_holders_snapshot_is_open` | premise: the holder's snapshot is open |
+| `test_compact_keeps_a_group_an_older_snapshot_can_see` | compact keeps a group an older snapshot can still see |
+| `test_the_group_count_holds_while_the_snapshot_lives` | and the group count stays at six while that snapshot lives |
+| `test_the_older_snapshot_read_the_group_before_the_delete` | the older snapshot read the group's rows before the delete |
+| `test_the_older_snapshot_still_reads_the_group_after_compact` | and still reads all of them after the delete and the compact |
+| `test_compact_retires_the_group_once_the_snapshot_ends` | once that snapshot ends, compact retires the group |
+| `test_the_group_count_drops_to_five` | and the group count drops to five |
+| `test_the_table_agrees_with_its_mirror_after_the_held_compact` | parity after the held-snapshot compact |
+| `test_compact_holds_share_update_exclusive_lock` | compact holds ShareUpdateExclusiveLock |
+| `test_compact_holds_no_access_exclusive_lock` | compact holds no AccessExclusiveLock |
+
+## 287. test_native_agg_deletes.py: metadata aggregates over a table with deletes answer right and stay cheap
+
+The twin of `test/native_agg_deletes.sh` (#149). An ungrouped, unfiltered aggregate is answered from row group metadata, and a group with deletes is decided per group: count(*) folds rowCount minus deleted, and only dirty groups are scanned for min/max. The answers are compared with a heap mirror over four delete patterns, and two in-server timings bound count(*) and min/max against a full scan.
+
+### Every test
+
+Every test makes one check under the shell's name. The heap mirror is written from the generator, and a premise per stage checks it holds exactly the rows the generator says survive. A failed reading is a `query_error()`: an aggregate either side failed to read is "no reading", never "same", and a timing that is not a number is "no reading", never fast.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_heap_mirror_holds_every_generated_row` | premise: the heap mirror holds every generated row |
+| `test_aggregates_match_heap_with_nothing_deleted` | aggregates match heap with nothing deleted |
+| `test_the_heap_mirror_lost_exactly_the_one_deleted_row` | premise: the heap mirror lost exactly the one deleted row |
+| `test_aggregates_match_heap_after_one_row_is_deleted` | aggregates match heap after one row is deleted |
+| `test_the_heap_mirror_lost_exactly_the_contiguous_tenth` | premise: the heap mirror lost exactly the contiguous tenth |
+| `test_aggregates_match_heap_after_a_contiguous_tenth_is_deleted` | aggregates match heap after a contiguous tenth is deleted |
+| `test_the_heap_mirror_lost_exactly_every_seventh_row_as_well` | premise: the heap mirror lost exactly every seventh row as well |
+| `test_aggregates_match_heap_after_every_group_is_dirtied` | aggregates match heap after every group is dirtied |
+| `test_the_timing_fixture_has_the_row_groups_its_margin_assumes` | the timing fixture has the row groups its margin assumes |
+| `test_the_timing_table_counts_the_row_its_one_delete_removed` | the timing table counts the row its one delete removed |
+| `test_one_deleted_row_does_not_send_count_back_to_a_full_scan` | one deleted row does not send count(*) back to a full scan |
+| `test_a_dirty_group_is_scanned_without_scanning_the_clean_ones` | a dirty group is scanned without scanning the clean ones |
+| `test_the_metadata_aggregate_path_is_still_chosen_with_a_row_deleted` | the metadata aggregate path is still chosen with a row deleted |
+
+## 288. test_native_cluster.py: Z-order clustering reorders storage, tightens the zone maps, and refuses what it cannot cluster on
+
+The twin of `test/native_cluster.sh` (Phase F2). pgcolumnar.cluster() reorders 40960 rows by the Z-order curve over (x, y): the table answers as a heap mirror built from the same generator before and after; a 2D box skips more of the 20 chunk groups after clustering, and most of them; clustering on id alone brings back an id range's skipping that the (x, y) clustering scattered; an unsupported type and a missing column are refused by their own guards, and the backend survives both.
+
+### Every test
+
+One check per test, each by the shell's name, every reading a value (a failed query is a `query_error()` that fails its own check) from a module fixture on a private database. A refusal reads the SQLSTATE and the guard's words, and survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_cluster_row_count` | row count |
+| `test_native_cluster_box_parity_before_clustering` | box parity (pre-cluster) |
+| `test_native_cluster_plan_is_the_columnar_scan` | the plan under test is a columnar custom scan |
+| `test_native_cluster_row_count_after_clustering` | row count after cluster |
+| `test_native_cluster_box_parity_after_clustering` | box parity (post-cluster) |
+| `test_native_cluster_full_table_parity_after_clustering` | full-table parity after cluster |
+| `test_native_cluster_increases_2d_skipping` | clustering increases 2D skipping |
+| `test_native_cluster_skips_most_groups` | clustering skips most groups |
+| `test_native_cluster_single_column_restores_id_skipping` | single-column clustering lets an id range skip most groups |
+| `test_native_cluster_single_column_parity` | single-column cluster parity |
+| `test_native_cluster_unsupported_type_is_refused` | unsupported type errors cleanly |
+| `test_native_cluster_missing_column_is_refused` | missing column errors cleanly |
+| `test_native_cluster_backend_survives_the_refusals` | backend still up after the refusals |
+
+## 289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound
+
+The twin of `test/native_exact_selection.sh`. On a 32-vector table where z holds only multiples of ten, z BETWEEN 51 AND 59 is ruled out by value in every vector, by no zone map, decoding only the qual column; the all-matching control decodes every column and rules out nothing; the equality form is pruned whole by bloom; and selective, partial, on-bound and all-matching queries return what a heap mirror built from the generator returns.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree, and a counter that cannot be read is a failed reading, never a number.
+
+| test | what it holds |
+| --- | --- |
+| `test_nes_the_zero_match_plan_is_a_columnar_custom_scan` | the zero-match plan is a columnar custom scan |
+| `test_nes_one_row_group` | one row group, so every count below is one group's |
+| `test_nes_the_predicate_matches_no_row` | premise: the predicate really matches no row |
+| `test_nes_the_control_matches_every_row` | and the control matches every row |
+| `test_nes_zone_maps_rule_out_nothing` | ZONE MAPS RULE OUT NOTHING, which is what makes this 1b-ii |
+| `test_nes_no_whole_row_group_is_pruned` | no whole row group is pruned either |
+| `test_nes_explain_reports_vector_decodes` | EXPLAIN reports Columnar Vector Decodes |
+| `test_nes_the_control_decodes_every_column_of_every_vector` | the control decodes every column of every vector |
+| `test_nes_exact_selection_rules_out_every_vector` | exact selection rules out every vector, none of them by zone map |
+| `test_nes_a_zero_matching_predicate_decodes_only_the_qual_column` | a zero-matching predicate decodes the qual column and no payload column |
+| `test_nes_the_control_rules_out_no_vector_by_value` | and the control rules out no vector by value |
+| `test_nes_the_zero_matching_query_returns_nothing` | the zero-matching query returns nothing |
+| `test_nes_the_equality_form_is_pruned_by_bloom` | the EQUALITY form is pruned by bloom and reaches no decode |
+| `test_nes_a_selective_matching_predicate_returns_the_right_rows` | a selective matching predicate still returns the right rows |
+| `test_nes_a_partially_matching_range_returns_the_right_rows` | and a partially matching range does too |
+| `test_nes_a_range_matching_only_on_its_bounds_returns_them` | a range whose only matches lie on its bounds still returns them |
+| `test_nes_the_control_returns_every_row` | the control returns every row |
+
+## 290. test_native_ctas.py: CREATE TABLE AS into a columnar table works with a parallel source plan, and a committed table's first write still serializes
+
+The twin of `test/native_ctas.sh` (#387). A parallel CTAS, a serial CTAS and WITH NO DATA plus INSERT each run to the end and write every row, the parallel one with its content and exactly one storage row; and a committed empty table first-written by two sessions at once still serializes on the first-writer lock.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. "Succeeds" means the statements ran and committed, not merely that no ERROR was printed. The race is forced: writer A holds its transaction open after its first write, writer B is seen waiting on a lock, then A commits. Survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_ctas_source_plan_is_parallel` | premise: the CTAS source plan is parallel |
+| `test_ctas_parallel_into_columnar_succeeds` | parallel CTAS into a columnar table succeeds (#387) |
+| `test_ctas_parallel_wrote_every_row` | parallel CTAS wrote every row (#387) |
+| `test_ctas_parallel_content_matches_the_source` | parallel CTAS content matches the source (#387) |
+| `test_ctas_serial_still_succeeds` | serial CTAS still succeeds |
+| `test_ctas_serial_row_count` | serial CTAS row count |
+| `test_ctas_with_no_data_then_insert_succeeds` | WITH NO DATA then INSERT still succeeds |
+| `test_ctas_with_no_data_then_insert_row_count` | WITH NO DATA then INSERT row count |
+| `test_ctas_parallel_produced_one_storage_row` | the parallel CTAS produced exactly one storage row |
+| `test_ctas_backend_still_up_after_the_loads` | backend still up after the CTAS loads |
+| `test_ctas_second_writer_started_while_the_first_was_open` | the second writer started while the first held its transaction open |
+| `test_ctas_concurrent_first_writes_both_succeed` | concurrent first writes to a committed empty table both succeed |
+| `test_ctas_race_produced_one_storage_row` | and they produced one storage row, not two |
+| `test_ctas_race_every_row_present` | and every row from both writers is present |
+| `test_ctas_backend_still_up_after_the_race` | backend still up after the concurrent first writes |
+
+## 291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec
+
+The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; and a chunk too small to sample is still encoded.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()` and counts are read as numbers, so two failed reads never agree; each catalog count reads bad/total, so an empty catalog cannot pass as none bad.
+
+| test | what it holds |
+| --- | --- |
+| `test_none_holds_every_row` | [none] row count |
+| `test_none_round_trips_every_column` | [none] all columns round-trip |
+| `test_none_round_trips_the_nulls` | [none] nulls round-trip |
+| `test_none_filtered_scan_agrees` | [none] filtered scan |
+| `test_none_aggregate_agrees` | [none] aggregate over encoded column |
+| `test_none_carries_no_baseline_descriptor` | [none] no baseline descriptors remain |
+| `test_none_constant_column_is_small` | [none] constant column encoded small |
+| `test_none_constant_column_is_encoded_not_raw` | [none] the constant column's vectors are encoded, not stored raw |
+| `test_none_uses_no_block_codec` | [none] no block codec used |
+| `test_pglz_holds_every_row` | [pglz] row count |
+| `test_pglz_round_trips_every_column` | [pglz] all columns round-trip |
+| `test_pglz_round_trips_the_nulls` | [pglz] nulls round-trip |
+| `test_pglz_filtered_scan_agrees` | [pglz] filtered scan |
+| `test_pglz_aggregate_agrees` | [pglz] aggregate over encoded column |
+| `test_pglz_carries_no_baseline_descriptor` | [pglz] no baseline descriptors remain |
+| `test_pglz_constant_column_is_small` | [pglz] constant column encoded small |
+| `test_pglz_constant_column_is_encoded_not_raw` | [pglz] the constant column's vectors are encoded, not stored raw |
+| `test_lz4_holds_every_row` | [lz4] row count |
+| `test_lz4_round_trips_every_column` | [lz4] all columns round-trip |
+| `test_lz4_round_trips_the_nulls` | [lz4] nulls round-trip |
+| `test_lz4_filtered_scan_agrees` | [lz4] filtered scan |
+| `test_lz4_aggregate_agrees` | [lz4] aggregate over encoded column |
+| `test_lz4_carries_no_baseline_descriptor` | [lz4] no baseline descriptors remain |
+| `test_lz4_constant_column_is_small` | [lz4] constant column encoded small |
+| `test_lz4_constant_column_is_encoded_not_raw` | [lz4] the constant column's vectors are encoded, not stored raw |
+| `test_zstd_holds_every_row` | [zstd] row count |
+| `test_zstd_round_trips_every_column` | [zstd] all columns round-trip |
+| `test_zstd_round_trips_the_nulls` | [zstd] nulls round-trip |
+| `test_zstd_filtered_scan_agrees` | [zstd] filtered scan |
+| `test_zstd_aggregate_agrees` | [zstd] aggregate over encoded column |
+| `test_zstd_carries_no_baseline_descriptor` | [zstd] no baseline descriptors remain |
+| `test_zstd_constant_column_is_small` | [zstd] constant column encoded small |
+| `test_zstd_constant_column_is_encoded_not_raw` | [zstd] the constant column's vectors are encoded, not stored raw |
+| `test_alp_column_round_trips_exactly` | alp column round-trips exactly |
+| `test_alp_special_values_round_trip` | alp special values round-trip |
+| `test_alp_is_chosen_for_the_decimal_column` | alp chosen for the decimal column |
+| `test_fsst_column_round_trips_exactly` | fsst column round-trips exactly |
+| `test_fsst_filtered_scan_round_trips` | fsst filtered scan round-trips |
+| `test_fsst_is_chosen_for_the_shared_substring_column` | fsst chosen for the shared-substring column |
+| `test_fsst_shrinks_the_url_column` | fsst shrinks the url column |
+| `test_fsst_stores_one_shared_table_per_chunk` | fsst stores one shared table per chunk (E3b) |
+| `test_sampling_on_matches_the_heap_oracle` | sampling on == heap oracle |
+| `test_sampling_off_matches_the_heap_oracle` | sampling off == heap oracle |
+| `test_sampling_changes_nothing_a_query_sees` | sampling changes nothing a query can see |
+| `test_a_misleading_head_costs_little_ratio` | a misleading column head does not cost much ratio |
+| `test_a_misleading_head_reads_back_exactly` | misleading-head column still reads back exactly |
+| `test_a_run_length_column_is_not_misjudged` | a run-length column is not misjudged by the sample |
+| `test_a_run_length_column_reads_back_exactly` | run-length column reads back exactly |
+| `test_a_sample_below_the_floor_still_encodes` | a sample setting below the floor still encodes |
+| `test_a_chunk_smaller_than_the_sample_window_is_encoded` | a chunk smaller than the sample window still encodes |
+| `test_a_chunk_smaller_than_the_sample_window_reads_back` | a chunk smaller than the sample window reads back exactly |
+
+## 292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump
+
+The twin of `test/native_fastdecode.sh`. Every attbyval fixed type, with NULL patterns, adversarial bit patterns, every fixed-width encoding, per-vector skipping, deletes and ADD COLUMN, is compared with a heap mirror built from the generator, by-reference and varlena columns serving as controls. The vector-skipping section sets chunk_group_row_limit so a group holds several vectors, and requires the scan to report vectors skipped.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each comparison hashes both sides as lib.sh's `pgc_set_hash` does, and a failed reading is a `query_error()`, so two failed reads never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_fastdecode_row_count_matches` | row count matches |
+| `test_fastdecode_scan_is_the_columnar_custom_scan` | scan is the columnar custom scan |
+| `test_fastdecode_many_row_groups_written` | many row groups written (widen runs per group) |
+| `test_fastdecode_byval_columns_carry_real_descriptors` | byval fixed columns carry non-baseline descriptors |
+| `test_fastdecode_full_projection_matches_heap` | full projection is byte-identical to heap |
+| `test_fastdecode_exact_aggregates_match_heap` | exact aggregates match heap |
+| `test_fastdecode_grouped_aggregate_matches_heap` | grouped aggregate matches heap |
+| `test_fastdecode_filtered_by_int_matches_heap` | filtered by int matches heap |
+| `test_fastdecode_filtered_by_bigint_matches_heap` | filtered by bigint matches heap |
+| `test_fastdecode_filtered_by_float_matches_heap` | filtered by float matches heap |
+| `test_fastdecode_filtered_by_date_matches_heap` | filtered by date matches heap |
+| `test_fastdecode_boundary_bit_patterns_round_trip` | boundary int/float bit patterns round-trip exactly |
+| `test_fastdecode_negative_zero_preserved` | negative zero preserved |
+| `test_fastdecode_nan_preserved` | NaN preserved |
+| `test_fastdecode_encoded_columns_carry_real_descriptors` | encoded columns carry non-baseline descriptors |
+| `test_fastdecode_all_encodings_decode_identically` | all encodings decode identically to heap |
+| `test_fastdecode_aggregates_over_encoded_columns_match` | aggregates over encoded columns match |
+| `test_fastdecode_a_row_group_holds_multiple_vectors` | vecskip: a row group holds multiple vectors |
+| `test_fastdecode_narrow_range_with_vector_skipping_matches` | narrow range with vector skipping matches heap |
+| `test_fastdecode_the_narrow_range_skips_whole_vectors` | the narrow range skips whole vectors |
+| `test_fastdecode_two_narrow_ranges_match` | two narrow ranges (non-adjacent vectors) match heap |
+| `test_fastdecode_aggregate_under_skipping_matches` | aggregate under skipping matches heap |
+| `test_fastdecode_scan_after_deletes_matches` | scan after scattered deletes matches heap |
+| `test_fastdecode_aggregate_after_deletes_matches` | aggregate after deletes matches heap |
+| `test_fastdecode_scan_across_add_column_matches` | scan across an ADD COLUMN boundary matches heap |
+| `test_fastdecode_aggregate_across_add_column_matches` | aggregate across ADD COLUMN matches heap |
+
+## 293. test_native_fetch_sort_context.py: a merge join over sorted, index-fetched columnar rows decodes outside the sort's context
+
+The twin of `test/native_fetch_sort_context.sh`. Under the forced plan the #720 bug needs, a Merge Join whose columnar side is a Sort (an Incremental Sort on 18+) directly over an Index Scan using f_id on f, a two-key and a three-key merge condition return the numbers the generator gives, and two single-key controls stay right. On 15 and 16 there is no bump allocator, and the checks guard that the fix changed nothing.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each forced query run in one session after the shell's SET statements. A failed reading is a `query_error()`, so an errored arm is a red, as the shell's numeric comparison against a SET tag is.
+
+| test | what it holds |
+| --- | --- |
+| `test_nfsc_the_plan_is_a_merge_join` | premise: plan is a merge join |
+| `test_nfsc_the_columnar_side_is_an_index_scan_under_a_sort` | premise: the columnar side is an index scan under a sort |
+| `test_nfsc_the_two_key_merge_join_count_is_right` | two-key merge join count is right (#720) |
+| `test_nfsc_the_two_key_merge_join_sum_is_right` | two-key merge join sum(id) is right (#720) |
+| `test_nfsc_a_three_key_merge_cond_with_a_filter_is_right` | three-key merge cond with a filter (#720) |
+| `test_nfsc_a_single_int_key_is_still_right` | control: single int key still right |
+| `test_nfsc_a_single_text_key_is_still_right` | control: single text key still right |
+
+## 294. test_native_fold_skipguard.py: the batch fold is reachable for a shape that skips vectors, and accounts for the skipping
+
+The twin of `test/native_fold_skipguard.sh`. 60,000 rows in one group of 59 1024-row vectors and a range inside one of them: the fold arm's own plan must report exactly 1 vector decoded and 58 skipped (#542), the query must reach the batch fold, and both the fold and the scalar arm must return the arithmetic answer.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each arm run in one session after the shell's SET statements. The plan's counters are read from the fold arm itself. A failed reading is a `query_error()`, and the scalar arm is compared with the arithmetic oracle rather than with the fold, so two failures never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fold_arm_decodes_only_the_vector_it_needs` | the fold arm decodes only the vector it needs |
+| `test_the_fold_arm_reports_the_vectors_it_skipped` | and reports the 58 it skipped, on its own plan (#542) |
+| `test_decoded_plus_skipped_is_the_groups_vectors` | so decoded plus skipped is the group's vectors, on the FOLD arm |
+| `test_the_query_reaches_the_batch_fold` | the query reaches the batch fold |
+| `test_the_fold_answers_correctly_while_decode_skips` | the fold answers correctly while decode skips 58 of 59 vectors |
+| `test_the_scalar_arm_agrees_with_the_oracle` | and the scalar arm agrees |
+
+## 295. test_native_fetch_group_memo.py: the by-row-number fetch resolves its row group from a memo, and the memo never serves a group it should not
+
+The twin of `test/native_fetch_group_memo.sh` (#709). 3000 index-probe fetches cost a bounded number of row_group index reads and no heap scan of row_group; scattered fetches are exact; and a group flushed under an aborted savepoint, or retired mid-statement by compact_rewrite() or compact(), never resurrects through a stale memo. Unique checks, an AFTER UPDATE trigger's OLD row, a fresh DELETE and a same-transaction TRUNCATE keep their behaviour.
+
+The compact() arm calls compact once, inside the checked statement, and compact retires nothing while a transaction older than the `DELETE` is open (#1993). So both harnesses first wait up to 30 s until nothing holds the horizon at that `DELETE`, and check the count of what still holds it, which must be 0. Table `fd` has autovacuum off, so an autovacuum cannot retire the group first.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Where the shell runs one psql -c, the twin runs one transaction, so the transaction-local scan counters bracket the measured statement as they do in the shell. Readings are values: a failed query is a query_error(), a reading taken before a later statement fails is kept, and a failed fixture step reds the checks that depend on it by name. Survival reads the server log's crash count as well as SELECT 1.
+
+| test | what it holds |
+| --- | --- |
+| `test_fgm_measured_plan_is_a_nested_loop_of_index_probes` | the measured plan is a nested loop of index probes (fetch path engaged) |
+| `test_fgm_the_fetch_count_is_exact` | the fetch count is exact (3000 rows found) |
+| `test_fgm_index_fetches_cost_bounded_row_group_reads` | 3000 index fetches cost a bounded number of row_group reads (delta <= 20) |
+| `test_fgm_row_group_is_never_heap_scanned` | row_group is never heap-scanned in the window (index resolution intact) |
+| `test_fgm_scattered_fetched_values_are_exact` | scattered index-fetched values are exact |
+| `test_fgm_same_transaction_flush_then_fetch` | same-transaction flush then fetch sees the new rows |
+| `test_fgm_aborted_savepoint_rows_do_not_resurrect` | rows flushed under an aborted savepoint do not resurrect through the cursor |
+| `test_fgm_same_statement_retire_neither_loses_nor_doubles` | a same-statement retire neither loses nor doubles rows (500|t|500) |
+| `test_fgm_no_transaction_older_than_the_delete_before_compact` | no transaction older than the DELETE from fd was open before the same-statement compact |
+| `test_fgm_same_statement_compact_resurrects_nothing` | a same-statement compact() of a fully deleted group resurrects nothing (10|t|0) |
+| `test_fgm_table_is_exact_after_the_rewrite` | the table is exact after the in-statement rewrite |
+| `test_fgm_duplicate_still_violates_a_unique_index` | a buffered + flushed duplicate still violates a unique index (23505) |
+| `test_fgm_after_update_trigger_sees_the_old_row` | an AFTER UPDATE trigger still sees the OLD row (SnapshotAny re-fetch) |
+| `test_fgm_delete_visible_to_the_next_fetch` | a DELETE is visible to the very next fetch (delete vectors uncached) |
+| `test_fgm_same_transaction_truncate_then_fetch` | same-transaction TRUNCATE then fetch sees only the new rows |
+| `test_fgm_backend_alive` | backend alive |
+
+## 296. test_parallel_copy_dedup.py: pgcolumnar.parallel_copy can refuse a load it has already done
+
+The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check by the shell's name. With `dedup => true`, `pgcolumnar.parallel_copy` refuses a second load of a file whose bytes it already loaded into the same table (#403 item 7): it stores nothing, returns 0 and says so in a NOTICE. Without dedup the same load doubles the table; a file changed only in its last row, past the coordinator's first 256 KiB read, loads; the record is per table; and the table's records are exactly the server's `sha256()` of the two files it loaded. On a private database, with the files in `server_dir`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pcdedup_the_changed_row_lies_past_the_first_read` | premise: the changed row lies past the first 256 KiB of the file |
+| `test_pcdedup_without_dedup_a_repeated_load_doubles_the_table` | without dedup a repeated load doubles the table, which is the defect |
+| `test_pcdedup_each_plain_load_reported_its_rows` | and each of those loads reported its rows |
+| `test_pcdedup_the_first_load_stores_its_rows` | the first load stores its rows normally (#403 item 7) |
+| `test_pcdedup_the_first_load_reports_them` | and reports them |
+| `test_pcdedup_the_second_load_of_the_same_file_stores_nothing` | the second load of the same file stores nothing (#403 item 7) |
+| `test_pcdedup_the_second_load_reports_0` | and reports 0 rather than claiming it loaded them |
+| `test_pcdedup_the_skip_says_so_in_a_notice` | and says in a NOTICE that it skipped the load, rather than returning a silent 0 |
+| `test_pcdedup_a_changed_file_at_the_same_path_is_loaded` | a changed file at the same path is loaded, not skipped (#403 item 7) |
+| `test_pcdedup_the_changed_file_reports_its_rows` | and reports the rows it loaded |
+| `test_pcdedup_the_same_file_loads_into_a_different_table` | the same file loads into a DIFFERENT table (the record is per table) |
+| `test_pcdedup_the_other_table_load_reports_its_rows` | and reports its rows |
+| `test_pcdedup_dedup_off_loads_again` | asking for no dedup loads again even though the file is on record |
+| `test_pcdedup_dedup_off_reports_those_rows` | and reports those rows too |
+| `test_pcdedup_the_skipped_load_left_no_record` | the skipped load left exactly one record for that table and file |
+| `test_pcdedup_the_records_hold_each_files_sha256` | the records hold the SHA-256 of each loaded file's bytes |
+| `test_pcdedup_no_prepared_transaction_leaked` | no prepared transaction leaked through any of it |
+
+## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
+
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_copy_single_copy_heap_and_columnar_agree` | a single COPY of the 5000-row file into heap and into pgcolumnar gives the same rows |
+| `test_parallel_copy_split_offsets_are_newline_aligned` | `file_split_offsets` returns workers+1 offsets from 0 to the file size, never decreasing, each interior one right after a newline: 9 tests, one per file and worker count |
+| `test_parallel_copy_range_loads_give_back_the_generated_rows` | loading each range on its own gives back the rows the file was generated from: 9 tests, one per file and worker count |
+| `test_parallel_copy_every_range_of_a_large_file_is_non_empty` | on a file with far more records than workers, every range is non-empty, so a split degraded to one range fails: 5 tests |
+| `test_parallel_copy_zero_workers_is_rejected` | workers < 1 is refused ("at least 1") |
+| `test_parallel_copy_split_of_a_directory_is_rejected` | a directory is refused as not a regular file, not split as an 8-exabyte file |
+| `test_parallel_copy_returns_every_row_loaded` | `parallel_copy` into a partitioned and into a single table, with 1, 2 and 4 workers, returns 5000: 6 tests |
+| `test_parallel_copy_load_equals_the_single_copy` | each of those loads holds the rows of a single heap COPY of the file: 6 tests |
+| `test_parallel_copy_load_leaves_no_prepared_transaction` | each of those loads leaves no prepared transaction: 6 tests |
+| `test_parallel_copy_signed_keys_return_every_row` | keys from -100 to 399 with an unbounded first partition: 500 rows returned |
+| `test_parallel_copy_signed_keys_equal_the_oracle` | that load equals its heap oracle (no misbucketing, no deadlock) |
+| `test_parallel_copy_signed_keys_leave_no_prepared_transaction` | that load leaves no prepared transaction |
+| `test_parallel_copy_text_partition_key_is_rejected` | a text partition key is refused ("numeric or date/time") |
+| `test_parallel_copy_text_partition_key_leaves_the_server_up` | the server answers and no backend was killed since the suite began |
+| `test_parallel_copy_key_after_a_generated_column_returns_every_row` | a key after a generated column: 3000 rows returned |
+| `test_parallel_copy_key_after_a_generated_column_equals_the_oracle` | that load equals its heap oracle |
+| `test_parallel_copy_bad_partition_key_value_is_rejected` | a non-integer key is refused by the splitter ("invalid input syntax") |
+| `test_parallel_copy_bad_partition_key_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_bad_partition_key_leaves_no_prepared_transaction` | the refused load leaves no prepared transaction |
+| `test_parallel_copy_loader_failure_fails_the_load_with_its_cause` | rows routed into a partition gap fail the load with the loader's own message ("failed: no partition of relation") |
+| `test_parallel_copy_loader_failure_rolls_back_the_siblings` | the failed load leaves the target empty: the prepared siblings were rolled back |
+| `test_parallel_copy_loader_failure_leaves_no_prepared_transaction` | the failed load leaves no prepared transaction |
+| `test_parallel_copy_loader_failure_leaves_the_server_up` | the server answers and no backend was killed |
+| `test_parallel_copy_unsorted_input_is_rejected` | a shuffled file is refused ("not sorted") |
+| `test_parallel_copy_unsorted_input_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_default_partition_is_rejected` | a target with a DEFAULT partition is refused |
+| `test_parallel_copy_prepared_transaction_guard_fires` | 10 workers against max_prepared_transactions = 8 are refused up front, naming the setting |
+| `test_parallel_copy_prepared_transaction_guard_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_missing_file_errors` | a missing file is refused with a file error |
+| `test_parallel_copy_missing_file_leaves_the_server_up` | the server answers and no backend was killed |
+| `test_parallel_copy_missing_file_loads_nothing` | the refused load leaves the target empty |
+| `test_parallel_copy_heap_target_is_rejected` | a heap target is refused ("not a pgcolumnar table") |
+| `test_parallel_copy_bulk_parallel_writer_is_off_by_default` | `pgcolumnar.bulk_parallel_writer` is off by default |
+| `test_parallel_copy_witness_loads_every_row` | 4 workers load 40000 rows into one table with small stripes: 40000 returned |
+| `test_parallel_copy_witness_equals_the_oracle` | that load equals its heap oracle |
+| `test_parallel_copy_witness_has_more_stripes_than_workers` | more than 4 distinct stripes: each worker reserved several |
+| `test_parallel_copy_witness_stripes_do_not_overlap` | no two stripes' byte ranges overlap |
+| `test_parallel_copy_witness_stripes_cover_every_row` | the stripes' row counts sum to 40000 |
+| `test_parallel_copy_witness_leaves_no_prepared_transaction` | that load leaves no prepared transaction |
+| `test_parallel_copy_single_table_bad_row_fails_with_its_cause` | a bad row fails a single-table load with the loader's own message ("failed: invalid input syntax") |
+| `test_parallel_copy_single_table_failure_loads_nothing` | the failed load leaves the target empty |
+| `test_parallel_copy_single_table_failure_leaves_no_prepared_transaction` | the failed load leaves no prepared transaction |
+| `test_parallel_copy_fifo_is_refused_not_a_hang` | a FIFO given to a single-table load is refused with 42809 within 5 seconds (#686) |
+| `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+| `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
+| `test_parallel_copy_partitioned_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
+| `test_parallel_copy_split_refuses_an_s3_url` | `file_split_offsets` refuses an `s3://` URL with 0A000, naming itself and the URL, with the local-files-only hint (#1886) |
+| `test_parallel_copy_split_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_split_refuses_the_other_remote_schemes` | the same for `https://`, `gs://`, `az://` and `S3://`, in one check |
+| `test_parallel_copy_refuses_an_s3_url` | `parallel_copy` into a single table refuses an `s3://` URL with 0A000, naming itself and the URL, with the hint (#1886) |
+| `test_parallel_copy_refuses_an_http_url` | the same for an `http://` URL |
+| `test_parallel_copy_refuses_the_other_remote_schemes_for_a_partitioned_target` | a partitioned target refuses `https://`, `gs://`, `az://` and `S3://` the same way, in one check |
+| `test_parallel_copy_refuses_a_remote_url_before_the_target` | a heap target gets the 0A000 refusal, not 42809: the URL is refused before the target's kind is checked |
+| `test_parallel_copy_split_still_reads_a_local_path_holding_a_scheme` | control: `file_split_offsets` still splits a local file whose path holds `s3://` past its start; its last offset is the file size |
+| `test_parallel_copy_still_loads_a_local_path_holding_a_scheme` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_split_refuses_s3a_and_s3n_urls` | `file_split_offsets` refuses `s3a://` and `s3n://` URLs with 0A000, naming itself and the URL, with the hint, in one check (#1918) |
+| `test_parallel_copy_split_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://`: the scheme match ignores case |
+| `test_parallel_copy_refuses_s3a_and_s3n_urls` | `parallel_copy` into a single table refuses `s3a://` and `s3n://` URLs the same way, in one check (#1918) |
+| `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
+| `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
+| `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+
+## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
+
+The pytest twin of `test/parallel.sh` (ported for #1341), every check by the shell's name. A 50000-row table is written in 25 row groups of 2000 rows, and the planner settings force a parallel plan, so several backends claim distinct row groups from one shared counter. Each "par" query must plan a Gather over a PgColumnarScan and return the heap's rows; forced serial, the same queries plan no Gather and still return the heap's rows. On a private database.
+
+### Every test
+
+The table must hold 25 row groups: with one, a claim that skips every other group returns the right rows. "par no-filter" returns rows rather than count(*), which the vectorized aggregate answered without a Gather. Two plan counts say every "par" query planned a Gather and every "serial" one did not.
+
+| test | what it holds |
+| --- | --- |
+| `test_parallel_table_has_row_groups_to_claim` | par table has 25 row groups to claim |
+| `test_parallel_plan_has_a_gather` | parallel plan has Gather |
+| `test_parallel_plan_has_the_columnar_scan` | parallel plan has PgColumnarScan |
+| `test_parallel_filtered_scan_matches_the_heap` | par filtered scan |
+| `test_parallel_range_scan_matches_the_heap` | par range scan |
+| `test_parallel_whole_row_sample_matches_the_heap` | par whole sample |
+| `test_parallel_count_and_sum_match_the_heap` | par count |
+| `test_parallel_unfiltered_scan_matches_the_heap` | par no-filter |
+| `test_parallel_every_par_query_plans_a_gather` | par queries all plan a Gather |
+| `test_serial_filtered_scan_matches_the_heap` | serial filtered scan |
+| `test_serial_range_scan_matches_the_heap` | serial range scan |
+| `test_serial_count_and_sum_match_the_heap` | serial count |
+| `test_serial_queries_plan_no_gather` | serial queries plan no Gather |
+
+## 299. test_parallel_vector_agg.py: the parallel vectorized aggregates fold every row group once
+
+The pytest twin of `test/parallel_vector_agg.sh` (ported for #1341), every check by the shell's name. With `pgcolumnar.enable_parallel_vector_agg` on, the ungrouped batch fold plans as a parallel partial node under a Gather and a Finalize Aggregate, and the grouped fold (#349) as a parallel partial node under a Finalize HashAggregate, each worker claiming distinct row groups through the shared counter. Counts and integer sums equal a serial oracle exactly; float sums and averages equal core's own parallel aggregate; the empty, all-null, more-workers-than-groups and not-batch-foldable cases, committed deletes and deletes earlier in the same transaction (H2) agree too; and no backend died. On a private database.
+
+### Every test
+
+Every comparison refuses a failed reading, so two failed arms never agree. The grouped oracles are core's grouped aggregate (`pgcolumnar.enable_group_vectorization` off), not pgcolumnar's grouped fold run serially. "server still up" also needs the server log's count of killed backends unmoved since setup.
+
+| test | what it holds |
+| --- | --- |
+| `test_pva_finalize_aggregate_present` | Finalize Aggregate present |
+| `test_pva_gather_present` | Gather present |
+| `test_pva_the_partial_columnar_agg_node_present` | the partial columnar agg node present |
+| `test_pva_the_partial_runs_the_batch_fold` | the partial runs the batch fold |
+| `test_pva_count_equals_the_serial_oracle` | count(*) parallel-vec == serial oracle |
+| `test_pva_avg_float8_matches_core_parallel` | avg(v) parallel-vec ~= core parallel agg |
+| `test_pva_sum_float8_matches_core_parallel` | sum(v) parallel-vec ~= core parallel agg |
+| `test_pva_avg_float4_matches_core_parallel` | avg(w::float8) f4 ~= core parallel agg |
+| `test_pva_int_sum_avg_takes_the_parallel_fold` | int sum/avg takes the parallel fold |
+| `test_pva_int_sum_avg_equal_serial_exactly` | sum(k)+avg(k) int: parallel fold == serial (exact) |
+| `test_pva_not_batch_foldable_all_null_avg` | not-batch-foldable filter: all-null avg is NULL |
+| `test_pva_not_batch_foldable_count_exact` | not-batch-foldable filter: count(*) exact |
+| `test_pva_empty_count_is_zero` | empty count(*) == 0 |
+| `test_pva_empty_avg_is_null` | empty avg is NULL |
+| `test_pva_more_workers_than_groups_exact` | more-workers-than-groups count+sum exact |
+| `test_pva_committed_deletes_equal_serial` | committed deletes: parallel fold == serial |
+| `test_pva_in_xact_deletes_equal_serial` | in-xact deletes (H2): parallel fold == serial |
+| `test_pva_the_grouped_fixture_has_its_rows` | the grouped fixture has its rows |
+| `test_pva_grouped_finalize_hashaggregate_present` | grouped Finalize HashAggregate present (#349) |
+| `test_pva_partial_grouped_node_under_the_gather` | the partial grouped node is under the Gather (#349) |
+| `test_pva_workers_launched_for_our_grouped_node` | workers actually launched for OUR grouped node (#349) |
+| `test_pva_gather_carries_per_worker_partials` | the Gather carries per-worker partials, more than one row per group (#349) |
+| `test_pva_finalize_collapses_to_the_group_count` | the Finalize collapses them back to exactly the group count (#349) |
+| `test_pva_grouped_int_equals_core_serial` | grouped count+sum(int): parallel fold == serial oracle (#349) |
+| `test_pva_grouped_multikey_where_equals_core_serial` | grouped multi-key + WHERE: parallel fold == serial oracle (#349) |
+| `test_pva_grouped_float_equals_core_parallel` | grouped avg/sum(float8): parallel fold == core parallel agg (#349) |
+| `test_pva_grouped_few_groups_many_workers` | grouped few-groups-many-workers: parallel == serial (#349) |
+| `test_pva_grouped_in_xact_deletes_equal_core_serial` | grouped in-xact deletes (H2): parallel fold == serial (#349) |
+| `test_pva_server_still_up` | server still up |
+
+## 300. test_parallel_export_parquet.py: parallel Parquet export equals serial export equals the source
+
+The pytest twin of `test/parallel_export_parquet.sh` (ported for #1341), every check by the shell's name: 57 tests, nine of the functions parametrized over a literal table of the shell's names (W is 1, 2 and 4). `pgcolumnar.parallel_export_parquet` writes one Parquet file per worker for a single columnar table and one per partition for a partitioned one, and `pgcolumnar.read_parquet` reads the directory back. Also asserted: empty input, an export inside a transaction with uncommitted rows (#329), a cancelled export (#394), a local cancel that must not return while a worker it stopped (SIGSTOP) still runs (#1864 review), the destination-length guard (#863) and the two refusals. On a private database; the exported files live in `server_dir`.
+
+### Every test
+
+The source hashes and counts come from the generator that fills each table, not from the table being exported. A refusal must carry its own message, and the server must answer with no backend killed by a signal since setup.
+
+| test | what it holds |
+| --- | --- |
+| `test_pexport_serial_export_reads_back_the_source` | serial export read-back == source |
+| `test_pexport_single_returns_the_source_count` | parametrized by the shell's three names: single(W): rows returned == source count |
+| `test_pexport_single_reads_back_the_source` | parametrized by the shell's three names: single(W): read-back == source |
+| `test_pexport_single_reads_back_the_serial_export` | parametrized by the shell's three names: single(W): read-back == serial export |
+| `test_pexport_single_writes_one_file_per_worker` | parametrized by the shell's three names: single(W): wrote exactly W files (distinct per worker) |
+| `test_pexport_single_writes_a_success_marker` | parametrized by the shell's three names: single(W): a _SUCCESS completion marker is written |
+| `test_pexport_single_success_marker_is_empty` | parametrized by the shell's three names: single(W): the _SUCCESS marker is empty |
+| `test_pexport_part_returns_the_source_count` | parametrized by the shell's three names: part(W): rows returned == source count |
+| `test_pexport_part_reads_back_the_source` | parametrized by the shell's three names: part(W): read-back == source |
+| `test_pexport_part_writes_one_file_per_partition` | parametrized by the shell's three names: part(W): one file per partition (4, incl the empty one) |
+| `test_pexport_empty_returns_zero_rows` | empty: rows returned == 0 |
+| `test_pexport_empty_reads_back_the_empty_set` | empty: read-back is the empty set |
+| `test_pexport_in_txn_count_is_the_committed_count` | in-txn export: read-back count == committed count (no duplication) |
+| `test_pexport_in_txn_has_no_duplicate_ids` | in-txn export: no duplicate ids in the read-back |
+| `test_pexport_in_txn_reads_back_the_committed_rows` | in-txn export: read-back == committed rows (uncommitted rows absent) |
+| `test_pexport_cancel_control_writes_files` | cancel-control: a completed export writes files |
+| `test_pexport_a_file_was_on_disk_before_the_cancel` | a file was on disk before the cancel (cleanup has work to do) |
+| `test_pexport_the_export_was_cancelled_mid_flight` | the export was cancelled mid-flight, not completed first (fixture premise) |
+| `test_pexport_a_cancelled_export_leaves_no_files` | a cancelled export leaves no partial files (item 2) |
+| `test_pexport_a_cancelled_export_writes_no_marker` | a cancelled export writes no _SUCCESS marker |
+| `test_pexport_a_retry_into_the_cleaned_directory_succeeds` | retry into the cleaned directory succeeds |
+| `test_pexport_the_retry_writes_a_fresh_marker` | the retry writes a fresh _SUCCESS marker |
+| `test_pexport_local_stop_premise_a_worker_was_stopped` | premise: local stop: a worker was stopped before the cancel |
+| `test_pexport_local_stop_premise_the_export_was_cancelled` | premise: local stop: the export was cancelled, not completed |
+| `test_pexport_local_stop_no_worker_runs_when_the_cancel_returns` | local stop: no worker is still running when the cancel returns -- #1864 review: the dispatcher waited for the workers only on a remote prefix, so a local cleanup could race a worker's rename to its final part name |
+| `test_pexport_accepted_boundary_length` | accepted boundary: the destination is exactly MAXPGPATH-40 bytes |
+| `test_pexport_accepted_boundary_still_exports` | accepted boundary: a 984-byte destination still exports |
+| `test_pexport_accepted_boundary_wrote_both_parts` | accepted boundary: it wrote both part files |
+| `test_pexport_accepted_boundary_wrote_a_marker` | accepted boundary: it wrote a _SUCCESS marker |
+| `test_pexport_rejected_boundary_length` | rejected boundary: the destination is exactly MAXPGPATH-39 bytes |
+| `test_pexport_rejected_boundary_raises_54000` | rejected boundary: a 985-byte destination raises 54000 |
+| `test_pexport_rejected_boundary_creates_nothing` | rejected boundary: the destination was not created |
+| `test_pexport_window_length` | cleanup-scan window: the destination is exactly MAXPGPATH-30 bytes |
+| `test_pexport_window_raises_54000` | cleanup-scan window: a 994-byte destination raises 54000 |
+| `test_pexport_window_message_is_ours` | cleanup-scan window: and it is OUR message, not another 54000 |
+| `test_pexport_window_creates_nothing` | cleanup-scan window: the destination was not created |
+| `test_pexport_rejects_a_non_empty_directory` | reject a non-empty output directory |
+| `test_pexport_rejects_a_non_columnar_target` | reject a non-columnar target |
+| `test_pexport_the_server_survives_the_exports` | server still up after the exports |
+| `test_pexport_workers_use_the_callers_group_byte_cap` | the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group (#1843 review) |
+
+## 301. test_native_fold_deferral.py: the batch fold defers payload until a row passes its keys, and the work is measured
+
+The twin of `test/native_fold_deferral.sh`. On a five-column table over six row groups, a 1%-survival sum folds with every group deferred and loads exactly survivors times payload width; a 99%-survival sum defers only the optimistic first group and loads more than survivors alone; and both answers equal the row path and a heap mirror written from the generator.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, so two failed reads never agree, and a count or plan line that cannot be read is a failed reading, never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_fold_deferral_the_selective_query_takes_the_fold` | the selective query takes the fold (ANALYZE, post-#602) |
+| `test_fold_deferral_the_selective_predicate_is_selective` | premise: the selective predicate is genuinely selective (<= 2%) |
+| `test_fold_deferral_deferred_fold_equals_row_path` | deferred fold == row path (selective) |
+| `test_fold_deferral_deferred_fold_equals_heap_mirror` | deferred fold == heap mirror (selective) |
+| `test_fold_deferral_high_survival_fold_equals_heap_mirror` | fold == heap mirror (high survival) |
+| `test_fold_deferral_the_loads_counter_exists` | the loads counter exists under ANALYZE |
+| `test_fold_deferral_the_predicate_has_survivors` | premise: the predicate has survivors (the identity is not 0 == 0) |
+| `test_fold_deferral_loads_equal_survivors_times_payload` | deferred: loads == survivors x payload width (the identity) |
+| `test_fold_deferral_explain_group_total_matches_stats` | EXPLAIN group total == stats() group count |
+| `test_fold_deferral_the_fixture_spans_several_groups` | the fixture spans several groups |
+| `test_fold_deferral_every_group_deferred_at_one_percent` | deferred: every group deferred at 1% survival |
+| `test_fold_deferral_only_the_first_group_defers_at_high_survival` | adaptive: only the optimistic first group deferred at 99% survival |
+| `test_fold_deferral_eager_groups_load_more_than_survivors` | adaptive: eager groups load more than survivors alone (work measured, not assumed) |
+
+## 302. test_native_lazy_slot.py: the index fetch decodes only the prefix the executor asks for, and never a stale one
+
+The twin of `test/native_lazy_slot.sh` (#157). Through an index scan with the custom scan off, values match a heap table built from the generator for every column position and for count(*); a row still in the write buffer reads correctly; sorting, CREATE TABLE AS and a unique check still get the whole row; and a 41-column table is not in a different class from a 3-column one for the same 2000 one-column fetches.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The heap mirror is written from the generator, not copied through the reader under test. Readings are values: a failed query is a query_error() that every comparison refuses by name, so two failed reads never agree, and a timing whose statement failed is no reading rather than a fast one.
+
+| test | what it holds |
+| --- | --- |
+| `test_lazy_slot_the_fetch_is_an_index_scan` | the fetch really is an index scan |
+| `test_lazy_slot_every_column_position_matches_heap` | single-row index fetches match heap for every column position |
+| `test_lazy_slot_select_star_matches_heap` | SELECT * through the index matches heap |
+| `test_lazy_slot_a_range_sums_the_same_as_heap` | a range of rows sums the same as heap |
+| `test_lazy_slot_count_star_matches_heap` | count(*) through the index matches heap |
+| `test_lazy_slot_a_buffered_row_reads_correctly` | a row fetched before it is flushed reads correctly |
+| `test_lazy_slot_an_order_by_matches_heap` | an ORDER BY over index-fetched rows matches heap |
+| `test_lazy_slot_a_copy_keeps_every_column` | copying index-fetched rows into a heap table keeps every column |
+| `test_lazy_slot_a_unique_violation_is_detected` | a unique violation is still detected through the fetch path |
+| `test_lazy_slot_a_wide_table_is_not_in_another_class` | a wide table is not in a different class from a narrow one |
+
+## 303. test_native_metadata_flush.py: a stripe flush opens each metadata table once, and the flush's writes read back correctly
+
+The twin of `test/native_metadata_flush.sh`. A 3-column and a 20-column table each flush one stripe under small limits; the flush's DEBUG1 witness (`metadata flush: opens=N`) must report the same small count for both, no more than six and at least the three tables every flush writes. The wide table must read back exactly what the generator wrote, and a range read must rule out a vector by its zone row alone.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. The witness is captured from the inserting session's notices, with the stripe limits set in that session as the shell does. The heap mirror is written from the generator. A failed reading is a `query_error()`, so two failures never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_metadata_flush_emits_the_witness` | the flush emits the metadata-open witness |
+| `test_native_metadata_flush_narrow_and_wide_open_the_same` | narrow (3 col) and wide (20 col) flush open the same number of metadata relations |
+| `test_native_metadata_flush_wide_opens_a_small_constant` | a 20-column flush opens a small constant number of metadata relations, not one per row |
+| `test_native_metadata_flush_wide_opens_at_least_three` | and the 20-column flush opens at least the three tables every flush writes |
+| `test_native_metadata_flush_row_count_survives` | the wide table's row count survives the batched flush |
+| `test_native_metadata_flush_every_column_reads_back` | every column reads back correct (sum over all 20 columns matches the heap mirror) |
+| `test_native_metadata_flush_range_read_matches_heap` | a zone-map-pruned range read matches heap (the batched zone rows are correct) |
+| `test_native_metadata_flush_zone_row_rules_out_a_vector` | and that range read rules out a vector by its zone row alone |
+
+## 304. test_native_late_materialization.py: a row the qual rejects is not materialized, and the answers do not change
+
+The twin of `test/native_late_materialization.sh`. A leading-wildcard LIKE that cannot be pruned selects one row in 1024 from a one-group table with wide payload columns; the scan counts the rejected rows as filtered before materialization, the executor still reports them as removed by filter, and every answer, with the feature on, off and refused for a volatile qual, equals a heap mirror written from the generator.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, with serial plans as the shell's cluster runs them. A failed reading is a `query_error()`, and a counter the plan did not print is a failed reading, never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_late_materialization_fixture_loaded_every_row` | premise: the fixture loaded every row |
+| `test_late_materialization_needle_is_selective` | premise: the needle is selective, not most of the table |
+| `test_late_materialization_heap_agrees_on_matches` | heap agrees on how many rows match |
+| `test_late_materialization_query_runs_on_the_custom_scan` | the query runs on the columnar custom scan |
+| `test_late_materialization_nothing_pruned_at_group_level` | nothing was pruned at the group level |
+| `test_late_materialization_nothing_pruned_at_vector_level` | nothing was pruned at the vector level |
+| `test_late_materialization_rejected_row_not_materialized` | a rejected row does not materialize its payload columns |
+| `test_late_materialization_executor_still_reports_filtered_rows` | the executor still reports the rows the scan filtered |
+| `test_late_materialization_rows_identical_to_heap` | the rows are identical to the heap mirror |
+| `test_late_materialization_off_filters_nothing_early` | with the feature off nothing is filtered early |
+| `test_late_materialization_off_answers_unchanged` | and the answers are the same with it off |
+| `test_late_materialization_volatile_qual_refused` | a volatile qual is refused the two-pass path |
+| `test_late_materialization_volatile_matches_heap` | and the volatile query still matches the heap mirror |
+| `test_late_materialization_same_shape_uses_the_path` | the same shape without the volatile term does use it |
+
+## 305. test_native_reclaim_reconcile.py: a reuse op drops the free_space row that overlaps a live group, and only that row
+
+The twin of `test/native_reclaim_reconcile.sh` (Phase F reconcile). A free_space row synthesized over a live group, the post-crash state end-truncation can leave, is dropped by compact_rewrite, compact and truncate, the data still equals a heap mirror after each, the legitimate free ranges come through a plain compact unchanged, and reuse keeps the data right for two more cycles.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order, each statement in its own autocommit session as the shell's psql -c runs it. Readings are values: a failed query is a query_error(), so two failed reads never agree, and the row sets are compared as an md5 over the sorted rows.
+
+| test | what it holds |
+| --- | --- |
+| `test_rr_parity_before` | parity before |
+| `test_rr_stale_row_injected` | stale overlapping free row injected |
+| `test_rr_compact_rewrite_reconciled` | compact_rewrite reconciled the stale row |
+| `test_rr_data_intact_after_rewrite` | data intact after reconcile + rewrite |
+| `test_rr_row_count_intact` | row count intact |
+| `test_rr_a_legitimate_free_range_exists` | compact_rewrite recorded the free ranges it left |
+| `test_rr_plain_compact_reconciled` | plain compact reconciled the stale row |
+| `test_rr_plain_compact_kept_the_legitimate_ranges` | plain compact kept the legitimate free ranges, which overlap no live group |
+| `test_rr_data_intact_after_compact` | data intact after compact reconcile |
+| `test_rr_truncate_reconciled` | truncate reconciled the stale row |
+| `test_rr_data_intact_after_truncate` | data intact after truncate reconcile |
+| `test_rr_parity_after_reuse_cycle_1` | parity after reuse cycle 1 |
+| `test_rr_parity_after_reuse_cycle_2` | parity after reuse cycle 2 |
+
+## 306. test_native_page_offset_bound.py: a corrupt page_offset is refused by the containment guard on both reads, and an intact table still reads
+
+The twin of `test/native_page_offset_bound.sh`. A 20000-row table is corrupted one column_chunk.page_offset at a time (past the group, to 0 so the subtraction wraps, and to -1 so it arrives near UINT64_MAX), and read through the whole-group read (column projection off) and the projected read; each read must be refused by the chunk containment guard, the backend must survive, and an intact table must still read every row on both paths.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as "XX001 (containment guard)" only when the primary message is the guard's; survival also reads the server log's count of backends killed by a signal since the arm began; a failed reading is a `query_error()`.
+
+| test | what it holds |
+| --- | --- |
+| `test_an_intact_table_reads_every_row_with_projection_off` | an intact table reads every row and value with projection off |
+| `test_an_intact_tables_projected_read_returns_every_id` | an intact table's projected read returns every id |
+| `test_a_projected_page_offset_overrun_is_refused_by_the_guard` | projected page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_projected_overrun` | alive after projected overrun |
+| `test_a_whole_group_page_offset_overrun_is_refused_by_the_guard` | whole-group page_offset overrun is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_overrun` | alive after whole-group overrun |
+| `test_a_whole_group_page_offset_of_zero_is_refused_by_the_guard` | whole-group page_offset=0 is refused by the containment guard |
+| `test_the_backend_survives_the_whole_group_wrap` | alive after whole-group wrap |
+| `test_a_whole_group_page_offset_of_minus_one_hits_the_guard` | whole-group page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_whole_group_minus_one` | alive after whole-group page_offset=-1 |
+| `test_a_projected_page_offset_of_minus_one_hits_the_guard` | projected page_offset=-1 hits the containment guard |
+| `test_the_backend_survives_the_projected_minus_one` | alive after projected page_offset=-1 |
+
+## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
+
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A failed reading is a `query_error()`, a plan line that is missing is a failed reading, and survival also requires the server log's crash count to be unchanged.
+
+| test | what it holds |
+| --- | --- |
+| `test_param_pushdown_a_generic_plan_parameterized_qual_prunes` | a generic-plan parameterized qual prunes chunk groups (19 of 20 removed) |
+| `test_param_pushdown_the_parameterized_count_matches_the_literal` | parameterized count matches the literal count |
+| `test_param_pushdown_the_literal_count_is_the_expected_value` | literal count is the expected value |
+| `test_param_pushdown_the_correlated_arm_rescans_the_columnar_scan` | the correlated arm rescans the columnar scan once per outer row |
+| `test_param_pushdown_a_correlated_param_exec_builds_no_skip_predicate` | a correlated PARAM_EXEC builds no skip predicate |
+| `test_param_pushdown_a_correlated_param_exec_is_not_mis_pruned` | a correlated PARAM_EXEC is not mis-pruned (results stay correct) |
+| `test_param_pushdown_a_correlated_upper_bound_is_not_mis_pruned` | a correlated PARAM_EXEC upper bound is not mis-pruned either |
+| `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
+| `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
+| `test_param_pushdown_the_backend_is_alive` | backend alive |
+
+## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's
+
+The twin of `test/native_sort_by.sh`. A 40,960-row table with 50 hosts cycled in insert order is sorted by its declared key (host, ts) with the zero-argument vacuum_sorted: heap parity holds before and after, group skipping on a host appears, the rows lie in (host, ts) order in scan order, and explicit columns lay them out the same way. The key round-trips and resets, and no key, a bad column, a dropped declared column and (PG18+) a virtual generated column are each refused by their own guard, with the backend still up.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. A refusal reads as '<SQLSTATE> <phrase of the guard's message>', a failed reading is a `query_error()`, and every reading after a refusal first waits for the server, so a crash reds its own arm and the survival check. Before PostgreSQL 18 the virtual arm declines, as the shell records its skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_nsb_row_count` | row count |
+| `test_nsb_the_plan_under_test_is_a_columnar_custom_scan` | the plan under test is a columnar custom scan |
+| `test_nsb_equality_parity_pre_sort` | equality parity (pre-sort) |
+| `test_nsb_the_scan_order_starts_unsorted` | premise: before sorting, the scan order does not follow (host, ts) |
+| `test_nsb_declared_sort_by_round_trips` | declared sort_by round-trips |
+| `test_nsb_row_count_after_sort` | row count after sort |
+| `test_nsb_full_table_parity_after_sort` | full-table parity after sort |
+| `test_nsb_equality_parity_post_sort` | equality parity (post-sort) |
+| `test_nsb_sorting_a_text_key_enables_group_skipping` | sorting a text key enables group skipping |
+| `test_nsb_the_scan_order_follows_the_declared_key` | the scan order follows the declared key (host, ts) |
+| `test_nsb_explicit_column_sort_parity` | explicit-column sort parity |
+| `test_nsb_explicit_columns_lay_the_rows_out_as_the_declared_key_does` | explicit columns lay the rows out as the declared key does |
+| `test_nsb_sort_by_cleared` | sort_by cleared |
+| `test_nsb_zero_arg_errors_when_no_key_declared` | zero-arg errors when no key declared |
+| `test_nsb_set_options_rejects_a_nonexistent_sort_by_column` | set_options rejects a nonexistent sort_by column |
+| `test_nsb_zero_arg_errors_on_a_dropped_declared_column` | zero-arg errors on a dropped declared column |
+| `test_nsb_empty_table_sorts_without_error` | empty table sorts without error |
+| `test_nsb_single_row_table_sorts_without_error` | single-row table sorts without error |
+| `test_nsb_single_row_parity` | single-row parity |
+| `test_nsb_set_options_rejects_a_virtual_generated_sort_by_column` | set_options rejects a virtual generated sort_by column |
+| `test_nsb_vacuum_sorted_rejects_an_explicit_virtual_generated_column` | vacuum_sorted rejects an explicit virtual generated column |
+| `test_nsb_backend_still_up_after_the_refusals` | backend still up after the refusals |
+
+## 309. test_native_rewrite.py: compact_rewrite reclaims partially-deleted groups online, and vacuum's rewrite keeps every row reachable
+
+The twin of `test/native_rewrite.sh` (Phase F3b). compact_rewrite rewrites groups past the deleted-fraction threshold, and only those, into fresh groups with fresh row numbers under ShareUpdateExclusiveLock, with results equal to a heap mirror written from the generator; index scans and point lookups stay right; group numbers are never reused; and pgcolumnar.vacuum rewrites into fresh storage with every row reachable, through the index as well.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes every reading in the shell's order on a private schema. Readings are values: a failed query is a query_error(), so two failed reads never agree, counts are compared as numbers, and the duplicate must be refused with 23505 by n_id_uq itself. The index after vacuum is read over a narrow range, because over the whole table stale entries still land on every row once.
+
+| test | what it holds |
+| --- | --- |
+| `test_row_count_after_delete` | row count after delete |
+| `test_there_are_deleted_rows_to_reclaim` | there are deleted rows to reclaim |
+| `test_parity_after_delete` | parity after delete |
+| `test_rewrote_some_groups` | rewrote some groups |
+| `test_dead_row_space_reclaimed` | dead-row space reclaimed |
+| `test_parity_after_rewrite` | parity after rewrite |
+| `test_row_count_after_rewrite` | row count after rewrite |
+| `test_a_second_rewrite_with_nothing_deleted_rewrites_no_group` | a second rewrite with nothing deleted rewrites no group |
+| `test_a_group_deleted_below_the_threshold_is_not_rewritten` | a group deleted below the threshold is not rewritten |
+| `test_index_scan_returns_each_live_row_once` | index scan returns each live row once |
+| `test_live_id_present_via_index` | live id present via index |
+| `test_deleted_id_absent_via_index` | deleted id absent via index |
+| `test_unique_constraint_still_enforced` | unique constraint still enforced |
+| `test_compact_rewrite_holds_share_update_exclusive_lock` | compact_rewrite holds ShareUpdateExclusiveLock |
+| `test_compact_rewrite_holds_no_access_exclusive_lock` | compact_rewrite holds no AccessExclusiveLock |
+| `test_a_rewrite_plus_later_writes_reuse_no_group_number` | a rewrite plus later writes reuse no group number |
+| `test_group_numbers_issued_after_a_rewrite_are_past_every_earlier_one` | group numbers issued after a rewrite are past every earlier one |
+| `test_vacuum_rewrites_into_a_fresh_storage_id` | vacuum rewrites into a fresh storage id |
+| `test_every_live_row_still_reads_back_after_rewrite_and_vacuum` | every live row still reads back after rewrite and vacuum |
+| `test_an_index_range_read_after_vacuum_returns_the_rows_asked_for` | an index range read after vacuum returns the rows asked for |
+
+## 310. test_native_zonemap.py: zone-map rows carry exact counts, sums and the right bounds, by value
+
+The twin of `test/native_zonemap.sh`. On a four-column table of three row groups of two vectors each, the pgcolumnar.zone_map rows are checked against a heap mirror written from the same generator: their number, value and null counts, sums, the presence and width of their bounds, and each bound of id, k and v decoded and compared with the heap's own for its group and vector; the read path still matches the heap, and the rows go with the table.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading opens its own connection and returns a failure as a `query_error()`, so two failed reads never agree and a count that cannot be read is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zonemap_row_count` | row count |
+| `test_zonemap_read_parity` | read parity (no regression) |
+| `test_zonemap_whole_chunk_zone_rows` | whole-chunk zone rows |
+| `test_zonemap_per_vector_zone_rows` | per-vector zone rows |
+| `test_zonemap_whole_chunk_rows_cover_their_group` | whole-chunk value+null = group rows |
+| `test_zonemap_each_vector_covers_1024` | per-vector value+null = 1024 |
+| `test_zonemap_value_count_sums_for_nullable_v` | value_count sums (v, nullable) |
+| `test_zonemap_null_count_sums_for_nullable_v` | null_count sums (v, nullable) |
+| `test_zonemap_value_count_sums_for_id` | value_count sums (id, no nulls) |
+| `test_zonemap_null_count_zero_for_id` | null_count zero (id, no nulls) |
+| `test_zonemap_vector_value_counts_fold_into_the_chunk` | per-vector value_count folds into chunk (k) |
+| `test_zonemap_min_max_present_for_all_columns` | min/max present for all columns |
+| `test_zonemap_int4_min_width` | id (int4) min width = 4 bytes |
+| `test_zonemap_int8_max_width` | k (int8) max width = 8 bytes |
+| `test_zonemap_v_is_not_ascending_within_a_vector` | premise: v is not ascending within a vector, so a stale minimum would show |
+| `test_zonemap_every_vector_minimum_is_the_heaps` | every vector's minimum of id, k and v is the heap's |
+| `test_zonemap_every_vector_maximum_is_the_heaps` | every vector's maximum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_minimum_is_the_heaps` | every whole-chunk minimum of id, k and v is the heap's |
+| `test_zonemap_every_chunk_maximum_is_the_heaps` | every whole-chunk maximum of id, k and v is the heap's |
+| `test_zonemap_sum_present_for_int4_columns` | sum present for int4 columns |
+| `test_zonemap_sum_null_for_other_columns` | sum null for non-int4 columns |
+| `test_zonemap_whole_chunk_sum_of_id_matches_heap` | whole-chunk sum(id) matches heap |
+| `test_zonemap_zone_maps_go_with_the_table` | zone maps cleaned on drop |
+
+## 311. test_native_zonemap_session.py: a scan resolves zone_map once, and each scan holds its own session
+
+The twin of `test/native_zonemap_session.sh`. The witness is the DEBUG1 line each scan's zone-map session emits when it closes, `probes=N opens=M`: over 40 chunk groups a scan probes once per group and opens zone_map once, a second predicate column adds one probe and no open, the two scans of a join each report their own groups, and the scans around one that errors inside a subtransaction each open for themselves and probe only their own groups.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each reading returns a failure as a `query_error()`, and the statements around the aborted scan run one by one, continuing past the error as psql does with ON_ERROR_STOP=0.
+
+| test | what it holds |
+| --- | --- |
+| `test_native_zonemap_session_fixture_has_several_groups` | the fixture has more than one chunk group |
+| `test_native_zonemap_session_scan_probes_once_per_group` | the scan really probed the zone maps, once per group |
+| `test_native_zonemap_session_scan_resolves_zone_map_once` | the scan resolves zone_map ONCE, not once per group (#744) |
+| `test_native_zonemap_session_second_column_still_opens_once` | a second predicate column still resolves zone_map once |
+| `test_native_zonemap_session_short_circuit_adds_one_probe` | and the short circuit means it adds one probe, not one per group |
+| `test_native_zonemap_session_zs2_has_several_groups` | zs2 has more than one chunk group |
+| `test_native_zonemap_session_nested_scans_answer` | nested columnar scans return the right answer |
+| `test_native_zonemap_session_nested_scans_hold_their_own_handle` | nested columnar scans each hold their own handle |
+| `test_native_zonemap_session_middle_scan_errored` | the middle scan really did error inside the subtransaction |
+| `test_native_zonemap_session_every_scan_reports_its_own_session` | every scan around an aborted one reports its own session (#744) |
+| `test_native_zonemap_session_each_scan_opened_once` | and each of them opened exactly once |
+| `test_native_zonemap_session_each_scan_probed_its_own_groups` | and each of them probed exactly its own groups |
+| `test_native_zonemap_session_scan_after_abort_answers` | the scan after the subtransaction abort returns the right answer |
+
+## 312. test_native_zonemap_narrow.py: group skipping reads only the predicate columns' zone maps, and still prunes
+
+The twin of `test/native_zonemap_narrow.sh`. A one-predicate scan of a 30-column table reads about as many pgcolumnar.zone_map tuples as the same scan of a 2-column table (pg_stat_all_tables.idx_tup_fetch, flushed with pg_stat_force_next_flush); both answer correctly; and c1 > 19000 removes nine of the ten groups on each table, read from the scan's own counter.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each reading opens its own connection, as the shell's psql calls do, and returns a failure as a `query_error()`, so two failed reads never agree and an unread count is never 0.
+
+| test | what it holds |
+| --- | --- |
+| `test_zone_map_reads_scale_with_predicates_not_table_width` | zone_map reads scale with predicates, not table width (wide ~= narrow) |
+| `test_the_wide_scan_result_is_correct` | wide scan result is correct |
+| `test_the_narrow_scan_result_is_correct` | narrow scan result is correct |
+| `test_a_pruning_predicate_still_prunes_on_the_wide_table` | a pruning predicate still prunes on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_wide_table` | the zone map removes the nine groups c1 > 19000 cannot match, on the wide table |
+| `test_the_zone_map_removes_nine_groups_on_the_narrow_table` | and on the narrow table |
+
+## 313. test_native_vecdecode.py: decode honours the skip vector, and the fold reads neither holes nor nulls as values
+
+The twin of `test/native_vecdecode.sh`. One row group of 32 1024-row vectors with a monotonic id, so a narrow range rules most vectors out: "Columnar Vectors Decoded" must move by exactly the skipped count, every range must match a heap mirror written from the generator, and the batch fold must answer correctly over skipped vectors and over a nullable column.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database built once in the shell's order. Each counter is read from the plan text and a missing one is a `query_error()`, never 0; every comparison of two readings refuses a failed side. The fold arm runs with the shell's SET statements.
+
+| test | what it holds |
+| --- | --- |
+| `test_vecdecode_narrow_plan_is_the_custom_scan` | the narrow plan is a columnar custom scan |
+| `test_vecdecode_wide_plan_is_the_custom_scan` | the wide plan is a columnar custom scan |
+| `test_vecdecode_one_row_group` | one row group, so every difference is per-vector |
+| `test_vecdecode_no_whole_group_pruned` | no whole group is pruned on the narrow query |
+| `test_vecdecode_narrow_range_skips_vectors` | the narrow range skips vectors |
+| `test_vecdecode_wide_range_skips_none` | the wide range skips none, so the arms really differ |
+| `test_vecdecode_explain_reports_vectors_decoded` | EXPLAIN reports Columnar Vectors Decoded |
+| `test_vecdecode_full_scan_decodes_something` | and it is not stuck at zero when a full scan decodes everything |
+| `test_vecdecode_ruled_out_vector_not_decoded` | a ruled-out vector is not decoded |
+| `test_vecdecode_decoded_plus_skipped_is_the_groups_vectors` | and EVERY ruled-out vector is: decoded plus skipped is the group's vectors |
+| `test_vecdecode_narrow_range_parity` | narrow range parity with heap |
+| `test_vecdecode_cross_vector_parity` | cross-vector range parity |
+| `test_vecdecode_boundary_range_parity` | boundary range parity, a range starting exactly on a vector edge |
+| `test_vecdecode_nullable_column_has_nulls` | premise: the nullable column has nulls inside the ranges read below |
+| `test_vecdecode_nullable_cross_vector_parity` | cross-vector parity of a nullable column, nulls included |
+| `test_vecdecode_aggregate_over_skipping_range` | aggregate over a skipping range matches heap |
+| `test_vecdecode_aggregate_over_many_skipped_vectors` | aggregate over a range spanning many skipped vectors matches heap |
+| `test_vecdecode_range_matching_no_row` | a range matching no row at all is still correct |
+| `test_vecdecode_aggregate_reaches_the_fold` | the aggregate really reaches the batch fold |
+| `test_vecdecode_fold_answers_over_skipping_range` | the fold answers correctly over a range that skips vectors |
+| `test_vecdecode_nullable_aggregate_reaches_the_fold` | a nullable aggregate reaches the fold |
+| `test_vecdecode_fold_nullable_count_and_sum` | the fold answers count and sum of a nullable column over a skipping range |
+| `test_vecdecode_deep_range_reaches_the_fold` | the deep range reaches the fold too |
+| `test_vecdecode_deep_range_agrees_with_heap` | and it agrees with heap after many leading skipped vectors |
+| `test_vecdecode_poison_range_reaches_the_fold` | the poison-accepting range reaches the fold |
+| `test_vecdecode_fold_arm_decodes_only_what_it_needs` | the FOLD ARM really decodes only the vectors it needs |
+| `test_vecdecode_fold_counter_reads_every_vector_when_none_skipped` | control: and the same counter reads every vector when nothing is skipped |
+| `test_vecdecode_fold_does_not_count_undecoded_rows` | the fold does not count rows from a vector it never decoded |
+
+## 314. test_native_parquet_fieldid.py: read_parquet binds output columns by Parquet field id, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fieldid.sh`. pyarrow writes a file whose field ids are out of order and disjoint from position (alpha=7, beta=3, gamma=12), one with no field ids, and one where two columns share an id. read_parquet(path, field_ids) must bind and reorder by id, read a subset, leave the positional read alone, and refuse an absent id, a duplicate id in the file, a non-scalar output column, a count mismatch, an id-less file and a duplicate requested id, each with its own guard's message. A fourth file has the shape Iceberg writes for a struct, a list and a map, with their field ids on group nodes: asking for one of those ids is refused with 0A000 as nested, naming the column and its kind, not as an id the file lacks (#1788). The backend must survive.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_fieldid_projection_binds_and_reorders_by_id` | field-id projection binds and reorders by id (g=gamma, a=alpha) |
+| `test_fieldid_projection_reads_a_subset` | field-id projection reads a subset (only id 3 = beta) |
+| `test_positional_read_parquet_is_unaffected_by_fieldid_binding` | positional read_parquet is unaffected |
+| `test_an_absent_field_id_is_refused` | an absent field id is refused (22023) |
+| `test_a_duplicate_field_id_in_the_parquet_file_is_refused` | a duplicate field id in the file is refused (42702) |
+| `test_a_nested_fieldid_output_column_is_refused` | a nested/array output column is refused (0A000) |
+| `test_a_field_ids_column_count_mismatch_is_refused` | a field_ids/column-count mismatch is refused (22023) |
+| `test_a_parquet_file_with_no_field_ids_is_refused` | a file with no field ids is refused (22023) |
+| `test_a_duplicate_requested_field_id_is_refused` | a duplicate requested field id is refused (22023) |
+| `test_the_duplicate_requested_id_error_names_the_id` | the duplicate-requested-id error names the id, not the file |
+| `test_the_nested_files_leaves_carry_only_the_child_ids` | premise: the nested file's leaves carry ids 1,5,6,7,8,9 and none of 2,3,4, as pyarrow reads them back |
+| `test_the_nested_files_groups_carry_the_nested_ids` | premise: the nested file's groups carry ids st=2 li=3 mp=4 |
+| `test_parquet_schema_reports_a_lists_and_a_structs_own_field_id_and_a_maps_leaf_ids` | parquet_schema reports a list's and a struct's own field id, and a map's leaf ids (#1893) |
+| `test_a_scalar_beside_nested_columns_still_reads_by_field_id_premise` | premise: a scalar beside nested columns still reads by field id |
+| `test_a_struct_field_id_read_as_text_is_refused_as_nested` | a struct field id read as text is refused as nested (0A000) |
+| `test_a_list_field_id_read_as_int4_is_refused_as_nested` | a list field id read as int4 is refused as nested (0A000) |
+| `test_a_map_field_id_read_as_int8_is_refused_as_nested` | a map field id read as int8 is refused as nested (0A000) |
+| `test_field_id_minus_one_over_the_nested_file_is_refused_as_absent` | field id -1 over the nested file is refused as absent, not as a group without an id (22023) |
+| `test_the_backend_survives_the_fieldid_refusals` | backend still up after the refusals |
+
+## 315. test_native_parquet_codecs.py: GZIP, ZSTD and LZ4_RAW pages decode to the generator's rows, an all-NULL column's empty dictionary page decodes, and a crafted page size is refused
+
+The twin of `test/native_parquet_codecs.sh`. `test/craft_parquet_codecs.py`, the shell's own crafter, writes the same 20000 rows with each codec plus an uncompressed control, and a gzip page whose header declares an uncompressed size of -1. Each file's codec is read from its own metadata; every file decodes through `read_parquet` to the generator's rows, built in SQL; each FDW count and a sum read every value; a column that is NULL in every row, which pyarrow writes with an empty dictionary page of declared size 0, reads back under GZIP, ZSTD and LZ4_RAW as 3 rows with no non-NULL value (#1786); and the crafted header is refused with the reader's own decode error, killing no backend.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and survival also requires the server log's count of backends killed by a signal not to have moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_uncompressed_file_is_uncompressed` | premise: the uncompressed file is UNCOMPRESSED |
+| `test_the_gzip_file_is_gzip_compressed` | premise: the gzip file is GZIP-compressed |
+| `test_the_zstd_file_is_zstd_compressed` | premise: the zstd file is ZSTD-compressed |
+| `test_the_lz4_file_is_lz4_compressed` | premise: the lz4 file is LZ4-compressed |
+| `test_uncompressed_decodes_to_the_generators_rows` | uncompressed decodes to the generator's rows |
+| `test_gzip_decodes_to_the_generators_rows` | gzip decodes to the generator's rows |
+| `test_zstd_decodes_to_the_generators_rows` | zstd decodes to the generator's rows |
+| `test_lz4_decodes_to_the_generators_rows` | lz4 decodes to the generator's rows |
+| `test_the_gzip_fdw_counts_every_row` | gzip FDW count |
+| `test_the_zstd_fdw_counts_every_row` | zstd FDW count |
+| `test_the_lz4_fdw_counts_every_row` | lz4 FDW count |
+| `test_the_gzip_sum_matches_the_generator` | gzip sum matches the generator |
+| `test_the_all_null_gzip_file_is_gzip_with_a_dictionary_page` | premise: the all-NULL gzip file is GZIP with a dictionary page |
+| `test_the_all_null_zstd_file_is_zstd_with_a_dictionary_page` | premise: the all-NULL zstd file is ZSTD with a dictionary page |
+| `test_the_all_null_lz4_file_is_lz4_with_a_dictionary_page` | premise: the all-NULL lz4 file is LZ4 with a dictionary page |
+| `test_an_all_null_gzip_column_reads_as_three_null_rows` | all-NULL gzip column reads as 3 rows, none non-NULL |
+| `test_an_all_null_zstd_column_reads_as_three_null_rows` | all-NULL zstd column reads as 3 rows, none non-NULL |
+| `test_an_all_null_lz4_column_reads_as_three_null_rows` | all-NULL lz4 column reads as 3 rows, none non-NULL |
+| `test_a_crafted_uncompressed_size_is_a_clean_decode_error` | crafted uncompressed size gives a clean decode error |
+| `test_the_backend_survives_the_crafted_header` | backend survived the crafted header |
+
+## 316. test_native_parquet_units.py: TIME and TIMESTAMP units decode to the right instant, and their stats skip correctly
+
+The twin of `test/native_parquet_units.sh`. pyarrow writes one instant as TIMESTAMP millis, micros and nanos, a time as TIME micros and millis, a millis value whose conversion overflows, two nanos values with sub-microsecond digits (one pre-epoch), and a two-group millis file; each reads back to the right value through the FDW, read_parquet and import_parquet, parquet_schema advises the lossless type, the overflow raises 22008, and the millis stats skip the group a predicate cannot match.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database, and declines first under the shell's pyarrow skip name. Each reading returns a failure as a `query_error()`, so two failed reads never agree. The truncation checks want literals and the two-group file is compared with the generator's series, so no oracle is read through the reader under test.
+
+| test | what it holds |
+| --- | --- |
+| `test_ts_ms_decodes_to_the_right_instant` | ts_ms decodes to the right instant |
+| `test_ts_us_decodes_to_the_right_instant` | ts_us decodes to the right instant |
+| `test_ts_ns_decodes_to_the_right_instant` | ts_ns decodes to the right instant |
+| `test_time_micros_decodes_to_the_right_time` | time micros decodes to the right time |
+| `test_time_millis_decodes_to_the_right_time` | time millis decodes to the right time |
+| `test_parquet_schema_advises_time_for_time_millis` | parquet_schema advises time for TIME_MILLIS |
+| `test_parquet_schema_advises_timestamp_for_millis` | parquet_schema advises timestamp for millis |
+| `test_parquet_schema_advises_timestamp_for_micros` | parquet_schema advises timestamp for micros |
+| `test_parquet_schema_advises_bigint_for_nanos` | parquet_schema advises bigint for nanos (lossless) |
+| `test_nanos_read_as_bigint_is_exact` | nanos read as bigint is exact |
+| `test_millis_to_micros_overflow_raises_22008` | millis-to-micros overflow raises 22008 |
+| `test_read_parquet_honours_the_unit` | read_parquet honours the unit |
+| `test_import_parquet_honours_the_unit` | import_parquet honours the unit |
+| `test_millis_equals_micros` | millis == micros |
+| `test_nanos_equals_micros` | nanos == micros |
+| `test_nanos_sub_us_truncates_toward_zero_frac` | nanos sub-us truncates toward zero [frac] |
+| `test_nanos_sub_us_truncates_toward_zero_neg` | nanos sub-us truncates toward zero [neg] |
+| `test_millis_scaled_stats_skip_the_non_matching_group` | millis-scaled stats skip the non-matching group |
+| `test_the_millis_file_reads_back_exactly_as_written` | the millis file reads back exactly as written |
+| `test_millis_pushdown_result_equals_the_oracle` | millis pushdown result == oracle |
+| `test_int96_premise_pyarrow_wrote_int96` | premise: pyarrow wrote the INT96 file as INT96 |
+| `test_parquet_schema_advises_timestamptz_for_int96` | parquet_schema advises timestamptz for INT96 |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant` | INT96 reads into timestamptz as the stored instant |
+| `test_int96_reads_into_timestamp_as_the_session_wall_time` | INT96 reads into timestamp as the wall time in the session zone |
+| `test_int96_reads_into_timestamptz_as_the_stored_instant_in_a_non_utc_zone` | INT96 reads into timestamptz as the stored instant in a non-UTC session zone |
+| `test_int96_into_a_non_timestamp_type_is_refused` | INT96 into a non-timestamp type is refused |
+| `test_import_parquet_reads_int96_into_timestamptz` | import_parquet reads INT96 into timestamptz |
+
+## 317. test_native_parquet_projection.py: a projected Parquet scan decodes only the columns it references, and reads the generator's rows
+
+The twin of `test/native_parquet_projection.sh`. `test/craft_parquet_projection.py`, the shell's own crafter, writes a four-column file and a two-column file whose second column's data page is smashed. Each projection, a qual on an unselected column, and a projection behind a dropped column return the generator's rows, built in SQL; the EXPLAIN "Columns Read" counter reflects each projection; and the smashed column is never decoded when projected out.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Each test declines under the shell's pyarrow skip name before it asks for the fixture, which runs the crafter as a subprocess, so the fixture never imports pyarrow. A failed reading is a `query_error()`, and a setup step that fails is not raised: every reading then fails by its own name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_a_projection_matches_the_oracle` | projection [a] == oracle |
+| `test_the_c_projection_matches_the_oracle` | projection [c] == oracle |
+| `test_the_a_d_projection_matches_the_oracle` | projection [a, d] == oracle |
+| `test_the_b_c_d_projection_matches_the_oracle` | projection [b, c, d] == oracle |
+| `test_the_star_projection_matches_the_oracle` | projection [*] == oracle |
+| `test_a_qual_on_an_unselected_column_matches_the_oracle` | qual on unselected column == oracle |
+| `test_one_column_reads_one` | one column reads 1 |
+| `test_two_columns_read_two` | two columns read 2 |
+| `test_select_star_reads_four` | select star reads 4 |
+| `test_count_star_reads_zero` | count(*) reads 0 |
+| `test_after_a_dropped_column_the_d_projection_matches_the_oracle` | after a dropped column, projection [d] == oracle |
+| `test_after_a_dropped_column_one_column_reads_one` | after a dropped column, one column reads 1 |
+| `test_a_selected_column_and_a_qual_column_read_two` | selected 1 + qual 1 reads 2 |
+| `test_selecting_the_good_column_skips_the_corrupt_one` | selecting the good column skips the corrupt one |
+| `test_count_star_decodes_nothing_and_survives_the_corruption` | count(*) decodes nothing, survives corruption |
+| `test_selecting_the_corrupt_column_does_error` | selecting the corrupt column does error |
+| `test_the_good_column_values_are_still_correct` | good-column values are still correct |
+
+## 318. test_native_parquet_hardening.py: the Parquet reader refuses values that do not fit their column, a row group with too few chunks, and a malformed footer
+
+The twin of `test/native_parquet_hardening.sh`. `test/craft_parquet_hardening.py`, the shell's own crafter, writes the narrowing files (int2 and date over INT32, time and timestamp over INT64, each out of range and in range), the unsigned files (pyarrow's uint8 to uint64, and a UINT_32 file re-encoded with only its LogicalType or only its ConvertedType mark), a two-column file whose row group carries one column chunk, string files whose cells are not valid UTF-8 (PLAIN and dictionary-encoded, plus an embedded NUL), and two copies of the committed Iceberg events table: one whose eu data file holds an invalid string, and one whose manifest records the eu partition value as invalid bytes. Each out-of-range value must raise with its type's own message rather than wrap, each in-range value must decode to exactly what was written, read_parquet and import_parquet share the decoder, an unsigned column must read as the stored value into bigint or numeric (which `parquet_schema` advises) and refuse a narrower type with 22003 rather than come back negative (#1814), the short chunk list must be refused by the chunk-count guard itself, and the backend must survive. Each invalid string cell must be refused with 22021 and a message naming the column, through read_parquet, the Parquet foreign table, import_parquet and iceberg_scan, with no row stored; valid multibyte UTF-8 must still read whole; and the Iceberg FDW must read, not prune, a file whose partition value is not valid text (#1821). For #1822 it also writes variants of a 3000-row file's footer: an invalid Thrift type nibble on each field header, a missing `row_groups`, a missing footer or row-group `num_rows`, a footer total above or below its row groups' sum, a type-0 nibble with a field-id delta, and an unknown map field and list of bools. It also sets each field header to type 13 (UUID, a 16-byte value), adds an unknown UUID field and list of UUIDs, a list whose element type is 14, a list of 4294967295 elements of type 15, and lists of 4294967295 bytes and doubles that run off the footer's end. Each defect must be refused, and each valid variant must read 3000 rows with the right sum. The missing-field guards overlap the total check: with one of them removed, the total check still refuses the file. So each of those checks tells its guard apart by the error detail, not by the refusal alone. The two run-off lists must be refused within 3 s: a skip that stepped past the end without an error took 10 to 12 s on PG18. The type-15 list must be refused within 3 s under a 5 s statement_timeout: skipped as zero bytes, its elements ran until the timeout. For #1921 it sets a struct group's `num_children` to -1, to 2^32 + 1 and to -(2^32) + 1: `parquet_schema` must refuse each file with XX001 naming the element, where it returned the first column and dropped the rest. A plain cast to int reads the two wide values as 1, so only a check of the full value refuses them. For #1910 it changes only the page header's `uncompressed_page_size` of SNAPPY v1 and v2 pages: each must be refused with XX001, as pyarrow refuses it, while the unpatched files and an uncompressed page whose header size differs still read 100 rows summing to 5050. So do an UNCOMPRESSED v2 page marked is_compressed=true and the same page with a header size below its level bytes, which pyarrow reads too. For #1935 it changes only the Thrift type nibble of one page header field. A data page encoding field (i32) of type BOOL_TRUE and of type UUID must each be refused with XX001, as pyarrow refuses them; both read 100 rows before the fix. A sweep sets every i32 or struct field the reader stores, in a v1 and a v2 page header, to every other compact type: none of the 168 copies may read. The v2 is_compressed field is optional, so pyarrow skips it when its type is not bool. A sweep over its 11 other types may read, but only with the right answer, and the LIST copy must read 100 rows summing to 5050, as in pyarrow. The required i32 fields the reader skips get the same sweep (48 copies): a v1 page's definition and repetition level encodings, and a v2 page's num_nulls and num_rows. So do a dictionary page's header struct, num_values and encoding (36 copies), on a one-column dictionary file that must read 4 rows summing to 10 unpatched. A v1 definition level encoding of type BOOL_TRUE plus one changed value byte must be refused: before this check it read 100 rows summing to 5049. Each sweep's expected text names its number of copies, so a missing count file fails it.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A refusal reads as 'SQLSTATE: message' through the shell's own pgc_try; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved. The string tests read a second private database created as UTF8, because the check is against the server encoding and a SQL_ASCII cluster accepts any byte but NUL.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_hardening_int2_out_of_range_raises_22003` | int2 out of range -> 22003 |
+| `test_parquet_hardening_time_out_of_day_raises_22008` | time out of day -> 22008 |
+| `test_parquet_hardening_invalid_date_raises_22008` | date invalid -> 22008 |
+| `test_parquet_hardening_date_offset_overflow_raises_22008` | date offset overflow -> 22008 |
+| `test_parquet_hardening_timestamp_overflow_raises_22008` | timestamp overflow -> 22008 |
+| `test_parquet_hardening_int2_in_range_still_reads` | int2 in range still reads |
+| `test_parquet_hardening_time_in_range_still_reads` | time in range still reads |
+| `test_parquet_hardening_date_in_range_still_reads` | date in range still reads |
+| `test_parquet_hardening_timestamp_in_range_still_reads` | timestamp in range still reads |
+| `test_parquet_hardening_no_wrapped_value_appears` | no wrapped -25536 appears |
+| `test_parquet_hardening_read_parquet_also_raises_22003` | read_parquet also raises 22003 |
+| `test_parquet_hardening_read_parquet_in_range_still_reads` | read_parquet in range still reads |
+| `test_parquet_hardening_import_parquet_also_raises_22003` | import_parquet also raises 22003 |
+| `test_parquet_hardening_import_parquet_left_no_wrapped_rows` | import_parquet left no wrapped rows |
+| `test_parquet_hardening_unsigned_premise_pyarrow_reads_unsigned` | premise: pyarrow reads the unsigned file's values unsigned |
+| `test_parquet_hardening_parquet_schema_advises_types_that_hold_unsigned_values` | parquet_schema advises a type that holds every unsigned value |
+| `test_parquet_hardening_uint32_reads_into_bigint_as_unsigned` | UINT_32 reads into bigint as unsigned |
+| `test_parquet_hardening_uint64_reads_into_numeric_as_unsigned` | UINT_64 reads into numeric as unsigned |
+| `test_parquet_hardening_uint32_into_bigint_where_counts_every_row` | UINT_32 into bigint: WHERE c > 0 counts every row |
+| `test_parquet_hardening_uint32_above_2_31_into_integer_raises_22003` | UINT_32 at or above 2^31 into integer -> 22003 |
+| `test_parquet_hardening_uint64_above_2_63_into_bigint_raises_22003` | UINT_64 at or above 2^63 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_max_into_smallint_raises_22003` | UINT_32 2^32-1 into smallint -> 22003, not -1 |
+| `test_parquet_hardening_uint64_refusal_names_the_stored_value` | the UINT_64 refusal names the stored value |
+| `test_parquet_hardening_read_parquet_reads_every_unsigned_width` | read_parquet reads every unsigned width at its advised type |
+| `test_parquet_hardening_read_parquet_uint64_into_bigint_raises_22003` | read_parquet UINT_64 into bigint -> 22003 |
+| `test_parquet_hardening_uint32_logical_type_alone_marks_it_unsigned` | UINT_32 marked only by its LogicalType reads into bigint as unsigned |
+| `test_parquet_hardening_uint32_converted_type_alone_marks_it_unsigned` | UINT_32 marked only by its ConvertedType reads into bigint as unsigned |
+| `test_parquet_hardening_import_parquet_reads_unsigned_into_wider_types` | import_parquet reads UINT_32 into bigint and UINT_64 into numeric |
+| `test_parquet_hardening_import_parquet_uint32_into_integer_raises_22003` | import_parquet UINT_32 into integer -> 22003 |
+| `test_parquet_hardening_short_chunk_list_is_a_clean_reject` | short chunk list rejected with a specific error |
+| `test_parquet_hardening_backend_survives_the_short_chunk_list` | backend survived short chunk list |
+| `test_parquet_hardening_parquet_schema_still_describes_the_bad_file` | parquet_schema still describes a bad chunk list |
+| `test_parquet_hardening_a_valid_two_column_file_still_reads` | valid two-column file still reads |
+| `test_parquet_hardening_unchanged_repetition_file_reads` | the unchanged repetition file reads 3000/4498500 |
+| `test_parquet_hardening_repetition_required_over_optional_pages_is_refused` | repetition_type REQUIRED over optional pages is refused |
+| `test_parquet_hardening_invalid_repetition_type_is_refused` | repetition_type that is not 0, 1 or 2 is refused |
+| `test_parquet_hardening_import_parquet_refuses_repetition_required_over_optional_pages` | import_parquet refuses repetition_type REQUIRED over optional pages |
+| `test_parquet_hardening_unchanged_list_file_reads` | the unchanged list file reads {} {1,2} {3} {4,5,6} null |
+| `test_parquet_hardening_list_group_marked_optional_over_repeated_pages_is_refused` | a list group marked OPTIONAL over repeated pages is refused |
+| `test_parquet_hardening_list_group_marked_optional_is_refused_into_a_scalar_column` | a list group marked OPTIONAL over repeated pages is refused into a scalar column |
+| `test_parquet_hardening_unpatched_required_int96_file_reads` | the unpatched REQUIRED INT96 file reads its 3 values |
+| `test_parquet_hardening_int96_nanoseconds_of_a_whole_day_are_refused` | INT96 nanoseconds of a whole day are refused |
+| `test_parquet_hardening_int96_negative_nanoseconds_are_refused` | INT96 nanoseconds of -1 are refused |
+| `test_parquet_hardening_int96_negative_julian_day_is_refused` | INT96 Julian day -1 is refused |
+| `test_parquet_hardening_int96_short_page_is_refused` | an INT96 page shorter than its num_values is refused |
+| `test_parquet_hardening_footer_good_file_still_reads` | footer: the good file still reads |
+| `test_parquet_hardening_footer_reencoded_good_file_still_reads` | footer: the re-encoded good file still reads |
+| `test_parquet_hardening_footer_invalid_type_nibble_on_row_groups_is_refused` | footer: an invalid type nibble on row_groups is refused |
+| `test_parquet_hardening_footer_invalid_type_nibble_on_num_rows_is_refused` | footer: an invalid type nibble on a num_rows is refused |
+| `test_parquet_hardening_footer_every_invalid_type_nibble_is_refused` | footer: every invalid type nibble on a field header is refused |
+| `test_parquet_hardening_footer_no_uuid_nibble_reads_a_wrong_answer` | footer: no type-13 (UUID) nibble on a field header reads a wrong answer |
+| `test_parquet_hardening_footer_without_row_groups_is_refused` | footer: no row_groups field is refused |
+| `test_parquet_hardening_footer_row_group_without_num_rows_is_refused` | footer: a row group with no num_rows is refused |
+| `test_parquet_hardening_footer_without_file_num_rows_is_refused` | footer: no file num_rows is refused |
+| `test_parquet_hardening_footer_num_rows_differing_from_row_groups_is_refused` | footer: a file num_rows that differs from its row groups is refused |
+| `test_parquet_hardening_footer_row_group_num_rows_below_total_is_refused` | footer: a row group num_rows below the footer's total is refused |
+| `test_parquet_hardening_footer_num_rows_above_row_groups_total_is_refused` | footer: a file num_rows above its row groups' total is refused |
+| `test_parquet_hardening_footer_type_0_nibble_with_delta_is_refused` | footer: a type-0 nibble with a field-id delta is refused as corrupt |
+| `test_parquet_hardening_footer_unknown_map_field_is_skipped_whole` | footer: an unknown map field is skipped whole |
+| `test_parquet_hardening_footer_unknown_bool_list_is_skipped_whole` | footer: an unknown list of bools is skipped whole |
+| `test_parquet_hardening_footer_unknown_uuid_field_is_skipped_whole` | footer: an unknown UUID field is skipped whole |
+| `test_parquet_hardening_footer_unknown_uuid_list_is_skipped_whole` | footer: an unknown list of UUIDs is skipped whole |
+| `test_parquet_hardening_footer_list_of_non_compact_type_is_refused` | footer: a list whose element type is not a compact type is refused |
+| `test_parquet_hardening_footer_huge_list_of_non_compact_type_is_refused_at_once` | footer: a huge list whose element type is not a compact type is refused at once |
+| `test_parquet_hardening_footer_byte_list_off_the_end_is_refused_at_once` | footer: a list of bytes that runs off the footer is refused at once |
+| `test_parquet_hardening_footer_double_list_off_the_end_is_refused_at_once` | footer: a list of doubles that runs off the footer is refused at once |
+| `test_parquet_hardening_footer_schema_element_with_no_name_is_refused` | footer: a schema element with no name is refused |
+| `test_parquet_hardening_footer_file_without_level_histograms_still_reads` | footer: the file without level histograms still reads |
+| `test_parquet_hardening_footer_repetition_type_of_2_32_is_refused` | footer: a repetition_type of 2^32 is refused, not read as REQUIRED |
+| `test_parquet_hardening_footer_unpatched_struct_files_schema_has_its_three_columns` | footer: the unpatched struct file's schema has its three columns |
+| `test_parquet_hardening_footer_negative_num_children_is_refused_by_parquet_schema` | footer: a negative num_children is refused by parquet_schema |
+| `test_parquet_hardening_footer_num_children_of_2_32_plus_1_is_refused_by_parquet_schema` | footer: a num_children of 2^32 + 1 is refused by parquet_schema |
+| `test_parquet_hardening_footer_num_children_of_minus_2_32_plus_1_is_refused_by_parquet_schema` | footer: a num_children of -(2^32) + 1 is refused by parquet_schema |
+| `test_parquet_hardening_backend_survived_the_malformed_footers` | backend survived the malformed footers |
+| `test_parquet_hardening_strings_run_in_a_utf8_database` | premise: the string arms run in a UTF8 database |
+| `test_parquet_hardening_read_parquet_plain_string_not_utf8_raises_22021` | read_parquet PLAIN string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_dictionary_string_not_utf8_raises_22021` | read_parquet dictionary string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_read_parquet_embedded_nul_raises_22021` | read_parquet string with an embedded NUL -> 22021 |
+| `test_parquet_hardening_varchar_output_column_is_checked_too` | varchar output column is checked too -> 22021 |
+| `test_parquet_hardening_parquet_foreign_table_string_not_utf8_raises_22021` | parquet foreign table string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_string_not_utf8_raises_22021` | import_parquet string not UTF-8 -> 22021 |
+| `test_parquet_hardening_import_parquet_stored_no_row_of_the_invalid_file` | import_parquet stored no row of the invalid file |
+| `test_parquet_hardening_insert_select_read_parquet_stored_no_row_of_the_invalid_file` | INSERT SELECT read_parquet stored no row of the invalid file |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_plain` | valid multibyte UTF-8 still reads (PLAIN) |
+| `test_parquet_hardening_valid_multibyte_utf8_still_reads_dictionary` | valid multibyte UTF-8 still reads (dictionary) |
+| `test_parquet_hardening_iceberg_scan_data_file_string_not_utf8_raises_22021` | iceberg_scan data file string not UTF-8 -> 22021 naming the column |
+| `test_parquet_hardening_patched_manifest_table_reads_all_five_rows` | the patched-manifest table reads all five rows |
+| `test_parquet_hardening_iceberg_fdw_reads_a_file_whose_partition_value_is_not_valid_text` | iceberg FDW reads, not prunes, a file whose partition value is not valid text |
+| `test_parquet_hardening_backend_survives_the_string_arms` | backend survived the string arms |
+| `test_parquet_hardening_page_unpatched_snappy_v1_file_reads` | page: the unpatched SNAPPY v1 file reads |
+| `test_parquet_hardening_page_unpatched_snappy_v2_file_reads` | page: the unpatched SNAPPY v2 file reads |
+| `test_parquet_hardening_page_snappy_v1_shorter_than_header_is_refused` | page: a SNAPPY v1 page shorter than its header's size is refused |
+| `test_parquet_hardening_page_snappy_v1_longer_than_header_is_refused` | page: a SNAPPY v1 page longer than its header's size is refused |
+| `test_parquet_hardening_page_snappy_v2_values_shorter_than_header_is_refused` | page: a SNAPPY v2 page whose values are shorter than its header's size is refused |
+| `test_parquet_hardening_page_uncompressed_header_size_differs_still_reads` | page: an uncompressed page whose header size differs still reads, as in pyarrow |
+| `test_parquet_hardening_page_uncompressed_v2_marked_compressed_reads` | page: an UNCOMPRESSED v2 page marked compressed reads |
+| `test_parquet_hardening_page_uncompressed_v2_header_size_below_level_bytes_reads` | page: an UNCOMPRESSED v2 page whose header size is below its level bytes reads, as in pyarrow |
+| `test_parquet_hardening_page_encoding_field_of_type_bool_true_is_refused` | page: a data page encoding field of Thrift type BOOL_TRUE is refused |
+| `test_parquet_hardening_page_encoding_field_of_type_uuid_is_refused` | page: a data page encoding field of Thrift type UUID is refused |
+| `test_parquet_hardening_page_every_stored_i32_or_struct_field_of_another_type_is_refused` | page: every i32 or struct page header field the reader stores, of another Thrift type, is refused |
+| `test_parquet_hardening_page_no_is_compressed_of_another_type_reads_a_wrong_answer` | page: no v2 is_compressed field of another Thrift type reads a wrong answer |
+| `test_parquet_hardening_page_is_compressed_of_type_list_is_skipped_and_reads` | page: a v2 is_compressed field of type LIST is skipped and reads, as in pyarrow |
+| `test_parquet_hardening_page_def_level_encoding_of_type_bool_true_with_changed_value_is_refused` | page: a v1 definition_level_encoding field of type BOOL_TRUE, with a changed value byte, is refused |
+| `test_parquet_hardening_page_every_skipped_required_i32_field_of_another_type_is_refused` | page: every required i32 page header field the reader skips, of another Thrift type, is refused |
+| `test_parquet_hardening_page_unpatched_dictionary_page_file_reads` | page: the unpatched dictionary page file reads |
+| `test_parquet_hardening_page_every_dictionary_page_header_field_of_another_type_is_refused` | page: every dictionary page header field of another Thrift type is refused |
+
+## 319. test_native_parquet_stack.py: a crafted Parquet footer trips the recursion guard instead of crashing the backend
+
+The twin of `test/native_parquet_stack.sh`. Two hand-crafted footers (no writer makes them, so no pyarrow) each drive one of the footer parser's two recursions 20000 deep: a run of Thrift struct openers through `PgColumnarThriftSkip`, and a linear schema chain through `walk_schema`. Under a pinned `max_stack_depth` each must raise 54001 rather than SIGSEGV, a shallow valid chain must still describe its one column, and `read_parquet` must refuse the crash input the same way `parquet_schema` does.
+
+### Every test
+
+Every test makes one check under the shell's name. Each parquet_schema or read_parquet call runs on its own connection with max_stack_depth pinned, and a failed or unreachable reading is a `query_error()`, so a crash shows as the survival check reading something other than 1 rather than as an unnamed error. Each survival test runs its own trigger with a crash baseline taken just before it, waits for the server, and wants SELECT 1 and an unchanged count of `terminated by signal` in the server log, since a bare SELECT 1 answers again once crash recovery is over (#1708 review).
+
+| test | what it holds |
+| --- | --- |
+| `test_nested_struct_footer_raises_stack_depth` | nested-struct footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_nested_struct_footer` | backend survived the nested-struct footer |
+| `test_schema_chain_footer_raises_stack_depth` | schema-chain footer raises stack-depth, not SIGSEGV |
+| `test_backend_survived_the_schema_chain_footer` | backend survived the schema-chain footer |
+| `test_a_shallow_valid_schema_chain_still_reads` | a shallow valid schema chain still reads |
+| `test_backend_survived_the_valid_file` | backend survived the valid file |
+| `test_read_parquet_rejects_the_nested_struct_footer` | read_parquet rejects the nested-struct footer the same way |
+| `test_backend_survived_read_parquet_on_the_crash_input` | backend survived read_parquet on the crash input |
+
+## 320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time
+
+The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The crafter runs as a subprocess, so the module imports no pyarrow; every test declines under the shell's skip name before it asks for the fixture, and on a box that cannot build the sparse file under the shell's other skip name. Every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved since its section began. One extra test mirrors 'crafted files were built', which the shell records only when the crafter fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_parquet_streaming_crafted_files_were_built` | crafted files were built |
+| `test_parquet_streaming_schema_reads_a_file_over_the_palloc_ceiling` | parquet_schema reads a file over the 1GB palloc ceiling |
+| `test_parquet_streaming_schema_reports_the_oversized_files_columns` | parquet_schema reports the columns of the oversized file |
+| `test_parquet_streaming_value_read_of_the_sparse_file_fails_cleanly` | value read of the sparse file fails cleanly |
+| `test_parquet_streaming_backend_survived_the_failed_read` | backend survived the failed read |
+| `test_parquet_streaming_schema_still_reads_a_normal_file` | parquet_schema still reads a normal file |
+| `test_parquet_streaming_read_parquet_still_reads_a_normal_file` | read_parquet still reads a normal file |
+| `test_parquet_streaming_zero_filled_page_area_is_rejected` | zero-filled page area is rejected, not walked byte by byte |
+| `test_parquet_streaming_page_size_past_eof_is_rejected` | page size past end of file is rejected by the size bound |
+| `test_parquet_streaming_negative_page_offset_is_rejected` | negative page offset is rejected by the offset check |
+| `test_parquet_streaming_unparseable_page_header_is_rejected` | unparseable page header is rejected |
+| `test_parquet_streaming_second_dictionary_page_is_rejected` | a second dictionary page in a chunk is rejected |
+| `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
+| `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
+| `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
+| `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
+| `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |
+| `test_parquet_streaming_full_scan_decodes_all_four_row_groups` | streaming: a full scan decodes all four row groups |
+| `test_parquet_streaming_limit_10_decodes_one_row_group` | streaming: LIMIT 10 (inside group 0) decodes one row group |
+| `test_parquet_streaming_limit_1010_decodes_two_row_groups` | streaming: LIMIT 1010 (into group 1) decodes two row groups |
+| `test_parquet_streaming_rescan_under_a_nested_loop_is_correct` | streaming: rescan under a nested loop is correct |
+
+## 321. test_native_parquet_partition.py: Hive-style partition columns materialize and prune whole files, and a tree that does not match fails loudly
+
+The twin of `test/native_parquet_partition.sh`. pyarrow writes a four-file dt=/region= tree and a percent-encoded tree. The partition values must materialize as typed columns; a predicate on a partition column must drop whole files before they are opened (the EXPLAIN Files and Files Pruned counters); partition and file predicates must combine; a volatile clause must never decide a whole file; a tree that does not match the declaration must fail with its own guard's message; Hive encoding (percent escapes, the null marker) must decode, and an encoded NUL or an invalid byte must be refused.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The writer runs as a subprocess, so the module imports no pyarrow, and every test declines under the shell's skip name before it asks for the fixture. A pruning count is 'no reading' unless the plan's Files line shows the scan ran; a refusal reads as '<SQLSTATE> (its own message)' only when the primary message is the guard's own; every reading waits for the server; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_four_partitions_read` | all four partitions read |
+| `test_partition_values_materialize` | partition values materialize |
+| `test_a_partition_column_is_typed_not_text` | partition column is typed, not text |
+| `test_group_by_a_partition_column` | group by a partition column |
+| `test_one_partition_value_prunes_half_the_files` | one partition value prunes half the files |
+| `test_and_reads_the_other_half` | and reads the other half |
+| `test_both_partition_columns_prune_down_to_one_file` | both columns prune down to one file |
+| `test_a_pruned_scan_still_returns_the_right_rows` | pruned scan still returns the right rows |
+| `test_an_inequality_on_a_partition_column_prunes` | an inequality on a partition column prunes |
+| `test_in_on_a_partition_column_prunes` | IN on a partition column prunes |
+| `test_a_predicate_matching_everything_prunes_nothing` | a predicate matching everything prunes nothing |
+| `test_a_predicate_on_a_file_column_prunes_no_files` | a predicate on a file column prunes no files |
+| `test_a_pruned_files_row_groups_are_never_counted` | a pruned file's row groups are never counted |
+| `test_partition_prune_plus_row_group_skip` | partition prune plus row-group skip |
+| `test_row_groups_are_still_skipped_inside_the_surviving_files` | row groups are still skipped inside the surviving files |
+| `test_a_volatile_clause_prunes_nothing` | a volatile clause prunes nothing |
+| `test_a_volatile_clause_keeps_every_matching_partition_row` | a volatile clause keeps every matching partition row |
+| `test_a_stable_clause_still_prunes` | a stable clause still prunes |
+| `test_a_file_missing_a_declared_partition_component_errors` | a file missing a declared partition component errors |
+| `test_a_basename_that_looks_like_a_partition_component_is_unaffected` | a file whose basename looks like a partition component is unaffected |
+| `test_an_unknown_partition_column_errors` | an unknown partition column errors rather than being ignored |
+| `test_an_empty_partition_columns_option_is_rejected` | an empty partition_columns option is rejected |
+| `test_declaring_a_file_column_as_a_partition_column_errors` | declaring a file column as a partition column errors |
+| `test_the_backend_survives_the_bad_declarations` | backend survived the bad declarations |
+| `test_a_percent_encoded_partition_value_decodes` | a percent-encoded partition value decodes |
+| `test_the_encoded_value_is_queryable_as_itself` | the encoded value is queryable as itself |
+| `test_hive_default_partition_reads_as_null` | __HIVE_DEFAULT_PARTITION__ reads as null |
+| `test_a_null_partition_value_is_not_the_literal_marker` | a null partition value is not the literal marker |
+| `test_an_unencoded_value_is_unaffected` | an unencoded value is unaffected |
+| `test_all_three_encoded_partitions_still_read` | all three partitions still read |
+| `test_a_null_partition_value_prunes` | a null partition value prunes |
+| `test_an_encoded_null_byte_in_a_partition_value_is_rejected` | an encoded null byte in a partition value is rejected |
+| `test_a_byte_invalid_in_the_server_encoding_is_rejected` | a byte invalid in the server encoding is rejected |
+| `test_the_encoded_tree_reads_again_once_both_are_gone` | the tree reads again once both are gone |
+| `test_the_backend_survives_the_malformed_partition_values` | backend survived the malformed partition values |
+
+## 322. test_native_parquet_fdw.py: the Parquet FDW reads an exported file as a foreign table, prunes what it can, and refuses each misuse by its own guard
+
+The twin of `test/native_parquet_fdw.sh`. A columnar table is exported and read back through a pgcolumnar_parquet foreign table, compared with a heap table written from the generator across full scan, projection, predicate, a nested-loop self-join (rescan) and a nested-type table. EXPLAIN ANALYZE must show a one-column query reading one of eleven columns, and a selective predicate skipping three of four row groups. The option validator and the scan refuse an invalid option, an empty path, a missing path, a non-Parquet file and an incompatible declared type, each with its own guard's message, and the backend survives.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with its own foreign server; the files live in server_dir. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> (<label>)' only when the primary message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_scalar_table_exports_every_row` | scalar export rows |
+| `test_a_full_foreign_scan_equals_the_source` | full scan: fdw == source |
+| `test_the_foreign_table_counts_every_row` | fdw row count |
+| `test_a_projection_equals_the_source` | projection: fdw == source |
+| `test_a_predicate_equals_the_source` | predicate: fdw == source |
+| `test_a_nested_loop_self_join_rescans_correctly` | nested-loop self-join (rescan): fdw == source |
+| `test_explain_shows_a_foreign_scan` | EXPLAIN shows Foreign Scan |
+| `test_a_one_column_query_reads_one_column` | a one-column query reads one of the eleven columns |
+| `test_the_skip_table_exports_every_row` | skip export rows |
+| `test_the_skip_file_has_four_row_groups` | the skip file has four row groups |
+| `test_a_selective_predicate_skips_three_row_groups` | a selective predicate skips the three row groups it cannot match |
+| `test_the_skipped_scan_returns_every_matching_row` | and the skipped scan still returns every matching row |
+| `test_the_fdw_nested_table_exports_every_row` | nested export rows |
+| `test_a_nested_full_scan_equals_the_source` | nested full scan: fdw == source |
+| `test_an_invalid_table_option_is_rejected` | reject invalid table option (HV00D) |
+| `test_an_empty_path_option_is_rejected` | reject empty path option (HV00D) |
+| `test_a_scan_without_a_path_option_errors` | scan without path option errors (HV00J) |
+| `test_a_scan_of_a_non_parquet_file_errors` | scan of non-parquet file errors (XX001) |
+| `test_a_scan_with_an_incompatible_declared_type_errors` | scan with incompatible declared type errors (42804) |
+| `test_a_numeric_5_2_foreign_column_refuses_an_overflow` | typmod: a numeric(5,2) foreign column refuses 12345.678 (22003) |
+| `test_a_numeric_5_2_foreign_column_rounds_to_scale_2` | typmod: a numeric(5,2) foreign column rounds 1.005 and 2.500 to scale 2 |
+| `test_a_varchar_3_foreign_column_refuses_a_longer_value` | typmod: a varchar(3) foreign column refuses 'hello' (22001) |
+| `test_the_backend_is_still_up_after_the_fdw_refusals` | backend still up after the refusals |
+
+## 323. test_native_read_parquet.py: read_parquet returns the rows that were written, refuses what it must, and keeps its file gate
+
+The twin of `test/native_read_parquet.sh`. A columnar table of eleven scalar types (with an all-NULL row) and one of int[], text[] and a composite are exported; read_parquet reads each file back as the generator's rows, a projection keeps its column, and import_parquet of the same file agrees. A missing column list, too few columns, an incompatible type and a non-Parquet file are each refused with their own SQLSTATE and message; a role without pg_read_server_files is refused by read_parquet's own gate, and a member reads every row.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. Every reading waits for the server first and returns a failure as a `query_error()`, so a crash fails only its own reading and the survival check, and two failed reads never agree.
+
+| test | what it holds |
+| --- | --- |
+| `test_read_parquet_fixture_exports_every_scalar_row` | scalar export rows |
+| `test_read_parquet_returns_the_generated_scalar_rows` | scalar round-trip: read_parquet == the generated rows |
+| `test_read_parquet_counts_every_scalar_row` | scalar read_parquet row count |
+| `test_a_projected_column_round_trips` | projected column round-trips |
+| `test_read_parquet_fixture_exports_every_nested_row` | nested export rows |
+| `test_read_parquet_returns_the_generated_nested_rows` | nested round-trip: read_parquet == the generated rows |
+| `test_a_missing_column_definition_list_is_refused` | premise: reject missing column definition list |
+| `test_fewer_declared_columns_than_the_file_is_refused` | reject fewer columns than file |
+| `test_an_incompatible_declared_type_is_refused` | reject incompatible declared type |
+| `test_read_parquet_type_refusal_names_read_parquet` | read_parquet's type refusal names read_parquet |
+| `test_import_parquet_type_refusal_names_import_parquet` | import_parquet's type refusal names import_parquet |
+| `test_parquet_foreign_table_type_refusal_names_the_wrapper` | a Parquet foreign table's type refusal names the foreign-data wrapper |
+| `test_a_file_that_is_not_parquet_is_refused` | reject non-parquet file |
+| `test_read_parquet_keeps_its_own_file_gate` | a role without pg_read_server_files is refused by read_parquet's own gate |
+| `test_a_pg_read_server_files_member_reads_every_row` | and a member of pg_read_server_files reads every row |
+| `test_the_backend_is_still_up_after_the_read_parquet_refusals` | backend still up after the refusals |
+| `test_import_parquet_loads_every_row` | import parity rows |
+| `test_read_parquet_agrees_with_import_parquet` | read_parquet == import_parquet |
+| `test_a_typmod_that_holds_every_value_reads_them_unchanged` | typmod: a declared typmod that holds every value reads them unchanged |
+| `test_numeric_5_2_refuses_an_overflow` | typmod: numeric(5,2) refuses 12345.678 with numeric field overflow |
+| `test_numeric_5_3_same_scale_lower_precision_refuses_an_overflow` | typmod: numeric(5,3), the file's scale with a lower precision, refuses 12345.678 (22003) |
+| `test_numeric_5_2_rounds_to_the_declared_scale` | typmod: numeric(5,2) rounds 1.005 and 2.500 to the declared scale |
+| `test_varchar_3_refuses_a_longer_value` | typmod: varchar(3) refuses 'hello' with value too long |
+| `test_varchar_3_drops_excess_trailing_spaces` | typmod: varchar(3) drops the excess trailing spaces of 'abc  ' |
+| `test_create_table_as_of_an_overflowing_value_fails` | typmod: CREATE TABLE AS of an overflowing value fails with numeric field overflow |
+| `test_the_failed_create_table_as_left_no_table` | typmod: the failed CREATE TABLE AS left no table |
+| `test_insert_select_into_a_heap_table_stores_the_rounded_values` | typmod: INSERT ... SELECT into a numeric(5,2) heap table stores the rounded values |
+| `test_import_parquet_into_a_typmod_table_stores_the_rounded_values` | typmod: import_parquet into a numeric(5,2) table stores the rounded values |
+| `test_an_array_element_typmod_applies` | typmod: an array element typmod applies, varchar(3)[] refuses 'a1000' |
+| `test_a_composite_field_typmod_applies` | typmod: a composite field typmod applies, y varchar(3) refuses 'c1000' |
+
+## 324. test_objstore_listing.py: a remote prefix or glob is listed page by page, an exact key is not listed, and a listing that cannot advance or fails is refused
+
+The twin of `test/objstore_listing.sh`. Over the local SigV4 fixture server, answering ListObjectsV2 two keys a page, read_parquet and the FDW read every object under a remote prefix (recursively, hidden and non-Parquet objects excluded), a remote glob matches only the top level, the hidden-name skip applies only below the prefix the user named and a remote glob matches `_` and dot names as a local glob does (#1784), an exact key is read with no LIST, an exact key holding `*`, `?` or `[` reads that object alone while a pattern naming no object of its exact name still expands (#1785), a bracketed `s3://[::1]/` authority is refused as an IPv6 literal, and Hive partition columns are stamped and pruned over a remote prefix. A replayed continuation token, a truncated page with no keys and a LIST answered with HTTP 500 are each refused by their own guard. When one object under a prefix or glob does not match the declared columns, the refusal names it in its DETAIL (#1902): `mix/` holds one string id among int64 ids, read by position, by field id and through the FDW, and `wide/` holds one file with an extra column, read by a glob. `s3a://` and `s3n://` read as `s3://`, in any case (#1930): an exact key, a prefix and a glob through read_parquet, parquet_schema, import_parquet and the FDW, a Hive prefix and a Hive root whose own `dt=` component is not a partition value; a missing object through `s3a://` is reported under its `s3://` URL; `s3ax://` and `xs3a://` stay local paths; and export_parquet, export_arrow and parallel_export_parquet refuse an alias with 0A000 and a hint naming the `s3://` URL. The backend survives. The shell's optional real-S3 arms (#1798) run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation: the layout goes there under a per-run prefix, and every remote prefix and glob reads as the same layout does from local disk, including 1100 one-row objects that a real server cannot list in one 1000-key page. The virtual-host arm also needs `PGC_S3_INTEGRATION_VHOST_ENDPOINT`, an endpoint whose bucket subdomain resolves. Otherwise they decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private cluster restarted with AWS_* in its environment; the Parquet fixtures are written by a subprocess, and without pyarrow every test declines under the shell's skip message. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> by the <guard>' only when the message is the guard's own; every reading waits for the server first; survival also requires that the server log's count of killed backends has not moved.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_listing_fixture_server_is_up` | premise: fixture up |
+| `test_read_parquet_over_a_prefix_reads_every_object_under_it` | read_parquet over a prefix reads every object under it (4 parts, recursive) |
+| `test_the_prefix_listing_paged` | the prefix listing paged (more than one list-type=2 request) |
+| `test_the_fdw_over_a_prefix_reads_what_read_parquet_reads` | FDW over a prefix == read_parquet over the prefix |
+| `test_hidden_and_non_parquet_objects_are_excluded_from_the_listing` | hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded |
+| `test_a_remote_glob_matches_only_the_top_level_parts` | glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/ |
+| `test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local` | #1784, eleven parameters, one check each: a prefix the user names may itself start with `_` or `.` (`_landing/`, `.dir/`, and a glob under each) and still reads, with `_temporary/` below it skipped; a glob matches `_` names and a dot name only when it spells the dot (`glb/*.parquet`, `glb/_*.parquet`, `glb/.*.parquet`), as a local glob does; the `glb/` prefix still skips both below it; an upper-case scheme (`S3://.../_landing/` and `S3://.../_landing/*.parquet`) reads as `s3://` does, for a prefix and a pattern; only the scheme ignores case, so `S3://.../glb/[A_]*.parquet` matches `_b.parquet` and not `a.parquet` |
+| `test_an_exact_key_with_a_glob_metacharacter_reads_that_object` | #1785, seven parameters, one check each: an exact key holding `?`, `[` or `*` (`lit/q?mark.parquet`, `lit/brack[1].parquet`, `lit/star*x.parquet`) reads that object alone, not the neighbour its pattern also matches; so does `lit/raw[1]`, which has no `.parquet` suffix, and `S3://.../lit/q?mark.parquet` with an upper-case scheme; `lit/q?mar?.parquet`, which names no object exactly, is still a pattern (`q?mark` and `qXmark`, not `Q?mark`); and a backslash before the `?` matches only `q?mark.parquet` |
+| `test_an_ipv6_literal_s3_authority_is_refused` | an IPv6 literal s3 authority s3://[::1]/... is refused as IPv6, not listed |
+| `test_an_exact_key_read_returns_its_rows` | exact-key read returns its rows |
+| `test_an_exact_key_read_issues_no_list` | an exact-key read issues no ListObjectsV2 |
+| `test_the_exact_key_read_reached_the_request_log` | and the request log recorded the exact-key read |
+| `test_hive_over_a_remote_prefix_stamps_the_partition_column` | Hive over a remote prefix stamps the partition column |
+| `test_a_partition_predicate_prunes_a_remote_file` | a partition predicate prunes a remote file (Files Pruned = 1) |
+| `test_a_non_advancing_continuation_token_is_refused` | a non-advancing continuation token is refused, not an infinite paging loop |
+| `test_a_truncated_page_with_no_keys_is_refused` | a truncated page with no keys is refused, not looped |
+| `test_a_list_that_fails_is_refused_not_read_as_empty` | a LIST that returns HTTP 500 is refused, not read as an empty prefix |
+| `test_the_matching_objects_of_the_mixed_prefix_read` | premise: the matching objects of mix/ read |
+| `test_a_prefix_read_names_the_object_whose_type_does_not_match` | read_parquet over a prefix names the object whose column type does not match |
+| `test_a_glob_read_names_the_object_with_an_extra_column` | read_parquet over a glob names the object with an extra column |
+| `test_a_field_id_prefix_read_names_the_object_whose_type_does_not_match` | read_parquet by field id over a prefix names the object whose column type does not match |
+| `test_the_fdw_over_a_prefix_names_the_object_whose_type_does_not_match` | the FDW over a prefix names the object whose column type does not match |
+| `test_an_s3a_or_s3n_url_reads_as_s3` | #1930, seven parameters, one check each: an s3a:// and an s3n:// exact key (`lst/part-0000.parquet`, 3 rows), an s3a:// and an s3n:// prefix (`lst/`, 12 rows), an s3a:// glob (`lst/*.parquet`, the 3 top-level parts), an upper-case `S3A://` prefix and a mixed-case `S3n://` exact key each read what the s3:// reading of the same object reads |
+| `test_parquet_schema_through_s3a_equals_through_s3` | parquet_schema through s3a:// == through s3:// (and both are the one bigint column) |
+| `test_import_parquet_through_s3n_loads_the_objects_rows` | import_parquet through s3n:// loads the object's rows (3 rows, sum 33) |
+| `test_the_fdw_over_an_s3a_prefix_reads_what_read_parquet_reads_over_s3` | the FDW over an s3a:// prefix == read_parquet over the s3:// prefix |
+| `test_hive_over_an_upper_case_s3a_prefix_stamps_the_partition_column` | Hive over an S3A:// prefix stamps the partition column |
+| `test_an_s3a_fdw_roots_own_component_is_not_a_partition_value` | an s3a:// FDW root's own dt= component is not a partition value, as with s3:// -- HV004 naming the s3:// file; with the root left as s3a:// it matched no resolved file and the root's dt= stamped every row |
+| `test_a_missing_object_through_s3a_is_reported_under_its_s3_url` | a missing object through s3a:// is reported under its s3:// URL (58P01) |
+| `test_a_scheme_that_only_resembles_s3a_is_a_local_path` | two parameters, the controls: `control: an s3ax:// URL is a local path, not S3` and `control: an xs3a:// URL is a local path, not S3`, each 58P01 naming the URL as a local file |
+| `test_an_export_refuses_an_s3a_or_s3n_url` | three parameters, one check each: export_parquet refuses `s3a://`, export_arrow `s3n://` and parallel_export_parquet `S3A://`, each with 0A000, the export's own message for the URL and a hint naming the `s3://` URL |
+| `test_the_backend_is_still_up_after_the_listing_refusals` | backend still up after the listing refusals |
+| `test_an_s3_glob_of_more_than_128_stars_is_refused_before_the_listing` | read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists (#1972) |
+| `test_an_s3_glob_of_4096_bytes_is_refused` | read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000 (#1972) |
+| `test_a_foreign_table_over_an_s3_glob_of_129_stars_is_refused` | a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000 (#1972) |
+| `test_the_listing_returns_a_key_of_1000_levels_that_one_star_matches` | premise: the listing returns a key of 1000 levels, and a glob of one * matches it |
+| `test_an_s3_glob_of_1000_levels_is_refused_and_the_server_stays_up` | read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 in a UTF-8 database, and the server stays up (#1972) |
+| `test_integration_the_listing_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials |
+| `test_integration_a_real_s3_prefix_read_equals_the_local_directory` | opt-in: integration: real S3 prefix read == local directory (`lst/`, by set hash) |
+| `test_integration_a_real_s3_glob_equals_the_local_glob` | opt-in: integration: real S3 glob == local glob (`lst/*.parquet` and the three `glb/` globs) |
+| `test_integration_a_real_s3_skips_hidden_names_like_a_local_directory` | opt-in: integration: real S3 skips hidden names like a local directory (`hid/` with `_SUCCESS`, `_temporary/` and a dot file, and `glb/`) |
+| `test_integration_a_real_s3_prefix_under_a_hidden_directory_equals_local` | opt-in: integration: real S3 prefix under a _ or . directory == local (`_landing/`, `.dir/` and a glob under each) |
+| `test_integration_the_real_s3_serves_1100_keys_in_pages_of_at_most_1000` | opt-in: integration: the real S3 serves the 1100 keys in pages of at most 1000 (the server's first page, read by the aws CLI) |
+| `test_integration_a_real_s3_listing_pages_past_1000_keys` | opt-in: integration: real S3 listing pages past 1000 keys (1100 one-row objects read back as 1100 rows) |
+| `test_integration_the_cluster_restarts_with_the_virtual_host_endpoint` | opt-in, also needs `PGC_S3_INTEGRATION_VHOST_ENDPOINT`: integration: the cluster restarts with the virtual-host endpoint |
+| `test_integration_a_real_s3_virtual_host_prefix_read_equals_path_style` | opt-in, also needs `PGC_S3_INTEGRATION_VHOST_ENDPOINT`: integration: real S3 virtual-host prefix read == path-style |
+
+## 325. test_native_rewrite_conc.py: The online rewrite runs alongside writers without losing a row, and without blocking them
+
+The twin of `test/native_rewrite_conc.sh`. Six workers insert, delete and update disjoint ranges of a columnar table and its heap oracle while a compactor loops compact_rewrite and compact. A delete that races a rewrite of its group is refused with a serialization failure and retried, so the two tables must end equal. A compact_rewrite held mid-verb must then let a reader and a writer through.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database. The workers and the compactor run as threads, each statement retried as the shell's runsql retries it. The oracle comparisons hash both tables, and a failed read is a value no other read shares. The held rewrite runs in its own thread; the reader and the writer each set a 3 s lock_timeout, and the lock is checked to be still held after both finish.
+
+| test | what it holds |
+| --- | --- |
+| `test_all_rewrite_workers_succeeded` | all workers succeeded (retried past serialization failures) |
+| `test_the_compactor_rewrote_groups_while_the_workers_were_writing` | the compactor rewrote groups while the workers were writing |
+| `test_conc_rewrite_whole_row` | conc-rewrite whole-row |
+| `test_conc_rewrite_count_sum` | conc-rewrite count/sum |
+| `test_conc_rewrite_range` | conc-rewrite range |
+| `test_row_count_sane` | row count sane |
+| `test_a_compact_rewrite_holds_its_lock_mid_verb` | a compact_rewrite holds its lock on t_col mid-verb |
+| `test_a_reader_finishes_while_the_rewrite_holds_its_lock` | a reader with a 3 s lock_timeout finishes while the rewrite holds its lock |
+| `test_a_writer_inserts_while_the_rewrite_holds_its_lock` | a writer with a 3 s lock_timeout inserts while the rewrite holds its lock |
+| `test_the_rewrite_still_held_its_lock_when_both_had_finished` | and the rewrite still held its lock when both had finished |
+| `test_the_held_rewrite_itself_completed` | the held rewrite itself completed |
+
+## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
+
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+
+### Every test
+
+Every test makes one check under the shell's name. Each addressing check reads the request paths the fixture logged for that read, not only the answer, since the fixture serves the same object either way. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow, or UNAVAILABLE_ENDPOINT where pgc-bucket.s3.local does not resolve, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_server_is_up` | premise: fixture up |
+| `test_an_s3_path_style_read` | s3:// path-style read |
+| `test_path_style_puts_the_bucket_in_the_request_path` | path-style put the bucket in the request path |
+| `test_a_key_needing_encoding_reads_back_path_style` | a key with a space, '+' and '=' reads back (path-style) |
+| `test_the_path_style_request_path_is_the_key_encoded_once` | and its path-style request path is the key URI-encoded once |
+| `test_a_gs_read_round_trips` | gs:// read round-trips (scheme handled, HMAC creds reused) |
+| `test_a_gs_write_round_trips` | gs:// write round-trips |
+| `test_the_gs_written_object_reads_back` | gs:// read-back of the written object |
+| `test_a_virtual_host_read_equals_the_path_style_read` | virtual-host read == path-style read (same object, different addressing) |
+| `test_virtual_host_puts_the_key_alone_in_the_path` | virtual-host put the KEY ALONE in the path (no bucket segment) |
+| `test_a_key_needing_encoding_reads_back_virtual_host` | a key with a space, '+' and '=' reads back (virtual-host) |
+| `test_the_virtual_host_request_path_is_the_key_alone_encoded_once` | and its virtual-host request path is the key alone, URI-encoded once |
+| `test_an_s3_prefix_read_path_style` | s3:// prefix read, path-style |
+| `test_the_path_style_list_puts_the_bucket_in_the_path` | and its path-style LIST put the bucket in the request path |
+| `test_an_s3_prefix_read_virtual_host` | s3:// prefix read, virtual-host |
+| `test_the_virtual_host_list_goes_to_the_bucket_root` | and its virtual-host LIST went to the bucket root |
+| `test_an_s3_pattern_read_virtual_host` | s3:// pattern read, virtual-host |
+| `test_the_pattern_read_virtual_host_list_goes_to_the_bucket_root` | and the pattern read's virtual-host LIST went to the bucket root |
+| `test_the_virtual_host_export_fails_in_a_worker` | premise: the virtual-host export fails in a worker |
+| `test_the_virtual_host_upload_cleanup_lists_at_the_bucket_root` | and its virtual-host upload cleanup listed the uploads at the bucket root |
+| `test_a_terminated_workers_upload_is_open_and_unanswered` | premise: a worker's upload is open and its id unanswered when the worker is terminated |
+| `test_the_virtual_host_upload_cleanup_aborts_the_open_upload` | and the virtual-host upload cleanup aborted the upload the worker left open |
+| `test_addressing_path_puts_the_bucket_back_in_the_path` | removal proof: with addressing=path the bucket is back in the path |
+| `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
+| `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
+| `test_gs_with_no_endpoint_goes_to_storage_googleapis_com` | gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name) |
+
+## 327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left
+
+The twin of `test/objstore_stash_recovery.sh`. It runs `test/objstore_module.sh` as a subprocess against three arrangements of pkglibdir, each from a pristine copy of the module: a different valid module left at `.probe` beside a good one, the only copy at `.probe` with nothing installed, and a 19-byte stand-in installed with the real module at `.away`. It asserts on the suite's exit status and on what it left behind. The installed module is shared, so this file must not run beside others that load it.
+
+### Every test
+
+Every test reads one observation the module fixture took, and makes one check under the shell's name. If no valid module is installed, each test is unrunnable as `stash recovery`, the shell's skip.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_session_build_installed_a_valid_module` | the build or install failed, so nothing below measures the guard |
+| `test_debris_premise_installed_module_valid` | premise: the installed module is valid before this slice arranges anything |
+| `test_debris_premise_stash_in_place` | premise: a debris stash really is in place for the run below |
+| `test_debris_premise_stash_is_a_different_valid_module` | premise: and the debris is a valid module that differs from the installed one |
+| `test_debris_suite_completes` | the suite runs to completion with debris beside a valid module |
+| `test_debris_not_restored_over_the_module` | and the installed module is still the one that was there, not the debris |
+| `test_debris_gone` | the debris is gone afterwards |
+| `test_debris_module_still_valid` | and the module left installed is still valid |
+| `test_only_copy_premise_nothing_installed` | premise: nothing is installed at the module's path for this slice |
+| `test_only_copy_premise_stash_is_real` | premise: and the stash beside it is the real module |
+| `test_only_copy_suite_completes` | the suite recovers the only surviving copy and runs to completion |
+| `test_only_copy_reinstalled` | the module is installed again afterwards, and valid |
+| `test_only_copy_stash_not_left` | and the stash is not left behind for the next run to trip on |
+| `test_stand_in_premise_installed` | premise: a 19-byte stand-in really is installed as the module |
+| `test_stand_in_premise_not_a_module` | premise: which is not a module |
+| `test_stand_in_premise_stash_is_real` | premise: and the real module is the thing parked at the stash |
+| `test_stand_in_suite_completes` | the suite replaces the stand-in with the real module and completes |
+| `test_stand_in_real_module_survived` | the real module survived, rather than being deleted with the stash |
+| `test_stand_in_stash_cleared` | and the stash is cleared |
+
+## 328. test_objstore_s3_read.py: SigV4-signed s3:// reads, every refusal naming its cause
+
+The twin of `test/objstore_s3_read.sh`. A private cluster reads a parquet object through the local fixture server in SigV4 mode, which recomputes every signature with python's stdlib, requires the session token in the signed set, and refuses a tamper bucket against a different secret. Reads are compared with the byte-identical local file, the request count with the unsigned arithmetic, and the region with both AWS_REGION and AWS_DEFAULT_REGION set, then the fallback alone. A versioned object (#1867) is read with the version id the HEAD named, signed in the canonical query and percent-encoded, so an overwrite mid-read leaves the read on the old version. A missing endpoint, region and secret are each refused naming what is missing; a 403 names the HTTP 403 and a 404 stays 58P01; an https endpoint is never downgraded.
+
+### Every test
+
+Every test makes one check under the shell's name. Refusals are a SQLSTATE plus the phrase that names the cause; a failed read is a query_error, never text. Every reading waits for the server first, and survival also counts killed backends in the private cluster's log. The first tests decline without pyarrow, under the shell's skip message. The real-S3 arm declines UNMET_PRECONDITION unless PGC_S3_INTEGRATION_ENDPOINT is set, which no matrix run does, so expected_unrunnable.txt lists it on every major.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_fixture_is_written` | premise: fixture written |
+| `test_the_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_an_s3_read_with_no_environment_is_refused_naming_the_endpoint` | config: s3 read with no environment is 28000 |
+| `test_aws_region_outranks_aws_default_region` | region: AWS_REGION outranks AWS_DEFAULT_REGION |
+| `test_a_full_scan_over_s3_reads_what_the_local_file_reads` | A: full scan s3 == local |
+| `test_a_projection_over_s3_reads_what_the_local_file_reads` | A: projection s3 == local |
+| `test_a_percent_encoded_key_over_s3_reads_what_the_local_file_reads` | A: percent-encoded key s3 == local |
+| `test_count_over_s3` | A: count(*) over s3 |
+| `test_the_signed_run_logged_requests` | premise: signed run logged requests |
+| `test_signing_left_the_request_arithmetic_unchanged` | B: signing left the request arithmetic unchanged |
+| `test_the_versioned_overwrite_pair_has_one_byte_length` | premise: the versioned overwrite pair has one byte length |
+| `test_a_signed_versioned_read_overwritten_mid_read_finishes_on_the_version_it_opened` | C: a signed versioned read overwritten mid-read finishes on the version it opened |
+| `test_the_signed_versioned_read_logged_gets` | premise: the signed versioned read logged GETs |
+| `test_every_signed_ranged_get_of_a_versioned_read_names_the_version` | C: every signed ranged GET of a versioned read names the version |
+| `test_the_tamper_bucket_surfaces_its_403_as_28000` | 403: tamper bucket surfaces 28000 |
+| `test_a_verified_request_for_a_missing_key_still_reaches_404` | 403 ordering premise: verified requests still reach 404 = 58P01 |
+| `test_aws_default_region_is_the_fallback` | region: AWS_DEFAULT_REGION is the fallback |
+| `test_an_s3_read_with_no_region_is_refused_naming_it` | config: s3 read with no region is refused naming it |
+| `test_an_s3_read_with_no_secret_is_refused_naming_it` | config: s3 read with no AWS_SECRET_ACCESS_KEY is refused naming it |
+| `test_an_https_endpoint_is_not_downgraded` | https endpoint is not downgraded |
+| `test_the_backend_is_still_up_after_the_s3_refusals` | backend still up after the s3 refusals |
+| `test_a_real_s3_implementation_reads_what_the_local_file_reads` | integration: real S3 implementation == local |
+
+## 329. test_objstore_tls_read.py: TLS for object-store reads, every verification proven by a certificate that must be refused
+
+The twin of `test/objstore_tls_read.sh`. A private cluster, trusting the fixture CA through SSL_CERT_FILE in the postmaster environment, reads a parquet object over https from the shell's fixture server and over s3:// with SigV4 on an https endpoint, then must refuse four servers: a wrong host, an expired certificate, an untrusted CA and a self-signed leaf. A transfer stalled mid-body must be cancelled by statement_timeout, and a restart with SSL_CERT_DIR alone must still trust the CA.
+
+### Every test
+
+Every test makes one check under the shell's name. A refusal is 08006, the module's own message naming the URL, and OpenSSL's verification reason for that certificate as the whole DETAIL; each carries the premise that the fixture logged the handshake, and waits for SELECT 1 afterwards so a crash fails only its own checks, which the closing survival check counts in the server log. The PKI, the fixture and the logs live in `server_dir`, since the backend reads the CA. The first test mirrors the shell's two pgc_skip names: it declines without pyarrow or without the openssl CLI, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_expired_certificate_is_genuinely_expired` | premise: expired certificate is genuinely expired |
+| `test_six_tls_servers_are_up` | premise: six TLS servers are up |
+| `test_an_https_read_equals_the_local_read` | A: https differential == local |
+| `test_count_over_https` | A: count(*) over https |
+| `test_s3_over_https_equals_the_local_read` | A2: s3 over https differential == local |
+| `test_the_handshake_was_attempted[...]` | premise: {label} handshake was attempted, one test per label (wrong-host, expired, untrusted-ca, self-signed) |
+| `test_the_certificate_is_refused_08006[...]` | C: {label} refused with 08006, one test per label |
+| `test_the_refusal_is_the_tls_one[...]` | C: {label} refusal is the TLS one: the module's message naming the URL, one test per label |
+| `test_the_refusal_names_its_reason[...]` | C: {label} names its reason: the whole DETAIL, OpenSSL's verification reason, one test per label |
+| `test_the_refused_read_returned_no_rows[...]` | C: {label} returned no rows, one test per label |
+| `test_a_stalled_tls_transfer_is_cancelled` | D: stalled TLS transfer cancelled with query_canceled |
+| `test_the_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_ssl_cert_dir_alone_trusts_the_ca` | E: SSL_CERT_DIR alone trusts the CA (count(*) over https) |
+| `test_no_backend_was_terminated_by_a_signal` | survival: no backend was terminated by a signal |
+
+## 330. test_objstore_http_read.py: the HTTP ranged byte source, with request counts and each refusal's own guard
+
+The twin of `test/objstore_http_read.sh`. Foreign tables over the local fixture server (`test/objstore_http_server.py`, the shell's own) read a G-row-group parquet fixture: the answer must equal the byte-identical local file, the buffered request count must equal the arithmetic from the fixture's shape with every GET carrying a Range header, and statement_timeout must cancel a transfer stalled mid-body. An unreachable port, a 404, a server that ignores Range, a short 206 body, EOF mid-body and a server that hangs up are each refused by their own guard; a keep-alive connection the server dropped is retried once, and a fresh connection is not. An object the server overwrites between two ranged GETs of one read is refused with `changed while it was being read`, not read as rows from both versions, and a server that sends only a weak ETag is still read, because the client does not send a weak ETag as If-Match (#1805). An ETag of 79 characters still pins the read, an ETag of 80 is not sent cut short (the read succeeds unpinned), and a server whose ETag changes on every request is refused as if the object changed. With `pgcolumnar.objstore_pin_reads` off (#1866) that server is read whole, and an overwrite mid-read is read unpinned, old and new rows mixed. A versioned object is read whole from the version the read opened, with the version id on every ranged GET; an overwrite that changes the length, on a server with no ETag, is refused by the Content-Range total, with the pin on or off (#1867). An object that shrinks below the offset of a later GET gets 416 and is refused the same way. With the pin off no GET names a version, a version id of `null` or one over 1024 bytes is not sent, and a versioned GET answered 403 (no `s3:GetObjectVersion`) is sent again without the version and the read finishes (#1888 review). Two reads of one object in one statement, a `UNION ALL` of the same foreign table that the server overwrites between the two HEADs, are refused with `changed while it was being read`; the next statement reads the new object; and in a versioned bucket both reads read the version the first opened (#1894). One s3 key on two foreign servers with different endpoints is two objects, plain and versioned; in one transaction a statement sent on its own reads the new object; a statement that overwrites an object and reads it again reads the new object; and with a weak ETag a same-length overwrite between two reads is not caught, the documented limit (#1907 review). The pin ends with the top-level statement (#1907 second review): two statements sent in one query string each read the current object, from a plain and from a versioned store, and so does the statement after a `DO` block in one string, while two reads inside one function call or one `DO` block share the pin and are refused. The refusal's DETAIL names the statement's earlier read with both ETags and lengths. A versioned overwrite by a longer object reads the first version with its own length, and with a weak ETag an overwrite that changes the length is refused. Only an `s3://` key is a pattern (#1785): an http URL with a query string reads the object and its HEAD carries the query to the server, and a bracketed IPv6 host is refused by name rather than as a listing.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order, each statement on its own connection as the shell's psql calls are. Request counts come from the fixture's request log. A refusal is the SQLSTATE plus the phrase from its own guard's message, since many guards share 08006 and 08P01; each refusal reading first waits for the server, so a crash in one arm can't leak into the next. A failed read is a query_error, never text. The first test mirrors the shell's pgc_skip name: it declines without pyarrow, and the rest decline with it.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_http_read_fixture_is_written` | premise: fixture written |
+| `test_the_http_read_fixture_server_is_up` | premise: fixture server is up |
+| `test_the_http_read_fixture_server_b_is_up` | premise: fixture server B is up |
+| `test_a_full_scan_over_http_equals_the_local_file` | A: full scan http == local |
+| `test_a_projection_over_http_equals_the_local_file` | A: projection http == local |
+| `test_count_over_http` | A: count(*) over http |
+| `test_the_buffered_run_logged_requests` | premise: buffered run logged requests |
+| `test_the_unbuffered_run_logged_requests` | premise: unbuffered run logged requests |
+| `test_buffered_full_width_requests` | B: buffered full-width requests (K = 4 + G*NCOLS) |
+| `test_buffered_two_column_requests` | B: buffered 2-col requests (K = 4 + G*2) |
+| `test_unbuffered_is_at_least_ten_times_k` | B: unbuffered >= 10x K |
+| `test_the_buffered_to_unbuffered_request_ratio` | B: buffered/unbuffered request ratio |
+| `test_the_range_audit_phase_logged_gets` | premise: the range-audit phase logged GETs |
+| `test_every_get_carried_a_range_header` | B: every GET carried a Range header |
+| `test_an_unreachable_endpoint_is_refused` | C: unreachable endpoint SQLSTATE |
+| `test_a_404_is_refused` | C: http 404 SQLSTATE |
+| `test_a_range_ignoring_server_is_refused` | C: range-ignoring server SQLSTATE |
+| `test_a_short_206_body_is_refused` | C: a short 206 body is refused |
+| `test_eof_mid_body_is_refused` | C: EOF mid-body is refused |
+| `test_a_dropped_keep_alive_connection_is_retried` | C: a dropped keep-alive connection is retried (http == local) |
+| `test_a_server_that_hangs_up_is_refused` | C: a server that hangs up on a fresh connection is refused |
+| `test_a_fresh_connection_is_not_retried` | C: and that fresh connection is not retried (one request logged) |
+| `test_the_overwrite_pair_has_one_byte_length` | premise: the overwrite pair has one byte length |
+| `test_an_object_overwritten_mid_read_is_refused` | C: an object overwritten mid-read is refused |
+| `test_a_weak_etag_is_not_sent_as_if_match` | C: a weak ETag is not sent as If-Match (http == local) |
+| `test_a_79_character_etag_still_pins_the_read` | C: a 79-character ETag still pins the read |
+| `test_a_79_character_etag_reads_an_unchanged_object_whole` | C: a 79-character ETag reads an unchanged object whole (http == local) |
+| `test_an_80_character_etag_is_not_sent_cut_short` | C: an 80-character ETag is not sent cut short as If-Match |
+| `test_a_server_whose_etag_changes_on_every_request_is_refused` | C: a server whose ETag changes on every request is refused |
+| `test_the_length_change_pair_differs_in_length` | premise: the length-change pair differs in length |
+| `test_with_the_pin_off_a_fickle_etag_server_is_read_whole` | C: with pgcolumnar.objstore_pin_reads off, a server whose ETag changes on every request is read whole (http == local) |
+| `test_with_the_pin_off_an_overwrite_mid_read_is_read_unpinned` | C: with pgcolumnar.objstore_pin_reads off, an object overwritten mid-read is read unpinned |
+| `test_a_versioned_object_overwritten_mid_read_is_read_from_its_version` | C: a versioned object overwritten mid-read is read whole from the version the read opened |
+| `test_the_versioned_read_logged_gets` | premise: the versioned read logged GETs |
+| `test_every_ranged_get_of_a_versioned_read_names_the_version` | C: every ranged GET of a versioned read names the version |
+| `test_an_object_whose_length_changes_mid_read_is_refused` | C: an object whose length changes mid-read is refused (Content-Range total) |
+| `test_with_the_pin_off_a_length_change_is_still_refused` | C: with pgcolumnar.objstore_pin_reads off, an object whose length changes mid-read is still refused |
+| `test_the_shrink_pairs_new_file_is_shorter_than_its_old_one` | premise: the shrink pair's new file is shorter than its old one (bytes old-new) |
+| `test_an_object_that_shrinks_below_a_later_gets_offset_is_refused` | C: an object that shrinks mid-read below a later GET's offset is refused (HTTP 416) |
+| `test_with_the_pin_off_no_get_names_the_version` | C: with pgcolumnar.objstore_pin_reads off, no ranged GET of a versioned object names the version |
+| `test_a_version_id_of_null_is_not_sent_as_a_pin` | C: a version id of null is not sent as a pin |
+| `test_a_version_id_longer_than_1024_bytes_is_not_sent_cut_short` | C: a version id longer than 1024 bytes is not sent cut short |
+| `test_a_versioned_get_answered_403_is_sent_again_without_the_version` | C: a versioned GET answered 403 is sent again without the version, and the read finishes |
+| `test_an_object_overwritten_between_two_reads_of_one_statement_is_refused` | C: an object overwritten between two reads of one statement is refused |
+| `test_the_statement_after_that_reads_the_new_object` | C: the statement after that reads the new object |
+| `test_two_reads_of_one_versioned_object_read_the_version_the_first_opened` | C: two reads of one versioned object in one statement, overwritten between them, read the version the first opened |
+| `test_one_s3_key_on_two_endpoints_reads_each_endpoints_own_object` | C: one s3 key on two endpoints, read in one statement, reads each endpoint's own object |
+| `test_one_versioned_s3_key_on_two_endpoints_reads_each_endpoints_own_version` | C: one versioned s3 key on two endpoints, read in one statement, reads each endpoint's own version |
+| `test_in_one_transaction_the_next_statement_reads_the_new_object` | C: in one transaction, the next statement reads the new object |
+| `test_two_statements_sent_in_one_query_string_each_read_the_current_object` | C: two statements sent in one query string each read the current object |
+| `test_two_statements_sent_in_one_query_string_to_a_versioned_store_each_read_the_current_version` | C: two statements sent in one query string to a versioned store each read the current version |
+| `test_two_reads_of_one_object_in_one_function_call_are_refused` | C: two reads of one object in one function call, overwritten between them, are refused |
+| `test_two_reads_of_one_object_in_one_do_block_are_refused` | C: two reads of one object in one DO block, overwritten between them, are refused |
+| `test_the_statement_after_a_do_block_in_one_query_string_reads_the_new_object` | C: the statement after a DO block in one query string reads the new object |
+| `test_the_refusal_names_the_earlier_read_of_the_statement_in_its_detail` | C: the refusal of an overwrite between two reads names the earlier read of the statement in its DETAIL |
+| `test_a_versioned_overwrite_by_a_longer_object_reads_the_version_the_first_opened` | C: two reads of one versioned object in one statement, overwritten between them by a longer object, read the version the first opened |
+| `test_with_a_weak_etag_an_overwrite_that_changes_the_length_is_refused` | C: with a weak ETag, an overwrite that changes the length between two reads of one statement is refused |
+| `test_a_statement_that_overwrites_an_object_and_reads_it_again_reads_the_new_object` | C: a statement that overwrites an object and reads it again reads the new object |
+| `test_with_a_weak_etag_a_same_length_overwrite_between_two_reads_is_not_caught` | C: with a weak ETag, a same-length overwrite between two reads of one statement is not caught |
+| `test_a_stalled_transfer_is_cancelled` | D: stalled transfer cancelled with query_canceled |
+| `test_the_http_read_cancel_latency_is_bounded` | D: cancel latency bounded (<=10s) |
+| `test_an_http_url_with_a_query_string_reads_the_object` | E: an http URL with a query string (?raw=true) reads the object, not a listing |
+| `test_the_query_string_reached_the_server` | E: and its HEAD carried the query string to the server |
+| `test_a_versioned_read_of_an_http_url_with_a_query_string_adds_the_version_with_an_ampersand` | E: a versioned read of an http URL with a query string adds the version with '&' and reads the version it opened -- #1904: a second '?' hid the versionId, and the overwrite failed the read |
+| `test_an_ipv6_literal_http_host_is_refused` | E: an IPv6 literal http host is refused as IPv6, not as a listing |
+| `test_the_server_survives` | survival: the server answers and no backend crashed |
+
+## 331. test_objstore_sink_write.py: exports to s3:// go as one PUT or a completed multipart upload, read back as the generator, and a failed export leaves no key and no open upload
+
+The twin of `test/objstore_sink_write.sh`. Over the local SigV4 fixture server, which emulates multipart as S3 does (the object is the parts the complete lists, each checked against its ETag), a small export goes as one plain PUT and a large one as a multipart upload completed once, and each object reads back as the generator's rows, the Arrow one imported back from the bucket. An injected fault and a part the server refuses each fail the export by their own message, leave no key and leave no upload open. When the abort's DELETE is answered as Garage answers it, a 204 with no Content-Length on a connection kept open (`__delete_unframed__`), the export still returns within 4 s (#1830 review). A CreateMultipartUpload reply whose body ends at connection close, and an HTTP/1.0 reply whose connection does not persist (`__uploads_unframed__`), still start the upload, and no request goes on the connection either reply ended (#1830). An export that needs more than 10000 parts stops with 54000 after part 10000 and leaves no key and no upload open. An export to AWS S3 (including `amazonaws.com.cn`), to Cloudflare R2 or to the default GCS endpoint with parts under 5 MiB is refused with 22023 before the upload starts, while a one-part export, 5 MiB parts, and a host such as `notamazonaws.com` that only ends in those letters are not (#1857). An unlisted endpoint is refused by the allow-list. An allow-listed `http://` target, served by a second fixture server without the SigV4 options, is written unsigned and does not crash the backend (#1779): a small export as one PUT and a large one as a multipart upload, each read back as the generator over `http://`, an Arrow export imported back from the server's directory, and an injected fault leaves no upload open. A 403 from an unsigned `http://` target carries a hint that says the request went unsigned, not one that sends the reader to the `AWS_*` credentials, and a 403 to a signed `s3://` request still sends the reader there. parallel_export_parquet writes one object per worker and a _SUCCESS marker under an s3:// prefix, a refused stale-part listing or a refused `_SUCCESS` PUT after every worker finished fails the run by its own 28000 and leaves no part and no earlier marker (`__listing_status__` and the fixture's `__put_status__`, #1781). A refused listing after a larger 4-worker run leaves that run's part-0002 and part-0003 and no marker, which is the limit docs/sql-reference.md documents, and its error names the prefix it listed rather than the dummy key `s3://pgc-bucket/_`. A smaller re-run drops the stale tail, a prefix that ends in one or more `/` gets keys with one slash and reads back through the documented glob (#1782), no form of the prefix deletes part objects under a sibling prefix that shares its leading characters, a smaller re-run keeps a part under a deeper prefix such as `sl/sub/`, a smaller re-run to an `S3://` prefix (uppercase scheme) still drops the stale tail, and a bare bucket is refused before any worker writes. A `gs://` or `http://` prefix is refused before any worker starts, since only an `s3://` prefix can be listed (#1832), and the refusal of an unsupported scheme hints at that (#1831). A 1023-byte prefix is refused as too long before any request (#1849). The workers obey the session's allow-list and part size rather than only the system's, and the dispatcher refuses an endpoint the session's list leaves out before any worker starts (#1780). A cancelled run on a prefix ending in `/` leaves no object, no marker, no upload open and no key with an empty segment. A cancel while every worker waits for the answer to its part PUT, which the fixture applies 3 s late, leaves no part (#1864), and with a 12 s hold the cancel returns within 8 s, because the dispatcher waits for the workers once, not twice. The shell's three optional real-S3 arms run when `PGC_S3_INTEGRATION_ENDPOINT` names a real S3 implementation, and otherwise decline as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major (#432). The first is the restart into that endpoint, so a crash in an earlier arm reports by name rather than ending the run (#1850).
+
+### Every test
+
+Every test makes one check under the shell's name, on a private cluster restarted with AWS_* in its environment; the fixtures are generated by SQL, so the module needs no pyarrow. A failed reading is a query_error(), unique per call, so two failures never agree. A refusal reads as '<SQLSTATE> by the <guard>' only when the message is the guard's own, and every reading waits for the server first. Open uploads are read from the fixture server's __open_uploads__, not inferred from the DELETE count.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_sink_write_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_a_small_export_to_s3_succeeds` | small export to s3:// succeeds |
+| `test_a_small_object_goes_as_one_plain_put` | small object went as ONE plain PUT (no multipart) |
+| `test_the_small_object_reads_back_as_the_generator` | small round trip: s3 read-back == source |
+| `test_a_large_export_to_s3_succeeds` | large export to s3:// succeeds |
+| `test_the_large_export_took_the_multipart_protocol` | premise: the large export took the multipart protocol |
+| `test_the_large_export_completed_its_upload_once` | and completed it exactly once (POST with uploadId, no partNumber) |
+| `test_the_large_object_reads_back_as_the_generator` | large round trip: s3 read-back == source |
+| `test_an_s3_export_and_pinned_read_of_a_key_with_a_literal_question_mark_keep_queries_out_of_the_path` | s3:// export and pinned read of a key with a literal '?' keep each request's query out of the path -- #1904 review: the request path encodes the '?' as %3F |
+| `test_the_part_size_refuses_more_than_512_mib` | objstore_part_size refuses a value above its 512 MiB maximum (#1812) |
+| `test_the_part_size_accepts_512_mib` | objstore_part_size accepts its 512 MiB maximum |
+| `test_a_chunk_bigger_than_the_room_left_in_the_part_uploads_whole` | an 800 MB chunk over 500 MB already staged uploads whole at the 512 MiB part size, in 3 parts; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_an_injected_mid_upload_failure_surfaces_as_disk_full` | inject: mid-upload failure surfaces as disk-full (53100) |
+| `test_the_injected_failure_leaves_no_key` | inject: the key does not exist |
+| `test_the_injected_fault_landed_mid_multipart` | premise: the fault landed mid-multipart (an upload was started) |
+| `test_every_upload_the_injected_export_started_was_aborted` | inject: every upload started was aborted (no billable orphan) |
+| `test_the_injected_failure_leaves_no_open_upload` | inject: the server holds no open upload for the key |
+| `test_a_refused_part_fails_the_export` | part failure: a refused part fails the export (58030) |
+| `test_a_refused_part_leaves_no_key` | part failure: the key does not exist |
+| `test_the_part_failure_landed_mid_multipart` | premise: the part failure landed mid-multipart (an upload was started) |
+| `test_a_refused_part_leaves_no_open_upload` | part failure: the server holds no open upload for the key |
+| `test_an_unframed_204_abort_still_fails_the_export` | unframed 204: a refused part fails the export (58030) -- #1830 review, the fixture's `__delete_unframed__` answers the abort as Garage does |
+| `test_the_unframed_204_export_sent_one_abort` | premise: unframed 204: the export sent one abort DELETE |
+| `test_an_abort_answered_204_with_no_length_returns_promptly` | unframed 204: the export returned within 4 s when its abort was answered 204 with no Content-Length -- the fixture closes the idle connection after 8 s |
+| `test_the_unframed_204_abort_leaves_no_open_upload` | unframed 204: the server holds no open upload for the key |
+| `test_an_unlisted_endpoint_is_refused_by_the_allow_list` | allow-list: an unlisted endpoint refuses 42501 before any write |
+| `test_an_arrow_export_to_s3_imports_back_as_the_generator` | arrow export to s3:// also round-trips |
+| `test_a_parallel_export_to_an_s3_prefix_succeeds` | parallel export to an s3:// prefix succeeds |
+| `test_the_parallel_export_wrote_one_object_per_worker` | parallel: one object per worker was written (4) |
+| `test_every_worker_put_went_to_the_prefix` | parallel: every worker PUT went to the prefix |
+| `test_a_success_marker_exists_at_the_prefix` | parallel remote: a _SUCCESS marker object exists at the prefix |
+| `test_the_marker_went_to_the_prefix_as_a_put` | parallel remote: the marker went to the prefix as a PUT |
+| `test_the_per_worker_objects_read_back_as_the_generator` | parallel: the union of the per-worker objects == source |
+| `test_a_rerun_into_the_same_prefix_succeeds` | parallel: a re-run into the same prefix succeeds (overwrite) |
+| `test_an_earlier_complete_run_left_its_marker` | premise: lister refused: an earlier complete run left its marker at lf/ |
+| `test_a_refused_listing_fails_the_export` | lister refused: the export fails with the listing's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_listing` | premise: lister refused: both workers' parts were uploaded before the listing |
+| `test_a_refused_listing_leaves_no_part` | lister refused: no part object remains at the prefix |
+| `test_a_refused_listing_leaves_no_marker` | lister refused: no _SUCCESS marker certifies the failed run's prefix |
+| `test_a_refused_marker_fails_the_export` | marker refused: the export fails with the marker PUT's 28000 |
+| `test_the_parts_were_uploaded_before_the_refused_marker` | premise: marker refused: both workers' parts were uploaded before the marker |
+| `test_a_refused_marker_leaves_no_part` | marker refused: no part object remains at the prefix |
+| `test_the_larger_run_left_four_parts_and_a_marker` | premise: listing refused after a larger run: the 4-worker run left 4 parts and its marker at lt/ |
+| `test_a_refused_listing_names_the_prefix_it_listed` | listing error: the refused listing names the prefix it listed, not a dummy key |
+| `test_a_refused_listing_leaves_the_larger_runs_tail` | listing refused after a larger run: the earlier run's part-0002 and part-0003 remain, and nothing else |
+| `test_a_refused_listing_after_a_larger_run_leaves_no_marker` | listing refused after a larger run: no _SUCCESS marker remains at the prefix |
+| `test_the_four_worker_run_wrote_four_parts_and_a_marker` | shrink: the 4-worker run wrote 4 parts + marker |
+| `test_a_smaller_rerun_leaves_exactly_its_own_parts` | shrink: a smaller re-run leaves exactly its own 2 parts (stale tail dropped) |
+| `test_the_larger_runs_stale_parts_are_gone` | shrink: parts 0002/0003 from the larger run are gone |
+| `test_the_marker_certifies_the_reconciled_prefix` | shrink: _SUCCESS certifies the reconciled prefix |
+| `test_a_parallel_export_to_a_prefix_ending_in_a_slash_succeeds` | trailing slash: parallel export to an s3:// prefix ending in / succeeds |
+| `test_a_trailing_slash_prefix_puts_parts_with_one_slash` | trailing slash: every worker PUT went to sl/part- (one slash) |
+| `test_a_trailing_slash_prefix_puts_the_marker_with_one_slash` | trailing slash: the marker went to sl/_SUCCESS (one slash) |
+| `test_a_trailing_slash_prefix_names_no_key_with_an_empty_segment` | trailing slash: no request named a key with an empty segment (//) |
+| `test_a_trailing_slash_export_reads_back_through_the_documented_glob` | trailing slash: the documented glob read-back equals the source |
+| `test_a_trailing_slash_export_leaves_the_sibling_prefixes_parts` | trailing slash: an export to sl/ leaves the parts under slx/ and sl2/ |
+| `test_a_smaller_rerun_without_the_slash_succeeds` | no slash: a 2-worker re-run to s3://bucket/sl succeeds |
+| `test_a_smaller_rerun_without_the_slash_leaves_its_own_parts` | no slash: the re-run leaves exactly its own 2 parts under sl/ |
+| `test_a_smaller_rerun_without_the_slash_leaves_the_sibling_prefixes_parts` | no slash: a re-run to sl leaves the parts under slx/ and sl2/ |
+| `test_a_smaller_rerun_without_the_slash_leaves_a_nested_prefixes_part` | no slash: a re-run to sl leaves the nested sl/sub/part-0009.parquet |
+| `test_an_export_to_a_prefix_with_several_slashes_succeeds` | several slashes: a 3-worker export to s3://bucket/sl// succeeds |
+| `test_several_slashes_put_parts_with_one_slash` | several slashes: every worker PUT went to sl/part- (one slash) |
+| `test_several_slashes_name_no_key_with_an_empty_segment` | several slashes: no request named a key with an empty segment (//) |
+| `test_several_slashes_leave_exactly_this_runs_parts` | several slashes: sl/ holds exactly this run's 3 parts |
+| `test_several_slashes_leave_the_sibling_prefixes_parts` | several slashes: an export to sl// leaves the parts under slx/ and sl2/ |
+| `test_an_uppercase_scheme_rerun_succeeds` | uppercase scheme: a 2-worker re-run to S3://bucket/up/ succeeds |
+| `test_an_uppercase_scheme_rerun_leaves_exactly_its_own_parts` | uppercase scheme: a 2-worker re-run to S3://bucket/up/ leaves exactly its own 2 parts |
+| `test_an_uppercase_scheme_rerun_deletes_the_stale_parts` | uppercase scheme: the re-run sent a DELETE for up/part-0002 and up/part-0003 |
+| `test_a_bare_bucket_with_a_slash_is_refused` | bare bucket: an export to s3://bucket/ is refused as naming no prefix |
+| `test_a_bare_bucket_without_a_slash_is_refused` | bare bucket: an export to s3://bucket is refused as naming no prefix |
+| `test_the_refused_bare_bucket_exports_sent_no_put` | bare bucket: the refused exports sent no PUT |
+| `test_no_part_object_lands_at_the_bucket_root` | bare bucket: no part object at the bucket root |
+| `test_a_session_set_to_empty_refuses_the_parallel_export` | premise: a session SET to '' makes parallel_export_parquet fail 42501, with or without the dispatcher's check |
+| `test_the_dispatcher_raises_the_refusal_not_a_worker` | session allow-list: the dispatcher raises the refusal, not a worker -- with the settings handed to the workers but no check in the dispatcher, worker 0 refused |
+| `test_nothing_reached_the_prefix_the_session_refused` | session allow-list: nothing reached the refused prefix (no PUT, no POST) -- #1780: the workers uploaded part-0000 before the error |
+| `test_the_system_list_is_empty_before_the_widen_arm` | session allow-list: a new session sees an empty system list before the widen arm |
+| `test_a_session_set_widens_an_empty_system_list_for_the_workers` | session allow-list: a session SET widens an empty system list for the workers |
+| `test_a_session_part_size_reaches_the_workers` | parallel: a session SET of objstore_part_size reaches the workers (multipart) |
+| `test_a_worker_was_uploading_before_the_cancel` | premise: a worker was uploading before the cancel |
+| `test_all_four_uploads_were_open_before_the_cancel` | all four workers' uploads were open before the cancel -- an upload whose POST ?uploads is in flight is #1743's window |
+| `test_the_export_was_cancelled_not_completed` | premise: the export was cancelled, not completed |
+| `test_the_dispatcher_deleted_the_known_keys_on_cancel` | cancel: the dispatcher issued DELETE over the known keys |
+| `test_the_cancel_names_no_key_with_an_empty_segment` | cancel: no request named a key with an empty segment (//) |
+| `test_no_completed_object_remains_after_the_cancel` | cancel: no completed object remains at the prefix |
+| `test_no_success_marker_remains_after_the_cancel` | cancel: no _SUCCESS marker at the prefix |
+| `test_no_upload_stays_open_after_the_cancel` | cancel: the server holds no open upload under the prefix -- #1722: the workers the cancel terminates abort their uploads on the way out |
+| `test_all_four_part_puts_reached_the_store_before_the_cancel` | premise: commit hold: all four part PUTs reached the store before the cancel |
+| `test_the_commit_hold_export_was_cancelled_not_completed` | premise: commit hold: the export was cancelled, not completed |
+| `test_a_cancel_leaves_no_part_a_worker_was_committing` | commit hold: a cancel leaves no part that a worker was committing -- #1864: the fixture applies each part PUT 3 s late (`__put_hold__`), and the dispatcher deleted the keys before that |
+| `test_the_long_hold_export_was_cancelled_not_completed` | premise: long hold: the export was cancelled, not completed |
+| `test_a_cancel_waits_for_the_workers_once` | long hold: a cancel waits for the workers once, not twice -- #1864 review: the cancel waited 5 s before the DELETEs and again before the upload abort, about 10 s against a store that held every commit 12 s |
+| `test_terminated_workers_exit_while_the_store_is_silent` | terminate: export workers exit within 75 s while the store is silent -- #1727: each wait slice times out, so the 60 s quiet limit ends a worker's abort |
+| `test_the_unsigned_http_fixture_server_is_up` | premise: unsigned http fixture server is up |
+| `test_a_small_export_to_http_succeeds_unsigned` | http:// small export succeeds unsigned (no crash) -- #1779: the signer read a NULL region and the backend died with signal 11 |
+| `test_a_small_http_object_goes_as_one_plain_put` | http:// small object went as ONE plain PUT |
+| `test_the_small_http_object_reads_back_as_the_generator` | http:// small round trip: read-back == source |
+| `test_an_arrow_export_to_http_imports_back_as_the_generator` | http:// arrow export round-trips unsigned (no crash) -- #1779 names export_arrow too; it writes through the same sink |
+| `test_a_large_export_to_http_succeeds_unsigned` | http:// large export succeeds unsigned (no crash) |
+| `test_the_large_http_export_took_the_multipart_protocol` | the http:// large export took the multipart protocol -- started, at least two parts, completed once |
+| `test_the_large_http_object_reads_back_as_the_generator` | http:// large round trip: read-back == source |
+| `test_a_multipart_http_export_to_a_url_with_a_query_string_joins_parameters_with_an_ampersand` | http:// multipart export to a URL with a query string joins each request's parameters with '&' -- #1904: raw=true?uploads= was refused with HTTP 400 |
+| `test_an_injected_failure_on_http_surfaces_as_disk_full` | http:// inject: mid-upload failure surfaces as disk-full (53100) |
+| `test_the_injected_http_fault_landed_mid_multipart` | the http:// fault landed mid-multipart (an upload was started) |
+| `test_the_injected_http_failure_leaves_no_open_upload` | http:// inject: the server holds no open upload for the key -- the unsigned abort reached the server |
+| `test_the_abort_of_a_failed_http_export_to_a_url_with_a_query_string_joins_with_an_ampersand` | http:// inject to a URL with a query string: the abort joins uploadId with '&' and no upload stays open -- #1904 review |
+| `test_a_403_from_an_unsigned_http_target_hints_that_it_went_unsigned` | http:// 403: the hint says the request went unsigned, not to check AWS_* credentials -- the SigV4 fixture server refuses a request with no Authorization header |
+| `test_a_403_to_a_signed_s3_request_still_hints_at_the_credentials` | s3:// 403: a signed request that is refused still hints to check AWS_* credentials -- the fixture verifies the denied bucket against another secret |
+| `test_a_parallel_export_to_gs_is_refused_before_any_worker_starts` | gs:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832: it uploaded every part and then failed at the s3://-only listing |
+| `test_a_parallel_export_to_http_is_refused_before_any_worker_starts` | http:// prefix: a parallel export is refused before any worker starts, with no request sent -- #1832 |
+| `test_a_1023_byte_prefix_is_refused_as_too_long` | long prefix: a 1023-byte s3:// prefix is refused as too long, with no request sent -- #1849: why the upload cleanup's prefix buffer cannot truncate |
+| `test_the_unsupported_scheme_hint_says_only_s3_can_be_listed` | unsupported scheme: the parallel export's hint says only an s3:// prefix can be listed -- #1831: the hint said a remote prefix cannot be listed at all |
+| `test_an_unframed_upload_id_reply_still_starts_the_upload` | unframed reply: a multipart export succeeds when the UploadId reply ends at connection close -- #1830, the fixture's `__uploads_unframed__` = close |
+| `test_the_unframed_reply_export_sent_one_create` | premise: unframed reply: the export sent CreateMultipartUpload once |
+| `test_no_request_reuses_the_connection_a_close_delimited_reply_ended` | unframed reply: no request went on the connection the close-delimited reply ended -- #1830 review, the fixture shuts down only its sending side and logs REUSED for a request on it |
+| `test_the_unframed_reply_object_reads_back_as_the_generator` | unframed reply: the object reads back as the generator |
+| `test_an_http10_upload_id_reply_still_starts_the_upload` | HTTP/1.0 reply: a multipart export succeeds -- #1830, `__uploads_unframed__` = http10 |
+| `test_the_http10_reply_export_sent_one_create` | premise: HTTP/1.0 reply: the export sent CreateMultipartUpload once |
+| `test_no_request_reuses_the_connection_an_http10_reply_ended` | HTTP/1.0 reply: no request went on the connection the HTTP/1.0 reply ended -- the fixture logs REUSED for a request on it |
+| `test_an_export_needing_more_than_10000_parts_is_refused` | part limit: an export that needs more than 10000 parts is refused by the part limit (54000) -- #1857, 1 KiB parts |
+| `test_the_part_limit_export_uploaded_parts_1_to_10000` | part limit: the export uploaded parts 1 to 10000 -- a `>=` limit stops at 9999 |
+| `test_no_part_above_10000_is_sent` | part limit: no part numbered above 10000 was sent -- the fixture refuses one as S3 does |
+| `test_the_part_limit_leaves_no_open_upload` | part limit: the server holds no open upload for the key |
+| `test_the_part_limit_leaves_no_object` | part limit: the key does not exist |
+| `test_aws_s3_refuses_parts_below_5_mib_before_the_upload` | part minimum: an export to AWS S3 with 256 KiB parts is refused before the upload starts (22023) -- #1857, the allow-list keeps the endpoint unreached |
+| `test_a_one_part_export_to_aws_s3_is_not_refused_by_the_part_minimum` | part minimum: a one-part export to AWS S3 is not refused by the part minimum |
+| `test_5_mib_parts_to_aws_s3_are_not_refused_by_the_part_minimum` | part minimum: an export to AWS S3 with 5 MiB parts is not refused by the part minimum |
+| `test_aws_s3_in_china_refuses_parts_below_5_mib` | part minimum: an export to AWS S3 in China (amazonaws.com.cn) with 256 KiB parts is refused (22023) |
+| `test_cloudflare_r2_refuses_parts_below_5_mib` | part minimum: an export to Cloudflare R2 (r2.cloudflarestorage.com) with 256 KiB parts is refused (22023) -- #1830 review |
+| `test_a_host_only_ending_in_amazonaws_com_is_not_refused_by_the_part_minimum` | part minimum: an export to notamazonaws.com with 256 KiB parts is not refused by the part minimum -- the domain match needs the dot |
+| `test_gcs_refuses_parts_below_5_mib` | part minimum: a gs:// export at the default GCS endpoint with 256 KiB parts is refused (22023) |
+| `test_integration_the_cluster_restarts_with_the_real_s3_credentials` | opt-in: integration: the cluster restarts with the real S3 credentials (#1850: a restart that does not come back is this named red, not an error of the whole module; the restart first waits out a crash recovery) |
+| `test_integration_a_multipart_export_to_real_s3_succeeds` | opt-in: integration: multipart export to real S3 succeeds |
+| `test_integration_the_real_s3_read_back_equals_the_source` | opt-in: integration: real S3 read-back == source |
+
+## 332. test_native_fetch_interrupt.py: the by-row-number fetch is cancellable
+
+The twin of `test/native_fetch_interrupt.sh`. It reads `src/columnar_reader.c` as the shell does: `pgcolumnar_fetch_row` carries a `CHECK_FOR_INTERRUPTS`, the check comes before the `pgcolumnar_lookup_row_group(` call it guards, and that helper is where `PgColumnarReadRowGroupList` is called. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name. Each function body is taken from its signature to the first closing brace at column 0, with its comments blanked (multi-line ones too, newlines kept), so a call commented out is not a call. A missing file or function reads as an empty body, which fails every check.
+
+| test | what it holds |
+| --- | --- |
+| `test_fetch_row_carries_an_interrupt_check` | pgcolumnar_fetch_row carries an interrupt check |
+| `test_the_check_precedes_the_row_group_resolution` | the interrupt check precedes the row-group resolution |
+| `test_the_resolution_is_where_the_catalog_read_lives` | the row-group resolution is where the catalog read lives |
+
+## 333. test_objstore_module.py: the object-store module's packaging and loader, every refusal pinned
+
+The twin of `test/objstore_module.sh`. nm finds the module's entry point absent from `pgcolumnar.so` and present in `pgcolumnar_objstore.so`. An s3://, gs:// and https:// read are each refused with their own SQLSTATE and message (https:// by whether the module links libssl), a remote glob is listed remotely, a local file `export_parquet` wrote reads back through `read_parquet`, and a relative path is not taken for a URL. Then the installed module is moved: present, absent and broken are three different reports, each the same twice in one session.
+
+### Every test
+
+Every test makes one check under the shell's name, from one module fixture that takes a pristine copy of the module first and puts it back in its finally; the file runs alone, as the shell does. A refusal reads as `SQLSTATE: primary message`; a read that succeeded reads as a query_error. Counts are lines of the error text, as the shell's grep -c. With an ambient AWS_* in this process's environment (the session postmaster inherits it) the remote refusals decline UNMET_PRECONDITION; with the module unmovable the moving arms decline under the shell's skip name.
+
+| test | what it holds |
+| --- | --- |
+| `test_a_restored_stash_is_a_module` | a stash restored over a missing module is a module -- the shell records it only when it fails, so it has no ledger row |
+| `test_the_main_library_is_installed` | the main library is installed |
+| `test_the_module_is_installed_beside_it` | the object-store module is installed BESIDE it, not inside it |
+| `test_the_entry_point_is_not_in_the_preloaded_library` | the module's entry point is NOT inside the preloaded library |
+| `test_the_entry_point_is_defined_in_the_module` | positive control: it IS defined in the module, so nm really looked |
+| `test_an_s3_url_reports_an_object_storage_error` | a s3 URL reports an object-storage error, not a missing file |
+| `test_an_s3_url_is_not_a_missing_file` | and the s3 URL is NOT reported as a missing file |
+| `test_a_gs_url_reports_an_object_storage_error` | a gs URL reports an object-storage error, not a missing file |
+| `test_a_gs_url_is_not_a_missing_file` | and the gs URL is NOT reported as a missing file |
+| `test_an_https_url_reports_an_object_storage_error` | a https URL reports an object-storage error, not a missing file |
+| `test_an_https_url_is_not_a_missing_file` | and the https URL is NOT reported as a missing file |
+| `test_a_star_glob_is_handled_remotely` | a remote glob (*) is handled remotely (an object-storage error, not a local one) |
+| `test_a_star_glob_is_not_a_local_miss` | and the * glob is NOT reported as a local filesystem miss |
+| `test_a_question_glob_is_handled_remotely` | a remote glob (?) is handled remotely (an object-storage error, not a local one) |
+| `test_a_question_glob_is_not_a_local_miss` | and the ? glob is NOT reported as a local filesystem miss |
+| `test_a_bracket_glob_is_handled_remotely` | a remote glob ([0-9]) is handled remotely (an object-storage error, not a local one) |
+| `test_a_bracket_glob_is_not_a_local_miss` | and the [0-9] glob is NOT reported as a local filesystem miss |
+| `test_a_local_path_still_works` | a local path still works |
+| `test_a_relative_path_is_not_a_url` | a relative path is not mistaken for a URL |
+| `test_present_both_reads_report_an_unhandled_scheme` | with the module present, both reads report an unhandled scheme |
+| `test_present_neither_claims_the_module_is_missing` | and neither claims the module is missing |
+| `test_premise_the_module_was_absent` | premise: the module really was absent while those two reads ran |
+| `test_premise_the_module_is_back` | premise: and the real module is back afterwards |
+| `test_absent_no_read_leaks_the_loader_error` | with the module absent, neither read leaks the loader's own error |
+| `test_absent_both_reads_name_the_missing_module` | both reads name the missing module, identically |
+| `test_absent_neither_downgrades_to_an_unhandled_scheme` | and neither downgrades it to an unhandled scheme |
+| `test_premise_the_module_is_corrupt` | premise: the module really is corrupt for this run, not merely intended to be |
+| `test_premise_the_module_was_restored` | premise: the real module was restored afterwards |
+| `test_broken_is_not_an_unhandled_scheme` | a broken module does NOT masquerade as an unhandled scheme |
+| `test_broken_is_not_a_module_never_installed` | nor as a module that was never installed |
+| `test_broken_keeps_the_loader_reason` | and the loader's own reason survives |
+
+## 334. test_phase2.py: compression, projection, zone maps and chunk-group filtering
+
+The twin of `test/phase2.sh`. A private database, built once by a module fixture in the shell's order: the phase 1 regression table, one table per codec, the too-small-to-compress fallback, nulls under lz4, projection, and 25000 sorted ints in three vectors whose zone maps are decoded from their bytes. Every expected value comes from the generator.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name; the five per-codec tests are parametrized over the four codecs, named by the shell's own `$codec` template. A failed query is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_count_star_reads_every_row` | count(*) |
+| `test_a_filtered_count_reads_the_matching_rows` | count where a<50 |
+| `test_order_by_limit_returns_the_first_three_rows` | order by a limit3 |
+| `test_a_column_with_no_nulls_reads_none` | no nulls t.b |
+| `test_a_codec_round_trips_every_row` (none, pglz, lz4, zstd) | {codec} count |
+| `test_a_codec_round_trips_the_ids` (each codec) | {codec} sum(id) |
+| `test_a_codec_round_trips_a_payload` (each codec) | {codec} payload ok |
+| `test_a_codec_round_trips_one_distinct_payload` (each codec) | {codec} distinct pl |
+| `test_the_codec_asked_for_is_the_block_codec_stored` (each codec) | {codec} block codec -- 0, 1, 2, 3 |
+| `test_a_value_too_small_to_compress_round_trips` | fallback value |
+| `test_a_value_too_small_to_compress_is_stored_with_codec_0` | fallback codec=0 |
+| `test_nulls_round_trip_under_lz4` | null rows |
+| `test_every_third_value_reads_null` | null count |
+| `test_a_null_reads_null` | null value |
+| `test_a_value_beside_nulls_reads_its_value` | nonnull val |
+| `test_projecting_a_reads_a` | project a |
+| `test_projecting_b_reads_b` | project b |
+| `test_projecting_c_reads_c` | project c |
+| `test_a_sum_over_one_projected_column` | project sum |
+| `test_projecting_two_columns_in_order` | project b,c |
+| `test_three_vectors_have_zone_maps` | vectors |
+| `test_every_zone_map_has_a_minimum_and_maximum` | minmax present |
+| `test_vector_0_minimum_is_1` | v0 min=1 |
+| `test_vector_0_maximum_is_10000` | v0 max=10000 |
+| `test_vector_2_maximum_is_25000` | v2 max=25000 |
+| `test_a_between_filter_returns_its_rows` | between count |
+| `test_a_range_filter_returns_its_bounds` | range min/max |
+| `test_a_point_lookup_returns_one_row` | point lookup |
+| `test_a_range_past_the_data_returns_none` | empty range |
+| `test_a_range_inside_the_last_vector_decodes_one_of_three` | range decodes 1 of 3 vectors |
+| `test_no_row_group_outlives_its_table` | orphan row groups |
+| `test_no_column_chunk_outlives_its_table` | orphan chunks |
+
+## 335. test_phase3.py: read-your-writes, DELETE, UPDATE, rollback, savepoints and temporary tables
+
+The twin of `test/phase3.sh`. A private database, built once by a module fixture in the shell's order. Statements the shell runs in one psql session run on one connection here, including the savepoint arms, where a statement meant to fail may fail only with division_by_zero (22012). Every expected value comes from the generator, except the nested-read arm's, which is heap's answer to the same statement on the same rows.
+
+### Every test
+
+Every test reads one value the fixture took and makes one check under the shell's name. A failed query, or a reading the session never reached, is a query_error(), never text standing in for one.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_regression_table_counts_every_row` | reg count |
+| `test_the_regression_table_filters` | reg filter a<100 |
+| `test_a_table_created_in_the_transaction_reads_its_rows` | ryw count |
+| `test_an_insert_is_read_by_its_own_transaction` | ryw sum |
+| `test_the_transaction_s_rows_persist` | ryw persisted |
+| `test_the_deleted_range_straddles_a_vector_boundary` | the deleted range straddles vectors 0 and 1 |
+| `test_a_delete_leaves_the_survivors` | delete count |
+| `test_deleted_rows_are_gone` | delete gone |
+| `test_the_deleted_range_s_neighbours_survive` | delete neighbors |
+| `test_the_table_s_bounds_survive` | delete boundaries |
+| `test_a_tail_delete_leaves_the_survivors` | delete tail count |
+| `test_a_tail_delete_lowers_the_maximum` | delete tail max |
+| `test_the_delete_vector_catalog_has_rows` | delete_vector rows>0 |
+| `test_the_delete_vector_catalog_counts_every_deletion` | delete_vector deleted |
+| `test_an_update_shows_the_new_value` | update value |
+| `test_an_update_changes_one_row` | update one row |
+| `test_an_update_keeps_the_row_count` | update count |
+| `test_a_key_update_removes_the_old_keys` | update key gone |
+| `test_a_key_update_writes_the_new_keys` | update key new |
+| `test_a_key_update_keeps_the_row_count` | update key total |
+| `test_a_bulk_update_keeps_the_row_count` | bulk update rows |
+| `test_a_bulk_update_rewrites_every_row` | bulk update sfx |
+| `test_the_rollback_table_starts_with_its_rows` | rb before |
+| `test_a_rolled_back_transaction_leaves_the_count` | rb after count |
+| `test_a_rolled_back_transaction_leaves_the_range` | rb after range |
+| `test_rollback_to_a_savepoint_keeps_the_work_before_it` | savepoint in-txn |
+| `test_rollback_to_a_savepoint_holds_after_commit` | savepoint final |
+| `test_an_insert_that_failed_inside_a_savepoint_leaves_nothing` | savepoint failed insert discarded |
+| `test_a_delete_that_failed_inside_a_savepoint_deletes_nothing` | savepoint failed delete discarded |
+| `test_the_failed_statements_leave_nothing_after_commit` | savepoint failed final |
+| `test_a_read_in_a_block_that_commits_into_an_aborted_one_sees_the_deletes` | savepoint nested read in a delete sees its deleted rows, as on heap |
+| `test_a_temporary_table_keeps_its_survivors` | temp survivors |
+| `test_a_temporary_table_s_deleted_rows_are_gone` | temp deleted |
+| `test_deletes_survive_their_transaction` | durable survivors |
+| `test_only_the_undeleted_rows_survive` | durable odd only |
+| `test_drop_removes_the_delete_vector_rows` | delete_vector cleaned |
+| `test_drop_removes_the_row_group_rows` | row group cleaned |
+
+## 336. test_phase4.py: btree and hash index reads through the index fetch, and refusals by SQLSTATE
+
+The twin of `test/phase4.sh`. On a private database it builds btree and hash indexes over columnar tables and reads them back, deletes and updates under an index, refuses unique, primary-key, NOT NULL and CHECK violations, converts a heap table to columnar and back, and plans a plain index scan for a covering query with pgcolumnar.enable_index_only_scan off. Every index read runs with seqscan, the columnar custom scan and the index-only scan off, so it goes through pgcolumnar_index_fetch_tuple; the plan checks assert that plan under the same settings.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. A refusal is the SQLSTATE the statement failed with (23505, 23502, 23514); a lost connection carries none and is a query_error, never a match. A failed query is a query_error, never text.
+
+| test | what it holds |
+| --- | --- |
+| `test_btree_plan_is_index_scan` | btree plan is index scan |
+| `test_btree_point` | btree point |
+| `test_btree_range_count` | btree range count |
+| `test_btree_range_first` | btree range first |
+| `test_btree_miss` | btree miss |
+| `test_hash_plan_is_index_scan` | hash plan is index scan |
+| `test_hash_point` | hash point |
+| `test_hash_point2` | hash point2 |
+| `test_hash_miss` | hash miss |
+| `test_uq_initial` | uq initial |
+| `test_uq_cross_statement_duplicate_refused` | uq cross-stmt dup |
+| `test_uq_within_statement_duplicate_refused` | uq within-stmt dup |
+| `test_uq_unchanged` | uq unchanged |
+| `test_uq_new_row` | uq new row |
+| `test_uq_final_count` | uq final count |
+| `test_uq2_duplicate_refused` | uq2 dup |
+| `test_uq2_count` | uq2 count |
+| `test_not_null_refused` | not null reject |
+| `test_check_refused` | check reject |
+| `test_ck_unchanged` | ck unchanged |
+| `test_deleted_range_plan_is_index_scan` | deleted range plan is index scan |
+| `test_deleted_point` | deleted point |
+| `test_deleted_range` | deleted range |
+| `test_survivors_around` | survivors around |
+| `test_neighbor_present` | neighbor present |
+| `test_updated_old_gone` | updated old gone |
+| `test_updated_new_found` | updated new found |
+| `test_conv_starts_heap` | conv starts heap |
+| `test_conv_now_columnar` | conv now columnar |
+| `test_conv_col_count` | conv col count |
+| `test_conv_col_value` | conv col value |
+| `test_conv_col_sum` | conv col sum |
+| `test_conv_back_heap` | conv back heap |
+| `test_conv_heap_count` | conv heap count |
+| `test_conv_heap_value` | conv heap value |
+| `test_conv_heap_sum` | conv heap sum |
+| `test_ios_off_plain_index_scan` | IOS off: plain index scan |
+| `test_covering_value` | covering value |
+| `test_full_table_scan_available` | full-table scan available |
+
+## 337. test_phase6.py: vectorized aggregates and scans against a heap oracle, not only against themselves
+
+The twin of `test/phase6.sh`. On a private database a 50,000-row columnar table (five chunk groups) and a 30,000-row table with NULLs in independent patterns are read by aggregates, filtered aggregates, fallback aggregates and row scans, before and after a DELETE. Each query runs with pgcolumnar.enable_vectorization on, with it off, and against schema `oracle`, heap tables of the same names filled by the same generator and the same DELETE; all three must agree, and equal the known value where the shell names one.
+
+### Every test
+
+Every test makes one check under the shell's name, from readings a module fixture takes in the shell's order. Values are read in PostgreSQL's text format, columns joined by "|" as psql -qAt prints them; a failed query is a query_error, never text. The shell's timing block records no check and is not ported.
+
+| test | what it holds |
+| --- | --- |
+| `test_t_row_count` | row count |
+| `test_vectors_formed` | vectors formed |
+| `test_t_count_star` | count(*) |
+| `test_count_id` | count(id) |
+| `test_sum_id` | sum(id) |
+| `test_sum_smallint` | sum(smallint) |
+| `test_avg_id` | avg(id) |
+| `test_min_id_max_id` | min(id),max(id) |
+| `test_min_max_text` | min/max text |
+| `test_several_at_once` | several at once |
+| `test_count_filtered` | count filtered |
+| `test_sum_filtered` | sum filtered |
+| `test_avg_filtered` | avg filtered |
+| `test_min_max_filtered` | min/max filtered |
+| `test_filter_other_col` | filter other col |
+| `test_multi_predicate` | multi-predicate |
+| `test_full_table_scan` | full table scan |
+| `test_filtered_projected_scan` | filtered projected scan |
+| `test_filtered_scan_exact_value` | filtered scan exact value |
+| `test_filtered_scan_exact_count` | filtered scan exact count |
+| `test_count_with_nulls` | count(*) with nulls |
+| `test_count_a_skips_nulls` | count(a) skips nulls |
+| `test_sum_a_ignores_nulls` | sum(a) ignores nulls |
+| `test_avg_a_ignores_nulls` | avg(a) ignores nulls |
+| `test_min_max_a_with_nulls` | min/max(a) with nulls |
+| `test_min_max_txt_nulls` | min/max(txt) nulls |
+| `test_count_code_nulls` | count(code) nulls |
+| `test_filter_excludes_nulls` | filter excludes nulls |
+| `test_count_empty_result` | count empty result |
+| `test_sum_empty_is_null` | sum empty is null |
+| `test_min_empty_is_null` | min empty is null |
+| `test_sum_bigint_numeric` | sum(bigint)->numeric |
+| `test_avg_bigint_numeric` | avg(bigint)->numeric |
+| `test_sum_numeric` | sum(numeric) |
+| `test_avg_float8` | avg(float8) |
+| `test_sum_float8` | sum(float8) |
+| `test_ordered_set_agg` | ordered-set agg |
+| `test_string_agg_fallback` | string agg (fallback) |
+| `test_group_by_fallback` | group by (fallback) |
+| `test_count_distinct` | count distinct |
+| `test_count_after_delete` | count after delete |
+| `test_sum_after_delete` | sum after delete |
+| `test_scan_after_delete` | scan after delete |
+
+## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
+
+The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+
+### Every test
+
+Every test makes one check under the shell's name, reading what a module fixture measured in the shell's order. A cancel is SQLSTATE 57014 with the message "canceling statement due to statement timeout"; anything else is reported as what came back. One connection takes a cancel and then answers the three follow-up checks, and the crash check reads the server log once the server answers again.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_many_group_table_has_many_groups` | the many-group table has many groups |
+| `test_the_one_group_table_has_exactly_one_group` | the one-group table has exactly one group |
+| `test_the_scan_outlasts_the_timeout` | the scan outlasts the timeout, so a cancel is possible |
+| `test_a_scan_of_many_small_groups_is_cancelled` | a scan of many small groups is cancelled |
+| `test_a_scan_of_one_large_group_is_cancelled` | a scan of one large group is cancelled |
+| `test_cancel_latency_does_not_grow_with_row_group_size` | cancel latency does not grow with row group size |
+| `test_the_cancel_arrives_within_an_absolute_bound` | the cancel arrives within a generous absolute bound |
+| `test_the_session_is_usable_after_the_cancel` | the session is usable after the cancel |
+| `test_the_table_still_reads_correctly_after_the_cancel` | the table still reads correctly after the cancel |
+| `test_the_cancelled_predicate_returns_its_true_answer` | the cancelled predicate returns its true answer when allowed to finish |
+| `test_no_backend_crashed_while_the_scans_were_cancelled` | no backend crashed while the scans were cancelled |
+
+## 339. test_decode_interrupts.py: the decode path's interrupt checks, each inside the loop it guards
+
+The twin of `test/decode_interrupts.sh`. A source-shape suite: a cancel cannot tell the decoders' interrupt checks apart at any scale CI can carry, so both twins read `src/columnar_encoding.c` and `src/columnar_reader.c`, with comments blanked, and require each check inside the loop it guards. It needs no cluster and is listed in NO_CLUSTER.
+
+### Every test
+
+Every test makes one check under the shell's name; the per-decoder pair is parametrized over the shell's own `$f` loop, so each runs once per decoder. A check counts only inside the braces of a for, while or foreach body, or of the loop whose header the arm names, walked character by character over the comment-blanked file.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_decode_interrupt_macro_exists` | the decode interrupt macro exists |
+| `test_the_macro_calls_check_for_interrupts` | the macro calls CHECK_FOR_INTERRUPTS |
+| `test_a_decoder_was_found` | `$f was found`, once for each of the nine decoders |
+| `test_a_decoder_checks_inside_a_loop` | `$f checks for interrupts`, once for each of the nine decoders, inside a loop body |
+| `test_decode_rle_inner_loop_was_found` | decode_rle's inner value loop was found |
+| `test_decode_rle_checks_in_its_value_loop` | decode_rle checks inside its value loop, not only around it |
+| `test_decode_fsst_shared_decode_loop_was_found` | decode_fsst_shared's decode loop was found |
+| `test_decode_fsst_shared_checks_in_its_decode_loop` | decode_fsst_shared checks inside its decode loop, not only in the table parse |
+| `test_the_stride_is_defined` | the stride is defined |
+| `test_the_stride_is_a_power_of_two` | the stride is a power of two |
+| `test_the_stride_is_not_too_large` | the stride is not so large that a check never lands |
+| `test_the_group_load_checks_per_column_chunk` | the group load checks for interrupts per column chunk |
+| `test_the_row_loop_checks_for_interrupts` | the row loop checks for interrupts |
+
+## 340. test_decode_skip_interrupts.py: the Thrift skip of a hostile footer stops at the footer's end, and both skip loops keep an interrupt check
+
+The twin of `test/decode_skip_interrupts.sh`. It writes the shell's Thrift skip-bomb footer (256 lists of 4.3e9 bools in one unrecognised struct). Since #1822 each bool element takes its one byte, so the footer runs off its own end: parquet_schema() over it must be refused by the footer parser (0A000), not cancelled by the 1 s statement_timeout, within 3 s, with no backend killed. No test now runs the Thrift skip's interrupt check, because every skipped value takes at least one byte and the footer ends the loop. av_skip's window is too small for a timeout to resolve. So both skip functions are held by shape: an interrupt check before the switch, in the source with its comments blanked.
+
+### Every test
+
+Every test makes one check under the shell's name. The functional arm runs once in a module fixture on the shared cluster; the statement runs in a daemon thread abandoned after 30 s, as the shell's KILL abandons psql, and survival waits for SELECT 1 before reading the server log's crash count. The shape tests read src/ with `re`.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_thrift_skip_bomb_is_refused_as_corrupt` | Thrift skip-bomb footer is refused as corrupt, not an uninterruptible hang |
+| `test_the_skip_bomb_answer_lands_within_3_s` | the skip-bomb answer lands within 3 s of the statement's start under a 1 s timeout |
+| `test_the_backend_survived_the_skip_bomb` | backend survived the Thrift skip-bomb footer |
+| `test_thrift_skip_checks_for_interrupts_before_its_switch` | PgColumnarThriftSkip checks for interrupts |
+| `test_av_skip_checks_for_interrupts_before_its_switch` | av_skip checks for interrupts per element (before the switch, not just per block) |
+
+## 341. test_native_cancel.py: a scan's row-group load yields to statement_timeout inside the decode loop
+
+The twin of `test/native_cancel.sh`. One row group, one vector, one column of 16M values, so the whole table decodes in one load whose only inner interrupt point is COLUMNAR_DECODE_INTERRUPT. A statement_timeout of a quarter of the server's own load time must fire with its own 57014 and land in the lower half of the window between the timeout and a full load.
+
+### Every test
+
+Every test makes one check under the shell's name, in a private database, because the row-group premise counts a catalog every test shares. Each timing is a fresh connection plus the statement, as the shell times a psql; the cancel is the quickest of three that raised the timeout's error. Unlike the shell's check_timing, the twin's timing check has no PGC_SKIP_TIMING switch.
+
+| test | what it holds |
+| --- | --- |
+| `test_one_row_group` | one row group |
+| `test_the_load_outlasts_the_timeout` | premise: the load outlasts the timeout, so the timeout can fire during it |
+| `test_the_short_timeout_is_what_fired` | the short timeout is what fired |
+| `test_the_cancel_arrives_well_before_the_load_completes` | cancel arrives well before the load completes |
+
+## 342. test_objstore_export_double_cancel.py: a second cancel during a remote export's cleanup keeps the export's own error
+
+The pytest twin of `test/objstore_export_double_cancel.sh` (#1741), every check by the shell's name. A `parallel_export_parquet` to `s3://` is cancelled while its workers upload, and again while the dispatcher's cleanup DELETE is held in flight by the fixture server's `__delete_delay__` hook. The export must report its own cancel (57014), and the server log must not gain "errstart was not called": the cleanup used to run with the first cancel's error still on the error stack, and the module's best-effort catch emptied the whole stack when it swallowed the second cancel. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_double_cancel_sigv4_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_a_worker_was_uploading_before_the_first_cancel` | premise: a worker was uploading before the first cancel |
+| `test_the_cleanup_was_deleting_when_the_second_cancel_landed` | premise: the first cancel's cleanup was deleting when the second cancel landed |
+| `test_the_export_reports_its_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_the_server_log_has_no_errstart_was_not_called` | double cancel: the server log has no 'errstart was not called' |
+| `test_no_completed_object_remains_at_the_prefix` | double cancel: no completed object remains at the prefix |
+| `test_the_server_survived` | double cancel: the server survived |
+
+## 343. test_parquet_timestamp_zone.py: a Parquet timestamp read into the other timestamp type follows PostgreSQL's casts
+
+The pytest twin of `test/parquet_timestamp_zone.sh` (#1706 item 2), every check by the shell's name. In a New York session: a naive Parquet timestamp read into `timestamptz` is its wall time in the session zone, and a UTC-adjusted one read into `timestamp` is the session-zone wall time of its instant, each equal to PostgreSQL's own cast; the same-kind reads are controls; an export and import round trip keeps both types (with #1707's exporter); and a row group spanning the 2024-03-10 spring-forward gap is not skipped on its converted min and max, which need not bound its converted rows. `parquet_schema` advises `timestamptz` for a UTC-adjusted or legacy column and `timestamp` for a naive one (#1807). The naive file is read again in Tokyo, so a reader that hard-codes a zone fails; the repeated hour of the 2024-11-03 fall-back resolves as the cast resolves it; and `test/fixtures/parquet/legacy_timestamp_micros.parquet`, written by pgcolumnar's own exporter before #1707 with only the `TIMESTAMP_MICROS` converted type, reads as the instant the Parquet spec defines it to be. The files are written by `python3` with pyarrow, so no test imports pyarrow: each declines by the shell's skip name, then asks for the fixture. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_ptz_pyarrow_wrote_one_naive_and_one_adjusted_file` | premise: pyarrow wrote the naive file without isAdjustedToUTC and the other with it |
+| `test_ptz_a_naive_file_into_timestamptz_is_its_session_wall_time` | a naive file read into timestamptz is its wall time in the session zone |
+| `test_ptz_the_naive_read_equals_the_cast_from_timestamp` | and that is what PostgreSQL's cast from timestamp gives |
+| `test_ptz_an_adjusted_file_into_timestamp_is_the_session_wall_time` | an adjusted file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_the_adjusted_read_equals_the_cast_from_timestamptz` | and that is what PostgreSQL's cast from timestamptz gives |
+| `test_ptz_a_naive_file_into_timestamp_keeps_its_wall_time` | control: a naive file read into timestamp keeps its wall time |
+| `test_ptz_an_adjusted_file_into_timestamptz_keeps_its_instant` | control: an adjusted file read into timestamptz keeps its instant |
+| `test_ptz_an_export_import_round_trip_keeps_both_types` | an export and import round trip keeps timestamp and timestamptz in a non-UTC session |
+| `test_ptz_the_gap_wall_times_become_their_instants` | the gap file's wall times become, sorted, the instants 07:00Z, 07:00Z and 07:30Z |
+| `test_ptz_a_gap_spanning_group_is_not_skipped` | a row group spanning a spring-forward gap is not skipped on its converted min and max |
+| `test_ptz_the_legacy_fixture_carries_only_the_converted_type` | premise: the legacy fixture carries the TIMESTAMP_MICROS converted type and no logical type |
+| `test_ptz_a_naive_file_in_tokyo_is_its_wall_time_there` | a naive file read into timestamptz in Tokyo is its wall time there, as the cast gives |
+| `test_ptz_the_tokyo_reading_differs_from_new_york` | and the Tokyo reading is a different instant from the New York one |
+| `test_ptz_a_fall_back_wall_time_is_what_the_cast_gives` | a naive wall time in the fall-back hour read into timestamptz is what the cast gives |
+| `test_ptz_a_legacy_file_into_timestamp_is_the_session_wall_time` | a legacy TIMESTAMP_MICROS file read into timestamp is the session-zone wall time of its instant |
+| `test_ptz_a_legacy_file_into_timestamptz_keeps_its_instant` | a legacy TIMESTAMP_MICROS file read into timestamptz keeps its instant |
+| `test_ptz_parquet_schema_advises_timestamptz_for_an_adjusted_file` | parquet_schema advises timestamptz for an adjusted file and timestamp for a naive one (#1807) |
+| `test_ptz_parquet_schema_advises_the_exported_source_types` | parquet_schema advises the source types for export_parquet's timestamp and timestamptz (#1807) |
+| `test_ptz_parquet_schema_advises_timestamptz_for_a_legacy_column` | parquet_schema advises timestamptz for a legacy TIMESTAMP_MICROS column (#1807) |
+
+## 344. test_parquet_skip_cross_type.py: Parquet row-group skipping uses a constant of another type in the operator family
+
+The pytest twin of `test/parquet_skip_cross_type.sh` (#1712), every check by the shell's name. Over a file of 200,000 ascending rows in 4 row groups, each arm reads the skip count from EXPLAIN (ANALYZE): an int4 constant on the int8 column (greater-than, equality, and on the left of the operator), and a float4 constant below every row on the float8 column; the answers are compared with the same query in the column's own type, and a float4 NaN constant must still find a NaN row its group's statistics leave out. A second file, a naive timestamp column whose first row group spans New York's 2024-03-10 spring-forward gap, is read in New York: a timestamptz constant must find the rows a heap copy finds, because converting wall-time statistics to instants does not keep their order across the gap, and a timestamp constant must still skip. Before #1712 a constant of another type skipped nothing. The files are written by `python3` with pyarrow, so no test imports pyarrow. On a private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_pxt_the_file_holds_four_row_groups` | premise: the file holds 4 row groups (pyarrow's own count) |
+| `test_pxt_an_int8_constant_skips_three_groups` | control: an int8 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_an_int4_constant_skips_three_groups` | an int4 constant on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_the_int4_constant_returns_the_int8_rows` | and returns the rows the int8 constant returns |
+| `test_pxt_an_int4_equality_skips_three_groups` | an int4 constant in an equality on the int8 column skips 3 of the 4 row groups |
+| `test_pxt_a_constant_on_the_left_is_compared_the_same_way` | a constant on the left of the operator is compared the same way |
+| `test_pxt_a_float4_constant_below_every_row_skips_all_groups` | a float4 constant below every row skips all 4 row groups of the float8 column -- negative, because a float4 misread as float8 is a tiny positive number |
+| `test_pxt_the_float4_constant_returns_the_float8_rows` | and returns the rows the float8 constant returns |
+| `test_pxt_a_float4_nan_still_finds_the_nan_row` | a float4 NaN constant still finds the float8 column's NaN row |
+| `test_pxt_the_gap_file_holds_two_row_groups` | premise: the gap file holds 2 row groups (pyarrow's own count) |
+| `test_pxt_the_heap_finds_row_one_for_each_gap_predicate` | premise: in New York the heap copy finds row 1 for ts > 07:15Z, ts >= 07:15Z and ts = 07:30Z |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_gt` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>) |
+| `test_pxt_a_timestamptz_constant_after_a_gap_finds_the_heap_row_ge` | a timestamptz constant after a spring-forward gap finds the timestamp column's row the heap finds (>=) |
+| `test_pxt_a_timestamptz_equality_after_a_gap_finds_the_heap_row` | a timestamptz constant equal to a row's instant after a spring-forward gap finds that row, as the heap does |
+| `test_pxt_a_timestamp_constant_skips_one_gap_group` | control: a timestamp constant on the timestamp column skips 1 of the 2 row groups |
+| `test_pxt_the_timestamp_constant_returns_the_heap_rows` | and returns the rows the heap returns |
+| `test_pxt_the_four_type_file_holds_four_row_groups` | premise: the four-type file holds 4 row groups (pyarrow's own count) (#1887) |
+| `test_pxt_a_cross_type_constant_skips_row_groups` | parametrized over four (#1887): `an int4 constant on an int2 column skips 3 of the 4 row groups (#1887)`, `an int8 constant on an int4 column skips all 4 row groups (#1887)`, `a float8 constant on a float4 column skips 3 of the 4 row groups (#1887)` and `a date constant on a timestamp column skips 2 of the 4 row groups (#1887)` |
+| `test_pxt_a_cross_type_constant_returns_the_heap_rows` | parametrized over four (#1887): `an int4 constant on an int2 column returns the heap copy's 5000 rows (#1887)`, `an int8 constant on an int4 column returns the heap copy's 0 rows (#1887)`, `a float8 constant on a float4 column returns the heap copy's 20000 rows (#1887)` and `a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)`; each shows the foreign table's count beside the heap copy's |
+
+## 345. test_parquet_export.py: pgcolumnar.export_parquet writes a file two readers read back equal to the heap
+
+The pytest twin of `test/parquet_export.sh` (ported for #1341), every check by the shell's name. A mixed-type columnar table of 80003 rows, more than one row group, is exported and read back by pyarrow and by DuckDB; an empty table, two refusals and the extended types (date, time, timestamps, uuid, numeric, json) follow. On a private database.
+
+### Every test
+
+Each value comparison needs the generator's ids on both sides and the file's row count, so two empty readings cannot agree. DuckDB's non-null count of b is held to the generator's 80002, not to the table under test. Each refusal must carry its own message. Without pyarrow every test declines. DuckDB is the `duckdb` Python package, pinned in `requirements-test.txt`, reached only through `require_module`; without it the four DuckDB tests decline by the shell's check names, as the shell skips them by name without the `duckdb` CLI. CI sets `PGC_REQUIRE=pyarrow,duckdb`, so there either decline fails.
+
+| test | what it holds |
+| --- | --- |
+| `test_export_parquet_reports_every_row` | export_parquet rows written |
+| `test_parquet_values_match_the_heap_oracle` | parquet values match heap oracle |
+| `test_the_parquet_schema_has_the_expected_types` | parquet schema |
+| `test_duckdb_counts_every_parquet_row` | duckdb row count |
+| `test_duckdb_counts_the_generators_non_null_b` | duckdb non-null count(b) |
+| `test_an_empty_table_exports_no_parquet_rows` | empty export rows written |
+| `test_an_empty_table_writes_a_readable_parquet_file` | empty parquet readable |
+| `test_parquet_export_refuses_a_heap_table` | reject non-columnar table |
+| `test_parquet_export_refuses_an_unsupported_type` | reject unsupported type |
+| `test_the_extended_parquet_export_reports_every_row` | extended export rows written |
+| `test_extended_parquet_values_match_the_heap_oracle` | extended values match heap oracle |
+| `test_the_extended_parquet_types_are_the_mapped_ones` | extended parquet types |
+| `test_duckdb_reads_the_parquet_decimal` | duckdb reads decimal |
+| `test_duckdb_counts_every_extended_parquet_row` | duckdb extended row count |
+| `test_a_row_group_is_cut_at_the_byte_cap` | a row group is cut at the byte cap: 40 rows of 10000 bytes under a 65536-byte cap make groups of 6,6,6,6,6,6,4 (#1811) |
+| `test_the_byte_cut_parquet_file_reads_back_exactly` | and the byte-cut file reads back every row exactly, by id, length and md5 |
+| `test_the_group_byte_cap_refuses_more_than_256_mib` | export_group_bytes refuses a value above its 256 MiB maximum |
+| `test_a_row_group_cut_counts_an_int4s_level_byte` | the byte cut counts an int4's level byte: 1000 int4 rows under a 1024-byte cap make groups of 204,204,204,204,184 (#1843 review) |
+| `test_a_row_group_cut_counts_a_numerics_text_form` | the byte cut counts a numeric's text form: 10 rows of 1e1000 under a 1024-byte cap make 10 groups of 1 |
+| `test_a_row_group_cut_counts_a_lists_elements_as_written` | the byte cut counts a list's elements as written: 10 rows of three 1e300 under a 1024-byte cap make 10 groups of 1 |
+| `test_a_row_group_cut_counts_an_int2_as_the_int32_it_is_written_as` | the byte cut counts an int2 as the INT32 it is written as: 1000 int2 rows under a 1024-byte cap make groups of 204,204,204,204,184 (#1843 review) |
+| `test_a_row_group_cut_counts_a_composites_fields_as_written` | the byte cut counts a composite's fields as written: 40 rows of a 10000-byte text field under a 65536-byte cap make groups of 6,6,6,6,6,6,4 (#1843 review) |
+| `test_a_row_group_cut_counts_a_text_lists_elements_as_written` | the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make groups of 6,6,6,6,6,6,4 (#1843 review) |
+| `test_a_row_group_cut_counts_an_int_lists_elements_as_written` | the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make groups of 5,5,5,5,5,5,5,5 (#1843 review) |
+| `test_a_row_larger_than_the_byte_cap_goes_in_a_group_of_its_own` | a row larger than the byte cap goes in a group of its own: 3 rows of 2000 bytes under a 1024-byte cap make groups of 1,1,1 (#1843 review) |
+| `test_every_kept_text_reaches_its_own_value_in_the_file` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them (#1843 review) |
+| `test_over_1gib_of_one_column_exports_in_several_row_groups` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 row groups of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+
+## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
+
+The twin of `test/planner_choice_quality.sh` (#433, #434). On 200,000 wide rows whose payload does not compress, with an index on a correlated key, two queries run the planner's own choice and then two forced alternatives (indexes off; the custom scan and the sequential scan off). The chosen plan must run to completion, and must be no more than PLAN_BOUND (3) times slower than the fastest forced alternative that is a different plan. A forced alternative that fails fails the comparison instead of counting as the fastest plan.
+
+### Every test
+
+Every test makes one check under the shell's name, on a private database with serial planning, as the shell's cluster runs. Each arm runs its EXPLAIN, a warming run and the timed run in one session, so the plan named is the plan timed. An error, a statement-timeout cancel or a lost connection is a failure by name, never a short time. With PGC_SKIP_TIMING=1 nothing executes, the fixture is 20,000 rows, and the two measured tests per query are declared unrunnable under the shell's names, so the session does not end green; the shell's driver does not run the suite at all under that flag.
+
+| test | what it holds |
+| --- | --- |
+| `test_planner_choice_fixture_rows` | fixture rows |
+| `test_planner_choice_payload_did_not_compress` | premise: the payload did not compress, so the fetch path is exercised |
+| `test_planner_choice_index_key_is_correlated` | premise: the index key is correlated, which is the case that misprices |
+| `test_range_aggregate_chosen_plan_was_identified` | premise: [range scan with aggregate] the chosen plan was identified |
+| `test_range_aggregate_forcing_produced_a_different_plan` | [range scan with aggregate] forcing produced a different plan |
+| `test_range_aggregate_chosen_plan_ran_to_completion` | [range scan with aggregate] the chosen plan ran to completion |
+| `test_range_aggregate_chosen_plan_is_not_far_slower` | [range scan with aggregate] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+| `test_wide_range_count_chosen_plan_was_identified` | premise: [wide range, narrow projection] the chosen plan was identified |
+| `test_wide_range_count_forcing_produced_a_different_plan` | [wide range, narrow projection] forcing produced a different plan |
+| `test_wide_range_count_chosen_plan_ran_to_completion` | [wide range, narrow projection] the chosen plan ran to completion |
+| `test_wide_range_count_chosen_plan_is_not_far_slower` | [wide range, narrow projection] the chosen plan is within the bound of the best alternative; or, when no alternative yields a time, that the chosen plan is the custom scan |
+## 347. test_objstore_export_open_uploads.py: a cancelled remote export leaves none of its multipart uploads open
+
+The twin of `test/objstore_export_open_uploads.sh` (#1743, #1722), every check by the shell's name. A `parallel_export_parquet` to `s3://` is ended while its workers' multipart uploads are open, and the dispatcher's cleanup must list the uploads under the prefix and abort each one whose key is one of the export's own part names. Two foreign uploads seeded under each prefix, `part-0004.parquet` (one past a 4-worker export's last part) and `notes.parquet`, must stay open. Five parallel arms: a cancel while every worker sends parts; a cancel while every worker waits for the answer to CreateMultipartUpload, which the fixture server's `__uploads_delay__` hook holds after the upload exists; the workers terminated in that same window; a cancel there followed by a second cancel while the first cancel's cleanup deletes a part key (`__delete_delay__` holds each DELETE 3 s), where the export must still report the first cancel and leave none of its uploads open (#1741); and a cancel there while the store does not answer the listing, where the cleanup's bounded wait must give up and the export still report its own cancel within 30 s. The serial arms (#1810) cancel `export_parquet` and `export_arrow`, and terminate `export_parquet`, while their own CreateMultipartUpload is held; the gs cancel arm (#1854) cancels `export_parquet` to a `gs://` key the same way: no upload at the key may stay open, and `notes.parquet` and the key plus `.old` must. The commit arms (#1813) cancel `export_parquet` while the store holds the answer to CompleteMultipartUpload (`__complete_delay__`) or to a single PUT (`__put_delay__`), after it wrote the new object over an earlier one: the report must match what the key holds, and the export must warn that it wrote the object. The complete-drop arm (#1846) has the store close the connection with no answer after it applied CompleteMultipartUpload (`__complete_drop__`) and the cancel arrived: the export must send the request only once and fail with the error that says the store may have written the object. The serial double-cancel arm (#1846) cancels `export_parquet` while its CreateMultipartUpload is held, and again while the store holds its cleanup's listing (`__list_uploads_delay__`, 3 s a page): the cleanup holds interrupts, so no upload at the key may stay open. The put-refused arm (#1846) has the store refuse a small export's single PUT (`__put_status__`) while another writer's upload is open at the key: the export sent no create, so it must not list the uploads, and that upload must stay open. The commit arms also check that the clean export run first issued no commit warning. The serial tests are parametrized over the four serial arms and the commit tests over the two commit arms, one collected test per check. Then the messages must name what the caller gave, never the dummy key `s3://pgc-bucket/_` a bucket-level request is resolved from (#1869): with worker 0's part PUT refused (`__put_status__`) and the cleanup's upload listing refused (`__list_uploads_status__`), the dispatcher's LOG of what the cleanup discarded names the prefix it listed; and with no region in the postmaster's environment, the export's endpoint check and `read_parquet`'s directory listing each name the prefix in the region refusal. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario once, and makes one `expect` call by the shell's check name. Open uploads are read from the fixture server's `__open_uploads__` record; survival also reads the server log's crash count.
+
+| test | what it holds |
+| --- | --- |
+| `test_open_uploads_fixture_server_is_up` | premise: sigv4 fixture server is up |
+| `test_the_foreign_uploads_were_open_before_the_exports` | premise: the foreign uploads were open before the exports |
+| `test_parts_cancel_landed_while_every_worker_sent_parts` | premise: parts: every worker was sending parts when the cancel landed |
+| `test_parts_reports_its_own_cancel` | parts: the export reports its own cancel (57014) |
+| `test_parts_leaves_no_upload_of_the_export_open` | parts: no upload of this export is left open |
+| `test_parts_leaves_the_foreign_uploads_open` | parts: the foreign uploads under the prefix are left open |
+| `test_parts_the_server_survived` | parts: the server survived |
+| `test_cancel_landed_while_every_create_was_unanswered` | premise: cancel: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_cancel_reports_its_own_cancel` | cancel: the export reports its own cancel (57014) |
+| `test_cancel_leaves_no_upload_of_the_export_open` | cancel: no upload of this export is left open |
+| `test_cancel_leaves_the_foreign_uploads_open` | cancel: the foreign uploads under the prefix are left open |
+| `test_cancel_leaves_no_completed_object` | cancel: no completed object remains at the prefix |
+| `test_cancel_the_server_survived` | cancel: the server survived |
+| `test_terminate_landed_while_every_create_was_unanswered` | premise: terminate: every worker's CreateMultipartUpload was unanswered when the workers were terminated |
+| `test_terminate_reports_that_a_worker_failed` | terminate: the export reports that a worker failed |
+| `test_terminate_leaves_no_upload_of_the_export_open` | terminate: no upload of this export is left open |
+| `test_terminate_leaves_the_foreign_uploads_open` | terminate: the foreign uploads under the prefix are left open |
+| `test_terminate_the_server_survived` | terminate: the server survived |
+| `test_double_cancel_first_cancel_landed_while_every_create_was_unanswered` | premise: double cancel: every worker's CreateMultipartUpload was unanswered when the first cancel landed |
+| `test_double_cancel_second_cancel_landed_in_a_part_delete` | premise: double cancel: the first cancel's cleanup was deleting a part when the second cancel landed |
+| `test_double_cancel_reports_the_exports_own_cancel` | double cancel: the export reports its own cancel (57014) |
+| `test_double_cancel_logs_no_errstart` | double cancel: the server log has no 'errstart was not called' |
+| `test_double_cancel_leaves_no_upload_of_the_export_open` | double cancel: no upload of this export is left open |
+| `test_double_cancel_leaves_the_foreign_uploads_open` | double cancel: the foreign uploads under the prefix are left open |
+| `test_double_cancel_the_server_survived` | double cancel: the server survived |
+| `test_silent_listing_cancel_landed_while_every_create_was_unanswered` | premise: silent listing: every worker's CreateMultipartUpload was unanswered when the cancel landed |
+| `test_silent_listing_the_cleanup_asked_for_open_uploads` | silent listing: the cleanup asked the store for its open uploads |
+| `test_silent_listing_reports_its_own_cancel` | silent listing: the export reports its own cancel (57014) |
+| `test_silent_listing_returned_promptly` | silent listing: the export returned within 30 s of the cancel |
+| `test_silent_listing_the_server_survived` | silent listing: the server survived |
+| `test_serial_create_was_unanswered_when_the_signal_landed` | premise: serial cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: arrow cancel: the export_arrow CreateMultipartUpload was unanswered when the signal landed; premise: serial terminate: the export_parquet CreateMultipartUpload was unanswered when the signal landed; premise: gs cancel: the export_parquet CreateMultipartUpload was unanswered when the signal landed |
+| `test_serial_reports_the_signal` | serial cancel: the export reports the signal; arrow cancel: the export reports the signal; serial terminate: the export reports the signal; gs cancel: the export reports the signal |
+| `test_serial_leaves_no_upload_at_the_key_open` | serial cancel: no upload at the export's key is left open; arrow cancel: no upload at the export's key is left open; serial terminate: no upload at the export's key is left open; gs cancel: no upload at the export's key is left open (#1854) |
+| `test_serial_leaves_the_foreign_uploads_open` | serial cancel: the foreign uploads under the prefix are left open; arrow cancel: the foreign uploads under the prefix are left open; serial terminate: the foreign uploads under the prefix are left open; gs cancel: the foreign uploads under the prefix are left open |
+| `test_serial_the_server_survived` | serial cancel: the server survived; arrow cancel: the server survived; serial terminate: the server survived; gs cancel: the server survived |
+| `test_serial_double_cancel_first_cancel_landed_while_the_create_was_unanswered` | premise: serial double cancel: the export_parquet CreateMultipartUpload was unanswered when the first cancel landed |
+| `test_serial_double_cancel_second_cancel_landed_in_the_listing` | premise: serial double cancel: the cleanup was listing the uploads when the second cancel landed |
+| `test_serial_double_cancel_reports_its_own_cancel` | serial double cancel: the export reports its own cancel (57014) |
+| `test_serial_double_cancel_leaves_no_upload_at_the_key_open` | serial double cancel: no upload at the export's key is left open |
+| `test_serial_double_cancel_leaves_the_foreign_uploads_open` | serial double cancel: the foreign uploads under the prefix are left open |
+| `test_serial_double_cancel_the_server_survived` | serial double cancel: the server survived |
+| `test_commit_an_earlier_object_is_at_the_key` | premise: complete cancel: an earlier object is at the key; premise: put cancel: an earlier object is at the key |
+| `test_commit_the_earlier_export_issued_no_commit_warning` | complete cancel: the earlier export issued no commit warning; put cancel: the earlier export issued no commit warning |
+| `test_commit_answer_was_held_when_the_cancel_landed` | premise: complete cancel: the store had written the new object and held the answer when the cancel landed; premise: put cancel: the store had written the new object and held the answer when the cancel landed |
+| `test_commit_report_matches_the_object_at_the_key` | complete cancel: what the export reports matches the object at the key; put cancel: what the export reports matches the object at the key |
+| `test_commit_warns_that_the_object_was_written` | complete cancel: the export warns that it wrote the object before the cancel took effect; put cancel: the export warns that it wrote the object before the cancel took effect |
+| `test_commit_leaves_no_upload_at_the_key_open` | complete cancel: no upload at the export's key is left open; put cancel: no upload at the export's key is left open |
+| `test_commit_the_server_survived` | complete cancel: the server survived; put cancel: the server survived |
+| `test_complete_drop_an_earlier_object_is_at_the_key` | premise: complete drop: an earlier object is at the key |
+| `test_complete_drop_answer_was_held_when_the_cancel_landed` | premise: complete drop: the store had written the new object and held the answer when the cancel landed |
+| `test_complete_drop_report_matches_the_object_at_the_key` | complete drop: what the export reports matches the object at the key |
+| `test_complete_drop_sent_the_commit_request_once` | complete drop: the export sent the commit request once |
+| `test_complete_drop_says_the_store_may_have_written_the_object` | complete drop: the export says the store may have written the object |
+| `test_complete_drop_the_server_survived` | complete drop: the server survived |
+| `test_put_refused_the_export_failed_on_the_refusal` | premise: put refused: the export failed on the store's refusal of its single PUT |
+| `test_put_refused_the_export_sent_no_create` | premise: put refused: the export sent no CreateMultipartUpload |
+| `test_put_refused_the_export_asked_for_no_open_uploads` | put refused: the export asked the store for no open uploads |
+| `test_put_refused_the_other_writers_upload_is_left_open` | put refused: the other writer's upload at the key is left open |
+| `test_put_refused_the_server_survived` | put refused: the server survived |
+| `test_refused_upload_listing_export_fails_on_the_refused_part` | premise: refused upload listing: the export fails on worker 0's refused part |
+| `test_refused_upload_listing_the_cleanup_listed_once` | premise: refused upload listing: the cleanup asked the store for its open uploads once |
+| `test_refused_upload_listing_names_the_listed_prefix` | refused upload listing: the server log names the prefix that was listed, not a dummy key |
+| `test_no_region_export_names_the_prefix` | no region: parallel_export_parquet's refusal names the prefix it was given, not a dummy key |
+| `test_no_region_read_parquet_names_the_prefix` | no region: read_parquet's directory listing refusal names the prefix it was given, not a dummy key |
+
+## 348. test_native_agg_collation.py: min and max under a COLLATE override answer under that collation
+
+The twin of `test/native_agg_collation.sh` (#1771), every check by the shell's name. The grouped node and the ungrouped vectorized aggregate compared min/max under the column's collation and ignored the Aggref's input collation, so on an ICU column `min(t COLLATE "C")` answered in ICU order; they now decline such an aggregate and core answers it. Every group mixes values the two collations order differently, a heap mirror is the oracle, and a control holds that min/max under the column's own collation still take the grouped node. A private database; it declines as `MISSING_DEPENDENCY` where the server has no ICU.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_groups_mix_both_orderings` | premise: the groups mix values the two collations order differently |
+| `test_the_columns_own_collation_takes_the_grouped_node` | control: min and max under the column's own collation take the grouped node |
+| `test_the_columns_own_collation_answers_like_heap` | and answer what heap answers |
+| `test_grouped_min_max_under_collate_c_answer_like_heap` | grouped min and max under a C-collation override answer what heap answers |
+| `test_ungrouped_min_max_under_collate_c_answer_like_heap` | ungrouped min and max under a C-collation override answer what heap answers |
+
+## 349. test_native_sketch.py: a named column gets one distinct-count sketch per row group, and nothing else does
+
+The twin of `test/native_sketch.sh` (#1309 phase 1), every check by the shell's name. A column named in `set_options(sketch_columns => ...)` gets one HyperLogLog sketch per row group in `pgcolumnar.sketch`: 2048 one-byte registers from the type's extended hash (seed 0) of each non-NULL value. The option refuses an unknown column (42703), a type with no extended hash and a nondeterministic collation (0A000). A group of one value sets one register and an all-NULL group none. The registers of a fixed group are pinned by digest, and recomputed independently in SQL from `hashint8extended`. A parallel flush writes the same sketch; a projection's storage gets none; vacuum, compact_rewrite, TRUNCATE and DROP leave no sketch whose row group is gone, checked over every storage; `reset_options` stops new sketches. A kept flush (#1360) rewritten after its subtransaction aborts still sketches every row, a column rename follows into `sketch_columns`, and a group written before the option was set has no sketch row. A private database.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the shell's scenario once, and makes one `expect` call by the shell's check name. Counts read the base storage by `pgcolumnar.get_storage_id`, because a projection's storage row carries the table's oid too.
+
+| test | what it holds |
+| --- | --- |
+| `test_set_options_accepts_sketch_columns` | set_options accepts sketch_columns naming a column |
+| `test_the_options_row_records_it` | and the options row records it |
+| `test_an_unknown_column_is_refused` | an unknown column is refused |
+| `test_a_type_with_no_extended_hash_is_refused` | a column whose type has no extended hash is refused |
+| `test_a_nondeterministic_collation_is_refused` | a column with a nondeterministic collation is refused |
+| `test_the_refusals_left_the_option_alone` | the refusals left the recorded option alone |
+| `test_the_insert_wrote_three_row_groups` | premise: the insert wrote three row groups |
+| `test_each_row_group_gets_one_sketch` | each row group gets one sketch for the named column |
+| `test_a_column_not_named_gets_no_sketch` | a column not named gets no sketch |
+| `test_each_sketch_holds_2048_registers` | each sketch holds 2048 registers |
+| `test_a_table_naming_no_column_has_no_sketch` | a table that names no column has no sketch rows |
+| `test_one_group_of_a_value_and_one_of_nulls` | one group of a single value and one of NULLs was written |
+| `test_one_distinct_value_sets_one_register` | a row group of one distinct value sets exactly one register |
+| `test_an_all_null_group_sets_no_register` | an all-NULL row group sets no register |
+| `test_the_sketch_of_a_fixed_group_is_pinned` | the sketch of a fixed row group is pinned |
+| `test_the_registers_follow_the_stated_rule` | the registers follow the stated rule, recomputed in SQL |
+| `test_the_parallel_insert_used_a_worker` | premise: the parallel insert flushed columns in a worker |
+| `test_a_parallel_flush_writes_the_same_sketch` | a parallel flush writes the same sketch as a serial one |
+| `test_the_projection_storage_holds_groups` | premise: the projection's storage holds row groups |
+| `test_a_projection_gets_no_sketch` | a projection's storage gets no sketch |
+| `test_a_rewrite_leaves_one_sketch_per_group` | a rewrite leaves one sketch per surviving row group |
+| `test_compact_rewrite_rewrote_groups` | premise: compact_rewrite rewrote row groups |
+| `test_compact_rewrite_leaves_one_sketch_per_group` | compact_rewrite leaves one sketch per surviving row group |
+| `test_reset_options_clears_sketch_columns` | reset_options clears sketch_columns |
+| `test_the_insert_after_the_reset_wrote_a_group` | premise: the insert after the reset wrote a row group |
+| `test_a_group_after_the_reset_gets_no_sketch` | a row group written after the reset gets no sketch |
+| `test_truncate_leaves_no_sketch` | TRUNCATE leaves no sketch for the old storage |
+| `test_drop_leaves_no_sketch` | DROP TABLE leaves no sketch behind |
+| `test_the_insert_around_the_aborted_block_wrote_every_row` | premise: the insert around the aborted block wrote 1000 distinct rows |
+| `test_a_kept_flush_loses_no_row_from_the_sketch` | a kept flush whose subtransaction aborted loses no row from the sketch |
+| `test_a_rename_follows_into_sketch_columns` | a rename follows into sketch_columns |
+| `test_a_group_after_a_rename_gets_its_sketch` | a row group written after a rename still gets its sketch |
+| `test_a_group_from_before_the_option_has_no_sketch` | a row group written before the option was set has no sketch row |
+| `test_no_sketch_outlives_its_row_group` | no sketch outlives its row group |
+
+## 350. test_native_sketch_agg.py: approx_count_distinct estimates what count(DISTINCT) counts, within its theory
+
+The twin of `test/native_sketch_agg.sh` (#1309 phase 2), every check by the shell's name. `pgcolumnar.approx_count_distinct` is a HyperLogLog over the type's extended hash (seed 0), with the writer's 2048 registers and register rule and a fixed estimator (the raw estimate, or linear counting at most 5m/2 with a zero register). One dataset is held within 4 standard errors (9.2%) and to a pinned value, each pin recomputed independently in SQL from core's extended hash; over 50 disjoint sets the RMS relative error must sit between 0.5 and 1.5 standard errors and the mean bias within 3 standard errors of the mean. NULLs are not counted (ten values and 500 NULLs, where one extra value would show), empty and all-NULL input estimate 0, a forced parallel plan returns the serial answer, and a type with no extended hash and a nondeterministic collation are refused with 0A000. A private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_table_holds_100000_distinct_values` | premise: the table holds 100000 distinct values |
+| `test_100000_bigints_are_within_4_standard_errors` | approx_count_distinct of 100000 distinct bigints is within 4 standard errors of the exact count |
+| `test_100000_bigints_equal_the_pin` | and equals its pinned value |
+| `test_a_text_column_is_within_4_standard_errors` | a text column is within 4 standard errors too |
+| `test_the_text_column_equals_the_pin` | and equals its pinned value, the recomputation's |
+| `test_a_heap_table_gives_the_columnar_answer` | a heap table gives the columnar table's answer |
+| `test_the_rms_error_matches_the_theory` | over 50 sets the RMS relative error is between 0.5 and 1.5 standard errors |
+| `test_the_mean_bias_is_small` | and the mean bias is within 3 standard errors of the mean |
+| `test_ten_distinct_values_estimate_ten` | ten distinct values estimate ten |
+| `test_1000_values_are_within_4_standard_errors` | 1000 distinct values are within 4 standard errors (linear counting) |
+| `test_9000_values_are_within_4_standard_errors` | 9000 distinct values are within 4 standard errors (the raw estimate) |
+| `test_the_small_counts_equal_their_pins` | and the small counts equal their pinned values |
+| `test_nulls_are_not_counted` | NULLs are not counted |
+| `test_an_empty_input_estimates_0` | an empty input estimates 0 |
+| `test_an_all_null_input_estimates_0` | an all-NULL input estimates 0 |
+| `test_the_parallel_plan_runs_workers` | premise: the parallel plan runs a partial aggregate in workers |
+| `test_a_parallel_plan_returns_the_serial_answer` | a parallel plan returns the serial answer |
+| `test_the_aggregate_refuses_a_type_with_no_extended_hash` | a type with no extended hash is refused |
+| `test_the_aggregate_refuses_a_nondeterministic_collation` | a nondeterministic collation is refused |
+
+## 351. test_native_sketch_rewrite.py: every rewrite rebuilds the distinct-count sketches, and keeps the table's options
+
+Port of `native_sketch_rewrite.sh` (#1309 phase 4). Each rewrite starts from the same
+table: `sketch_columns => a`, five row groups of 1,000 rows, a third of them deleted.
+Afterwards the base storage must have a sketch for every row group, no sketch row may
+name a row group that does not exist, and the union of the sketches must equal the
+registers recomputed in SQL from the live rows. The rewriting `ALTER TABLE` forms and
+`REFRESH MATERIALIZED VIEW` fill a transient relation (`pg_temp_<oid>`) whose own OID
+has no options row, so the rewritten rows lost the table's sketches, its stripe limit
+and its compression; those arms read all three.
+
+After each rewrite of a table, `approx_count_distinct` must fold every row group from its sketch and scan none, read from #1309 phase 3's `Columnar Sketch Groups Folded / Scanned` lines; before any rewrite, the groups with deletes are scanned. A materialized view's fold is not asserted: no vectorized aggregate path reads a materialized view.
+
+| test | what it holds |
+| --- | --- |
+| `test_before_any_rewrite` | before any rewrite each row group has its sketch, and the deleted rows are still in them |
+| `test_pgcolumnar_vacuum` | after `pgcolumnar.vacuum` every row group has its sketch, none outlives its group, and the sketches describe exactly the live rows |
+| `test_compact_rewrite` | the same after `compact_rewrite` |
+| `test_recluster` | the same after `recluster` |
+| `test_vacuum_sorted` | the same after `vacuum_sorted` |
+| `test_truncate_and_reinsert` | the same after `TRUNCATE` and a reinsert |
+| `test_alter_column_type` | the same after a type change, and the rewrite keeps the table's `stripe_row_limit` |
+| `test_add_column_with_a_volatile_default` | the same after `ADD COLUMN` with a volatile default, and the stripe limit holds |
+| `test_set_access_method_heap_and_back` | the same after `SET ACCESS METHOD heap` and back, and the stripe limit holds |
+| `test_alter_column_type_keeps_compression` | a table set to `compression => 'none'` stays uncompressed through a type change |
+| `test_refresh_materialized_view` | the same three for a materialized view's `REFRESH` |
+| `test_refresh_materialized_view_concurrently` | the sketches are whole and describe the live rows after `REFRESH ... CONCURRENTLY`, which builds its transient under `ExclusiveLock` |
+| `test_a_user_table_named_like_a_transient_borrows_nothing` | a user table named `pg_temp_<oid>`, whose creator holds no `ExclusiveLock` on that relation, keeps its own defaults: one row group and no sketch (#1775 review) |
+## 352. test_native_sketch_fold.py: approx_count_distinct folds the stored sketches and scans only what they cannot describe
+
+The twin of `test/native_sketch_fold.sh` (#1309 phase 3), every check by the shell's name. An ungrouped, unfiltered `pgcolumnar.approx_count_distinct` over a column named in `sketch_columns` folds each clean row group's stored sketch by a register-wise max, and reads and hashes only a group with deletes or with no sketch row. A register union is exactly the registers of the union, so every answer must equal the same query with `pgcolumnar.enable_custom_scan` off; EXPLAIN ANALYZE's `Columnar Sketch Groups Folded` and `Scanned` tell a fold from a scan that agrees. A WHERE, a GROUP BY, an aggregate the metadata cannot answer, and a COLLATE override each decline the fold. The deleted rows hold values no other row has, so a fold that ignored them would disagree. A private database.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_every_group_carries_its_sketches` | premise: ten row groups, each with a sketch for a and for t |
+| `test_a_clean_table_folds_every_group` | on a clean table every row group is folded from its sketch |
+| `test_the_fold_answers_the_plain_aggregate` | and the fold answers what the plain aggregate answers |
+| `test_a_text_column_folds_to_the_plain_answer` | a text column folds to the plain answer too |
+| `test_count_star_beside_it_folds` | count(*) beside it folds and counts every row |
+| `test_a_group_with_deletes_is_scanned` | a row group with deletes is scanned, the others folded |
+| `test_the_answer_with_deletes_is_the_plain_one` | and the answer is the plain aggregate's over the live rows |
+| `test_a_group_with_no_sketch_is_scanned` | a row group with no sketch row is scanned, not counted as empty |
+| `test_the_answer_without_sketches_is_the_plain_one` | and the answer is the plain aggregate's |
+| `test_a_where_declines_the_fold` | a WHERE declines the fold |
+| `test_the_where_answer_is_the_plain_one` | and still answers what the plain aggregate answers |
+| `test_a_group_by_declines_the_fold` | a GROUP BY declines the fold |
+| `test_the_group_by_answer_is_the_plain_one` | and answers what the plain aggregate answers |
+| `test_an_unanswerable_aggregate_beside_it_declines` | an aggregate the metadata cannot answer beside it declines the fold |
+| `test_a_collate_override_declines_the_fold` | a COLLATE override declines the fold |
+| `test_the_collate_answer_is_the_plain_one` | and the override answers what the plain aggregate answers |
+
+## 353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status
+
+The twin of `test/objstore_error_advice.sh` (#1796), every check by the shell's name. Three object-store messages that pointed the reader at the wrong thing. A 403 hint must name where the refused key was configured: the server environment, the user mapping, or the credentials a REST catalog vended. An allow-list refusal's hint must suggest the `host:port` the message names, appended to the current list with any quote doubled, and the list it suggests must permit the endpoint. A single-PUT export to an `http://` endpoint, larger than the socket buffers, which the store refuses before reading the body, must report the 403 and its hint, not `failed before a response`. Over `https://` (#1902) a failed send leaves the session unreadable, so a write over 1 MiB sends `Expect: 100-continue` and the store's refusal must arrive before the body; a store that answers 100 Continue, ignores `Expect`, sends its 100 late or answers 417 must still get the object, a small export must carry no `Expect`, a multipart export to a store that ignores `Expect` must send it on one part only (the wait is paid once per handle, #1903 review), a single PUT answered 200 before its body must still send the body so the object holds the rows, one answered 200 with neither a length nor chunked framing (a reply that ends at connection close) must fail `failed before a response` and leave no object, and a refusal that comes after the wait must still keep its 403 over `http://`. One SigV4 fixture with a refused bucket (`--tamper-bucket`, which refuses before reading a body and closes with it unread), the same fixture over `https://` with a certificate the postmaster trusts through `SSL_CERT_FILE`, three REST catalogs over the committed iceberg warehouse (one vends a wrong secret in its flat config, one in a storage-credentials entry (#1861), one vends nothing), and a postmaster whose environment holds the right key, so the environment would have read what the mapping and vended keys were refused. A private cluster, because the postmaster starts with `AWS_*` in its environment.
+
+### Every test
+
+Every test reads one value from a module fixture that runs the whole scenario on the private cluster, and makes one check under the shell's name.
+
+| test | what it holds |
+| --- | --- |
+| `test_the_advice_suite_can_run_here` | premise: the SigV4 S3 fixture and both REST catalogs are up |
+| `test_the_https_fixture_is_up` | premise: the https SigV4 fixture is up |
+| `test_the_environment_key_writes_and_reads` | premise: the server environment's key writes and reads s3://pgc-bucket/small.parquet |
+| `test_an_environment_key_refusal_hints_at_the_environment` | environment key refused: the 403 hint names the server environment |
+| `test_the_foreign_table_reads_with_the_right_mapping_secret` | premise: the foreign table reads with the right secret in the user mapping |
+| `test_a_user_mapping_key_refusal_hints_at_the_mapping` | user mapping key refused: the 403 hint names the user mapping |
+| `test_a_user_mapping_key_refused_on_a_glob_listing_hints_at_the_mapping` | user mapping key refused on a glob's listing: the 403 hint names the user mapping |
+| `test_the_iceberg_table_reads_through_a_catalog_vending_nothing` | premise: the iceberg table reads through a catalog that vends nothing (server environment) |
+| `test_a_vended_key_refusal_hints_at_the_vended_credentials` | vended key refused: the 403 hint names the catalog's vended credentials |
+| `test_a_vended_entry_key_refusal_hints_at_the_vended_credentials` | vended key refused through a storage-credentials entry: the 403 hint names the catalog's vended credentials |
+| `test_an_allow_list_refusal_with_an_empty_list_suggests_host_and_port` | allow-list refusal, empty list: the hint suggests host:port |
+| `test_an_allow_list_refusal_keeps_the_list_and_appends_host_and_port` | allow-list refusal: the hint keeps the current entries and appends host:port |
+| `test_an_allow_list_refusal_doubles_a_quote_in_the_list` | allow-list refusal: a quote in the current list is doubled in the hint |
+| `test_the_list_the_hint_suggests_permits_the_endpoint` | allow-list refusal: the list the hint suggests permits the endpoint |
+| `test_the_mid_size_export_is_one_put` | premise: the mid-size export is one PUT of more than 4 MiB |
+| `test_a_small_export_to_the_refused_bucket_reports_the_403` | a small export to the refused bucket reports the 403 and its hint |
+| `test_a_mid_size_export_refused_early_keeps_the_403` | mid-size export refused before its body was read: the 403 and its hint survive |
+| `test_a_mid_size_export_over_https_answered_100_continue_writes_the_object` | a mid-size export over https whose store answers 100 Continue writes the object |
+| `test_the_mid_size_put_over_https_carries_expect` | the mid-size PUT over https carried Expect: 100-continue |
+| `test_a_small_export_over_https_sends_no_expect` | a small export over https sends no Expect header |
+| `test_a_mid_size_export_over_https_refused_early_keeps_the_403` | mid-size export over https refused before its body was sent: the 403 and its hint survive |
+| `test_a_store_that_ignores_expect_gets_the_body_after_the_wait` | a mid-size export over https to a store that ignores Expect is sent after the wait |
+| `test_a_late_100_continue_is_passed_over_for_the_final_answer` | a 100 Continue that comes after the wait is passed over for the final answer |
+| `test_a_417_sends_the_export_again_without_expect` | a store that answers 417 to Expect gets the export again without it |
+| `test_the_multipart_export_to_an_expect_ignoring_store_is_several_parts` | premise: the multipart export to a store that ignores Expect is 3 or more parts, all read back |
+| `test_a_store_that_ignores_expect_gets_it_on_one_part_only` | a multipart export to a store that ignores Expect sends it on one part only |
+| `test_a_200_before_the_body_still_sends_the_body` | a single PUT answered 200 before its body still sends the body, and the object holds the rows |
+| `test_a_200_with_no_framing_before_the_body_is_not_taken_as_written` | a single PUT answered 200 with no framing before its body is not taken as written |
+| `test_a_refusal_after_the_expect_wait_keeps_the_403_over_http` | mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive |
+| `test_the_server_survived_the_refusals` | the server survived the refusals |
+
+## 354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine
+
+The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name but one. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. The same holds when the harness's process took the lock itself as `flock -F`, where it holds the only descriptor. The session must record the library digest it starts with, and a copy of the library changed after that must be reported with both digests. An inner session through the real conftest, whose test changes the library the session recorded, must end failed and name the change. One shell check has no twin: a suite that sets `set -e` before it loads lib.sh must still load it under `flock`. Only lib.sh can show that, and a twin would have to source it, so it is declared shell-only in `test_compare_to_bash.py`. The library change is made on a copy; the shared library is never touched.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_control_a_plain_child_under_flock_holds_the_lock` | control: a child of a plain shell under flock holds the lock |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | premise: the postmaster outlives the flock command that started it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
+| `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |
+| `test_a_lock_the_harness_took_itself_stays_held` | a lock the harness's own process took stays held |
+| `test_a_lock_taken_by_flock_no_fork_stays_held` | a lock taken as flock -F on the harness's own process stays held |
+| `test_the_session_records_the_library_it_runs` | setup records the digest of the library it verified |
+| `test_a_replaced_library_is_reported` | an unchanged library is not reported |
+| `test_a_replaced_library_is_reported` | a library replaced after setup is reported with both digests |
+| `test_a_run_whose_library_changed_fails` | a run whose library changed mid-run ends failed |
+
+## 355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows
+
+The pytest twin of `test/native_scale.sh` (#2018), every check by the shell's name. Until #2018 neither harness ran this property in any job. The shell suite was opt-in and is now a registered suite.
+
+It loads `SCALE_N` rows (default 500000, as in the shell) into a columnar table and a heap mirror. It deletes a quarter, runs `compact_rewrite`, checks an indexed range lookup, and reclusters by `c`. After each step the two tables must give the same order-independent fingerprint. Then four rounds delete a slice and run `compact_rewrite` with no inserts. Before rounds 2 to 4 it waits for the horizon, as `test_native_reclaim.py` does (#2010). The file after round 4 must be no larger than after round 2.
+
+Each `recluster` and `compact_rewrite` call must return a group count. A failed call rolls back, so the parity checks still pass and the file stops changing, which the plateau check reads as success. With the allocator's `CommandCounterIncrement` removed, `recluster` fails with "tuple already updated by self", and only the group-count check fails (review of #2021). CI runs the twin at `SCALE_N=200000`, so the pytest-cluster job stays inside its 40-minute limit. At 200000 it still fails that mutant and the reuse-off mutant.
+
+The four rounds delete `id % 8` = 1, 2, 3 and 5. Each delete must remove its whole slice from both tables, `(N - s) // 8 + 1` rows. Round 4 used to delete `id % 8 = 4`, and every such id also has `id % 4 = 0`, which the first delete removed. So round 4 deleted nothing and rewrote nothing, and the plateau check compared round 3 with round 2 (#2024). A mutant that turned off free-space reuse from round 4 on passed every check. With slice 5, round 4 grew the file at 200000 rows from 1490944 to 1744896 bytes under that mutant, and the plateau check failed.
+
+Each round's `compact_rewrite` must also rewrite at least one group. A group count of 0 passes the group-count check, and a rewrite that does nothing leaves the file the same size, which passes the plateau check. A mutant that made `compact_rewrite` return 0 from round 4 on passed all 28 earlier checks; the new check fails it with `no: rewrote [0] groups` (review of #2029).
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_scale_parity_and_reclaim_steady_state` | bulk load count |
+| `test_scale_parity_and_reclaim_steady_state` | bulk load parity |
+| `test_scale_parity_and_reclaim_steady_state` | parity after delete |
+| `test_scale_parity_and_reclaim_steady_state` | compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | parity after compact_rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | indexed lookup after rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | recluster returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | parity after recluster |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1 deletes its whole id % 8 slice from n |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 1: compact_rewrite rewrote at least one group |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 1 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2 deletes its whole id % 8 slice from n |
+| `test_scale_parity_and_reclaim_steady_state` | round 2: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 2: compact_rewrite rewrote at least one group |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 2 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3 deletes its whole id % 8 slice from n |
+| `test_scale_parity_and_reclaim_steady_state` | round 3: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 3: compact_rewrite rewrote at least one group |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 3 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4 deletes its whole id % 8 slice from h |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4 deletes its whole id % 8 slice from n |
+| `test_scale_parity_and_reclaim_steady_state` | round 4: no transaction older than the newest freed range was open before the rewrite |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite returned a group count |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
+| `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
+| `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |

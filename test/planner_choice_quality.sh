@@ -91,10 +91,18 @@ check "premise: the index key is correlated, which is the case that misprices" \
 	        FROM pg_stats WHERE tablename='pq' AND attname='k'")" "yes"
 
 # Time a query under a given setting, and report which scan node ran.
-run_plan() {  # run_plan <settings> <sql> -> "<node> <ms>"
-	local node ms out
+#
+# A FAILED RUN IS NOT A FAST ONE. psql prints "Time:" after a statement that
+# errored as well as after one that succeeded, so this used to read a plan that
+# raised an error in 2 ms as a plan that answered in 2 ms, and the ratio below
+# passed with the chosen plan unable to run at all (measured: a custom scan that
+# raises at execution left the suite PASSED). psql's exit status under
+# ON_ERROR_STOP is the signal now, and the statement-timeout cancel is told
+# apart by its own message rather than by any line containing "timeout".
+run_plan() {  # run_plan <settings> <sql> -> "<node>\t<ms | TIMEOUT | ERROR (msg) | empty>"
+	local node ms out rc
 	node=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -Atq -c "$1" -c "EXPLAIN (COSTS OFF) $2" 2>&1 |
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "$1" -c "EXPLAIN (COSTS OFF) $2" 2>&1 |
 		grep -oE 'Index Only Scan|Index Scan|Bitmap Heap Scan|Custom Scan \([A-Za-z]+\)|Seq Scan' | head -1)
 	# No execution under PGC_SKIP_TIMING. The plan name above comes from EXPLAIN,
 	# so every premise still holds; only the wall clock is unavailable.
@@ -107,11 +115,18 @@ run_plan() {  # run_plan <settings> <sql> -> "<node> <ms>"
 	# warm against a 3x bound -- the ordering alone could push a healthy ratio
 	# over it. The discarded run also populates shared buffers for the timed one.
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -Atq -c "SET statement_timeout='${PLAN_TIMEOUT}s';" -c "$1" -c "$2" >/dev/null 2>&1
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "SET statement_timeout='${PLAN_TIMEOUT}s';" -c "$1" -c "$2" >/dev/null 2>&1
 	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -Atq -c "SET statement_timeout='${PLAN_TIMEOUT}s';" -c "$1" -c '\timing on' -c "$2" 2>&1)
-	if grep -qiE 'timeout|canceling' <<<"$out"; then
-		printf '%s\tTIMEOUT\n' "${node:-unknown}"; return
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -c "SET statement_timeout='${PLAN_TIMEOUT}s';" -c "$1" -c '\timing on' -c "$2" 2>&1)
+	rc=$?
+	if [ "$rc" != 0 ]; then
+		if grep -q 'canceling statement due to statement timeout' <<<"$out"; then
+			printf '%s\tTIMEOUT\n' "${node:-unknown}"
+		else
+			out=$(grep -m1 -E 'ERROR|FATAL|error' <<<"$out" | tr '\t' ' ')
+			printf '%s\tERROR (%s)\n' "${node:-unknown}" "${out:-psql exit $rc}"
+		fi
+		return
 	fi
 	ms=$(grep -oE 'Time: [0-9.]+ ms' <<<"$out" | tail -1 | grep -oE '[0-9.]+')
 	# Tab-delimited, because a node name contains spaces: "Custom Scan
@@ -122,9 +137,15 @@ run_plan() {  # run_plan <settings> <sql> -> "<node> <ms>"
 }
 
 # The planner's choice against the best alternative it declined.
+#
+# THE CHECK NAMES CARRY THE LABEL AND NOTHING ELSE. They used to carry the bound,
+# the timeout and the node that won the comparison, so the same check had one
+# name when it passed ("... alternative (Index Scan)") and another when it failed
+# ("... alternative (Custom Scan (PgColumnarScan))") -- a red that no green run
+# had ever named. Those values are in the display line now, not the name.
 choice_vs_best() {  # choice_vs_best <label> <sql>
 	local label="$1" sql="$2"
-	local cnode cms best bnode n1 m1 n2 m2 i cand_n cand_m
+	local cnode cms best bnode n1 m1 n2 m2 i cand_n cand_m slowalt failalt
 
 	IFS=$'\t' read -r cnode cms <<<"$(run_plan "" "$sql")"
 	IFS=$'\t' read -r n1 m1 <<<"$(run_plan "SET enable_indexscan=off; SET enable_bitmapscan=off;" "$sql")"
@@ -138,43 +159,64 @@ choice_vs_best() {  # choice_vs_best <label> <sql>
 	check "premise: [$label] the chosen plan was identified" \
 		"$([ "$cnode" != unknown ] && echo yes || echo "no (grep matched no scan node)")" "yes"
 
-	# Premise: the alternatives must really be different plans. If forcing changed
+	# The alternatives must really be different plans. If forcing changed
 	# nothing, there is no choice to judge and the check below would compare a
-	# plan with itself.
-	check "premise: [$label] forcing produced a different plan" \
-		"$([ "$n1" != "$cnode" ] || [ "$n2" != "$cnode" ] && echo yes || echo "no (all $cnode)")" "yes"
+	# plan with itself. An arm whose EXPLAIN named no scan node is not a
+	# different plan; it is an unidentified one.
+	#
+	# Not a premise (#1339): it is a product check. With pgcolumnar.enable_custom_scan
+	# ignored by the planner, every arm runs the custom scan and this is the one
+	# check that goes red -- 2026-10-22, PG17, both twins.
+	check "[$label] forcing produced a different plan" \
+		"$( { [ "$n1" != "$cnode" ] && [ "$n1" != unknown ]; } ||
+		    { [ "$n2" != "$cnode" ] && [ "$n2" != unknown ]; } &&
+		    echo yes || echo "no (chosen $cnode, forced $n1 and $n2)")" "yes"
 
 	# Everything below this line has a wall clock in it. An absent timing is the
 	# signal, not a second reading of the flag: when nothing was executed there is
-	# no ratio to judge, and check_ratio_needs_quiet_machine decides whether that is a skip or a
-	# failure. If the flag is set it announces a skip; if it is not, check_ratio
-	# rejects the empty side loudly. Either way this suite never asserts "" == "".
-	if [ -z "$cms" ]; then
-		check_ratio_needs_quiet_machine "[$label] the chosen plan is within ${PLAN_BOUND}x of the best alternative" \
+	# no measurement to judge, and check_timing / check_ratio_needs_quiet_machine
+	# decide whether that is a skip or a failure. If the flag is set they announce
+	# a skip; if it is not, the empty reading fails loudly.
+	#
+	# The chosen plan must have RUN before it can be compared. A timeout, an error
+	# and a missing timing line are each a failure here, by name, and not a number.
+	check_timing "[$label] the chosen plan ran to completion" \
+		"$(pgc_is_number "$cms" && echo yes || echo "no (${cms:-no timing reported})")" "yes"
+	if ! pgc_is_number "$cms"; then
+		check_ratio_needs_quiet_machine "[$label] the chosen plan is within the bound of the best alternative" \
 			"$cms" "" "$PLAN_BOUND"
 		return
 	fi
 
-	best=""; bnode=""; slowalt=""
+	best=""; bnode=""; slowalt=""; failalt=""
 	# Node and time kept in separate variables rather than re-split from a string.
 	for i in 1 2; do
 		eval "cand_n=\$n$i; cand_m=\$m$i"
-		# An alternative that timed out is not a missing alternative. Remember it:
-		# the two look identical to the ratio below (neither yields a number) but
-		# they are opposite results, and the report has to say which happened.
-		if [ "${cand_m:-}" = TIMEOUT ] && [ "$cand_n" != "$cnode" ]; then
-			slowalt="$cand_n"
-		fi
-		case "${cand_m:-}" in '' | TIMEOUT | unknown) continue ;; esac
 		# An arm whose forcing did not change the plan is the CHOSEN plan run
 		# again, not an alternative. The premise above only requires ONE arm to
 		# differ, so without this the minimum could be the chosen plan's own warm
 		# re-run and the ratio would measure cache warmth.
 		[ "$cand_n" = "$cnode" ] && continue
+		# An alternative that timed out is not a missing alternative. Remember it:
+		# the two look identical to the ratio below (neither yields a number) but
+		# they are opposite results, and the report has to say which happened.
+		case "${cand_m:-}" in
+			TIMEOUT) slowalt="$cand_n"; continue ;;
+			# An alternative that FAILED is neither fast nor absent. Read as a
+			# time it made the chosen plan look slow; read as absent it made
+			# "nothing could be forced" pass. It is its own failure.
+			ERROR*) failalt="$cand_n ($cand_m)"; continue ;;
+		esac
+		pgc_is_number "${cand_m:-}" || continue
 		if [ -z "$best" ] || [ "$(awk -v a="$cand_m" -v b="$best" 'BEGIN{print (a<b)?1:0}')" = 1 ]; then
 			best="$cand_m"; bnode="$cand_n"
 		fi
 	done
+	if [ -n "$failalt" ]; then
+		check "[$label] the chosen plan is within the bound of the best alternative" \
+			"no (the forced alternative $failalt failed, so there is nothing to compare)" "yes"
+		return
+	fi
 	# No alternative could be forced.
 	#
 	# This was a failing premise, and that was wrong in the direction that matters.
@@ -198,7 +240,8 @@ choice_vs_best() {  # choice_vs_best <label> <sql>
 		# forced" reads as "there was nothing to compare", which is the opposite
 		# of what happened, and hides that the ratio bound went untested.
 		if [ -n "$slowalt" ]; then
-			check "[$label] the forced alternative ($slowalt) did not finish in ${PLAN_TIMEOUT}s, so the chosen plan is far better" \
+			echo "      [$label] the forced alternative ($slowalt) did not finish in ${PLAN_TIMEOUT}s"
+			check "[$label] a forced alternative did not finish, so the chosen plan must be the custom scan" \
 				"$(case "$cnode" in 'Custom Scan'*) echo yes ;; *) echo "no ($cnode)" ;; esac)" "yes"
 			return
 		fi
@@ -209,11 +252,8 @@ choice_vs_best() {  # choice_vs_best <label> <sql>
 		return
 	fi
 
-	if [ "$cms" = TIMEOUT ]; then
-		check "[$label] the chosen plan finished within ${PLAN_TIMEOUT}s" "no" "yes"
-		return
-	fi
-	check_ratio_needs_quiet_machine "[$label] the chosen plan is within ${PLAN_BOUND}x of the best alternative ($bnode)" \
+	echo "      [$label] best alternative $bnode, bound ${PLAN_BOUND}x"
+	check_ratio_needs_quiet_machine "[$label] the chosen plan is within the bound of the best alternative" \
 		"$cms" "$best" "$PLAN_BOUND"
 }
 

@@ -86,43 +86,279 @@ from compare_to_bash import (_as_names, _bash_names, _bodies,  # noqa: E402
 # The shape is `SHELL_REFERENCES`' in `test_harness_deps.py`, asserted in both
 # directions for the same reason: a one-way list rots into a permanent exemption.
 COMPLETE = ["advisory_lock_class",
+            "projection_rewrite",
+            "audit",
+            "server_file_privilege",
+            "inheritance",
+            "parquet_import",
+            "phase5",
+            "smoke",
+            "sort_status",
+            "sort_status_privilege",
+            "parallel_export_parquet",
+            "parallel_vector_agg",
+            "parallel",
+            "parallel_copy",
+            "parallel_copy_dedup",
+            "parquet_export",
+            "planner_choice_quality",
+            "parquet_export_stats",
+            "parallel_flush_optin",
+            "parallel_degree",
+            "parquet_count_bounds",
+            "parquet_nested_import",
+            "parquet_nested",
+            "parquet_level_width",
+            "read_stream",
+            "encode_invariants",
+            "cost_written_geometry",
+            "pg19_vacuum_options",
+            "preimage_rewrite",
+            "projection_rename_restore",
+            "row_triggers",
+            "pushdown_report",
+            "qual_order_selectivity",
+            "scan_direction",
+            "nologin_workers",
+            "reader_buffer_reuse",
+            "recluster_extent",
+            "recluster_gate",
+            "rewrite_group_scan",
+            "index_delete_liveness",
+            "fsst_margin",
+            "groupagg_table_sizing",
+            "export_sink",
+            "generated_columns",
+            "estimate_deleted",
+            "iceberg_fdw_projection",
+            "iceberg_fdw_estimate",
+            "iceberg_name_mapping_memory",
+            "iceberg_name_mapping",
+            "iceberg_catalog",
+            "iceberg_scan",
+            "iceberg_malformed",
+            "iceberg_objstore",
+            "iceberg_dv",
+            "iceberg_deletes",
+            "iceberg_rest",
+            "iceberg_rest_scan",
+            "iceberg_rest_vended",
+            "iceberg_rest_server",
+            "concurrency",
+            "isolation",
+            "index_only",
+            "import_deferred",
+            "import_exclusion",
+            "fsst_verdict_cache",
+            "fuzz_parquet",
+            "fuzz_arrow",
+            "fuzz_listing",
+            "fuzz_avro",
+            "fuzz",
+            "int8_agg_int128",
+            "eager_ordering_record",
+            "maintenance_due",
+            "doc_parallel_premise",
+            "encode_effort",
+            "local_open_race_free",
+            "logical_decoding_source",
+            "logical_subscriber",
+            "logical_decoding_cdc_recipe",
+            "sorted_mark_rename",
+            "tablesample",
+            "ungrouped_vector_agg",
+            "vacuum_sorted_gate",
+            "vacuum_stripe_count",
+            "vector_agg_rescan_memory",
+            "vector_agg_tlist_shape",
+            "vm_clear_on_renumber",
+            "wal_envelope",
+            "docs_style",
+            "zonemap_estimate_sample",
+            "write_fsst_compressed",
+            "write_minmax_fastpath",
+            "zonemap_cost",
+            "range_pruning",
+            "native_format",
+            "native_fold_skipguard",
+            "catalog_natts",
+            "arrow_export",
+            "alter_column_type",
+            "analyze_stats",
+            "bloom_sizing",
+            "bloom_setting",
+            "column_projection",
+            "bloom_lazy",
+            "autovacuum",
+            "autovacuum_yield",
+            "avro_manifest",
+            "arrow_nested_import",
+            "arrow_nested",
+            "iceberg_data_files",
+            "alter_table_scans",
+            "batch_fold_explain",
+            "concurrent_diff",
+            "dependency_estimate",
+            "fdw_plan_privilege",
+            "am_contracts",
+            "alter_am_cleanup",
             "analyze_differential",
             "analyze_function",
             "analyze_reltuples",
             "approx_aggregates",
+            "arrow_import",
             "autovacuum_expire",
             "base_scan_io",
+            "cancel_decode",
+            "bench_guards",
             "catalog_delete_index",
+            "parquet_skip_cross_type",
+            "parquet_timestamp_zone",
+            "catalog_filter_reads",
             "catalog_plan_index",
             "catalog_scan_index",
             "collation_change",
             "column_extent",
+            "corruption",
+            "debug_hook_privilege",
+            "decode_interrupts",
             "differential",
             "encode_post_codec",
+            "decode_skip_interrupts",
+            "entry_point_privilege",
+            "fk_referencing",
             "format_downgrade",
+            "hardening",
             "hilbert_cluster",
+            "hilbert_curve",
             "hilbert_locality",
             "iceberg_fdw",
+            "import_export_privilege",
             "index_am_support",
             "index_fetch_penalty_crossover",
             "index_fetch_penalty_width",
             "latest_reading",
+            "maintenance_crash",
+            "maintenance_rollback",
+            "native_agg",
+            "native_agg_addcolumn",
+            "native_agg_deletes",
+            "native_backend_crash",
+            "native_batch_fold_projection",
+            "native_bloom",
+            "native_sketch",
+            "native_sketch_agg",
+            "native_sketch_fold",
+            "native_sketch_rewrite",
+            "drop_cleanup",
+            "native_agg_collation",
+            "large_values",
+            "objstore_sink_write",
+            "native_cancel",
             "native_chunk_length_bound",
+            "native_ctas",
+            "native_cluster",
+            "native_compact",
+            "native_decode_gate_width",
+            "native_decode_gating",
             "native_delete_vector_index",
             "native_delete_visibility_paths",
+            "native_dict_underfill",
+            "native_dml",
+            "native_encdesc_golden",
+            "native_fastdecode",
+            "native_encoding",
+            "native_exact_selection",
+            "native_fetch_bigcap",
+            "native_fetch_cache",
             "native_fetch_coalesce",
+            "native_fetch_interrupt",
+            "native_fetch_group_memo",
+            "native_fetch_position",
+            "native_fetch_projection",
+            "native_fold_deferral",
+            "native_fetch_sort_context",
+            "native_gap",
             "native_groupagg",
+            "native_groupagg_batch",
+            "native_groupagg_wide_cost",
+            "native_index",
             "native_index_fetch_stripe_cost",
+            "native_index_projection",
+            "native_ios",
+            "native_join_runtime_filter",
+            "native_join_vector_agg",
+            "native_late_materialization",
+            "native_metadata_flush",
+            "native_lazy_slot",
             "native_ownership",
+            "native_parquet_codecs",
+            "native_page_offset_bound",
             "native_parquet_dict_oob",
+            "native_parquet_fieldid",
+            "native_parquet_flba",
+            "native_parquet_hardening",
+            "native_parquet_multifile",
+            "native_parquet_fdw",
+            "native_parquet_partition",
+            "native_parquet_streaming",
+            "native_parquet_pushdown",
+            "native_parquet_projection",
+            "native_param_pushdown",
+            "native_parquet_schema",
+            "native_parquet_stack",
+            "native_parquet_units",
             "native_projection",
+            "native_read_parquet",
+            "native_reclaim",
             "native_reclaim_cycles",
             "native_reclaim_frag",
+            "native_rewrite_conc",
+            "native_reclaim_reconcile",
+            "native_recluster",
+            "native_rewrite",
+            "native_repack",
+            "native_roundtrip",
+            "native_saop_pushdown",
+            "native_scale",
+            "native_skip",
+            "native_sort_by",
+            "native_toasted_write",
+            "native_truncate",
+            "native_upgrade_converge",
             "native_vacuum_race",
+            "native_varlena_bound",
+            "native_vecdecode",
+            "native_vecskip",
+            "native_zonemap_narrow",
+            "native_zonemap_session",
+            "native_writer",
+            "objstore_addressing",
+            "native_zonemap",
+            "objstore_allowlist",
+            "objstore_credentials",
+            "objstore_crlf",
+            "objstore_error_advice",
+            "objstore_export_double_cancel",
+            "objstore_module",
+            "objstore_http_read",
+            "objstore_tls_read",
+            "objstore_s3_read",
+            "objstore_stash_recovery",
+            "objstore_listing",
+            "objstore_export_open_uploads",
+            "objstore_userinfo",
             "parallel_am_scan",
             "parallel_scan_cost",
             "partition_lifecycle",
+            "phase6",
+            "partition_rows",
+            "phase4",
             "partman_columnar",
+            "pg_dump_roundtrip",
+            "pg_upgrade",
+            "phase2",
+            "prepared_across_sessions",
             "prepared_writes",
             "projection_drop_column",
             "projection_parallel",
@@ -131,44 +367,47 @@ COMPLETE = ["advisory_lock_class",
             "projection_scan_io",
             "projection_update",
             "projections",
+            "phase3",
+            "recovery",
+            "recovery_minimal_wal",
+            "replication",
             "rewrite_storage_oid",
+            "rls_direct_storage",
+            "rls_query_paths",
             "rollup",
+            "savepoint_flush",
             "scan_decode_cost",
+            "serializable",
+            "settings_reference",
             "sorted_pathkeys",
+            "sorted_projection",
+            "statement_self_visibility",
             "stats_privilege",
             "storage_row_repair",
             "temporal",
             "tid_range_scan",
             "tier_partition",
             "timeseries_recipes",
+            "truncate_cleanup",
             "ttl_expire",
+            "type_matrix",
+            "unique_conc",
+            "update_conc",
+            "vacuum_lock_privilege",
             "validity_elision",
+            "vm_privilege",
             "zonemap_boundaries"]
 
 # stem -> why it does not yet reach zero. Empty today, and an entry here is a claim
 # about the PORT rather than a licence: the standing arm does not grade it, so the
 # reason is the only thing standing between a declared gap and a forgotten one.
 INCOMPLETE = {
-    # #1293 ported the arms it added: min/max over timestamptz read no data, and
-    # stay right after deletes. The int4/text parity, sum/avg, parallel-plan and
-    # fallback arms of the shell suite predate it and are #432's to port.
-    "native_agg": "the timestamptz min/max arms (blocks read against a decode "
-                  "control, parity before and after deletes) are ported; the "
-                  "int4/text parity, sum/avg, parallel-plan and fallback arms are not",
-    # The port asserts the engine counters, the heap oracle, the scattered zero
-    # and the declared-collation property. The shell suite additionally pins the
-    # three states of max_upper and its own fixture geometry by name, and those
-    # arms are not ported, so the pair does not grade to zero and is declared
-    # here rather than listed as complete.
-    "range_pruning": "counters, heap oracle, scattered zero and the declared "
-                     "collation are ported; the three-state and fixture-geometry "
-                     "premises of the shell suite are not",
-    # #1137 ported the arms it added and the format-version pin. The rest of the
-    # shell suite needs a C hook bound at test time (the metapage version) and
-    # lib.sh's heap-mirror pair, and porting those is #432's work, not this one.
-    "native_format": "the format-stamp range arms and the version pin are "
-                     "ported; the metapage-version hook arms and the diverse-type "
-                     "round trip are not",
+    # #1915, review of #1928. One shell check has no twin: "a set -e suite under
+    # flock still loads lib.sh". It measures lib.sh's descriptor-closing loop, and
+    # the pytest harness has no such loop; a twin could only source the real lib.sh,
+    # which CONTEXT.md's twin rule forbids. It belongs to the shell harness alone.
+    "harness_isolation": "the set -e check measures lib.sh's descriptor loop, which "
+                         "only the shell harness has; a twin would source lib.sh",
 }
 
 
@@ -316,14 +555,17 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
         added += len(got)
         absent += [n for n in got if n not in _joined(src)]
     expect.at_least(added, 40,
-                    "premise: the reader really does add names in this tree, so the "
+                    "the reader really does add names in this tree, so the "
                     "assertion below is not vacuous")
     expect.text(", ".join(absent) or "none", "none",
                 "every name the loop reader returns appears verbatim in the file it "
                 "came from")
     expect.text(", ".join(files),
-                "build_refusal, differential, join_runtime_filter, "
-                "native_vacuum_race, sorted_pathkeys",
+                "build_refusal, differential, native_groupagg_batch, "
+                "native_index_projection, native_parquet_pushdown, "
+                "native_reclaim, native_repack, "
+                "native_saop_pushdown, native_vacuum_race, native_vecskip, sorted_pathkeys, "
+                "sorted_projection",
                 "and it is these files, so another appearing is a diff a reviewer "
                 "sees rather than a number that moved")
 
@@ -334,7 +576,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
     split = ('for label, sql in (("one two "\n' + '                   "three", "q"),):\n'
              '    expect.num(g, 1, label)\n')
     expect.text(", ".join(_loop_names(ast.parse(split))), "one two three",
-                "premise: the reader joins a wrapped name, which is why the relaxation "
+                "the reader joins a wrapped name, which is why the relaxation "
                 "is needed at all")
     expect.contains(
         split, "one two three",
@@ -348,7 +590,7 @@ def test_the_loop_reader_invents_nothing_in_this_corpus(expect):
              'for label, sql in ((f"one {P} three", "q"),):\n'
              '    expect.num(g, 1, label)\n')
     expect.text(", ".join(_loop_names(ast.parse(built))), "one {} three",
-                "premise: an f-string name is read as a TEMPLATE, not refused")
+                "an f-string name is read as a TEMPLATE, not refused")
     expect.contains(
         _joined(built), "one {} three",
         "and collapsing the concatenation does NOT rescue it -- a template is "
@@ -409,7 +651,7 @@ def test_dropping_a_member_brings_the_divergence_back_named(expect):
     bash = ["c_int range", "c_vc range"]
     full = set(_matchable_names(_EXPAND_FIXTURE))
     expect.num(len([b for b in bash if b not in full]), 0,
-               "premise: with both members present, neither bash name is missing")
+               "with both members present, neither bash name is missing")
 
     thinned = set(_matchable_names(_EXPAND_FIXTURE.replace(
         '"c_vc": "c_vc > \'a\'"', '')))
@@ -468,6 +710,22 @@ def test_the_expansion_refuses_what_it_cannot_spell(expect):
     expect.num(len(_expanded_names(ast.parse(constant))), 0,
                "a name interpolating a module constant is refused, because 1e-6 "
                "renders as 1e-06 and bash carries neither")
+    # THE CONSTANT ALONE (#1339 :468). The fixture above also interpolates `col`, so the
+    # two-distinct-names rule refuses it too, and admitting constants to the gate
+    # (`e.id in columns or e.id in consts`) left that arm green. Here the constant is
+    # the only interpolation, so this rule is the only thing that can refuse it. A gate
+    # that admitted it then looks the constant up as a column and raises, which is read
+    # as a value so this arm reddens by name rather than erroring.
+    alone = ('FLOAT_RTOL = 1e-6\n'
+             '@pytest.mark.parametrize("col", ["c_int"])\n'
+             'def test_x(col, expect):\n'
+             '    expect.num(g, 1, f"within {FLOAT_RTOL} relative")\n')
+    try:
+        got = repr(_expanded_names(ast.parse(alone)))
+    except KeyError as exc:
+        got = f"raised KeyError {exc}"
+    expect.text(got, "[]",
+                "a name whose only interpolation is a module constant is refused")
 
     multi = ('@pytest.mark.parametrize("old", ["a"])\n'
              '@pytest.mark.parametrize("new", ["b"])\n'
@@ -929,16 +1187,21 @@ def test_the_extractor_reads_every_recorder_lib_sh_defines(expect):
     # well-formed"` -- so the extractor reads their shape as a template from
     # `parallel_copy.sh` itself while the 12 labels the suite supplies go unread. The
     # behaviour list is the one that matters for the queue: `sorted_pathkeys.sh`
-    # defines `ans` and `ansp` and loses 19 of its 113 names, and `phase6.sh` loses 39
-    # of 43. Filed rather than fixed here: this change is about the recorders `lib.sh`
-    # shares, and widening both populations at once would make the removal proof
-    # unreadable.
+    # defines `ans` and `ansp` and loses 19 of its 113 names. (`phase6.sh` was listed
+    # here as losing 39 of 43; its `eq_on_off` is read now, and test_phase6.py grades
+    # all 43, #1341.) Filed rather than fixed here: this change is about the recorders
+    # `lib.sh` shares, and widening both populations at once would make the removal
+    # proof unreadable.
+    direct_call = re.compile(r'\bpgc_record\s+[A-Z]')
     direct = sorted(sh.name[:-3] for sh in HERE.parent.glob("*.sh")
                     if sh.name != "lib.sh"
-                    and re.search(r'\bpgc_record\s+[A-Z]', _strip_comments(sh.read_text())))
-    expect.at_least(len(direct), 1,
-                    "premise: some suite does call pgc_record directly, so this is "
-                    "not vacuous")
+                    and direct_call.search(_strip_comments(sh.read_text())))
+    # The corpus no longer has a suite that calls pgc_record directly (phase6.sh was
+    # the last, #1341), so the arm below cannot lean on one being there. A planted
+    # line proves the detector still finds such a call, wherever the corpus stands.
+    planted = 'pgc_record PASS "$suite" "$part" "a planted name"\n'
+    expect.num(1 if direct_call.search(_strip_comments(planted)) else 0, 1,
+               "control: the detector finds a planted direct pgc_record call")
     twinned = sorted(d for d in direct if (HERE / f"test_{d}.py").exists())
     expect.text(", ".join(twinned) or "none", "none",
                 "no suite calling pgc_record directly has a twin, so excluding the "
@@ -1151,17 +1414,19 @@ def test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one(expect):
 
 
 def test_the_suite_local_helpers_are_known_and_excluded(expect):
-    """Four helpers are defined by ONE suite each, and the extractor does not read
-    them. That is a scope decision and it is asserted rather than left implicit.
+    """No suite defines its own `check_<something>` helper, which the extractor does
+    not read. That is a scope decision and it is asserted rather than left implicit.
 
-    `compare_to_bash.py` grades a `test/<stem>.sh` against a
-    `test/pytest/test_<stem>.py`. None of the four suites defining its own helper
-    has a pytest twin, so none is graded and the exclusion costs nothing TODAY.
-    The day one of them is ported, this arm is what says the grader cannot see it.
+    `compare_to_bash.py` reads the checks a suite records through `lib.sh`; a helper
+    a suite defines for itself, recording under a name it builds, is invisible to it.
+    There were three such helpers, all in parallel_copy.sh, and they went when that
+    suite was ported (#1341): its checks now carry literal names at the call site.
+    parquet_export_stats.sh's check_float went the same way before it. A suite that
+    adds one again reddens this arm, which is what says the grader cannot see it.
 
     The population is `check_<something>`, which is not the same as "starts with
-    check": `checks_in` in `decode_interrupts.sh` is a COUNTING utility returning a
-    number of interrupt checks in a function body, and records nothing. It was in
+    check": `checks_in`, which `decode_interrupts.sh` had until #1341, was a COUNTING
+    utility returning a number of interrupt checks in a function body, and recorded nothing. It was in
     this list until the arm printed it and the definition was read.
     """
     root = HERE.parent
@@ -1171,16 +1436,8 @@ def test_the_suite_local_helpers_are_known_and_excluded(expect):
             continue
         for h in re.findall(r'^(check_[a-z_]+)\(\)\s*\{', sh.read_text(), re.M):
             local.setdefault(h, sh.name)
-    expect.text(", ".join(f"{h} ({f})" for h, f in sorted(local.items())),
-                "check_float (parquet_export_stats.sh), "
-                "check_reconstruct (parallel_copy.sh), "
-                "check_split_happened (parallel_copy.sh), "
-                "check_structure (parallel_copy.sh)",
-                "the suite-local helpers are exactly these four")
-    twinned = [f for h, f in local.items()
-               if (HERE / f"test_{f[:-3]}.py").exists()]
-    expect.num(len(twinned), 0,
-               "and none of their suites has a pytest twin, so none is graded today")
+    expect.text(", ".join(f"{h} ({f})" for h, f in sorted(local.items())) or "none", "none",
+                "no suite defines its own check_ helper, which the grader would not read")
 
 
 def test_a_suites_own_forwarding_wrapper_is_read(expect):
@@ -1244,7 +1501,8 @@ def test_a_composing_wrapper_is_left_alone(expect):
 
 
 def test_a_helper_whose_name_cannot_be_resolved_is_refused(expect):
-    """THE REFUSE HALF. `hilbert_curve.sh` is the whole population, and it is real:
+    """THE REFUSE HALF. `hilbert_curve.sh` was the whole population, and it was real
+    until its port (#1341) wrote these loops out at their call sites:
 
         arms_failed() {            # arms_failed "LIST" DETAIL
             while IFS= read -r _a; do
@@ -1270,8 +1528,8 @@ def test_a_helper_whose_name_cannot_be_resolved_is_refused(expect):
 
 def test_the_refusal_names_exactly_the_suites_it_refuses(expect):
     """A STATIC GUARD NEEDS A FALSE-POSITIVE BUDGET, measured over the tree before it
-    ships rather than discovered by it. One suite of 264 is refused and it is a true
-    positive; every graded pair is unchanged.
+    ships rather than discovered by it. One suite of 264 was refused and it was a
+    true positive; every graded pair was unchanged. Since #1341 none is.
 
     THE SET IS PINNED, NOT THE COUNT, and that is not a style choice.
     `checks_never_observed_red` is this repo's worked example of the other shape: a
@@ -1286,9 +1544,12 @@ def test_the_refusal_names_exactly_the_suites_it_refuses(expect):
     """
     refused = sorted(sh.name[:-3] for sh in HERE.parent.glob("*.sh")
                      if sh.name != "lib.sh" and _suite_recorders(sh.read_text())[1])
-    expect.text(", ".join(refused), "hilbert_curve",
-                "exactly these suites are refused -- `hilbert_curve`, whose helpers "
-                "take a newline-separated LIST of names in one argument")
+    # `hilbert_curve` was the one refused suite until its port (#1341) wrote the two
+    # list-taking helpers out as loops at their call sites. The refusal itself is
+    # still exercised, against a fixture, by the arm below.
+    expect.text(", ".join(refused) or "none", "none",
+                "exactly these suites are refused -- none, since `hilbert_curve` "
+                "stopped taking a newline-separated LIST of names in one argument")
     twinned = [r for r in refused if (HERE / f"test_{r}.py").exists()]
     expect.text(", ".join(twinned) or "none", "none",
                 "and none of them has a pytest twin, so the refusal grades nothing "
@@ -1334,10 +1595,20 @@ def test_the_grader_itself_refuses_the_suite_it_cannot_read(expect, tmp_path):
 
     port = tmp_path / "test_stub.py"
     port.write_text("def test_x(expect):\n    expect.num(1, 1, 'a name')\n")
+    # THE SUITE SIDE IS A FIXTURE TOO, since #1341: it was `hilbert_curve.sh`, the one
+    # real suite with these helpers, until that suite's port wrote them out as loops.
+    # These are its two helpers as they stood.
+    unreadable = tmp_path / "unreadable.sh"
+    unreadable.write_text(
+        'arms_unrunnable() {\n\tlocal _a\n\twhile IFS= read -r _a; do\n'
+        '\t\t[ -n "$_a" ] && check_unrunnable "$_a" "$2" "$3"\n\tdone <<< "$1"\n}\n'
+        'arms_failed() {\n\tlocal _a\n\twhile IFS= read -r _a; do\n'
+        '\t\t[ -n "$_a" ] && pgc_fail "$_a" "$2"\n\tdone <<< "$1"\n}\n'
+        'check "a name" "$a" "$b"\n')
 
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        rc = main(str(HERE.parent / "hilbert_curve.sh"), str(port))
+        rc = main(str(unreadable), str(port))
     text = out.getvalue()
     expect.num(rc, 2, "the grader exits 2 -- neither a pass nor an ordinary MISSING -- "
                       "on a suite whose names it cannot fully read")
@@ -1441,6 +1712,116 @@ def test_every_pair_in_the_tree_is_declared(expect):
                 "every incomplete pair says why, at more than a passing word")
 
 
+def _registered_suites():
+    """The SUITES array, read the way run_all_versions.sh itself reads it: the same
+    sed range and an eval, through bash, so this guard and the runner cannot disagree
+    about which suites exist."""
+    import subprocess
+    runner = HERE.parent / "run_all_versions.sh"
+    out = subprocess.run(
+        ["bash", "-c", 'eval "$(sed -n \'/^SUITES=(/,/)$/p\' "$1")"; printf "%s\\n" "${SUITES[@]}"',
+         "bash", str(runner)],
+        capture_output=True, text=True, check=True).stdout
+    return [s for s in out.split("\n") if s]
+
+
+UNPORTED_FILE = HERE / "unported_suites.txt"
+
+# REGISTERED SUITES THAT TEST THE SHELL HARNESS ITSELF, and so have no pytest twin by
+# design, not by backlog (#1341). A twin of one would re-test bash library code from
+# Python and prove nothing about pytest's own harness, which has its own guards
+# (test_harness_deps.py, the pgc_vacuity self-tests, test_build_refusal.py). Held both
+# ways by `test_a_shell_harness_suite_is_declared_both_ways`: a declared stem that gains
+# a twin, stops being a registered suite, is also listed unported, or carries no reason
+# reddens, so this cannot rot into a one-way exemption.
+SHELL_HARNESS = {
+    "harness_selftest": "tests lib.sh and portlib.sh themselves (the port-squatter "
+                        "identity guard, start retries, the suite list's rules), not "
+                        "pgcolumnar; pytest's own harness has its own guards",
+}
+
+
+def _unported():
+    if not UNPORTED_FILE.exists():
+        return None
+    return [ln.strip() for ln in UNPORTED_FILE.read_text().splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def test_every_registered_suite_is_ported_or_declared_unported(expect):
+    """NO SUITE IS TWIN-LESS WITHOUT SAYING SO (#1341).
+
+    `test_every_pair_in_the_tree_is_declared` grades the pairs that EXIST. A registered
+    shell suite with no pytest twin was in no list at all, so the parity goal (#432)
+    could not be read off the tree: 168 suites were twin-less and nothing named them,
+    and a new shell-only suite could land with nobody noticing. `unported_suites.txt`
+    declares them, one stem per line so that a port's removal and another port's
+    removal never conflict, and this arm holds it in both directions:
+
+        a registered suite with no twin, not declared     reddens, named
+        a declared stem that now has its twin             reddens, so the port must
+                                                          also move it to COMPLETE or
+                                                          INCOMPLETE
+        a declared stem that is not a registered suite    reddens, so the list cannot rot
+    """
+    reg = _registered_suites()
+    expect.at_least(len(reg), 200, "premise: the runner's SUITES array was read, not an empty one")
+    unp = _unported()
+    expect.text("present" if unp is not None else f"missing: {UNPORTED_FILE.name}", "present",
+                "premise: the unported declaration exists")
+    if unp is None:
+        return
+    expect.num(len(unp), len(set(unp)), "premise: no stem is declared unported twice")
+    paired = {s for s in reg if (HERE / f"test_{s}.py").exists()}
+    undeclared = sorted(s for s in reg if s not in paired and s not in set(unp) and s not in SHELL_HARNESS)
+    ported = sorted(s for s in unp if s in paired)
+    phantom = sorted(set(unp) - set(reg))
+    expect.text(", ".join(undeclared) or "none", "none",
+                "every registered suite without a pytest twin is declared unported")
+    expect.text(", ".join(ported) or "none", "none",
+                "and a suite that gained its twin is no longer declared unported")
+    expect.text(", ".join(phantom) or "none", "none",
+                "and every declared unported stem is a registered suite")
+
+
+def _shell_harness_violations(declared, reg, unported, twin_exists):
+    """-> (gained a twin, not a registered suite, also listed unported, no reason), each
+    a sorted list of stems: the four ways a SHELL_HARNESS declaration can rot."""
+    return (sorted(s for s in declared if twin_exists(s)),
+            sorted(s for s in declared if s not in reg),
+            sorted(s for s in declared if s in unported),
+            sorted(s for s, why in declared.items() if not str(why).strip()))
+
+
+def test_a_shell_harness_suite_is_declared_both_ways(expect):
+    """A SHELL-HARNESS SUITE IS A DECLARATION, NOT AN EXEMPTION (#1341).
+
+    `SHELL_HARNESS` names registered suites whose subject is the shell harness, so the
+    unported guard above accepts them without a twin. It is held in the other direction
+    here, so it cannot become a list that only grows:
+
+        a declared stem that gains test_<stem>.py      reddens: then it is a port
+        a declared stem that is not a registered suite reddens: the list cannot rot
+        a declared stem also in unported_suites.txt    reddens: one state per stem
+        a declared stem with an empty reason           reddens: say why
+    """
+    reg = set(_registered_suites())
+    expect.at_least(len(reg), 200, "premise: the runner's SUITES array was read for the shell-harness check")
+    unp = _unported()
+    expect.text("present" if unp is not None else f"missing: {UNPORTED_FILE.name}", "present",
+                "premise: the unported declaration exists for the shell-harness check")
+    twin, phantom, both, unexplained = _shell_harness_violations(
+        SHELL_HARNESS, reg, set(unp or ()), lambda s: (HERE / f"test_{s}.py").exists())
+    expect.text(", ".join(twin) or "none", "none",
+                "a shell-harness suite has no pytest twin")
+    expect.text(", ".join(phantom) or "none", "none",
+                "and every shell-harness stem is a registered suite")
+    expect.text(", ".join(both) or "none", "none",
+                "and no shell-harness stem is also declared unported")
+    expect.text(", ".join(unexplained) or "none", "none",
+                "and every shell-harness stem says why")
+
+
 def test_the_ported_suites_in_this_tree_are_graded_one_for_one(expect):
     """THE STANDING ARM, and the reason this file is not only about fixtures.
 
@@ -1452,18 +1833,14 @@ def test_the_ported_suites_in_this_tree_are_graded_one_for_one(expect):
     Only the pairs that reach zero today are listed. A pair with a real gap is not pinned to
     its gap: that would turn the gap into the expected state.
 
-    THE LIST IS HAND-WRITTEN FOR THAT REASON AND NOTHING ENFORCES IT, which is a
-    different thing from the reason being wrong. The comment below already says a new
-    port belongs here; no arm reddens when one does not arrive. Today the list happens
-    to equal the pairs that exist, so nothing has ever been silently ungraded -- but an
-    eighth complete pair omitted would leave this arm passing while it graded seven,
-    which is absent-from-the-list and no-gap-found producing the same green.
-
-    #1046 TRACKS MAKING THIS ASSERTION TWO-DIRECTIONAL, in the shape `SHELL_REFERENCES`
-    already uses: derive the pairs that EXIST and require the declared list to equal that
-    set. It is not a tidy-up -- it changes what happens to an INCOMPLETE port, which is
-    quietly absent today and would have to redden, so the issue records the design
-    question rather than settling it. Kept out of the PR that added the eighth pair.
+    THE LIST IS ENFORCED BOTH WAYS (#1046, landed). `COMPLETE` and `INCOMPLETE` are
+    module declarations, and `test_every_pair_in_the_tree_is_declared` requires their
+    union to equal the pairs that exist on disk, in both directions; the cardinality
+    premise below counts the same thing from this arm's side. A complete pair left
+    out of both reddens there -- measured: dropping `advisory_lock_class` from
+    `COMPLETE` fails both -- so absent-from-the-list and no-gap-found can no longer
+    produce the same green. An INCOMPLETE port is declared with its reason and
+    graded by its own arms, not by this loop.
     """
     from compare_to_bash import main
     import contextlib

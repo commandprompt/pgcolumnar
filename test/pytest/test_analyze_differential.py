@@ -51,8 +51,6 @@ ROWS = 50000
 # Five types, because the failure this file hunts is type-dependent. The array
 # literal for most_common_vals is built through the type's own output function;
 # an int column can be written correctly by code that mangles every text column.
-COLUMNS = (("i", "int"), ("t", "text"), ("n", "numeric"), ("d", "date"),
-           ("b", "boolean"))
 
 # The two text values that break an array literal assembled by hand: one carries
 # the separator, the other the quote.
@@ -155,6 +153,30 @@ def _mcv(conn, col, typ):
     return list(row[0]), list(row[1] or [])
 
 
+
+def _mcv_listed(conn, col, typ):
+    """-> "yes" when the column has a most-common list, else its length. An empty list
+    makes "no value disagrees" true of nothing, so this is read first."""
+    values, _ = _mcv(conn, col, typ)
+    return "yes" if len(values) >= 1 else f"no (length [{len(values)}])"
+
+
+def _mcv_wrong(conn, col, typ):
+    """-> how many most-common values have a stored frequency the table disagrees
+    with. The oracle is an independent count over the table, never a re-reading of
+    what the function wrote; a tolerance is required because most_common_freqs is
+    real while the true frequency is exact."""
+    values, freqs = _mcv(conn, col, typ)
+    wrong = []
+    for value, freq in zip(values, freqs):
+        seen = _one(conn, f"SELECT count(*) FROM ad_c WHERE {col} IS NOT DISTINCT FROM %s", (value,))
+        if abs(decimal.Decimal(seen) / ROWS - decimal.Decimal(repr(freq))) > decimal.Decimal("0.000001"):
+            wrong.append((value, freq, seen))
+    if wrong:
+        print(f"-- {col}: stored frequency disagrees with the table for {wrong}")
+    return len(wrong)
+
+
 def test_analyze_differential(pgc_conn, expect):
     version_num = _one(pgc_conn, "SHOW server_version_num")
     readable = str(version_num).isdigit()
@@ -208,13 +230,16 @@ def test_analyze_differential(pgc_conn, expect):
         cur.execute("ANALYZE ad_c")
     core = _shape(pgc_conn)
 
+    # Not premises (#1339): core reads a columnar table through pgcolumnar's own
+    # ANALYZE sampler, so a repository change can redden these -- with the sampler
+    # mapping no block to a slice, core collects nothing and both go red.
     expect.num(len(_columns_with(core, KIND_MCV)), 5,
-               "premise: core produced a most-common list for every column")
+               "core ANALYZE, through the columnar sampler, produced a most-common list for every column")
     # `b` has two distinct values, both repeated, so its most-common list
     # describes it completely and num_hist = ndistinct - num_mcv = 0
     # (analyze.c:2744). Four columns, not five, and that is the point.
     expect.num(len(_columns_with(core, KIND_HISTOGRAM)), 4,
-               "premise: and a histogram for the four with a tail, but not for boolean")
+               "and a histogram for the four with a tail, but not for boolean")
 
     # --- clear, so what follows is unambiguously ours -------------------------
     #
@@ -292,28 +317,23 @@ def test_analyze_differential(pgc_conn, expect):
     # A tolerance is required and is not slack: most_common_freqs is real
     # (float4, ~7 significant digits) while the true frequency is exact, so
     # demanding equality would fail on representation rather than on correctness.
-    for col, typ in COLUMNS:
-        values, freqs = _mcv(pgc_conn, col, typ)
-        # Asserted before the comparison: an empty most-common list makes "no
-        # value disagrees" true of nothing, which is the vacuous pass this whole
-        # file is about.
-        expect.text("yes" if len(values) >= 1 else f"no (length [{len(values)}])",
-                    "yes", f"premise: {col} has a most-common list to check")
-
-        wrong = []
-        for value, freq in zip(values, freqs):
-            # The oracle is an independent count over the table, never a
-            # re-reading of what the function wrote. One value at a time, so a
-            # failure names the value rather than counting failures.
-            seen = _one(pgc_conn,
-                        f"SELECT count(*) FROM ad_c WHERE {col} IS NOT DISTINCT FROM %s",
-                        (value,))
-            if abs(decimal.Decimal(seen) / ROWS - decimal.Decimal(repr(freq))) > decimal.Decimal("0.000001"):
-                wrong.append((value, freq, seen))
-        if wrong:
-            print(f"-- {col}: stored frequency disagrees with the table for {wrong}")
-        expect.num(len(wrong), 0,
-                   f"every most-common value of {col} exists with exactly its stored frequency")
+    # Not premises (#1339): these read the most-common list pgcolumnar.analyze()
+    # wrote, so a repository change reddens them. One literal name per column.
+    expect.text(_mcv_listed(pgc_conn, "i", "int"), "yes", "i has a most-common list to check")
+    expect.num(_mcv_wrong(pgc_conn, "i", "int"), 0,
+               "every most-common value of i exists with exactly its stored frequency")
+    expect.text(_mcv_listed(pgc_conn, "t", "text"), "yes", "t has a most-common list to check")
+    expect.num(_mcv_wrong(pgc_conn, "t", "text"), 0,
+               "every most-common value of t exists with exactly its stored frequency")
+    expect.text(_mcv_listed(pgc_conn, "n", "numeric"), "yes", "n has a most-common list to check")
+    expect.num(_mcv_wrong(pgc_conn, "n", "numeric"), 0,
+               "every most-common value of n exists with exactly its stored frequency")
+    expect.text(_mcv_listed(pgc_conn, "d", "date"), "yes", "d has a most-common list to check")
+    expect.num(_mcv_wrong(pgc_conn, "d", "date"), 0,
+               "every most-common value of d exists with exactly its stored frequency")
+    expect.text(_mcv_listed(pgc_conn, "b", "boolean"), "yes", "b has a most-common list to check")
+    expect.num(_mcv_wrong(pgc_conn, "b", "boolean"), 0,
+               "every most-common value of b exists with exactly its stored frequency")
 
     # --- the values themselves survived the round trip -------------------------
     #

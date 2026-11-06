@@ -105,7 +105,14 @@ def _load(cur, table, expr):
     cur.execute(
         f"INSERT INTO {table} SELECT {expr} FROM generate_series(1, {ROWS}) g"
     )
-    cur.execute(f"CREATE TABLE {table}_h AS SELECT * FROM {table}")
+    # THE HEAP MIRROR IS WRITTEN FROM THE SAME SEEDED GENERATOR, NOT COPIED (#1339):
+    # a copy reads through the decoder under test, so a decode defect lands on both
+    # sides. Reseeded so random() repeats the columnar table's sequence.
+    cur.execute(f"CREATE TABLE {table}_h (v bigint)")
+    cur.execute("SELECT setseed(0.11)")
+    cur.execute(
+        f"INSERT INTO {table}_h SELECT {expr} FROM generate_series(1, {ROWS}) g"
+    )
 
 
 TAIL_EXPR = (

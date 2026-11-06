@@ -109,7 +109,13 @@ psql_run "ALTER DATABASE $PGC_DB SET pgcolumnar.compression = 'none';"
 # provably broken, and the premise arm is what caught them.
 psql_run "CREATE TABLE ve_full (k bigint, v bigint) USING pgcolumnar;"
 psql_run "INSERT INTO ve_full SELECT g, g FROM generate_series(1, $ROWS) g;"
-psql_run "CREATE TABLE ve_full_h AS SELECT * FROM ve_full;"
+# THE HEAP MIRRORS ARE WRITTEN FROM THE GENERATOR, NOT COPIED FROM THE TABLE (#1339).
+# A CREATE TABLE ... AS SELECT FROM ve_full reads through the reader under test, so
+# a read that turned a present value into NULL was copied into the oracle too and
+# every comparison with it stayed equal: measured, with row 5 of every group read
+# as NULL, the EXCEPT ALL arms stayed green.
+psql_run "CREATE TABLE ve_full_h (k bigint, v bigint);"
+psql_run "INSERT INTO ve_full_h SELECT g, g FROM generate_series(1, $ROWS) g;"
 
 # Every tenth row NULL: enough that the bitmap is genuinely needed, and not so
 # many that the column stops holding values to compare.
@@ -117,7 +123,10 @@ psql_run "CREATE TABLE ve_nulls (k bigint, v bigint) USING pgcolumnar;"
 psql_run "INSERT INTO ve_nulls
 	SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE g END
 	FROM generate_series(1, $ROWS) g;"
-psql_run "CREATE TABLE ve_nulls_h AS SELECT * FROM ve_nulls;"
+psql_run "CREATE TABLE ve_nulls_h (k bigint, v bigint);"
+psql_run "INSERT INTO ve_nulls_h
+	SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE g END
+	FROM generate_series(1, $ROWS) g;"
 
 full_nulls="$(q "SELECT count(*) FROM ve_full WHERE v IS NULL;" | tail -1)"
 some_nulls="$(q "SELECT count(*) FROM ve_nulls WHERE v IS NULL;" | tail -1)"
@@ -162,9 +171,12 @@ check "premise: the residual was summed over chunks that exist" \
 check "premise: each fixture is a single row group, which is what the expected size assumes" \
 	"$groups" "11"
 
-check "premise: the first fixture holds no nulls at all" "$full_nulls" "0"
+# AN ARM, NOT A PREMISE (#1339, #1236). It counts the nulls THROUGH THE READER, so a
+# read that turns a present value into NULL reddens it: measured, with row 5 of every
+# group read as NULL, it read 1. A check a repository change can redden is an arm.
+check "the full column reads back no nulls at all" "$full_nulls" "0"
 
-check "premise: the second fixture holds nulls, so its bitmap is load-bearing" \
+check "the second fixture holds nulls, so its bitmap is load-bearing" \
 	"$(awk -v n="$some_nulls" 'BEGIN { print (n + 0 > 0) ? "has-nulls" : "none" }')" \
 	"has-nulls"
 
@@ -251,7 +263,7 @@ FORCE="SET pgcolumnar.enable_custom_scan = off;
 # table AM's fetch, so arms over a single-column table pass against a build
 # whose fetch path is broken. "Index Only Scan" does not match this anchored
 # pattern, which is the point of anchoring it.
-check "premise: the arms below reach the row through an index scan" \
+check "the arms below reach the row through an index scan" \
 	"$(q "$FORCE EXPLAIN (COSTS OFF) SELECT v FROM ve_full WHERE k = 12345;" |
 		grep -cE '^[[:space:]]*Index Scan using')" \
 	"1"
@@ -307,18 +319,31 @@ check "single-row fetches of the null-bearing column return its nulls as nulls" 
 # catalog -- which is what a bit flip or a crafted file does, and what
 # corruption.sh does for the fields that predate this change.
 #
-# ASSERT THE SQLSTATE, NOT THE TEXT. `42501`, `22023`, a login FATAL and a
+# ASSERT THE SQLSTATE, NOT ONLY THE TEXT. `42501`, `22023`, a login FATAL and a
 # missing function all satisfy a grep for "ERROR"; XX001 is ERRCODE_DATA_CORRUPTED
 # and comes only from a guard that ran.
-sqlstate() {	# SQL -> the 5-char SQLSTATE it raises, or NOERR
-	local out
+#
+# AND WHICH GUARD (#1339). XX001 comes from sixteen guards in the reader: with the
+# no-nulls guard disabled, both arms below still saw XX001 from a later one and
+# stayed green. So each reads the message too, and a red names what fired.
+# SQL -> `SQLSTATE|the no-nulls guard`, `SQLSTATE|another guard: <message>` or NOERR.
+guard_of() {
+	local out state msg
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
 		-U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
-\\set VERBOSITY sqlstate
+\\set VERBOSITY verbose
 $1;
 SQLEOF
 )"
-	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1 | grep . || echo NOERR
+	state="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' | head -1)"
+	msg="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' | head -1)"
+	if [ -z "$state" ]; then
+		echo NOERR
+	elif grep -qF "claims no nulls but does not account for every row" <<<"$msg"; then
+		echo "$state|the no-nulls guard"
+	else
+		echo "$state|another guard: $msg"
+	fi
 }
 
 # GUARD 1: a chunk that CLAIMS it stored no bitmap while its own descriptor
@@ -335,29 +360,38 @@ psql_run "UPDATE pgcolumnar.column_chunk c
 	  AND c.column_index = 1;"
 
 check "a chunk claiming no bitmap while it holds fewer values than rows is refused" \
-	"$(sqlstate "SELECT sum(v) FROM ve_nulls")" \
-	"XX001"
+	"$(guard_of "SELECT sum(v) FROM ve_nulls")" \
+	"XX001|the no-nulls guard"
 
 check "and the backend survives that refusal" "$(q "SELECT 1;" | tail -1)" "1"
 
 # GUARD 2: a row count the chunk cannot possibly hold. The elided chunk's
-# descriptor still accounts for its own 100,000 values, so a row_count of four
+# descriptor still accounts for its own 100,000 values, so a row_count of nine
 # billion makes the same claim false in the other direction, and the reader
-# refuses BEFORE it synthesizes anything -- which is the ordering that matters,
-# since the bitmap it would otherwise invent is half a gigabyte.
+# refuses BEFORE it synthesizes anything -- which is the ordering that matters.
+#
+# NINE BILLION, NOT FOUR, SO THE ORDER IS VISIBLE (#1339 review). The bitmap it
+# would need is 1.125 GB, over MaxAllocSize, so the "implausible row count"
+# backstop sits between the no-nulls guard and the allocation: a no-nulls guard
+# moved below the allocation is met by the backstop first and names it. At four
+# billion the bitmap was 500 MB, under the backstop, and that move stayed green.
+# It still cannot see a guard placed between the backstop and the allocation.
+#
+# A reworded guard message reddens both arms here and in the pytest twin, which
+# must then be updated together: the red prints the real message.
 #
 # BOUNDING THE SYNTHESIZED BITMAP BY THE ROW GROUP'S BYTE LENGTH DOES NOT WORK,
 # and this suite is where that was measured: ve_full's group is 360 bytes on
 # disk and would need 12,500 bytes of bits, which is the saving, not a defect.
 psql_run "UPDATE pgcolumnar.row_group r
-	SET row_count = 4000000000
+	SET row_count = 9000000000
 	FROM pgcolumnar.storage s
 	WHERE s.storage_id = r.storage_id
 	  AND s.relation_oid = 've_full'::regclass;"
 
 check "an implausible row count on an elided chunk is refused before anything is allocated" \
-	"$(sqlstate "SELECT sum(v) FROM ve_full")" \
-	"XX001"
+	"$(guard_of "SELECT sum(v) FROM ve_full")" \
+	"XX001|the no-nulls guard"
 
 check "and the backend survives that refusal too" "$(q "SELECT 1;" | tail -1)" "1"
 

@@ -39,12 +39,12 @@ runsql() {
 
 # Compactor loop: hammer the online rewrite + fully-dead retirement concurrently.
 STOP="$PGC_WORKDIR/stop"
-rm -f "$STOP"
+rm -f "$STOP" "$PGC_WORKDIR/compactor.out"
 (
 	while [ ! -f "$STOP" ]; do
 		env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-			-d "$PGC_DB" -q -c "SELECT pgcolumnar.compact_rewrite('t_col', 0.0);" \
-			>/dev/null 2>>"$PGC_WORKDIR/compactor.err" || true
+			-d "$PGC_DB" -qAt -c "SELECT pgcolumnar.compact_rewrite('t_col', 0.0);" \
+			>>"$PGC_WORKDIR/compactor.out" 2>>"$PGC_WORKDIR/compactor.err" || true
 		env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 			-d "$PGC_DB" -q -c "SELECT pgcolumnar.compact('t_col');" \
 			>/dev/null 2>>"$PGC_WORKDIR/compactor.err" || true
@@ -78,6 +78,15 @@ touch "$STOP"
 wait "$comp_pid" 2>/dev/null || true
 check "all workers succeeded (retried past serialization failures)" "$fail" "0"
 
+# THE RACE MUST HAVE HAPPENED, or the oracle comparison below proves nothing about
+# it. While the workers ran, the compactor must have moved rows (compact_rewrite
+# returns the live rows it moved) -- a rewrite that never ran alongside the writers
+# leaves the conflict protocol untested.
+moved="$(awk '/^[0-9]+$/ {s += $1} END {print s + 0}' "$PGC_WORKDIR/compactor.out" 2>/dev/null)"
+echo "-- compactor moved $moved rows during the workers' window; serialization retries: $(cat "$PGC_WORKDIR"/w.*.err 2>/dev/null | grep -c 'row group was compacted concurrently')"
+check "the compactor rewrote groups while the workers were writing" \
+	"$([ -n "$moved" ] && [ "$moved" -gt 0 ] 2>/dev/null && echo yes || echo "no (moved [$moved])")" "yes"
+
 # A final settling pass, then the columnar table must equal the heap oracle.
 q "SELECT pgcolumnar.compact_rewrite('t_col', 0.0);" >/dev/null
 q "SELECT pgcolumnar.compact('t_col');" >/dev/null
@@ -86,5 +95,41 @@ diff_query "conc-rewrite whole-row" "SELECT * FROM %T"
 diff_query "conc-rewrite count/sum" "SELECT count(*), sum(v), count(distinct cat) FROM %T"
 diff_query "conc-rewrite range"     "SELECT count(*) FROM %T WHERE id BETWEEN 4000 AND 12000"
 check "row count sane" "$([ "$(q 'SELECT count(*) FROM t_col;')" -gt 0 ] && echo ok)" "ok"
+
+# ---- the online rewrite does not block readers or writers --------------------
+#
+# The point of F3b is ShareUpdateExclusiveLock: a rewrite runs alongside the
+# workload. Nothing above could see a rewrite that took a stronger lock -- the
+# workers would simply wait for it and still finish, and the oracle would still
+# match. So a compact_rewrite is held mid-verb with its lock taken
+# (pgcolumnar.maintenance_hold_ms), and a reader and a writer, each with a short
+# lock_timeout, must finish while it still holds it.
+BEFORE="$(q 'SELECT count(*) FROM t_col;')"
+(
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -v ON_ERROR_STOP=1 -c "SET pgcolumnar.maintenance_hold_ms = 12000;" \
+		-c "SELECT pgcolumnar.compact_rewrite('t_col', 0.0);" >"$PGC_WORKDIR/holder.out" 2>&1
+	echo "rc=$?" >>"$PGC_WORKDIR/holder.out"
+) &
+holder_pid=$!
+# the holder's lock on t_col, by any backend running compact_rewrite: wait (bounded) until it is taken
+held() {
+	q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+	   WHERE l.relation = 't_col'::regclass AND l.granted AND a.query LIKE '%compact_rewrite%'
+	     AND a.pid <> pg_backend_pid();"
+}
+for _ in $(seq 1 50); do [ "$(held)" = "1" ] && break; sleep 0.2; done
+check "a compact_rewrite holds its lock on t_col mid-verb" "$(held)" "1"
+check_num "a reader with a 3 s lock_timeout finishes while the rewrite holds its lock" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -v ON_ERROR_STOP=1 -c "BEGIN; SET LOCAL lock_timeout = '3s'; SELECT count(*) FROM t_col; COMMIT;" 2>/dev/null | head -1)" \
+	"$BEFORE"
+check "a writer with a 3 s lock_timeout inserts while the rewrite holds its lock" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -v ON_ERROR_STOP=1 -c "BEGIN; SET LOCAL lock_timeout = '3s'; INSERT INTO t_col VALUES (-1, 0, 0, 'probe'); COMMIT;" \
+		>/dev/null 2>&1 && echo inserted || echo refused)" "inserted"
+check "and the rewrite still held its lock when both had finished" "$(held)" "1"
+wait "$holder_pid"
+check "the held rewrite itself completed" "$(tail -1 "$PGC_WORKDIR/holder.out")" "rc=0"
 
 pgc_summary

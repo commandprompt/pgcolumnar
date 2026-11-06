@@ -399,12 +399,29 @@ pgc_setup() {
 			echo "-- source: $_pgc_fresh_current, freshness UNVERIFIED (no stamp for major $PGC_MAJOR)"
 			;;
 	esac
+	# The library these checks run against. pgc_summary fails the run if it
+	# changes before the end (#1915).
+	PGC_RUN_SO_DIGEST="$_pgc_bin_current"
 
 	echo "-- initdb"
-	pgc_pg "initdb -D '$PGC_PGDATA' -A trust" >/dev/null 2>&1
+	# -U postgres, because every psql below connects as postgres (#1341). initdb's
+	# default superuser is whoever runs it, which is postgres only under the
+	# runuser above; a non-root run -- the pytest-cluster job, which chowns
+	# pkglibdir precisely so that it can stay non-root, driving a shell suite as
+	# test_objstore_stash_recovery.py does -- got a cluster with no postgres role,
+	# and every start attempt "failed". pgc_cluster.initdb has always passed it.
+	pgc_pg "initdb -D '$PGC_PGDATA' -A trust -U postgres" >/dev/null 2>&1
 	{
 		echo "port=$PGC_PORT"
 		echo "listen_addresses='127.0.0.1'"
+		# THE SOCKET DIRECTORY, pinned to this cluster's own datadir, as
+		# pgc_cluster.py pins it. A packaged postgres defaults it to
+		# /var/run/postgresql, which only postgres can write: under runuser that is
+		# fine, but a non-root, non-postgres run -- the pytest-cluster job driving
+		# objstore_module.sh from test_objstore_stash_recovery.py -- FATALs on the
+		# lock file, and pg_ctl says only "could not start server" (#1717). Every
+		# connection here is TCP on 127.0.0.1, so nothing reads the socket's path.
+		echo "unix_socket_directories='$PGC_PGDATA'"
 		echo "shared_preload_libraries='pgcolumnar'"
 		# Deterministic text output so heap and columnar hashes match.
 		echo "extra_float_digits=3"
@@ -1031,7 +1048,8 @@ pgc_freshness_verdict() {	# pgc_freshness_verdict RECORDED CURRENT -> verdict
 #
 # fresh     the server started after the binary was installed
 # predates  the binary is newer than the server, so the server has older code
-# unknown   one of the two timestamps could not be read
+# unknown   one of the two timestamps could not be read, or the two are
+#           exactly equal, which says nothing about which came first (#1956)
 # pgc_check_running_binary SO_PATH
 #
 # The runtime half of the freshness check: does the RUNNING server postdate the
@@ -1054,11 +1072,18 @@ pgc_freshness_verdict() {	# pgc_freshness_verdict RECORDED CURRENT -> verdict
 # Returns non-zero rather than calling exit, so a caller that is not a suite can
 # turn it into its own kind of failure. pgc_setup passes the status through.
 pgc_check_running_binary() {	# pgc_check_running_binary SO_PATH -> 0|1
-	local _so_path="$1" _so_epoch _pm_epoch
-	_so_epoch="$(stat -c %Y "$_so_path" 2>/dev/null || echo '')"
+	local _so_path="$1" _so_epoch _so_stat _so_frac _pm_epoch
+	# Both readings keep their sub-second part (#1956). Whole seconds made an
+	# install in the same second after the server start read as fresh.
+	# %Y is the whole-second epoch and %y carries the same instant's
+	# nanoseconds, so one stat call gives SECONDS.FRACTION without parsing a date.
+	_so_stat="$(stat -c '%Y %y' "$_so_path" 2>/dev/null || echo '')"
+	_so_epoch="${_so_stat%% *}"
+	_so_frac="$(printf '%s\n' "$_so_stat" | grep -o '\.[0-9][0-9]*' | head -n 1)"
+	[ -n "$_so_epoch" ] && _so_epoch="$_so_epoch$_so_frac"
 	_pm_epoch="$(psql_admin_scalar \
-		"SELECT floor(extract(epoch from pg_postmaster_start_time()))::bigint;" \
-		2>/dev/null | tr -dc '0-9')"
+		"SELECT extract(epoch from pg_postmaster_start_time());" \
+		2>/dev/null | tr -dc '0-9.')"
 	case "$(pgc_running_binary_verdict "$_so_epoch" "$_pm_epoch")" in
 		fresh)
 			echo "-- server: started after the binary was installed"
@@ -1072,17 +1097,38 @@ pgc_check_running_binary() {	# pgc_check_running_binary SO_PATH -> 0|1
 			return 1
 			;;
 		unknown)
-			echo "-- server: could not compare binary and postmaster timestamps"
+			echo "-- server: could not compare binary and postmaster timestamps" \
+				"(.so [$_so_epoch], postmaster [$_pm_epoch])"
 			;;
 	esac
 	return 0
 }
 
+# Each epoch is SECONDS or SECONDS.FRACTION. The comparison is exact decimal
+# arithmetic on the digits, not floating point. A server that started strictly
+# after the install is fresh, strictly before is predates. An exactly equal
+# pair cannot say which came first, so it is unknown, never fresh (#1956).
 pgc_running_binary_verdict() {	# pgc_running_binary_verdict SO_EPOCH PM_EPOCH
-	local so="${1:-}" pm="${2:-}"
-	case "$so" in '' | *[!0-9]*) echo unknown; return ;; esac
-	case "$pm" in '' | *[!0-9]*) echo unknown; return ;; esac
-	[ "$pm" -ge "$so" ] && echo fresh || echo predates
+	local so="${1:-}" pm="${2:-}" re='^[0-9]+([.][0-9]+)?$'
+	local so_i so_f pm_i pm_f
+	[[ "$so" =~ $re ]] || { echo unknown; return; }
+	[[ "$pm" =~ $re ]] || { echo unknown; return; }
+	so_i="${so%%.*}"; pm_i="${pm%%.*}"
+	so_f="${so#"$so_i"}"; so_f="${so_f#.}"
+	pm_f="${pm#"$pm_i"}"; pm_f="${pm_f#.}"
+	# Pad both fractions to 18 digits, so each is an integer count of the same
+	# unit. 18 digits fit a 64-bit integer; a cut past them can only turn a
+	# difference into unknown, never into fresh.
+	so_f="${so_f}000000000000000000"; so_f="${so_f:0:18}"
+	pm_f="${pm_f}000000000000000000"; pm_f="${pm_f:0:18}"
+	so_i=$((10#$so_i)); pm_i=$((10#$pm_i))
+	so_f=$((10#$so_f)); pm_f=$((10#$pm_f))
+	if [ "$pm_i" -gt "$so_i" ]; then echo fresh
+	elif [ "$pm_i" -lt "$so_i" ]; then echo predates
+	elif [ "$pm_f" -gt "$so_f" ]; then echo fresh
+	elif [ "$pm_f" -lt "$so_f" ]; then echo predates
+	else echo unknown
+	fi
 }
 
 # THE BINARY, NOT ONLY THE SOURCE (#959). `pgc_freshness_verdict` compares two
@@ -1113,6 +1159,26 @@ pgc_binary_identity_verdict() {	# pgc_binary_identity_verdict RECORDED CURRENT -
 	[ -z "$recorded" ] && { echo unknown; return; }
 	[ -z "$current" ] && { echo unknown; return; }
 	[ "$recorded" = "$current" ] && echo fresh || echo replaced
+}
+
+# THE LIBRARY CAN CHANGE AFTER SETUP, TOO (#1915). pgc_setup refuses a library
+# this tree did not install, but on a shared box another session can install
+# into the same prefix while a suite runs. A suite that restarts its server
+# then loads the other session's code, and its results are about that code.
+# Measured on PG18: /usr/local/pgsql/lib/pgcolumnar.so replaced at 14:45:10
+# between one session's install and its test.
+#
+# pgc_setup records the digest it verified in PGC_RUN_SO_DIGEST; pgc_summary
+# calls this with it. Takes the path, so the suite can drive it on a copy.
+pgc_check_library_unchanged() {	# pgc_check_library_unchanged SO_PATH RECORDED -> 0|1
+	local so="${1:-}" recorded="${2:-}" now
+	[ -n "$recorded" ] || return 0
+	now="$(md5sum "$so" 2>/dev/null | cut -c1-12)"
+	[ "$now" = "$recorded" ] && return 0
+	echo "FAIL  the installed library changed during this run: $recorded at setup, ${now:-absent} now ($so)"
+	echo "      Another session installed into this prefix, so the checks above may"
+	echo "      have measured its code. Build, install and test in one lock hold."
+	return 1
 }
 
 # ONE DECISION, so no caller can claim the binary on source evidence alone. Pure,
@@ -1221,11 +1287,13 @@ pgc_source_stamp_path() {	# pgc_source_stamp_path DIR PG_CONFIG
 	_pgc_sp_lib="$("$_pgc_sp_cfg" --pkglibdir 2>/dev/null)"
 	# An unreadable pg_config gets a key that matches nothing rather than one
 	# every broken config shares: `unknown` would alias them together, which is
-	# the defect being fixed, one level down.
+	# the defect being fixed, one level down. Eight hex characters, as the
+	# readable branch keeps (#1478): three aliased two broken configs once in
+	# about 4096 runs, and selftest 340 failed CI on it.
 	if [ -n "$_pgc_sp_lib" ]; then
 		_pgc_sp_id="$(printf '%s' "$_pgc_sp_lib" | md5sum | cut -c1-8)"
 	else
-		_pgc_sp_id="nolib$(printf '%s' "$_pgc_sp_cfg" | md5sum | cut -c1-3)"
+		_pgc_sp_id="nolib$(printf '%s' "$_pgc_sp_cfg" | md5sum | cut -c1-8)"
 	fi
 	printf '%s/.pgc_source_stamp.%s.%s\n' \
 		"$_pgc_sp_dir" "${_pgc_sp_major:-0}" "$_pgc_sp_id"
@@ -1276,6 +1344,33 @@ psql_admin_scalar() {
 q() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At -c "$1" 2>/dev/null || true
+}
+
+# pgc_xact_blocks CATLIST SQL -- buffers the listed pgcolumnar catalogs, heap and
+# index, served while SQL ran, as "TOTAL|cat=N cat=N ...", counted by this
+# backend for this transaction alone (#1298).
+#
+# NOT pg_statio_all_tables. That view is shared: another session's reads reach it
+# whenever that session flushes or exits, and pg_stat_force_next_flush() flushes
+# only the caller's own counts, so no reset or flush keeps them out. Measured on
+# PG18 with a second session scanning the catalogs during one compaction: the
+# shared reading rose by 28 to 120 buffers, this one by -3 to +18.
+#
+# One q, so one transaction: the counts before and after SQL are taken with
+# nothing flushed in between, and the difference is SQL's own work. SQL must
+# therefore be statements a transaction block allows (not VACUUM).
+pgc_xact_blocks() {
+	local per="SELECT t.relname AS cat, sum(pg_stat_get_xact_blocks_fetched(x.r)) AS b
+		FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
+		CROSS JOIN LATERAL (SELECT t.oid UNION ALL
+				    SELECT indexrelid FROM pg_index WHERE indrelid = t.oid) x(r)
+		WHERE n.nspname = 'pgcolumnar' AND t.relname IN ($1)
+		GROUP BY t.relname"
+	q "SELECT set_config('pgc.before', (SELECT json_object_agg(cat, b) FROM ($per) p)::text, true);
+	   $2
+	   SELECT sum(d)::text || '|' || string_agg(cat || '=' || d, ' ' ORDER BY cat)
+		FROM (SELECT p.cat, p.b - (current_setting('pgc.before')::json ->> p.cat)::bigint AS d
+			FROM ($per) p) z;" | tail -1
 }
 
 # Run a SQL file, returning At output.
@@ -1951,6 +2046,184 @@ chunk_group_count() {
 	     AND vector_index >= 0 AND column_index = 0;"
 }
 
+# pgc_horizon_holders -- one line for each thing that can hold the oldest-xmin
+# horizon back: a session with a snapshot (backend_xmin) or a transaction ID
+# (backend_xid), a prepared transaction, a replication slot. Prints "none found"
+# when there is nothing. The session that runs this query is left out (#1981).
+pgc_horizon_holders() {
+	local out
+	out="$(q "SELECT 'session pid=' || pid || ' backend_type=' || coalesce(backend_type, '-')
+	          || ' database=' || coalesce(datname, '-') || ' state=' || coalesce(state, '-')
+	          || ' backend_xid=' || coalesce(backend_xid::text, '-')
+	          || ' backend_xmin=' || coalesce(backend_xmin::text, '-')
+	          || ' xact_start=' || coalesce(xact_start::text, '-')
+	          || ' query=' || translate(left(coalesce(query, ''), 200), E'\n\r\t', '   ')
+	     FROM pg_stat_activity
+	    WHERE pid <> pg_backend_pid() AND (backend_xmin IS NOT NULL OR backend_xid IS NOT NULL)
+	   UNION ALL
+	   SELECT 'prepared transaction gid=' || gid || ' transaction=' || transaction
+	          || ' database=' || database || ' prepared=' || prepared
+	     FROM pg_prepared_xacts
+	   UNION ALL
+	   SELECT 'replication slot ' || slot_name || ' xmin=' || coalesce(xmin::text, '-')
+	          || ' catalog_xmin=' || coalesce(catalog_xmin::text, '-')
+	     FROM pg_replication_slots WHERE xmin IS NOT NULL OR catalog_xmin IS NOT NULL;")"
+	echo "${out:-none found}"
+}
+
+# pgc_retry_past_horizon WANT SQL [CALLS] -- run SQL until the counts it returns
+# add up to WANT, and print "<total>/<calls>" (#1979).
+#
+# For compact and truncate. compact retires a dead row group only when no
+# transaction in the database is older than the DELETE. truncate removes a freed
+# range only when no transaction is older than the compact that freed it. While
+# such a transaction is open, either one returns 0 and the check after it
+# measures nothing. An autoanalyze, or a session another test left open, is
+# enough. So SQL runs again every 0.5 s, up to CALLS calls (default 60, so 30 s).
+#
+# SQL must return one integer. When it returns anything else, the wait stops at
+# once and the output is printed, so an error does not read as a held horizon.
+# When the total is still short after the last call, the things that hold the
+# horizon back are printed (#1981), so a red names the holder. Both go to
+# stderr: the caller's check prints the total itself.
+pgc_retry_past_horizon() {
+	local want="$1" sql="$2" max="${3:-60}" r total=0 calls=0
+	while [ "$total" -lt "$want" ] && [ "$calls" -lt "$max" ]; do
+		[ "$calls" -gt 0 ] && sleep 0.5
+		r="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -qAt -c "$sql" 2>&1)"
+		calls=$((calls + 1))
+		case "$r" in
+			''|*[!0-9]*)
+				echo "  [$sql] did not return a count on call $calls: $r" >&2
+				echo "$total/$calls"
+				return ;;
+		esac
+		total=$((total + r))
+	done
+	if [ "$total" -lt "$want" ]; then
+		echo "  [$sql] returned $total of $want in $calls calls. What holds the horizon back:" >&2
+		pgc_horizon_holders | sed 's/^/    /' >&2
+	fi
+	echo "$total/$calls"
+}
+
+# pgc_freed_range_blockers TABLE -- how many sessions, prepared transactions and
+# replication slots hold truncate's horizon at or before the newest range compact
+# freed in TABLE (#1988). Prints nothing when TABLE has no freed range.
+#
+# truncate removes a freed range only when the oldest-xmin horizon has passed the
+# transaction that freed it (free_space.freed_xid). The count itself is
+# _pgc_horizon_blockers_since, below.
+pgc_freed_range_blockers() {
+	_pgc_horizon_blockers_since "SELECT min(age(freed_xid::text::xid)) AS a FROM pgcolumnar.free_space
+	                              WHERE storage_id = pgcolumnar.get_storage_id('$1') AND freed_xid >= 3"
+}
+
+# pgc_delete_blockers TABLE -- how many sessions, prepared transactions and
+# replication slots hold compact's horizon at or before the newest DELETE in TABLE
+# (#1993). Prints nothing when TABLE has no deleted rows.
+#
+# compact retires a fully deleted row group only when the oldest-xmin horizon has
+# passed the transaction that deleted its rows: the xmin of the group's row in
+# pgcolumnar.delete_vector. compact uses the same horizon as truncate, so the
+# count is _pgc_horizon_blockers_since, below.
+pgc_delete_blockers() {
+	_pgc_horizon_blockers_since "SELECT min(age(xmin)) AS a FROM pgcolumnar.delete_vector
+	                              WHERE storage_id = pgcolumnar.get_storage_id('$1')
+	                                AND xmin::text::bigint >= 3"
+}
+
+# _pgc_horizon_blockers_since SQL -- the count behind pgc_freed_range_blockers and
+# pgc_delete_blockers. SQL returns one row with one column, a: the age of the
+# transaction to compare against, or NULL.
+#
+# For a user table, PostgreSQL computes the horizon from this database's sessions,
+# but one of them is the caller's own, and its snapshot's xmin is the oldest
+# transaction ID running in any database (#1992). So this counts, where the xid
+# or xmin is not newer than that transaction:
+#   - each session, in any database, with a backend_xid;
+#   - each session in this database, or with no database such as a walsender,
+#     with a backend_xmin (a snapshot with no xid in another database does not
+#     hold the horizon back);
+#   - each prepared transaction, in any database;
+#   - each replication slot with an xmin, physical or logical.
+# xid has no ordering operator, so age() compares them: the older xid has the
+# larger age, and an xid equal to the one compared against holds it too. 0 means
+# the horizon has passed that transaction.
+#
+# It counts more than the horizon in one case: PostgreSQL skips a backend that
+# is running VACUUM, and pg_stat_activity cannot tell this apart. Such a count
+# only makes a wait longer.
+#
+# With no transaction to compare against, every comparison is NULL and a count
+# would read 0 without measuring anything. So the query returns NULL and this
+# prints nothing.
+_pgc_horizon_blockers_since() {
+	q "WITH f AS ($1)
+	   SELECT CASE WHEN f.a IS NOT NULL THEN
+	            (SELECT count(*) FROM pg_stat_activity
+	              WHERE pid <> pg_backend_pid()
+	                AND (age(backend_xid) >= f.a
+	                     OR ((datname = current_database() OR datid IS NULL)
+	                         AND age(backend_xmin) >= f.a)))
+	          + (SELECT count(*) FROM pg_prepared_xacts WHERE age(transaction) >= f.a)
+	          + (SELECT count(*) FROM pg_replication_slots WHERE age(xmin) >= f.a)
+	          END
+	     FROM f;"
+}
+
+# pgc_wait_freed_range_past_horizon TABLE [CALLS] -- wait until nothing holds the
+# horizon at or before the newest range compact freed in TABLE, and print
+# "<blockers>/<calls>" (#1988).
+#
+# For a check that a truncate does NOT shrink the file. While the horizon holds,
+# truncate leaves the file as it is for that reason alone, and such a check passes
+# whatever it means to test. See _pgc_wait_no_blockers for how it waits.
+pgc_wait_freed_range_past_horizon() {
+	_pgc_wait_no_blockers pgc_freed_range_blockers "$1" "the newest range freed in $1" "${2:-60}"
+}
+
+# pgc_wait_delete_past_horizon TABLE [CALLS] -- wait until nothing holds the
+# horizon at or before the newest DELETE in TABLE, and print "<blockers>/<calls>"
+# (#1993).
+#
+# For a compact that must run once, inside a statement the check reads, so
+# pgc_retry_past_horizon cannot repeat it. Once this reads 0, no new session can
+# hold the horizon there: a snapshot taken later has a newer xmin.
+pgc_wait_delete_past_horizon() {
+	_pgc_wait_no_blockers pgc_delete_blockers "$1" "the newest delete in $1" "${2:-60}"
+}
+
+# _pgc_wait_no_blockers COUNTER TABLE WHAT CALLS -- the wait behind the two
+# helpers above. It runs "COUNTER TABLE" every 0.5 s, up to CALLS times (60 is
+# 30 s), until it reads 0. When something still holds the horizon after the last
+# call, what holds it is printed to stderr. The caller's check prints the count
+# itself.
+#
+# When COUNTER gives no count (nothing to compare against, or the query failed),
+# it stops at once and prints "none/<calls>", so a check that wants 0 fails (#1992).
+_pgc_wait_no_blockers() {
+	local counter="$1" table="$2" what="$3" max="$4" n="" calls=0
+	while [ "$calls" -lt "$max" ]; do
+		[ "$calls" -gt 0 ] && sleep 0.5
+		n="$("$counter" "$table")"
+		calls=$((calls + 1))
+		case "$n" in
+			0) break ;;
+			''|*[!0-9]*)
+				echo "  no count for $table on call $calls: nothing to compare against, or the query failed: ${n:-empty}" >&2
+				echo "none/$calls"
+				return ;;
+		esac
+	done
+	if [ "$n" != 0 ]; then
+		echo "  $what is still held after $calls calls ($n). What holds the horizon back:" >&2
+		pgc_horizon_holders | sed 's/^/    /' >&2
+	fi
+	echo "$n/$calls"
+}
+
 # ---- summary ---------------------------------------------------------------
 
 # A dependency this suite needs is not installed.
@@ -2047,6 +2320,12 @@ pgc_summary() {
 		echo "FAIL  the summary does not reconcile: $PGC_PASSED passed + $PGC_FAILED failed + $PGC_UNRUN unrunnable + $PGC_SKIPPED skipped = $_sum, but $PGC_CHECKS checks ran"
 		echo "      A check was counted whose outcome nothing recorded. Find the helper"
 		echo "      that bumps PGC_CHECKS without touching PGC_PASSED, PGC_FAILED, PGC_UNRUN or PGC_SKIPPED."
+		PGC_FAIL=1
+	fi
+	# Not a check, like the reconciliation above: it is about the run, not about
+	# the code, and every suite that calls pgc_setup gets it (#1915).
+	if [ -n "${PGC_RUN_SO_DIGEST:-}" ] && ! pgc_check_library_unchanged \
+			"$("$PGC_PG_CONFIG" --pkglibdir 2>/dev/null)/pgcolumnar.so" "$PGC_RUN_SO_DIGEST"; then
 		PGC_FAIL=1
 	fi
 	if [ "$PGC_FAIL" != "0" ]; then

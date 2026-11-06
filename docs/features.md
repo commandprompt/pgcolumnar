@@ -307,8 +307,9 @@ and writes continue.
 ## Reading external Parquet in place
 
 - `pgcolumnar.read_parquet(path) AS t(...)` reads a server-side Parquet file's
-  rows without importing them, and `pgcolumnar.parquet_schema(path)` reports its
-  leaf columns and the PostgreSQL type each maps to.
+  rows without importing them. `pgcolumnar.parquet_schema(path)` reports its
+  columns, one row per column `read_parquet` declares, and the PostgreSQL type
+  each maps to.
 - The `pgcolumnar_parquet` foreign-data wrapper exposes a Parquet file as a
   foreign table: `CREATE FOREIGN TABLE ... SERVER ... OPTIONS (path '...')`.
 - A `path` that is a directory reads each `*.parquet` file below it, at any
@@ -338,10 +339,11 @@ and writes continue.
 
 ## Object storage
 
-- Every path that reads or writes a Parquet or Arrow file also accepts an
-  `s3://`, `http://`, or `https://` URL. This covers `read_parquet`,
-  `export_parquet`, `import_parquet`, `parquet_schema`, the `pgcolumnar_parquet`
-  foreign-data wrapper, and the Iceberg reader. The support lives in a separate
+- Every path that reads or writes a Parquet file also accepts an `s3://`,
+  `http://`, or `https://` URL. This covers `read_parquet`, `export_parquet`,
+  `import_parquet`, `parquet_schema`, the `pgcolumnar_parquet` foreign-data
+  wrapper, and the Iceberg reader. `export_arrow` writes a remote URL too.
+  `import_arrow` reads local files only. The support lives in a separate
   module, `pgcolumnar_objstore`, loaded on the first remote use.
 - `s3://` requests are signed with AWS Signature Version 4. An `https://` request
   verifies the server certificate when the module is built with OpenSSL. An export
@@ -349,11 +351,14 @@ and writes continue.
   that is visible only when it completes.
 - Credentials come from the server process environment: `AWS_ACCESS_KEY_ID`,
   `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, and
-  `AWS_ENDPOINT_URL`. The foreign-data wrapper can read them from its server and
-  user mapping instead.
+  `AWS_ENDPOINT_URL`. The `pgcolumnar_parquet` foreign-data wrapper can read them
+  from its server and user mapping instead. The `pgcolumnar_iceberg` wrapper
+  always uses the server process environment.
 - `pgcolumnar.objstore_allowed_endpoints` gates every remote scheme. It is empty
-  by default, so no host is reachable until an administrator lists it. A
-  link-local or instance-metadata address is refused even when it is listed.
+  by default, so no host is reachable until an administrator lists it. The
+  module refuses the link-local ranges and the known instance-metadata
+  addresses even when they are listed. See
+  [the refused ranges](best-practices.md#run-object-storage-safely).
 
 ## Apache Iceberg
 
@@ -378,7 +383,10 @@ Read-only support for Apache Iceberg tables at their current snapshot.
 
 - `pgcolumnar.iceberg_rest_scan(catalog_uri, namespace, table)` reads a table named
   by a catalog rather than a metadata path. `iceberg_rest_table_location`,
-  `iceberg_rest_namespaces`, and `iceberg_rest_tables` resolve and list a catalog.
+  `iceberg_rest_namespaces`, `iceberg_rest_namespace_levels`, and
+  `iceberg_rest_tables` resolve and list a catalog. A namespace is a dotted
+  `text` or a `text[]` of levels; the `text[]` form names a level that contains
+  a dot.
 - A bearer token comes from the `PGCOLUMNAR_ICEBERG_REST_TOKEN` environment
   variable. It can instead come per role from a foreign server and user mapping of
   the `pgcolumnar_iceberg_catalog` wrapper. The mapping holds the token in

@@ -49,19 +49,32 @@ DATADIR="$PGC_WORKDIR/pcdedup"
 mkdir -p "$DATADIR"; chmod 777 "$DATADIR"
 if [ "$(id -u)" = "0" ]; then chown postgres "$DATADIR"; fi
 
-ROWS=20000
+# The coordinator reads the file 256 KiB at a time (PCOPY_FINGERPRINT_BUFSZ). The
+# changed file G differs from F ONLY in its last row, and 25,000 rows put that row
+# past the first read. When G differed from its first bytes and the file fitted in
+# one read, a fingerprint of the first read alone loaded G as a change and this
+# suite passed 14 of 14.
+ROWS=25000
 F="$DATADIR/load.txt"
 G="$DATADIR/other.txt"
 
 psql_run "COPY (SELECT g AS id, 'v'||g AS txt FROM generate_series(1,$ROWS) g)
           TO '$F' WITH (FORMAT text);" >/dev/null
-psql_run "COPY (SELECT g AS id, 'w'||g AS txt FROM generate_series(1,$ROWS) g)
-          TO '$G' WITH (FORMAT text);" >/dev/null
+psql_run "COPY (SELECT g AS id, CASE WHEN g = $ROWS THEN 'changed' ELSE 'v'||g END AS txt
+          FROM generate_series(1,$ROWS) g) TO '$G' WITH (FORMAT text);" >/dev/null
 
 q() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 		-c "$1" 2>&1 | tail -1
 }
+
+# The SHA-256 of each file's bytes, computed by the server from the file itself.
+sha() { q "SELECT encode(sha256(pg_read_binary_file('$1')), 'hex')"; }
+sha_f="$(sha "$F")"
+sha_g="$(sha "$G")"
+check_num "premise: the changed row lies past the first 256 KiB of the file" \
+	"$(q "SELECT ((SELECT size FROM pg_stat_file('$G'))
+	        - octet_length('$ROWS'||E'\tchanged\n') >= 262144)::int")" 1
 
 mk() { psql_run "DROP TABLE IF EXISTS $1; CREATE TABLE $1 (id int, txt text) USING pgcolumnar;" >/dev/null; }
 
@@ -69,15 +82,20 @@ mk() { psql_run "DROP TABLE IF EXISTS $1; CREATE TABLE $1 (id int, txt text) USI
 mk pcd_plain
 r1="$(q "SELECT pgcolumnar.parallel_copy('pcd_plain','$F',4)")"
 r2="$(q "SELECT pgcolumnar.parallel_copy('pcd_plain','$F',4)")"
-check "premise: without dedup a repeated load doubles the table, which is the defect" \
+# Not premises (#1339): dedup is pgcolumnar's own default, and forcing it on reddens
+# both of these.
+check "without dedup a repeated load doubles the table, which is the defect" \
 	"$(q "SELECT count(*) FROM pcd_plain")" "$(( ROWS * 2 ))"
-check "premise: and each of those loads reported its rows" "$r1/$r2" "$ROWS/$ROWS"
+check "and each of those loads reported its rows" "$r1/$r2" "$ROWS/$ROWS"
 
 # ---- the same load twice, with dedup --------------------------------------
 mk pcd
 d1="$(q "SELECT pgcolumnar.parallel_copy('pcd','$F',4,true)")"
 c1="$(q "SELECT count(*) FROM pcd")"
-d2="$(q "SELECT pgcolumnar.parallel_copy('pcd','$F',4,true)")"
+# All of psql's output, NOTICE included: the header promises the skip says so.
+o2="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SELECT pgcolumnar.parallel_copy('pcd','$F',4,true)" 2>&1)"
+d2="$(printf '%s\n' "$o2" | tail -1)"
 c2="$(q "SELECT count(*) FROM pcd")"
 echo "-- dedup on: load 1 returned $d1 (table $c1), load 2 returned $d2 (table $c2)"
 
@@ -85,6 +103,8 @@ check "the first load stores its rows normally (#403 item 7)" "$c1" "$ROWS"
 check "and reports them" "$d1" "$ROWS"
 check "the second load of the same file stores nothing (#403 item 7)" "$c2" "$ROWS"
 check "and reports 0 rather than claiming it loaded them" "$d2" "0"
+check_num "and says in a NOTICE that it skipped the load, rather than returning a silent 0" \
+	"$(printf '%s\n' "$o2" | grep -c 'NOTICE:  pgcolumnar.parallel_copy skipped a load already applied to "pcd"')" 1
 
 # ---- a changed file at the same path is a different load -------------------
 cp "$G" "$F"
@@ -111,6 +131,13 @@ check "and reports those rows too" "$d5" "$ROWS"
 check "the skipped load left exactly one record for that table and file" \
 	"$(q "SELECT count(*) FROM pgcolumnar.load_fingerprint
 	      WHERE relation_oid = 'pcd'::regclass")" "2"
+
+# The SHA-256 of the file's bytes, not of some part of them: the two records are
+# exactly the two files' digests, in load order.
+check_text "the records hold the SHA-256 of each loaded file's bytes" \
+	"$(q "SELECT string_agg(encode(fingerprint, 'hex'), ',' ORDER BY loaded_at)
+	      FROM pgcolumnar.load_fingerprint WHERE relation_oid = 'pcd'::regclass")" \
+	"$sha_f,$sha_g"
 
 check "no prepared transaction leaked through any of it" \
 	"$(q "SELECT count(*) FROM pg_prepared_xacts")" "0"

@@ -28,6 +28,7 @@ import subprocess
 import sys
 
 import functools
+import inspect
 import itertools
 
 import pytest
@@ -241,7 +242,10 @@ RECORD_VERDICTS = ("PASS", "FAIL", "UNRUN", "DECLINED")
 # through cannot_run and ends the run INCOMPLETE. Closed, so "optional" cannot grow
 # by one call site at a time. PGC_REQUIRE (comma-separated) names capabilities that
 # must be present here, as CI does, and turns a decline of them into a failure.
-DECLINABLE_CAPABILITIES = ("pyarrow",)
+# duckdb joined on the owner's decision on #1341 (2026-10-21): the one reader of an
+# exported Parquet file that is not pyarrow, pinned in requirements-test.txt and
+# required in CI by PGC_REQUIRE.
+DECLINABLE_CAPABILITIES = ("pyarrow", "duckdb")
 
 
 class VacuityError(AssertionError):
@@ -333,6 +337,8 @@ def _resolving(method):
     anyone adds one after.
     """
 
+    signature = inspect.signature(method)
+
     @functools.wraps(method)
     def wrapper(self, *args, **kwargs):
         taken = len(self._records)
@@ -343,6 +349,16 @@ def _resolving(method):
                 rec = self._records[taken]
                 rec.verdict = "FAIL"
                 rec.reason = str(exc)
+            elif isinstance(exc, VacuityError):
+                # A REFUSAL STILL MARKS NOTHING, but it is noted beside the records
+                # with its check's name (#1613). Whether it is REPORTED is decided
+                # by the test's outcome, in pytest_runtest_makereport: a guard test
+                # that catches a refusal on purpose must not print one.
+                try:
+                    name = signature.bind(self, *args, **kwargs).arguments.get("name")
+                except TypeError:
+                    name = None
+                self._refusals.append((exc, name or f"(an unnamed {method.__name__})"))
             raise
 
     wrapper._pgc_resolves_verdict = True
@@ -355,6 +371,7 @@ class Expect:
     def __init__(self, nodeid):
         self.nodeid = nodeid
         self._records = []
+        self._refusals = []    # (VacuityError, check name): never records (#1613)
         self.unrunnable = None
         self.declined = None
 
@@ -455,6 +472,7 @@ class Expect:
         if got != want:
             raise AssertionError(f"{name}: got {got!r} want {want!r}")
 
+    @_resolving
     def row_set(self, got, want, name, *, allow_empty=None):
         """Compare two result sets as SETS, order deliberately ignored.
 
@@ -606,6 +624,7 @@ class Expect:
                 )
         self.num(got, want, name)
 
+    @_resolving
     def wrote(self, cur, want, name):
         """Assert how many rows a write actually wrote, and acknowledge a zero.
 
@@ -973,7 +992,12 @@ class Expect:
                 f"{name}: outcomes() with no expectation asserts nothing."
             )
         self._record(name)
-        result.assert_outcomes(**want)
+        # pytest's own failure is a bare dict comparison; name the check, or a red
+        # outcomes() is the one assertion in the corpus that does not say what failed.
+        try:
+            result.assert_outcomes(**want)
+        except AssertionError as exc:
+            raise AssertionError(f"{name}: {exc}") from None
 
     @_resolving
     def run_failed(self, result, name):
@@ -1152,6 +1176,25 @@ def expect(request):
     _RECORDERS.pop(request.node.nodeid, None)
 
 
+def _refuse_set(proxy, attr, value, inner):
+    """__setattr__ for the watched proxies: their own state is set, anything else refused.
+
+    The proxies forward READS through __getattr__, so without this a setting such
+    as `pgc_conn.autocommit = False` lands on the proxy, the real object keeps its
+    value, and the test goes on as if it had changed (#1420). Refused rather than
+    forwarded, so a test that wants a transaction says so with BEGIN and ROLLBACK
+    or opens a connection of its own, as the existing twins do.
+    """
+    if attr.startswith("_"):
+        object.__setattr__(proxy, attr, value)
+        return
+    raise AttributeError(
+        f"{type(proxy).__name__} does not forward setting {attr!r}: the {inner} "
+        f"would keep its value while the test went on as if it had changed (#1420). "
+        f"For a transaction, run BEGIN and ROLLBACK, or open a connection of your own."
+    )
+
+
 class _WatchedCursor:
     """A psycopg cursor that reports every write it runs to the guard.
 
@@ -1188,6 +1231,9 @@ class _WatchedCursor:
     def __getattr__(self, attr):
         return getattr(self._cur, attr)
 
+    def __setattr__(self, attr, value):
+        _refuse_set(self, attr, value, "cursor")
+
     def __iter__(self):
         return iter(self._cur)
 
@@ -1219,6 +1265,9 @@ class _WatchedConnection:
 
     def __getattr__(self, attr):
         return getattr(self._conn, attr)
+
+    def __setattr__(self, attr, value):
+        _refuse_set(self, attr, value, "connection")
 
     def __enter__(self):
         self._conn.__enter__()
@@ -1290,6 +1339,20 @@ class _UnrunnableCollector:
 
     def __init__(self):
         self.items = []
+        # WHAT THE WORKERS COLLECTED, under xdist (#1892). The controller collects
+        # nothing itself, so `session.items` is empty there, and the stale-row
+        # direction below had no collection to intersect with.
+        self.xdist_collected = set()
+        # WHAT PASSED (#1914). The stale-row direction asks "listed, and ran to a
+        # pass". A listed test that failed, or was lost to a crashed worker, did
+        # not decline either, but the list is right about it and the run already
+        # fails for it.
+        self.passed = set()
+
+    # Optional, so a run without xdist does not fail on an unknown hook.
+    @pytest.hookimpl(optionalhook=True)
+    def pytest_xdist_node_collection_finished(self, node, ids):
+        self.xdist_collected.update(ids)
 
     def pytest_runtest_logreport(self, report):
         # This hook fires on the CONTROLLER for reports received from xdist
@@ -1298,6 +1361,8 @@ class _UnrunnableCollector:
         # exit status is discarded by xdist; the controller's is the run's.
         if report.when != "call":
             return
+        if report.passed:
+            self.passed.add(report.nodeid)
         for key, value in getattr(report, "user_properties", ()):
             if key == "pgc_unrunnable":
                 reason, _, detail = value.partition("\n")
@@ -1370,6 +1435,7 @@ class _RecordCollector:
         self.records = []      # (nodeid, verdict, name)
         self.offences = []
         self.declined = []     # (nodeid, name, reason): the capability is in reason
+        self.refused = []      # (nodeid, name, reason): refusals that failed a test (#1613)
 
     def pytest_runtest_logreport(self, report):
         if report.when != "call":
@@ -1381,6 +1447,8 @@ class _RecordCollector:
                 held = value
             elif key == "pgc_declined":
                 self.declined.extend((report.nodeid, n, r) for n, r in value)
+            elif key == "pgc_refused":
+                self.refused.extend((report.nodeid, n, r) for n, r in value)
             elif key == "pgc_records":
                 arrived = list(value)
         if held is None and arrived is None:
@@ -1434,7 +1502,22 @@ def pytest_runtest_makereport(item, call):
                 report.user_properties.append(
                     ("pgc_declined", [(r.name, r.reason) for r in rec.records
                                       if r.verdict == "DECLINED"]))
+            # THE REFUSAL THAT FAILED THIS TEST, by identity (#1613). A refusal the
+            # test caught did not fail it, so it is not the excinfo and is not sent.
+            failed_by = call.excinfo.value if call.excinfo is not None else None
+            refused = [(name, _refusal_reason(name, exc)) for exc, name in rec._refusals
+                       if exc is failed_by]
+            if refused:
+                report.user_properties.append(("pgc_refused", refused[:1]))
     return report
+
+
+def _refusal_reason(name, exc):
+    """-> the refusal's first line without the leading `<name>: ` it usually carries,
+    so the printed line names the check once."""
+    text = (str(exc).splitlines() or [""])[0]
+    prefix = f"{name}: "
+    return text[len(prefix):] if text.startswith(prefix) else text
 
 
 def pytest_terminal_summary(terminalreporter):
@@ -1465,7 +1548,7 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line(f"checks unrunnable: {len(collector.items)}")
 
     records = getattr(terminalreporter.config, "pgc_records", None)
-    if records is None or not records.records:
+    if records is None or not (records.records or records.refused):
         return
     tally = {v: 0 for v in RECORD_VERDICTS}
     for _nodeid, verdict, _name in records.records:
@@ -1475,14 +1558,23 @@ def pytest_terminal_summary(terminalreporter):
         terminalreporter.write_line("")
         for nodeid, nm, why in records.declined:
             terminalreporter.write_line(f"DECLINED  {nodeid}: {why}: {nm}")
+    # REFUSED, in the shape of the shell's FAIL line (#1613): the shell records a
+    # comparison that measured nothing as a FAIL, so its FAIL names equal the twin's
+    # FAIL names plus these. The refusal itself is still not a record.
+    if records.refused:
+        terminalreporter.write_line("")
+        for _nodeid, nm, why in records.refused:
+            terminalreporter.write_line(f"REFUSED  {nm}: {why}")
     terminalreporter.write_line(f"checks run: {len(records.records)}")
-    # DECLINED joins the line only when present, so a run with no declines prints the
-    # line every reader and guard already parses, byte for byte.
+    # DECLINED and REFUSED join the line only when present, so a run with neither
+    # prints the line every reader and guard already parses, byte for byte.
     shown = [v for v in RECORD_VERDICTS if v != "DECLINED" or tally[v]]
+    parts = [f"{tally[v]} {v.lower()}" for v in shown]
+    if records.refused:
+        parts.append(f"{len(records.refused)} refused")
     terminalreporter.write_line(
-        "accounting: "
-        + " + ".join(f"{tally[v]} {v.lower()}" for v in shown)
-        + f" = {sum(tally.values())}"
+        "accounting: " + " + ".join(parts)
+        + f" = {sum(tally.values()) + len(records.refused)}"
     )
 
 
@@ -1510,13 +1602,21 @@ def _server_major(config):
     return m.group(1) if m else None
 
 
-def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE):
+def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE, env=None):
     """-> the set of nodeids allowed to decline on `major`.
 
     A major with no rows expects NOTHING to decline, which is a claim and not an
     absence: 18 and 19 are in that position and a test declining there is a
     finding.
+
+    A ROW MAY CARRY A CONDITION, `MAJOR NODEID unless-env VAR=VALUE` (#1767
+    review), for an opt-in arm: the row applies only while VAR does not have
+    VALUE, or, written `unless-env VAR`, while VAR is unset or empty. An opted-in run therefore expects the arm to RUN, and refuses it if it
+    declines, instead of reading the run as a stale list. Any other suffix is an
+    error: read as part of the nodeid it would never match, and the row would be
+    dead without a word.
     """
+    env = os.environ if env is None else env
     found = set()
     try:
         text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -1526,9 +1626,19 @@ def expected_unrunnable(major, path=EXPECTED_UNRUNNABLE):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        parts = line.split(None, 1)
-        if len(parts) == 2 and parts[0] == str(major):
-            found.add(parts[1].strip())
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != str(major):
+            continue
+        if len(parts) == 4 and parts[2] == "unless-env":
+            var, eq, value = parts[3].partition("=")
+            # VAR=VALUE is met by that value; a bare VAR by any non-empty one, for
+            # an opt-in variable that carries an endpoint rather than a flag
+            if (env.get(var) == value) if eq else bool(env.get(var)):
+                continue
+        elif len(parts) != 2:
+            raise ValueError(f"{path}: {line!r} is not 'MAJOR NODEID' or "
+                             "'MAJOR NODEID unless-env VAR[=VALUE]'")
+        found.add(parts[1])
     return found
 
 
@@ -1592,6 +1702,16 @@ def pytest_sessionfinish(session, exitstatus):
     collector = getattr(session.config, "pgc_unrunnable", None)
     if collector is None:
         return
+    # ONLY THE CONTROLLER JUDGES THE LIST (#1892). A worker collects every test but
+    # runs only its share, so it read each test another worker ran as "listed and
+    # RAN", and named a decline it did run a second time beside the controller.
+    # Measured on main 75a57668: `pytest -n 4` on one file printed the stale line
+    # once per worker that did not run every listed test, three times in one run
+    # and four in another, and each run exited 67 with every test passed. The
+    # controller receives every worker's reports, so it alone holds the whole
+    # picture.
+    if hasattr(session.config, "workerinput"):
+        return
 
     # AN UNEXPECTEDLY UNRUNNABLE TEST MUST NOT LEAVE THE RUN GREEN (#1163). The
     # rule used to be "any unrunnable test", which is right about the danger and
@@ -1631,8 +1751,19 @@ def pytest_sessionfinish(session, exitstatus):
     #
     # The other direction is untouched: `actual - allowed` is answerable from any
     # run, because a test that declined, declined, whoever else was collected.
-    allowed &= {item.nodeid for item in session.items}
+    #
+    # UNDER XDIST THE WORKERS COLLECT (#1892), so the controller's `session.items`
+    # is empty and the workers' ids arrive through the collector instead.
+    allowed &= ({item.nodeid for item in session.items}
+                | collector.xdist_collected)
     unexpected, ran_anyway = unrunnable_offences(actual, allowed)
+    # ONLY A PASS MAKES A ROW STALE (#1914). "Did not decline" is not "ran": a
+    # listed test that failed, or that a crashed xdist worker lost, reached the
+    # message below, which tells the reader to delete a correct row. Measured in
+    # the review of PR #1905: `os._exit(3)` under `-n 2 --max-worker-restart=0`
+    # exited 1 and still named the row stale. The failure or the loss is already
+    # reported, and already fails the run.
+    ran_anyway = [nodeid for nodeid in ran_anyway if nodeid in collector.passed]
     if not unexpected and not ran_anyway:
         return
     if unexpected:
@@ -1675,6 +1806,7 @@ class _RunShape:
         self.collected = set()
         self.reported = set()
         self.setup_skips = []
+        self.call_skips = []
 
     def pytest_collection_modifyitems(self, items):
         # Fires in the controller when running serially, and in each worker under
@@ -1733,6 +1865,11 @@ class _RunShape:
             self.reported.add(report.nodeid)
         if report.when == "setup" and report.skipped:
             self.setup_skips.append(report.nodeid)
+        # AND DURING THE CALL (#1339). pytest.skip(), pytest.xfail() and
+        # pytest.importorskip() in a test body raise past pytest_runtest_call's guards,
+        # and an xfail marker reports a failing test as skipped here. Each is exit 0.
+        if report.when == "call" and report.skipped:
+            self.call_skips.append(report.nodeid)
 
     def pytest_sessionfinish(self, session, exitstatus):
         # Only the process holding the whole picture can reconcile: an xdist worker
@@ -1765,6 +1902,14 @@ class _RunShape:
                 f"how one fixture removes every test that depends on it: "
                 + ", ".join(sorted(self.setup_skips)[:5])
                 + (" ..." if len(self.setup_skips) > 5 else "")
+                + " -- use expect.cannot_run(REASON, detail) in the test instead"
+            )
+        if self.call_skips:
+            problems.append(
+                f"{len(self.call_skips)} test(s) were skipped or xfailed while running, "
+                f"which pytest counts as success: "
+                + ", ".join(sorted(self.call_skips)[:5])
+                + (" ..." if len(self.call_skips) > 5 else "")
                 + " -- use expect.cannot_run(REASON, detail) in the test instead"
             )
         if problems:
@@ -2575,7 +2720,9 @@ def pytest_collection_modifyitems(session, config, items,
     offenders = []
     seen_files = set()
     for item in items:
-        for marker in ("skip", "skipif"):
+        # xfail too (#1339): xfail_strict turns an XPASS into a failure, but a FAILING
+        # test under xfail is still "xfailed", and pytest counts that as success.
+        for marker in ("skip", "skipif", "xfail"):
             mk = item.get_closest_marker(marker)
             if mk is None:
                 continue

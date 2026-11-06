@@ -56,8 +56,16 @@ psql_run "INSERT INTO h SELECT g, md5(g::text) FROM generate_series(6001, 7000) 
 psql_run "INSERT INTO n SELECT g, md5(g::text) FROM generate_series(6001, 7000) g;"
 check "parity after post-gap insert" "$(hash_n)" "$(hash_h)"
 psql_run "CREATE INDEX n_id ON n (id);"
+# Forced to fetch every row through n_id, and asserted (#1341). With the defaults
+# this count plans an Index Only Scan (PG17 and PG18), which fetches each row only
+# while the visibility map leaves its page unmarked: once a VACUUM marks them it
+# answers from the index alone, whatever the fetch does. count(v), not count(*),
+# with the custom scan, seqscan and bitmap scans off, so the plan is an Index Scan.
+IDX_SETS="SET enable_seqscan = off; SET enable_bitmapscan = off; SET pgcolumnar.enable_custom_scan = off;"
+check "premise: the indexed lookup reads n_id" \
+	"$(pgc_uses_row_fetch "$IDX_SETS" "SELECT count(v) FROM n WHERE id BETWEEN 1 AND 7000")" yes
 check "indexed lookup after gap" \
-	"$(q 'SELECT count(*) FROM n WHERE id BETWEEN 1 AND 7000;')" "7000"
+	"$(q "$IDX_SETS SELECT count(v) FROM n WHERE id BETWEEN 1 AND 7000;" | tail -1)" "7000"
 
 # a delete + reader still resolves correctly across the gapped layout.
 psql_run "DELETE FROM h WHERE id % 7 = 0;"

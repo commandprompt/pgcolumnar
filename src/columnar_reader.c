@@ -29,6 +29,7 @@
 #include "catalog/pg_am.h"
 #include "commands/defrem.h"
 #include "miscadmin.h"
+#include "parser/parse_coerce.h"
 #include "utils/lsyscache.h"
 #include "utils/rangetypes.h"
 #include "port/atomics.h"
@@ -292,6 +293,18 @@ struct PgColumnarReadState
 	 */
 	char	   *nativeDeleteMask;
 	uint32		nativeDeleteMaskLen;
+	/* return deleted rows too, flagged; the index build asks for this (#1341) */
+	bool		emitDeleted;
+	bool		lastRowDeleted;
+
+	/*
+	 * With emitDeleted, a row deleted under THIS snapshot too is dead to every
+	 * transaction, and is not returned (#1407). The index build passes one that
+	 * sees only transactions older than every running snapshot.
+	 */
+	Snapshot	deadHorizon;
+	char	   *deadMask;
+	uint32		deadMaskLen;
 
 	MemoryContext readContext;		/* whole scan */
 	MemoryContext stripeContext;	/* reset per stripe */
@@ -872,6 +885,37 @@ pgcolumnar_make_predicates(SkipPredicate *out, int nkeys, ScanKey keys,
 
 		crossType = (OidIsValid(argType) && argType != colType);
 
+		/*
+		 * Nor is a pair of types that are both binary-coercible to the type the
+		 * column's default btree opclass orders (#1433). A comparison on a cidr
+		 * column resolves to inet's operator and a varchar column's to text's,
+		 * so the key arrives with a column of cidr and an argument of inet. The
+		 * two share one representation and the opclass's ordering, but
+		 * network_ops registers an ordering proc only for (inet, inet), so the
+		 * opfamily lookup below found nothing and the key was dropped: the
+		 * column pruned nothing, as a domain did before #483.
+		 *
+		 * The column's own cmp and hash procs, from lookup_type_cache below,
+		 * are the opclass's (network_cmp and hashinet for cidr, bttextcmp and
+		 * hashtext for varchar). The writer builds the zone maps and bloom
+		 * filters with those same procs, so treating the key as same-type keeps
+		 * reader and writer in agreement, the bloom probe included.
+		 *
+		 * Not when the opclass orders a polymorphic type: two different enums
+		 * are each binary-coercible to anyenum without sharing an ordering.
+		 */
+		if (crossType)
+		{
+			Oid			opclass = GetDefaultOpClass(colType, BTREE_AM_OID);
+			Oid			inType = OidIsValid(opclass)
+				? get_opclass_input_type(opclass) : InvalidOid;
+
+			if (OidIsValid(inType) && !IsPolymorphicType(inType) &&
+				(colType == inType || IsBinaryCoercible(colType, inType)) &&
+				(argType == inType || IsBinaryCoercible(argType, inType)))
+				crossType = false;
+		}
+
 		tce = lookup_type_cache(att->atttypid,
 								TYPECACHE_CMP_PROC_FINFO |
 								TYPECACHE_HASH_PROC_FINFO);
@@ -906,6 +950,19 @@ pgcolumnar_make_predicates(SkipPredicate *out, int nkeys, ScanKey keys,
 			Oid			cmpProc;
 
 			if (!OidIsValid(opclass))
+				continue;
+
+			/*
+			 * Not a timestamp column against a timestamptz constant (#1738).
+			 * timestamp_cmp_timestamptz turns the column's value into an instant
+			 * in the session zone, and across a spring-forward gap that is not
+			 * order-preserving: in New York on 2024-03-10 the nonexistent 02:30
+			 * is read as standard time, 07:30Z, while 03:00 is 07:00Z. A group
+			 * whose max is 03:00 then looked wholly below 07:15Z although its
+			 * 02:30 row is above it, and was skipped. The reverse pair converts
+			 * the constant once, and the date pairs carry no zone, so both stay.
+			 */
+			if (colType == TIMESTAMPOID && argType == TIMESTAMPTZOID)
 				continue;
 			opfamily = get_opclass_family(opclass);
 			cmpProc = get_opfamily_proc(opfamily, colType, argType,
@@ -2830,6 +2887,17 @@ pgcolumnar_native_load_group(PgColumnarReadState *rs)
 										&rs->nativeDeleteMask,
 										&rs->nativeDeleteMaskLen);
 	}
+	rs->deadMask = NULL;
+	rs->deadMaskLen = 0;
+	if (rs->deadHorizon != NULL && rs->nativeDeleteMask != NULL)
+	{
+		List	   *deadList = PgColumnarReadDeleteVectorList(rs->storageId,
+													   rg->groupNumber,
+													   rs->deadHorizon);
+
+		pgcolumnar_merge_delete_vectors(deadList, (uint32) ((rg->rowCount + 7) / 8),
+										&rs->deadMask, &rs->deadMaskLen);
+	}
 
 	/*
 	 * The chunk metadata is read before the data (#338) because it carries the
@@ -3453,11 +3521,50 @@ pgcolumnar_native_next_row(PgColumnarReadState *rs, Datum *values, bool *nulls,
 		*rowNumber = rs->nativeGroup->firstRowNumber + rs->rowInGroup;
 		rs->rowInGroup++;
 
-		if (deleted)
+		if (deleted && !rs->emitDeleted)
 			continue;			/* row deleted: cursors advanced, do not emit */
+		if (deleted && rs->deadMask != NULL &&
+			dv_row_deleted(rs->deadMask, rs->deadMaskLen, rs->rowInGroup - 1))
+			continue;			/* dead to every transaction: no snapshot needs it */
 
+		rs->lastRowDeleted = deleted;
 		return true;
 	}
+}
+
+/*
+ * PgColumnarReadSetEmitDeleted
+ *		Return rows the snapshot sees as deleted as well, and let the caller ask
+ *		PgColumnarReadLastRowDeleted which ones they were (#1341). The index build
+ *		needs them: a row deleted after an older snapshot began is still visible to
+ *		that snapshot, so a new index must hold it, as heap's build holds a
+ *		recently-dead tuple. Only the unfiltered path honours this; a filter never
+ *		sees a deleted row.
+ */
+void
+PgColumnarReadSetEmitDeleted(PgColumnarReadState *readState, bool emit)
+{
+	readState->emitDeleted = emit;
+}
+
+/*
+ * PgColumnarReadSetDeadHorizon
+ *		With PgColumnarReadSetEmitDeleted, leave out the deleted rows that are
+ *		deleted under `horizon` too (#1407). The index build passes a snapshot that
+ *		sees only transactions older than every running snapshot, so a row deleted
+ *		there is dead to all and needs no index entry, as heap's build skips a dead
+ *		tuple. Without it every deleted row was indexed, and REINDEX reclaimed none.
+ */
+void
+PgColumnarReadSetDeadHorizon(PgColumnarReadState *readState, Snapshot horizon)
+{
+	readState->deadHorizon = horizon;
+}
+
+bool
+PgColumnarReadLastRowDeleted(PgColumnarReadState *readState)
+{
+	return readState->lastRowDeleted;
 }
 
 bool
@@ -4408,6 +4515,18 @@ pgcolumnar_lookup_row_group(uint64 storageId, Snapshot metaSnapshot,
 	pgcolumnar_group_memo_fill(m, storageId, cid, metaSnapshot);
 	/* a fresh build IS the unmemoized read; no second attempt needed */
 	return pgcolumnar_group_memo_walk(m, rowNumber);
+}
+
+/*
+ * PgColumnarLookupRowGroup
+ *		The row group covering rowNumber under metaSnapshot, or NULL, through the
+ *		same memo the fetch path uses. For the update path's single-row conflict
+ *		check (#1421), which needs one group, not the whole list.
+ */
+NativeRowGroupMetadata *
+PgColumnarLookupRowGroup(uint64 storageId, Snapshot metaSnapshot, uint64 rowNumber)
+{
+	return pgcolumnar_lookup_row_group(storageId, metaSnapshot, rowNumber);
 }
 
 /*

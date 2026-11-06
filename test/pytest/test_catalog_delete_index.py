@@ -41,6 +41,10 @@ nothing else is counting during these tests, and this file must not be run
 concurrently with another that reads statistics.
 """
 
+import time
+
+from pgc_horizon import wait_delete_past_horizon
+
 # Phase 0 is small ON PURPOSE. The claim it carries -- that probing every
 # catalog costs more than choosing -- is worth 284 parts per thousand at six
 # catalog pages, 151 at nine and 31 at eighteen, against a drift of 3 to 10
@@ -213,30 +217,13 @@ def _make_target(conn, table, groups):
 
 
 def _compact_work(conn, table, min_blocks=None):
-    """Total catalog buffers the compaction of `table` cost, and the breakdown.
-
-    FLUSH BEFORE THE RESET, NOT ONLY AFTER. This harness holds ONE connection
-    for the whole file, so the writes that built the fixture leave pending
-    statistics in this backend that `pg_stat_reset()` does not clear -- they
-    flush afterwards and land on top of the reading. The shell twin cannot
-    reach this state: it runs every statement in a fresh backend, which flushes
-    on exit before the next one starts.
-
-    Measured, on an otherwise identical single-session fixture:
-        reset with pending stats   row_group idx=36 seq=15
-        flush BEFORE reset         row_group idx=32 seq=0
-    The fifteen were the test's own DELETE, one scan per retired group,
-    arriving after the counter had been zeroed.
-    """
-    with conn.cursor() as cur:
-        cur.execute("SELECT pg_stat_force_next_flush()")
-        cur.execute("SELECT pg_stat_reset()")
-        if min_blocks is not None:
-            cur.execute(f"SET pgcolumnar.index_min_blocks = {min_blocks}")
-        cur.execute("SELECT pgcolumnar.compact(%s)", (table,))
-        cur.execute("RESET pgcolumnar.index_min_blocks")
-        cur.execute("SELECT pg_stat_force_next_flush()")
-    per_catalog = _work(conn)
+    """Total catalog buffers the compaction of `table` cost, and the breakdown,
+    counted in the compaction's own transaction (_cat_blocks, #1298)."""
+    sts = []
+    if min_blocks is not None:
+        sts.append(f"SET LOCAL pgcolumnar.index_min_blocks = {min_blocks}")
+    sts.append(f"SELECT pgcolumnar.compact('{table}')")
+    per_catalog = _cat_blocks(conn, CATALOGS, sts)
     return sum(per_catalog.values()), per_catalog
 
 
@@ -270,6 +257,25 @@ def _phase(conn, expect, name, prefix, groups, other, other_label, carried=0):
         f"premise: the phase {name} catalogs hold only this file's tables",
     )
 
+    # WAIT FOR THE HORIZON FIRST (#2010), as the shell half does. compact retires
+    # a dead group only when no transaction is older than the DELETE. A snapshot
+    # another session held from before _make_target's DELETE made each compaction
+    # retire nothing. Each compaction is measured once, in its own transaction, so
+    # it cannot be repeated: wait at each table's DELETE, and check the count.
+    held = 0
+    for t in tables:
+        n, calls = wait_delete_past_horizon(conn, t)
+        print(f"--   horizon blockers/calls before compacting {t}: {n}/{calls}")
+        if n is None:
+            held = None
+            break
+        held += n
+    expect.num(
+        held,
+        0,
+        f"no transaction older than the phase {name} deletes was open before the compactions",
+    )
+
     control, _ = _compact_work(conn, tables[0])
     default, by_cat = _compact_work(conn, tables[1])
     other_work, other_cat = _compact_work(conn, tables[2], other)
@@ -289,7 +295,7 @@ def _phase(conn, expect, name, prefix, groups, other, other_label, carried=0):
     expect.num(
         groups - _groups_of(conn, tables[1]),
         groups - groups // 2,
-        f"premise: the phase {name} compaction retired the emptied groups",
+        f"the phase {name} compaction retired the emptied groups",
     )
     with conn.cursor() as cur:
         cur.execute(f"SELECT count(*) FROM {tables[1]}")
@@ -363,6 +369,11 @@ def test_retiring_a_group_costs_no_more_for_a_bigger_database(pgc_own_db, expect
             "INSERT INTO retire_deep "
             f"SELECT g, g % 7, g % 13, 'x' || g FROM generate_series(1,{DEEP_ROWS}) g"
         )
+    # READ BEFORE PHASE B BUILDS ITS TARGETS (#1339), as the shell twin does: this
+    # asks whether the DEEP TABLE grew the catalogs. Measured after phase B's own
+    # three tables exist, their growth was folded in and the premise held with the
+    # deep table's INSERT removed.
+    pages_after_deep = _catpages(conn)
 
     db, sb, pages_b, margin_b = _phase(
         conn, expect, "B", "retB", BIG_GROUPS, READ_WHOLE, "read-whole", carried=7
@@ -377,7 +388,7 @@ def test_retiring_a_group_costs_no_more_for_a_bigger_database(pgc_own_db, expect
     # row was secretly the same database, and the only thing that said so was
     # this quantity, flat where it should have grown eightfold.
     expect.at_least(
-        pages_b - pages_a,
+        pages_after_deep - pages_a,
         1,
         "premise: the deep table grew the catalogs it is there to grow",
     )
@@ -451,8 +462,9 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
         cur.execute("INSERT INTO vac_small SELECT g FROM generate_series(1,3000) g")
         cur.execute("DELETE FROM vac_small WHERE k % 3 = 0")
 
-        cur.execute("SELECT count(*) FROM vac_small")
-        expect.at_least(cur.fetchone()[0], 1, "premise: the vacuumed table holds rows")
+        # NO "the vacuumed table holds rows" premise (#1339). It had no shell twin, and it
+        # read a columnar count under a premise label. That the vacuum had work to do is
+        # "premise: the vacuum walked this table's groups" below, which both twins hold.
         cur.execute(
             "SELECT pg_relation_size('pgcolumnar.row_group') / 8192"
         )
@@ -466,7 +478,7 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
     expect.at_least(
         rg_pages - int(min_blocks),
         1,
-        "premise: row_group is larger than the threshold, so the two paths differ",
+        "row_group is larger than the threshold, so the two paths differ",
     )
 
     def vacuum_work(min_blocks=None):
@@ -479,6 +491,18 @@ def test_vacuum_reads_less_of_row_group_than_reading_it_whole(pgc_own_db, expect
             cur.execute("RESET pgcolumnar.index_min_blocks")
             cur.execute("SELECT pg_stat_force_next_flush()")
         return _work(conn)
+
+    # WAIT FOR THE HORIZON FIRST (#2010), as the shell half does. The vacuum walks
+    # a group's deletes only when no transaction is older than the DELETE. A
+    # snapshot another session held from before that DELETE left delete_vector
+    # unread. Once the count reads 0 it stays 0, so one wait covers all three.
+    v_held, v_calls = wait_delete_past_horizon(conn, "vac_small")
+    print(f"-- horizon blockers/calls before the vacuums: {v_held}/{v_calls}")
+    expect.num(
+        v_held,
+        0,
+        "no transaction older than the vacuumed table's delete was open before the vacuums",
+    )
 
     w_default = vacuum_work()
     w_control = vacuum_work()
@@ -523,34 +547,100 @@ DROP_CATALOGS = tuple(CATALOGS) + ("storage",)
 
 
 def _drop_work(conn, table, min_blocks=None):
-    """Buffers the seven catalogs served while `table` was dropped.
+    """Buffers the seven catalogs served while `table` was dropped, counted in
+    the drop's own transaction (_cat_blocks, #1298).
 
     A DROP cannot be repeated, so each reading needs its own identically built
     table.
     """
+    sts = []
+    if min_blocks is not None:
+        sts.append(f"SET LOCAL pgcolumnar.index_min_blocks = {min_blocks}")
+    sts.append(f"DROP TABLE {table}")
+    return sum(_cat_blocks(conn, DROP_CATALOGS, sts).values())
+
+
+_XACT_PER = (
+    "SELECT t.relname, sum(pg_stat_get_xact_blocks_fetched(x.r))::bigint "
+    "FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace "
+    "CROSS JOIN LATERAL (SELECT t.oid UNION ALL "
+    "                    SELECT indexrelid FROM pg_index WHERE indrelid = t.oid) x(r) "
+    "WHERE n.nspname = 'pgcolumnar' AND t.relname = ANY(%s) GROUP BY t.relname"
+)
+
+
+def _cat_blocks(conn, catalogs, statements):
+    """Buffers each of `catalogs`, heap and index, served while `statements` ran,
+    counted by this backend for this transaction alone (#1298).
+
+    NOT pg_statio_all_tables. That view is shared: another session's reads
+    reach it whenever that session flushes or exits, and
+    pg_stat_force_next_flush() flushes only the caller's own counts, so no
+    reset or flush keeps them out. Measured on PG18 with a second session
+    scanning the catalogs during one compaction: the shared reading rose by 28
+    to 120 buffers, this one by -3 to +18.
+
+    One transaction, read before and after: this backend reports nothing while
+    a transaction is open, so the difference is the statements' own work, and
+    pending counts left by the fixture's writes cancel out.
+    """
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute(_XACT_PER, (list(catalogs),))
+        before = {r[0]: int(r[1]) for r in cur.fetchall()}
+        for st in statements:
+            cur.execute(st)
+        cur.execute(_XACT_PER, (list(catalogs),))
+        return {r[0]: int(r[1]) - before.get(r[0], 0) for r in cur.fetchall()}
+
+
+def _other_session(conn, sql):
+    """A statement that reads no catalog itself, but runs `sql` in a second
+    session inside it, through COPY ... TO PROGRAM, and waits for it to exit."""
     with conn.cursor() as cur:
-        # FLUSH BEFORE THE RESET, for the reason _compact_work records: this
-        # harness holds ONE connection, so the writes that built the fixture
-        # leave pending statistics that pg_stat_reset() does not clear and that
-        # land on top of the reading. Omitting it here read -988 permille --
-        # the first DROP absorbing the whole fixture build -- against +125 for
-        # the shell twin, which gets a fresh backend per statement.
-        cur.execute("SELECT pg_stat_force_next_flush()")
+        cur.execute("SELECT setting FROM pg_config WHERE name = 'BINDIR'")
+        bindir = cur.fetchone()[0]
+    info = conn.info
+    return (f"COPY (SELECT 1) TO PROGRAM '{bindir}/psql -h {info.host} -p {info.port} "
+            f"-U {info.user} -d {info.dbname} -Atqc \"{sql}\" >/dev/null'")
+
+
+def test_a_catalog_reading_takes_in_none_of_another_sessions_reads(pgc_own_db, expect):
+    """ANOTHER SESSION'S READS ARE NOT THIS STATEMENT'S WORK (#1298).
+
+    The drop and compaction arms compare two readings a few buffers apart, so a
+    reading that takes in another session's catalog reads can hide a
+    regression on either side. The measured statement reads no catalog itself;
+    inside it a second session scans row_group and column_chunk and exits.
+    """
+    conn = pgc_own_db
+    for i in range(1, 7):
+        _make_target(conn, f"oth_{i}", 6)
+    other = _other_session(
+        conn, "SELECT count(*) FROM pgcolumnar.row_group; "
+              "SELECT count(*) FROM pgcolumnar.column_chunk")
+
+    # The control first: the second session really ran and really read the
+    # catalogs. Its counts reach the shared view when it exits, so wait for them.
+    with conn.cursor() as cur:
         cur.execute("SELECT pg_stat_reset()")
-        if min_blocks is not None:
-            cur.execute(f"SET pgcolumnar.index_min_blocks = {min_blocks}")
-        cur.execute(f"DROP TABLE {table}")
-        cur.execute("RESET pgcolumnar.index_min_blocks")
-        cur.execute("SELECT pg_stat_force_next_flush()")
-        cur.execute(
-            "SELECT coalesce(sum("
-            "  coalesce(heap_blks_read,0) + coalesce(heap_blks_hit,0) "
-            "+ coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0) "
-            "FROM pg_statio_all_tables "
-            "WHERE schemaname = 'pgcolumnar' AND relname = ANY(%s)",
-            (list(DROP_CATALOGS),),
-        )
-        return int(cur.fetchone()[0])
+        cur.execute(other)
+        for _ in range(50):
+            cur.execute(
+                "SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) "
+                "FROM pg_statio_all_tables WHERE schemaname = 'pgcolumnar' "
+                "AND relname IN ('row_group', 'column_chunk')")
+            other_reads = int(cur.fetchone()[0])
+            if other_reads > 0:
+                break
+            time.sleep(0.1)
+    expect.at_least(
+        other_reads, 1,
+        "premise: the second session's catalog reads reach the shared statistics",
+    )
+    expect.num(
+        sum(_cat_blocks(conn, DROP_CATALOGS, [other]).values()), 0,
+        "a reading takes in none of another session's catalog reads (#1298)",
+    )
 
 
 def test_dropping_a_table_reads_less_of_the_catalogs_than_reading_them_whole(

@@ -20,8 +20,5 @@ concurrency
 phase2
 phase3
 phase4
-phase5
 phase6
 smoke
-unique_conc
-update_conc

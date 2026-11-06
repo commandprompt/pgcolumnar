@@ -24,9 +24,9 @@ psql_run "ANALYZE pu;"
 psql_run "CREATE TABLE pu_h (a int, b text, c int) USING heap;"
 psql_run "INSERT INTO pu_h SELECT g, 'r'||g, (g*7)%1000 FROM generate_series(1,20000) g;"
 
-check "premise: planner uses the covering projection" \
+check "planner uses the covering projection" \
 	"$(q "EXPLAIN (COSTS OFF) SELECT a, c FROM pu WHERE c BETWEEN 100 AND 200;" | grep -c 'Columnar Projection: pc')" "1"
-check "premise: projection matches the heap before any update" \
+check "projection matches the heap before any update" \
 	"$(pgc_set_hash "SELECT a, c FROM pu WHERE c BETWEEN 100 AND 200")" \
 	"$(pgc_set_hash "SELECT a, c FROM pu_h WHERE c BETWEEN 100 AND 200")"
 
@@ -53,8 +53,13 @@ check "covering projection scan matches heap after updating a non-projected colu
 check "read_projection still matches the live base" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('pu','pc')")" \
 	"$(pgc_set_hash "SELECT a::text || '|' || c::text FROM pu")"
+# AGAINST HEAP, NOT THE BASE (#1339): b was never compared with heap after its own
+# update, so an UPDATE that kept b's old value matched the base it had just written.
 check "reconstruct via the projection still rebuilds every live row" \
 	"$(pgc_set_hash "SELECT pgcolumnar.reconstruct_via_projection('pu','pc')")" \
-	"$(pgc_set_hash "SELECT a::text || '|' || b || '|' || c::text FROM pu")"
+	"$(pgc_set_hash "SELECT a::text || '|' || b || '|' || c::text FROM pu_h")"
+check "every column matches heap after updating a non-projected column" \
+	"$(pgc_set_hash "SELECT a, b, c FROM pu")" \
+	"$(pgc_set_hash "SELECT a, b, c FROM pu_h")"
 
 pgc_summary

@@ -56,11 +56,12 @@ check "premise: and it compared them rather than writing them all off as dynamic
 # regression test rather than a restatement of the code.
 #
 # The refusal set decides what gets swept. A new refusal emitter must be looked at
-# rather than silently sweep or silently not sweep; `arms_unrunnable` is here
-# because it wraps `check_unrunnable` and reads its names from a list, so it must
-# be recognised as a refusal and must NOT be offered as a twin.
-check_text "the refusal emitters are the two the tree defines" \
-	"$_un_ref" "arms_unrunnable:None check_unrunnable:1"
+# rather than silently sweep or silently not sweep. `arms_unrunnable` was here,
+# wrapping `check_unrunnable` and reading its names from a list, until hilbert_curve's
+# port (#1341) wrote it out as loops at its call sites; `check_unrunnable` is now the
+# only one, and a new list-taking wrapper reddens this arm by name.
+check_text "the refusal emitters are the ones the tree defines" \
+	"$_un_ref" "check_unrunnable:1"
 
 # pgc_skip records `pgc_record FAIL "$2"`: its first quoted argument is the
 # CAPABILITY, not the name. Reading argument one takes `arrow` where the check is

@@ -49,6 +49,24 @@ q() {
 }
 q1() { q "$1" | tail -1; }
 
+# Backends killed by a signal, from the server log: a number, or nothing when the log
+# cannot be read. A fresh connection answers again after crash recovery, so "SELECT 1"
+# alone passed with a backend SIGKILLed just before it (#1341, as avro_manifest found
+# in #1576). The survival check also requires that this count has not moved.
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since
+	local _up _now
+	_up="$(q1 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"
+	elif [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1
+	else echo "no ([$_up], $(( _now - $1 )) backend crashes)"; fi
+}
+CRASHES_BEFORE="$(crashes)"
+
 # One day per ~10000 rows and a 10000-row group limit, so a day is about one
 # chunk group and pruning has something to remove. NULLs and the extremes are in
 # the data because they are where a rewrite most easily admits a row it should
@@ -59,8 +77,15 @@ psql_run "INSERT INTO pre_c SELECT timestamp '2024-01-01' + (g / 10000) * interv
                                    + (g % 10000) * interval '1 second', g
           FROM generate_series(1,500000) g;"
 psql_run "INSERT INTO pre_c VALUES (NULL, -1), ('infinity', -2), ('-infinity', -3);"
+# THE MIRRORS ARE BUILT FROM THE GENERATORS, never copied from the columnar table:
+# a copy agrees with whatever the columnar reader returned, so with a slice of
+# pre_c corrupted before the copy every heap comparison here passed, 86 of 86
+# (#1341). The same holds for pre_edgeh and pre_tzh below.
 psql_run "CREATE TABLE pre_h(ts timestamp, v int);"
-psql_run "INSERT INTO pre_h SELECT * FROM pre_c;"
+psql_run "INSERT INTO pre_h SELECT timestamp '2024-01-01' + (g / 10000) * interval '1 day'
+                                   + (g % 10000) * interval '1 second', g
+          FROM generate_series(1,500000) g;"
+psql_run "INSERT INTO pre_h VALUES (NULL, -1), ('infinity', -2), ('-infinity', -3);"
 psql_run "ANALYZE pre_c; ANALYZE pre_h;"
 
 check_num "premise: the fixture spans many chunk groups" \
@@ -79,7 +104,7 @@ TRUNC="SELECT count(*) FROM pre_c WHERE date_trunc('day', ts) = $DAY"
 # The reference: the explicit range already prunes. Without this the work arm
 # below cannot tell "the rewrite did not fire" from "there was nothing to prune".
 ref="$(removed "$RANGE")"
-check_num "premise: the explicit range prunes, so there IS something to remove" \
+check_num "the explicit range prunes, so there IS something to remove" \
 	"$([ -n "$ref" ] && [ "$ref" -gt 0 ] && echo 1 || echo 0)" 1
 echo "      explicit range removed $ref chunk groups"
 
@@ -119,7 +144,7 @@ ord_arm() {	# ord_arm <label> <trunc-predicate> <equivalent-range-predicate>
 	local r g
 	r="$(removed "SELECT count(*) FROM pre_c WHERE $rp")"
 	g="$(removed "SELECT count(*) FROM pre_c WHERE $tp")"
-	check_num "premise: the range for [$label] prunes, so there is something to remove" \
+	check_num "the range for [$label] prunes, so there is something to remove" \
 		"$([ -n "$r" ] && [ "$r" -gt 0 ] && echo 1 || echo 0)" 1
 	check_num "[$label] prunes chunk groups" \
 		"$([ -n "$g" ] && [ "$g" -gt 0 ] && echo 1 || echo 0)" 1
@@ -173,7 +198,10 @@ psql_run "INSERT INTO pre_edge SELECT timestamp '2024-01-01' + g * interval '1 d
 psql_run "INSERT INTO pre_edge VALUES ('294276-12-31 23:00', -1), ('infinity', -2),
           ('-infinity', -3);"
 psql_run "CREATE TABLE pre_edgeh(ts timestamp, v int);"
-psql_run "INSERT INTO pre_edgeh SELECT * FROM pre_edge;"
+psql_run "INSERT INTO pre_edgeh SELECT timestamp '2024-01-01' + g * interval '1 day', g
+          FROM generate_series(1,1000) g;"
+psql_run "INSERT INTO pre_edgeh VALUES ('294276-12-31 23:00', -1), ('infinity', -2),
+          ('-infinity', -3);"
 MAXY="timestamp '294276-01-01'"
 edge_arm() {	# edge_arm <label> <predicate>
 	check_num "[$1] answers instead of raising, and agrees with the heap" \
@@ -228,7 +256,9 @@ psql_run "INSERT INTO pre_tz SELECT timestamptz '2024-01-01+00' + (g / 10000) * 
                                     + (g % 10000) * interval '1 second', g
           FROM generate_series(1,200000) g;"
 psql_run "CREATE TABLE pre_tzh(ts timestamptz, v int);"
-psql_run "INSERT INTO pre_tzh SELECT * FROM pre_tz;"
+psql_run "INSERT INTO pre_tzh SELECT timestamptz '2024-01-01+00' + (g / 10000) * interval '1 day'
+                                    + (g % 10000) * interval '1 second', g
+          FROM generate_series(1,200000) g;"
 # timestamptz is excluded because the truncation depends on the session
 # TimeZone. Asserted as an ANSWER under two different zones rather than as an
 # absence: what matters is that the result follows the zone, which a frozen key
@@ -295,6 +325,6 @@ check_num "an unlisted unit (millennium) still answers correctly" \
 	"$(q1 "SELECT count(*) FROM pre_c WHERE date_trunc('millennium', ts) = date_trunc('millennium', timestamp '2024-02-01');")" \
 	"$(q1 "SELECT count(*) FROM pre_h WHERE date_trunc('millennium', ts) = date_trunc('millennium', timestamp '2024-02-01');")"
 
-check_num "backend still up" "$(q1 'SELECT 1;')" 1
+check "backend still up" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

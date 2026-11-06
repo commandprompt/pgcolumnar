@@ -62,6 +62,38 @@ psql_run "CREATE TABLE u (k int, v text) USING pgcolumnar;
 check "premise: the lock is enabled, or nothing below proves anything" \
 	"$(q "SHOW pgcolumnar.enable_unique_insert_lock")" "on"
 
+# The lock under test is TAKEN at all. Nothing else here says so: every check below
+# reads whatever locks an insert takes, and an insert also takes the storage-row lock
+# (102), so with the unique-key lock never taken the premise below still saw a lock,
+# the class check still read "unreachable", and the duplicate check still passed --
+# the btree's own uniqueness check waits on the winner and rejects the loser without
+# it (#1339). Read from the inserting session's own pg_locks, with the setting as the
+# control rather than the class number, so a renumbered class still counts: the
+# classes taken with the lock on that are not taken with it off. Both readings must
+# hold a lock, since the storage-row lock is taken either way: with the off reading
+# failing, an empty control made every class "extra" and this read "taken" (found by
+# jdatcmd reviewing #1565).
+lock_classes() {	# $1 = on|off -> the advisory classes one insert into u takes
+	q "SET pgcolumnar.enable_unique_insert_lock = $1;
+	   BEGIN;
+	   INSERT INTO u VALUES (900003, 'classes');
+	   SELECT coalesce(string_agg(DISTINCT objsubid::text, ',' ORDER BY objsubid::text), '')
+	     FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid();
+	   ROLLBACK;" | grep -vxE 'SET|BEGIN|INSERT 0 1|ROLLBACK'
+}
+cls_on="$(lock_classes on)"
+cls_off="$(lock_classes off)"
+cls_extra="$(awk -v on="$cls_on" -v off=",$cls_off," 'BEGIN {
+	n = split(on, c, ","); for (i = 1; i <= n; i++) if (c[i] != "" && index(off, "," c[i] ",") == 0) x = x "," c[i]
+	print substr(x, 2) }')"
+echo "      advisory classes an insert takes: lock on [$cls_on], lock off [$cls_off]"
+check "an insert takes the unique-key lock, and only while enable_unique_insert_lock is on" \
+	"$(if [ -z "$cls_on" ]; then echo "no reading (no advisory lock with the setting on)"
+	   elif [ -z "$cls_off" ]; then echo "no reading (no advisory lock with the setting off)"
+	   elif [ -n "$cls_extra" ]; then echo taken
+	   else echo "not taken (on [$cls_on], off [$cls_off])"; fi)" \
+	"taken"
+
 # ---------------------------------------------------------------------------
 # 1. Discover the advisory lock an insert actually takes.
 # ---------------------------------------------------------------------------
@@ -188,8 +220,11 @@ fi
 # ---------------------------------------------------------------------------
 # 3. The internal lock still does its job.
 # ---------------------------------------------------------------------------
-# Removing the collision by removing the lock would satisfy everything above and
-# silently give back issue #5.
+# This asserts that a duplicate is rejected, NOT that the lock is what rejects it.
+# The lock's presence is the "an insert takes the unique-key lock" check above. With
+# the lock never taken, a duplicate is still rejected: measured on PG17, even a
+# CONCURRENT duplicate waits on the first insert and gets 23505, because the btree's
+# uniqueness check waits on the winner (#1339).
 #
 # IT PLANTS ITS OWN KEY. This arm used to re-insert 900001 and rely on the
 # contention arm above having inserted it successfully -- so under a mutation
@@ -203,5 +238,168 @@ dup=$(psql_run "INSERT INTO u VALUES (900002, 'dup');" 2>&1)
 check "a duplicate key is still rejected" \
 	"$(grep -qiE 'duplicate key|unique constraint' <<<"$dup" && echo rejected || echo "NOT rejected: $(head -1 <<<"$dup")")" \
 	"rejected"
+
+# ---- the row-identity lock (class 104) and its two settings (#1341) ----------------
+#
+# An UPDATE or DELETE serialises on the row it changes through an advisory lock in
+# class 104 (PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY). pgcolumnar.enable_row_update_lock
+# turns that off for a session; pgcolumnar.row_lock_buckets is part of the lock tag,
+# so it is fixed at server start. Neither was set or read by any test.
+psql_run "CREATE TABLE rl (id int, v int) USING pgcolumnar;"
+psql_run "INSERT INTO rl SELECT g, g FROM generate_series(1, 100) g;"
+# row_locks_while_updating SETTING -> "<class-104 locks>|<holder past its UPDATE>", read
+# in one query once the holder's UPDATE has FINISHED. WAITED FOR, NOT SLEPT ON (#1368
+# review), and waited for on the right event: the holder names itself in
+# application_name after its UPDATE returns, and the poll waits for that name. Waiting
+# for its RowExclusiveLock on rl was not enough, because the UPDATE takes that at
+# executor start, before it reaches row 7 and takes the class-104 lock; a poll landing
+# between the two read "none|1" on CI (main f601281, PG 17 and PG 18). The CTE sleep
+# ahead of the row keeps that window open on every run, so waiting on the early event
+# fails every time rather than now and then.
+row_locks_while_updating() {
+	local tag="rl_updated_$1"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "BEGIN; SET LOCAL pgcolumnar.enable_row_update_lock = $1; WITH d AS MATERIALIZED (SELECT pg_sleep(1)) UPDATE rl SET v = v + 1 FROM d WHERE id = 7; SET application_name = '$tag'; SELECT pg_sleep(3); COMMIT;" \
+		>/dev/null 2>&1 &
+	local holder=$! got="" i
+	for i in $(seq 1 100); do
+		got="$(q "SELECT (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 104
+		                    AND pid <> pg_backend_pid()) || '|' ||
+		                 (SELECT count(*) FROM pg_stat_activity WHERE application_name = '$tag')")"
+		[ "${got#*|}" = 1 ] && break
+		sleep 0.1
+	done
+	echo "$got"
+	wait "$holder"
+}
+_rl_on="$(row_locks_while_updating on)"
+check "an UPDATE holds a row-identity lock (class 104) while enable_row_update_lock is on" \
+	"$([ "${_rl_on%|*}" -ge 1 ] 2>/dev/null && echo "held|${_rl_on#*|}" || echo "none|${_rl_on#*|}")" "held|1"
+check "and holds none with enable_row_update_lock off" "$(row_locks_while_updating off)" "0|1"
+check "row_lock_buckets is fixed at server start, so a session cannot change it (55P02)" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -v VERBOSITY=sqlstate -c "SET pgcolumnar.row_lock_buckets = 7;" 2>&1 | sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p')|$(q "SELECT context || '|' || setting FROM pg_settings WHERE name = 'pgcolumnar.row_lock_buckets'")" \
+	"55P02|postmaster|1024"
+
+# The documented bound (docs/configuration.md): row_lock_buckets "bounds the row locks
+# a transaction holds, so a bulk update cannot exhaust the lock table". One transaction
+# updates 200000 rows and then counts its own class-104 locks (one -c string is one
+# transaction): one per bucket, not one per row. A row lock per row would not fit the
+# default lock table at all.
+psql_run "CREATE TABLE rlb (id int, v int) USING pgcolumnar;
+          INSERT INTO rlb SELECT g, g FROM generate_series(1, 200000) g;" >/dev/null
+check "a bulk UPDATE of 200000 rows holds one row-identity lock per bucket, row_lock_buckets of them" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+		-c "UPDATE rlb SET v = v + 1;
+		    SELECT count(*) || '|' || current_setting('pgcolumnar.row_lock_buckets') FROM pg_locks
+		     WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND objsubid = 104;" 2>&1 |
+		grep -E '^[0-9]+[|]|ERROR' | tail -1)" "1024|1024"
+check "and the UPDATE committed every row" "$(q "SELECT count(*) || '|' || sum(v - id) FROM rlb")" "200000|200000"
+
+# ---- the row-identity lock cannot be reached from SQL (#1341 item 56) ------------
+# The INSERT arms above ask this of the unique-key and storage-row locks; nothing
+# asked it of class 104. An UPDATE is held open and every advisory lock it took is
+# read. None may be in field 1 or 2, the only classes SQL can produce. Then a second
+# session takes each of those exact tags with pg_advisory_xact_lock(int4, int4), and
+# a columnar UPDATE of the same row must not wait on it. An oid above the int4 range
+# is addressed by its negative int4, the same 32 bits lockfuncs.c puts in the tag.
+rl_wait_for() {	# rl_wait_for APPLICATION_NAME -> its pid, once it has named itself
+	local i pid=""
+	for i in $(seq 1 100); do
+		pid="$(q "SELECT pid FROM pg_stat_activity WHERE application_name = '$1'")"
+		[ -n "$pid" ] && break
+		sleep 0.1
+	done
+	echo "$pid"
+}
+rl_end() {	# rl_end PID BGPID: end a holder's backend and its psql
+	q "SELECT pg_terminate_backend($1)" >/dev/null 2>&1
+	kill "$2" 2>/dev/null; wait "$2" 2>/dev/null
+	local i
+	for i in $(seq 1 60); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND pid <> pg_backend_pid()")" = 0 ] && break
+		sleep 0.2
+	done
+}
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "BEGIN; UPDATE rl SET v = v + 1 WHERE id = 7; SET application_name = 'rl_tagger'; SELECT pg_sleep(30); COMMIT;" \
+	>/dev/null 2>&1 &
+rl_bg=$!
+rl_pid="$(rl_wait_for rl_tagger)"
+RL_TAGS="$(q "SELECT CASE WHEN classid::bigint > 2147483647 THEN classid::bigint - 4294967296 ELSE classid::bigint END
+	              || ' ' || CASE WHEN objid::bigint > 2147483647 THEN objid::bigint - 4294967296 ELSE objid::bigint END
+	              || ' ' || objsubid
+	         FROM pg_locks WHERE locktype = 'advisory' AND granted AND pid = ${rl_pid:-0}")"
+rl_end "${rl_pid:-0}" "$rl_bg"
+RL_N="$(printf '%s\n' "$RL_TAGS" | grep -c '[0-9]')"
+rl_reach=""
+while read -r _c _o _f; do
+	case "${_f:-}" in 1|2) rl_reach="$rl_reach ($_c,$_o,field4=$_f)" ;; esac
+done <<<"$RL_TAGS"
+check "the locks an UPDATE takes are not in a SQL-reachable class" \
+	"$(if [ "$RL_N" -eq 0 ]; then echo "unknown (no advisory lock seen; holder pid ${rl_pid:-none})"
+	   elif [ -n "$rl_reach" ]; then echo "reachable:$rl_reach"
+	   else echo unreachable; fi)" "unreachable"
+rl_grab="BEGIN;"
+while read -r _c _o _f; do
+	[ -z "${_f:-}" ] && continue
+	rl_grab="$rl_grab SELECT pg_advisory_xact_lock($_c::int, $_o::int);"
+done <<<"$RL_TAGS"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "$rl_grab SET application_name = 'rl_user'; SELECT pg_sleep(30); COMMIT;" >/dev/null 2>&1 &
+rl_bg=$!
+rl_pid="$(rl_wait_for rl_user)"
+check "premise: the other session holds every one of those tags through the SQL functions" \
+	"$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 2
+	         AND pid = ${rl_pid:-0}")" "$RL_N"
+rl_upd="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "SET statement_timeout = '10s';" -c "UPDATE rl SET v = v + 1 WHERE id = 7;" 2>&1)"
+case "$rl_upd" in
+	*timeout*|*canceling*) rl_verdict="BLOCKED by the user lock" ;;
+	*ERROR*)               rl_verdict="ERROR: $(head -1 <<<"$rl_upd")" ;;
+	*)                     rl_verdict=ok ;;
+esac
+check "a user advisory lock on those tags does not block a columnar UPDATE" "$rl_verdict" "ok"
+rl_end "${rl_pid:-0}" "$rl_bg"
+
+# ---- bulk_parallel_writer set by hand still serialises a first write (#1341 item 55) --
+# The setting lets parallel_copy's loaders skip the storage-row creation lock (class
+# 102). The reference says setting it by hand is safe, because the skip fires only
+# once the storage row is committed. Two sessions with it on each make the first
+# write to a committed, empty table: the second must wait for the first and then
+# land its row. A skip that did not wait for the row to be committed lets both
+# create it, and the second fails on storage_pkey.
+#
+# The first writer commits only once the suite has looked for the second one waiting
+# and then inserted a committed flag row, not after a fixed sleep: a slow second
+# writer would otherwise start after the first had committed, and the premise below
+# would fail on timing (OffgridwithJD, review of #1415). The pytest twin does the same.
+psql_run "CREATE TABLE bw (id int) USING pgcolumnar; CREATE TABLE bw_go (go int) USING heap;"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+	-c "SET statement_timeout = '60s'; BEGIN; SET LOCAL pgcolumnar.bulk_parallel_writer = on; INSERT INTO bw VALUES (1); SET application_name = 'bw_first';
+	    DO \$\$ BEGIN WHILE NOT EXISTS (SELECT 1 FROM bw_go) LOOP PERFORM pg_sleep(0.1); END LOOP; END \$\$; COMMIT;" \
+	>/dev/null 2>&1 &
+bw_bg=$!
+bw_pid="$(rl_wait_for bw_first)"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
+	-c "SET pgcolumnar.bulk_parallel_writer = on; SET statement_timeout = '30s';" -c "INSERT INTO bw VALUES (2);" \
+	>"$PGC_WORKDIR/bw_second.out" 2>&1 &
+bw_bg2=$!
+# The second write must be waiting on the first before the first commits, or the arm
+# measures two writes in sequence.
+bw_waited=no
+for _i in $(seq 1 100); do
+	[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO bw%'")" -ge 1 ] && { bw_waited=yes; break; }
+	sleep 0.1
+done
+psql_run "INSERT INTO bw_go VALUES (1);"	# release the first writer, whatever the poll saw
+check "premise: the second first write waited on the first" "$bw_waited" "yes"
+wait "$bw_bg2"; wait "$bw_bg"
+bw_out="$(cat "$PGC_WORKDIR/bw_second.out")"
+case "$bw_out" in
+	*ERROR*) bw_verdict="ERROR: $(grep -m1 ERROR <<<"$bw_out")" ;;
+	*)       bw_verdict=ok ;;
+esac
+check "with bulk_parallel_writer set by hand, a second first write waits for the first and both rows land" \
+	"$([ -n "$bw_pid" ] && echo held || echo "no holder")|$bw_verdict|$(q "SELECT count(*) FROM bw")" "held|ok|2"
 
 pgc_summary

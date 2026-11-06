@@ -1,0 +1,1047 @@
+"""ListObjectsV2 discovery over remote paths (#619): the pytest twin of
+`test/objstore_listing.sh`, every check by the shell's name (#1341).
+
+read_parquet and the FDW expand a remote prefix (trailing slash) or a remote glob into
+the objects under it, through a paged ListObjectsV2 loop behind the object-store ABI;
+Hive partition columns work over a remote prefix; an exact key is one GET and no LIST.
+An exact key holding `*`, `?` or `[` reads that object alone, a pattern naming no object
+of its exact name still expands, and a bracketed authority is refused as IPv6 (#1785).
+When one object under a prefix or glob does not match the declared columns, the refusal
+names it in its DETAIL (#1902), for read_parquet by position and by field id, and for
+the FDW.
+s3a:// and s3n:// read as s3://, in any case, through read_parquet, parquet_schema,
+import_parquet and the FDW, a Hive root included; an error after the rewrite names the
+s3:// URL; s3ax:// and xs3a:// stay local paths; and the three exports refuse an alias
+with 0A000 and a hint naming the s3:// URL, sending no request (#1930).
+The local SigV4 fixture server (test/objstore_http_server.py, the shell's own) answers
+the listing two keys a page, so the continuation-token loop runs.
+
+EACH REFUSAL IS ITS OWN GUARD'S. The two non-progress refusals share 08P01, so each
+check requires its guard's own message: with the no-keys guard removed, the replayed
+page reaches the token guard and still raises 08P01. A LIST that fails (HTTP 500) must
+be refused by the status check, not read as an empty prefix.
+
+A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: survival reads the private
+cluster's server log for killed backends, and every reading waits for the server, so a
+crash fails only its own check and survival.
+
+A PRIVATE CLUSTER, restarted with AWS_* in its environment, which the shared cluster
+cannot do. The parquet fixtures are written by a subprocess (this module imports no
+pyarrow); without pyarrow every test declines under the shell's skip message.
+
+THE SHELL'S REAL-S3 ARMS ARE MIRRORED (#1798), the way test_objstore_s3_read.py mirrors
+its own: with PGC_S3_INTEGRATION_ENDPOINT set, the layout goes to a real S3
+implementation under a per-run prefix and every remote prefix and glob is compared with
+the same layout read from local disk; page/ holds 1100 one-row objects, more than one
+real 1000-key page. The virtual-host arm also needs PGC_S3_INTEGRATION_VHOST_ENDPOINT,
+whose bucket subdomain resolves. Otherwise these decline as UNMET_PRECONDITION, which
+expected_unrunnable.txt lists for every major. A restart that does not come back is a
+named red, not an error of the whole module (#1850).
+"""
+import os
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+
+import psycopg
+import pytest
+
+from pgc_vacuity import query_error
+
+TEST = pathlib.Path(__file__).resolve().parents[1]
+AKID, SECRET, REGION, BUCKET = "PGCTESTKEYID", "pgctest-secret-shhh", "pgc-test-1", "pgc-bucket"
+
+WRITE_FIXTURES = r'''
+import sys, os
+import pyarrow as pa, pyarrow.parquet as pq
+B = sys.argv[1]
+def one(path, ids):
+    pq.write_table(pa.table({"id": pa.array(ids, pa.int64())}), path)
+one(os.path.join(B, "lst/part-0000.parquet"), [0, 1, 2])
+one(os.path.join(B, "lst/part-0001.parquet"), [10, 11, 12])
+one(os.path.join(B, "lst/part-0002.parquet"), [20, 21, 22])
+one(os.path.join(B, "lst/sub/part-0003.parquet"), [30, 31, 32])
+open(os.path.join(B, "lst/_SUCCESS"), "w").close()
+open(os.path.join(B, "lst/notes.txt"), "w").write("not parquet\n")
+one(os.path.join(B, "hive/dt=2026-01-01/part.parquet"), [1, 2, 3])
+one(os.path.join(B, "hive/dt=2026-01-02/part.parquet"), [4, 5, 6])
+one(os.path.join(B, "_landing/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "_landing/_temporary/t.parquet"), [99])
+one(os.path.join(B, ".dir/a.parquet"), [4, 5, 6])
+one(os.path.join(B, "glb/a.parquet"), [1, 2, 3])
+one(os.path.join(B, "glb/_b.parquet"), [10, 11, 12, 13, 14])
+one(os.path.join(B, "glb/.h.parquet"), [100])
+one(os.path.join(B, "lit/q?mark.parquet"), [2])
+one(os.path.join(B, "lit/qXmark.parquet"), [3])
+one(os.path.join(B, "lit/Q?mark.parquet"), [20])
+one(os.path.join(B, "lit/brack[1].parquet"), [1])
+one(os.path.join(B, "lit/star*x.parquet"), [4])
+one(os.path.join(B, "lit/starZZZx.parquet"), [5])
+one(os.path.join(B, "lit/raw[1]"), [8])
+def typed(path, ids, typ, **extra):
+    f = [pa.field("id", typ, metadata={b"PARQUET:field_id": b"1"})]
+    cols = [pa.array(ids, typ)]
+    for k, v in extra.items():
+        f.append(pa.field(k, pa.string(), metadata={b"PARQUET:field_id": b"2"}))
+        cols.append(pa.array(v, pa.string()))
+    pq.write_table(pa.Table.from_arrays(cols, schema=pa.schema(f)), path)
+for i in (0, 1, 3):
+    typed(os.path.join(B, "mix/f%02d.parquet" % i), [i], pa.int64())
+typed(os.path.join(B, "mix/f02.parquet"), ["2"], pa.string())
+typed(os.path.join(B, "wide/f00.parquet"), [0], pa.int64())
+typed(os.path.join(B, "wide/f01.parquet"), [1], pa.int64(), x=["extra"])
+typed(os.path.join(B, "wide/f02.parquet"), [2], pa.int64())
+'''
+
+# (scheme, key after the bucket) of each #1785 literal-key reading
+LITERAL_READS = [("s3://", "lit/q?mark.parquet"), ("s3://", "lit/brack[1].parquet"),
+                 ("s3://", "lit/star*x.parquet"), ("s3://", "lit/raw[1]"), ("S3://", "lit/q?mark.parquet"),
+                 ("s3://", "lit/q?mar?.parquet"), ("s3://", "lit/q\\?mark.parquet")]
+
+# (scheme, key after the bucket) of each #1930 alias reading
+ALIAS_READS = [("s3a://", "lst/part-0000.parquet"), ("s3n://", "lst/part-0000.parquet"), ("s3a://", "lst/"),
+               ("s3n://", "lst/"), ("s3a://", "lst/*.parquet"), ("S3A://", "lst/"),
+               ("S3n://", "lst/part-0000.parquet")]
+
+STUCK = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated>'
+         '<NextContinuationToken>STUCK</NextContinuationToken>'
+         '<Contents><Key>lst/part-0000.parquet</Key></Contents></ListBucketResult>\n')
+EMPTY = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>true</IsTruncated>'
+         '<NextContinuationToken>next-1</NextContinuationToken></ListBucketResult>\n')
+
+
+def _message(exc):
+    return str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+
+
+def _wait_up(dsn):
+    """Wait up to 15 s for the server, as the shell's readings do after a refusal."""
+    for _ in range(30):
+        try:
+            with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as conn:
+                conn.execute("SELECT 1")
+            return
+        except psycopg.Error:
+            time.sleep(0.5)
+
+
+def _row(dsn, sql):
+    """-> the first row's columns joined by a space, or the failure as a query_error()."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            row = conn.execute(sql).fetchone()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    if row is None:
+        return query_error(f"no row from {sql}")
+    return " ".join("" if v is None else str(v) for v in row)
+
+
+def _rows(dsn, sql):
+    """-> every row as text, sorted and joined by newlines, or the failure as a query_error()."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    return "\n".join(sorted(" ".join(str(v) for v in r) for r in rows)) or "EMPTY"
+
+
+def _refusal(dsn, sql, phrase, label):
+    """-> "<SQLSTATE><label>" when `sql`, under a 10 s statement_timeout, raised with `phrase` in its message, the bare
+    SQLSTATE when the message lacks it, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute("SET statement_timeout = '10s'")
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        return exc.sqlstate + (label if phrase in str(exc) else "")
+    return "no error"
+
+
+def _alias_refusal(dsn, sql, func, url, s3url):
+    """-> "0A000 named" when `sql` raised 0A000 with the export's own message for `url`
+    and a hint naming `s3url`, else what it raised (#1930)."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        if (exc.sqlstate == "0A000" and exc.diag.message_primary == f'columnar: {func} does not write "{url}"'
+                and exc.diag.message_hint == f'Write to "{s3url}" instead.'):
+            return "0A000 named"
+        return f"{exc.sqlstate} ({exc.diag.message_primary})"
+    return "no error"
+
+
+def _refusal_detail(dsn, sql):
+    """-> "SQLSTATE: message | DETAIL: detail" ("| no detail" without one) for the error
+    `sql` raises, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        detail = exc.diag.message_detail
+        return f"{exc.sqlstate}: {exc.diag.message_primary} | " + \
+            (f"DETAIL: {detail}" if detail else "no detail")
+    return query_error("no error: the statement completed")
+
+
+def _sqlstate(dsn, sql):
+    """-> the SQLSTATE `sql` fails with, "ok" when it succeeds, or "no answer" when the
+    connection is lost, as the shell's st reads it."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        return exc.sqlstate or "no answer"
+    return "ok"
+
+
+def _deep_premise(dsn, sql):
+    """-> "<SQLSTATE> names the key" when `sql` fails with an error that names the
+    1000-level key, as the shell's deep_premise reads it, or what happened instead."""
+    _wait_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        if "a/a/x.parquet" in str(exc) or "a/a/x.parquet" in (exc.diag.message_detail or ""):
+            return f"{exc.sqlstate} names the key"
+        return f"{exc.sqlstate}: {_message(exc)[:200]}"
+    return "no error"
+
+
+def _list_requests(log):
+    try:
+        return sum(1 for line in pathlib.Path(log).read_text(errors="replace").splitlines()
+                   if "list-type=2" in line)
+    except OSError as exc:
+        return query_error(f"request log unreadable: {exc}")
+
+
+def _key_fetched(log, path):
+    """-> "logged" when the request log records a GET or HEAD of `path`, else "not logged"."""
+    try:
+        lines = pathlib.Path(log).read_text(errors="replace").splitlines()
+    except OSError as exc:
+        return query_error(f"request log unreadable: {exc}")
+    hit = any(line.split(" ")[:2] in (["GET", path], ["HEAD", path]) for line in lines)
+    return "logged" if hit else "not logged"
+
+
+def _crashes(log):
+    try:
+        return pathlib.Path(log).read_text(errors="replace").count("terminated by signal")
+    except OSError as exc:
+        return query_error(f"crash count unreadable: {exc}")
+
+
+def _survived(dsn, log, before):
+    _wait_up(dsn)
+    up, now = _row(dsn, "SELECT 1"), _crashes(log)
+    if not isinstance(before, int) or not isinstance(now, int):
+        return query_error(f"crash count unreadable: {before} / {now}")
+    return "1" if up == "1" and now == before else f"no ([{up}], {now - before} backend crashes)"
+
+
+def _pg_ctl(cluster, args, extra_env):
+    """pg_ctl with an explicit environment: every AWS_* of this process removed, then
+    `extra_env` added. Dropped to postgres when running as root, as the harness does."""
+    unset = [a for k in os.environ if k.startswith("AWS_") for a in ("-u", k)]
+    cmd = ["env"] + unset + [f"{k}={v}" for k, v in extra_env.items()] + \
+          [os.path.join(cluster.bindir, "pg_ctl")] + args
+    if os.geteuid() == 0:
+        cmd = ["runuser", "-u", "postgres", "--"] + cmd
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def _restart(cluster, datadir, log, env):
+    """Restart the private cluster with env, as pg_restart_env does. -> True once it
+    answers again, False when it does not (#1850): it first waits out a crash recovery,
+    because a fast stop sent during the replay did not finish in pg_ctl's 60 s."""
+    _wait_up(cluster.dsn())
+    _pg_ctl(cluster, ["-D", str(datadir), "-m", "fast", "-w", "stop"], {})
+    _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], env)
+    for _ in range(30):
+        try:
+            with psycopg.connect(cluster.dsn(), autocommit=True, connect_timeout=5) as conn:
+                if conn.execute("SELECT 1").fetchone() == (1,):
+                    return True
+        except psycopg.Error:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+WRITE_INTEGRATION = r'''
+import sys, os
+import pyarrow as pa, pyarrow.parquet as pq
+B = sys.argv[1]
+def one(path, ids):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pq.write_table(pa.table({"id": pa.array(ids, pa.int64())}), path)
+one(os.path.join(B, "hid/part.parquet"), [1, 2, 3])
+open(os.path.join(B, "hid/_SUCCESS"), "w").close()
+one(os.path.join(B, "hid/_temporary/x.parquet"), [99])
+one(os.path.join(B, "hid/.hidden.parquet"), [100])
+for i in range(1100):
+    one(os.path.join(B, "page/k-%04d.parquet" % i), [i])
+'''
+
+_NOT_RESTARTED = "no (the cluster did not answer SELECT 1 within 15 s of the restart)"
+
+
+def _s3cli(ep, *args):
+    """The aws CLI against `ep` with the integration credentials. -> CompletedProcess,
+    or None when the CLI cannot be run."""
+    env = dict(os.environ, AWS_ACCESS_KEY_ID=os.environ.get("PGC_S3_INTEGRATION_KEY", ""),
+               AWS_SECRET_ACCESS_KEY=os.environ.get("PGC_S3_INTEGRATION_SECRET", ""),
+               AWS_DEFAULT_REGION=os.environ.get("PGC_S3_INTEGRATION_REGION", "garage"))
+    try:
+        return subprocess.run(["aws", "--endpoint-url", ep, *args], env=env, capture_output=True, text=True)
+    except OSError:
+        return None
+
+
+def _first_page(ep, ib, region, key, secret, prefix):
+    """ListObjectsV2's first page under `prefix`, signed by curl's own SigV4 (the shell's
+    s3firstpage; `aws s3api` fails to start on some aws-cli 2 / Python 3.14 installs).
+    -> "KeyCount IsTruncated" ("1000 True"), or the failure as a query_error()."""
+    try:
+        got = subprocess.run(["curl", "-sS", "--aws-sigv4", f"aws:amz:{region}:s3", "--user", f"{key}:{secret}",
+                              f"{ep}/{ib}?list-type=2&prefix={prefix}"], capture_output=True, text=True)
+    except OSError as exc:
+        return query_error(f"curl could not be run: {exc}")
+    if got.returncode != 0:
+        return query_error(f"curl failed ({got.returncode}): {got.stderr.strip()[:200]}")
+    n = re.search(r"<KeyCount>([0-9]+)</KeyCount>", got.stdout)
+    t = re.search(r"<IsTruncated>(true|false)</IsTruncated>", got.stdout)
+    if not n or not t:
+        return query_error(f"no KeyCount and IsTruncated in the reply: {got.stdout.strip()[:200]}")
+    return f"{n.group(1)} {t.group(1).capitalize()}"
+
+
+def _integration(cluster, datadir, log, bucket, work):
+    """The shell's real-S3 block (#1798). -> None when PGC_S3_INTEGRATION_ENDPOINT is
+    unset, else a dict holding "restart" and, when the upload worked, the readings."""
+    ep = os.environ.get("PGC_S3_INTEGRATION_ENDPOINT", "")
+    if not ep:
+        return None
+    ib = os.environ.get("PGC_S3_INTEGRATION_BUCKET", "pgcolumnar-test")
+    region = os.environ.get("PGC_S3_INTEGRATION_REGION", "garage")
+    run = f"lst-{os.getpid()}"
+    local = work / "int"
+    local.mkdir()
+    for d in ("lst", "_landing", ".dir", "glb"):
+        shutil.copytree(bucket / d, local / d)
+    made = subprocess.run([sys.executable, "-c", WRITE_INTEGRATION, str(local)], capture_output=True, text=True)
+    if made.returncode != 0:
+        raise RuntimeError(f"the integration layout was not written: {made.stderr.strip()}")
+    for p in [local, *local.rglob("*")]:
+        p.chmod(0o777 if p.is_dir() else 0o666)
+    key, secret = os.environ.get("PGC_S3_INTEGRATION_KEY", ""), os.environ.get("PGC_S3_INTEGRATION_SECRET", "")
+    creds = {"AWS_ACCESS_KEY_ID": key, "AWS_SECRET_ACCESS_KEY": secret, "AWS_REGION": region}
+    i = {"restart": "yes" if _restart(cluster, datadir, log, dict(creds, AWS_ENDPOINT_URL=ep)) else _NOT_RESTARTED}
+    host = ep.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+    with open(datadir / "postgresql.conf", "a") as fh:
+        fh.write(f"\npgcolumnar.objstore_allowed_endpoints='127.0.0.1,{host}'\n")
+    dsn = cluster.dsn()
+    _row(dsn, "SELECT pg_reload_conf()")
+    up = _s3cli(ep, "s3", "cp", "--recursive", "--only-show-errors", str(local), f"s3://{ib}/{run}")
+    if up is None or up.returncode != 0:
+        return i
+    remote = f"s3://{ib}/{run}"
+
+    def rd(root, *subs):
+        """each sub's "count sum" under root, joined by "; ", as the shell's rd"""
+        return "; ".join(_row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                   f"'{root}/{sub}') AS t(id int8)") for sub in subs)
+
+    try:
+        i["prefix"] = (_rows(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{remote}/lst/') AS t(id int8)"),
+                       _rows(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{local}/lst/') AS t(id int8)"))
+        globs = ("lst/*.parquet", "glb/*.parquet", "glb/_*.parquet", "glb/.*.parquet")
+        i["glob"] = (rd(remote, *globs), rd(str(local), *globs))
+        i["hidden"] = (rd(remote, "hid/", "glb/"), rd(str(local), "hid/", "glb/"))
+        named = ("_landing/", ".dir/", "_landing/*.parquet", ".dir/*.parquet")
+        i["named"] = (rd(remote, *named), rd(str(local), *named))
+        # the server's own first page, read by another client: the premise that 1100
+        # keys cannot come back in one page
+        i["page cap"] = _first_page(ep, ib, region, key, secret, f"{run}/page/")
+        i["paged"] = rd(remote, "page/")
+        vep = os.environ.get("PGC_S3_INTEGRATION_VHOST_ENDPOINT", "")
+        vhost = vep.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
+        try:
+            resolves = bool(vep) and bool(socket.getaddrinfo(f"{ib}.{vhost}", None))
+        except OSError:
+            resolves = False
+        if resolves:
+            with open(datadir / "postgresql.conf", "a") as fh:
+                fh.write(f"\npgcolumnar.objstore_allowed_endpoints='127.0.0.1,{host},{vhost}'\n")
+            i["vrestart"] = ("yes" if _restart(cluster, datadir, log, dict(creds, AWS_ENDPOINT_URL=vep))
+                             else _NOT_RESTARTED)
+            sql = f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('{remote}/lst/') AS t(id int8)"
+            got = {}
+            for style in ("virtual", "path"):
+                _wait_up(dsn)
+                try:
+                    with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+                        conn.execute(f"SET pgcolumnar.objstore_s3_addressing = '{style}'")
+                        got[style] = " ".join(str(v) for v in conn.execute(sql).fetchone())
+                except psycopg.Error as exc:
+                    got[style] = query_error(_message(exc))
+            i["vhost"] = (got["virtual"], got["path"])
+    finally:
+        _s3cli(ep, "s3", "rm", "--recursive", "--only-show-errors", f"s3://{ib}/{run}/")
+    return i
+
+
+@pytest.fixture(scope="module")
+def osl(pgc_cluster):
+    from pgc_cluster import Cluster, pick_port
+
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-objlist-"))
+    os.chmod(work, 0o777)
+    bucket = work / BUCKET
+    for d in ("lst/sub", "hive/dt=2026-01-01", "hive/dt=2026-01-02", "_landing/_temporary", ".dir", "glb", "lit",
+              "mix", "wide"):
+        (bucket / d).mkdir(parents=True)
+    r = {}
+    srv = None
+    cluster = None
+    datadir = work / "data"
+    try:
+        made = subprocess.run([sys.executable, "-c", WRITE_FIXTURES, str(bucket)],
+                              capture_output=True, text=True)
+        if made.returncode != 0:
+            raise RuntimeError(f"the parquet fixtures were not written: {made.stderr.strip()}")
+        for p in [bucket, *bucket.rglob("*")]:
+            p.chmod(0o777 if p.is_dir() else 0o666)
+
+        s3_port = pick_port(29)
+        out = work / "s3_server.out"
+        s3log = str(work / "s3.log")
+        # page size 2 forces the continuation-token loop for the 4-object prefix
+        srv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+                                "--port", str(s3_port), "--log", s3log,
+                                "--sigv4-key", AKID, "--sigv4-secret", SECRET, "--sigv4-region", REGION,
+                                "--list-page-size", "2"],
+                               stdout=open(out, "w"), stderr=subprocess.STDOUT)
+        for _ in range(50):
+            if out.is_file() and "READY" in out.read_text(errors="replace"):
+                break
+            time.sleep(0.1)
+        r["fixture up"] = str(out.read_text(errors="replace").count("READY") if out.is_file() else 0)
+
+        datadir.mkdir()
+        log = str(work / "server.log")
+        cluster = Cluster(pgc_cluster.pg_config, "objlist", datadir, pick_port(28))
+        cluster.initdb()
+        with open(datadir / "postgresql.conf", "a") as fh:
+            fh.write("\npgcolumnar.objstore_allowed_endpoints='127.0.0.1'\n")
+        started = _pg_ctl(cluster, ["-D", str(datadir), "-l", log, "-w", "start"], {})
+        if started.returncode != 0:
+            raise RuntimeError(f"the private cluster did not start: {started.stderr}")
+        dsn = cluster.dsn()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        if not _restart(cluster, datadir, log, {"AWS_ENDPOINT_URL": f"http://127.0.0.1:{s3_port}",
+                                                "AWS_ACCESS_KEY_ID": AKID, "AWS_SECRET_ACCESS_KEY": SECRET,
+                                                "AWS_REGION": REGION}):
+            raise RuntimeError("cluster did not come back after env restart")
+        before = _crashes(log)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE SERVER s3srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        rp = f"pgcolumnar.read_parquet('s3://{BUCKET}/lst/') AS t(id int8)"
+
+        open(s3log, "w").close()
+        r["prefix"] = _row(dsn, f"SELECT count(*), sum(id) FROM {rp}")
+        n = _list_requests(s3log)
+        r["paged"] = ("paged" if n >= 2 else f"not paged ({n} list requests)") if isinstance(n, int) else n
+
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fprefix (id int8) SERVER s3srv OPTIONS (path 's3://{BUCKET}/lst/')")
+        r["fdw rows"] = _rows(dsn, "SELECT * FROM fprefix")
+        r["rp rows"] = _rows(dsn, f"SELECT * FROM {rp}")
+        r["excluded"] = _row(dsn, "SELECT count(*) FROM fprefix")
+        r["glob"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                              f"'s3://{BUCKET}/lst/*.parquet') AS t(id int8)")
+
+        # #1784: the hidden rule applies below the named prefix only, and a glob
+        # matches as a local glob() does
+        for sub in ("_landing/", ".dir/", "_landing/*.parquet", ".dir/*.parquet",
+                    "glb/*.parquet", "glb/_*.parquet", "glb/.*.parquet", "glb/"):
+            r["named " + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                          f"'s3://{BUCKET}/{sub}') AS t(id int8)")
+        for sub in ("_landing/", "_landing/*.parquet", "glb/[A_]*.parquet"):
+            r["named S3://" + sub] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                               f"'S3://{BUCKET}/{sub}') AS t(id int8)")
+
+        # #1785: an exact key that holds *, ? or [ is looked up literally first
+        for scheme, sub in LITERAL_READS:
+            r[f"literal {scheme}{sub}"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                                    f"'{scheme}{BUCKET}/{sub}') AS t(id int8)")
+        r["ipv6 s3"] = _refusal(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                     "'s3://[::1]/lit/q?mark.parquet') AS t(id int8)",
+                                "IPv6 literal hosts are not supported", " by the IPv6 check")
+
+        open(s3log, "w").close()
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fexact (id int8) SERVER s3srv "
+                      f"OPTIONS (path 's3://{BUCKET}/lst/part-0000.parquet')")
+        r["exact"] = _row(dsn, "SELECT count(*), sum(id) FROM fexact")
+        n = _list_requests(s3log)
+        r["exact lists"] = str(n) if isinstance(n, int) else n
+        r["exact logged"] = _key_fetched(s3log, f"/{BUCKET}/lst/part-0000.parquet")
+
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fhive (id int8, dt date) SERVER s3srv "
+                      f"OPTIONS (path 's3://{BUCKET}/hive/', partition_columns 'dt')")
+        r["hive"] = _rows(dsn, "SELECT dt, count(*) FROM fhive GROUP BY dt ORDER BY dt")
+        plan = _rows(dsn, "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) "
+                          "SELECT count(*) FROM fhive WHERE dt = DATE '2026-01-01'")
+        pruned = [ln for ln in plan.splitlines() if "Files Pruned" in ln] if not plan.startswith("QUERY_ERROR") else []
+        r["pruned"] = pruned[0].split(":")[-1].strip() if pruned else (plan if plan.startswith("QUERY_ERROR")
+                                                                       else "no Files Pruned line")
+
+        # #1930: s3a:// and s3n:// read as s3://, in any case; the exports refuse them
+        for scheme, sub in ALIAS_READS:
+            r[f"alias {scheme}{sub}"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                                  f"'{scheme}{BUCKET}/{sub}') AS t(id int8)")
+        r["alias schema"] = (_rows(dsn, f"SELECT * FROM pgcolumnar.parquet_schema("
+                                        f"'s3a://{BUCKET}/lst/part-0000.parquet')"),
+                             _rows(dsn, f"SELECT * FROM pgcolumnar.parquet_schema("
+                                        f"'s3://{BUCKET}/lst/part-0000.parquet')"))
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE TABLE alias_dst (id int8) USING pgcolumnar")
+            c.execute(f"CREATE FOREIGN TABLE falias (id int8) SERVER s3srv OPTIONS (path 's3a://{BUCKET}/lst/')")
+            c.execute(f"CREATE FOREIGN TABLE fhive_alias (id int8, dt date) SERVER s3srv "
+                      f"OPTIONS (path 'S3A://{BUCKET}/hive/', partition_columns 'dt')")
+            c.execute(f"CREATE FOREIGN TABLE fhive_root (id int8, dt date) SERVER s3srv "
+                      f"OPTIONS (path 's3a://{BUCKET}/hive/dt=2026-01-01/', partition_columns 'dt')")
+            c.execute("CREATE TABLE alias_src (id int8) USING pgcolumnar")
+            c.execute("INSERT INTO alias_src VALUES (7), (8)")
+        r["alias import"] = (_row(dsn, f"SELECT pgcolumnar.import_parquet('alias_dst', "
+                                       f"'s3n://{BUCKET}/lst/part-0001.parquet')"),
+                             _row(dsn, "SELECT sum(id) FROM alias_dst"))
+        r["alias fdw"] = (_rows(dsn, "SELECT * FROM falias"), r["rp rows"])
+        r["alias hive"] = _rows(dsn, "SELECT dt, count(*) FROM fhive_alias GROUP BY dt ORDER BY dt")
+        r["alias hive root"] = _refusal(dsn, "SELECT count(*) FROM fhive_root",
+                                        f'file "s3://{BUCKET}/hive/dt=2026-01-01/part.parquet" has no "dt=" '
+                                        'directory component', " naming the s3:// file")
+        r["alias missing"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                           f"'s3a://{BUCKET}/lst/nope.parquet') AS t(id int8)",
+                                      f'"s3://{BUCKET}/lst/nope.parquet" does not exist', " by its s3:// URL")
+        for scheme in ("s3ax://", "xs3a://"):
+            r["control " + scheme] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                                   f"'{scheme}{BUCKET}/lst/part-0000.parquet') AS t(id int8)",
+                                              f'could not open file "{scheme}{BUCKET}/lst/part-0000.parquet"',
+                                              " as a local file")
+        for func, url in (("export_parquet", f"s3a://{BUCKET}/out/e.parquet"),
+                          ("export_arrow", f"s3n://{BUCKET}/out/e.arrow"),
+                          ("parallel_export_parquet", f"S3A://{BUCKET}/out/pe/")):
+            r["alias export " + func] = _alias_refusal(dsn, f"SELECT pgcolumnar.{func}('alias_src', '{url}')",
+                                                       func, url, "s3://" + url.split("://", 1)[1])
+
+        override = work / "__listing_override__"
+        stmt = f"SELECT count(*) FROM {rp}"
+        override.write_text(STUCK)
+        r["stuck"] = _refusal(dsn, stmt, "returned a non-advancing continuation token", " by the token check")
+        override.unlink()
+        override.write_text(EMPTY)
+        r["empty"] = _refusal(dsn, stmt, "returned a truncated page with no keys", " by the progress check")
+        override.unlink()
+        status = work / "__listing_status__"
+        status.write_text("500\n")
+        r["http500"] = _refusal(dsn, stmt, "returned HTTP 500", " by the HTTP status check")
+        status.unlink()
+
+        # #1902: the object that does not match the declared columns is named
+        r["mix good"] = _row(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet("
+                                  f"'s3://{BUCKET}/mix/f0[013].parquet') AS t(id int8)")
+        r["mix prefix"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                               f"'s3://{BUCKET}/mix/') AS t(id int8)")
+        r["wide glob"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                              f"'s3://{BUCKET}/wide/*.parquet') AS t(id int8)")
+        r["mix field id"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.read_parquet("
+                                                 f"'s3://{BUCKET}/mix/', ARRAY[1]) AS t(id int8)")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE FOREIGN TABLE fmix (id int8) SERVER s3srv OPTIONS (path 's3://{BUCKET}/mix/')")
+        r["mix fdw"] = _refusal_detail(dsn, "SELECT count(*) FROM fmix")
+        r["survived"] = _survived(dsn, log, before)
+
+        # #1972: an s3:// glob of more than 128 *, or of 4096 bytes or more, is
+        # refused with 54000 before the listing, as path_glob_matches refuses it
+        def rst(n):
+            open(s3log, "w").close()
+            got = _sqlstate(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                 f"'s3://{BUCKET}/glb/' || repeat('*/', {n}) || 'x.parquet') AS t(id int8)")
+            return f"{got} lists={_list_requests(s3log)}"
+        r["deep stars"] = f"{rst(128)}|{rst(129)}"
+        r["deep bytes"] = "|".join(
+            _sqlstate(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                           f"rpad('s3://{BUCKET}/*', {n}, 'a') || '.parquet') AS t(id int8)") for n in (4087, 4088))
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"DO $$BEGIN EXECUTE format('CREATE FOREIGN TABLE fdeep (id int8) SERVER s3srv "
+                      f"OPTIONS (path %L)', 's3://{BUCKET}/' || repeat('*/', 129) || 'x.parquet'); END$$")
+        r["deep fdw"] = _sqlstate(dsn, "SELECT count(*) FROM fdeep")
+        # A key of 1000 levels, listed from __listing_override__ so that no tree
+        # 1000 directories deep is made on disk. It holds no object, so a glob
+        # that matches it fails on the read and names the key: the premise. The
+        # crash read runs in a C.UTF-8 database, where fnmatch keeps more on the
+        # stack for each *.
+        override = work / "__listing_override__"
+        override.write_text('<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>'
+                            f'<Contents><Key>deep/{"a/" * 1000}x.parquet</Key></Contents></ListBucketResult>\n')
+        r["deep premise"] = _deep_premise(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                               f"'s3://{BUCKET}/deep/' || repeat('a/', 1000) || '*.parquet') AS t(id int8)")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE DATABASE lst_cutf8 TEMPLATE template0 ENCODING 'UTF8' "
+                      "LC_COLLATE 'C.UTF-8' LC_CTYPE 'C.UTF-8'")
+        udsn = cluster.dsn("lst_cutf8")
+        with psycopg.connect(udsn, autocommit=True) as c:
+            c.execute("CREATE EXTENSION pgcolumnar")
+        deep_before = _crashes(log)
+        r["deep crash"] = (_sqlstate(udsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
+                                           f"'s3://{BUCKET}/deep/' || repeat('*/', 1000) || '*.parquet') AS t(id int8)")
+                           + "|" + _survived(dsn, log, deep_before))
+        override.unlink()
+        _wait_up(dsn)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("DROP DATABASE lst_cutf8")
+        r["integration"] = _integration(cluster, datadir, log, bucket, work)
+        yield r
+    finally:
+        if cluster is not None:
+            _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
+        if srv is not None:
+            srv.kill()
+            srv.wait()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _readings(request, expect):
+    """-> the fixture's readings, or None after declining as the shell skips."""
+    if expect.require_module("pyarrow.parquet", name="pyarrow is required to write the fixture") is None:
+        return None
+    return request.getfixturevalue("osl")
+
+
+def test_the_listing_fixture_server_is_up(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["fixture up"], "1", "premise: fixture up")
+
+
+def test_read_parquet_over_a_prefix_reads_every_object_under_it(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["prefix"], "12 192",
+                    "read_parquet over a prefix reads every object under it (4 parts, recursive)")
+
+
+def test_the_prefix_listing_paged(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["paged"], "paged", "the prefix listing paged (more than one list-type=2 request)")
+
+
+def test_the_fdw_over_a_prefix_reads_what_read_parquet_reads(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["fdw rows"], r["rp rows"], "FDW over a prefix == read_parquet over the prefix")
+
+
+def test_hidden_and_non_parquet_objects_are_excluded_from_the_listing(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["excluded"], "12", "hidden (_SUCCESS) and non-parquet (notes.txt) objects are excluded")
+
+
+def test_a_remote_glob_matches_only_the_top_level_parts(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["glob"], "9 99", "glob s3://.../lst/*.parquet matches the 3 top-level parts, not sub/")
+
+
+@pytest.mark.parametrize("sub, want, name", [
+    ("_landing/", "3 6",
+     "a prefix whose own name starts with _ lists the objects below it, still skipping _temporary/"),
+    (".dir/", "3 15", "a prefix whose own name starts with . lists the objects below it"),
+    ("_landing/*.parquet", "3 6", "glob under a named _ directory (_landing/*.parquet) matches"),
+    (".dir/*.parquet", "3 15", "glob under a named . directory (.dir/*.parquet) matches"),
+    ("glb/*.parquet", "8 66", "glob glb/*.parquet matches _b.parquet but not .h.parquet, as a local glob does"),
+    ("glb/_*.parquet", "5 60", "glob glb/_*.parquet matches the _ file it spells"),
+    ("glb/.*.parquet", "1 100", "glob glb/.*.parquet matches the dot file it spells"),
+    ("glb/", "3 6", "prefix glb/ still skips _b.parquet and .h.parquet below it"),
+    ("S3://_landing/", "3 6", "an upper-case scheme prefix S3://.../_landing/ reads as s3:// does"),
+    ("S3://_landing/*.parquet", "3 6",
+     "an upper-case scheme glob S3://.../_landing/*.parquet matches as s3:// does"),
+    ("S3://glb/[A_]*.parquet", "5 60",
+     "an upper-case scheme glob S3://.../glb/[A_]*.parquet is case-sensitive after the scheme"),
+])
+def test_hidden_names_are_judged_below_the_named_prefix_and_globs_match_as_local(request, expect, sub, want, name):
+    """#1784: a prefix or glob the user names may itself start with '_' or '.'."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["named " + sub], want, name)
+
+
+@pytest.mark.parametrize("key, want, name", [
+    ("s3://lit/q?mark.parquet", "1 2",
+     "an exact key with ? (lit/q?mark.parquet) reads that object alone, not qXmark.parquet"),
+    ("s3://lit/brack[1].parquet", "1 1", "an exact key with [ (lit/brack[1].parquet) reads that object"),
+    ("s3://lit/star*x.parquet", "1 4",
+     "an exact key with * (lit/star*x.parquet) reads that object alone, not starZZZx.parquet"),
+    ("s3://lit/raw[1]", "1 8", "an exact key with [ and no .parquet suffix (lit/raw[1]) reads that object"),
+    ("S3://lit/q?mark.parquet", "1 2",
+     "an upper-case scheme exact key S3://.../lit/q?mark.parquet reads that object alone"),
+    ("s3://lit/q?mar?.parquet", "2 5",
+     "with no object of that exact name, lit/q?mar?.parquet is a pattern (q?mark and qXmark, not Q?mark)"),
+    ("s3://lit/q\\?mark.parquet", "1 2",
+     "an escaped key, a backslash before the ? of lit/q?mark.parquet, matches only q?mark.parquet"),
+])
+def test_an_exact_key_with_a_glob_metacharacter_reads_that_object(request, expect, key, want, name):
+    """#1785: `*`, `?` and `[` are legal in an S3 key; the literal key is tried first."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["literal " + key], want, name)
+
+
+def test_an_ipv6_literal_s3_authority_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["ipv6 s3"], "0A000 by the IPv6 check",
+                    "an IPv6 literal s3 authority s3://[::1]/... is refused as IPv6, not listed")
+
+
+def test_an_exact_key_read_returns_its_rows(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["exact"], "3 3", "exact-key read returns its rows")
+
+
+def test_an_exact_key_read_issues_no_list(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["exact lists"], "0", "an exact-key read issues no ListObjectsV2")
+
+
+def test_the_exact_key_read_reached_the_request_log(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["exact logged"], "logged", "and the request log recorded the exact-key read")
+
+
+def test_hive_over_a_remote_prefix_stamps_the_partition_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["hive"], "2026-01-01 3\n2026-01-02 3",
+                    "Hive over a remote prefix stamps the partition column")
+
+
+def test_a_partition_predicate_prunes_a_remote_file(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["pruned"], "1", "a partition predicate prunes a remote file (Files Pruned = 1)")
+
+
+def test_a_non_advancing_continuation_token_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["stuck"], "08P01 by the token check",
+                    "a non-advancing continuation token is refused, not an infinite paging loop")
+
+
+def test_a_truncated_page_with_no_keys_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["empty"], "08P01 by the progress check", "a truncated page with no keys is refused, not looped")
+
+
+def test_a_list_that_fails_is_refused_not_read_as_empty(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["http500"], "08006 by the HTTP status check",
+                    "a LIST that returns HTTP 500 is refused, not read as an empty prefix")
+
+
+@pytest.mark.parametrize("key, want, name", [
+    ("s3a://lst/part-0000.parquet", "3 3", "an s3a:// exact key reads the object s3:// reads"),
+    ("s3n://lst/part-0000.parquet", "3 3", "an s3n:// exact key reads the object s3:// reads"),
+    ("s3a://lst/", "12 192", "an s3a:// prefix lists and reads every object under it, as s3:// does"),
+    ("s3n://lst/", "12 192", "an s3n:// prefix lists and reads every object under it, as s3:// does"),
+    ("s3a://lst/*.parquet", "9 99", "an s3a:// glob lst/*.parquet matches the 3 top-level parts, as s3:// does"),
+    ("S3A://lst/", "12 192", "an upper-case S3A:// prefix reads as s3:// does"),
+    ("S3n://lst/part-0000.parquet", "3 3", "a mixed-case S3n:// exact key reads as s3:// does"),
+])
+def test_an_s3a_or_s3n_url_reads_as_s3(request, expect, key, want, name):
+    """#1930: the Hadoop names for S3 read as s3://, in any case, as in the Iceberg reader."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias " + key], want, name)
+
+
+def test_parquet_schema_through_s3a_equals_through_s3(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        a, b = r["alias schema"]
+        expect.text(f"{a}|{b}", "id bigint True None|id bigint True None",
+                    "parquet_schema through s3a:// == through s3://")
+
+
+def test_import_parquet_through_s3n_loads_the_objects_rows(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text("|".join(r["alias import"]), "3|33", "import_parquet through s3n:// loads the object's rows")
+
+
+def test_the_fdw_over_an_s3a_prefix_reads_what_read_parquet_reads_over_s3(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        got, want = r["alias fdw"]
+        expect.text(got, want, "the FDW over an s3a:// prefix == read_parquet over the s3:// prefix")
+
+
+def test_hive_over_an_upper_case_s3a_prefix_stamps_the_partition_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias hive"], "2026-01-01 3\n2026-01-02 3",
+                    "Hive over an S3A:// prefix stamps the partition column")
+
+
+def test_an_s3a_fdw_roots_own_component_is_not_a_partition_value(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias hive root"], "HV004 naming the s3:// file",
+                    "an s3a:// FDW root's own dt= component is not a partition value, as with s3://")
+
+
+def test_a_missing_object_through_s3a_is_reported_under_its_s3_url(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias missing"], "58P01 by its s3:// URL",
+                    "a missing object through s3a:// is reported under its s3:// URL")
+
+
+@pytest.mark.parametrize("scheme, name", [
+    ("s3ax://", "control: an s3ax:// URL is a local path, not S3"),
+    ("xs3a://", "control: an xs3a:// URL is a local path, not S3"),
+])
+def test_a_scheme_that_only_resembles_s3a_is_a_local_path(request, expect, scheme, name):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["control " + scheme], "58P01 as a local file", name)
+
+
+@pytest.mark.parametrize("func, name", [
+    ("export_parquet", "export_parquet refuses s3a:// with 0A000 and a hint naming the s3:// URL"),
+    ("export_arrow", "export_arrow refuses s3n:// with 0A000 and a hint naming the s3:// URL"),
+    ("parallel_export_parquet", "parallel_export_parquet refuses S3A:// with 0A000 and a hint naming the s3:// URL"),
+])
+def test_an_export_refuses_an_s3a_or_s3n_url(request, expect, func, name):
+    """#1930: the exports write s3:// only, as the Iceberg reader writes nothing."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["alias export " + func], "0A000 named", name)
+
+
+MIX_TYPE = '42804: Parquet column 0 physical type is not compatible with target column "id" (bigint)'
+MIX_DETAIL = f'DETAIL: The mismatched file is "s3://{BUCKET}/mix/f02.parquet".'
+
+
+def test_the_matching_objects_of_the_mixed_prefix_read(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix good"], "3 4", "premise: the matching objects of mix/ read")
+
+
+def test_a_prefix_read_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix prefix"], f"{MIX_TYPE} | {MIX_DETAIL}",
+                    "read_parquet over a prefix names the object whose column type does not match")
+
+
+def test_a_glob_read_names_the_object_with_an_extra_column(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["wide glob"],
+                    "42804: Parquet file has 2 leaf columns, target table expands to 1 | "
+                    f'DETAIL: The mismatched file is "s3://{BUCKET}/wide/f01.parquet".',
+                    "read_parquet over a glob names the object with an extra column")
+
+
+def test_a_field_id_prefix_read_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix field id"],
+                    "42804: Parquet column with field id 1 has a physical type incompatible with "
+                    f'output column "id" (bigint) | {MIX_DETAIL}',
+                    "read_parquet by field id over a prefix names the object whose column type does not match")
+
+
+def test_the_fdw_over_a_prefix_names_the_object_whose_type_does_not_match(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["mix fdw"], f"{MIX_TYPE} | {MIX_DETAIL}",
+                    "the FDW over a prefix names the object whose column type does not match")
+
+
+def test_the_backend_is_still_up_after_the_listing_refusals(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["survived"], "1", "backend still up after the listing refusals")
+
+
+def test_an_s3_glob_of_more_than_128_stars_is_refused_before_the_listing(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep stars"], "58P01 lists=2|54000 lists=0",
+                    "read_parquet looks for an s3:// glob of 128 * and refuses 129 with 54000 before it lists")
+
+
+def test_an_s3_glob_of_4096_bytes_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep bytes"], "58P01|54000",
+                    "read_parquet looks for an s3:// glob of 4095 bytes and refuses one of 4096 with 54000")
+
+
+def test_a_foreign_table_over_an_s3_glob_of_129_stars_is_refused(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep fdw"], "54000", "a pgcolumnar_parquet foreign table over an s3:// glob of 129 * raises 54000")
+
+
+def test_the_listing_returns_a_key_of_1000_levels_that_one_star_matches(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep premise"], "58P01 names the key",
+                    "premise: the listing returns a key of 1000 levels, and a glob of one * matches it")
+
+
+def test_an_s3_glob_of_1000_levels_is_refused_and_the_server_stays_up(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r["deep crash"], "54000|1",
+                    "read_parquet refuses an s3:// glob of 1000 */ levels over a key that deep with 54000 "
+                    "in a UTF-8 database, and the server stays up")
+
+
+_NO_REAL_S3 = ("PGC_S3_INTEGRATION_ENDPOINT names no real S3 implementation (or its upload failed), "
+               "so the shell records nothing for these arms either")
+_NO_VHOST = ("PGC_S3_INTEGRATION_VHOST_ENDPOINT is unset or its bucket subdomain does not resolve, "
+             "so the shell records nothing for this arm either")
+
+
+_ABSENT = object()
+
+
+def _real_s3(request, expect, key):
+    """-> the integration reading `key`; None after declining as the shell skips (no
+    pyarrow); _ABSENT when the shell recorded nothing, so the caller declines by name."""
+    r = _readings(request, expect)
+    if r is None:
+        return None
+    i = r["integration"]
+    return _ABSENT if i is None or key not in i else i[key]
+
+
+def test_integration_the_listing_cluster_restarts_with_the_real_s3_credentials(request, expect):
+    got = _real_s3(request, expect, "restart")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: the cluster restarts with the real S3 credentials")
+    elif got is not None:
+        expect.text(got, "yes", "integration: the cluster restarts with the real S3 credentials")
+
+
+def test_integration_a_real_s3_prefix_read_equals_the_local_directory(request, expect):
+    got = _real_s3(request, expect, "prefix")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: real S3 prefix read == local directory")
+    elif got is not None:
+        expect.text(got[0], got[1], "integration: real S3 prefix read == local directory")
+
+
+def test_integration_a_real_s3_glob_equals_the_local_glob(request, expect):
+    got = _real_s3(request, expect, "glob")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3, name="integration: real S3 glob == local glob")
+    elif got is not None:
+        expect.text(got[0], got[1], "integration: real S3 glob == local glob")
+
+
+def test_integration_a_real_s3_skips_hidden_names_like_a_local_directory(request, expect):
+    got = _real_s3(request, expect, "hidden")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: real S3 skips hidden names like a local directory")
+    elif got is not None:
+        expect.text(got[0], got[1], "integration: real S3 skips hidden names like a local directory")
+
+
+def test_integration_a_real_s3_prefix_under_a_hidden_directory_equals_local(request, expect):
+    got = _real_s3(request, expect, "named")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: real S3 prefix under a _ or . directory == local")
+    elif got is not None:
+        expect.text(got[0], got[1], "integration: real S3 prefix under a _ or . directory == local")
+
+
+def test_integration_the_real_s3_serves_1100_keys_in_pages_of_at_most_1000(request, expect):
+    got = _real_s3(request, expect, "page cap")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: the real S3 serves the 1100 keys in pages of at most 1000")
+    elif got is not None:
+        expect.text(got, "1000 True", "integration: the real S3 serves the 1100 keys in pages of at most 1000")
+
+
+def test_integration_a_real_s3_listing_pages_past_1000_keys(request, expect):
+    got = _real_s3(request, expect, "paged")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_REAL_S3,
+                          name="integration: real S3 listing pages past 1000 keys")
+    elif got is not None:
+        expect.text(got, "1100 604450", "integration: real S3 listing pages past 1000 keys")
+
+
+def test_integration_the_cluster_restarts_with_the_virtual_host_endpoint(request, expect):
+    got = _real_s3(request, expect, "vrestart")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_VHOST,
+                          name="integration: the cluster restarts with the virtual-host endpoint")
+    elif got is not None:
+        expect.text(got, "yes", "integration: the cluster restarts with the virtual-host endpoint")
+
+
+def test_integration_a_real_s3_virtual_host_prefix_read_equals_path_style(request, expect):
+    got = _real_s3(request, expect, "vhost")
+    if got is _ABSENT:
+        expect.cannot_run("UNMET_PRECONDITION", _NO_VHOST,
+                          name="integration: real S3 virtual-host prefix read == path-style")
+    elif got is not None:
+        expect.text(got[0], got[1], "integration: real S3 virtual-host prefix read == path-style")

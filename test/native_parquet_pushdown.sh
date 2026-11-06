@@ -62,6 +62,24 @@ do
 		"$(pgc_set_hash "SELECT * FROM h  WHERE $pred")"
 done
 
+# ---- the row-group edges: an inclusive bound skips nothing it matches --------
+# Group 0 ends at 49999 and group 1 starts at 50000. A predicate whose constant is
+# a group's max or min is where an inclusive comparison read as exclusive skips a
+# group that holds the matching row -- and every predicate above stays clear of
+# them (#1496 review): with `col >= c` skipping on max <= c, this suite was green.
+for pred in \
+	"id >= 49999" \
+	"id > 49998" \
+	"id <= 50000" \
+	"id < 50001" \
+	"id = 49999" \
+	"id = 50000"
+do
+	check "row-group edge [$pred] == oracle" \
+		"$(pgc_set_hash "SELECT * FROM ft WHERE $pred")" \
+		"$(pgc_set_hash "SELECT * FROM h  WHERE $pred")"
+done
+
 # ---- skipping actually happens (EXPLAIN ANALYZE counter) --------------------
 skipped_for() {  # skipped_for WHERE
 	q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF)
@@ -138,28 +156,39 @@ do
 done
 
 # ---- inverted statistics must never drive a skip ---------------------------
-# Parquet's UINT_32 logical type is stored as physical INT32 but its statistics
-# are ordered UNSIGNED, while the reader decodes signed. A group spanning the
-# sign boundary therefore reports min=1, max=-1294967296: an inverted interval.
 # Every skip test assumes min <= max, so without a guard the equality and range
-# tests skip groups that really do contain matching rows. The values themselves
-# read back fine as int4, so this is a well-formed file producing bad bounds.
+# tests skip groups that really do contain matching rows. A corrupt or misannotated
+# file can carry such an interval while its values read back fine.
+#
+# This used to be a UINT_32 column, whose statistics are ordered unsigned while the
+# reader decoded signed. Since #1814 the reader decodes unsigned, so that file no
+# longer inverts; the interval is now made directly. pyarrow writes a signed INT32
+# column holding 1 and -1294967296, and the footer's min and max are swapped, so the
+# group claims min=1, max=-1294967296: the same values the UINT_32 file used to give.
 #
 # (The same inversion arises from narrowing a wide INT32 into int2, but that now
 # raises rather than wrapping -- see native_parquet_hardening.sh -- so it cannot
 # be used to reach this code path.)
 INVP="$PGC_WORKDIR/inverted.parquet"
 python3 - "$INVP" <<'PY'
-import sys, pyarrow as pa, pyarrow.parquet as pq
-pq.write_table(pa.table({"c": pa.array([1, 3000000000], pa.uint32())}),
+import struct, sys, pyarrow as pa, pyarrow.parquet as pq
+pq.write_table(pa.table({"c": pa.array([1, -1294967296], pa.int32())}),
                sys.argv[1], row_group_size=2)
+raw = open(sys.argv[1], "rb").read()
+flen = int.from_bytes(raw[-8:-4], "little")
+base = len(raw) - 8 - flen
+# each statistic is a Thrift binary: length 4, then the PLAIN little-endian value
+lo, hi = b"\x04" + struct.pack("<i", -1294967296), b"\x04" + struct.pack("<i", 1)
+foot = raw[base:-8]
+assert foot.count(lo) >= 1 and foot.count(lo) == foot.count(hi), (foot.count(lo), foot.count(hi))
+foot = foot.replace(lo, b"\0SWAP\0").replace(hi, lo).replace(b"\0SWAP\0", hi)
+open(sys.argv[1], "wb").write(raw[:base] + foot + raw[-8:])
 st = pq.ParquetFile(sys.argv[1]).metadata.row_group(0).column(0).statistics
-assert st.min == 1 and st.max == 3000000000, (st.min, st.max)
+assert st.min == 1 and st.max == -1294967296, (st.min, st.max)
 PY
 
 psql_run "CREATE FOREIGN TABLE fti (c int4) SERVER pq OPTIONS (path '$INVP');"
-# oracle: the signed reading of those two stored values, which is what the data
-# path yields; 3000000000 unsigned is -1294967296 as int4
+# oracle: the two stored values, which is what the data path yields
 psql_run "CREATE TABLE hi (c int4);"
 psql_run "INSERT INTO hi VALUES (1), (-1294967296);"
 
@@ -214,7 +243,10 @@ PYDEC
 		# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994).
 		for _pd_n in "INT64-backed DECIMAL: predicate skips 3 of 4 groups" \
 				"INT64-backed DECIMAL: skipping did not drop rows" \
-				"INT64-backed DECIMAL: unfiltered scan skips nothing"; do
+				"INT64-backed DECIMAL: unfiltered scan skips nothing" \
+				"typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+				"typmod: a numeric(18,1) column skips no group for d = 100.0" \
+				"typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups"; do
 			check_skip "$_pd_n" \
 				"SKIP  $_pd_n (could not build the integer-DECIMAL pushdown file)" \
 				"could not build the fixture file"
@@ -230,6 +262,21 @@ PYDEC
 			"$(q 'SELECT count(*) FROM ftdec WHERE d BETWEEN 120.00 AND 130.00;')" "1001"
 		check "INT64-backed DECIMAL: unfiltered scan skips nothing" \
 			"$(skipped_for_t ftdec 'd >= 0')" "0"
+		# A declared typmod that rounds (#1790): numeric(18,1) reads 99.95 .. 99.99
+		# as 100.0, but they sit in the first group, whose stored max is 99.99. A
+		# skip decided on the stored statistics would drop them, so a column whose
+		# typmod can change a value is never skipped. The file's own typmod,
+		# numeric(18,2), changes nothing, so it keeps skipping.
+		psql_run "CREATE FOREIGN TABLE ftdec1 (d numeric(18,1)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/dec_push.parquet');"
+		psql_run "CREATE FOREIGN TABLE ftdec2 (d numeric(18,2)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/dec_push.parquet');"
+		check "typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+			"$(q 'SELECT count(*) FROM ftdec1 WHERE d = 100.0;')" "10"
+		check "typmod: a numeric(18,1) column skips no group for d = 100.0" \
+			"$(skipped_for_t ftdec1 'd = 100.0')" "0"
+		check "typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups" \
+			"$(skipped_for_t ftdec2 "d BETWEEN 120.00 AND 130.00")" "3"
 	fi
 else
 	# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994). The OUTER gate: without
@@ -237,10 +284,66 @@ else
 	# left all three with no record.
 	for _pd_o in "INT64-backed DECIMAL: predicate skips 3 of 4 groups" \
 			"INT64-backed DECIMAL: skipping did not drop rows" \
-			"INT64-backed DECIMAL: unfiltered scan skips nothing"; do
+			"INT64-backed DECIMAL: unfiltered scan skips nothing" \
+			"typmod: a numeric(18,1) column returns every row that rounds to 100.0" \
+			"typmod: a numeric(18,1) column skips no group for d = 100.0" \
+			"typmod: a numeric(18,2) column, the file's own typmod, still skips 3 of 4 groups"; do
 		check_skip "$_pd_o" \
 			"SKIP  $_pd_o (pyarrow not available)" \
 			"pyarrow not available"
+	done
+fi
+
+
+# ---- a time type at full precision keeps skipping (#1790) --------------------
+# A declared typmod that can change a value turns row-group skipping off for the
+# column. timestamp(6) is microsecond precision, the precision the file stores,
+# so it changes nothing and must keep skipping. timestamp(3) rounds: each group's
+# last value, hh:59:59.9996, reads as the next hour, beyond the group's stored
+# max, so that column must skip nothing and return the rounded row.
+if python3 -c 'import pyarrow.parquet' 2>/dev/null; then
+	python3 - "$PGC_WORKDIR" <<'PYTS'
+import datetime, os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+W = sys.argv[1]
+# four row groups, one per hour of 2021-01-01: 999 whole seconds, then hh:59:59.9996
+base = datetime.datetime(2021, 1, 1)
+vals = []
+for g in range(4):
+    h = base + datetime.timedelta(hours=g)
+    vals += [h + datetime.timedelta(seconds=k) for k in range(999)]
+    vals.append(h + datetime.timedelta(minutes=59, seconds=59, microseconds=999600))
+pq.write_table(pa.table({"t": pa.array(vals, pa.timestamp("us"))}),
+               os.path.join(W, "ts_push.parquet"), compression="none",
+               row_group_size=1000)
+if pq.ParquetFile(os.path.join(W, "ts_push.parquet")).metadata.num_row_groups != 4:
+    sys.exit("expected 4 row groups")
+PYTS
+	if [ $? -ne 0 ]; then
+		# ONE SKIP PER ARM, UNDER THE ARM'S OWN NAME (#994).
+		for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+				"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+				"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
+			check_skip "$_pt" "SKIP  $_pt (could not build the timestamp pushdown file)" \
+				"could not build the fixture file"
+		done
+	else
+		psql_run "CREATE FOREIGN TABLE ftts6 (t timestamp(6)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/ts_push.parquet');"
+		psql_run "CREATE FOREIGN TABLE ftts3 (t timestamp(3)) SERVER pq
+		          OPTIONS (path '$PGC_WORKDIR/ts_push.parquet');"
+		check "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+			"$(skipped_for_t ftts6 "t >= TIMESTAMP '2021-01-01 03:00:00'")" "3"
+		check "typmod: a timestamp(3) column skips no group for t >= 03:00" \
+			"$(skipped_for_t ftts3 "t >= TIMESTAMP '2021-01-01 03:00:00'")" "0"
+		check "typmod: a timestamp(3) column returns the row that rounds up to 03:00" \
+			"$(q "SELECT count(*) FROM ftts3 WHERE t >= TIMESTAMP '2021-01-01 03:00:00'")" "1001"
+	fi
+else
+	for _pt in "typmod: a timestamp(6) column still skips 3 of 4 groups" \
+			"typmod: a timestamp(3) column skips no group for t >= 03:00" \
+			"typmod: a timestamp(3) column returns the row that rounds up to 03:00"; do
+		check_skip "$_pt" "SKIP  $_pt (pyarrow not available)" "pyarrow not available"
 	done
 fi
 

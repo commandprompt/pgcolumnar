@@ -78,7 +78,7 @@ ALL="SELECT count(v) FROM rb"
 G_ONE="$(groups_read "$ONE")"
 G_ALL="$(groups_read "$ALL")"
 check_num "premise: the one-group arm really reads exactly one row group" "$G_ONE" "1"
-check "premise: the all-groups arm really reads every row group" \
+check_num "premise: the all-groups arm really reads every row group" \
 	"$G_ALL" "$NGROUPS"
 
 F_ONE="$(faults "$ONE")"
@@ -94,7 +94,7 @@ check "premise: the instrument reports a nonzero fault count at all" \
 RATIO="$(awk -v a="$F_ALL" -v b="$F_ONE" 'BEGIN{ printf "%.2f", (b>0)? a/b : 999 }')"
 echo "-- faults(all)/faults(one) = $RATIO with $NGROUPS groups"
 check "reading every group does not cost per-group faults (ratio well under the group count)" \
-	"$(awk -v r="$RATIO" -v n="$NGROUPS" 'BEGIN{ print (r < 1 + (n-1)*0.5) ? "reused" : "per-group" }')" \
+	"$(awk -v r="$RATIO" -v n="$NGROUPS" 'BEGIN{ print (r < 1 + (n-1)*0.5) ? "reused" : "per-group (ratio " r " over " n " groups)" }')" \
 	"reused"
 
 # ---- correctness: the reused buffer must not leak one group into the next ----
@@ -103,13 +103,35 @@ check "reading every group does not cost per-group faults (ratio well under the 
 # projected read -- which deliberately does not read every column's range -- is
 # where a leak would show.
 psql_run "CREATE TABLE rb_h (id int, v text);"
-psql_run "INSERT INTO rb_h SELECT id, v FROM rb;"
-check "the full scan matches a heap mirror exactly" \
+# From the generator, not copied from rb: a copy agrees with whatever the reader
+# returned, so a full-scan error showed on both sides and passed.
+psql_run "INSERT INTO rb_h SELECT g,
+              md5(g::text)||md5((g*7)::text)||md5((g*13)::text)||md5((g*17)::text)
+          FROM generate_series(1, $ROWS) g;"
+check_text "the full scan matches a heap mirror exactly" \
 	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb;")" \
 	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb_h;")"
-check "a PROJECTED scan (one column of two) matches too" \
+check_text "a PROJECTED scan (one column of two) matches too" \
 	"$(q "SELECT count(*)||'/'||sum(id) FROM rb;")" \
 	"$(q "SELECT count(*)||'/'||sum(id) FROM rb_h;")"
+
+# ---- the whole-group read ----------------------------------------------------
+# Every read above names its columns, so it takes the projected read, which fills
+# only the wanted columns' ranges of the reused buffer. The reader has a second
+# path: with no projection it reads the whole group into the reused buffer in one
+# call. It takes that path for a whole-row Var, and for every read when
+# pgcolumnar.enable_column_projection = off. A whole-group read that stops short
+# leaves the previous group's bytes in the tail, so compare both forms with the
+# generator-built mirror. A setting that fails to apply errors the session, and
+# check_text refuses the empty side.
+NOPROJ="-c pgcolumnar.enable_column_projection=off"
+WHOLEROW="SELECT count(*)||'/'||md5(string_agg(r::text, ',' ORDER BY (r).id)) FROM"
+check_text "the full scan with column projection off (a whole-group read) matches a heap mirror" \
+	"$(PGOPTIONS="$NOPROJ" q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb;")" \
+	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb_h;")"
+check_text "a whole-row read (a whole-group read) matches a heap mirror" \
+	"$(q "$WHOLEROW rb r;")" \
+	"$(q "$WHOLEROW rb_h r;")"
 
 # A group SMALLER than the one before it is the case that exposes a stale tail:
 # the buffer is not shrunk, so the bytes past this group's end are the previous
@@ -123,9 +145,15 @@ psql_run "INSERT INTO rb_h SELECT g,
 check "premise: that really added a group smaller than the ones before it" \
 	"$(q "SELECT (SELECT min(rowcount) FROM pgcolumnar.stats('rb')) < (SELECT max(rowcount) FROM pgcolumnar.stats('rb'));")" \
 	"t"
-check "a short group after a full one still reads correctly" \
+check_text "a short group after a full one still reads correctly" \
 	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb;")" \
 	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb_h;")"
+check_text "a short group after a full one reads correctly with column projection off" \
+	"$(PGOPTIONS="$NOPROJ" q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb;")" \
+	"$(q "SELECT count(*)||'/'||md5(string_agg(v, ',' ORDER BY id)) FROM rb_h;")"
+check_text "a short group after a full one reads correctly in a whole-row read" \
+	"$(q "$WHOLEROW rb r;")" \
+	"$(q "$WHOLEROW rb_h r;")"
 
 # ---- differential arms: the shapes where a stale read would actually show ----
 # These exist because of a finding on the #776 review: the arms above pass
@@ -152,9 +180,13 @@ psql_run "SELECT pgcolumnar.set_options('rbd', stripe_row_limit => 20000, encode
 psql_run "INSERT INTO rbd SELECT g, (g%100)::smallint, g::bigint*1000,
               md5(g::text), repeat(md5((g*7)::text), 3)
           FROM generate_series(1, 120000) g;"
-psql_run "CREATE TABLE rbd_h AS SELECT * FROM rbd;"
+# From the generator too, for the same reason.
+psql_run "CREATE TABLE rbd_h AS SELECT g AS i, (g%100)::smallint AS s, g::bigint*1000 AS b,
+              md5(g::text) AS t, repeat(md5((g*7)::text), 3) AS u
+          FROM generate_series(1, 120000) g;"
+RBD_GROUPS="$(q "SELECT count(*) FROM pgcolumnar.stats('rbd');")"
 check "premise: the differential fixture spans several row groups" \
-	"$([ "$(q "SELECT count(*) FROM pgcolumnar.stats('rbd');")" -ge 3 ] && echo yes || echo no)" "yes"
+	"$([ "${RBD_GROUPS:-0}" -ge 3 ] 2>/dev/null && echo yes || echo "no ($RBD_GROUPS groups)")" "yes"
 
 dq_pair() {   # same projection against columnar and its heap twin
 	local proj="$1"
@@ -163,9 +195,14 @@ dq_pair() {   # same projection against columnar and its heap twin
 	b="$(q "SELECT md5(string_agg(x, ',' ORDER BY x)) FROM (SELECT ($proj)::text x FROM rbd_h) z;")"
 	[ -n "$a" ] && [ "$a" = "$b" ] && echo match || echo "differ($a vs $b)"
 }
-for proj in "i" "s" "b" "t" "u" "i||':'||t" "s||':'||u" "i||b::text||t||u"; do
-	check "projected subset [$proj] matches the heap twin" "$(dq_pair "$proj")" "match"
-done
+check "projected subset [i] matches the heap twin" "$(dq_pair "i")" "match"
+check "projected subset [s] matches the heap twin" "$(dq_pair "s")" "match"
+check "projected subset [b] matches the heap twin" "$(dq_pair "b")" "match"
+check "projected subset [t] matches the heap twin" "$(dq_pair "t")" "match"
+check "projected subset [u] matches the heap twin" "$(dq_pair "u")" "match"
+check "projected subset [i||':'||t] matches the heap twin" "$(dq_pair "i||':'||t")" "match"
+check "projected subset [s||':'||u] matches the heap twin" "$(dq_pair "s||':'||u")" "match"
+check "projected subset [i||b::text||t||u] matches the heap twin" "$(dq_pair "i||b::text||t||u")" "match"
 
 psql_run "ALTER TABLE rbd ADD COLUMN added int;"
 psql_run "ALTER TABLE rbd_h ADD COLUMN added int;"

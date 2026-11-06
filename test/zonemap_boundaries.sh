@@ -35,13 +35,15 @@ check "< excludes the group whose minimum equals the constant" \
 check_text "<= keeps the row at a row-group minimum" \
 	"$(pgc_set_hash "SELECT id FROM zb_c WHERE v <= 1001")" \
 	"$(pgc_set_hash "SELECT id FROM zb_h WHERE v <= 1001")"
-check "premise: <= at the second-group minimum removes no group" \
+# The two "removes no group" checks are arms, not premises (#1339, #1236): a zone
+# check that skipped a group whose bound EQUALS the constant reddens both.
+check "<= at the second-group minimum removes no group" \
 	"$(groups_removed 'v <= 1001')" "0"
 
 check_text ">= keeps the row at a row-group maximum" \
 	"$(pgc_set_hash "SELECT id FROM zb_c WHERE v >= 1000")" \
 	"$(pgc_set_hash "SELECT id FROM zb_h WHERE v >= 1000")"
-check "premise: >= at the first-group maximum removes no group" \
+check ">= at the first-group maximum removes no group" \
 	"$(groups_removed 'v >= 1000')" "0"
 
 # These mutations remain row-correct, so only work-done counters can see them.

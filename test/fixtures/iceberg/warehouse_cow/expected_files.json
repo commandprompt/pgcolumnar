@@ -1,0 +1,45 @@
+{
+  "recorded_root": "/tmp/pgc_ice_cow",
+  "tables": {
+    "cow": {
+      "entries": [
+        {
+          "content": 0,
+          "file_basename": "00000-0-91cc64f3-3065-4f15-b028-666c09f70b7f.parquet",
+          "record_count": 5,
+          "status": 1
+        },
+        {
+          "content": 0,
+          "file_basename": "00000-0-338cab52-f57b-4453-b89d-4ab2c5e45c39.parquet",
+          "record_count": 10,
+          "status": 2
+        }
+      ],
+      "live_files": [
+        {
+          "delete_files": 0,
+          "file_basename": "00000-0-91cc64f3-3065-4f15-b028-666c09f70b7f.parquet",
+          "record_count": 5
+        }
+      ],
+      "metadata_basename": "00002-38cf4fe2-a703-4699-bb2b-af23261ed933.metadata.json",
+      "operation": "overwrite",
+      "rows": 5
+    },
+    "cow_all": {
+      "entries": [
+        {
+          "content": 0,
+          "file_basename": "00000-0-7aafc4b9-f777-495f-a221-18d59c961b99.parquet",
+          "record_count": 10,
+          "status": 2
+        }
+      ],
+      "live_files": [],
+      "metadata_basename": "00002-e0c59732-81e8-4015-8af0-721daec64e92.metadata.json",
+      "operation": "delete",
+      "rows": 0
+    }
+  }
+}

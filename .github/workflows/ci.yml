@@ -93,6 +93,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # The docs_style twin compares each dated CHANGELOG section with its release tag
+      # (#1341). The default checkout fetches no tags, so without this its four changelog
+      # arms would decline here on every run. Depth 1, as in the suites job.
+      - name: fetch the release tags, for the changelog section comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
       - name: install pytest, pinned from requirements-test.txt, WITHOUT the driver
         run: |
           set -euo pipefail
@@ -155,12 +160,16 @@ jobs:
   # neighbours. The ends of the range -- 15, 16 and 19, which is where the gap was --
   # are covered by the nightly matrix rather than on every PR.
   #
-  # conftest.py's default is an assert build that exists on the audit container and not
-  # here, so the pg_config is passed explicitly.
+  # The pg_config is passed explicitly, so each matrix job tests the major it names.
+  # conftest.py's default would take the first /usr/local candidate or PATH (#1933).
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20. The run is serial and grows with every ported twin: main took 12 to 17
+    # minutes on 2026-10-22, and seven stacked port PRs were cancelled at 20m16s. More
+    # workers (-n) would be faster, but a port race under -n 2 is known (#1635), so the
+    # budget moves first and the parallel run waits for that to be settled.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -168,7 +177,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
+
+      - name: Resolve the object-storage suite host names
+        # test_objstore_addressing.py, the twin of objstore_addressing.sh, reads
+        # through virtual-host-style S3 addressing (pgc-bucket.s3.local) against
+        # its own loopback fixture server, as the suites job's shells do. Without
+        # the names its tests decline UNAVAILABLE_ENDPOINT and the run ends 67.
+        run: echo "127.0.0.1 s3.local pgc-bucket.s3.local" | sudo tee -a /etc/hosts
+
+      - name: Add the PGDG repository and refresh the package lists
         run: |
           set -euo pipefail
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -182,13 +206,35 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 100 3 update
+
+      # SEEDED FROM THE BUILD JOB'S CACHE, READ-ONLY. This job downloaded ~110 MB per
+      # run, ~91 MB of it the LLVM toolchain postgresql-server-dev-N depends on, and that
+      # download is what stalls (#386). On 2026-10-22 all three 200-second attempts of
+      # #1740's retry stalled on azure.archive.ubuntu.com in most PRs' cluster jobs, while
+      # the build jobs in the same runs fetched 0 B from their cache.
+      #
+      # It derives no key of its own, so there is no second copy of the build job's key
+      # to go stale: it restores the newest archive under the build job's prefix and
+      # never saves. apt still resolves the versions, uses a deb from the archive only
+      # when it is the version it wants, and downloads the rest. A miss, or a stale
+      # archive, degrades to the full download this job made before.
+      - name: Restore the build job's PostgreSQL ${{ matrix.pg }} packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install PostgreSQL ${{ matrix.pg }} with its headers
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev
-          # NOT cached, deliberately. The suites job caches because it runs a matrix for
-          # an hour; a second copy of that cache-key derivation is a thing that goes
-          # stale silently, and this job is minutes long.
 
       # ASSERTED, not assumed. A missing pg_config would otherwise surface as a
       # confusing failure inside conftest's build rather than here.
@@ -263,8 +309,17 @@ jobs:
           # developer box without it; in CI that would be green forever, so CI proves
           # the module imports and sets PGC_REQUIRE, which turns a decline into a
           # failure (OffgridwithJD, review of #1286).
+          # DUCKDB TOO (#1341): the one reader of an exported Parquet file that is not
+          # pyarrow, pinned beside it in requirements-test.txt and required the same way.
           /tmp/pgcvenv/bin/python -c 'import pyarrow, pyarrow.parquet; print("pyarrow", pyarrow.__version__)'
-          export PGC_REQUIRE=pyarrow
+          /tmp/pgcvenv/bin/python -c 'import duckdb; print("duckdb", duckdb.__version__)'
+          export PGC_REQUIRE=pyarrow,duckdb
+          # TWIN OF native_scale AT 200000 ROWS (#2018, review of #2021). The job runs
+          # close to its 40-minute limit, and the twin's default is 500000. At
+          # 200000 the twin still fails the two regressions it guards: the
+          # allocator's missing CommandCounterIncrement and broken free-space
+          # reuse. The shell suite keeps its default in the suites job.
+          export SCALE_N=200000
           PYTHONPATH=. /tmp/pgcvenv/bin/pytest -q \
             --pg-config /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
             --pgc-expect-tests "$WANT" \
@@ -318,7 +373,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           # Acquire retries cover a flaky mirror; the outer timeout keeps a
           # wedged one from consuming the whole job budget.
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # The key has to track the package VERSIONS and not only their names.
       #
@@ -386,7 +441,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} \
             liblz4-dev libzstd-dev zlib1g-dev 2>&1 | tee /tmp/apt-install.log
@@ -460,14 +515,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PG_BETA: 19beta2
+      PG_BETA: 19beta4
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
           set -euo pipefail
-          sudo apt-get update
+          .github/scripts/apt-retry.sh 100 3 update
           # gcc-14 explicitly, so one compiler configures PostgreSQL and builds
           # the extension.
           #
@@ -482,7 +537,7 @@ jobs:
           # project's own Makefile for PostgreSQL 19, whose headers use C23
           # constructs, and the Makefile now probes for the spelling the
           # compiler accepts. See #294.
-          sudo apt-get install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
             build-essential gcc-14 flex bison libreadline-dev zlib1g-dev \
             liblz4-dev libzstd-dev pkg-config
 
@@ -540,7 +595,13 @@ jobs:
       matrix:
         pg: ['17', '18']
     steps:
+      # FULL HISTORY, because census-commits (#1431) reads every commit this PR adds,
+      # from its merge base with the base branch. At depth 1 the PR's own commits are
+      # absent and the gate stops the run rather than checking fewer than it reports.
+      # Measured: 3909 commits, a 40 MB pack.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # THE LEDGER GATE NEEDS THE BASE BRANCH TO EXIST (#918). It compares the
       # tracked ceiling in `test/check_ledger_budget.txt` against the one already
@@ -549,13 +610,22 @@ jobs:
       #
       # actions/checkout fetches one ref at depth 1, so without this the base is
       # absent and the gate stops the run -- correctly, but for a reason that is
-      # this workflow's to fix rather than the author's. Depth 1 is enough: only
-      # the file at that commit is read.
+      # this workflow's to fix rather than the author's. Not shallow: the checkout
+      # above is full, and census-commits needs the base's history to find the
+      # merge base, which a --depth=1 fetch would cut.
       - name: fetch the PR base, for the ledger ceiling comparison
         if: github.base_ref != ''
         run: |
-          git fetch --depth=1 origin \
+          git fetch origin \
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       # The repository and the package lists first, on their own, because the
       # cache key below is derived from the versions apt resolves and cannot be
@@ -576,7 +646,7 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           # Acquire retries cover a flaky mirror; the outer timeout keeps a
           # wedged one from consuming the whole job budget.
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # See the build job for why the key hashes the resolved versions: a fixed
       # key freezes the archives, and the next routine PGDG minor then turns the
@@ -632,7 +702,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip 2>&1 | tee /tmp/apt-install.log

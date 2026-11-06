@@ -125,13 +125,13 @@ check "premise: the sweep reads a population of scripts, not an empty find" \
 
 # The reverse of what this premise used to assert. Both directories are swept
 # now, and saying so out loud is what stops the prune quietly coming back.
+_tsm_parts="$(printf '%s\n' "${_tsm_scripts[@]}" | grep -c '/test/selftest/')"
 check "premise: the sourced parts are inside the population, not pruned" \
-	"$([ "$(printf '%s\n' "${_tsm_scripts[@]}" | grep -c '/test/selftest/')" -ge 25 ] \
-		&& echo yes || echo no)" "yes"
+	"$([ "$_tsm_parts" -ge 25 ] && echo yes || echo "no ($_tsm_parts under test/selftest/)")" "yes"
 
+_tsm_tools="$(printf '%s\n' "${_tsm_scripts[@]}" | grep -c '/test/fixtures/')"
 check "premise: and so are the fixture host tools" \
-	"$([ "$(printf '%s\n' "${_tsm_scripts[@]}" | grep -c '/test/fixtures/')" -ge 10 ] \
-		&& echo yes || echo no)" "yes"
+	"$([ "$_tsm_tools" -ge 10 ] && echo yes || echo "no ($_tsm_tools under test/fixtures/)")" "yes"
 
 check "premise: a runnable script one level down is inside the population" \
 	"$(printf '%s\n' "${_tsm_scripts[@]}" | grep -c '/pbt/run\.sh$')" "1"

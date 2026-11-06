@@ -121,6 +121,20 @@ snappy_raw_uncompress(const uint8 *in, size_t inlen, StringInfo out)
 	return (uint32) out->len == ulen;
 }
 
+#if defined(HAVE_LIBZ) || defined(HAVE_LIBZSTD) || defined(HAVE_LIBLZ4)
+/*
+ * The empty result for a page whose declared uncompressed size is 0.
+ */
+static bool
+empty_output(StringInfo scratch, const uint8 **out, size_t *outlen)
+{
+	resetStringInfo(scratch);
+	*out = (const uint8 *) scratch->data;
+	*outlen = 0;
+	return true;
+}
+#endif
+
 /*
  * Decompress one Parquet page body according to its column-chunk codec.
  *
@@ -140,7 +154,19 @@ snappy_raw_uncompress(const uint8 *in, size_t inlen, StringInfo out)
  * MaxAllocSize up front so a crafted page yields a clean "return false" rather
  * than a generic allocation error deep in enlargeStringInfo or a decompressor.
  * Every codec that consumes usize also caps its output at it, so none can be
- * driven to allocate or inflate more than the header declares.
+ * driven to allocate or inflate more than the header declares. When usize is
+ * above 0, every real codec also refuses an output whose length is not usize
+ * (#1910). When usize is 0, GZIP, ZSTD and LZ4_RAW return an empty output
+ * without decompressing (see below), so they do not compare the stream with
+ * usize; SNAPPY does, and refuses a stream that is not empty. UNCOMPRESSED
+ * copies nothing and returns the srclen bytes the page holds, so its usize
+ * changes nothing that is read; pyarrow reads such a page too, v1 or v2.
+ *
+ * A declared size of 0 gives an empty output for GZIP, ZSTD and LZ4_RAW (#1786),
+ * as it already did for UNCOMPRESSED and SNAPPY. pyarrow writes the dictionary
+ * page of a column that is NULL in every row with no values, so its declared size
+ * is 0; refusing that page made the whole column unreadable. An empty output
+ * cannot inflate into a large allocation, so the size bound loses nothing.
  */
 bool
 PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t usize,
@@ -158,8 +184,12 @@ PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t u
 
 		case PQC_SNAPPY:
 			/* Snappy self-describes its output length (a leading varint), which
-			 * snappy_raw_uncompress bounds; usize is not consulted. */
-			if (!snappy_raw_uncompress(src, srclen, scratch))
+			 * snappy_raw_uncompress bounds. The page header's size must agree
+			 * too, as it must for every other codec (#1910): a corrupt stream
+			 * whose own length still matched read without an error and gave a
+			 * wrong answer, where pyarrow refuses the page. */
+			if (!snappy_raw_uncompress(src, srclen, scratch) ||
+				(size_t) scratch->len != usize)
 				return false;
 			*out = (const uint8 *) scratch->data;
 			*outlen = scratch->len;
@@ -171,10 +201,10 @@ PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t u
 				z_stream	zs;
 				int			rc;
 
+				if (usize == 0)
+					return empty_output(scratch, out, outlen);
 				/* Bound the output at the declared size, like zstd and lz4, so a
 				 * small crafted page cannot inflate into a huge allocation. */
-				if (usize == 0)
-					return false;
 				memset(&zs, 0, sizeof(zs));
 				/* 15 + 32: accept a gzip or zlib header (Parquet writes gzip) */
 				if (inflateInit2(&zs, 15 + 32) != Z_OK)
@@ -202,7 +232,7 @@ PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t u
 				size_t		got;
 
 				if (usize == 0)
-					return false;	/* zstd needs the output size */
+					return empty_output(scratch, out, outlen);
 				enlargeStringInfo(scratch, (int) usize);
 				got = ZSTD_decompress(scratch->data, usize, src, srclen);
 				if (ZSTD_isError(got) || got != usize)
@@ -220,7 +250,7 @@ PgColumnarParquetDecompress(int codec, const uint8 *src, size_t srclen, size_t u
 				int			got;
 
 				if (usize == 0)
-					return false;	/* lz4 raw needs the output size */
+					return empty_output(scratch, out, outlen);
 				enlargeStringInfo(scratch, (int) usize);
 				got = LZ4_decompress_safe((const char *) src, scratch->data,
 										  (int) srclen, (int) usize);

@@ -527,6 +527,12 @@ pgcolumnar_column_extent(PG_FUNCTION_ARGS)
 	ac = pg_class_aclcheck(relid, GetUserId(), ACL_SELECT);
 	if (ac != ACLCHECK_OK)
 		aclcheck_error(ac, OBJECT_TABLE, get_rel_name(relid));
+	/*
+	 * The stored extent covers every row, so under a policy it would show values
+	 * from rows the caller cannot see. Refused as the other direct-storage entry
+	 * points are (#563), after the ACL check (OffgridwithJD, review of #1429).
+	 */
+	PgColumnarRequireNoRowSecurity(relid);
 	rel = relation_open(relid, AccessShareLock);
 	if (!PgColumnarIsColumnarRelation(relid))
 		ereport(ERROR,

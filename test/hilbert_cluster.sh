@@ -295,7 +295,7 @@ sqlstate() {	# sqlstate ROLE SQL -> a five-character SQLSTATE, noerror, or PROBE
 # nowhere in this tree and this suite cannot afford that: "the verb left the
 # table alone" and "the verb raised" produce identical fixtures.
 hrun() {	# hrun WHAT SQL
-	check_text "premise: $1 ran without raising" "$(sqlstate postgres "$2")" "noerror"
+	check_text "$1 ran without raising" "$(sqlstate postgres "$2")" "noerror"
 }
 
 # The premise behind every scanorder() comparison below. Without it those arms
@@ -385,12 +385,19 @@ do
 		_old="${_pair%%|*}"; _new="${_pair##*|}"
 		_sold="$(sqlstate "$_role" "SELECT pgcolumnar.$_old($_args);")"
 		_snew="$(sqlstate "$_role" "SELECT pgcolumnar.$_new($_args);")"
-		check_text "premise: $_old on $_what raises $_want (the probe reads the right state)" \
+		check_text "$_old on $_what raises $_want (the probe reads the right state)" \
 			"$_sold" "$_want"
 		check_text "$_new on $_what raises $_want" \
 			"$_snew" "$_want"
+		# "THE ONE $_old RAISES", so it has to be a raised SQLSTATE. Two verbs that both
+		# ran clean, or both went unreachable, used to agree here under a name that
+		# says two refusals were compared (#1339 :301).
+		case "$_sold" in
+			[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]) _cmp="$_snew" ;;
+			*) _cmp="no comparison: $_old raised nothing ($_sold)" ;;
+		esac
 		check_text "and $_new's state on $_what is the one $_old raises on the identical input" \
-			"$_snew" "$_sold"
+			"$_cmp" "$_sold"
 	done
 done
 
@@ -517,9 +524,9 @@ mk3 s3hi;  S3HI_SEQ0="$(scanorder s3hi)";   hrun "cluster_hilbert('s3hi','k','j'
 S3LEX_MOVED="$(changed "$S3LEX_SEQ0" "$(scanorder s3lex)")"
 S3ZO_MOVED="$(changed "$S3ZO_SEQ0" "$(scanorder s3zo)")"
 S3HI_MOVED="$(changed "$S3HI_SEQ0" "$(scanorder s3hi)")"
-check "premise: vacuum_sorted moved s3lex from its own baseline" "$S3LEX_MOVED" "moved"
-check "premise: cluster moved s3zo from its own baseline" "$S3ZO_MOVED" "moved"
-check "premise: cluster_hilbert moved s3hi from its own baseline" "$S3HI_MOVED" "moved"
+check "vacuum_sorted moved s3lex from its own baseline" "$S3LEX_MOVED" "moved"
+check "cluster moved s3zo from its own baseline" "$S3ZO_MOVED" "moved"
+check "cluster_hilbert moved s3hi from its own baseline" "$S3HI_MOVED" "moved"
 check "premise: the plan being digested for s3hi is the columnar custom scan too" \
 	"$(pgc_is_columnar_scan 'SELECT * FROM s3hi')" "yes"
 
@@ -604,7 +611,7 @@ decay4() {	# the 25% appended tail every decay fixture gets
 # ---- (a) recluster_hilbert on an already-hilbert table, same key ------------
 mk4 s4a
 hrun "cluster_hilbert('s4a','a','b')" "SELECT pgcolumnar.cluster_hilbert('s4a','a','b');"
-check_num "premise: the eager rewrite left no appended tail on s4a" "$(appended s4a)" "0"
+check_num "the eager rewrite left no appended tail on s4a" "$(appended s4a)" "0"
 S4A_PHYS="$(physlayout s4a)"
 S4A_RET="$(q "SELECT pgcolumnar.recluster_hilbert('s4a','a','b');")"
 check_num "(a) recluster_hilbert on an already-hilbert table with the same key reclusters 0 groups" \
@@ -651,7 +658,7 @@ fi
 # ---- (b) recluster_hilbert on a 'zorder' table over the same columns --------
 mk4 s4b
 hrun "cluster('s4b','a','b')" "SELECT pgcolumnar.cluster('s4b','a','b');"
-check_text "premise: s4b is a zorder table over exactly (a,b)" "$(skind s4b)/$(skey s4b)" "zorder/{a,b}"
+check_text "s4b is a zorder table over exactly (a,b)" "$(skind s4b)/$(skey s4b)" "zorder/{a,b}"
 S4B_PHYS="$(physlayout s4b)"
 S4B_SET="$(setof s4b)"
 check "(b) recluster_hilbert on a zorder table over the same columns does real work (>0)" \
@@ -769,9 +776,9 @@ check "premise: the plan being digested for s5hi is the columnar custom scan too
 hrun "cluster_hilbert('s5hi','a')" "SELECT pgcolumnar.cluster_hilbert('s5hi','a');"
 hrun "cluster('s5zo','a')"         "SELECT pgcolumnar.cluster('s5zo','a');"
 
-check "premise: cluster_hilbert changed s5hi's order from its own baseline" \
+check "cluster_hilbert changed s5hi's order from its own baseline" \
 	"$(changed "$S5HI_BEFORE" "$(scanorder s5hi)")" "moved"
-check "premise: cluster changed s5zo's order from its own baseline" \
+check "cluster changed s5zo's order from its own baseline" \
 	"$(changed "$S5ZO_BEFORE" "$(scanorder s5zo)")" "moved"
 # AND BOTH STILL HOLD THEIR ROWS. Two verbs that record their kind and then
 # EMPTY the table satisfy both premises above -- the emptied digest differs from
@@ -803,7 +810,7 @@ check_text "and each records its own verb's kind" "$(skind s5hi)/$(skind s5zo)" 
 
 mk4 s6t
 hrun "cluster_hilbert('s6t','a','b')" "SELECT pgcolumnar.cluster_hilbert('s6t','a','b');"
-check_text "premise: s6t is a hilbert table before vacuum_sorted touches it" "$(skind s6t)" "hilbert"
+check_text "s6t is a hilbert table before vacuum_sorted touches it" "$(skind s6t)" "hilbert"
 check "premise: the plan being digested for s6t is the columnar custom scan too" \
 	"$(pgc_is_columnar_scan 'SELECT * FROM s6t')" "yes"
 # THE ORDER DIGEST IS THE INSTRUMENT HERE, NOT physlayout. vacuum_sorted is an
@@ -876,38 +883,49 @@ mk7() {
 mk7 av_hi;  hrun "cluster_hilbert('av_hi','a','b')"  "SELECT pgcolumnar.cluster_hilbert('av_hi','a','b');"
 mk7 av_ref; hrun "cluster_hilbert('av_ref','a','b')" "SELECT pgcolumnar.cluster_hilbert('av_ref','a','b');"
 mk7 av_zo;  hrun "cluster('av_zo','a','b')"          "SELECT pgcolumnar.cluster('av_zo','a','b');"
-decay4 av_hi; decay4 av_ref; decay4 av_zo
+# av_zd: a ZORDER table left decayed for the daemon (#1339 :1362). Every table the
+# daemon handled here used to be a hilbert one, so a daemon that reclustered
+# everything on the hilbert curve -- converting a layout the user chose, on a
+# timer -- passed the whole section.
+mk7 av_zd;  hrun "cluster('av_zd','a','b')"          "SELECT pgcolumnar.cluster('av_zd','a','b');"
+decay4 av_hi; decay4 av_ref; decay4 av_zo; decay4 av_zd
 
-check_text "premise: av_hi is a hilbert table with appended decay for the daemon to find" \
+check_text "av_hi is a hilbert table with appended decay for the daemon to find" \
 	"$(skind av_hi)/$([ "$(appended av_hi)" -gt 0 ] 2>/dev/null && echo decayed || echo clean)" \
 	"hilbert/decayed"
-check_text "premise: and the key the daemon will read off it is the one it was clustered by" \
+check_text "and the key the daemon will read off it is the one it was clustered by" \
 	"$(skey av_hi)" "{a,b}"
 # BOTH halves of the daemon's dispatch, so the recluster is its only reason to
 # touch av_hi. Without the compaction half, a compact_rewrite that folded the
 # tail and relabelled the table zorder would pass the arm below and redden THE
 # RULING, and the reader would attribute both to the recluster path.
-check_text "premise: the daemon agrees a recluster is due, and that a compaction is NOT" \
+check_text "the daemon agrees a recluster is due, and that a compaction is NOT" \
 	"$(q "SELECT recluster_due::text || '/' || compact_rewrite_due::text FROM pgcolumnar.maintenance_due('av_hi');")" \
 	"true/false"
 check "premise: the plan being digested for av_hi is the columnar custom scan too" \
 	"$(pgc_is_columnar_scan 'SELECT * FROM av_hi')" "yes"
+check_text "av_zd is a zorder table with appended decay for the daemon to find" \
+	"$(skind av_zd)/$([ "$(appended av_zd)" -gt 0 ] 2>/dev/null && echo decayed || echo clean)" \
+	"zorder/decayed"
+check_text "and the daemon agrees av_zd's recluster is due, and that a compaction is NOT" \
+	"$(q "SELECT recluster_due::text || '/' || compact_rewrite_due::text FROM pgcolumnar.maintenance_due('av_zd');")" \
+	"true/false"
 
 # The two references, driven by hand while the daemon is still off.
 hrun "recluster_hilbert('av_ref','a','b')" "SELECT pgcolumnar.recluster_hilbert('av_ref','a','b');"
 hrun "recluster('av_zo','a','b')"          "SELECT pgcolumnar.recluster('av_zo','a','b');"
 REF_FOLDED="$(appended av_ref)"
 ZO_FOLDED="$(appended av_zo)"
-check_num "premise: the hand-driven hilbert reference folded its tail back in" "$REF_FOLDED" "0"
-check_num "premise: the hand-driven zorder control folded its tail back in" "$ZO_FOLDED" "0"
+check_num "the hand-driven hilbert reference folded its tail back in" "$REF_FOLDED" "0"
+check_num "the hand-driven zorder control folded its tail back in" "$ZO_FOLDED" "0"
 # Gated for the same reason S3's and S4(d)'s comparisons are: an av_ref that was
 # never reclustered still carries its tail, so it differs from av_zo for a
 # reason that has nothing to do with the curve, and the premise passes on it.
 if [ "$REF_FOLDED" = "0" ] && [ "$ZO_FOLDED" = "0" ]; then
-	check "premise: the two references really are two different layouts, so the arm below discriminates" \
+	check "the two references really are two different layouts, so the arm below discriminates" \
 		"$(differs "$(scanorder av_ref)" "$(scanorder av_zo)")" "different"
 else
-	check_unrunnable "premise: the two references really are two different layouts, so the arm below discriminates" \
+	check_unrunnable "the two references really are two different layouts, so the arm below discriminates" \
 		UNMET_PRECONDITION \
 		"a hand-driven reference did not fold its tail (av_ref=[$REF_FOLDED], av_zo=[$ZO_FOLDED]), so the two layouts are not the two rewrites"
 fi
@@ -919,7 +937,7 @@ fi
 # while the arm it guards still prints PASS leaves the flagship green on a tree
 # with no Hilbert code in it, which is exactly what happened.
 S7_PRE="$(differs "$(scanorder av_hi)" "$(scanorder av_ref)")"
-check "premise: av_hi does NOT yet match the hilbert reference, so matching it later is a change" \
+check "av_hi does NOT yet match the hilbert reference, so matching it later is a change" \
 	"$S7_PRE" "different"
 
 # THE REFERENCES ARE FROZEN HERE. Everything below compares against these
@@ -935,10 +953,12 @@ q "SELECT pg_reload_conf();" >/dev/null
 check_text "the daemon is now ON" "$(q "SHOW pgcolumnar.autovacuum;")" "on"
 
 AV_AFTER="$(appended av_hi)"
+ZD_AFTER="$(appended av_zd)"
 for _ in $(seq 1 15); do
 	sleep 2
 	AV_AFTER="$(appended av_hi)"
-	[ "${AV_AFTER:-1}" = "0" ] && break
+	ZD_AFTER="$(appended av_zd)"
+	[ "${AV_AFTER:-1}" = "0" ] && [ "${ZD_AFTER:-1}" = "0" ] && break
 done
 check_num "the daemon reclustered av_hi (its appended tail folded to 0)" "$AV_AFTER" "0"
 
@@ -962,6 +982,14 @@ check_num "and it still has no appended tail, so nothing rewrote it behind the c
 check_text "THE RULING: the daemon left the table hilbert, it did not convert it to zorder" \
 	"$(skind av_hi)" "hilbert"
 check_text "and sort_status agrees with the catalog about it" "$(skindst av_hi)" "hilbert"
+
+# THE OTHER HALF OF THE DISPATCH: a decayed zorder table is reclustered too, and on
+# its own curve. A daemon that sent every table to recluster_hilbert folded
+# av_zd's tail just as well, so the curve and key are what tell the two apart.
+check_num "the daemon reclustered the decayed zorder table av_zd too (its appended tail folded to 0)" \
+	"$ZD_AFTER" "0"
+check_text "and it kept av_zd on the zorder curve and its key: a non-hilbert table is not converted" \
+	"$(skind av_zd)/$(skey av_zd)" "zorder/{a,b}"
 
 if [ "$S7_PRE" = "different" ] && [ "$REF_FOLDED" = "0" ]; then
 	check_text "and the layout the daemon produced IS a Hilbert layout: identical to the hand-driven hilbert twin" \
@@ -1028,9 +1056,12 @@ cat_syms="$(printf '%s\n' $cat_syms | sort -u | tr '\n' ' ')"
 
 check "premise: the install script declares MODULE_PATHNAME symbols at all" \
 	"$([ "$(printf '%s\n' $src_syms | grep -c .)" -ge 20 ] && echo yes || echo no)" "yes"
-check "the catalog and the install script still agree on the symbol set" \
-	"$(diff <(printf '%s\n' $src_syms) <(printf '%s\n' $cat_syms) >/dev/null && echo same || echo differs)" \
-	"same"
+# THE TWO LISTS ARE COMPARED, NOT A TOKEN ABOUT THEM (#1339): "same" was also what
+# two empty lists produced, and check_text refuses an empty side. A failure now
+# names the symbols rather than saying "differs".
+check_text "the catalog and the install script still agree on the symbol set" \
+	"$(printf '%s\n' $cat_syms | sort -u | tr '\n' ' ' | sed 's/ $//')" \
+	"$(printf '%s\n' $src_syms | sort -u | tr '\n' ' ' | sed 's/ $//')"
 
 for fn in cluster_hilbert recluster_hilbert; do
 	check_num "pgcolumnar.$fn is installed, exactly once" \

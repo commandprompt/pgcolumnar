@@ -11,6 +11,9 @@
 # pyarrow writes ConvertedType for millis and micros but only LogicalType for
 # nanos, so this suite exercises both metadata paths.
 #
+# INT96 (#1870) is the legacy 12-byte timestamp: nanoseconds in the day, then the
+# Julian day. parquet_schema advises timestamptz for it, and it reads as an instant.
+#
 # Usage:  test/native_parquet_units.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -49,16 +52,12 @@ pq.write_table(pa.table({"t": pa.array([9223372036854776], pa.int64()).cast(pa.t
 # Nanos truncation. pq_scale_to_usecs divides by 1000 with C semantics (toward
 # zero), which the code comment reasons about but the round-number cases above do
 # not exercise: they are exact multiples of 1000 and non-negative. Write a value
-# with sub-microsecond digits, and a pre-epoch (negative) one, as nanos; write the
-# toward-zero-truncated microseconds directly as the reference. Reading the two as
-# timestamp must agree, which pins the rounding direction.
-def trunc_us(ns):                       # toward zero, unlike Python's floor //
-    return -(-ns // 1000) if ns < 0 else ns // 1000
+# with sub-microsecond digits, and a pre-epoch (negative) one, as nanos. The checks
+# below compare each with its toward-zero microseconds as a LITERAL: a reference
+# file read back through the same reader agreed with it on two failed reads.
 for tag, ns in [("frac", 1784851200_123_456_789), ("neg", -1784851200_123_456_789)]:
     pq.write_table(pa.table({"t": pa.array([ns], pa.int64()).cast(pa.timestamp('ns'))}),
                    f"{W}/tsns_{tag}.parquet", version="2.6")
-    pq.write_table(pa.table({"t": pa.array([trunc_us(ns)], pa.int64()).cast(pa.timestamp('us'))}),
-                   f"{W}/tsus_{tag}.parquet", version="1.0")
 
 # Row-group skipping over a unit-scaled column: two groups of millis timestamps
 # with disjoint ranges. The FDW decodes each group's min/max through the same
@@ -73,6 +72,15 @@ g1 = [g1base + i * HOUR for i in range(1000)]   # Jul-Aug 2025, hourly
 pq.write_table(pa.table({"t": pa.array(g0 + g1, pa.int64()).cast(pa.timestamp('ms'))}),
                f"{W}/ms_groups.parquet", row_group_size=1000)
 assert pq.ParquetFile(f"{W}/ms_groups.parquet").num_row_groups == 2
+
+# INT96 (#1870): the legacy timestamp Spark, Hive and Impala write, 8 bytes of
+# nanoseconds in the day then 4 bytes of Julian day. pyarrow writes it from a
+# timestamp with use_deprecated_int96_timestamps. One whole second, one with
+# sub-microsecond digits, one before 1970, and a NULL.
+pq.write_table(pa.table({"t": pa.array([1784851200_000_000_000, 1784851200_123_456_789,
+                                        -1784851200_123_456_789, None],
+                                       pa.timestamp("ns", tz="UTC"))}),
+               f"{W}/int96.parquet", use_deprecated_int96_timestamps=True)
 PY
 
 for u in ms us ns; do
@@ -84,10 +92,9 @@ psql_run "CREATE FOREIGN TABLE ftime_ms (t time) SERVER pq OPTIONS (path '$W/tim
 # ---- the same instant, whatever the unit -----------------------------------
 # Before the unit was honoured, millis read 1000x small (1970-01-21 15:47:31.2)
 # and nanos declared as timestamp read 1000x large, both silently.
-for u in ms us ns; do
-	check "ts_$u decodes to the right instant" \
-		"$(q "SELECT t::text FROM fts_$u;")" "2026-07-24 00:00:00"
-done
+check "ts_ms decodes to the right instant" "$(q "SELECT t::text FROM fts_ms;")" "2026-07-24 00:00:00"
+check "ts_us decodes to the right instant" "$(q "SELECT t::text FROM fts_us;")" "2026-07-24 00:00:00"
+check "ts_ns decodes to the right instant" "$(q "SELECT t::text FROM fts_ns;")" "2026-07-24 00:00:00"
 
 check "time micros decodes to the right time" \
 	"$(q 'SELECT t::text FROM ftime;')" "01:02:03.000004"
@@ -150,15 +157,76 @@ check "nanos == micros" \
 	"$(pgc_set_hash 'SELECT t FROM fts_ns')" "$(pgc_set_hash 'SELECT t FROM fts_us')"
 
 # ---- nanos truncation direction (toward zero) ------------------------------
-# The nanos value carries sub-microsecond digits the micros reference cannot, so
-# equality holds only if the reader truncates toward zero exactly as the reference
-# was computed. The negative case is the one that distinguishes toward-zero from
-# floor.
-for tag in frac neg; do
-	check "nanos sub-us truncates toward zero [$tag]" \
-		"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_$tag.parquet') AS t(t timestamp);")" \
-		"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsus_$tag.parquet') AS t(t timestamp);")"
+# The nanos value carries sub-microsecond digits, so the reading equals its
+# toward-zero microseconds only if the reader truncates that way. The negative case
+# is the one that distinguishes toward-zero from floor. The want is a literal, and
+# check_text refuses an empty reading: comparing with a second file read through the
+# same reader passed both checks with the server stopped (two empty reads agree).
+check_text "nanos sub-us truncates toward zero [frac]" \
+	"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_frac.parquet') AS t(t timestamp);")" \
+	"2026-07-24 00:00:00.123456"
+check_text "nanos sub-us truncates toward zero [neg]" \
+	"$(q "SELECT t::text FROM pgcolumnar.read_parquet('$W/tsns_neg.parquet') AS t(t timestamp);")" \
+	"1913-06-10 23:59:59.876544"
+
+# ---- INT96 timestamps (#1870) -------------------------------------------------
+# parquet_schema used to give no type for an INT96 column, and every declared type
+# was refused as incompatible. INT96 holds an instant (Spark's meaning), so the
+# advice is timestamptz. A read keeps whole microseconds and drops the nanosecond
+# digits by rounding down, within the day the value names: the pre-1970 value
+# .123456789 s before a whole second therefore reads as .876543 past the second
+# before it. A timestamp column gets the instant's wall time in the session zone,
+# as for any UTC-adjusted timestamp.
+I96="$W/int96.parquet"
+# qe SQL -> the result, or the ERROR line when SQL fails, so a refusal is its own reading
+qe() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1 | grep -v '^SET$' | head -3
+}
+I96_UTC="1913-06-10 23:59:59.876543,2026-07-24 00:00:00,2026-07-24 00:00:00.123456,null"
+check "premise: pyarrow wrote the INT96 file as INT96" \
+	"$(python3 -c "import sys, pyarrow.parquet as pq; print(pq.ParquetFile(sys.argv[1]).schema.column(0).physical_type)" "$I96" 2>&1)" \
+	"INT96"
+check "parquet_schema advises timestamptz for INT96" \
+	"$(qe "SELECT coalesce(data_type, '<null>') FROM pgcolumnar.parquet_schema('$I96');")" \
+	"timestamp with time zone"
+check "INT96 reads into timestamptz as the stored instant" \
+	"$(qe "SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamptz);")" \
+	"$I96_UTC"
+check "INT96 reads into timestamp as the wall time in the session zone" \
+	"$(qe "SET timezone = 'Asia/Tokyo';
+	      SELECT string_agg(coalesce(t::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamp);")" \
+	"1913-06-11 08:59:59.876543,2026-07-24 09:00:00,2026-07-24 09:00:00.123456,null"
+check "INT96 reads into timestamptz as the stored instant in a non-UTC session zone" \
+	"$(qe "SET timezone = 'Asia/Tokyo';
+	      SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST)
+	      FROM pgcolumnar.read_parquet('$I96') AS t(t timestamptz);")" \
+	"$I96_UTC"
+# INT96 binds only to the two timestamp types. Into any other type the bind refuses
+# it with 42804, naming the column and the declared type, before a value is read.
+i96_other=""
+for ty in bigint text date; do
+	i96_other="$i96_other $ty=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c '\set VERBOSITY verbose' \
+		-c "SELECT count(*) FROM pgcolumnar.read_parquet('$I96') AS t(t $ty);" 2>&1 |
+		sed -n 's/^ERROR:  \([0-9A-Z]*\): .*target column "t" (\([a-z ]*\)).*/\1(\2)/p' | head -1)"
 done
+# A bind that let INT96 through would hand a timestamp to a text column, which can
+# end the backend. Wait for the server to accept connections again, so a crash here
+# reddens this check and not the checks after it.
+for _i in $(seq 1 60); do
+	[ "$(qe 'SELECT 1')" = 1 ] && break
+	sleep 0.5
+done
+check "INT96 into a non-timestamp type is refused" "$i96_other" \
+	" bigint=42804(bigint) text=42804(text) date=42804(date)"
+psql_run "CREATE TABLE imp_i96 (t timestamptz);"
+i96_imp="$(qe "SELECT pgcolumnar.import_parquet('imp_i96'::regclass, '$I96');")"
+check "import_parquet reads INT96 into timestamptz" \
+	"$i96_imp:$(qe "SELECT string_agg(coalesce((t AT TIME ZONE 'UTC')::text, 'null'), ',' ORDER BY t NULLS LAST) FROM imp_i96;")" \
+	"4:$I96_UTC"
 
 # ---- pushdown over a unit-scaled column ------------------------------------
 # The predicate falls entirely in the second group's range, so the first group's
@@ -173,9 +241,17 @@ skipped_ms() {
 # 2025-06-01 is inside group 1 only.
 check "millis-scaled stats skip the non-matching group" \
 	"$(skipped_ms "t >= timestamp '2025-06-01'")" "1"
-# correctness: the skip must not drop a matching row (oracle = a heap mirror)
-psql_run "CREATE TABLE hmsg (t timestamp);"
-psql_run "INSERT INTO hmsg SELECT t FROM pgcolumnar.read_parquet('$W/ms_groups.parquet') AS t(t timestamp);"
+# correctness: the skip must not drop a matching row. The oracle is the GENERATOR,
+# the same hourly series the fixture wrote, not the file read back through
+# read_parquet: that mirror shared the reader under test, so a decode that shifted
+# every row after a page's first to the next dictionary entry agreed with itself and
+# passed (dictshift, 19/19 on main).
+psql_run "CREATE TABLE hmsg AS
+	SELECT timestamp '2024-01-01' + g * interval '1 hour' AS t FROM generate_series(0, 999) g
+	UNION ALL
+	SELECT timestamp '2025-07-01' + g * interval '1 hour' FROM generate_series(0, 999) g;"
+check "the millis file reads back exactly as written" \
+	"$(pgc_set_hash "SELECT t FROM fmsg")" "$(pgc_set_hash "SELECT t FROM hmsg")"
 check "millis pushdown result == oracle" \
 	"$(pgc_set_hash "SELECT t FROM fmsg WHERE t >= timestamp '2025-06-01'")" \
 	"$(pgc_set_hash "SELECT t FROM hmsg WHERE t >= timestamp '2025-06-01'")"

@@ -55,6 +55,10 @@ mine_parq="$PGC_WORKDIR/mine.parquet"
 psql_run "INSERT INTO mine SELECT g, 'x'||g FROM generate_series(1,50) g;"
 psql_run "SELECT pgcolumnar.export_arrow('mine'::regclass, '$mine_arrow');"
 psql_run "SELECT pgcolumnar.export_parquet('mine'::regclass, '$mine_parq');"
+# parallel_copy reads COPY text, so the attacker's own rows go out in that form too.
+mine_text="$PGC_WORKDIR/mine.txt"
+pex_out="$PGC_WORKDIR/iep_pex_out.parquet"
+psql_run "COPY (SELECT id, secret FROM mine) TO '$mine_text' WITH (FORMAT text);"
 
 # A DIRECT connection as the role, matching test/native_ownership.sh:22 and the
 # trust auth pgc_setup uses (test/lib.sh:214, initdb -A trust). SET ROLE over a
@@ -106,12 +110,42 @@ check "export_arrow refuses SELECT of a table the caller cannot read" \
 	"$(denied_as t_files "SELECT pgcolumnar.export_arrow('victim'::regclass, '$arrow_out');")" "denied"
 check "get_storage_id refuses a caller who cannot SELECT the relation" \
 	"$(denied_as t_files "SELECT pgcolumnar.get_storage_id('victim'::regclass);")" "denied"
+# The parallel twins (#1341): they always checked, and nothing asked them. Their
+# loaders and workers skip the executor's permission check, so the check before
+# anything is spawned is the only one.
+check "parallel_copy refuses INSERT into a table the caller cannot write" \
+	"$(denied_as t_files "SELECT pgcolumnar.parallel_copy('victim'::regclass, '$mine_text', 2);")" "denied"
+check "parallel_export_parquet refuses SELECT of a table the caller cannot read" \
+	"$(denied_as t_files "SELECT pgcolumnar.parallel_export_parquet('victim'::regclass, '$pex_out', 2);")" "denied"
+
+# ---- #1886: the INSERT check runs before the remote-URL refusal ---------------
+# Both loaders refuse a URL (0A000), but only after the table ACL. A caller with
+# no INSERT on the table gets the same 42501 for a URL as for a local path, so the
+# error order is the same in import_arrow and parallel_copy. outcome_as shows the
+# SQLSTATE and message the server gave, or the value when the statement succeeded.
+outcome_as() {	# role sql -> "SQLSTATE message" or the value
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
+		-d "$PGC_DB" -X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$2" 2>&1)"
+	case "$out" in
+		*ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;;
+		*) printf '%s\n' "$out";;
+	esac
+}
+check "import_arrow checks INSERT before it refuses a remote URL (#1886)" \
+	"$(outcome_as t_files "SELECT pgcolumnar.import_arrow('victim'::regclass, 's3://pgc-bucket/m.arrow');")" \
+	"42501 permission denied for table victim"
+check "parallel_copy checks INSERT before it refuses a remote URL (#1886)" \
+	"$(outcome_as t_files "SELECT pgcolumnar.parallel_copy('victim'::regclass, 's3://pgc-bucket/data.txt', 2);")" \
+	"42501 permission denied for table victim"
 
 # ---- the consequence: no rows leaked in or out -------------------------------
 check_num "victim still holds exactly its own rows (no import landed)" \
 	"$(q "SELECT count(*) FROM victim;")" 200
 check "no victim file was written by the export attempts" \
 	"$([ -e "$parq_out" ] || [ -e "$arrow_out" ] && echo written || echo none)" "none"
+check "nor by the parallel export" \
+	"$([ -e "$pex_out" ] && echo written || echo none)" "none"
 
 # ---- allow arms: the owner is not broken by the fix --------------------------
 # t_files owns 'mine' and may read and write it, so the same calls must succeed.
@@ -123,6 +157,10 @@ check "the owner can still read its own storage id" \
 	"$(denied_as t_files "SELECT pgcolumnar.get_storage_id('mine'::regclass);")" "allowed"
 check "the owner can still import into its own table" \
 	"$(denied_as t_files "SELECT pgcolumnar.import_arrow('mine'::regclass, '$mine_arrow');")" "allowed"
+check "the owner can still parallel_copy into its own table" \
+	"$(run_as t_files "SELECT pgcolumnar.parallel_copy('mine'::regclass, '$mine_text', 2);")" "50"
+check "the owner can still parallel_export_parquet its own table" \
+	"$(run_as t_files "SELECT pgcolumnar.parallel_export_parquet('mine'::regclass, '$PGC_WORKDIR/mine_pex.parquet', 2) > 0;")" "t"
 
 
 pgc_summary

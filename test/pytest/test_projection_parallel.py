@@ -181,12 +181,23 @@ def test_projection_parallel(pgc_conn, expect):
     serial = _plan(pgc_conn, sql, 0, True)
     par_off = _plan(pgc_conn, sql, 2, False)
     par_on = _plan(pgc_conn, sql, 2, True)
-    par_on_ana = _plan(pgc_conn, sql, 2, True, analyze=True)
     par_on_count = _count(pgc_conn, count_sql, 2, True)
+    count_plan = _plan(pgc_conn, count_sql, 2, True)
 
-    worker_rows = _worker_rows(par_on_ana)
-    n_busy = sum(1 for r in worker_rows if r and r > 0)
+    # Up to five ANALYZE attempts, stopping at the first with both workers busy
+    # (#1336). A worker that starts late may find every group claimed on a correct
+    # build; the single-claimer defect leaves one worker idle on every attempt.
+    # The premises below read the attempt that was used.
+    attempts = []
+    for _ in range(5):
+        par_on_ana = _plan(pgc_conn, sql, 2, True, analyze=True)
+        worker_rows = _worker_rows(par_on_ana)
+        n_busy = sum(1 for r in worker_rows if r and r > 0)
+        attempts.append(worker_rows)
+        if n_busy == 2:
+            break
     launched = (_gather(par_on_ana) or {}).get("Workers Launched")
+    print(f"-- worker rows per ANALYZE attempt: {attempts}")
 
     print("-- serial:", _shape(serial))
     print("-- parallel, projection off:", _shape(par_off))
@@ -209,25 +220,43 @@ def test_projection_parallel(pgc_conn, expect):
         "gather+projection",
         "a covering projection can be a parallel scan",
     )
+    # THE COUNT'S OWN PLAN (#1339): it comes from a different query from the one
+    # whose shape is asserted above, and nothing asked how it planned.
+    expect.text(
+        _shape(count_plan),
+        "gather+projection",
+        "the parallel count is a parallel covering projection scan",
+    )
     expect.num(
         par_on_count,
         want,
         "a parallel covering projection returns the covering rows once",
     )
+    # NOT PREMISES (#1339, #1236). The worker count is the projection path's own
+    # parallel_workers: with it set to 1, Workers Launched reads 1 and these go red.
+    # A check a pgcolumnar change can redden is an arm.
     expect.num(
         launched,
         2,
-        "premise: EXPLAIN ANALYZE launched two workers",
+        "EXPLAIN ANALYZE launched two workers",
     )
     expect.num(
         len(worker_rows),
         2,
-        "premise: ANALYZE printed a rows= line per launched worker",
+        "ANALYZE printed a rows= line per launched worker",
     )
     expect.num(
         n_busy,
         2,
         "workers share the covering projection scan, it is not a single claimer",
+    )
+    # AND SHARE IT, NOT DUPLICATE IT (#1339). Two busy workers is also what two
+    # workers each scanning every group look like. With the leader not participating,
+    # the workers' rows are everything the Gather returns.
+    expect.num(
+        sum(worker_rows),
+        want,
+        "the workers' rows add up to the covering rows, each returned once",
     )
 
     # ---- the page-cost ladder (#1209) ------------------------------------

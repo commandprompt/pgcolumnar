@@ -42,6 +42,8 @@ psql_run "SELECT pgcolumnar.vacuum_sorted('ss_t','ts');"   -- give it a sorted r
 psql_run "ALTER TABLE ss_t OWNER TO t_ssowner;"
 psql_run "REVOKE ALL ON ss_t FROM PUBLIC;"
 psql_run "GRANT SELECT ON ss_t TO t_sssel;"
+psql_run "CREATE TABLE ss_h (id int);"   # a heap table, readable by no test role
+psql_run "REVOKE ALL ON ss_h FROM PUBLIC;"
 
 as() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" \
 	-d "$PGC_DB" -At -v ON_ERROR_STOP=0 -c "$2" 2>&1 | head -1; }
@@ -74,6 +76,16 @@ check "a role with no privilege on the table is refused" \
 	"$(as t_ssnone "SELECT count(*) FROM pgcolumnar.sort_status('ss_t');" | grep -c 'permission denied for table')" "1"
 check "and the refusal names the TABLE, not a catalog table it never asked about" \
 	"$(as t_ssnone "SELECT count(*) FROM pgcolumnar.sort_status('ss_t');" | grep -c 'ss_t')" "1"
+
+# ---- the order: privilege before anything else ------------------------------
+#
+# As in stats_privilege.sh: get_storage_id checks the DEFINER, so only the explicit
+# caller check refuses, and only while it runs first ("sidfirst" swaps them and
+# every check above stays green). A heap table must be refused for privilege.
+check "a role with no privilege on a heap table is refused for privilege, not told it is not columnar" \
+	"$(as t_ssnone "SELECT count(*) FROM pgcolumnar.sort_status('ss_h');" | grep -c 'permission denied for table ss_h')" "1"
+check "a superuser asking about a heap table is told it is not columnar" \
+	"$(as postgres "SELECT count(*) FROM pgcolumnar.sort_status('ss_h');" | grep -c 'relation "ss_h" is not a columnar table')" "1"
 
 # ---- the superuser path still works ----------------------------------------
 check_num "a superuser still reads sort status" \

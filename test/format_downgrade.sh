@@ -237,7 +237,14 @@ fetch () {	# fetch TABLE -> SQLSTATE of an index fetch of a non-key column
 }
 check "the old build still reads a table this build only read" \
 	"$(q "SELECT count(*), sum(id) FROM t_read")" "3000|4501500"
-check "and fetches from it by index" "$(fetch t_read)" "ok"
+# THE VALUE, NOT ONLY "IT RAN" (#1339). The defect #1137 measured was a fetch that
+# SUCCEEDS and returns NULL for a row holding a value, so an arm reading only the
+# SQLSTATE passed it. The value is compared with its generator, not with a read.
+fetchv () {	# fetchv TABLE -> the value an index fetch returns for id 1234
+	q "SET pgcolumnar.enable_custom_scan = off; SET enable_seqscan = off;
+	   SET enable_bitmapscan = off; SELECT coalesce(v, '<NULL>') FROM $1 WHERE id = 1234" | tail -1
+}
+check_text "and fetches from it by index" "$(fetchv t_read)" "$(q "SELECT repeat(md5('1234'), 6)")"
 check "the old build refuses a table this build appended to, on a scan" \
 	"$(sqlstate "SELECT count(v) FROM t_append")" "0A000"
 check "the old build refuses a table this build appended to, on an index fetch" "$(fetch t_append)" "0A000"

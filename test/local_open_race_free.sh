@@ -42,22 +42,35 @@ opener_body() {
 	     f {print}' "$OBJ"
 }
 
+# The open CALL must carry O_NONBLOCK: the body also names it where fcntl clears
+# it and in comments, so a count of any mention passed an open(2) without it.
+OPEN_RE='(OpenTransientFile|[^a-z_]open)\([^)]*O_NONBLOCK'
+# A stat or lstat of anything -- not only of an argument spelled "path" -- and
+# never fstat, which is the one stat the opener may do.
+STAT_RE='(^|[^a-z_])l?stat\('
+# count_in BODY ERE: lines of BODY matching ERE; a body that was not read is a
+# failed reading, never 0.
+count_in() {
+	[ -n "$1" ] || { echo "no body read"; return; }
+	printf '%s\n' "$1" | grep -Ec "$2"
+}
+
 check "the race-free opener exists" \
 	"$([ -n "$(opener_body)" ] && echo yes || echo no)" "yes"
 check "the opener opens O_NONBLOCK (a FIFO cannot block the open)" \
-	"$([ "$(opener_body | grep -c 'O_NONBLOCK')" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "$(opener_body | grep -Ec "$OPEN_RE")" -ge 1 ] && echo yes || echo no)" "yes"
 check "the opener fstats the fd it holds (checks what it opened)" \
 	"$([ "$(opener_body | grep -c 'fstat(')" -ge 1 ] && echo yes || echo no)" "yes"
 check "the opener never stats a path before opening it (no TOCTOU)" \
-	"$(opener_body | grep -Ec 'stat\((const )?path|stat\("|stat\(path')" "0"
+	"$(count_in "$(opener_body)" "$STAT_RE")" "0"
 # THE POPULATION, because this arm can pass on a tree it never read. `grep -rc`
 # prints `file:count` per file and prints NOTHING for a path it cannot open, and
 # `END{print s+0}` then manufactures the 0 the check wants. The three arms above read
 # `$OBJ`, not `$SRC`, so nothing here established that `$SRC` is a source tree. Counted
 # the same way the arm sums: one line of `grep -rc` output per file read.
 _lorf_files="$(grep -rc 'PgColumnarRejectNonRegularFile' "$SRC" 2>/dev/null | grep -c .)"
-check "premise: the recursive sweep read source files under \$SRC" \
-	"$([ "${_lorf_files:-0}" -ge 5 ] && echo yes || echo no)" "yes"
+check "premise: the recursive sweep read source files under src/" \
+	"$(pgc_is_number "$_lorf_files" && [ "$_lorf_files" -ge 5 ] && echo yes || echo "read [$_lorf_files] files")" "yes"
 check "the racy stat-before-open helper is gone" \
 	"$(grep -rc 'PgColumnarRejectNonRegularFile' "$SRC" | awk -F: '{s+=$2} END{print s+0}')" "0"
 
@@ -72,35 +85,44 @@ pcopy_part_body() {
 	     f {print}' "$PC"
 }
 check "the partition coordinator opens O_NONBLOCK (a FIFO cannot block its open)" \
-	"$([ "$(pcopy_part_body | grep -c 'O_NONBLOCK')" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "$(pcopy_part_body | grep -Ec "$OPEN_RE")" -ge 1 ] && echo yes || echo no)" "yes"
 check "the partition coordinator never stats a path before opening it (no TOCTOU)" \
-	"$(pcopy_part_body | grep -Ec 'stat\((const )?path|stat\("|stat\(path')" "0"
+	"$(count_in "$(pcopy_part_body)" "$STAT_RE")" "0"
 
 # --- functional arm: each newly-converted entry point refuses a FIFO ----------
 # A static FIFO is refused by both the old and new code, so this does not prove
 # the race is closed; it proves the entry point reaches the guard and returns a
-# clean error, not a hang. XX001 is DATA_CORRUPTED, what the opener raises.
+# clean error, not a hang. XX001 is DATA_CORRUPTED, what the opener raises -- and
+# what a parser raises on the empty read a FIFO gives an opener that does not
+# refuse it, so the opener's own message is required beside the code.
 sqlstate_or_hang() {
 	local out rc
 	out="$(timeout -s KILL 5 env PATH="$PGC_BINDIR:$PATH" psql \
 		-h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
-\\set VERBOSITY sqlstate
+\\set VERBOSITY verbose
 $1;
 SQLEOF
 )"
 	rc=$?
 	if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo HANG; return; fi
-	printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
+	local code
+	code="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' | head -1)"
+	# grep -c reads to EOF, so it cannot SIGPIPE the printf (#486)
+	if [ "$(printf '%s\n' "$out" | grep -c '^ERROR:  [0-9A-Z]\{5\}: columnar: ".*" is not a regular file')" -ge 1 ]; then
+		echo "$code not a regular file"
+	else
+		echo "$code"
+	fi
 }
 fifo_release() { exec 9<>"$1" 2>/dev/null; exec 9>&- 2>/dev/null; }
 
 FIFO="$PGC_WORKDIR/lo.fifo"; mkfifo "$FIFO"
 check "read_parquet on a FIFO is a clean error, not a hang" \
 	"$(sqlstate_or_hang "SELECT * FROM pgcolumnar.read_parquet('$FIFO') AS t(c int)")" \
-	"XX001"; fifo_release "$FIFO"
+	"XX001 not a regular file"; fifo_release "$FIFO"
 check "read_avro_manifest on a FIFO is a clean error, not a hang" \
 	"$(sqlstate_or_hang "SELECT count(*) FROM pgcolumnar.read_avro_manifest('$FIFO')")" \
-	"XX001"; fifo_release "$FIFO"
+	"XX001 not a regular file"; fifo_release "$FIFO"
 check "backend still up after the FIFO refusals" "$(q 'SELECT 1')" "1"
 
 pgc_summary

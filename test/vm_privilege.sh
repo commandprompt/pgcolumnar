@@ -99,8 +99,10 @@ nblocks="$(q "SELECT pg_relation_size('vmvictim')/8192;")"
 
 # ---- premises -----------------------------------------------------------------
 # Each of these makes a later assertion mean something. If any fails, the run is
-# void rather than green.
-check_num "premise: the fixture has 10000 live rows" \
+# void rather than green. The three without the prefix read the columnar code under
+# test (its scan, its visibility map, its storage size), so they are arms (#1381
+# review): a premise is a fact about the fixture alone.
+check_num "the fixture has 10000 live rows" \
 	"$(q "SELECT count(*) FROM vmvictim;")" 10000
 check "premise: the test role is not a superuser" \
 	"$(q "SELECT rolsuper FROM pg_roles WHERE rolname='t_vmnone';")" "f"
@@ -112,10 +114,10 @@ check "premise: the boundary victim is columnar, where the gate still applies" \
 	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid=c.relam WHERE c.relname='vmvictim';")" "pgcolumnar"
 check "premise: the heap fixture really is heap, or the #748 arm is vacuous" \
 	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid=c.relam WHERE c.relname='vmheap';")" "heap"
-check "premise: no all-visible bit is set yet" \
+check "no all-visible bit is set yet" \
 	"$(q "SELECT pgcolumnar.vm_is_visible('vmvictim'::regclass,0);")" "f"
-check "premise: the fixture spans more than one block" \
-	"$([ "${nblocks:-0}" -gt 1 ] && echo yes || echo no)" "yes"
+check "the fixture spans more than one block" \
+	"$([ "${nblocks:-0}" -gt 1 ] && echo yes || echo "no (blocks=${nblocks:-unset})")" "yes"
 
 # tail -1 is not cosmetic. psql -At -c with several statements echoes a command
 # tag per statement, so these helpers returned "SET\nSET\n20000". check_num then
@@ -182,10 +184,16 @@ check "an unprivileged role is refused by vm_is_visible" \
 
 # ---- the other direction: the owner must still be able to use them -------------
 # Without this the suite would pass if the fix simply broke both functions.
+# ON A TABLE OF ITS OWN (#1341): on vmvictim, an attack that got through had already
+# set block 0's bit, so the owner's call reported f and this control reddened for the
+# attack, not for the owner.
+psql_run "CREATE TABLE vmown (id int) USING pgcolumnar;
+          INSERT INTO vmown SELECT g FROM generate_series(1, 20000) g;
+          DELETE FROM vmown WHERE id % 2 = 0;"
 check "the owner can still call vm_selftest" \
-	"$(q "SELECT pgcolumnar.vm_selftest('vmvictim'::regclass, 0);")" "t"
+	"$(q "SELECT pgcolumnar.vm_selftest('vmown'::regclass, 0);")" "t"
 check "the owner can still call vm_is_visible" \
-	"$(q "SELECT pgcolumnar.vm_is_visible('vmvictim'::regclass, 0);")" "t"
+	"$(q "SELECT pgcolumnar.vm_is_visible('vmown'::regclass, 0);")" "t"
 
 # ---- #748: a non-columnar relation is refused, whoever asks ---------------------
 #
@@ -224,16 +232,23 @@ for b in $(seq 0 $(( ${heap_blocks:-1} - 1 ))); do
 	q "SELECT pgcolumnar.vm_selftest('vmheap'::regclass, $b);" >/dev/null 2>&1
 done
 check "premise: the heap sweep covered more than one block" \
-	"$([ "${heap_blocks:-0}" -gt 1 ] && echo yes || echo no)" "yes"
+	"$([ "${heap_blocks:-0}" -gt 1 ] && echo yes || echo "no (heap blocks=${heap_blocks:-unset})")" "yes"
 check "the heap index-only scan still returns only live rows after the sweep (#748)" \
 	"$(ios_count)" "10000"
 check "and it still agrees with the sequential scan (#748)" \
 	"$(ios_count)" "$(seq_count)"
 
+# ran_ok ROLE SQL -> "ok" only when psql ran SQL as ROLE and exited 0, "failed" otherwise.
+# Positive evidence (#1381, #1400 review): counting ERROR lines, or reading an empty
+# SQLSTATE as success, also passes a session that never connected.
+ran_ok() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -qtA -v ON_ERROR_STOP=1 -c "$2" >/dev/null 2>&1 && echo ok || echo failed
+}
 # And the positive control, because a guard that refused everything would satisfy
 # both arms above: the same call on the columnar victim is accepted.
 check "the same call on a columnar relation is still accepted (#748 control)" \
-	"$(sqlstate_of "pgcolumnar.vm_is_visible('vmvictim'::regclass, 0)")" ""
+	"$(ran_ok postgres "SELECT pgcolumnar.vm_is_visible('vmvictim'::regclass, 0)")" "ok"
 
 # ---- coverage ------------------------------------------------------------------
 # A future vm_* entry point that forgets the gate should turn this red rather than

@@ -41,3 +41,35 @@ check "the suite list is sorted in C order, so two new suites land in different 
 check "premise: C collation puts sort_status before sorted_projection" \
 	"$(printf 'sorted_projection\nsort_status\n' | LC_ALL=C sort | head -1)" "sort_status"
 
+
+# ---- and no name is listed twice (#2025) ------------------------------------
+#
+# The sorted check above compares the list with `LC_ALL=C sort`, and sort keeps
+# duplicates: a name listed twice sits next to itself, so the list is still
+# "sorted". The matrix then runs that suite twice in every job. Measured on the
+# review of #2021: with native_scale listed twice, harness_selftest passed
+# 1290/1290, because nothing else looked.
+#
+# So duplicates are a check of their own, and it prints the names it found.
+_listed_twice() {	# the names a runner's SUITES holds more than once, on one line
+	listed_suites "$@" | LC_ALL=C sort | uniq -d | tr '\n' ' ' | sed 's/ $//'
+}
+
+# The fixture is the real runner with its first suite printed twice, in place,
+# so the duplicate is adjacent and the list stays sorted. The name is read from
+# the runner rather than written here, so renaming that suite cannot stale it.
+_dup_first="${_SUITE_LIST%%$'\n'*}"
+_dup_fx="$(mktemp /tmp/pgc-runner-dup.XXXXXX.sh)"
+awk '{ print } /^SUITES=\(/ { getline; print; print }' "$RUNNER" > "$_dup_fx"
+
+check_num "premise: the duplicate fixture lists its first suite twice" \
+	"$(listed_suites "$_dup_fx" | grep -cx "$_dup_first")" "2"
+# What makes the next check necessary: the sorted comparison cannot see this.
+check "premise: and the fixture is still sorted in C order, so only the duplicate check can catch it" \
+	"$([ "$(listed_suites "$_dup_fx")" = "$(listed_suites "$_dup_fx" | LC_ALL=C sort)" ] &&
+	   echo sorted || echo "not sorted")" "sorted"
+check "a suite listed twice is reported by name (#2025)" \
+	"$(_listed_twice "$_dup_fx")" "$_dup_first"
+rm -f "$_dup_fx"
+
+check "no suite is listed twice in SUITES (#2025)" "$(_listed_twice)" ""

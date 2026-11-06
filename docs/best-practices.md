@@ -180,9 +180,33 @@ nothing. It is a superuser-only setting, so a role cannot widen its own reach. K
 it as narrow as the deployment allows.
 
 - **Link-local and instance-metadata addresses are refused unconditionally, even
-  when listed.** The ranges `169.254.0.0/16` and `fe80::/10` are the
-  cloud-credential-theft surface. They have no legitimate object-storage use. You
-  cannot rely on the allow-list alone to block them, and you do not need to.
+  when listed.** These addresses are the cloud-credential-theft surface. They have
+  no legitimate object-storage use. The module refuses a host that resolves to any
+  of them:
+  - `169.254.0.0/16` and `fe80::/10`, the link-local ranges;
+  - `fd00:ec2::/32`, which holds AWS's IPv6 metadata address `fd00:ec2::254`;
+  - `fd20:ce::254`, Google Compute Engine's IPv6 metadata address;
+  - `100.100.100.200`, Alibaba Cloud's metadata address. The rest of
+    `100.64.0.0/10` is carrier-grade NAT, so the module does not refuse it;
+  - `169.254.0.0/16` or `100.100.100.200` carried inside an IPv6 address:
+    IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible (`::/96`), or behind a NAT64
+    prefix (`64:ff9b::/96`, `64:ff9b:1::/48`).
+
+  You cannot rely on the allow-list alone to block them, and you do not need to.
+
+  The module refuses only these addresses. It does not refuse `169.254.169.254`
+  or `100.100.100.200` behind a NAT64 prefix your network chose itself, or any
+  other metadata address. Do not list a host that can resolve to one. See
+  [Object storage address refusal](limitations.md#object-storage-address-refusal).
+
+  The local-use prefix `64:ff9b:1::/48` can be cut at /48, /56, /64 or /96, and
+  each cut puts the IPv4 address at a different place. The module cannot tell
+  which cut your network uses, so it checks all four places. As a result, it also
+  refuses some ordinary IPv4 addresses behind that prefix. For example, behind a
+  /48 cut, `10.169.254.5` puts 169 and 254 where the /56 cut puts them, so the
+  module refuses it with SQLSTATE 42501. The same applies to `100.100.100.200`
+  at each of the four places. The well-known prefix `64:ff9b::/96` has
+  only one layout and no such over-refusal.
 - **Prefer per-role credentials over ambient environment keys.** The object-storage
   foreign-data wrapper takes `access_key_id`, `secret_access_key`, `session_token`,
   and `credentials_required` from a foreign server and user mapping. Each role then
@@ -190,7 +214,8 @@ it as narrow as the deployment allows.
   world-readable, rather than in a process-wide `AWS_*` environment variable.
 - **Leave buffered reads on** (`pgcolumnar.objstore_buffered`). They coalesce a
   column chunk into one request instead of many ranged reads. For a fast link and a
-  large export, raise `pgcolumnar.objstore_part_size` above its 8 MiB default.
+  large export, raise `pgcolumnar.objstore_part_size` above its 8 MiB default. Its
+  maximum is 512 MiB.
 - **Grant the server-file roles sparingly.** `parallel_copy` and Parquet reads
   require `pg_read_server_files`. `parallel_export_parquet` requires
   `pg_write_server_files`. Both roles also reach remote endpoints through the

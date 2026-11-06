@@ -111,7 +111,7 @@ check_text "and clean when it reports none" \
 # stub makes every later arm measure a function this part wrote.
 eval "$(sed -n '/^pgc_bav_tree_has_objects()/,/^}/p' "$PGC_TESTDIR/build_all_versions.sh")"
 : > "$_bav_ct/src/restored.o"
-check_text "premise: the real detector is back, and sees a real object" \
+check_text "the real detector is back, and sees a real object" \
 	"$(pgc_bav_tree_has_objects "$_bav_ct")" "yes"
 rm -f "$_bav_ct/src/restored.o"
 

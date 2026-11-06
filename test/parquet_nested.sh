@@ -23,13 +23,19 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Parquet nested export verification"
 fi
 
-expect_error() {
-	local label="$1" sql="$2"
-	if psql_run "$sql" >/dev/null 2>&1; then
-		check "$label (expected error)" "succeeded" "error"
-	else
-		check "$label" "error" "error"
+# refused SQL -> "refused: multi-dimensional", "succeeded", or the other error. Any
+# error used to pass, so with the export pointed at a missing table it read as the
+# refusal (#1341), as arrow_nested found before it.
+md_refusal() {
+	local out
+	if out="$(psql_run "$1" 2>&1)"; then
+		echo "succeeded"
+		return
 	fi
+	case "$out" in
+	*"does not support multi-dimensional arrays"*) echo "refused: multi-dimensional" ;;
+	*) echo "other error: $(printf '%s' "$out" | head -n 1)" ;;
+	esac
 }
 
 NF="$PGC_WORKDIR/nt.parquet"
@@ -62,6 +68,11 @@ check "nested Parquet field types" "$types" "True int32 True string True 2 x int
 vals="$(python3 - "$NF" <<'PY'
 import sys, pyarrow as pa, pyarrow.parquet as pq
 d = pq.read_table(sys.argv[1]).to_pydict()
+# Every id 1..5000, once: the loop below compares only rows the file holds, so a file
+# with none printed MATCH (#1341).
+if sorted(d['id']) != list(range(1, 5001)):
+    print("ROWS %d, not ids 1..5000" % len(d['id']))
+    sys.exit(0)
 bad = None
 for i in range(len(d['id'])):
     g = d['id'][i]
@@ -93,6 +104,8 @@ PY
 echo "-- multi-dimensional array rejected"
 psql_run "CREATE TABLE npm (id int, m int[]) USING pgcolumnar;"
 psql_run "INSERT INTO npm VALUES (1, ARRAY[[1,2],[3,4]]);"
-expect_error "reject multi-dim array" "SELECT pgcolumnar.export_parquet('npm', '$PGC_WORKDIR/npm.parquet');"
+check "reject multi-dim array" \
+	"$(md_refusal "SELECT pgcolumnar.export_parquet('npm', '$PGC_WORKDIR/npm.parquet');")" \
+	"refused: multi-dimensional"
 
 pgc_summary

@@ -26,6 +26,8 @@ incremented by one line and read by one (`pytest_runtest_call`), and ZERO
 per-assertion records anywhere.
 """
 
+import pytest
+
 import pgc_vacuity
 
 
@@ -33,7 +35,7 @@ def test_each_counted_assertion_appends_exactly_one_record(expect):
     """Three assertions, three records. The premise is that a fresh recorder has
     none, or the arm would pass on a recorder that ignored every call."""
     e = pgc_vacuity.Expect("records::one-each")
-    expect.num(len(e.records), 0, "premise: a fresh recorder holds no records")
+    expect.num(len(e.records), 0, "a fresh recorder holds no records")
     e.num(1, 1, "first")
     e.num(2, 2, "second")
     e.num(3, 3, "third")
@@ -69,6 +71,15 @@ def test_the_count_cannot_be_moved_without_a_record(expect):
         e.count = 99
     except AttributeError:
         expect.num(e.count, 1, "the count refused to be written and did not move")
+        # AND IT IS THE STREAM ITSELF (#1339). A read-only count over a second counter,
+        # kept in step by the recorder, also refuses the assignment above, and the
+        # whole file stayed green against one. Moving the stream directly is the only
+        # way to tell them apart: a count derived from it follows, a second one cannot.
+        e._records.append(e._records[0])
+        grown = e.count
+        e._records.clear()
+        expect.text(f"{grown}/{e.count}", "2/0",
+                    "and it moves with the record stream and with nothing else")
     else:
         raise AssertionError(
             "the count was assignable, so it is a second variable that can drift "
@@ -152,7 +163,7 @@ def test_a_failed_assertion_records_fail_even_when_the_test_catches_it(expect):
         e.num(1, 2, "this comparison must fail")
     except AssertionError:
         pass
-    expect.num(len(e.records), 1, "premise: the failed assertion was still counted")
+    expect.num(len(e.records), 1, "the failed assertion was still counted")
     expect.text(e.records[0].verdict, "FAIL",
                 "and it is recorded as FAIL, not as a pass the catcher hid")
 
@@ -208,7 +219,7 @@ def test_a_delegated_assertion_records_fail_too(expect):
         e.outcomes(_FakeResult(), "a delegated comparison", passed=1)
     except AssertionError:
         pass
-    expect.num(len(e.records), 1, "premise: the delegated assertion was counted")
+    expect.num(len(e.records), 1, "the delegated assertion was counted")
     expect.text(e.records[0].verdict, "FAIL",
                 "and a failure raised by pytest's own code is still recorded")
 
@@ -229,6 +240,25 @@ def test_a_refusal_still_leaves_no_record(expect):
         expect.num(len(e.records), 0, "a refused assertion still records nothing")
     else:
         raise AssertionError("num() accepted a string, so this arm tested nothing")
+
+    # EVERY KIND OF REFUSAL, not num's alone (#1339): a method that took its record
+    # before refusing passed the arm above while num stayed correct. A failed query
+    # and an empty expectation are refused by text(), and a failed query by rows().
+    failed = pgc_vacuity.query_error("planted")
+    refused = []
+    for label, call in (("text over a failed query", lambda r: r.text(failed, "x", "n")),
+                        ("text against an empty expectation", lambda r: r.text("x", "", "n")),
+                        ("rows over a failed query", lambda r: r.rows([(failed,)], [("x",)], "n"))):
+        r = pgc_vacuity.Expect(f"verdict::refusal::{label}")
+        try:
+            call(r)
+        except pgc_vacuity.VacuityError:
+            refused.append(f"{label}: {len(r.records)} records")
+        else:
+            refused.append(f"{label}: not refused")
+    expect.rows(refused, [(f"{l}: 0 records") for l in ("text over a failed query",
+                "text against an empty expectation", "rows over a failed query")],
+                "and so do the other refusals, each leaving no record")
 
 
 def test_every_refusal_precedes_its_record(expect):
@@ -285,6 +315,21 @@ def test_every_refusal_precedes_its_record(expect):
                 refusing.add(nm)
                 growing = True
 
+    # AND MODULE-LEVEL HELPERS (#1339): a refusal raised through a free function, not
+    # a method, was invisible to both scans above; called after the record it would
+    # land in the wrapped region just the same.
+    helpers = {fn.name: fn for fn in tree.body if isinstance(fn, ast.FunctionDef)}
+    refusing_free = {nm for nm, fn in helpers.items() if _raises_here(fn)}
+    growing = True
+    while growing:
+        growing = False
+        for nm, fn in helpers.items():
+            if nm not in refusing_free and any(
+                    isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in refusing_free
+                    for n in ast.walk(fn)):
+                refusing_free.add(nm)
+                growing = True
+
     scanned = []
     offenders = []
     for nm, fn in methods.items():
@@ -303,10 +348,14 @@ def test_every_refusal_precedes_its_record(expect):
         for attr, lineno in _self_calls(fn):
             if attr in refusing and lineno > first:
                 offenders.append(f"{nm}:{lineno} calls self.{attr}() after the record")
+        for n in ast.walk(fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                    and n.func.id in refusing_free and n.lineno > first):
+                offenders.append(f"{nm}:{n.lineno} calls {n.func.id}() after the record")
     # THE PREMISE IS THE POPULATION, and it is the difference between "no method
     # offends" and "the scan matched no methods". An empty offender list is the
     # answer to both, and only one of them is good news.
-    expect.at_least(len(scanned), 15, "premise: the scan found the recording methods")
+    expect.at_least(len(scanned), 15, "the scan found the recording methods")
     expect.rows(offenders, [], "no refusal is raised after its record is taken",
                 allow_empty="an empty offender list is the pass, and the at_least above "
                             "is the population premise that makes it mean something")
@@ -339,7 +388,7 @@ def test_every_recording_method_resolves_its_verdict(expect):
                 recording.append(fn.name)
 
     expect.at_least(len(recording), 15,
-                    "premise: the scan found the recording methods")
+                    "the scan found the recording methods")
     unwrapped = sorted(
         nm for nm in recording
         if not getattr(getattr(pgc_vacuity.Expect, nm), "_pgc_resolves_verdict", False)
@@ -382,7 +431,7 @@ def test_wrapping_a_method_twice_changes_nothing(expect):
     expect.num(e.count, 2, "and still takes one record per call")
 
 
-def test_a_recording_method_takes_exactly_one_record_per_call(expect):
+def test_a_recording_method_takes_exactly_one_record_per_call(expect, monkeypatch):
     """THE INVARIANT THE RESOLUTION RESTS ON, pinned because a mutation showed it
     was assumed.
 
@@ -395,23 +444,76 @@ def test_a_recording_method_takes_exactly_one_record_per_call(expect):
     wrapper marks the first and the second keeps a verdict nobody set. This is the
     arm that says so, rather than the comment.
     """
-    e = pgc_vacuity.Expect("records::one-per-call")
+    # EVERY RECORDING METHOD, not a hand-picked seven (#1339). The list named seven of
+    # the seventeen, so a method outside it could record twice and nothing here would
+    # say so. The arm after the loop requires this list to cover every method the
+    # resolution wraps, so a new one cannot be added without joining it.
+    class _Result:
+        ret = 1
+
+        def assert_outcomes(self, **want):
+            return None
+
+        class stdout:
+            @staticmethod
+            def fnmatch_lines(patterns):
+                import fnmatch
+                line = "E   refused: the reason"
+                missing = [p for p in patterns if not fnmatch.fnmatch(line, p)]
+                if missing:
+                    raise AssertionError(f"unmatched: {missing}")
+
+    class _Err(Exception):
+        sqlstate = "42501"
+
+    plan = [{"Plan": {"Node Type": "Custom Scan", "Custom Plan Provider": "PgColumnarScan",
+                      "Columnar Batch Fold": "yes"}}]
+    class _WriteCur:
+        # a one-row INSERT, as psycopg reports it
+        rowcount = 1
+        statusmessage = "INSERT 0 1"
+
     calls = [
-        lambda: e.num(1, 1, "num"),
-        lambda: e.text("a", "a", "text"),
-        lambda: e.rows(["a"], ["a"], "rows"),
-        lambda: e.ordered_rows(["a", "b"], ["a", "b"], "ordered_rows"),
-        lambda: e.at_least(5, 1, "at_least"),
-        lambda: e.differ("x", "y", "differ"),
-        lambda: e.row_set(["a"], ["a"], "row_set -- delegates to rows"),
+        ("num", lambda x: x.num(1, 1, "num")),
+        ("text", lambda x: x.text("a", "a", "text")),
+        ("rows", lambda x: x.rows(["a"], ["a"], "rows")),
+        ("ordered_rows", lambda x: x.ordered_rows(["a", "b"], ["a", "b"], "ordered_rows")),
+        ("at_least", lambda x: x.at_least(5, 1, "at_least")),
+        ("differ", lambda x: x.differ("x", "y", "differ")),
+        ("row_set", lambda x: x.row_set(["a"], ["a"], "row_set -- delegates to rows")),
+        ("wrote", lambda x: x.wrote(_WriteCur(), 1, "wrote -- delegates to num")),
+        ("hash", lambda x: x.hash("0123456789abcdef" * 2,
+                                "".join(["0123456789abcdef", "0123456789abcdef"]), "hash")),
+        ("contains", lambda x: x.contains("a b c", "b", "contains")),
+        ("sqlstate", lambda x: x.sqlstate(_Err("denied"), "42501", "sqlstate")),
+        ("ordering_observable", lambda x: x.ordering_observable(["a", "b"], ["b", "a"],
+                                                              "ordering_observable")),
+        ("outcomes", lambda x: x.outcomes(_Result(), "outcomes", passed=1)),
+        ("run_failed", lambda x: x.run_failed(_Result(), "run_failed")),
+        ("refusal", lambda x: x.refusal(_Result(), "refusal", "the reason")),
+        ("plan_node", lambda x: x.plan_node(plan, node_type="Custom Scan",
+                                          provider="PgColumnarScan", name="plan_node")),
+        ("plan_marker", lambda x: x.plan_marker(plan, "Columnar Batch Fold", name="plan_marker")),
+        ("declines", lambda x: x.declines("pyarrow", name="declines", detail="none here")),
+        ("cannot_run", lambda x: x.cannot_run("MISSING_DEPENDENCY", "none here", name="cannot_run")),
     ]
+    # A FRESH RECORDER PER CALL: declines and cannot_run must be a test's first
+    # outcome, so they cannot share one with the others. And no PGC_REQUIRE: CI sets
+    # it to pyarrow, under which declines("pyarrow") refuses by design. This counts
+    # records; it does not ask whether a capability may be declined here.
+    monkeypatch.delenv("PGC_REQUIRE", raising=False)
     deltas = []
-    for call in calls:
-        before = e.count
-        call()
-        deltas.append(e.count - before)
-    expect.rows([str(d) for d in deltas], ["1"] * len(calls),
+    for method, call in calls:
+        x = pgc_vacuity.Expect(f"records::one-per-call::{method}")
+        before = x.count
+        call(x)
+        deltas.append(f"{method}:{x.count - before}")
+    expect.rows(deltas, [f"{m}:1" for m, _ in calls],
                 "every call, including the delegating one, took exactly one record")
+    wrapped = sorted(nm for nm in dir(pgc_vacuity.Expect)
+                     if getattr(getattr(pgc_vacuity.Expect, nm), "_pgc_resolves_verdict", False))
+    expect.text(", ".join(sorted({m for m, _ in calls})), ", ".join(wrapped),
+                "and the calls cover every method the resolution wraps")
 
 
 # ---- phase 3: the session's records reconcile, and the check can fail --------
@@ -492,9 +594,75 @@ def test_the_total_separates_records_from_passes_and_from_tests(pytester, expect
         """
     )
     result = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(result, "premise: two tests, both passing", passed=2, failed=0)
+    expect.outcomes(result, "two tests, both passing", passed=2, failed=0)
     result.stdout.fnmatch_lines(["*checks run: 5*"])
     result.stdout.fnmatch_lines(["*accounting: 4 pass + 1 fail + 0 unrun = 5*"])
+
+
+_REFUSAL_FIXTURE = """
+    import pytest
+    from pgc_vacuity import VacuityError
+
+    def test_refused(expect):
+        expect.num("ERROR: the reading failed", 3, "a refused count")
+
+    def test_rowset_refused(expect):
+        # row_set refuses a failed query itself, before it delegates to rows
+        expect.row_set([("QUERY_ERROR.1.the read failed",)], [(1,)], "a refused row set")
+
+    class _DdlCursor:
+        rowcount = -1
+        statusmessage = "CREATE TABLE"
+
+    def test_wrote_refused(expect):
+        # wrote refuses a cursor with no row count (-1, as after DDL)
+        expect.wrote(_DdlCursor(), 0, "a refused write")
+
+    def test_failed(expect):
+        expect.num(2, 3, "a failed count")
+
+    def test_passed(expect):
+        expect.num(1, 1, "a passing count")
+
+    def test_a_guard_proven_by_catching_its_refusal(expect):
+        with pytest.raises(VacuityError):
+            expect.num("x", 3, "refused on purpose and caught")
+        expect.num(1, 1, "after the caught refusal")
+    """
+
+
+@pytest.mark.parametrize("workers", [None, "2"], ids=["serial", "xdist"])
+def test_a_refused_comparison_is_counted_and_named(pytester, expect, workers):
+    """A REFUSAL IS COUNTED AND NAMED, AND STILL MARKS NOTHING (#1613).
+
+    A comparison refused by a VacuityError takes no record, as the pinned rule
+    says. Before #1613 the accounting line therefore left it out: a twin under a
+    mutant printed fewer failures than the shell's FAILs, sometimes `0 fail`, and a
+    runner reading the red set by name had to parse VacuityError text. Now the line
+    adds `N refused` to its total, and each refusal prints `REFUSED  <name>:
+    <reason>`, so shell FAIL names = twin FAIL names + REFUSED names.
+
+    Only a refusal that FAILED ITS TEST is reported. The layer's own guard tests
+    raise refusals on purpose inside pytest.raises and pass; counting those would
+    print a refusal for a passing test. And under xdist the refusals cross the
+    worker boundary on the report, as the records do.
+    """
+    pytester.makepyfile(_REFUSAL_FIXTURE)
+    args = ["-p", "pgc_vacuity"] + (["-p", "xdist", "-n", workers] if workers else [])
+    result = pytester.runpytest(*args)
+    out = result.stdout.str()
+    expect.outcomes(result, "the three refused tests and the failed one fail; the other two pass",
+                    passed=2, failed=4)
+    expect.contains(out, "accounting: 2 pass + 1 fail + 0 unrun + 3 refused = 6",
+                    "the accounting line counts the refusal into its total")
+    expect.contains(out, "REFUSED  a refused count: num() needs numbers on both sides",
+                    "each refusal prints its check name on its own line")
+    expect.contains(out, "REFUSED  a refused row set: ",
+                    "a refused row_set is named, though it refuses before delegating to rows")
+    expect.contains(out, "REFUSED  a refused write: ",
+                    "a refused wrote is named, though it raises its refusals directly")
+    expect.contains(out, "refused on purpose and caught",
+                    "a refusal its test caught is not reported", absent=True)
 
 
 def test_a_record_lost_in_transport_is_refused(pytester, expect):

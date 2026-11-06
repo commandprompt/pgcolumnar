@@ -506,7 +506,7 @@ def test_every_layout_verb_ran_without_raising(locality, expect):
                  "cluster() on the dense control",
                  "cluster_hilbert() on the dense control"):
         expect.text(_VERB_STATES.get(what, "NOT RUN"), "noerror",
-                    f"premise: {what} ran without raising")
+                    f"{what} ran without raising")
 
 
 def test_the_source_holds_the_rows_both_arms_will_load(locality, expect):
@@ -612,7 +612,7 @@ def test_the_two_partitions_differ(digests, expect):
     dz, dh = digests
     verdict = _verdict(dz, dh)
     expect.text(verdict, "different",
-                "premise: the Z-order and Hilbert partitions differ")
+                "the Z-order and Hilbert partitions differ")
     expect.text(dz, DIGEST_ZORDER,
                 "the Z-order partition is the one these numbers were measured over")
     expect.text(dh, DIGEST_HILBERT,
@@ -723,8 +723,9 @@ def test_both_arms_plan_as_a_columnar_scan(locality, expect):
 
 
 def test_parallelism_is_off_so_a_counter_is_a_fact_about_the_layout(locality, expect):
-    """No bash twin by name: the bash suite sets this in the server's config
-    through PGC_EXTRA_CONF, where it cannot be undone by a session.
+    """bash: 'parallelism is off on the connection every arm runs through'. The
+    bash suite sets it in the server's config through PGC_EXTRA_CONF and reads it
+    back; here it is a SET on one connection.
 
     Here it is a SET on one connection, so it is asserted rather than assumed.
     A parallel plan divides the scan across workers and the counters below
@@ -788,14 +789,25 @@ def test_groups_read_over_sixty_placements(locality, digests, expect, box):
     """
     dz, dh = digests
     verdict = _verdict(dz, dh)
+    want_z, want_h, floor = PINS[box]
     if verdict != "different":
-        expect.cannot_run(
-            "UNMET_PRECONDITION",
-            f"the two partitions are not different ({verdict}), so a ratio "
-            f"between them is not about the curve")
+        # BY THE SHELL'S FOUR NAMES, NOT ONE ANONYMOUS DECLINE (#1339 :792): the bash
+        # suite records each of the four arms as unrunnable by name, and a refusal
+        # that names none of them leaves the two harnesses with different records.
+        why = (f"the two partitions are not different ({verdict}), so a ratio "
+               f"between them is not about the curve")
+        expect.cannot_run("UNMET_PRECONDITION", why,
+                          name=f"box {box}: groups read over {PLACEMENTS} placements, Z-order")
+        expect.cannot_run("UNMET_PRECONDITION", why,
+                          name=f"box {box}: groups read over {PLACEMENTS} placements, Hilbert")
+        expect.cannot_run("UNMET_PRECONDITION",
+                          f"the two partitions are not different ({verdict})",
+                          name=f"box {box}: Hilbert reads fewer groups than Z-order")
+        expect.cannot_run("UNMET_PRECONDITION",
+                          f"the two partitions are not different ({verdict})",
+                          name=f"box {box}: and it wins by the margin measured, z/h at least {floor}")
         return
 
-    want_z, want_h, floor = PINS[box]
     measured_z, total_z = _groups_read(locality, "hz", box)
     measured_h, total_h = _groups_read(locality, "hh", box)
 

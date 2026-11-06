@@ -24,6 +24,21 @@
  *   wrong bytes quietly" is the failure mode this tree keeps deciding not to
  *   ship.
  *
+ * - One read sees one version of the object (#1805). Open keeps the HEAD's
+ *   strong ETag and every ranged GET sends it as If-Match, so a key that is
+ *   overwritten mid-read answers 412 and the read fails, instead of mixing a
+ *   footer from one object with chunks from another. When the HEAD names a
+ *   version (x-amz-version-id), every ranged GET also asks for that version,
+ *   so the read finishes on it (#1867). pgcolumnar.objstore_pin_reads = off
+ *   sends neither (#1866). A 403 to a GET that names a version (a caller
+ *   without s3:GetObjectVersion) drops the version for the rest of the read;
+ *   If-Match stays. Whatever the pin, a 206 whose Content-Range total differs
+ *   from the HEAD's length fails the read, and so does a 416 for bytes inside
+ *   that length (#1867). The pin lasts the statement (#1894): a later read
+ *   of the same object in the statement asks for the first read's version,
+ *   or, with no version, fails if the ETag or length changed. "The same
+ *   object" is the same host, port and path, not the same URL text.
+ *
  * - Sockets are cleaned up on abort through a resource-release callback over
  *   the open-handle list. The invariant that makes close-all-on-abort correct:
  *   no handle survives its statement, so a live handle during an abort belongs
@@ -52,7 +67,9 @@
 #include <openssl/x509v3.h>
 #endif
 
+#include "access/xact.h"
 #include "common/cryptohash.h"
+#include "common/hashfn.h"
 #include "common/hmac.h"
 #include "common/sha2.h"
 #include "fmgr.h"
@@ -63,8 +80,10 @@
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "utils/guc.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 #include "columnar_objstore.h"
@@ -72,6 +91,7 @@
 PG_MODULE_MAGIC;
 
 PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
+PGDLLEXPORT void pgcolumnar_objstore_statement_end(void);
 
 /* Response head is bounded before it is parsed; a server cannot size us. */
 #define OS_MAX_HEAD		16384
@@ -80,6 +100,46 @@ PGDLLEXPORT const PgColumnarObjStoreApi *pgcolumnar_objstore_init(void);
 /* One wait slice; consecutive silent slices add up to the inactivity limit. */
 #define OS_WAIT_SLICE_MS	5000
 #define OS_MAX_QUIET_SLICES	12	/* 60 s of silence is a dead peer */
+/*
+ * Bytes kept of a response ETag, terminator included, so the longest ETag kept
+ * is OS_ETAG_BUF - 1 characters. The parsed ETag and the read pin share this one
+ * size: a pin smaller than the parse buffer would cut a kept ETag short, and a
+ * cut ETag matches nothing, so every pinned GET would fail (#1805 review).
+ */
+#define OS_ETAG_BUF			80
+/*
+ * A write whose body is larger than this sends its headers alone first, with
+ * Expect: 100-continue, and waits up to OS_EXPECT_WAIT_MS for the store to
+ * answer them (#1902). A store that refuses from the headers (403, 404) then
+ * says so before any body byte is sent, which works over TLS too, where a
+ * failed send leaves an early answer unreadable. A store that ignores Expect
+ * costs that wait once per handle: after a wait runs out with no answer, the
+ * handle's later writes (a multipart export's later parts) go without Expect
+ * (#1903 review). The same threshold and wait as curl's.
+ */
+#define OS_EXPECT_MIN_BODY	(1024 * 1024)
+#define OS_EXPECT_WAIT_MS	1000
+
+/*
+ * Bytes kept of a response x-amz-version-id, terminator included. S3 version
+ * ids are at most 1024 bytes. A longer one is kept as none: a cut id names
+ * no version, so every GET would fail.
+ */
+#define OS_VERSION_BUF		1025
+
+/*
+ * Where a handle's signing key came from (#1796). Only the 403 hint reads it:
+ * a refused key is fixed where it was configured, and before this every 403
+ * named the server environment, including a key from a user mapping or one a
+ * REST catalog vended. OS_CRED_ENV is 0, so a handle that never resolves s3://
+ * credentials keeps the hint it always had.
+ */
+typedef enum OsCredSource
+{
+	OS_CRED_ENV = 0,			/* AWS_* of the server process */
+	OS_CRED_MAPPING,			/* the user mapping for the foreign server */
+	OS_CRED_VENDED				/* a REST catalog's loadTable reply */
+} OsCredSource;
 
 struct PgColumnarObjHandle
 {
@@ -94,6 +154,20 @@ struct PgColumnarObjHandle
 	int			fd;				/* -1 when disconnected */
 	bool		fd_reserved;	/* ReserveExternalFD accounting */
 	int64		len;			/* object length from open's HEAD */
+
+	/*
+	 * The strong ETag open's HEAD returned, sent as If-Match on every ranged
+	 * GET so one read sees one version of the object (#1805). "" when the
+	 * server sent none, or only a weak one: then reads are not pinned.
+	 */
+	char		pin_etag[OS_ETAG_BUF];
+
+	/*
+	 * "versionId=<id, percent-encoded>" from the HEAD's x-amz-version-id, sent
+	 * as the query of every ranged GET (#1867). NULL when the store named no
+	 * version, or the pin is off.
+	 */
+	char	   *pin_query;
 	uint64		served;			/* requests completed on this connection */
 
 	/*
@@ -107,6 +181,7 @@ struct PgColumnarObjHandle
 	char	   *secret;
 	char	   *token;			/* session token, or NULL */
 	char	   *region;
+	OsCredSource credsrc;		/* where akid came from, for the 403 hint */
 	char		sigDate[9];		/* YYYYMMDD the cached key was derived for */
 	uint8		sigKey[PG_SHA256_DIGEST_LENGTH];
 
@@ -121,6 +196,29 @@ struct PgColumnarObjHandle
 	SSL_CTX    *sctx;
 	SSL		   *ssl;
 #endif
+
+	/*
+	 * When not 0, every wait on this handle ends by this time, and the request
+	 * raises once it passes (#1743). Set by the calls that take a timeout.
+	 */
+	TimestampTz deadline;
+	int			deadline_ms;	/* the timeout it came from, for the message */
+
+	/*
+	 * When true, os_write_request holds interrupts from the last body byte
+	 * sent until the answer is read (#1813). Set around a request whose
+	 * effect the store may apply even if its answer never arrives.
+	 */
+	bool		holdForAnswer;
+
+	/*
+	 * An Expect: 100-continue wait on this handle ran out with no answer, so
+	 * the store ignores Expect (#1903 review). Later writes on the handle,
+	 * over this connection or a later one, go without it: each would pay the
+	 * whole wait for nothing. It lives on the handle, not the connection, so
+	 * a reconnect does not reset it, and a sink's parts share it.
+	 */
+	bool		expectIgnored;
 
 	/* receive staging */
 	uint8	   *rb;
@@ -141,11 +239,57 @@ typedef struct OsResponse
 	int64		content_length; /* -1 when absent */
 	bool		chunked;
 	bool		conn_close;
-	char		etag[80];		/* PUT part response ETag, "" when absent (#394) */
+	char		etag[OS_ETAG_BUF];	/* response ETag, "" when absent or too long */
+	char		version_id[OS_VERSION_BUF]; /* x-amz-version-id, "" when absent
+											 * or too long */
+	int64		range_total;	/* Content-Range total, -1 when absent or "*" */
 } OsResponse;
 
 static dlist_head os_open_handles = DLIST_STATIC_INIT(os_open_handles);
 static bool os_callback_registered = false;
+
+/*
+ * The pins of the running statement (#1894). The first read of an object in
+ * a statement keeps its HEAD's length, strong ETag and version query here. A
+ * later read of the same object in that statement reads the same version, or
+ * fails if the store names no version and the object has changed.
+ *
+ * The key is the object as the module reaches it: scheme, host, port and
+ * request path after os_resolve_s3, not the URL the user wrote. One s3:// URL
+ * on two servers with different endpoints names two objects (#1907 review).
+ *
+ * A pin lasts one top-level statement. pgColumnar's executor and utility
+ * hooks call pgcolumnar_objstore_statement_end when a top-level statement
+ * ends, which drops every pin (#1907 second review). That matters for the
+ * statements of one simple-query string, such as psql -c 'SELECT ..;
+ * SELECT ..': PostgreSQL gives them one statement_timestamp(), so the time
+ * alone would let the second statement find the first one's pins. A change of
+ * statement_timestamp() and the end of the top-level transaction also drop
+ * the pins; they cover a main library too old to make the call.
+ *
+ * The pins live in os_stmt_pin_cxt, found through a hash of the key, so a
+ * statement over a listing of N objects costs N lookups, not N*N string
+ * compares. A reset frees the whole context at once.
+ */
+typedef struct OsStmtPin
+{
+	dlist_node	node;
+	char	   *key;
+	int64		len;
+	char		etag[OS_ETAG_BUF];	/* "" when the first read was not pinned */
+	char	   *query;			/* the first read's pin_query, or NULL */
+} OsStmtPin;
+
+/* The pins whose keys share one hash value. */
+typedef struct OsStmtPinBucket
+{
+	uint32		hash;			/* the hash key; must be first */
+	dlist_head	pins;
+} OsStmtPinBucket;
+
+static MemoryContext os_stmt_pin_cxt = NULL;
+static HTAB *os_stmt_pin_tab = NULL;
+static TimestampTz os_stmt_pins_stamp = 0;
 
 static void os_tls_handshake(PgColumnarObjHandle *h);
 
@@ -209,7 +353,96 @@ os_free_handle(PgColumnarObjHandle *h)
 		pfree(h->token);
 	if (h->region)
 		pfree(h->region);
+	if (h->pin_query)
+		pfree(h->pin_query);
 	pfree(h);
+}
+
+static void
+os_stmt_pin_free(OsStmtPin *p)
+{
+	dlist_delete(&p->node);
+	pfree(p->key);
+	if (p->query)
+		pfree(p->query);
+	pfree(p);
+}
+
+static void
+os_stmt_pins_reset(void)
+{
+	os_stmt_pin_tab = NULL;		/* it lives in os_stmt_pin_cxt */
+	if (os_stmt_pin_cxt != NULL)
+		MemoryContextReset(os_stmt_pin_cxt);
+}
+
+/* The pin key of an open handle: the object as the module reaches it. */
+static char *
+os_stmt_pin_key(const PgColumnarObjHandle *h)
+{
+	return psprintf("%s://%s:%d%s", h->tls ? "https" : "http",
+					h->host, h->port, h->abspath);
+}
+
+/* This statement's pin for key, or NULL. Drops an earlier statement's pins. */
+static OsStmtPin *
+os_stmt_pin_find(const char *key)
+{
+	uint32		hash;
+	OsStmtPinBucket *b;
+	dlist_iter	it;
+
+	if (os_stmt_pins_stamp != GetCurrentStatementStartTimestamp())
+	{
+		os_stmt_pins_reset();
+		os_stmt_pins_stamp = GetCurrentStatementStartTimestamp();
+	}
+	if (os_stmt_pin_tab == NULL)
+		return NULL;
+	hash = hash_bytes((const unsigned char *) key, strlen(key));
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_FIND, NULL);
+	if (b == NULL)
+		return NULL;
+	dlist_foreach(it, &b->pins)
+	{
+		OsStmtPin  *p = dlist_container(OsStmtPin, node, it.cur);
+
+		if (strcmp(p->key, key) == 0)
+			return p;
+	}
+	return NULL;
+}
+
+/* A new, zeroed pin for key. The caller has called os_stmt_pin_find first. */
+static OsStmtPin *
+os_stmt_pin_add(const char *key)
+{
+	uint32		hash = hash_bytes((const unsigned char *) key, strlen(key));
+	OsStmtPinBucket *b;
+	OsStmtPin  *p;
+	bool		found;
+
+	if (os_stmt_pin_cxt == NULL)
+		os_stmt_pin_cxt = AllocSetContextCreate(TopMemoryContext,
+												"pgcolumnar objstore statement pins",
+												ALLOCSET_SMALL_SIZES);
+	if (os_stmt_pin_tab == NULL)
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(uint32);
+		ctl.entrysize = sizeof(OsStmtPinBucket);
+		ctl.hcxt = os_stmt_pin_cxt;
+		os_stmt_pin_tab = hash_create("pgcolumnar objstore statement pins", 64,
+									  &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+	b = hash_search(os_stmt_pin_tab, &hash, HASH_ENTER, &found);
+	if (!found)
+		dlist_init(&b->pins);
+	p = MemoryContextAllocZero(os_stmt_pin_cxt, sizeof(OsStmtPin));
+	p->key = MemoryContextStrdup(os_stmt_pin_cxt, key);
+	dlist_push_tail(&b->pins, &p->node);
+	return p;
 }
 
 /*
@@ -224,6 +457,7 @@ os_resource_release(ResourceReleasePhase phase, bool isCommit,
 	if (phase != RESOURCE_RELEASE_AFTER_LOCKS || !isTopLevel)
 		return;
 
+	os_stmt_pins_reset();
 	while (!dlist_is_empty(&os_open_handles))
 	{
 		PgColumnarObjHandle *h =
@@ -241,16 +475,47 @@ os_resource_release(ResourceReleasePhase phase, bool isCommit,
 /* ------------------------------------------------------------------ waiting */
 
 static void
+os_deadline_passed(PgColumnarObjHandle *h)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_CONNECTION_FAILURE),
+			 errmsg("columnar: \"%s\" did not answer within %d ms",
+					h->url, h->deadline_ms)));
+}
+
+static void
 os_wait(PgColumnarObjHandle *h, uint32 sockEvents, int *quiet)
 {
 	int			rc;
+	uint32		events = WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH | sockEvents;
+	long		timeout = OS_WAIT_SLICE_MS;
 
-	rc = WaitLatchOrSocket(MyLatch,
-						   WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | sockEvents,
-						   h->fd, OS_WAIT_SLICE_MS, PG_WAIT_EXTENSION);
+	/*
+	 * WL_TIMEOUT, or the slice is not a slice: without it WaitLatchOrSocket
+	 * ignores the timeout and waits for the socket or the latch alone, so a
+	 * silent peer never counts a quiet slice. Under proc_exit (a terminated
+	 * worker aborting its upload, #1727) interrupts are held and the latch
+	 * alone never ends the wait either. A handle with a deadline (#1743) has
+	 * each slice cut to the time left, and the deadline is checked before and
+	 * after the wait, so it is bounded whether or not interrupts are held.
+	 */
+	if (h->deadline != 0)
+	{
+		long		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
+														   h->deadline);
+
+		if (left <= 0)
+			os_deadline_passed(h);
+		timeout = Min(timeout, left);
+	}
+	rc = WaitLatchOrSocket(MyLatch, events, h->fd, timeout, PG_WAIT_EXTENSION);
 	if (rc & WL_LATCH_SET)
 		ResetLatch(MyLatch);
 	CHECK_FOR_INTERRUPTS();
+	if (h->deadline != 0 &&
+		!(rc & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE)) &&
+		GetCurrentTimestamp() >= h->deadline)
+		os_deadline_passed(h);
 
 	if (rc & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE))
 		*quiet = 0;
@@ -326,42 +591,121 @@ os_check_endpoint_allowed(PgColumnarObjHandle *h)
 	}
 
 	if (!ok)
+	{
+		/*
+		 * The hint names the entry the message names, host:port, appended to
+		 * the current list (#1796). It suggested the bare host as the whole
+		 * list: an entry with no port matches every port on the host, and
+		 * ALTER SYSTEM SET replaces the list, so the advice as written opened
+		 * every port and dropped every other entry. The list goes inside a SQL
+		 * literal, so any quote in it is doubled.
+		 */
+		StringInfoData want;
+		const char *c;
+
+		initStringInfo(&want);
+		for (c = (list != NULL) ? list : ""; *c != '\0'; c++)
+		{
+			if (*c == '\'')
+				appendStringInfoChar(&want, '\'');
+			appendStringInfoChar(&want, *c);
+		}
+		if (want.len > 0)
+			appendStringInfoChar(&want, ',');
+		appendStringInfo(&want, "%s:%d", checkhost, h->port);
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("columnar: endpoint \"%s:%d\" is not in "
 						"pgcolumnar.objstore_allowed_endpoints",
 						checkhost, h->port),
-				 errhint("A superuser can permit it: ALTER SYSTEM SET "
+				 errhint("A superuser can add it: ALTER SYSTEM SET "
 						 "pgcolumnar.objstore_allowed_endpoints = '%s'; "
-						 "SELECT pg_reload_conf();", checkhost)));
+						 "SELECT pg_reload_conf();", want.data)));
+	}
 }
 
 /*
- * Link-local refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
+ * An IPv4 address, in host byte order, that is a metadata address: 169.254/16,
+ * or 100.100.100.200, Alibaba Cloud's instance-metadata address (#1848). Only
+ * that one address: the rest of 100.64.0.0/10 is carrier-grade NAT.
+ */
+static bool
+os_v4_is_metadata(uint32 a)
+{
+	return (a & 0xFFFF0000U) == 0xA9FE0000U ||	/* 169.254/16 */
+		a == 0x646464C8U;		/* 100.100.100.200 */
+}
+
+/* The four bytes at b[i], b[j], b[k], b[l] as an IPv4 address in host order */
+static uint32
+os_v4_at(const uint8_t *b, int i, int j, int k, int l)
+{
+	return ((uint32) b[i] << 24) | ((uint32) b[j] << 16) |
+		((uint32) b[k] << 8) | (uint32) b[l];
+}
+
+/*
+ * Metadata-address refusal, UNCONDITIONAL (#393): 169.254.0.0/16 and fe80::/10 are
  * the cloud-metadata credential-theft surface (IMDS lives at
- * 169.254.169.254) and have no legitimate object-storage use. Checked after
+ * 169.254.169.254) and have no legitimate object-storage use. The same
+ * surface has IPv6 forms (#1808): AWS's IPv6 IMDS in fd00:ec2::/32, Google
+ * Compute Engine's at fd20:ce::254, and
+ * 169.254/16 carried inside an IPv6 address -- IPv4-mapped ::ffff:0:0/96,
+ * IPv4-compatible ::/96, and the NAT64 prefixes 64:ff9b::/96 and
+ * 64:ff9b:1::/48 (RFC 6052, RFC 8215). Alibaba Cloud's metadata address
+ * 100.100.100.200 is refused too, as IPv4 and inside each of those IPv6
+ * forms (#1848). Checked after
  * resolution so a name pinned to a link-local address is caught, and the
  * whole connection is refused rather than the address skipped, so a resolver
  * returning a mixed set cannot steer the choice.
  */
 static bool
-os_addr_is_linklocal(const struct addrinfo *ai)
+os_addr_is_metadata(const struct addrinfo *ai)
 {
 	if (ai->ai_family == AF_INET)
-	{
-		uint32		a = ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr);
-
-		return (a & 0xFFFF0000U) == 0xA9FE0000U;	/* 169.254/16 */
-	}
+		return os_v4_is_metadata(ntohl(((const struct sockaddr_in *) ai->ai_addr)->sin_addr.s_addr));
 	if (ai->ai_family == AF_INET6)
 	{
 		const struct in6_addr *a6 =
 			&((const struct sockaddr_in6 *) ai->ai_addr)->sin6_addr;
 
+		const uint8_t *b = a6->s6_addr;
+		static const uint8_t zero10[10] = {0};
+		static const uint8_t nat64wkp[12] = {0x00, 0x64, 0xff, 0x9b};
+		static const uint8_t gceimds6[16] = {0xfd, 0x20, 0x00, 0xce,
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, 0x54};
+		bool		v4low = os_v4_is_metadata(os_v4_at(b, 12, 13, 14, 15));
+
 		if (IN6_IS_ADDR_LINKLOCAL(a6))
 			return true;
-		if (IN6_IS_ADDR_V4MAPPED(a6))
-			return a6->s6_addr[12] == 169 && a6->s6_addr[13] == 254;
+		/* fd00:ec2::/32, AWS IPv6 instance metadata (fd00:ec2::254) */
+		if (b[0] == 0xfd && b[1] == 0x00 && b[2] == 0x0e && b[3] == 0xc2)
+			return true;
+		/* fd20:ce::254, Google Compute Engine IPv6 instance metadata */
+		if (memcmp(b, gceimds6, 16) == 0)
+			return true;
+		/* ::ffff:0:0/96 (mapped) and ::/96 (compatible) carrying a metadata v4 */
+		if (memcmp(b, zero10, 10) == 0 &&
+			((b[10] == 0xff && b[11] == 0xff) || (b[10] == 0 && b[11] == 0)))
+			return v4low;
+		/* 64:ff9b::/96, the NAT64 well-known prefix */
+		if (memcmp(b, nat64wkp, 12) == 0)
+			return v4low;
+		/*
+		 * 64:ff9b:1::/48, the NAT64 local-use prefix. Its operator picks the
+		 * prefix length, so the IPv4 address may sit at any RFC 6052 position:
+		 * /48 (bytes 6,7,9,10), /56 (7,9,10,11), /64 (9-12) or /96 (12-15). The guard
+		 * cannot tell which, so it checks all four and fails closed. That
+		 * also refuses some ordinary addresses whose bytes land on another
+		 * layout's position, e.g. 10.169.254.5 behind a /48 prefix; the
+		 * docs say so.
+		 */
+		if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xff && b[3] == 0x9b &&
+			b[4] == 0x00 && b[5] == 0x01)
+			return os_v4_is_metadata(os_v4_at(b, 6, 7, 9, 10)) ||	/* /48 */
+				os_v4_is_metadata(os_v4_at(b, 7, 9, 10, 11)) ||	/* /56 */
+				os_v4_is_metadata(os_v4_at(b, 9, 10, 11, 12)) ||	/* /64 */
+				v4low;			/* /96 */
 	}
 	return false;
 }
@@ -431,16 +775,22 @@ os_connect(PgColumnarObjHandle *h)
 						h->host, gai_strerror(rc))));
 
 	for (ai = addrs; ai != NULL; ai = ai->ai_next)
-		if (os_addr_is_linklocal(ai))
+		if (os_addr_is_metadata(ai))
 		{
 			freeaddrinfo(addrs);
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("columnar: \"%s\" resolves into a link-local range, "
-							"which object storage never legitimately uses",
+					 errmsg("columnar: \"%s\" resolves into a link-local range "
+							"or an instance-metadata address, which object "
+							"storage never legitimately uses",
 							h->host),
-					 errdetail("Link-local addresses (169.254.0.0/16, fe80::/10) "
-							   "are refused unconditionally: they are the cloud "
+					 errdetail("Link-local and instance-metadata addresses "
+							   "(169.254.0.0/16, fe80::/10, fd00:ec2::/32, "
+							   "fd20:ce::254, Alibaba Cloud's 100.100.100.200, and "
+							   "169.254.0.0/16 or 100.100.100.200 inside an "
+							   "IPv4-mapped, IPv4-compatible or NAT64 IPv6 "
+							   "address) are refused "
+							   "unconditionally: they are the cloud "
 							   "instance-metadata surface.")));
 		}
 
@@ -754,6 +1104,22 @@ os_fill(PgColumnarObjHandle *h)
 /* --------------------------------------------------------------- response */
 
 /*
+ * True when the header line [line, eol) contains `token`, in any case. The
+ * Connection header's tokens are case-insensitive (RFC 9110 section 7.6.1).
+ */
+static bool
+os_line_has_token(const char *line, const char *eol, const char *token)
+{
+	size_t		tlen = strlen(token);
+	const char *p;
+
+	for (p = line; p + tlen <= eol; p++)
+		if (pg_strncasecmp(p, token, tlen) == 0)
+			return true;
+	return false;
+}
+
+/*
  * Read and parse one response head. Returns false when the connection died
  * before a single status byte arrived (the stale keep-alive case); raises on
  * everything else.
@@ -762,9 +1128,11 @@ static bool
 os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 {
 	int			headEnd = -1;
+	bool		keepAlive = false;
 
 	memset(resp, 0, sizeof(*resp));
 	resp->content_length = -1;
+	resp->range_total = -1;
 
 	for (;;)
 	{
@@ -829,9 +1197,13 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 			else if (pg_strncasecmp(line, "Transfer-Encoding:", 18) == 0 &&
 					 strstr(line, "chunked") != NULL && strstr(line, "chunked") < eol)
 				resp->chunked = true;
-			else if (pg_strncasecmp(line, "Connection:", 11) == 0 &&
-					 strstr(line, "close") != NULL && strstr(line, "close") < eol)
-				resp->conn_close = true;
+			else if (pg_strncasecmp(line, "Connection:", 11) == 0)
+			{
+				if (os_line_has_token(line + 11, eol, "close"))
+					resp->conn_close = true;
+				if (os_line_has_token(line + 11, eol, "keep-alive"))
+					keepAlive = true;
+			}
 			else if (pg_strncasecmp(line, "ETag:", 5) == 0)
 			{
 				const char *p = line + 5;
@@ -843,9 +1215,43 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 					   i < (int) sizeof(resp->etag) - 1)
 					resp->etag[i++] = *p++;
 				resp->etag[i] = '\0';
+				/* A cut-down ETag would match nothing: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->etag[0] = '\0';
+			}
+			else if (pg_strncasecmp(line, "x-amz-version-id:", 17) == 0)
+			{
+				const char *p = line + 17;
+				int			i = 0;
+
+				while (p < eol && (*p == ' ' || *p == '\t'))
+					p++;
+				while (p < eol && *p != '\r' && *p != '\n' &&
+					   i < (int) sizeof(resp->version_id) - 1)
+					resp->version_id[i++] = *p++;
+				resp->version_id[i] = '\0';
+				/* A cut-down id would name no version: keep none instead. */
+				if (p < eol && *p != '\r' && *p != '\n')
+					resp->version_id[0] = '\0';
+			}
+			else if (pg_strncasecmp(line, "Content-Range:", 14) == 0)
+			{
+				/* bytes FIRST-LAST/TOTAL (a 416 puts "*" before the slash); TOTAL may be "*" */
+				const char *slash = memchr(line, '/', eol - line);
+
+				if (slash != NULL && slash[1] >= '0' && slash[1] <= '9')
+					resp->range_total = strtoll(slash + 1, NULL, 10);
 			}
 			line = eol + 1;
 		}
+
+		/*
+		 * An HTTP/1.0 connection does not persist unless the reply says
+		 * keep-alive (RFC 9112 section 9.3). Reusing it sent the next request
+		 * into a connection the server was closing (#1830).
+		 */
+		if (head[7] == '0' && !keepAlive)
+			resp->conn_close = true;
 	}
 
 	h->rb_off += headEnd;
@@ -984,6 +1390,9 @@ os_read_body(PgColumnarObjHandle *h, const OsResponse *resp,
 	}
 }
 
+static char *os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp,
+						   int64 cap, int64 *outlen);
+
 /* ---------------------------------------------------------------- signing */
 
 static void
@@ -1087,7 +1496,7 @@ os_uriencode_query(const char *s)
  */
 static void
 os_sign_request(PgColumnarObjHandle *h, const char *method,
-				const char *rangeVal, StringInfo headers)
+				const char *query, const char *rangeVal, StringInfo headers)
 {
 	char		amzdate[20];	/* YYYYMMDDTHHMMSSZ */
 	char		datestamp[9];	/* YYYYMMDD */
@@ -1132,7 +1541,8 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 
 	/* canonical request */
 	initStringInfo(&creq);
-	appendStringInfo(&creq, "%s\n%s\n\n", method, h->abspath);
+	appendStringInfo(&creq, "%s\n%s\n%s\n", method, h->abspath,
+					 query != NULL ? query : "");
 	appendStringInfo(&creq, "host:%s:%d\n", h->host, h->port);
 	if (rangeVal != NULL)
 		appendStringInfo(&creq, "range:%s\n", rangeVal);
@@ -1170,6 +1580,18 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 /* ---------------------------------------------------------------- request */
 
 /*
+ * The character that joins a request's own query to the path. An http(s)://
+ * path keeps the URL's query string (#1785), so a second parameter joins it
+ * with '&', never a second '?' (#1904). An S3 path is percent-encoded and
+ * never holds a '?'.
+ */
+static const char *
+os_query_sep(const PgColumnarObjHandle *h)
+{
+	return strchr(h->abspath, '?') != NULL ? "&" : "?";
+}
+
+/*
  * One request/response cycle with a single reconnect on a stale keep-alive
  * connection. `off`/`n` describe the Range for GET; HEAD sends no Range.
  */
@@ -1179,14 +1601,20 @@ os_request(PgColumnarObjHandle *h, const char *method,
 {
 	StringInfoData req;
 	bool		isGet = (strcmp(method, "GET") == 0);
+	/* A ranged GET asks for the version open saw (#1867); the HEAD never. */
+	const char *query = isGet ? h->pin_query : NULL;
 	int			attempt;
 
 	initStringInfo(&req);
-	appendStringInfo(&req, "%s %s HTTP/1.1\r\nHost: %s:%d\r\n",
-					 method, h->abspath, h->host, h->port);
+	appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
+					 method, h->abspath, query != NULL ? os_query_sep(h) : "",
+					 query != NULL ? query : "", h->host, h->port);
 	if (isGet)
 		appendStringInfo(&req, "Range: bytes=%lld-%lld\r\n",
 						 (long long) off, (long long) (off + n - 1));
+	/* Pin the read to the version open saw (#1805); S3 answers 412 if not. */
+	if (isGet && h->pin_etag[0] != '\0')
+		appendStringInfo(&req, "If-Match: %s\r\n", h->pin_etag);
 	if (h->sign)
 	{
 		char		rangeVal[64];
@@ -1194,7 +1622,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 		if (isGet)
 			snprintf(rangeVal, sizeof(rangeVal), "bytes=%lld-%lld",
 					 (long long) off, (long long) (off + n - 1));
-		os_sign_request(h, method, isGet ? rangeVal : NULL, &req);
+		os_sign_request(h, method, query, isGet ? rangeVal : NULL, &req);
 	}
 	appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
@@ -1264,10 +1692,31 @@ os_reject_403(PgColumnarObjHandle *h, const OsResponse *resp, bool hasBody)
 		pfree(body);
 	}
 
+	/*
+	 * Only an s3:// or gs:// handle signs (h->sign). An http(s):// request
+	 * carries no credential, so pointing its reader at the AWS_* environment
+	 * would send them to settings the request never used (#1779).
+	 */
+	if (!h->sign)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
+				 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
+						h->url, code[0] ? ": " : "", code),
+				 errhint("Requests to http:// and https:// URLs are never "
+						 "signed. Use an s3:// or gs:// URL for a store that "
+						 "needs credentials.")));
+
+	/* the hint names where the refused key was configured (#1796) */
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 			 errmsg("columnar: access to \"%s\" was denied (HTTP 403%s%s)",
 					h->url, code[0] ? ": " : "", code),
+			 h->credsrc == OS_CRED_MAPPING ?
+			 errhint("Check access_key_id and secret_access_key in the user "
+					 "mapping the current role uses for this server.") :
+			 h->credsrc == OS_CRED_VENDED ?
+			 errhint("The storage credentials the catalog vended for this "
+					 "table were refused.") :
 			 errhint("Check the AWS_* credential environment of the server "
 					 "process.")));
 }
@@ -1315,6 +1764,11 @@ os_require_env(const char *name, const char *url)
  * (superuser, credentials_required=false, or a function-path caller), else a
  * 28000 refusal. Path-style request target with the key percent-encoded
  * exactly as it is signed.
+ *
+ * Its messages name h->url, not `url`. The two are the same except for a
+ * bucket-level request, which resolves from a dummy key, "s3://bucket/_", and
+ * names the URL the caller gave in h->url (os_write_handle_as). A refusal here
+ * used to name that dummy key (#1869).
  */
 static void
 os_resolve_s3(PgColumnarObjHandle *h, const char *url,
@@ -1339,7 +1793,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (slash == NULL || slash == bucket || slash[1] == '\0')
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: \"%s\" is not %s://bucket/key", url,
+				 errmsg("columnar: \"%s\" is not %s://bucket/key", h->url,
 						isGs ? "gs" : "s3")));
 
 	/*
@@ -1374,7 +1828,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (memchr(bucket, '@', slash - bucket) != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("columnar: userinfo in \"%s\" is not supported", url)));
+				 errmsg("columnar: userinfo in \"%s\" is not supported", h->url)));
 
 	if (cfg != NULL && cfg->endpoint != NULL)
 		ep = cfg->endpoint;
@@ -1388,7 +1842,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 			if (isGs)
 				ep = "https://storage.googleapis.com";
 			else
-				ep = os_require_env("AWS_ENDPOINT_URL", url);
+				ep = os_require_env("AWS_ENDPOINT_URL", h->url);
 		}
 	}
 	/*
@@ -1478,7 +1932,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 						(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
 						 errmsg("columnar: reading \"%s\" requires a region option "
 								"on the server, or AWS_REGION in the server "
-								"environment", url)));
+								"environment", h->url)));
 		}
 	}
 
@@ -1486,6 +1940,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	if (cfg != NULL && cfg->akid != NULL)
 	{
 		/* the mapping's credential triple; the validator required the pair */
+		h->credsrc = cfg->vended ? OS_CRED_VENDED : OS_CRED_MAPPING;
 		h->akid = pstrdup(cfg->akid);
 		h->secret = pstrdup(cfg->secret);
 		h->token = (cfg->token != NULL && cfg->token[0] != '\0')
@@ -1493,8 +1948,9 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 	}
 	else if (ambientOk)
 	{
-		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", url));
-		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", url));
+		h->credsrc = OS_CRED_ENV;
+		h->akid = pstrdup(os_require_env("AWS_ACCESS_KEY_ID", h->url));
+		h->secret = pstrdup(os_require_env("AWS_SECRET_ACCESS_KEY", h->url));
 		token = getenv("AWS_SESSION_TOKEN");
 		h->token = (token != NULL && token[0] != '\0') ? pstrdup(token) : NULL;
 	}
@@ -1503,7 +1959,7 @@ os_resolve_s3(PgColumnarObjHandle *h, const char *url,
 		MemoryContextSwitchTo(oldcxt);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
-				 errmsg("columnar: no credentials for \"%s\"", url),
+				 errmsg("columnar: no credentials for \"%s\"", h->url),
 				 errdetail("No user mapping for this server carries "
 						   "access_key_id and secret_access_key for the "
 						   "current role."),
@@ -1660,6 +2116,84 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 
 	h->len = resp.content_length;
 	*len = h->len;
+
+	/*
+	 * pgcolumnar.objstore_pin_reads = off leaves the read unpinned (#1866),
+	 * for a server whose ETag changes from one request to the next.
+	 */
+	{
+		const char *pin = GetConfigOption("pgcolumnar.objstore_pin_reads",
+										  true, false);
+
+		if (pin != NULL && strcmp(pin, "off") == 0)
+			return h;
+	}
+
+	/*
+	 * If-Match compares strongly (RFC 9110 13.1.1), so a weak ETag would make
+	 * every ranged GET fail. Such a server's reads stay unpinned.
+	 */
+	if (strncmp(resp.etag, "W/", 2) != 0)
+		strlcpy(h->pin_etag, resp.etag, sizeof(h->pin_etag));
+
+	/*
+	 * A versioned store names the version (#1867): ask for it on every ranged
+	 * GET, so an overwrite mid-read leaves this read on the version it
+	 * opened. "null" is the id S3 gives an object written while versioning
+	 * was off; that version is overwritten in place, so it pins nothing that
+	 * If-Match does not.
+	 */
+	if (resp.version_id[0] != '\0' && strcmp(resp.version_id, "null") != 0)
+	{
+		char	   *enc = os_uriencode_query(resp.version_id);
+
+		h->pin_query = MemoryContextAlloc(TopMemoryContext,
+										  strlen(enc) + sizeof("versionId="));
+		sprintf(h->pin_query, "versionId=%s", enc);
+		pfree(enc);
+	}
+
+	/*
+	 * One statement reads one version of a URL (#1894). The first read
+	 * keeps its pin for the statement. A later read asks for the version the
+	 * first one read, when the store named one. Otherwise it must see the
+	 * same ETag and length, or the object changed between the two reads.
+	 */
+	{
+		char	   *key = os_stmt_pin_key(h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
+
+		if (p == NULL)
+		{
+			p = os_stmt_pin_add(key);
+			p->len = h->len;
+			strlcpy(p->etag, h->pin_etag, sizeof(p->etag));
+			if (h->pin_query)
+				p->query = MemoryContextStrdup(os_stmt_pin_cxt, h->pin_query);
+		}
+		else if (p->query != NULL)
+		{
+			if (h->pin_query)
+				pfree(h->pin_query);
+			h->pin_query = MemoryContextStrdup(TopMemoryContext, p->query);
+			strlcpy(h->pin_etag, p->etag, sizeof(h->pin_etag));
+			h->len = p->len;
+			*len = h->len;
+		}
+		else if (p->len != h->len ||
+				 (p->etag[0] != '\0' && strcmp(p->etag, h->pin_etag) != 0))
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("columnar: \"%s\" changed while it was being read", url),
+					 errdetail("An earlier read of the object in this statement "
+							   "saw ETag %s and %lld bytes; this read sees ETag %s "
+							   "and %lld bytes.",
+							   p->etag[0] ? p->etag : "(none)", (long long) p->len,
+							   h->pin_etag[0] ? h->pin_etag : "(none)",
+							   (long long) h->len),
+					 errhint("Run the statement again to read the new version.")));
+		pfree(key);
+	}
 	return h;
 }
 
@@ -1686,17 +2220,87 @@ objstore_read(PgColumnarObjHandle *h, int64 off, void *buf, size_t n)
 				 errdetail("The server answered 200 with the whole object "
 						   "instead of 206 with the requested bytes.")));
 	}
+	/*
+	 * A GET that names a version needs s3:GetObjectVersion, and a policy that
+	 * grants only s3:GetObject answers it 403. Drop the version for the rest
+	 * of this read and ask again: If-Match still pins it, as before #1867. A
+	 * 403 for any other reason comes back on the retry and is reported then.
+	 */
+	if (resp.status == 403 && h->pin_query != NULL)
+	{
+		os_disconnect(h);
+		pfree(h->pin_query);
+		h->pin_query = NULL;
+		ereport(DEBUG1,
+				(errmsg_internal("columnar: \"%s\" refused a GET that names a version (HTTP 403); "
+								 "reading without the version", h->url)));
+		objstore_read(h, off, buf, n);
+		return;
+	}
 	if (resp.status == 403)
 		os_reject_403(h, &resp, true);
 	if (resp.status == 404)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_FILE),
 				 errmsg("columnar: \"%s\" does not exist (HTTP 404)", h->url)));
+	if (resp.status == 412 && h->pin_etag[0] != '\0')
+	{
+		/* The body is the server's, not ours; drop the connection with it. */
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object no longer has ETag %s, which it had when "
+						   "the read began, so the server refused the rest of "
+						   "the read (HTTP 412).", h->pin_etag),
+				 errhint("Run the statement again to read the new version.")));
+	}
+	/*
+	 * The read asks only for bytes inside the length the HEAD gave. A 416
+	 * says the object no longer has them: it shrank under the read.
+	 */
+	if (resp.status == 416 && off + (int64) n <= h->len)
+	{
+		os_disconnect(h);
+		if (resp.range_total >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+					 errdetail("The object is now %lld bytes long; it was %lld bytes "
+							   "when the read began (HTTP 416 Content-Range).",
+							   (long long) resp.range_total, (long long) h->len),
+					 errhint("Run the statement again to read the new version.")));
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The server has no bytes %lld-%lld, which were inside the "
+						   "%lld bytes the object had when the read began (HTTP 416).",
+						   (long long) off, (long long) (off + (int64) n - 1),
+						   (long long) h->len),
+				 errhint("Run the statement again to read the new version.")));
+	}
 	if (resp.status != 206)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("columnar: unexpected HTTP status %d for \"%s\"",
 						resp.status, h->url)));
+
+	/*
+	 * The 206 states the object's whole length (#1867). A length other than
+	 * the HEAD's means another writer replaced the object, even on a server
+	 * with no ETag to pin: refuse the rest of the read.
+	 */
+	if (resp.range_total >= 0 && resp.range_total != h->len)
+	{
+		os_disconnect(h);
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("columnar: \"%s\" changed while it was being read", h->url),
+				 errdetail("The object is now %lld bytes long; it was %lld bytes "
+						   "when the read began (HTTP 206 Content-Range).",
+						   (long long) resp.range_total, (long long) h->len),
+				 errhint("Run the statement again to read the new version.")));
+	}
 
 	os_read_body(h, &resp, (uint8 *) buf, (int64) n);
 
@@ -1735,11 +2339,16 @@ struct PgColumnarObjSink
 	PgColumnarObjHandle *h;		/* the resolved connection + credentials */
 	StringInfoData buf;			/* bytes not yet flushed as a part */
 	char	   *uploadId;		/* NULL until a multipart upload begins */
+	bool		createSent;		/* POST ?uploads was sent (#1810) */
+	PgColumnarObjStoreConfig *cfg;	/* a copy of create's cfg, or NULL */
 	StringInfoData completeXml; /* <Part> list built as parts complete */
 	int			partNo;			/* next part number (1-based) */
 	int			partSize;		/* frozen at create from the GUC */
 	int64		total;			/* bytes handed to sink_write */
 };
+
+static PgColumnarObjHandle *os_write_handle_as(const char *url, const char *name,
+											   const PgColumnarObjStoreConfig *cfg);
 
 /*
  * Resolve a write target into a connection handle exactly as the read path
@@ -1749,6 +2358,20 @@ struct PgColumnarObjSink
  */
 static PgColumnarObjHandle *
 os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	return os_write_handle_as(url, url, cfg);
+}
+
+/*
+ * os_write_handle, resolved from `url` and named `name` in every message. A
+ * bucket-level request (a LIST, the endpoint check) resolves from a dummy key
+ * in the bucket and names the URL the caller gave, so no error, from the
+ * resolve or from any later request, names "s3://bucket/_" (#1781, #1869).
+ * h->url is read only by messages: signing, host and path come from `url`.
+ */
+static PgColumnarObjHandle *
+os_write_handle_as(const char *url, const char *name,
+				   const PgColumnarObjStoreConfig *cfg)
 {
 	PgColumnarObjHandle *h;
 	bool		isS3 = (pg_strncasecmp(url, "s3://", 5) == 0 ||
@@ -1764,7 +2387,7 @@ os_write_handle(const char *url, const PgColumnarObjStoreConfig *cfg)
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 	h = (PgColumnarObjHandle *) palloc0(sizeof(PgColumnarObjHandle));
 	h->fd = -1;
-	h->url = pstrdup(url);
+	h->url = pstrdup(name);
 	h->rb = (uint8 *) palloc(OS_RBUF);
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
@@ -1900,14 +2523,159 @@ os_sign_write(PgColumnarObjHandle *h, const char *method, const char *canonPath,
 }
 
 /*
- * One signed write request (PUT/POST/DELETE) with an optional body, a single
- * reconnect on a stale keep-alive. `rawQuery` is the query as it goes on the
- * wire AND the canonical query the signature covers: the caller builds it with
- * keys already sorted (partNumber < uploadId; single-key queries are trivially
- * sorted) and any UploadId value already percent-encoded through
- * os_uriencode_query, so wire and canonical are byte-identical. The response
- * body, if any, is captured into *outBody (palloc'd) for the caller.
+ * Did the server answer a request we failed to finish sending (#1796 D)? A
+ * store may refuse a PUT from its headers alone, answer 403 or 404, and close
+ * with the body unread. A body larger than the socket buffers then fails to
+ * send (EPIPE or ECONNRESET) although the answer has arrived, and treating the
+ * failed send as no response lost the status. The answer is already in the
+ * receive queue when the send fails, so this only peeks, never waits: an empty
+ * queue keeps the stale keep-alive handling as it was. The store closes the
+ * connection it answered early, so a later request on this handle fails its
+ * send and takes the one reconnect a stale keep-alive takes.
+ *
+ * Plain sockets only. On TLS a failed SSL_write leaves the session unusable
+ * for SSL_read. A body large enough to fail its send is above
+ * OS_EXPECT_MIN_BODY, so a TLS store gets the chance to answer the headers
+ * before the body goes out (Expect: 100-continue, #1902), and only a store
+ * that ignores Expect and refuses after the wait still reads as no response.
  */
+static bool
+os_answered_early(PgColumnarObjHandle *h)
+{
+	char		c;
+
+	if (h->rb_len > h->rb_off)
+		return true;
+	if (h->tls || h->fd < 0)
+		return false;
+	return recv(h->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT) > 0;
+}
+
+/*
+ * Wait up to `ms` for the store to start answering the headers of a request
+ * sent with Expect: 100-continue (#1902), without sending its body. True when
+ * response bytes are staged in h->rb for os_read_head; false when nothing came
+ * in time (*timedOut set), or the connection ended first, which ends the wait
+ * at once (*timedOut left false). Over TLS the socket can turn readable with
+ * a record that holds no application data (a TLS 1.3 session ticket), so
+ * readiness alone is not an answer: only bytes that SSL_read returns are. Interrupts are serviced, since nothing has
+ * been committed yet.
+ */
+static bool
+os_await_answer(PgColumnarObjHandle *h, int ms, bool *timedOut)
+{
+	TimestampTz until = TimestampTzPlusMilliseconds(GetCurrentTimestamp(), ms);
+
+	if (h->rb_off == h->rb_len)
+		h->rb_off = h->rb_len = 0;
+	for (;;)
+	{
+		long		left;
+		int			rc;
+
+		if (h->rb_len > h->rb_off)
+			return true;
+#ifdef HAVE_OBJSTORE_OPENSSL
+		if (h->tls)
+		{
+			int			got;
+			int			serr;
+
+			ERR_clear_error();
+			got = SSL_read(h->ssl, h->rb + h->rb_len, OS_RBUF - h->rb_len);
+			if (got > 0)
+			{
+				h->rb_len += got;
+				return true;
+			}
+			serr = SSL_get_error(h->ssl, got);
+			if (serr != SSL_ERROR_WANT_READ && serr != SSL_ERROR_WANT_WRITE &&
+				!(serr == SSL_ERROR_SYSCALL && errno == EINTR))
+				return false;
+		}
+		else
+#endif
+		{
+			ssize_t		got = recv(h->fd, h->rb + h->rb_len,
+								   OS_RBUF - h->rb_len, MSG_DONTWAIT);
+
+			if (got > 0)
+			{
+				h->rb_len += (int) got;
+				return true;
+			}
+			if (got == 0 ||
+				(errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+				return false;
+		}
+
+		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), until);
+		if (left <= 0)
+		{
+			*timedOut = true;
+			return false;
+		}
+		rc = WaitLatchOrSocket(MyLatch,
+							   WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH |
+							   WL_SOCKET_READABLE,
+							   h->fd, left, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+	}
+}
+
+/*
+ * Read the final response head, passing over interim (1xx) ones: a store that
+ * answered 100 Continue after the Expect wait ran out sends it ahead of the
+ * final answer to the body.
+ */
+static bool
+os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
+{
+	do
+	{
+		if (!os_read_head(h, resp))
+			return false;
+	} while (resp->status >= 100 && resp->status < 200);
+	return true;
+}
+
+/*
+ * True when a reply has no body whatever its headers say: a 1xx, 204 or 304
+ * (RFC 9112 section 6.3).
+ */
+static bool
+os_reply_bodiless(const OsResponse *resp)
+{
+	return (resp->status >= 100 && resp->status < 200) ||
+		resp->status == 204 || resp->status == 304;
+}
+
+/*
+ * True when a reply's body ends where the server closes the connection: it
+ * has a body but neither a Content-Length nor chunked framing (RFC 9112
+ * section 6.3).
+ */
+static bool
+os_reply_until_close(const OsResponse *resp)
+{
+	return !os_reply_bodiless(resp) && !resp->chunked &&
+		resp->content_length < 0;
+}
+
+/*
+ * One write request (PUT/POST/DELETE), signed when the handle is an S3 one,
+ * with an optional body and a single reconnect on a stale keep-alive.
+ * `rawQuery` is the query as it goes on the wire AND the canonical query the
+ * signature covers: the caller builds it with keys already sorted (partNumber
+ * < uploadId; single-key queries are trivially sorted) and any UploadId value
+ * already percent-encoded through os_uriencode_query, so wire and canonical
+ * are byte-identical. The response body, if any, is captured into *outBody
+ * (palloc'd) for the caller.
+ */
+#define OS_WRITE_MAX_REPLY	(1024 * 1024)
+
 static void
 os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuery,
 				 const uint8 *body, int64 bodylen, OsResponse *resp,
@@ -1916,6 +2684,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	uint8		phash[PG_SHA256_DIGEST_LENGTH];
 	char		payloadHex[PG_SHA256_DIGEST_LENGTH * 2 + 1];
 	int			attempt;
+	bool		held = false;
+	bool		expect = (bodylen > OS_EXPECT_MIN_BODY && !h->expectIgnored);
 
 	os_sha256(body, (size_t) bodylen, phash);
 	os_hex(phash, sizeof(phash), payloadHex);
@@ -1924,6 +2694,11 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	{
 		StringInfoData req;
 		bool		fresh;
+		bool		sent;
+		bool		early;
+		bool		answered = false;
+		bool		early2xx = false;
+		bool		timedOut = false;
 
 		if (h->fd < 0)
 			os_connect(h);
@@ -1931,21 +2706,127 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 
 		initStringInfo(&req);
 		appendStringInfo(&req, "%s %s%s%s HTTP/1.1\r\nHost: %s:%d\r\n",
-						 method, h->abspath, rawQuery[0] ? "?" : "", rawQuery,
+						 method, h->abspath, rawQuery[0] ? os_query_sep(h) : "", rawQuery,
 						 h->host, h->port);
 		appendStringInfo(&req, "Content-Length: %lld\r\n", (long long) bodylen);
-		os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
+
+		/*
+		 * Sign only an S3 handle, as os_request does (#1779). An http(s)://
+		 * target has no region or credentials, so signing it read a NULL
+		 * region and crashed the backend; its write goes unsigned, like its
+		 * read.
+		 */
+		if (h->sign)
+			os_sign_write(h, method, h->abspath, rawQuery, payloadHex, &req);
+		if (expect)
+			appendStringInfoString(&req, "Expect: 100-continue\r\n");
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		if (os_send_all(h, req.data, req.len) &&
-			(bodylen == 0 || os_send_all(h, (const char *) body, bodylen)) &&
-			os_read_head(h, resp))
+		sent = os_send_all(h, req.data, req.len);
+
+		/*
+		 * With Expect, the store may answer the headers before the body is
+		 * sent (#1902). 100 Continue, or no answer within the wait (a store
+		 * that ignores Expect), sends the body; so does a connection that
+		 * ended, whose body send then fails and takes the stale keep-alive
+		 * path as before. A wait that runs out marks the handle, so its later
+		 * writes go without Expect and the wait is paid once (#1903 review).
+		 * 417 refuses the expectation itself, so the request goes again
+		 * without it.
+		 *
+		 * An answer of 300 or more is the answer to this request, and the
+		 * body is never sent. The writes this large (a single PUT, a part)
+		 * fail on any answer but 200, which drops the connection the store
+		 * may still expect the body on.
+		 *
+		 * A 2xx before the body (#1903 review) is still the request's one
+		 * final answer: HTTP gives a request exactly one, so no second answer
+		 * follows the body, and waiting for one would hang. But it cannot
+		 * mean the object was written, since none of the body was sent, and
+		 * a store that stays on the connection is still reading the body the
+		 * Content-Length promised. So the body is sent, and the 2xx stands as
+		 * the answer once the whole body has gone. A 2xx that closes the
+		 * connection will read no body: the write is not taken as done, and
+		 * goes the failed-send way (one retry on a stale keep-alive, else
+		 * "failed before a response"). A 2xx whose own body ends at
+		 * connection close closes it too (#1880), so it goes the same way.
+		 * A 100 Continue read here is not an answer: the body goes, and
+		 * os_read_final_head reads the final answer after it.
+		 */
+		if (sent && expect)
+		{
+			if (os_await_answer(h, OS_EXPECT_WAIT_MS, &timedOut))
+			{
+				/* bytes are staged, so this reads a head or raises */
+				(void) os_read_head(h, resp);
+				if (resp->status == 417)
+				{
+					pfree(req.data);
+					os_disconnect(h);
+					expect = false;
+					attempt--;	/* a fresh request, not a stale retry */
+					continue;
+				}
+				else if (resp->status >= 300)
+					answered = true;
+				else if (resp->status >= 200)
+					early2xx = true;
+			}
+			else if (timedOut)
+				h->expectIgnored = true;
+		}
+		if (early2xx && (resp->conn_close || os_reply_until_close(resp)))
+			sent = false;
+		else if (sent && !answered && bodylen > 0)
+			sent = os_send_all(h, (const char *) body, bodylen);
+		early = !sent && !early2xx && os_answered_early(h);
+		if (answered || (early2xx && sent))
 		{
 			pfree(req.data);
 			break;
 		}
+		if (sent || early)
+		{
+			/*
+			 * The store has the whole request and may apply it. From here a
+			 * cancel waits for the answer, so the caller learns the outcome
+			 * (#1813). The wait stays bounded by the quiet-slice timeout and
+			 * any deadline, which os_wait checks with interrupts held.
+			 */
+			if (sent && h->holdForAnswer && !held)
+			{
+				HOLD_INTERRUPTS();
+				held = true;
+			}
+			if (os_read_final_head(h, resp))
+			{
+				pfree(req.data);
+				break;
+			}
+		}
 		pfree(req.data);
 		os_disconnect(h);
+
+		/*
+		 * The store had the whole commit request when the connection closed,
+		 * so it may have applied it (#1846). With a cancel or terminate
+		 * pending, do not send it again: the retry would let the interrupt
+		 * end the statement with no word of the write. Say instead that the
+		 * object may be written.
+		 */
+		if (held)
+		{
+			bool		interrupted = (QueryCancelPending || ProcDiePending);
+
+			RESUME_INTERRUPTS();
+			held = false;
+			if (interrupted || fresh || attempt > 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_CONNECTION_FAILURE),
+						 errmsg("columnar: lost the connection to \"%s\" after sending the request that commits the object",
+								h->url),
+						 errdetail("The store may have written the object at that key.")));
+		}
 		if (!fresh && attempt == 0)
 			continue;			/* stale keep-alive: one reconnect */
 		ereport(ERROR,
@@ -1957,28 +2838,97 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 	if (resp->status == 403)
 		os_reject_403(h, resp, true);
 
+	/*
+	 * Read the reply body with the same reader as the listing (#1830). It
+	 * handles a Content-Length, chunked framing, and a body that ends when the
+	 * server closes the connection, which HTTP/1.1 allows. The old code read
+	 * only the first two, so it dropped a close-delimited UploadId and left
+	 * the body's bytes on the handle for the next request to read as its
+	 * reply. A 1xx, 204 or 304 reply has no body whatever its headers say
+	 * (RFC 9112 section 6.3). Garage answers a DELETE with a 204 that has no
+	 * Content-Length and keeps the connection open, so reading that reply
+	 * until close would wait until Garage drops the idle connection, about
+	 * 60 s. A body with a length of 1 MiB or more is an error page nobody
+	 * reads, so it is drained.
+	 *
+	 * Any other reply with neither a length nor chunked framing ends at
+	 * connection close (RFC 9112 section 6.3). A store that sends such a
+	 * reply and keeps the connection open makes this read wait for the
+	 * quiet-slice timeout. A chunked or close-delimited body over 1 MiB
+	 * raises os_slurp_body's size error, even on a 200 to
+	 * CompleteMultipartUpload, after the store has written the object. A
+	 * real S3 reply is far smaller; docs/sql-reference.md states the limit.
+	 */
 	{
 		char	   *b = NULL;
+		bool		untilClose = false;
 
-		if (!resp->chunked && resp->content_length > 0 &&
-			resp->content_length < 1024 * 1024)
-		{
-			b = palloc((Size) resp->content_length + 1);
-			os_read_exact(h, (uint8 *) b, resp->content_length);
-			b[resp->content_length] = '\0';
-		}
-		else if (resp->content_length > 0 || resp->chunked)
+		if (os_reply_bodiless(resp))
+			;
+		else if (!resp->chunked && resp->content_length >= OS_WRITE_MAX_REPLY)
 			os_read_body(h, resp, NULL, 0);		/* drain */
+		else if (resp->chunked || resp->content_length != 0)
+		{
+			untilClose = os_reply_until_close(resp);
+			b = os_slurp_body(h, resp, OS_WRITE_MAX_REPLY, NULL);
+		}
 		if (outBody != NULL)
 			*outBody = b;
 		else if (b != NULL)
 			pfree(b);
+
+		/* a close-delimited body leaves the connection at end of stream */
+		if (untilClose)
+			resp->conn_close = true;
 	}
 
 	if (resp->conn_close)
 		os_disconnect(h);
 	else
 		h->served++;
+	if (held)
+		RESUME_INTERRUPTS();
+}
+
+/*
+ * S3 multipart limits (#1857). An upload holds parts 1 to 10000, and AWS S3
+ * and GCS refuse a part under 5 MiB unless it is the last. The store checks
+ * the part size only when the upload completes, after every part went up.
+ */
+#define OS_MAX_PARTS		10000
+#define OS_MIN_PART_SIZE	(5 * 1024 * 1024)
+
+/* True when `host` is `domain` or a name under it, in any case. */
+static bool
+os_host_in_domain(const char *host, const char *domain)
+{
+	size_t		hl = strlen(host);
+	size_t		dl = strlen(domain);
+
+	if (hl > 0 && host[hl - 1] == '.')
+		hl--;					/* a fully qualified name's trailing dot */
+	if (hl == dl)
+		return pg_strncasecmp(host, domain, dl) == 0;
+	return hl > dl && host[hl - dl - 1] == '.' &&
+		pg_strncasecmp(host + hl - dl, domain, dl) == 0;
+}
+
+/*
+ * True when the write goes to AWS S3, Google Cloud Storage or Cloudflare R2,
+ * the stores known to refuse a part under 5 MiB. Other stores are not checked:
+ * some accept smaller parts, and the test servers rely on that.
+ */
+static bool
+os_store_needs_part_minimum(const PgColumnarObjHandle *h)
+{
+	const char *host = h->auth_host != NULL ? h->auth_host : h->host;
+
+	if (!h->sign || host == NULL)
+		return false;
+	return os_host_in_domain(host, "amazonaws.com") ||
+		os_host_in_domain(host, "amazonaws.com.cn") ||
+		os_host_in_domain(host, "storage.googleapis.com") ||
+		os_host_in_domain(host, "r2.cloudflarestorage.com");
 }
 
 /* Upload the buffered bytes as the next multipart part; record its ETag. */
@@ -1987,9 +2937,22 @@ os_flush_part(PgColumnarObjSink *s)
 {
 	OsResponse	resp;
 	char	   *body = NULL;
-	char	   *encId = os_uriencode_query(s->uploadId);
-	char	   *query = psprintf("partNumber=%d&uploadId=%s", s->partNo, encId);
+	char	   *encId;
+	char	   *query;
 	const char *etag;
+
+	/* refuse part 10001 before sending it; the abort then ends the upload */
+	if (s->partNo > OS_MAX_PARTS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("columnar: \"%s\" needs more than %d parts at a part size of %d bytes",
+						s->h->url, OS_MAX_PARTS, s->partSize),
+				 errdetail("A multipart upload holds at most %d parts. The export had produced %lld bytes.",
+						   OS_MAX_PARTS, (long long) s->total),
+				 errhint("Raise pgcolumnar.objstore_part_size so the object fits in %d parts.",
+						 OS_MAX_PARTS)));
+	encId = os_uriencode_query(s->uploadId);
+	query = psprintf("partNumber=%d&uploadId=%s", s->partNo, encId);
 
 	os_write_request(s->h, "PUT", query, (uint8 *) s->buf.data, s->buf.len,
 					 &resp, &body);
@@ -2002,8 +2965,8 @@ os_flush_part(PgColumnarObjSink *s)
 						s->h->url, resp.status)));
 	/* The part's ETag is the server's word for its bytes; CompleteMultipart
 	 * validates the list against it on a real S3, so echo it verbatim (already
-	 * quoted by the server). The fixture ignores it and concatenates by part
-	 * number, so both are satisfied. */
+	 * quoted by the server). The fixture checks it the same way and assembles
+	 * the listed parts, so both are satisfied. */
 	etag = resp.etag[0] ? resp.etag : "\"\"";
 	appendStringInfo(&s->completeXml,
 					 "<Part><PartNumber>%d</PartNumber><ETag>%s</ETag></Part>",
@@ -2023,6 +2986,25 @@ os_begin_multipart(PgColumnarObjSink *s)
 	char	   *idEnd;
 	MemoryContext oldcxt;
 
+	/*
+	 * A part under 5 MiB that is not the last makes AWS S3 and GCS refuse the
+	 * complete step (#1857). The upload starts when the buffer holds a whole
+	 * part, so the object will almost always need more than one part. Refuse
+	 * now, before the store holds anything. An object of exactly one part is
+	 * refused too, although the store would accept it; that edge is rare.
+	 */
+	if (s->partSize < OS_MIN_PART_SIZE && os_store_needs_part_minimum(s->h))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("columnar: a part size of %d bytes is below the 5 MiB minimum that \"%s\" requires",
+						s->partSize, s->h->url),
+				 errdetail("AWS S3 and Google Cloud Storage refuse a multipart upload whose parts, except the last, are under 5 MiB (%d bytes).",
+						   OS_MIN_PART_SIZE),
+				 errhint("Set pgcolumnar.objstore_part_size to %d or more, or to 0 for the 8 MiB default.",
+						 OS_MIN_PART_SIZE)));
+
+	/* from here the store may hold an upload this sink has no id for */
+	s->createSent = true;
 	os_write_request(s->h, "POST", "uploads=", NULL, 0, &resp, &body);
 	if (resp.status != 200 || body == NULL)
 		ereport(ERROR,
@@ -2058,7 +3040,24 @@ os_sink_free(PgColumnarObjSink *s)
 		pfree(s->completeXml.data);
 	if (s->uploadId != NULL)
 		pfree(s->uploadId);
+	if (s->cfg != NULL)
+	{
+		const char *strs[] = {s->cfg->endpoint, s->cfg->region, s->cfg->akid,
+		s->cfg->secret, s->cfg->token};
+		int			i;
+
+		for (i = 0; i < lengthof(strs); i++)
+			if (strs[i] != NULL)
+				pfree((char *) strs[i]);
+		pfree(s->cfg);
+	}
 	pfree(s);
+}
+
+static const char *
+os_strdup_or_null(const char *v)
+{
+	return v != NULL ? pstrdup(v) : NULL;
 }
 
 static PgColumnarObjSink *
@@ -2071,40 +3070,77 @@ objstore_sink_create(const char *url, const PgColumnarObjStoreConfig *cfg)
 	s = (PgColumnarObjSink *) palloc0(sizeof(PgColumnarObjSink));
 	initStringInfo(&s->buf);
 	initStringInfo(&s->completeXml);
+
+	/*
+	 * Keep the cfg: an abort with no upload id lists and aborts with it, so
+	 * it must use the same endpoint and credentials as the upload (#1846).
+	 */
+	if (cfg != NULL)
+	{
+		s->cfg = (PgColumnarObjStoreConfig *) palloc(sizeof(*cfg));
+		*s->cfg = *cfg;
+		s->cfg->endpoint = os_strdup_or_null(cfg->endpoint);
+		s->cfg->region = os_strdup_or_null(cfg->region);
+		s->cfg->akid = os_strdup_or_null(cfg->akid);
+		s->cfg->secret = os_strdup_or_null(cfg->secret);
+		s->cfg->token = os_strdup_or_null(cfg->token);
+	}
 	MemoryContextSwitchTo(oldcxt);
 	s->partSize = os_part_size();
 	s->h = os_write_handle(url, cfg);
 	return s;
 }
 
+/*
+ * Stage the chunk a part at a time (#1812). The whole chunk used to be
+ * appended first, so the buffer held up to one part plus one chunk, and a
+ * writer's chunk is a whole Parquet page or Arrow batch: 500 MB staged plus a
+ * 600 MB page passed the 1 GiB allocation cap. Now the buffer is filled to the
+ * part size, uploaded, and filled again, so it never holds more than one part.
+ */
 static void
 objstore_sink_write(PgColumnarObjSink *s, const void *buf, size_t n)
 {
-	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	const char *p = (const char *) buf;
 
-	appendBinaryStringInfo(&s->buf, (const char *) buf, (int) n);
-	MemoryContextSwitchTo(oldcxt);
 	s->total += (int64) n;
-
-	while (s->buf.len >= s->partSize)
+	while (n > 0)
 	{
-		StringInfoData rest;
-		int			carry = s->buf.len - s->partSize;
+		size_t		room = (size_t) (s->partSize - s->buf.len);
+		size_t		take = Min(n, room);
+		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
 
-		/* peel exactly one part; keep the remainder for the next flush */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		initStringInfo(&rest);
-		if (carry > 0)
-			appendBinaryStringInfo(&rest, s->buf.data + s->partSize, carry);
-		s->buf.len = s->partSize;
-		s->buf.data[s->partSize] = '\0';
-		if (s->uploadId == NULL)
-			os_begin_multipart(s);
-		os_flush_part(s);
-		pfree(s->buf.data);
-		s->buf = rest;
+		appendBinaryStringInfo(&s->buf, p, (int) take);
 		MemoryContextSwitchTo(oldcxt);
+		p += take;
+		n -= take;
+
+		if (s->buf.len >= s->partSize)
+		{
+			if (s->uploadId == NULL)
+				os_begin_multipart(s);
+			os_flush_part(s);	/* uploads the part and empties the buffer */
+		}
 	}
+}
+
+/*
+ * After the commit request succeeded: a cancel or terminate that arrived while
+ * its answer was awaited is still pending, and it ends the statement at the
+ * next interrupt check. Say first that the object is written, so the error
+ * that follows does not read as "nothing was written" (#1813). A committed
+ * object cannot be taken back: it may have replaced an earlier one. The detail
+ * does not say the object stays: a parallel_export_parquet worker runs this
+ * too, and its dispatcher deletes the worker's object when the export fails.
+ */
+static void
+os_sink_report_late_interrupt(PgColumnarObjSink *s)
+{
+	if (QueryCancelPending || ProcDiePending)
+		ereport(WARNING,
+				(errmsg("columnar: the export wrote \"%s\" before the interrupt took effect",
+						s->h->url),
+				 errdetail("The store accepted the object before the cancel or terminate took effect.")));
 }
 
 static void
@@ -2112,11 +3148,14 @@ objstore_sink_finish(PgColumnarObjSink *s)
 {
 	OsResponse	resp;
 
+	/* the commit request: the PUT or the CompleteMultipartUpload (#1813) */
 	if (s->uploadId == NULL)
 	{
 		/* small object: a single PUT is the whole story */
+		s->h->holdForAnswer = true;
 		os_write_request(s->h, "PUT", "", (uint8 *) s->buf.data, s->buf.len,
 						 &resp, NULL);
+		s->h->holdForAnswer = false;
 		if (resp.status != 200)
 			ereport(ERROR,
 					(errcode(ERRCODE_IO_ERROR),
@@ -2134,8 +3173,10 @@ objstore_sink_finish(PgColumnarObjSink *s)
 		initStringInfo(&xml);
 		appendStringInfo(&xml, "<CompleteMultipartUpload>%s</CompleteMultipartUpload>",
 						 s->completeXml.data);
+		s->h->holdForAnswer = true;
 		os_write_request(s->h, "POST", query, (uint8 *) xml.data, xml.len,
 						 &resp, NULL);
+		s->h->holdForAnswer = false;
 		pfree(xml.data);
 		pfree(query);
 		pfree(encId);
@@ -2145,14 +3186,84 @@ objstore_sink_finish(PgColumnarObjSink *s)
 					 errmsg("columnar: completing the upload of \"%s\" failed (HTTP %d)",
 							s->h->url, resp.status)));
 	}
+	os_sink_report_late_interrupt(s);
+
+	/* This statement wrote the object: a later read in it reads the new one. */
+	{
+		char	   *key = os_stmt_pin_key(s->h);
+		OsStmtPin  *p = os_stmt_pin_find(key);
+
+		if (p != NULL)
+			os_stmt_pin_free(p);
+		pfree(key);
+	}
 	os_free_handle(s->h);
 	s->h = NULL;
 	os_sink_free(s);
 }
 
+/*
+ * How long the abort of an upload whose id never arrived may take, from the
+ * listing's start to the last abort (#1810): the same bound the parallel
+ * dispatcher uses for its own cleanup (#1743).
+ */
+#define OS_SINK_CLEANUP_MS	10000
+
+static char **objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
+									int timeout_ms, char ***upload_ids, int *nuploads);
+static int	objstore_abort_upload(const char *url, const char *upload_id,
+								  const PgColumnarObjStoreConfig *cfg, int timeout_ms);
+
+/*
+ * The sink sent POST ?uploads but has no UploadId (#1810): a cancel or
+ * terminate landed while it waited for the answer, or the answer was lost.
+ * The store may hold the upload anyway. List the uploads for this exact key
+ * and abort each one. A listing by the key as a prefix also returns longer
+ * keys (key.old); those belong to someone else and stay open. An upload that
+ * another writer started at this same key cannot be told apart, and is
+ * aborted too.
+ *
+ * This runs for s3:// and gs:// (#1854): the GCS XML API lists multipart
+ * uploads the same way. The listing and the aborts use the cfg the sink was
+ * created with, so they reach the same endpoint with the same credentials as
+ * the upload. Raises on failure; the caller holds interrupts and catches.
+ */
+static void
+os_sink_abort_unanswered(PgColumnarObjSink *s)
+{
+	const char *url = s->h->url;
+	TimestampTz start = GetCurrentTimestamp();
+	char	  **keys;
+	char	  **ids = NULL;
+	int			n = 0;
+	int			i;
+
+	if (pg_strncasecmp(url, "s3://", 5) != 0 &&
+		pg_strncasecmp(url, "gs://", 5) != 0)
+		return;
+	keys = objstore_list_uploads(url, s->cfg, OS_SINK_CLEANUP_MS, &ids, &n);
+	for (i = 0; i < n; i++)
+	{
+		long		left;
+
+		/* the listing names keys s3:// or gs://bucket/key; compare past it */
+		if (strlen(keys[i]) < 5 || strcmp(keys[i] + 5, url + 5) != 0)
+			continue;
+		left = OS_SINK_CLEANUP_MS -
+			TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+		if (left <= 0)
+			break;
+		(void) objstore_abort_upload(url, ids[i], s->cfg, (int) left);
+	}
+}
+
 static void
 objstore_sink_abort(PgColumnarObjSink *s)
 {
+	MemoryContext cxt;
+	volatile uint32 held = 0;
+	volatile uint32 cancelHeld = 0;
+
 	if (s == NULL)
 		return;
 	if (s->h == NULL)			/* finish already ran; just reclaim */
@@ -2160,6 +3271,13 @@ objstore_sink_abort(PgColumnarObjSink *s)
 		os_sink_free(s);
 		return;
 	}
+	cxt = CurrentMemoryContext;
+
+	/*
+	 * A commit request that raised leaves holdForAnswer set (finish clears it
+	 * only on success). The DELETE below is not a commit request.
+	 */
+	s->h->holdForAnswer = false;
 	/* best effort, never raises: an ABORT that itself failed must not mask
 	 * the error that triggered it */
 	PG_TRY();
@@ -2170,13 +3288,45 @@ objstore_sink_abort(PgColumnarObjSink *s)
 			char	   *encId = os_uriencode_query(s->uploadId);
 			char	   *query = psprintf("uploadId=%s", encId);
 
+			/*
+			 * The abort can land mid-request (a cancel or a SIGTERM inside
+			 * os_wait), with a part's body still on this connection: the
+			 * DELETE would be read as more of that body, or its answer
+			 * confused with the part's. A fresh connection makes it a request
+			 * of its own (#1722).
+			 */
+			os_disconnect(s->h);
 			os_write_request(s->h, "DELETE", query, NULL, 0, &resp, NULL);
 			pfree(query);
 			pfree(encId);
 		}
+		else if (s->createSent)
+		{
+			/*
+			 * Interrupts held, so a second cancel cannot cut the cleanup
+			 * short; every wait is bounded by OS_SINK_CLEANUP_MS instead.
+			 */
+			HOLD_INTERRUPTS();
+			held = InterruptHoldoffCount;
+			cancelHeld = QueryCancelHoldoffCount;
+			os_sink_abort_unanswered(s);
+			RESUME_INTERRUPTS();
+			held = 0;
+		}
 	}
 	PG_CATCH();
 	{
+		/*
+		 * errfinish zeroed the holdoff counts before the longjmp. Put back
+		 * what the branch above held, then balance it.
+		 */
+		if (held != 0)
+		{
+			InterruptHoldoffCount = held;
+			QueryCancelHoldoffCount = cancelHeld;
+			RESUME_INTERRUPTS();
+		}
+		MemoryContextSwitchTo(cxt);
 		FlushErrorState();
 	}
 	PG_END_TRY();
@@ -2376,7 +3526,7 @@ os_list_parse_page(const char *body, int64 blen, const char *bucket,
 }
 
 /* Read the whole response body into a palloc'd NUL-terminated buffer, bounded by
- * cap; handles chunked and content-length framing. */
+ * cap; handles chunked, content-length and close-delimited framing. */
 static char *
 os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			  int64 *outlen)
@@ -2409,7 +3559,7 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			if ((int64) s.len + sz > cap)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 								h->url, (long long) cap)));
 			enlargeStringInfo(&s, (int) sz);
 			os_read_exact(h, (uint8 *) s.data + s.len, sz);
@@ -2418,18 +3568,46 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			os_read_line(h, line, sizeof(line));	/* chunk-terminating CRLF */
 		}
 	}
+	else if (resp->content_length < 0)
+	{
+		/*
+		 * Neither chunked nor a length: the body ends when the server closes
+		 * the connection (RFC 9112 section 6.3, rule 8). Every request on the
+		 * generic HTTP path sends Connection: close, and the Apache Iceberg
+		 * REST catalog answers a reply over about 32 KB this way (#1787).
+		 * Over plain TCP, os_fill returns false only on an orderly close (FIN)
+		 * and raises on a read error, so a reset connection is refused rather
+		 * than read as a short body. Over TLS, os_fill also returns false on
+		 * EOF without close_notify, so a body cut off that way is accepted as
+		 * complete; that is existing behaviour and is not changed here.
+		 */
+		for (;;)
+		{
+			int64		avail = h->rb_len - h->rb_off;
+
+			if ((int64) s.len + avail > cap)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
+								h->url, (long long) cap)));
+			if (avail > 0)
+			{
+				enlargeStringInfo(&s, (int) avail);
+				s.len += (int) os_take(h, (uint8 *) s.data + s.len, avail);
+				s.data[s.len] = '\0';
+			}
+			if (!os_fill(h))
+				break;
+		}
+	}
 	else
 	{
 		int64		cl = resp->content_length;
 
-		if (cl < 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("columnar: \"%s\" listing has no length", h->url)));
 		if (cl > cap)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("columnar: object listing from \"%s\" exceeded %lld bytes",
+					 errmsg("columnar: response from \"%s\" exceeded %lld bytes",
 							h->url, (long long) cap)));
 		enlargeStringInfo(&s, (int) cl);
 		os_read_exact(h, (uint8 *) s.data, cl);
@@ -2498,12 +3676,38 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 	{
 		char	   *body = os_slurp_body(h, &resp, OS_LIST_MAX_BODY, outlen);
 
-		if (resp.conn_close)
+		/* a close-delimited body leaves the connection at end of stream */
+		if (resp.conn_close || (!resp.chunked && resp.content_length < 0))
 			os_disconnect(h);
 		else
 			h->served++;
 		return body;
 	}
+}
+
+/*
+ * os_target_bucket_root
+ *		Point a handle resolved from a key in `bucket` at the bucket itself, the
+ *		target of a bucket-level request such as a LIST. Path-style addressing
+ *		names the bucket in the path, "/bucket". Virtual-host addressing has
+ *		already put the bucket in the host name (os_resolve_s3 sets auth_host),
+ *		so the path is the bucket root, "/": "/bucket" there would name the key
+ *		"bucket", and S3 answers that as a GetObject of it (#1783).
+ */
+static void
+os_target_bucket_root(PgColumnarObjHandle *h, const char *bucket)
+{
+	MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+	StringInfoData bp;
+
+	initStringInfo(&bp);
+	appendStringInfoChar(&bp, '/');
+	if (h->auth_host == NULL)
+		os_uriencode_path(&bp, bucket);
+	if (h->abspath != NULL)
+		pfree(h->abspath);
+	h->abspath = bp.data;
+	MemoryContextSwitchTo(oldcxt);
 }
 
 static char **
@@ -2538,22 +3742,16 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	bucket = pnstrdup(bstart, slash - bstart);
 	prefix = pstrdup(slash + 1);	/* may be "" (list the whole bucket) */
 
-	/* resolve host/region/credentials from a dummy key, then point the request
-	 * target at the bucket root and carry the prefix in the signed query */
+	/*
+	 * Resolve host/region/credentials from a dummy key, then point the request
+	 * target at the bucket root and carry the prefix in the signed query. The
+	 * handle is named for the prefix being listed, so a refusal, of the
+	 * listing or of the resolve, names it and not "s3://bucket/_" (#1781,
+	 * #1869).
+	 */
 	dummyUrl = psprintf("s3://%s/_", bucket);
-	h = os_write_handle(dummyUrl, cfg);
-	{
-		MemoryContext oldcxt = MemoryContextSwitchTo(TopMemoryContext);
-		StringInfoData bp;
-
-		initStringInfo(&bp);
-		appendStringInfoChar(&bp, '/');
-		os_uriencode_path(&bp, bucket);
-		if (h->abspath != NULL)
-			pfree(h->abspath);
-		h->abspath = bp.data;
-		MemoryContextSwitchTo(oldcxt);
-	}
+	h = os_write_handle_as(dummyUrl, url, cfg);
+	os_target_bucket_root(h, bucket);
 	encPrefix = os_uriencode_query(prefix);
 
 	PG_TRY();
@@ -2647,6 +3845,238 @@ objstore_list_objects(const char *url, const PgColumnarObjStoreConfig *cfg,
 	foreach(lc, keys)
 		out[i++] = (char *) lfirst(lc);
 	return out;
+}
+
+/* --------------------------------------------- ListMultipartUploads (#1743)
+ *
+ * The response is endpoint XML like a ListObjectsV2 page, read with the same
+ * bounded extractor. Each <Upload> element carries a <Key> and an <UploadId>;
+ * a truncated page names the next page by NextKeyMarker and
+ * NextUploadIdMarker.
+ */
+static void
+os_uploads_parse_page(const char *body, int64 blen, const char *scheme,
+					  const char *bucket, List **keys, List **ids,
+					  bool *truncated, char **nextKey, char **nextId)
+{
+	StringInfoData v;
+	StringInfoData kbuf;
+	int64		pos = 0;
+
+	*truncated = false;
+	*nextKey = NULL;
+	*nextId = NULL;
+
+	initStringInfo(&v);
+	if (os_xml_element(body, blen, "<IsTruncated>", "</IsTruncated>", &v))
+		*truncated = (v.len == 4 && pg_strncasecmp(v.data, "true", 4) == 0);
+	resetStringInfo(&v);
+	if (os_xml_element(body, blen, "<NextKeyMarker>", "</NextKeyMarker>", &v) &&
+		v.len > 0)
+		*nextKey = pstrdup(v.data);
+	resetStringInfo(&v);
+	if (os_xml_element(body, blen, "<NextUploadIdMarker>",
+					   "</NextUploadIdMarker>", &v))
+		*nextId = pstrdup(v.data);
+
+	initStringInfo(&kbuf);
+	for (;;)
+	{
+		int64		us = os_xml_find(body, blen, pos, "<Upload>");
+		int64		ue;
+
+		if (us < 0)
+			break;
+		ue = os_xml_find(body, blen, us, "</Upload>");
+		if (ue < 0)
+			break;
+		resetStringInfo(&kbuf);
+		appendStringInfo(&kbuf, "%s://%s/", scheme, bucket);
+		resetStringInfo(&v);
+		if (os_xml_element(body + us, ue - us, "<Key>", "</Key>", &kbuf) &&
+			os_xml_element(body + us, ue - us, "<UploadId>", "</UploadId>", &v) &&
+			v.len > 0)
+		{
+			*keys = lappend(*keys, pstrdup(kbuf.data));
+			*ids = lappend(*ids, pstrdup(v.data));
+		}
+		pos = ue;
+		if (list_length(*keys) > OS_LIST_MAX_KEYS)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("columnar: upload listing exceeded %d uploads",
+							OS_LIST_MAX_KEYS)));
+	}
+	pfree(kbuf.data);
+	pfree(v.data);
+}
+
+static void
+os_set_deadline(PgColumnarObjHandle *h, int timeout_ms)
+{
+	if (timeout_ms > 0)
+	{
+		h->deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+												  timeout_ms);
+		h->deadline_ms = timeout_ms;
+	}
+}
+
+static char **
+objstore_list_uploads(const char *url, const PgColumnarObjStoreConfig *cfg,
+					  int timeout_ms, char ***upload_ids, int *nuploads)
+{
+	const char *bstart;
+	const char *slash;
+	char	   *bucket;
+	char	   *encPrefix;
+	char	   *keyMarker = NULL;
+	char	   *idMarker = NULL;
+	PgColumnarObjHandle *h;
+	List	   *keys = NIL;
+	List	   *ids = NIL;
+	char	  **outKeys;
+	char	  **outIds;
+	int			pages = 0;
+	int			i;
+	const char *scheme;
+
+	/*
+	 * s3:// and, through the GCS XML API, gs:// (#1854). Keys come back in
+	 * the URL's scheme, lowercase.
+	 */
+	if (pg_strncasecmp(url, "s3://", 5) == 0)
+		scheme = "s3";
+	else if (pg_strncasecmp(url, "gs://", 5) == 0)
+		scheme = "gs";
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: listing uploads is only supported for s3:// and gs:// URLs, not \"%s\"",
+						url)));
+	bstart = url + 5;
+	slash = strchr(bstart, '/');
+	if (slash == NULL || slash == bstart)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("columnar: \"%s\" is not %s://bucket/prefix", url, scheme)));
+	bucket = pnstrdup(bstart, slash - bstart);
+	encPrefix = os_uriencode_query(slash + 1);
+
+	/*
+	 * As objstore_list_objects: resolve from a dummy key, request the bucket,
+	 * and name the prefix being listed in every message (#1869).
+	 */
+	h = os_write_handle_as(psprintf("%s://%s/_", scheme, bucket), url, cfg);
+	os_set_deadline(h, timeout_ms);
+	os_target_bucket_root(h, bucket);
+
+	PG_TRY();
+	{
+		for (;;)
+		{
+			StringInfoData q;
+			char	   *body;
+			int64		blen = 0;
+			bool		truncated = false;
+			char	   *nextKey = NULL;
+			char	   *nextId = NULL;
+			int			before = list_length(keys);
+
+			if (++pages > OS_LIST_MAX_PAGES)
+				ereport(ERROR,
+						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						 errmsg("columnar: upload listing of \"%s\" exceeded %d pages",
+								url, OS_LIST_MAX_PAGES)));
+
+			/* canonical query: key-marker < prefix < upload-id-marker < uploads */
+			initStringInfo(&q);
+			if (keyMarker != NULL)
+			{
+				char	   *enc = os_uriencode_query(keyMarker);
+
+				appendStringInfo(&q, "key-marker=%s&", enc);
+				pfree(enc);
+			}
+			appendStringInfo(&q, "prefix=%s&", encPrefix);
+			if (keyMarker != NULL && idMarker != NULL)
+			{
+				char	   *enc = os_uriencode_query(idMarker);
+
+				appendStringInfo(&q, "upload-id-marker=%s&", enc);
+				pfree(enc);
+			}
+			appendStringInfoString(&q, "uploads=");
+
+			body = os_list_request(h, q.data, &blen);
+			pfree(q.data);
+			os_uploads_parse_page(body, blen, scheme, bucket, &keys, &ids,
+								  &truncated, &nextKey, &nextId);
+			pfree(body);
+
+			if (!truncated || nextKey == NULL)
+				break;
+
+			/*
+			 * A truncated page must add uploads and move the markers on, or a
+			 * broken or hostile endpoint could keep the loop going (the same
+			 * two guards as objstore_list_objects).
+			 */
+			if (list_length(keys) == before ||
+				(keyMarker != NULL && strcmp(nextKey, keyMarker) == 0 &&
+				 strcmp(nextId ? nextId : "", idMarker ? idMarker : "") == 0))
+				ereport(ERROR,
+						(errcode(ERRCODE_PROTOCOL_VIOLATION),
+						 errmsg("columnar: upload listing of \"%s\" did not advance",
+								url)));
+			keyMarker = nextKey;
+			idMarker = nextId;
+		}
+	}
+	PG_CATCH();
+	{
+		os_free_handle(h);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	os_free_handle(h);
+
+	*nuploads = list_length(keys);
+	outKeys = (char **) palloc(sizeof(char *) * Max(*nuploads, 1));
+	outIds = (char **) palloc(sizeof(char *) * Max(*nuploads, 1));
+	for (i = 0; i < *nuploads; i++)
+	{
+		outKeys[i] = (char *) list_nth(keys, i);
+		outIds[i] = (char *) list_nth(ids, i);
+	}
+	*upload_ids = outIds;
+	return outKeys;
+}
+
+static int
+objstore_abort_upload(const char *url, const char *upload_id,
+					  const PgColumnarObjStoreConfig *cfg, int timeout_ms)
+{
+	PgColumnarObjHandle *h = os_write_handle(url, cfg);
+	OsResponse	resp;
+	char	   *encId = os_uriencode_query(upload_id);
+	char	   *query = psprintf("uploadId=%s", encId);
+
+	os_set_deadline(h, timeout_ms);
+	PG_TRY();
+	{
+		os_write_request(h, "DELETE", query, NULL, 0, &resp, NULL);
+	}
+	PG_CATCH();
+	{
+		os_free_handle(h);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	os_free_handle(h);
+	pfree(query);
+	pfree(encId);
+	return resp.status;
 }
 
 static void
@@ -2791,6 +4221,36 @@ objstore_http_request(const char *url, const char *method,
 	return result;
 }
 
+/*
+ * The allow-list check with no request (#1780). See columnar_objstore.h. An
+ * s3:// or gs:// URL resolves from a dummy key in its bucket, as
+ * objstore_list_objects does, so a bare or empty prefix resolves too.
+ */
+static void
+objstore_check_endpoint(const char *url, const PgColumnarObjStoreConfig *cfg)
+{
+	PgColumnarObjHandle *h;
+	char	   *target = (char *) url;
+
+	if (pg_strncasecmp(url, "s3://", 5) == 0 || pg_strncasecmp(url, "gs://", 5) == 0)
+	{
+		const char *bstart = url + 5;
+		const char *slash = strchr(bstart, '/');
+		int			blen = (slash != NULL) ? (int) (slash - bstart) : (int) strlen(bstart);
+
+		if (blen == 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no bucket", url)));
+		target = psprintf("%.5s%.*s/_", url, blen, bstart);
+	}
+	h = os_write_handle_as(target, url, cfg);	/* messages name `url` (#1869) */
+	os_check_endpoint_allowed(h);
+	os_free_handle(h);
+	if (target != url)
+		pfree(target);
+}
+
 static const PgColumnarObjStoreApi objstore_api = {
 	.abi_version = PGCOLUMNAR_OBJSTORE_ABI,
 	.handles_url = objstore_handles_url,
@@ -2804,10 +4264,26 @@ static const PgColumnarObjStoreApi objstore_api = {
 	.delete_object = objstore_delete_object,
 	.list_objects = objstore_list_objects,
 	.http_request = objstore_http_request,
+	.list_uploads = objstore_list_uploads,
+	.abort_upload = objstore_abort_upload,
+	.check_endpoint = objstore_check_endpoint,
 };
 
 const PgColumnarObjStoreApi *
 pgcolumnar_objstore_init(void)
 {
 	return &objstore_api;
+}
+
+/*
+ * A top-level statement ended (#1907 second review): drop its pins, so the
+ * next statement reads the object as it is now. pgColumnar finds this symbol
+ * by name, outside the API struct, so it does not change the ABI: a main
+ * library that lacks the call leaves the pins to the statement-time and
+ * transaction-end resets. It never raises.
+ */
+void
+pgcolumnar_objstore_statement_end(void)
+{
+	os_stmt_pins_reset();
 }

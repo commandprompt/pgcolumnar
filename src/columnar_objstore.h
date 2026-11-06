@@ -33,7 +33,7 @@
 
 #include "postgres.h"
 
-#define PGCOLUMNAR_OBJSTORE_ABI 5
+#define PGCOLUMNAR_OBJSTORE_ABI 8
 
 /* An open remote object (read) / upload (write). Module owns both. */
 typedef struct PgColumnarObjHandle PgColumnarObjHandle;
@@ -69,7 +69,36 @@ typedef struct PgColumnarObjStoreConfig
 	const char *secret;
 	const char *token;			/* optional session token */
 	bool		allow_ambient;	/* may fall back to the environment */
+	bool		vended;			/* the triple came from a REST catalog's
+								 * loadTable reply, not a user mapping (ABI 8,
+								 * #1796); only the 403 hint reads it */
+
+	/*
+	 * Per-object credentials (#1820), or NULL. pgColumnar-side only: every
+	 * pgColumnar call into the module first passes the config through
+	 * PgColumnarObjStoreConfigFor, which returns the config for that object
+	 * with this field NULL. So the module never sees it set, and its meaning
+	 * for the module is unchanged: the ABI version stays as it was. A config
+	 * that reached the module unresolved has no credential triple and
+	 * allow_ambient false, so the module refuses it (28000).
+	 */
+	const struct PgColumnarObjStoreCredSet *byprefix;
 } PgColumnarObjStoreConfig;
+
+/*
+ * The storage credentials a REST catalog vended for one table (#1820). For each
+ * object, PgColumnarObjStoreConfigFor uses the entry with the longest prefix of
+ * the object's URL. When no prefix matches it uses `fallback` (the catalog's
+ * flat config), and when there is no fallback it refuses the read (28000). It
+ * never falls back to the server's ambient AWS_* identity.
+ */
+typedef struct PgColumnarObjStoreCredSet
+{
+	int			n;
+	const char **prefix;		/* n storage location prefixes */
+	const PgColumnarObjStoreConfig **cfg;	/* n configs, byprefix NULL */
+	const PgColumnarObjStoreConfig *fallback;	/* or NULL: refuse */
+} PgColumnarObjStoreCredSet;
 
 typedef struct PgColumnarObjStoreApi
 {
@@ -158,6 +187,50 @@ typedef struct PgColumnarObjStoreApi
 										  int nheaders,
 										  const char *body, int64 body_len,
 										  int64 max_response);
+
+	/*
+	 * Multipart uploads in progress (#1743, ABI v6). A worker learns its
+	 * upload id only from the answer to CreateMultipartUpload, so a worker that
+	 * ends while waiting for that answer leaves an upload nobody holds the id
+	 * of. The parallel export's dispatcher finds those by listing.
+	 *
+	 * list_uploads lists the uploads in progress under `url`, an
+	 * s3://bucket/prefix or gs://bucket/prefix (ListMultipartUploads, paged by
+	 * the module; gs:// since #1854). It returns a palloc'd array of
+	 * `*nuploads` keys, each a full bucket/key URL in the lowercase scheme of
+	 * `url`, and sets `*upload_ids` to a parallel array of upload ids, both in
+	 * the current memory context. It raises on a transport or parse failure.
+	 *
+	 * abort_upload aborts one upload (AbortMultipartUpload, DELETE ?uploadId=)
+	 * and returns the HTTP status; a status is not an error. It raises on a
+	 * transport failure.
+	 *
+	 * Both take `timeout_ms`: when it is above 0, every wait in the call ends by
+	 * then, and the call raises once that much time has passed, whether or not
+	 * interrupts are held. 0 means the module's ordinary waits. cfg may be NULL.
+	 */
+	char	  **(*list_uploads) (const char *url,
+								 const PgColumnarObjStoreConfig *cfg,
+								 int timeout_ms,
+								 char ***upload_ids,
+								 int *nuploads);
+	int			(*abort_upload) (const char *url,
+								 const char *upload_id,
+								 const PgColumnarObjStoreConfig *cfg,
+								 int timeout_ms);
+
+	/*
+	 * The endpoint allow-list check alone (#1780, ABI v7). It resolves the
+	 * endpoint `url` would connect to, exactly as a write does, and raises
+	 * 42501 when pgcolumnar.objstore_allowed_endpoints, as this backend sees
+	 * it, does not list that endpoint. It sends no request and opens no
+	 * connection. `url` is s3://bucket/prefix, gs://bucket/prefix or an
+	 * http(s) URL; the prefix may be empty. The parallel export's dispatcher
+	 * calls it so a refused endpoint fails before any worker starts. cfg may
+	 * be NULL.
+	 */
+	void		(*check_endpoint) (const char *url,
+								   const PgColumnarObjStoreConfig *cfg);
 } PgColumnarObjStoreApi;
 
 /*
@@ -173,8 +246,51 @@ typedef const PgColumnarObjStoreApi *(*PgColumnarObjStoreInitFn) (void);
  */
 extern const PgColumnarObjStoreApi *PgColumnarObjStoreGet(void);
 
+/*
+ * A top-level statement ended. When the module is loaded, this calls its
+ * optional pgcolumnar_objstore_statement_end, which drops the object versions
+ * the module pinned for the statement (#1894, #1907 second review). That entry
+ * point is found by name, not through the API struct above, so it is not part
+ * of the ABI: either side may lack it, and then the module drops its pins when
+ * statement_timestamp() changes or the transaction ends.
+ */
+extern void PgColumnarObjStoreStatementEnd(void);
+
 /* Does `path` look like a remote URL at all? Cheap, no module load. */
 extern bool PgColumnarPathIsRemote(const char *path);
+
+/* Does `path` start with s3a:// or s3n://, in any case (#1930)? */
+extern bool PgColumnarPathIsS3Alias(const char *path);
+
+/*
+ * The s3:// form of an s3a:// or s3n:// path (palloc'd), else `path` itself.
+ * The Iceberg and Parquet readers read the Hadoop aliases through it (#1825,
+ * #1930).
+ */
+extern const char *PgColumnarS3Alias(const char *path);
+
+/*
+ * Raise 0A000 when `path` is s3a:// or s3n://, for an export (#1930), with a
+ * hint naming the s3:// URL. Returns normally for any other path.
+ */
+extern void PgColumnarRefuseS3AliasWrite(const char *funcname, const char *path);
+
+/*
+ * Raise 0A000 when `path` is a remote URL, for a function that reads local files
+ * only (#1886): "columnar: <funcname> does not read "<path>"", with a hint that
+ * it reads local files only. Also refuses s3a:// and s3n://, in any case
+ * (#1918), which PgColumnarPathIsRemote does not list. Returns normally for a
+ * local path.
+ */
+extern void PgColumnarRefuseRemotePath(const char *funcname, const char *path);
+
+/*
+ * The config to use for the object at `url`: `cfg` itself unless it carries
+ * per-object credentials (cfg->byprefix), else the longest-prefix match, else
+ * the fallback, else a 28000 refusal that names `url`.
+ */
+extern const PgColumnarObjStoreConfig *PgColumnarObjStoreConfigFor(const PgColumnarObjStoreConfig *cfg,
+																	const char *url);
 
 /*
  * Open a local regular file for reading with no stat-before-open race: opens

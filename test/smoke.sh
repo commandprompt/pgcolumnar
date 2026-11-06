@@ -123,14 +123,16 @@ fail=0
 # the ledger, the census, checks_never_observed_red, the red-observation record,
 # duplicate-name detection -- was blind to all nine. Measured: 0 RESULT lines.
 #
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. `fail` is still set, so this suite's own exit logic is untouched --
+# `fail` is still set, so this suite's own exit logic is untouched --
 # the verdict line it prints is load-bearing until `checks run:` reconciles, and
 # removing it in the same step would make the suite report less than it did before.
 #
-# NOT lib.sh's own `check`: that composes its own display and would drop the
-# `: $got` suffix these lines carry, which is the measured value rather than a
-# label. The name and the value are both wanted.
+# lib.sh's own `check` (#1341). This suite used to define its own `check` around
+# pgc_record, to keep a `: $got` suffix on PASS lines. A PASS line's value is the
+# wanted value, which the call already states, and a FAIL line carries both either
+# way. A suite-local recorder is also what the pytest twin's grading cannot read
+# (test_compare_to_bash's seed arm), so the shared one is used and `fail` is
+# taken from lib.sh's own PGC_FAIL below.
 #
 # AND THE `checks run:` LINE BELOW IS READ BY NOTHING YET, which is worth saying
 # so the next conversion does not add it believing it wired something up
@@ -146,15 +148,6 @@ fail=0
 # directly. So the remaining step is a gate flip rather than new work -- once
 # whatever replaces the verdict line emits the accounting line, reconciliation
 # starts working for all ten of these suites with no further change to them.
-check() {
-	local name="$1" got="$2" want="$3"
-	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
-	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
 
 check "count(*)"            "$TOTAL"    "100000"
 check "count where a<50"   "$FILTERED" "49"
@@ -169,6 +162,7 @@ check "orphan stripes"     "$ORPHANS"  "0"
 # writer, Phase D2). Confirms CREATE EXTENSION created the additive catalog.
 NATIVE_TABLES="$(run_pg "$PSQL -c \"SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar' AND c.relkind='r' AND c.relname IN ('storage','row_group','column_chunk','zone_map');\"")"
 check "native catalog tables" "$NATIVE_TABLES" "4"
+fail="$PGC_FAIL"
 
 echo
 if [ "$fail" = "0" ]; then

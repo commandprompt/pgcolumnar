@@ -967,6 +967,20 @@ check "the committed census matches the committed ledger" \
 check "the budget names a ceiling and a census, and says which is which" \
 	"$(grep -cE '^(suites_not_covered|checks_never_observed_red) [0-9]+$' "$_budget")" "2"
 
+# ---- #1431: the budget holds no history -------------------------------------
+#
+# Every PR appended its derivation above the census line, so any two PRs that
+# changed the ledger conflicted on the budget's end and needed a restate. The
+# derivation belongs in the commit message, where its Ledger-census trailer is
+# checked against the tsv. A derivation line anywhere refuses, not only at a
+# paragraph start: old restates wrapped one mid-paragraph ("2812 ->\n# 2818").
+check "the budget holds no derivation line" \
+	"$(grep -cE 'ledger rows|^#[[:space:]]+(never|dated)[[:space:]]+[0-9]' "$_budget" || true)" "0"
+check "the budget holds no history paragraph" \
+	"$(grep -cE '^# (#[0-9]+|MERGED)' "$_budget" || true)" "0"
+check "the census is the budget's last line" \
+	"$(grep -v '^[[:space:]]*$' "$_budget" | tail -1 | grep -cE '^checks_never_observed_red [0-9]+$' || true)" "1"
+
 
 # ---- #952: the census is printed AND compared -------------------------------
 #
@@ -1289,7 +1303,13 @@ check "premise: the gate's status block was found in the runner" \
 check "the runner captures the gate's status rather than only its success" \
 	"$(grep -c '_led_rc=\$?' "$_rv")" "1"
 check "a refusal keeps the regenerate-the-ledger wording" \
-	"$(printf '%s' "$_ledcase" | grep -c 'has a check the ledger has never seen')" "1"
+	"$(printf '%s' "$_ledcase" | grep -c 'regenerate the')" "1"
+# A REFUSAL HAS MORE THAN ONE CAUSE. rc=1 is an unseen check, a census that disagrees,
+# coverage over the ceiling, or a ceiling raised against the prior. The runner named
+# the first for all of them: #1537's CI refused a ceiling rise and printed "has a
+# check the ledger has never seen" under the gate's own "new this run=0".
+check "a refusal does not name one cause for all of them" \
+	"$(printf '%s' "$_ledcase" | grep -c 'has a check the ledger has never seen')" "0"
 check "an integrity failure says regenerating will not help" \
 	"$(printf '%s' "$_ledcase" | grep -c 'will not help')" "1"
 check "and it is a different sentence from the refusal, not the same one twice" \
@@ -1396,3 +1416,98 @@ check "and a genuine observation says so with --reds-are-real" \
 check "control: an all-PASS log still merges with no flag at all" \
 	"$(_led_rc merge --ledger "$_r946/d.tsv" --date 2026-09-10 "$_r946/green.log")" "0"
 unset _r946
+
+# ---- a premise the ledger has seen go red (#1236) ---------------------------
+#
+# A `premise:` check claims no repository change can redden it. A date in its
+# last-observed-red column says a mutation did, so one of the two claims is false and
+# the gate refuses rather than choosing. The control is the same ledger with `never`:
+# without it the arm passes on a gate that returns 1 for any reason at all.
+
+_r1236="$PGC_WORKDIR/r1236"; mkdir -p "$_r1236"
+printf 'RESULT\tdemo\tpart1\tpremise: the fixture holds rows\tPASS\t18\t\nRESULT\tdemo\tpart1\tsecond check\tPASS\t18\t\nchecks run: 2\n' > "$_r1236/p.log"
+printf 'suites_not_covered 0\n' > "$_r1236/b.txt"
+printf 'demo\tpart1\tpremise: the fixture holds rows\t18\tnever\t-\ndemo\tpart1\tsecond check\t18\tnever\t-\n' > "$_r1236/never.tsv"
+sed 's/\tnever\t-$/\t2026-10-01\t-/;2s/\t2026-10-01\t-$/\tnever\t-/' "$_r1236/never.tsv" > "$_r1236/dated.tsv"
+check "the dated fixture differs from the control in the premise row's date alone" \
+	"$(diff "$_r1236/never.tsv" "$_r1236/dated.tsv" | grep -c '^>.*premise: the fixture holds rows	18	2026-10-01')" "1"
+check "control: an undated premise passes the gate" \
+	"$(_led_rc gate --ledger "$_r1236/never.tsv" --budget "$_r1236/b.txt" --registered "$_lw/registered" "$_r1236/p.log")" "0"
+check "a premise the ledger has seen go red is refused" \
+	"$(_led_rc gate --ledger "$_r1236/dated.tsv" --budget "$_r1236/b.txt" --registered "$_lw/registered" "$_r1236/p.log")" "1"
+check "and it is named, so the reviewer knows which row" \
+	"$(_led_run gate --ledger "$_r1236/dated.tsv" --budget "$_r1236/b.txt" --registered "$_lw/registered" "$_r1236/p.log" \
+		| grep -c 'a premise the ledger has seen go red: demo	part1	premise: the fixture holds rows')" "1"
+unset _r1236
+
+# ---- #1431: each ledger commit carries its census, checked at that commit ----
+#
+# The derivation left the budget for the commit message, so the message is now
+# the record, and a restate that keeps a stale one would record a census the
+# commit's own tsv contradicts. `census-commits` checks every commit between the
+# merge base and HEAD that changes the tsv: exactly one `Ledger-census:` trailer,
+# read by `git interpret-trailers --parse` (so only the final trailer block
+# counts), equal to that commit's tsv, and consistent with itself. A commit that
+# leaves the tsv alone needs none. No merge base is an integrity failure (rc 2):
+# the gate cannot say what the PR added, and passing would enforce nothing.
+
+_cc="$PGC_WORKDIR/r1431"; rm -rf "$_cc"; mkdir -p "$_cc/repo/test"
+_ccg() { git -C "$_cc/repo" -c user.email=t@t -c user.name=t "$@" >/dev/null 2>&1; }
+_cc_tsv() {  # rows written as N never then M dated
+	: > "$_cc/repo/test/check_ledger.tsv"
+	for _i in $(seq 1 "$1"); do printf 'demo\tpart1\tn%s\t18\tnever\t-\n' "$_i" >> "$_cc/repo/test/check_ledger.tsv"; done
+	for _i in $(seq 1 "$2"); do printf 'demo\tpart1\td%s\t18\t2026-10-01\tm\n' "$_i" >> "$_cc/repo/test/check_ledger.tsv"; done
+}
+_cc_commit() {  # branch-base message [never dated]
+	if [ $# -ge 4 ]; then _cc_tsv "$3" "$4"; else date +%s%N > "$_cc/repo/README"; fi
+	_ccg add -A && _ccg commit -q -m "$2"
+}
+_cc_on() { _ccg checkout -q -B "$1" base; }
+_cc_rc()  { _led_rc census-commits --tsv "$_cc/repo/test/check_ledger.tsv" --against base; }
+_cc_run() { _led_run census-commits --tsv "$_cc/repo/test/check_ledger.tsv" --against base; }
+
+_ccg init -q . && _ccg checkout -q -b main
+_cc_commit main "base" 1 0 && _ccg tag base
+
+_cc_on good
+_cc_commit good "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1')" 1 1
+_cc_commit good "touch the readme, no trailer"
+check "a commit whose trailer matches its tsv passes the census-commit gate" "$(_cc_rc)" "0"
+check "the good range holds one tsv commit, so its pass checked something" \
+	"$(_cc_run | grep -c 'census commits: 1 change test/check_ledger.tsv')" "1"
+
+_cc_on notsv
+_cc_commit notsv "touch the readme, no trailer"
+check "a commit that leaves the tsv alone needs no trailer" "$(_cc_rc)" "0"
+
+_cc_on stale
+_cc_commit stale "$(printf 'add a dated row\n\nLedger-census: rows=1 never=1 dated=0')" 1 1
+check "a stale trailer is refused" "$(_cc_rc)" "1"
+check "and the refusal names the commit and both censuses" \
+	"$(_cc_run | grep -c "$(git -C "$_cc/repo" rev-parse --short=8 HEAD).*rows=1 never=1 dated=0.*rows=2 never=1 dated=1")" "1"
+
+_cc_on missing
+_cc_commit missing "add a dated row, and say nothing" 1 1
+check "a missing trailer is refused" "$(_cc_rc)" "1"
+
+_cc_on buried
+_cc_commit buried "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1\n\nA paragraph after it, so it is not the final trailer block.')" 1 1
+check "a trailer outside the final trailer block is refused as missing" "$(_cc_rc)" "1"
+
+_cc_on twice
+_cc_commit twice "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=1\nLedger-census: rows=2 never=1 dated=1')" 1 1
+check "two trailers are refused" "$(_cc_rc)" "1"
+
+_cc_on selfinc
+_cc_commit selfinc "$(printf 'add a dated row\n\nLedger-census: rows=2 never=1 dated=2')" 1 1
+check "a self-inconsistent trailer is refused" "$(_cc_rc)" "1"
+check "and for being inconsistent, not only for disagreeing with the tsv" \
+	"$(_cc_run | grep -c 'dated must be rows - never = 1')" "1"
+
+_ccg checkout -q --orphan unrelated
+_cc_commit unrelated "$(printf 'an unrelated root\n\nLedger-census: rows=1 never=1 dated=0')" 1 0
+check "a range with no merge base is an integrity failure" "$(_cc_rc)" "2"
+
+check "the runner calls the census-commit gate with the ledger gate's prior" \
+	"$(grep -cE 'pgc_ledger\.py" census-commits' "$_rv")" "1"
+unset _cc

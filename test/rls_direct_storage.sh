@@ -58,16 +58,18 @@ psql_run "GRANT SELECT, INSERT ON plain_t TO t_rls;"
 # the RLS check, so they would report acl and prove nothing about this fix.
 psql_run "GRANT EXECUTE ON FUNCTION pgcolumnar.read_projection(regclass,text) TO t_rls;"
 psql_run "GRANT EXECUTE ON FUNCTION pgcolumnar.reconstruct_via_projection(regclass,text) TO t_rls;"
-psql_run "ALTER TABLE rls_t ENABLE ROW LEVEL SECURITY;"
-psql_run "CREATE POLICY p_own ON rls_t FOR SELECT TO t_rls USING (owner_name = current_user);"
-psql_run "CREATE POLICY p_ins ON rls_t FOR INSERT TO t_rls WITH CHECK (owner_name = current_user);"
-# A source file the role may import, produced by the owner from the open table.
+# A source file the role may import, produced by the owner from the open table,
+# BEFORE row-level security is enabled, so no version of the guard under test can
+# stop the fixture from being made.
 # Exported from rls_t BY THE OWNER, so the source shape matches the import
 # target. A source taken from a differently shaped table makes the import arms
 # fail on column counts, which looks like a refusal and is not one.
 psql_run "SELECT pgcolumnar.export_parquet('rls_t','$OUT/src.parquet');"
 psql_run "SELECT pgcolumnar.export_arrow('rls_t','$OUT/src.arrow');"
 psql_run "COPY rls_t TO '$OUT/src.txt';"
+psql_run "ALTER TABLE rls_t ENABLE ROW LEVEL SECURITY;"
+psql_run "CREATE POLICY p_own ON rls_t FOR SELECT TO t_rls USING (owner_name = current_user);"
+psql_run "CREATE POLICY p_ins ON rls_t FOR INSERT TO t_rls WITH CHECK (owner_name = current_user);"
 
 as_rls() {  # as_rls <sql> -> the ERROR line, connfail, or noerror
 	local out
@@ -90,20 +92,26 @@ verdict() {  # verdict <sql> -> rls | acl | allowed | other
 }
 
 # ---- premises, every one run BY the restricted role -------------------------
+#
+# Two of these read the table through the columnar scan, so a product change can
+# redden them, and they are checks, not premises (#1236; #1397 review): the policy's
+# row count, which the custom scan dropping its quals turned into every row, and the
+# owner's count. The source files are a third: the owner's export writes them, so an
+# export that writes nothing reddens that check (#1383 review).
 check "premise: the role can open a session" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U t_rls -d "$PGC_DB" -At -c 'SELECT 1;' 2>&1 | head -1)" "1"
 check "premise: the role HOLDS select, so the ACL check cannot be what refuses" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U t_rls -d "$PGC_DB" -At \
 		-c "SELECT has_table_privilege('rls_t','SELECT');" 2>&1 | head -1)" "t"
-check_num "premise: the policy is in force for ordinary SQL" \
+check_num "the policy is in force for ordinary SQL" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U t_rls -d "$PGC_DB" -At \
 		-c 'SELECT count(*) FROM rls_t;' 2>&1 | head -1)" "1"
 check "premise: the role holds EXECUTE, so the grant layer is not what refuses" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U t_rls -d "$PGC_DB" -At \
 		-c "SELECT has_function_privilege('pgcolumnar.read_projection(regclass,text)','EXECUTE');" 2>&1 | head -1)" "t"
-check_num "premise: the owner sees every row, so the policy hides something real" \
+check_num "the owner sees every row, so the policy hides something real" \
 	"$(q 'SELECT count(*) FROM rls_t;')" "$ROWS"
-check "premise: the source files the import arms need exist" \
+check "the source files the import arms need exist" \
 	"$([ -s "$OUT/src.parquet" ] && [ -s "$OUT/src.arrow" ] && [ -s "$OUT/src.txt" ] && echo yes || echo no)" "yes"
 
 # ---- the refusals -----------------------------------------------------------
@@ -166,8 +174,11 @@ check "and still exportable by it" \
 owner_rows="$(q 'SELECT count(*) FROM rls_t;')"
 check "the OWNER can still read the RLS table's storage (RLS_NONE_ENV)" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('rls_t','p1');" 2>&1 | head -1)" "$owner_rows"
-check "and the owner can still export it" \
-	"$([ -n "$(q "SELECT pgcolumnar.export_parquet('rls_t','$OUT/owner.parquet');" 2>&1)" ] && echo ran || echo ran)" "ran"
+# Measured as the rows the export holds, read back: both branches of the old test
+# here echoed "ran", so a refused owner export passed it.
+q "SELECT pgcolumnar.export_parquet('rls_t','$OUT/owner.parquet');" >/dev/null 2>&1
+check_num "and the owner can still export it" \
+	"$([ -s "$OUT/owner.parquet" ] && q "SELECT count(*) FROM pgcolumnar.read_parquet('$OUT/owner.parquet') AS (id int, owner_name text, ssn text);" 2>&1 | head -1 || echo 0)" "$owner_rows"
 
 # ---- FORCE ROW LEVEL SECURITY reaches the owner too -------------------------
 #

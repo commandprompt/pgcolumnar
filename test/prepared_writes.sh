@@ -85,7 +85,7 @@ q "CREATE INDEX pw_id ON pw (id);" >/dev/null
 check "premise: the fetch is an index scan, which is what reaches the fetch cache" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At \
 		-c "SET enable_seqscan = off" -c "SET enable_bitmapscan = off" -c "SET pgcolumnar.enable_custom_scan = off" \
-		-c "EXPLAIN SELECT v FROM pw WHERE id = 120" 2>&1 | grep -c 'Index Scan using pw_id')" "1"
+		-c "EXPLAIN SELECT string_agg(v, ',') FROM pw WHERE id IN (120, 121, 122)" 2>&1 | grep -c 'Index Scan using pw_id')" "1"
 check "an index fetch before PREPARE, and the same row fetched first after COMMIT PREPARED, in one session" \
 	"$(session "SET enable_seqscan = off" "SET enable_bitmapscan = off" "SET pgcolumnar.enable_custom_scan = off" \
 		"BEGIN" "SELECT string_agg(v, ',') FROM pw WHERE id IN (120, 121, 122)" "PREPARE TRANSACTION 'pw_fetch'" \

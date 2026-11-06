@@ -28,6 +28,7 @@ check fires BEFORE the work, so a non-owner is refused for a projection that doe
 not exist rather than told it is missing.
 """
 
+import psycopg
 import pytest
 
 # Every maintenance and DDL entry point, with an argument list that would be valid
@@ -113,18 +114,70 @@ def test_non_owner_is_refused_with_42501(pgc_conn, expect, call):
     expect.sqlstate(excinfo.value, "42501", f"non-owner refused: {fn}")
 
 
+# The order the owner runs them in: a projection must exist before it is dropped, and
+# truncate empties the table, so it goes last.
+OWNER_ORDER = [
+    "compact('n')",
+    "compact_rewrite('n', 0.0)",
+    "recluster('n', 'id')",
+    "vacuum('n')",
+    "vacuum_sorted('n', 'id')",
+    "cluster('n', 'id')",
+    "add_projection('n', 'p', ARRAY['id','v'])",
+    "drop_projection('n', 'p')",
+    "truncate('n')",
+]
+
+
 def test_the_owner_is_allowed(pgc_conn, expect):
-    """The control. A gate that refused everyone would satisfy every arm above."""
+    """The control. A gate that refused everyone would satisfy every arm above.
+
+    THE OWNER IS NOT A SUPERUSER (#1339). It used to be the connecting role,
+    `postgres`, and the owner check passes every superuser. So the control proved a
+    superuser is allowed, and an ownership gate rewritten as `superuser()` refused
+    every real owner while every arm here stayed green. `bob` owns the table and is
+    nothing else, and he runs all nine functions, not two.
+    """
     with pgc_conn.cursor() as cur:
         _fixture(cur)
-        cur.execute("SELECT pgcolumnar.compact('n')")
-        cur.execute("SELECT count(*) FROM n")
-        after_compact = cur.fetchone()[0]
-        cur.execute("SELECT pgcolumnar.recluster('n', 'id')")
-        cur.execute("SELECT count(*) FROM n")
-        after_recluster = cur.fetchone()[0]
-    expect.num(after_compact, 3000, "owner compact allowed")
-    expect.num(after_recluster, 3000, "owner recluster allowed")
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'bob'")
+        if cur.fetchone() is None:
+            cur.execute("CREATE ROLE bob NOSUPERUSER")
+        cur.execute("GRANT USAGE ON SCHEMA pgcolumnar TO bob")
+        cur.execute("SELECT current_schema()")
+        cur.execute(f'GRANT USAGE ON SCHEMA "{cur.fetchone()[0]}" TO bob')
+        cur.execute("ALTER TABLE n OWNER TO bob")
+        cur.execute("SELECT rolsuper FROM pg_roles WHERE rolname = 'bob'")
+        bob_super = cur.fetchone()[0]
+        cur.execute("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'n'::regclass")
+        owner = cur.fetchone()[0]
+        outcomes = {}
+        counts = {}
+        cur.execute("SET ROLE bob")
+        try:
+            for call in OWNER_ORDER:
+                fn = call.split("(")[0]
+                try:
+                    cur.execute(f"SELECT pgcolumnar.{call}")
+                    outcomes[fn] = "allowed"
+                except psycopg.Error as e:
+                    outcomes[fn] = e.sqlstate or type(e).__name__
+                cur.execute("SELECT count(*) FROM n")
+                counts[fn] = cur.fetchone()[0]
+        finally:
+            cur.execute("RESET ROLE")
+    expect.text(f"{owner}|{bob_super}", "bob|False",
+                "premise: the table's owner is bob, who is not a superuser")
+    # The verdict AND the rows: a refusal leaves 3000 rows too, so the count alone
+    # cannot tell an allowed call from a refused one.
+    expect.text(f"{outcomes['compact']}|{counts['compact']}", "allowed|3000",
+                "owner compact allowed")
+    expect.text(f"{outcomes['recluster']}|{counts['recluster']}", "allowed|3000",
+                "owner recluster allowed")
+    expect.num(len(outcomes), 9, "premise: the owner ran all nine maintenance functions")
+    for call in OWNER_ORDER:
+        fn = call.split("(")[0]
+        expect.text(outcomes[fn], "allowed", f"owner allowed: {fn}")
 
 
 def test_the_check_fires_before_the_work(pgc_conn, expect):

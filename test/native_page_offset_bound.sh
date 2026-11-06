@@ -31,8 +31,48 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
-alive()  { [ "$(q 'SELECT 1;')" = "1" ] && echo yes || echo no; }
-errors() { if psql_run "$1" >/dev/null 2>&1; then echo no; else echo yes; fi; }
+# A REFUSAL IS THE CONTAINMENT GUARD'S OWN. Every arm wants XX001 with the guard's
+# message ("... lies outside row group"), read as "XX001 (containment guard)". It used to
+# accept any psql failure, so a backend the corrupt offset crashed passed as refused.
+# A BACKEND THAT DIED DOES NOT PASS AS ONE THAT SURVIVED: SELECT 1 answers again once
+# crash recovery has finished, so survival also reads the server log's count of
+# backends killed by a signal since the arm began. AND AN INTACT TABLE STILL READS: a
+# guard over-applied to refuse every chunk, or a legal chunk ending exactly at its
+# group's end, passed every arm below, which all want a refusal.
+GUARD_RE='lies outside row group'
+refusal_of() {	# stdin: psql output -> "XX001 (containment guard)", "<SQLSTATE>: <msg>", or what happened
+	local line state msg out; out="$(cat)"
+	line="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): /\1|/p' <<<"$out" | head -1)"
+	if [ -z "$line" ]; then
+		grep -qE 'server closed the connection|connection to server' <<<"$out" \
+			&& echo "no refusal: the connection was lost" || echo "no error"
+		return
+	fi
+	state="${line%%|*}"; msg="${line#*|}"
+	if grep -qE -- "$GUARD_RE" <<<"$msg"; then echo "$state (containment guard)"; else echo "$state: $msg"; fi
+}
+refusal() {	# refusal SQL [PROJECTION_OFF] -> the refusal reading
+	local pre=""; [ "${2:-}" = off ] && pre="SET pgcolumnar.enable_column_projection = off;"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF | refusal_of
+\\set VERBOSITY verbose
+$pre
+$1;
+SQLEOF
+}
+crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+survived() {	# survived BEFORE -> "1" when the server answers and no backend died since BEFORE
+	local _up _now _i
+	_up="$(q 'SELECT 1')"; _now="$(crashes)"
+	if ! [[ "$1" =~ ^[0-9]+$ && "$_now" =~ ^[0-9]+$ ]]; then echo "no (crash count unreadable)"; return; fi
+	if [ "$_up" = 1 ] && [ "$_now" = "$1" ]; then echo 1; return; fi
+	for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && break; sleep 0.5; done
+	echo "no ([$_up], $(( _now - $1 )) backend crashes)"
+}
 sid()    { q "SELECT pgcolumnar.get_storage_id('c');"; }
 
 mkc() {
@@ -41,59 +81,68 @@ mkc() {
 	psql_run "INSERT INTO c SELECT g, (random()*9e18)::bigint, 'v'||(g%5)
 	          FROM generate_series(1,20000) g;"
 }
+WANT="XX001 (containment guard)"
 
-# --- control: the projected read already refuses an out-of-group offset --------
-echo "-- control: page_offset overrun on a PROJECTED scan (SELECT sum(r)) errors"
+# --- controls: an intact table reads every row, on both paths --------------------
+echo "-- control: an intact table reads through the whole-group and the projected read"
+mkc
+# Rows, not an aggregate: count() and sum() over an intact table can be answered
+# without decoding a chunk, and then neither read path is exercised. The OFFSET 0
+# fence keeps the filter a filter, so every chunk of every group is decoded.
+EVERY_1000="$(seq -s, 1000 1000 20000)"
+check_text "an intact table reads every row and value with projection off" \
+	"$(PGOPTIONS="-c pgcolumnar.enable_column_projection=off" q "SELECT string_agg(id::text, ',' ORDER BY id) FROM
+	        (SELECT * FROM c WHERE id % 1000 = 0 AND r IS NOT NULL AND t LIKE 'v%' OFFSET 0) s;")" \
+	"$EVERY_1000"
+check_text "an intact table's projected read returns every id" \
+	"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM
+	        (SELECT id FROM c WHERE id % 1000 = 0 OFFSET 0) s;")" "$EVERY_1000"
+
+# --- control: the projected read already refuses an out-of-group offset ----------
+echo "-- control: page_offset overrun on a PROJECTED scan (SELECT sum(r)) is refused"
 mkc
 psql_run "UPDATE pgcolumnar.column_chunk SET page_offset = page_offset + 999999999
           WHERE storage_id = $(sid) AND column_index = 1;"
-check "projected page_offset overrun errors" "$(errors 'SELECT sum(r) FROM c;')" "yes"
-check "alive after projected overrun"        "$(alive)" "yes"
+B="$(crashes)"
+check_text "projected page_offset overrun is refused by the containment guard" \
+	"$(refusal 'SELECT sum(r) FROM c')" "$WANT"
+check "alive after projected overrun" "$(survived "$B")" "1"
 
-# --- the gap: whole-group read (projection off) with the offset above the group
-echo "-- page_offset overrun on the WHOLE-GROUP read (projection off) must error, not crash"
+# --- the gap: whole-group read (projection off) with the offset above the group --
+echo "-- page_offset overrun on the WHOLE-GROUP read (projection off) must be refused, not crash"
 mkc
 psql_run "UPDATE pgcolumnar.column_chunk SET page_offset = page_offset + 999999999
           WHERE storage_id = $(sid) AND column_index = 1;"
-check "whole-group page_offset overrun errors" \
-	"$(errors 'SET pgcolumnar.enable_column_projection=off; SELECT * FROM c;')" "yes"
-check "alive after whole-group overrun"        "$(alive)" "yes"
+B="$(crashes)"
+check_text "whole-group page_offset overrun is refused by the containment guard" \
+	"$(refusal 'SELECT * FROM c' off)" "$WANT"
+check "alive after whole-group overrun" "$(survived "$B")" "1"
 
-# --- the harsher case: offset below fileOffset -> uint64 wrap on the same path -
+# --- the harsher case: offset below fileOffset -> uint64 wrap on the same path ---
 echo "-- page_offset driven below the group start (subtraction wraps), projection off"
 mkc
 psql_run "UPDATE pgcolumnar.column_chunk SET page_offset = 0
           WHERE storage_id = $(sid) AND column_index = 2;"
-check "whole-group page_offset=0 errors" \
-	"$(errors 'SET pgcolumnar.enable_column_projection=off; SELECT * FROM c;')" "yes"
-check "alive after whole-group wrap"     "$(alive)" "yes"
+B="$(crashes)"
+check_text "whole-group page_offset=0 is refused by the containment guard" \
+	"$(refusal 'SELECT * FROM c' off)" "$WANT"
+check "alive after whole-group wrap" "$(survived "$B")" "1"
 
 # --- the overflow case: page_offset = -1 arrives as ~UINT64_MAX, so a naive
-# --- `page_offset + page_length > group_end` test wraps and passes, letting base
-# --- index far outside nativeBuffer. The guard must reject it (the containment
-# --- test is written overflow-safe), and specifically the CONTAINMENT guard must
-# --- fire -- not a downstream decode error that only incidentally catches the
-# --- wrapped read. page_offset is a signed bigint column, so -1 is storable.
-guard_fires() {  # guard_fires <sql> ; yes iff the containment guard raised
-	# capture-then-grep: piping an erroring psql into grep under pipefail would
-	# mask the match (see the pipefail-hides-grep lesson).
-	local out
-	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
-		-U postgres -d "$PGC_DB" -c "$1" 2>&1)"
-	case "$out" in
-		*"lies outside row group"*) echo yes ;;
-		*) echo no ;;
-	esac
-}
+# --- `page_offset + page_length > group_end` test wraps and passes. The guard is
+# --- written overflow-safe, and it must be the CONTAINMENT guard that fires, not a
+# --- downstream decode error that only incidentally catches the wrapped read.
 echo "-- page_offset = -1 (unsigned wrap) must be caught by the containment guard, both paths"
 mkc
 psql_run "UPDATE pgcolumnar.column_chunk SET page_offset = -1
           WHERE storage_id = $(sid) AND column_index = 1;"
-check "whole-group page_offset=-1 hits the containment guard" \
-	"$(guard_fires 'SET pgcolumnar.enable_column_projection=off; SELECT * FROM c;')" "yes"
-check "alive after whole-group page_offset=-1" "$(alive)" "yes"
-check "projected page_offset=-1 hits the containment guard" \
-	"$(guard_fires 'SELECT sum(r) FROM c;')" "yes"
-check "alive after projected page_offset=-1" "$(alive)" "yes"
+B="$(crashes)"
+check_text "whole-group page_offset=-1 hits the containment guard" \
+	"$(refusal 'SELECT * FROM c' off)" "$WANT"
+check "alive after whole-group page_offset=-1" "$(survived "$B")" "1"
+B="$(crashes)"
+check_text "projected page_offset=-1 hits the containment guard" \
+	"$(refusal 'SELECT sum(r) FROM c')" "$WANT"
+check "alive after projected page_offset=-1" "$(survived "$B")" "1"
 
 pgc_summary

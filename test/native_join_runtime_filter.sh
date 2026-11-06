@@ -104,11 +104,12 @@ check "int4/int8 answer equals heap" "$(pc "${rf_on}$SQLX"|tail -1)" "$(q "SELEC
 # must not claim an ordering; Bloom may still reject. 200 text keys.
 q "$(cat <<'SQL'
 CREATE TABLE dim_txt(k text COLLATE "C");
-INSERT INTO dim_txt SELECT (40 + 100 * g)::text FROM generate_series(0,199) g;
+INSERT INTO dim_txt SELECT (15000 + g)::text FROM generate_series(0,199) g;
 CREATE TABLE fact_txt(k text COLLATE "C", payload text) USING pgcolumnar;
 SELECT pgcolumnar.set_options($t$fact_txt$t$, stripe_row_limit => 1000);
 INSERT INTO fact_txt SELECT g::text, repeat(md5(g::text), 8) FROM generate_series(1,20000) g;
-CREATE TABLE heap_txt AS SELECT * FROM fact_txt;
+CREATE TABLE heap_txt(k text COLLATE "C", payload text);
+INSERT INTO heap_txt SELECT g::text, repeat(md5(g::text), 8) FROM generate_series(1,20000) g;
 ANALYZE dim_txt;
 ANALYZE fact_txt;
 SQL
@@ -118,6 +119,23 @@ SELECT count(*),sum(length(fact_txt.k)),sum(length(fact_txt.payload))
 FROM fact_txt JOIN dim_txt ON fact_txt.k = dim_txt.k COLLATE "POSIX"
 SQL
 )
+# THE FIXTURE MUST BE ONE THE INTERVAL COULD PRUNE (#1339). The dimension keys used
+# to span C-order "10060".."9960", which overlaps every fact group, so a wrongly
+# attached interval removed nothing either and the "stays off" arm passed with the
+# collation gate removed. The 200 keys "15000".."15199" leave every group whose keys
+# start with 2-9 outside the hull, and the control below proves an interval prunes
+# them when the collations DO match. Two hundred, not ten: under ten build rows no
+# Bloom filter is built (measured: "Runtime Filter Bloom: false"), and the Bloom arm
+# below would have nothing to measure. The heap mirror is written from the generator.
+SQLM=$(cat <<'SQL'
+SELECT count(*),sum(length(fact_txt.k)),sum(length(fact_txt.payload))
+FROM fact_txt JOIN dim_txt ON fact_txt.k = dim_txt.k
+SQL
+)
+onm="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLM")"
+mgrp="$(val 'Runtime Filter Groups Removed' "$onm")"
+check "with matching collations the same fixture's interval removes row groups" \
+	"$([ "${mgrp:-0}" -ge 1 ] && echo "removed ($mgrp)" || echo "REMOVED NONE")" "removed ($mgrp)"
 onc="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLC")"
 check "collation-mismatch plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onc")" 1
 cgrp="$(val 'Runtime Filter Groups Removed' "$onc")"
@@ -156,6 +174,16 @@ ORDER BY 1
 SQL
 )
 check "rescan answers equal heap" "$(pc "${rf_on}SET max_parallel_workers_per_gather=0;$SQLR" | grep -v '^SET$')" "$(q "$SQLRH")"
+# An empty build on one rescan must not carry into the next (#1447). An empty
+# build now ends the join at once, so a state left over from the first outer row
+# (99999 keeps no key) would answer the second (0 keeps all 200) with no rows.
+SQLRE="${SQLR//(VALUES (0),(8000))/(VALUES (99999),(0))}"
+SQLRHE="${SQLRH//(VALUES (0),(8000))/(VALUES (99999),(0))}"
+check "premise: the empty-then-full rescan runs under the coordinator" \
+	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;EXPLAIN (COSTS OFF) $SQLRE" | grep -c 'Columnar Runtime Filter Coordinator')" 1
+check "premise: heap's empty-then-full rescan answer holds every dimension key" "$(q "$SQLRHE" | head -1)" "0|200"
+check "an empty build on one rescan does not empty the next" \
+	"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;$SQLRE" | grep -v '^SET$')" "$(q "$SQLRHE")"
 
 # 220000 distinct build keys exceed d*10 vs 2^21, so Bloom must refuse rather
 # than emit a saturated filter. Fact is larger so it remains the hash outer.
@@ -221,7 +249,9 @@ check "3-table join order matches filter-off" "$(printf '%s\n' "$on3" | rel_orde
 check "3-table answer equals filter-off" "$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQL3"|tail -1)" "$(pc "${rf_off}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQL3"|tail -1)"
 
 # Empty build: Hash Join still exists, the coordinator still wraps it, and the
-# answer is zero rather than a leftover hull from a previous execution.
+# answer is zero. With a dimension this small the hash join never runs its outer
+# side at all, so this answer cannot fail on what the coordinator does with an
+# empty build (#1339); the large-dimension arms below can.
 q "$(cat <<'SQL'
 CREATE TABLE dim_none(k int);
 CREATE TABLE fact_none(k int, payload text) USING pgcolumnar;
@@ -236,6 +266,23 @@ SQLN="SELECT count(*),sum(fact_none.k) FROM fact_none JOIN dim_none ON fact_none
 onn="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLN")"
 check "empty-build plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onn")" 1
 check "empty-build answer equals heap" "$(pc "${rf_on}$SQLN"|tail -1)" "$(q "SELECT count(*),sum(heap_none.k) FROM heap_none JOIN dim_none ON heap_none.k=dim_none.k")"
+# An empty build from a LARGE dimension filtered to nothing (#1447). Here the hash
+# join fetches its first outer row before it builds, so the fact scan runs. The
+# coordinator found the build empty, and an inner join with an empty build has no
+# rows, so the fact table must not be read. It was read whole: every fact row was
+# rejected one at a time (5 of 5 groups read, 5000 rows rejected).
+q "$(cat <<'SQL'
+CREATE TABLE dim_gone(k int, v int);
+INSERT INTO dim_gone SELECT g, g FROM generate_series(1,200000) g;
+ANALYZE dim_gone;
+SQL
+)" >/dev/null
+SQLE="SELECT count(*),sum(fact_none.k) FROM fact_none JOIN dim_gone ON fact_none.k=dim_gone.k WHERE dim_gone.v < 0"
+one="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLE")"
+check "premise: the large-dimension empty build runs under the coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$one")" 1
+check "premise: and its build is empty" "$(val 'Runtime Filter Build Rows' "$one")" 0
+check "an empty build reads no fact chunk group" "$(val 'Columnar Chunk Groups Read' "$one")" 0
+check "an empty build from a large dimension answers as heap" "$(pc "${rf_on}$SQLE"|tail -1)" "$(q "SELECT count(*),sum(heap_none.k) FROM heap_none JOIN dim_gone ON heap_none.k=dim_gone.k WHERE dim_gone.v < 0")"
 
 # Projection-backed outer scans are excluded: a covering projection with a
 # sort-key restriction is cheaper than the base scan, so Hash Join would wrap
@@ -292,8 +339,50 @@ ANALYZE dim_fq;
 ANALYZE fact_fq;
 SQL
 )" >/dev/null
-SQLFQ="SELECT count(*),sum(fact_fq.k),sum(fact_fq.extra) FROM fact_fq JOIN dim_fq ON fact_fq.k=dim_fq.k WHERE fact_fq.k > 100 AND fact_fq.extra > 40"
+SQLFQ="SELECT count(*),sum(fact_fq.k),sum(fact_fq.extra) FROM fact_fq JOIN dim_fq ON fact_fq.k=dim_fq.k WHERE fact_fq.k > 100 AND fact_fq.extra % 4 <> 0"
 onfq="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLFQ")"
 check "fact-qual plan has coordinator" "$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$onfq")" 1
-check "fact-qual conjunction equals heap" "$(pc "${rf_on}$SQLFQ"|tail -1)" "$(q "SELECT count(*),sum(heap_fq.k),sum(heap_fq.extra) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra > 40")"
+# The conjunction must REMOVE some matching rows (#1339). "extra > 40" held for
+# every one of the 200 matches, so an answer that ignored the qual equalled heap's.
+check "premise: the fact qual removes matching rows on heap" \
+	"$(q "SELECT count(*) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra % 4 <> 0")|$(q "SELECT count(*) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k")" "150|200"
+check "fact-qual conjunction equals heap" "$(pc "${rf_on}$SQLFQ"|tail -1)" "$(q "SELECT count(*),sum(heap_fq.k),sum(heap_fq.extra) FROM heap_fq JOIN dim_fq ON heap_fq.k=dim_fq.k WHERE heap_fq.k > 100 AND heap_fq.extra % 4 <> 0")"
+# A gating qual, a WHERE that names no column (#1437). The planner puts a
+# Result with a One-Time Filter over the join, so the coordinator's child was a
+# Result rather than the Hash Join it expects, and every such query failed with
+# "expected a core Hash Join", EXPLAIN included. A true gate must give heap's
+# rows and a false one none, over a heap and a columnar dimension. The premises
+# show the same join with no gate takes the coordinator, so the gate is what the
+# arms vary. Independent of the pytest twin: different names, key range, and
+# row count.
+q "$(cat <<'SQL'
+CREATE TABLE dim_gh(k int);
+INSERT INTO dim_gh SELECT g FROM generate_series(3100, 3299) g;
+CREATE TABLE dim_gc(k int) USING pgcolumnar;
+INSERT INTO dim_gc SELECT g FROM generate_series(3100, 3299) g;
+CREATE TABLE fact_g(k int, payload text) USING pgcolumnar;
+SELECT pgcolumnar.set_options($t$fact_g$t$, stripe_row_limit => 1000);
+INSERT INTO fact_g SELECT g, repeat(md5(g::text), 4) FROM generate_series(1, 15000) g;
+CREATE TABLE heap_g AS SELECT * FROM fact_g;
+ANALYZE dim_gh;
+ANALYZE dim_gc;
+ANALYZE fact_g;
+SQL
+)" >/dev/null
+for dim in dim_gh dim_gc; do
+	kind=heap; [ "$dim" = dim_gc ] && kind=columnar
+	SQLG="SELECT count(*),sum(fact_g.k),sum(length(fact_g.payload)) FROM fact_g JOIN $dim ON fact_g.k=$dim.k"
+	ong="$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;EXPLAIN(ANALYZE,TIMING off,SUMMARY off)$SQLG")"
+	check "premise: with no gate, the $kind-dimension join has the coordinator" \
+		"$(grep -c 'Columnar Runtime Filter Coordinator' <<<"$ong")" 1
+	# the reference must hold rows, or a server that answered nothing on both
+	# sides would pass the comparisons below as equal
+	check "premise: heap's answer under a true gate over a $kind dimension holds every joined row" \
+		"$(q "SELECT count(*) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT true)")" 200
+	for gate in false true; do
+		check "a (SELECT $gate) gate over a $kind dimension equals heap" \
+			"$(pc "${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;$SQLG WHERE (SELECT $gate)" | tail -1)" \
+			"$(q "SELECT count(*),sum(heap_g.k),sum(length(heap_g.payload)) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT $gate)")"
+	done
+done
 pgc_summary

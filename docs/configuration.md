@@ -60,7 +60,7 @@ disk. It never changes the values that a table returns.
 | `pgcolumnar.enable_qual_pushdown` | boolean | `on` | Push scan qualifiers down so per-chunk min and max values can skip chunk groups. |
 | `pgcolumnar.enable_vectorization` | boolean | `on` | Use the vectorized aggregate path for supported ungrouped aggregates. |
 | `pgcolumnar.enable_group_vectorization` | boolean | `on` | Use the vectorized aggregate path for `GROUP BY` queries on a columnar table. The planner takes it only when the group count cannot exceed `pgcolumnar.groupagg_max_groups`; see [how the grouped path stays safe on by default](#how-the-grouped-path-stays-safe-on-by-default). |
-| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate builds. Over the cap the query errors. The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
+| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate holds in its table at once. At the cap the node hands its groups to a core `Finalize` and carries on, when every aggregate has a partial state; otherwise the query errors. The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
 | `pgcolumnar.enable_bloom_filter` | boolean | `on` | Skip chunk groups on equality filters using per-chunk bloom filters. |
 | `pgcolumnar.enable_join_runtime_filter` | boolean | `on` | Wrap a serial inner Hash Join so the build keys can skip fact-table groups and reject non-matching rows. Direct columnar scan only. Group skip needs the fact table clustered on the join key. On by default. |
 | `pgcolumnar.enable_read_stream` | boolean | `on` | Prefetch block reads with the read stream API. Effective on PostgreSQL 17 and later. |
@@ -94,16 +94,19 @@ disk. It never changes the values that a table returns.
 
 ### Object storage
 
-These govern the object-store module that reads and writes remote Parquet and
-Arrow files. See [Object storage](sql-reference.md#object-storage) for the URL
-schemes and the credential model.
+These govern the object-store module that reads and writes remote Parquet
+files, reads remote Iceberg tables, and writes remote Arrow files. See
+[Object storage](sql-reference.md#object-storage) for the URL schemes and the
+credential model.
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `pgcolumnar.objstore_allowed_endpoints` | string | `''` (empty) | The endpoints the module may connect to, comma-separated as `host` or `host:port`. An entry with no port matches any port on that host; add a port to restrict it. Empty refuses every remote endpoint, so a role that can read or write server files cannot reach an arbitrary host through the extension. Link-local addresses, including `169.254.169.254`, are refused whether or not they are listed. Superuser-only, so a role cannot widen its own reach. |
+| `pgcolumnar.objstore_allowed_endpoints` | string | `''` (empty) | The endpoints the module may connect to, comma-separated as `host` or `host:port`. An entry with no port matches any port on that host; add a port to restrict it. Empty refuses every remote endpoint, so a role that can read or write server files cannot reach an arbitrary host through the extension. The link-local ranges and the known instance-metadata addresses, such as `169.254.169.254` and Alibaba Cloud's `100.100.100.200`, are refused whether or not they are listed; see [the refused ranges](best-practices.md#run-object-storage-safely). Superuser-only, so a role cannot widen its own reach. |
 | `pgcolumnar.objstore_s3_addressing` | string | `path` | The S3 request addressing style. `path` sends `s3://bucket/key` to `endpoint/bucket/key`; `virtual` sends it to `bucket.endpoint/key`, which is what AWS now prefers. Under virtual-host addressing the allow-list still authorizes the endpoint, not the per-bucket hostname. |
 | `pgcolumnar.objstore_buffered` | boolean | `on` | Coalesce remote Parquet reads to one request per column chunk instead of many small ranged reads. |
-| `pgcolumnar.objstore_part_size` | integer | `0` | Multipart part size in bytes for a remote export. `0` uses the module default of 8 MiB. Raise it for a fast link. Range 0 to INT_MAX. |
+| `pgcolumnar.objstore_pin_reads` | boolean | `on` | Pin each remote read to the version of the object it opened. On, every ranged GET sends the ETag from the opening HEAD as `If-Match`, and the `x-amz-version-id` from the HEAD as `versionId=` when the store sends one other than `null`. A GET that names a version needs the `s3:GetObjectVersion` permission; if the store answers it with 403, the reader asks again without the version and keeps `If-Match`. Turn it off only for a server whose ETag changes from one request to the next for the same bytes, such as nodes behind a load balancer. Off, a read of an object overwritten during the read can return rows from both versions without an error, and so can two reads of one object in one statement (#1894). The check of the object's length stays on: each 206 `Content-Range` total must match the HEAD's length, and a 416 for bytes inside that length fails the read. See [limitations](limitations.md#reading-external-parquet). |
+| `pgcolumnar.objstore_part_size` | integer | `0` | Multipart part size in bytes for a remote export. `0` uses the module default of 8 MiB. Raise it for a fast link. An upload holds at most 10000 parts, so the part size limits the object size: 8 MiB parts allow about 78 GiB. An export that needs more parts fails before it sends part 10001. AWS S3, Google Cloud Storage and Cloudflare R2 need parts of at least 5 MiB (5242880 bytes); to them, a smaller part size fails when the export starts a multipart upload. Range 0 to 536870912 (512 MiB): the export holds one part in memory, in one allocation that PostgreSQL caps at 1 GiB. |
+| `pgcolumnar.export_group_bytes` | integer | `268435456` | The byte cap for one Parquet row group or Arrow record batch that `export_parquet`, `export_arrow` and `parallel_export_parquet` buffer. The writer counts each row in the form it writes it, and starts a new group before a row that would pass the cap, as well as every 65536 rows (Parquet) or 16384 rows (Arrow). A row larger than the cap goes in a group of its own; only such a group passes the cap. Lower it to bound the memory an export holds. `parallel_export_parquet` passes the caller's value to its workers. Range 1024 to 268435456 (256 MiB). See [Export size limits](limitations.md#export-size-limits). |
 
 ### Concurrent writes
 
@@ -123,7 +126,7 @@ answer.
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
 | `pgcolumnar.bulk_parallel_writer` | boolean | `off` | Internal. Set by `pgcolumnar.parallel_copy` loader workers so they skip the storage-row creation lock when the row already exists committed, which is what lets several atomic writers load one table at once. Marked `GUC_NOT_IN_SAMPLE`; leave it alone. Setting it by hand is safe but pointless: the skip only fires when the storage row is already committed, which is exactly when the lock guards nothing. |
-| `pgcolumnar.maintenance_hold_ms` | integer | `0` | Internal, for tests. A maintenance verb holds `ShareUpdateExclusiveLock` this many milliseconds, interruptibly, so a test can observe the daemon yield to a stronger lock. `0` disables it. Range 0 to 600000. Leave it at `0`. |
+| `pgcolumnar.maintenance_hold_ms` | integer | `0` | Internal, for tests. A maintenance verb holds `ShareUpdateExclusiveLock` this many milliseconds, interruptibly, so a test can observe the daemon yield to a stronger lock. `recluster` also waits, after it has listed the groups it will rewrite and before it locks them, so a test can write while it runs. `0` disables it. Range 0 to 600000. Leave it at `0`. |
 | `pgcolumnar.sink_fail_after` | integer | `-1` | Internal, for tests. A fault-injection point that fails an export write after this many bytes, by the path a full disk takes. `-1` disables it. Range -1 to INT_MAX. Leave it at `-1`. |
 
 ## Per-table storage options
@@ -167,6 +170,7 @@ SELECT pgcolumnar.set_options(
 | `sort_by` | name[] | Declared physical sort key (#288), applied by `pgcolumnar.vacuum_sorted(t)` with no columns. Column names, so it survives `pg_dump`/restore. Not auto-maintained; re-run after inserts. Cannot name a virtual generated column. Clear with `reset_options(t, sort_by => true)`. |
 | `ttl_column` | name | The `date`, `timestamp` or `timestamptz` column a retention is measured on. On a `date` column the cutoff is truncated to the day, so a row dated on the cutoff is kept. Set it with `ttl_interval`; neither works alone. Nothing is deleted until `pgcolumnar.expire(t)` runs: by name, or from the daemon with `pgcolumnar.autovacuum_expire` on. |
 | `ttl_interval` | interval | How long a row is kept, measured from `ttl_column`. `pgcolumnar.expire(t)` then drops row groups whose rows are all older than this. A group with one live row is kept whole. |
+| `sketch_columns` | name[] | Columns that get a distinct-count sketch in each row group: about 2 KB per row group per column, in `pgcolumnar.sketch`. The type needs an extended hash function, and a text column a deterministic collation; anything else is refused with SQLSTATE 0A000. Rows written before the option was set have no sketch. Clear with `reset_options(t, sketch_columns => true)`. |
 
 **A `stripe_row_limit` below 1024 disables FSST on text columns.** A vector is a
 fixed 1024 values. A row group smaller than that never fills one, so the
@@ -229,9 +233,33 @@ plan and succeeds. An estimate could not be the gate. On a key where one value
 fills half the table and the rest are unique, a fresh `ANALYZE` estimated 29,356
 groups for 2,000,001.
 
-The error remains possible only when something changes after planning: the cap
-is lowered, or the table grows past it. A prepared statement can see this. To keep larger
-tables on the fast path, raise `pgcolumnar.groupagg_max_groups`.
+The cap is reached only when something changes after planning: the cap is
+lowered, or the table grows past it. A prepared statement can see this. Since
+1.0-alpha5 most such queries no longer error (#1300). The grouped node runs under
+a core `Finalize HashAggregate` when every aggregate has a partial state. These
+are `count`, `min`, `max`, and `sum` and `avg` over integer and float columns.
+At the cap the node hands its groups to the `Finalize` and empties its table.
+Then it carries on. The `Finalize` combines the groups, and it spills to disk
+within `work_mem`. `EXPLAIN ANALYZE` reports each hand-off in
+`Columnar Group Table Flushes`. It reports the most the table held at once in
+`Columnar Group Table Peak Memory`. The other aggregates, `sum` and `avg` over
+`bigint` and `numeric`, keep the serial node. At the cap it writes its groups to
+a sort, which spills within `work_mem`, and empties its table. At the end it
+merges each group's parts and finishes them once. The answer, scale included,
+is the one core gives. A group key whose type has no ordering cannot be sorted,
+so such a query runs the ordinary plan. The error above is no longer reached.
+To keep larger tables on the fast path, raise `pgcolumnar.groupagg_max_groups`.
+
+Size the cap to the memory you can give the node. Each group it holds takes
+about 650 bytes, so the default of 1,000,000 groups is about 650 MB. That holds
+whatever `work_mem` says. It is also per grouped node and per parallel worker.
+So plan on 650 bytes times the cap, times the workers plus one. Past the cap the
+node's memory stays the same, but rows move to disk. So lowering the cap trades
+memory for time spent spilling. Measured on
+10,000,000 rows with 100,000 groups and a cap of 1,000, the hand-off spilled
+24 MB and ran 3.3 times longer. The merge wrote about 1.5 GB of temporary files
+and ran 4.9 times longer. Those keys rarely repeat between hand-offs, which is
+the worst case. A cap near the real group count costs almost nothing.
 
 ### Encode effort
 

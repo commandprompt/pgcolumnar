@@ -26,7 +26,8 @@ def _one(conn, sql):
 def _same(conn, sql, columnar, heap):
     c = _one(conn, sql.replace("%T", columnar))
     h = _one(conn, sql.replace("%T", heap))
-    return "same" if c == h else f"columnar [{c}] heap [{h}]"
+    # An answer is required (#1339): None on both sides is not the same answer.
+    return "same" if c is not None and c == h else f"columnar [{c}] heap [{h}]"
 
 
 def _value(g):
@@ -41,7 +42,10 @@ def test_a_collation_change_without_a_rewrite(pgc_conn, expect):
                       " AND collencoding IN (-1, pg_char_to_encoding(current_setting('server_encoding')))"
                       " ORDER BY collname LIMIT 1")
     if coll is None:
-        expect.cannot_run("no en_US collation", name="the server has no en_US collation to change a C column to")
+        # A reason cannot_run knows (#1339): "no en_US collation" is not one, and it
+        # raised VacuityError instead of recording the test as unrunnable.
+        expect.cannot_run("MISSING_DEPENDENCY", "no en_US collation",
+                          name="the server has no en_US collation to change a C column to")
         return
     expect.text(_one(conn, f"SELECT ('c' < 'Q' COLLATE \"{coll}\")::text || '|' || ('c' < 'Q' COLLATE \"C\")::text"),
                 "true|false", "premise: the new collation orders a lower-case letter before an upper-case one that C puts first")
@@ -54,6 +58,12 @@ def test_a_collation_change_without_a_rewrite(pgc_conn, expect):
             cur.execute(f"INSERT INTO {t} SELECT g, {_value('g')} FROM generate_series(1, {4 * GROUP}) g")
     expect.num(_one(conn, "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('xc')"),
                4, "premise: the columnar table has several row groups")
+    # The extent existed, and held C's bound (#1339): the arm after the change accepts
+    # "none", so without this a column_extent() that never returns a row passed it.
+    expect.text(_one(conn, "SELECT coalesce((SELECT minimum || '|' || maximum"
+                           " FROM pgcolumnar.column_extent('xc', 's')), 'none')"),
+                _one(conn, "SELECT min(s) || '|' || max(s) FROM xh"),
+                "before the change the column's extent is the C collation's bound")
     before = _one(conn, "SELECT pg_relation_filenode('xc')")
     for t in ("xc", "xh"):
         conn.execute(f'ALTER TABLE {t} ALTER COLUMN s TYPE text COLLATE "{coll}"')
@@ -103,3 +113,60 @@ def test_a_collation_change_without_a_rewrite(pgc_conn, expect):
     expect.text(_one(conn, f"SELECT ((SELECT count(*) FROM xj WHERE s < 'Q')"
                            f" = (SELECT count(*) FROM xh WHERE k <= {4 * GROUP} AND s < 'Q'))::text"), "true",
                 "a projection sorted on the column answers a range as heap does")
+
+
+def _signed(g):
+    # Every group holds both signs, so under int4 each group's maximum is small and
+    # under oid every negative value is near 2**32.
+    return f"CASE WHEN {g} % 3 = 0 THEN -({g} * 5) ELSE {g} * 3 END"
+
+
+def test_a_type_change_without_a_rewrite(pgc_conn, expect):
+    """int4 to oid is binary-coercible, so ALTER COLUMN ... TYPE oid rewrites
+    nothing, and oid orders unsigned (#1341 item 19). Zone maps, the extent, a
+    vacuum_sorted claim and a projection's zone maps kept int4's order. No collation
+    is involved, so this runs where the test above cannot."""
+    conn = pgc_conn
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE yc (k int, c int) USING pgcolumnar")
+        cur.execute("CREATE TABLE yh (k int, c int)")
+        cur.execute(f"SELECT pgcolumnar.set_options('yc', stripe_row_limit => {GROUP}, chunk_group_row_limit => {GROUP})")
+        for t in ("yc", "yh"):
+            cur.execute(f"INSERT INTO {t} SELECT g, {_signed('g')} FROM generate_series(1, {4 * GROUP}) g")
+    expect.num(_one(conn, "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('yc')"),
+               4, "premise: the int table has several row groups")
+    before = _one(conn, "SELECT pg_relation_filenode('yc')")
+    for t in ("yc", "yh"):
+        conn.execute(f"ALTER TABLE {t} ALTER COLUMN c TYPE oid")
+    expect.num(_one(conn, "SELECT pg_relation_filenode('yc')"), before,
+               "premise: the change from int4 to oid rewrote nothing")
+
+    expect.text(_same(conn, "SELECT min(c) || '|' || max(c) FROM %T", "yc", "yh"), "same",
+                "after int4 to oid min and max are heap's")
+    expect.text(_same(conn, "SELECT count(*) || ':' || min(c) || '|' || max(c) FROM %T WHERE c > 3000000000",
+                      "yc", "yh"), "same", "and a range above every int4 value returns heap's rows")
+    expect.text(_same(conn, f"SELECT count(*) FROM %T WHERE c = {2 ** 32 - 15}", "yc", "yh"), "same",
+                "and an equality on a value that was negative returns heap's rows")
+    expect.text(_one(conn, "SELECT coalesce((SELECT minimum || '|' || maximum FROM pgcolumnar.column_extent('yc', 'c')),"
+                           " 'none') IN ('none', (SELECT min(c) || '|' || max(c) FROM yh))::text"), "true",
+                "the int column's extent is not int4's bound")
+
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE ys (k int, c int) USING pgcolumnar")
+        cur.execute("CREATE TABLE ysh (k int, c int)")
+        for t in ("ys", "ysh"):
+            cur.execute(f"INSERT INTO {t} SELECT g, {_signed('g')} FROM generate_series(1, {4 * GROUP}) g")
+        cur.execute("SELECT pgcolumnar.vacuum_sorted('ys', 'c')")
+        for t in ("ys", "ysh"):
+            cur.execute(f"ALTER TABLE {t} ALTER COLUMN c TYPE oid")
+    expect.text(_same(conn, "SELECT string_agg(c::text, ',') FROM (SELECT c FROM %T ORDER BY c, k LIMIT 9) x",
+                      "ys", "ysh"), "same",
+                "a table sorted on int4 orders ORDER BY ... LIMIT as heap does after int4 to oid")
+
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE yj (k int, c int) USING pgcolumnar")
+        cur.execute(f"INSERT INTO yj SELECT g, {_signed('g')} FROM generate_series(1, {4 * GROUP}) g")
+        cur.execute("SELECT pgcolumnar.add_projection('yj', 'yj_by_c', columns => ARRAY['k', 'c'], sort_key => ARRAY['c'])")
+        cur.execute("ALTER TABLE yj ALTER COLUMN c TYPE oid")
+    expect.text(_same(conn, "SELECT count(*) || ':' || min(c) FROM %T WHERE c > 3000000000", "yj", "ysh"), "same",
+                "a projection sorted on the int column answers a range as heap does after int4 to oid")

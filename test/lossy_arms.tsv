@@ -61,15 +61,50 @@
 # Reported by @OffgridwithJD, who planted five shapes against the controls and
 # found this one by asking what the sweep was never SHOWN rather than what it
 # got wrong on what it was.
+#
+# 70 -> 136 WHEN TESTS CHAINED OUTSIDE THE BRACKETS CAME INTO SCOPE (#1997).
+# `[ A ] && [ B ] && echo yes || echo no` is a compound: `no` does not say
+# which test failed. The sweep read only the first test, so these arms were
+# never examined. The 66 new rows are that claim, and it is checkable off the
+# diff: no arm they name is touched by the change that added them. Selftest
+# 250 has 10 of the rows and the same change edits it, but only to repair a
+# different arm, `premise: stripping comments leaves the runner's code behind`
+# (#2002). The sweep now also joins a line that ends in `&&` or `||` to the
+# next, as bash does. That removed two arms that carry their value on the next
+# line and added nine chained arms that span lines.
+#
+# THE SAME CHANGE REPAIRED SEVEN ARMS AND ADDED NO ROW FOR THEM (#2002). A `]`
+# inside quotes or a substitution, as in `"${sizes[5]}"`, ended a test early,
+# so seven lossy arms in six suites were never examined. Each now prints its
+# numbers when it fails.
 050-the-list-must-be-read-the	positive control: and it is a whole list, not one lucky line
+150-the-verdict-must-not-assert-a	a mixed run reports both causes and neither as the whole story
+180-the-port-walk-must-wrap-not	and the port it found is below the busy region, which is where wrapping lands
+180-the-port-walk-must-wrap-not	a seed at the ceiling wraps past a busy top and still finds a port
 180-the-port-walk-must-wrap-not	premise: the auxiliary band has a width to wrap within
+200-additions-go-in-their-own-file	premise: the parts directory exists and was sourced
 210-no-suite-assigns-a-bash-special	control: the sweep catches an assignment to a bash special
+220-an-opt-in-upgrade-guard-must	premise: both not_a_suite definitions were found
+220-an-opt-in-upgrade-guard-must	premise: run_coverage.sh defines not_a_suite and calls it
 220-an-opt-in-upgrade-guard-must	premise: the population is the real test directory, not an empty glob
 240-the-nightly-enumeration-must-not	premise: at least three nightly jobs were parsed, so the list is real
 240-the-nightly-enumeration-must-not	premise: the nightly paragraph was located and is not empty
+240-the-nightly-enumeration-must-not	premise: the nightly workflow and the testing doc are both present
+250-the-coverage-runner-must-refuse	GCOV_PREFIX is exported before the suites run (#740)
+250-the-coverage-runner-must-refuse	premise: both stray-counter probes were located
+250-the-coverage-runner-must-refuse	premise: both the counter refusal and the lcov capture were located
+250-the-coverage-runner-must-refuse	premise: the containment and the copy were both located
+250-the-coverage-runner-must-refuse	premise: the guard's count directory and the capture's were both located
+250-the-coverage-runner-must-refuse	premise: the redirect, the suite invocation and the copy-back were located
+250-the-coverage-runner-must-refuse	the copy-back refuses a destination outside the tree (#740)
+250-the-coverage-runner-must-refuse	the counters are returned beside their objects before the refusal (#740)
+250-the-coverage-runner-must-refuse	the coverage runner refuses zero counters before it calls lcov (#740)
+250-the-coverage-runner-must-refuse	the refusal looks in GCOV_PREFIX before the tree-wide walk (#740)
 300-a-test-script-must-be-runnable	premise: the documents name a population of commands, not none
+330-the-incomplete-path-must-run-whole	premise: the selftest has a workdir to build fixtures in
 330-the-incomplete-path-must-run-whole	premise: the sweep found the loop's callers to check
 390-a-registered-suite-must-account	premise: the fixture is long enough to lose the race
+400-a-check-result-must-be-machine	premise: and it would name a file that calls check and echoes a SKIP
 400-a-check-result-must-be-machine	premise: and that population is the suite corpus
 400-a-check-result-must-be-machine	premise: the sweep read the suites, so an empty result means something
 410-a-check-must-have-been-red	and defines it BEFORE the first call, since bash reads top to bottom
@@ -77,18 +112,18 @@
 410-a-check-must-have-been-red	and it runs before the build directory is removed, which is the only place it can
 420-a-deleted-part-must-be-visible	premise: the manifest names something, so the comparison has two sides
 430-the-self-test-must-not-report	premise: the sweep reads every selftest part
+450-a-red-nightly-must-be-findable	premise: the nightly workflow and the reporter are both present
 450-a-red-nightly-must-be-findable	premise: the other nightly jobs were parsed, so the comparison is real
+460-the-controller-must-record-the-binary	premise: this part was given an executable pg_config to read the prefix from
+640-every-suite-job-installs-the-extensions	premise: both workflows are present
 analyze_function	premise: the fixture stays on the absolute-count side of core's 10% rule
 autovacuum	premise: av_off starts with dead rows above the threshold
 autovacuum	premise: av_on starts with dead rows above the threshold
 bloom_lazy	a scan that keeps every group reads more
-bloom_lazy	bloom reads do not follow the skipped groups
 bloom_lazy	bloom reads follow the columns a query filters on
 bloom_lazy	one predicate costs well less than six
-bloom_sizing	a five-value column does not get a unique column's filter (#467)
 cancel_decode	the many-group table has many groups
 cancel_decode	the scan outlasts the timeout, so a cancel is possible
-column_projection	premise: the unprojected read is large enough to measure (off: $B_OFF)
 column_projection	the cost model prices a narrow projection below a wide one
 # THE SHELL if/then/else SPELLING CAME INTO SCOPE (#1255), and per the rule
 # above these two rows are a claim that the SWEEP changed, checkable off the
@@ -106,7 +141,8 @@ column_projection	the cost model prices a narrow projection below a wide one
 # THE LIST IS 103 AGAIN AND THAT IS A COINCIDENCE. #1174 took it 77 -> 103, two
 # arms have been repaired since, and this widening adds two: 101 + 2. The same
 # total twice by unrelated routes is not evidence either count is right.
-cost_written_geometry	a table written in smaller groups is costed cheaper than one in larger
+decode_interrupts	the stride is a power of two
+decode_interrupts	the stride is not so large that a check never lands
 differential	matrix chunk groups>=12
 differential	matrix stripes>=2
 docs_style	premise: the changelog sweep found dated release sections
@@ -115,41 +151,54 @@ encode_post_codec	and that column stays far below the no-encoding size, so the w
 encode_post_codec	premise: the tail fixture's range is set by outliers, not by its typical value
 entry_point_privilege	premise: the extension is installed and C entry points were found
 entry_point_privilege	premise: the install script declares MODULE_PATHNAME symbols at all
-fsst_margin	so the margin is what changed the decision, not the corpus
 hilbert_cluster	premise: the install script declares MODULE_PATHNAME symbols at all
 hilbert_locality	box $box: Hilbert reads fewer groups than Z-order
-iceberg_name_mapping_memory	premise: core's own parse is the larger part of the scan's peak
-iceberg_name_mapping_memory	premise: the two sizes give different peaks
-iceberg_name_mapping_memory	the name-mapping parse does not allocate per entry (#731)
+iceberg_fdw_estimate	a filtered scan estimates fewer rows than the whole table (selectivity applied)
+iceberg_fdw_estimate	the FDW estimates a positive row count from the manifests
+import_export_privilege	no victim file was written by the export attempts
+import_export_privilege	premise: the attacker's own source files exist
+index_am_support	premise: $am, which the page claims, has a probe in this suite
 int8_agg_int128	premise: its values are NOT low-cardinality, so the fold is not answered from runs
-local_open_race_free	premise: the recursive sweep read source files under \$SRC
 logical_decoding_cdc_recipe	premise: and it is the whole block, not a fragment
 logical_subscriber	it retries rather than giving up, so the subscription is wedged
-native_cluster	clustering increases 2D skipping
-native_cluster	clustering skips most groups
 native_fetch_bigcap	premise: fetching one row touched a measurable number of buffers
 native_fetch_bigcap	premise: fetching ten rows touched a measurable number of buffers
+native_fetch_bigcap	premise: the fixture really has a row group above the cap
 native_fetch_bigcap	premise: the wide column is the one over the cap, so this arm is #359's
+native_fetch_cache	premise: the fetch-cache functions were extracted, not empty ranges
+native_fetch_coalesce	premise: the coalescing helper holds both the bound and the validity copy
+native_fetch_coalesce	the validity copy is bounded by the chunk length before it runs
+native_fetch_interrupt	the interrupt check precedes the row-group resolution
 native_fold_deferral	adaptive: eager groups load more than survivors alone (work measured, not assumed)
 native_fold_deferral	premise: the selective predicate is genuinely selective (<= 2%)
 native_gap	gap was physically materialized
 native_groupagg	a lookalike function with the same signature gets NO bound
-native_groupagg	and it is an UPPER bound: the true group count is at or below it
+native_groupagg	an informed estimate (plain column) is not replaced
 native_groupagg	a non-time expression key gets no bound either
-native_reclaim_frag	coalesce merges adjacent frees (fewer free_space rows)
+native_groupagg_batch	skipped vectors: premise: a row group was still read
+native_groupagg_batch	skipped vectors: premise: the scan really skipped vectors
+native_index_fetch_stripe_cost	changing the per-table stripe_row_limit changes the estimated cost
 native_reclaim_frag	coalesce never larger than whole-range reuse
 native_reclaim	repeated recluster reuses space (file plateaus)
 native_recluster	reclustering increases 2D skipping
 native_recluster	reclustering skips most groups
 native_rewrite	group numbers issued after a rewrite are past every earlier one
-native_truncate	file shrank
-native_truncate	GUC on: file shrank
 native_upgrade_converge	fresh $TARGET install has objects to compare
-native_vecdecode	a ruled-out vector is not decoded
-native_zonemap_narrow	zone_map reads scale with predicates, not table width (wide ~= narrow)
+objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)
 objstore_listing	the prefix listing paged (more than one list-type=2 request)
 objstore_module	premise: the real module was restored afterwards
 objstore_sink_write	parallel: every worker PUT went to the prefix
+objstore_sink_write	premise: the large export took the multipart protocol
+objstore_sink_write	shrink: parts 0002/0003 from the larger run are gone
+objstore_sink_write	shrink: the 4-worker run wrote 4 parts + marker
+parallel_am_scan	premise: both sides of the comparison returned a value
+parallel_scan_cost	premise: both leader settings produced a row estimate to compare
+parquet_level_width	and both callers reach the shared one
+pg_upgrade	old cluster has rows to preserve
+preimage_rewrite	[$label] prunes chunk groups
+preimage_rewrite	date_trunc('day', ts) = const prunes chunk groups (#403)
+preimage_rewrite	the explicit range prunes, so there IS something to remove
+preimage_rewrite	the range for [$label] prunes, so there is something to remove
 projection_scan_cost	a clause that mentions the sort key but cannot prune on it does not cheapen a covering projection
 projection_scan_cost	and an IN-list on the sort key keeps its discount, which gating on exactness would lose
 projection_scan_cost	a non-sort-key restriction does not cheapen a covering projection
@@ -157,23 +206,26 @@ projection_scan_cost	a tight covering projection is cheaper relative to the base
 projection_scan_cost	premise: the prunable range is priced above the one-stripe floor, so the arms differ
 projection_scan_cost	while a plain range on the sort key still earns its discount
 projections	fp2 spans multiple projection row groups
-pushdown_report	the executor filters far more rows with pushdown off
-reader_buffer_reuse	premise: the differential fixture spans several row groups
-reader_buffer_reuse	reading every group does not cost per-group faults (ratio well under the group count)
-read_stream	multiple stripes present
-recluster_extent	the insert committed while the rewrite was still running
-recluster_extent	the run does not claim rows written during the rewrite
+range_pruning	premise: the first three of those are not vacuously empty
+reader_buffer_reuse	premise: the instrument reports a nonzero fault count at all
+replication	and is a different cluster from the primary and the standby
+replication	vacuum rewrote r into a new relfilenode on the primary
+rls_direct_storage	no export file was written for the refused caller
+rls_direct_storage	the source files the import arms need exist
 scan_decode_cost	a wide projection costs materially more than a narrow one (decode is priced)
 scan_decode_cost	four wide text columns cost more than eight narrow int ones (#768)
-server_file_privilege	coverage check found the file functions (not an empty scan)
-sort_status	the replacement counts as appended
-sort_status	the run lost the retired groups
+scan_decode_cost	premise: both projections priced
+sorted_pathkeys	a plain Gather never sits above a scan claiming an order
 truncate_cleanup	PREMISE the projection has its own storage, distinct from the base
-vacuum_sorted_gate	premise: the tail is smaller than the chunk group limit
-vector_agg_rescan_memory	an IN-list does not add per-rescan query memory
-vector_agg_rescan_memory	the plain columnar scan does not grow query memory per rescan (#734)
-vector_agg_rescan_memory	the vectorized aggregate does not grow query memory per rescan (#727)
+vector_agg_rescan_memory	premise: both plain-scan slopes were measured
+vector_agg_rescan_memory	premise: both rescan slopes were measured
+vector_agg_rescan_memory	premise: the IN-list really becomes pushdown scan keys
+vector_agg_rescan_memory	the row path's scan keys still prune (work done, #717)
+vector_agg_tlist_shape	premise: the all-NULL pair has rows but no values
+wal_envelope	$1
 zonemap_cost	a demonstrably pruning restriction is discounted whatever its correlation (#461)
 zonemap_cost	and it is priced below the index scan it used to lose to (#434)
 zonemap_cost	and priced close to the correlated arm it matches physically (#461)
 zonemap_cost	an uncorrelated restriction gets no pruning discount (#434)
+zonemap_estimate_sample	a cost was extracted, so the checks below are not comparing two blanks
+zonemap_estimate_sample	a predicate matching nothing is floored, not priced at zero

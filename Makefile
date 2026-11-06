@@ -9,6 +9,7 @@ OBJS = \
 	src/columnar_metadata.o \
 	src/columnar_extent.o \
 	src/columnar_write_state.o \
+	src/columnar_sketch.o \
 	src/columnar_compression.o \
 	src/columnar_encoding.o \
 	src/columnar_bloom.o \
@@ -99,6 +100,15 @@ PG_MAJORVERSION := $(shell $(PG_CONFIG) --version | sed -E 's/^[^0-9]*([0-9]+).*
 
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 
+# NO SERVER, NO BUILD (#1344). Without a pg_config that answers, PGXS is empty, and
+# every probe below reads a file named by it: the CC probe's sed was handed no file
+# and read make's stdin, so a build in a background job or a CI step waited
+# forever, and with stdin closed `make clean` exited 0 having cleaned nothing.
+# Refuse here, before any of them runs, and say what to set.
+ifeq ($(strip $(PGXS)),)
+$(error PG_CONFIG=$(PG_CONFIG) gave no PGXS makefile; set PG_CONFIG to the pg_config of the server to build against)
+endif
+
 # HEADER DEPENDENCIES, BECAUSE PGXS DOES NOT EMIT THEM HERE (#1158). PostgreSQL
 # generates .deps only when the SERVER was configured with --enable-depend, and
 # `autodepend` is empty in the Makefile.global of every server this project is
@@ -126,7 +136,7 @@ PG_CFLAGS += -MMD -MP
 # compiler that may not be the one that does the build.
 PG_MAKEFILE_GLOBAL := $(patsubst %/makefiles/pgxs.mk,%/Makefile.global,$(PGXS))
 PROBE_CC := $(if $(filter command line,$(origin CC)),$(CC),\
-	$(shell sed -n 's/^CC = //p' $(PG_MAKEFILE_GLOBAL) 2>/dev/null | head -1))
+	$(shell sed -n 's/^CC = //p' $(PG_MAKEFILE_GLOBAL) </dev/null 2>/dev/null | head -1))
 PROBE_CC := $(if $(strip $(PROBE_CC)),$(PROBE_CC),cc)
 
 ifeq ($(shell test "$(PG_MAJORVERSION)" -ge 19 && echo yes),yes)

@@ -94,5 +94,13 @@ check "bigint column b rawLen parses as 2400 (300*8, at offset 11)" "$(le32 1 11
 # the whole table still reads back correctly under this descriptor
 check "the table reads back all rows" "$(q 'SELECT count(*) FROM d;')" "300"
 check "a full-column read is correct" "$(q 'SELECT sum(a) FROM d;')" "45150"
+# A read that DECODES (#1341). count(*) and sum(a) are answered from the catalog and
+# the zone maps' sums, so both stayed green with the reader parsing rawLen and encLen
+# from each other's offsets, a drift the byte arms above cannot see because the bytes
+# on disk are right. Every row's text, against the generator's, needs the pages.
+check "every row reads back as the generator wrote it (a decoding read)" \
+	"$(q "SELECT md5(string_agg(d::text, ',' ORDER BY a)) FROM d;")" \
+	"$(q "SELECT md5(string_agg(x::text, ',' ORDER BY g)) FROM (SELECT g, ROW(g, g*1000000::bigint, 'val'||(g%4)) x
+	      FROM generate_series(1,300) g) s;")"
 
 pgc_summary

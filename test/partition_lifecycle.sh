@@ -42,6 +42,15 @@ sqlstate_or() {	# sqlstate_or SQL -> the single value it returns, or the SQLSTAT
 	case "$out" in ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1;; *) echo "$out";; esac
 }
 kids() { q "SELECT count(*) FROM pg_inherits WHERE inhparent = '$1'::regclass;"; }
+# rc REL -> the relation as the function's messages name it: they format regclass
+# under its own search_path (pg_catalog, pg_temp), so always schema-qualified.
+rc() { q "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = '$1'::regclass;"; }
+refusal() {	# refusal SQL -> "SQLSTATE message" of the error it raises, or "ok: VALUE"
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -c "$1" 2>&1)
+	case "$out" in ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p' <<<"$out" | head -1;; *) echo "ok: $out";; esac
+}
 ams()  { q "SELECT coalesce(string_agg(DISTINCT a.amname, ','), 'none') FROM pg_inherits i
             JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_am a ON a.oid = c.relam
             WHERE i.inhparent = '$1'::regclass;"; }
@@ -61,7 +70,7 @@ q "CREATE TABLE tl (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);" >/
 made="$(q "SELECT pgcolumnar.partition_create_ahead('tl', '1 day', 3);")"
 check_num "from no partitions it creates enough to reach now plus the lead" \
 	"$made" "$(q "SELECT 4;")"
-check_num "premise: the parent now has the partitions it reported" "$(kids tl)" "$made"
+check_num "the parent now has the partitions it reported" "$(kids tl)" "$made"
 check "every partition it creates is columnar" "$(ams tl)" "pgcolumnar"
 check "they are contiguous, each one width wide" \
 	"$(bounds tl | awk -F'|' 'NR>1 && $1!=prev {gap++} {prev=$2} END {print gap+0}')|$(q "SELECT count(DISTINCT upper - lower) FROM (SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'TO \\(''([^'']+)''\\)'))[1]::timestamptz AS upper, (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \\(''([^'']+)''\\)'))[1]::timestamptz AS lower FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'tl'::regclass) b;")" \
@@ -152,12 +161,12 @@ gen_made="$(sqlstate_or "SELECT pgcolumnar.partition_create_ahead('gen', '1 day'
 check "a parent with a generated column gets its partitions, and the column stays generated" \
 	"$gen_made|$(q "INSERT INTO gen VALUES (now(), 21); SELECT w FROM gen;" | tail -1)" "2|42"
 
-# A 63-character name: the 16-character date suffix must survive, or the second
-# partition's name truncates onto the first's.
+# A 63-byte name, the longest an identifier holds: the 16-byte date suffix must
+# survive, or the second partition's name truncates onto the first's.
 LONG="p_$(printf 'x%.0s' $(seq 1 61))"
 q "CREATE TABLE $LONG (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);" >/dev/null
 long_made="$(sqlstate_or "SELECT pgcolumnar.partition_create_ahead('$LONG', '1 day', 2);")"
-check "a parent with a 63-character name gets partitions whose names keep their dates" \
+check "a parent with a 63-byte name gets partitions whose names keep their dates" \
 	"$long_made|$(q "SELECT count(*) FILTER (WHERE c.relname ~ '_[0-9]{8}T[0-9]{6}\$' AND octet_length(c.relname) <= 63)
 	   FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = '$LONG'::regclass;")" "3|3"
 
@@ -177,6 +186,54 @@ q "CREATE TABLE tail (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);
 check "a parent with a partition bounded by MAXVALUE is refused, and nothing is created" \
 	"$(sqlstate_or "SELECT pgcolumnar.partition_create_ahead('tail', '1 day', 2);")|$(kids tail)" "55000|1"
 
+# ---- refused before any DDL, each by its own check (#1341) ------------------------
+# The MESSAGE is in the want, not just the code: with the width check gone, a zero
+# or negative width never moves the counting loop on, and the 1000-partition cap
+# answers with the same 22023.
+q "CREATE TABLE wa (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);" >/dev/null
+check "a width that is not positive, or a negative lead, is refused before any DDL" \
+	"$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '0 seconds', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '-1 day', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '1 day', -1);")|$(kids wa)" \
+	"22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|0"
+# And the NULL halves of that guard (#1339). The function is not STRICT, so a NULL
+# reaches the body; without `width IS NULL OR ... ahead IS NULL` the comparison is
+# NULL, the guard does not fire and the call answers instead of refusing.
+check "a NULL width or a NULL lead is refused before any DDL" \
+	"$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', NULL, 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('wa', '1 day', NULL);")|$(kids wa)" \
+	"22023 width must be positive and ahead not negative|22023 width must be positive and ahead not negative|0"
+q "CREATE TABLE lp (ts timestamptz NOT NULL, v int) PARTITION BY LIST (ts);
+   CREATE TABLE mc (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts, v);
+   CREATE TABLE np (ts timestamptz NOT NULL, v int) USING pgcolumnar;" >/dev/null
+check "a parent that is not RANGE-partitioned on one column is refused before any DDL" \
+	"$(refusal "SELECT pgcolumnar.partition_create_ahead('lp', '1 day', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('mc', '1 day', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('np', '1 day', 1);")|$(kids lp)|$(kids mc)" \
+	"55000 $(rc lp) is not RANGE-partitioned on one column|55000 $(rc mc) is not RANGE-partitioned on one column|55000 $(rc np) is not RANGE-partitioned on one column|0|0"
+q "CREATE TABLE kd (d date NOT NULL, v int) PARTITION BY RANGE (d);
+   CREATE TABLE ki (k bigint NOT NULL, v int) PARTITION BY RANGE (k);" >/dev/null
+check "a parent partitioned on a key that is not a timestamp is refused before any DDL" \
+	"$(refusal "SELECT pgcolumnar.partition_create_ahead('kd', '1 day', 1);")|$(refusal "SELECT pgcolumnar.partition_create_ahead('ki', '1 day', 1);")|$(kids kd)|$(kids ki)" \
+	"55000 $(rc kd) is partitioned on date, not on a timestamp|55000 $(rc ki) is partitioned on bigint, not on a timestamp|0|0"
+
+# ---- month and year widths (#1341) ------------------------------------------------
+# date_bin cannot bin by months or years, so a width holding either starts at the
+# first of the current month, and each bound is the last one plus the width: the
+# calendar's month, not a fixed 30 days.
+for key in timestamptz timestamp; do
+	q "CREATE TABLE mo_$key (ts $key NOT NULL, v int) PARTITION BY RANGE (ts);" >/dev/null
+	nowexpr="now()"; [ "$key" = timestamp ] && nowexpr="localtimestamp"
+	check "a $key parent with a month width starts at this month's first and steps by calendar months" \
+		"$(sqlstate_or "SELECT pgcolumnar.partition_create_ahead('mo_$key', '1 month', 2);")|$(q "SELECT count(*) FILTER (WHERE f = date_trunc('month', f) AND t = f + interval '1 month') || '|' || (min(f) = date_trunc('month', $nowexpr))
+		   FROM (SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\) TO \(''([^'']+)''\)'))[1]::$key AS f,
+		                (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\) TO \(''([^'']+)''\)'))[2]::$key AS t
+		         FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'mo_$key'::regclass) b;")" \
+		"3|3|true"
+done
+q "CREATE TABLE yr (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);" >/dev/null
+check "a year width starts at this month's first and steps by calendar years" \
+	"$(sqlstate_or "SELECT pgcolumnar.partition_create_ahead('yr', '1 year', 1);")|$(q "SELECT count(*) FILTER (WHERE f = date_trunc('month', f) AND t = f + interval '1 year') || '|' || (min(f) = date_trunc('month', now()))
+	   FROM (SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\) TO \(''([^'']+)''\)'))[1]::timestamptz AS f,
+	                (regexp_match(pg_get_expr(c.relpartbound, c.oid), 'FROM \(''([^'']+)''\) TO \(''([^'']+)''\)'))[2]::timestamptz AS t
+	         FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'yr'::regclass) b;")" \
+	"2|2|true"
+
 # ---- refused: a DEFAULT partition -------------------------------------------------
 q "CREATE TABLE td (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);
    CREATE TABLE td_default PARTITION OF td DEFAULT USING pgcolumnar;" >/dev/null
@@ -189,6 +246,40 @@ check "a parent with a DEFAULT partition is refused" \
 # for any parent, and this arm passed in the red run.
 check "and nothing was created for it" \
 	"$(kids td)|$(q "SELECT count(*) FROM pg_proc WHERE proname = 'partition_create_ahead';")" "1|1"
+
+# ---- the caller's own privileges (#1341) -------------------------------------
+#
+# partition_create_ahead is not SECURITY DEFINER, so its CREATE TABLE ... PARTITION OF
+# runs as the caller, and core refuses a role that does not own the parent. Made
+# SECURITY DEFINER, it would run as the extension's owner and let any caller add
+# partitions, and the access-exclusive lock that comes with them, to a table it does
+# not own. Both roles hold USAGE and CREATE on the schema, so ownership is all that
+# separates them.
+for r in pl_own pl_peer; do
+	psql_run "DROP ROLE IF EXISTS $r; CREATE ROLE $r LOGIN NOSUPERUSER;
+	          GRANT USAGE, CREATE ON SCHEMA public TO $r; GRANT USAGE ON SCHEMA pgcolumnar TO $r;"
+done
+as_role() {	# as_role ROLE SQL -> the single value SQL returns as ROLE, or the SQLSTATE it fails with
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U "$1" -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$2" 2>&1)
+	case "$out" in
+		*ERROR:*|*FATAL:*) sed -n 's/^\(ERROR\|FATAL\): *\([0-9A-Z]\{5\}\).*/\2/p' <<<"$out" | head -1 ;;
+		*) printf '%s\n' "$out" | tail -1 ;;
+	esac
+}
+# The owner's control has a parent of its own (pw2), so a refusal that let the peer
+# through cannot make the control fail for the peer's reason.
+q "CREATE TABLE pv (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts); ALTER TABLE pv OWNER TO pl_own;
+   CREATE TABLE pw2 (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts); ALTER TABLE pw2 OWNER TO pl_own;" >/dev/null
+check "premise: pl_own owns the parent, and neither role is a superuser" \
+	"$(q "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class WHERE oid IN ('pv'::regclass, 'pw2'::regclass);")|$(q "SELECT count(*) FROM pg_roles WHERE rolname IN ('pl_own', 'pl_peer') AND rolsuper;")" \
+	"pl_own|0"
+check "premise: pl_peer can open a session" "$(as_role pl_peer "SELECT 1")" "1"
+check "a role that does not own the parent is refused by its own privileges (42501), and creates nothing" \
+	"$(as_role pl_peer "SELECT pgcolumnar.partition_create_ahead('pv', '1 day', 2)")|$(kids pv)" "42501|0"
+check "a non-superuser owner creates partitions ahead on its own table" \
+	"$(as_role pl_own "SELECT pgcolumnar.partition_create_ahead('pw2', '1 day', 2)")|$(kids pw2)" "3|3"
 
 # ==== the drop half: partition_drop_plan (#1297) ================================
 #
@@ -265,6 +356,9 @@ check "a timestamp key's plan for a timestamp cutoff is the same from sessions w
 check "a cutoff of the other timestamp type is refused" \
 	"$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dw', '2021-01-02 00:00+00'::timestamptz)")|$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dl', '2020-03-01 00:00'::timestamp)")" \
 	"42804|42804"
+check "a NULL cutoff is refused, in both overloads" \
+	"$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dl', NULL::timestamptz)")|$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dw', NULL::timestamp)")" \
+	"22023|22023"
 
 # Bounds at the ends of the range: MINVALUE below is listed once its upper bound
 # is past, MAXVALUE above never is.
@@ -390,8 +484,18 @@ check "a partition named with the drop block's dollar-quote tag is dropped by th
 check "a drop plan for a parent with a DEFAULT partition is refused" \
 	"$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('td', now())")" "55000"
 q "CREATE TABLE dn (k int NOT NULL) PARTITION BY RANGE (k);
-   CREATE TABLE dnl (k int);" >/dev/null
+   CREATE TABLE dnl (k int);
+   CREATE TABLE dls (ts timestamptz NOT NULL) PARTITION BY LIST (ts);
+   CREATE TABLE dr2 (ts timestamptz NOT NULL, k int NOT NULL) PARTITION BY RANGE (ts, k);" >/dev/null
+# Each by its own check, so the message is in the want (#1339): both answer 55000.
 check "a drop plan for a parent not partitioned on a timestamp is refused" \
-	"$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dn', now())")|$(sqlstate_or "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dnl', now())")" "55000|55000"
+	"$(refusal "SELECT count(*) FROM pgcolumnar.partition_drop_plan('dn', now())")" \
+	"55000 $(rc dn) is partitioned on integer, not on a timestamp"
+# The RANGE-on-one-column check had only an unpartitioned table to refuse, which
+# NOT FOUND refuses alone. A LIST parent and a two-column RANGE parent, both led by
+# a timestamptz, pass the key check: only strat and natts stop them.
+check "a drop plan for a parent not RANGE-partitioned on one column is refused, LIST and two-column RANGE included" \
+	"$(for t in dnl dls dr2; do refusal "SELECT count(*) FROM pgcolumnar.partition_drop_plan('$t', now())"; done | paste -sd'|')" \
+	"55000 $(rc dnl) is not RANGE-partitioned on one column|55000 $(rc dls) is not RANGE-partitioned on one column|55000 $(rc dr2) is not RANGE-partitioned on one column"
 
 pgc_summary

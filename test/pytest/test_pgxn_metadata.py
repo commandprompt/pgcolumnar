@@ -130,6 +130,15 @@ def test_the_script_meta_json_names_is_in_the_published_distribution(expect):
         members.count(named), 1, f"the distribution contains {named} exactly once"
     )
 
+    # SHIPPED IS NOT ENOUGH: IT MUST BE THE BASE SCRIPT (#1339). `provides.file` is
+    # the script a fresh install runs, and every upgrade script ships too, so
+    # naming `pgcolumnar--1.0-alpha4--1.0-alpha5.sql` passed the arm above.
+    version_text = VERSION.read_text(encoding="utf-8").strip()
+    expect.text(
+        named, f"pgcolumnar--{version_text}.sql",
+        "META.json names the base install script of the version VERSION holds",
+    )
+
 
 def test_every_sql_file_meta_json_could_name_is_shipped(expect):
     """The neighbouring failure: a script present in the tree and not in the archive.

@@ -117,7 +117,7 @@ def test_native_fetch_coalesce(pgc_conn, expect):
     expect.rows(
         [got],
         [want],
-        "premise: the wide fetch returns the projected values",
+        "the wide fetch returns the projected values",
     )
 
     with pgc_conn.cursor() as cur:
@@ -135,13 +135,17 @@ def test_native_fetch_coalesce(pgc_conn, expect):
         1,
         "premise: fetching every projected column touched a measurable number of buffers",
     )
-    extra_cols = NCOLS - 1
+    # A FEW PINS OF SLACK, NOT ONE PER EXTRA COLUMN (#1339): one per extra column is
+    # the once-per-column cost the name forbids, and a fetch reading every column on
+    # its own fitted it to the pin (measured 71 and 86 with coalescing disabled;
+    # 70 and 70 coalesced).
+    slack = 3
     print(f"-- index fetch buffers: narrow={narrow} wide={wide} "
-          f"(bound narrow + {extra_cols})")
+          f"(bound narrow + {slack})")
     expect.text(
-        "coalesced" if wide <= narrow + extra_cols
-        else f"wide {wide} over the bound {narrow + extra_cols} "
-             f"(narrow {narrow} + {extra_cols})",
+        "coalesced" if wide <= narrow + slack
+        else f"wide {wide} over the bound {narrow + slack} "
+             f"(narrow {narrow} + {slack})",
         "coalesced",
         "a wide index fetch does not pin once per column",
     )

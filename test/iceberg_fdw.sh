@@ -164,6 +164,62 @@ if [ -f "$FX/warehouse_bucket/db/byid/data/id_bucket=4/00000-0-aa63bd5e-94cd-4a4
 		"5,6,7,8"
 fi
 
+# ---- bucket[N] on a STRING column, and the comparison collation (#1818) -----
+# warehouse_bucket_text is bucket[16](s), one row per file: 1 abc, 2 ABC, 3 Abc,
+# 4 aBc, 5 x, 6 y, in buckets 10, 5, 0, 7, 11, 6. Iceberg hashes the UTF-8
+# bytes, so under a case-insensitive (nondeterministic) collation four rows
+# equal 'ABC' while sitting in four buckets. Pruning by bucket('ABC') there
+# would skip three files of matching rows. The wrapper must read every file
+# then, and must still prune under a deterministic collation.
+if ls "$FX"/warehouse_bucket_text/db/bystr/metadata/*.metadata.json >/dev/null 2>&1; then
+	SDEST="$PGC_WORKDIR/whs"; rm -rf "$SDEST"; mkdir -p "$SDEST"
+	cp -r "$FX/warehouse_bucket_text/db" "$SDEST/db"; chmod -R u+rwX "$SDEST"
+	MDS="$(ls "$SDEST"/db/bystr/metadata/*.metadata.json | sort | tail -1)"
+	q "CREATE FOREIGN TABLE evs (id bigint, s text)
+	   SERVER ice OPTIONS (metadata_path '$MDS')" >/dev/null
+	check "text bucket: the FDW reads the whole table (6 rows)" \
+		"$(q "SELECT count(*) FROM evs")" "6"
+	check "text bucket: s = 'ABC' under the default collation prunes 5 files" \
+		"$(fp "SELECT * FROM evs WHERE s = 'ABC'")" "5"
+	check "text bucket: s = 'ABC' under the default collation returns row 2" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs WHERE s = 'ABC'")" "2"
+	check "text bucket: s = 'ABC' under the deterministic C collation still prunes 5 files" \
+		"$(fp "SELECT * FROM evs WHERE s = 'ABC' COLLATE \"C\"")" "5"
+
+	q "CREATE COLLATION IF NOT EXISTS ice_ci
+	   (provider = icu, locale = 'und-u-ks-level2', deterministic = false)" >/dev/null
+	if [ "$(q "SELECT 1 FROM pg_collation WHERE collname = 'ice_ci'")" = "1" ]; then
+		q "CREATE FOREIGN TABLE evs_ci (id bigint, s text COLLATE ice_ci)
+		   SERVER ice OPTIONS (metadata_path '$MDS')" >/dev/null
+		check "text bucket: s = 'ABC' COLLATE ice_ci returns all four case variants" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs WHERE s = 'ABC' COLLATE ice_ci")" \
+			"1,2,3,4"
+		check_text "text bucket: s = 'ABC' COLLATE ice_ci matches iceberg_scan (same oracle)" \
+			"$(q "SELECT string_agg(id::text||'|'||s, ',' ORDER BY id) FROM evs WHERE s = 'ABC' COLLATE ice_ci")" \
+			"$(q "SELECT string_agg(id::text||'|'||s, ',' ORDER BY id)
+			      FROM pgcolumnar.iceberg_scan('$MDS') AS t(id bigint, s text)
+			      WHERE s = 'ABC' COLLATE ice_ci")"
+		check "text bucket: s = 'ABC' COLLATE ice_ci prunes no file (Files Pruned: 0)" \
+			"$(fp "SELECT * FROM evs WHERE s = 'ABC' COLLATE ice_ci")" "0"
+		check "text bucket: a column declared COLLATE ice_ci returns all four case variants" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM evs_ci WHERE s = 'ABC'")" \
+			"1,2,3,4"
+		check "text bucket: a column declared COLLATE ice_ci prunes no file (Files Pruned: 0)" \
+			"$(fp "SELECT * FROM evs_ci WHERE s = 'ABC'")" "0"
+		# identity pruning evaluates the qual itself, under its own collation, so
+		# 'EU' COLLATE ice_ci keeps the eu file and prunes only the us one.
+		check "identity: region = 'EU' COLLATE ice_ci returns the eu rows" \
+			"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM ev WHERE region = 'EU' COLLATE ice_ci")" \
+			"1,2"
+		check "identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)" \
+			"$(fp "SELECT * FROM ev WHERE region = 'EU' COLLATE ice_ci")" "1"
+	else
+		check_skip "text bucket: the nondeterministic collation case" \
+			"SKIP  text bucket: the nondeterministic collation case (ICU unavailable)" \
+			"ICU unavailable"
+	fi
+fi
+
 # ---- truncate[W] partition pruning (range, order-preserving) -----------------
 # warehouse_trunc is partitioned by truncate[100](amount) with column metrics
 # DISABLED, so truncate is the only mechanism (metrics would otherwise subsume
@@ -352,6 +408,86 @@ if ftmpx yd byyear_d "dt date" && ftmpx mo bymonth_d "dt date" \
 		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM hz WHERE tt >= TIMESTAMPTZ '2021-03-01 01:00:00+00'")" \
 		"$(oraclex hz "tt >= TIMESTAMPTZ '2021-03-01 01:00:00+00'")"
 fi
+
+# ---- a temporal transform read into the OTHER timestamp type (#1706) ---------
+# The reader converts a naive (timestamp) source read into timestamptz, and a
+# timestamptz source read into timestamp, as PostgreSQL's casts do in the session
+# zone. The writer computed each partition cell in the source's own kind, so a
+# cell does not bound the converted rows, and the FDW must not prune on it.
+# In New York, byhour's naive 2021-03-01 00:00, 01:00, 05:00 are 05:00Z, 06:00Z
+# and 10:00Z; byhour_tz's 00:00Z, 01:00Z, 05:00Z are the wall times 2021-02-28
+# 19:00, 20:00 and 2021-03-01 00:00. Each FDW read is compared with iceberg_scan
+# under the same declaration and zone, and check_text refuses two empty readings.
+qny() { PGOPTIONS="-c TimeZone=America/New_York" q "$1"; }
+if [ -n "${MD_th:-}" ] && ftmpx hn byhour_tz "tt timestamp"; then
+	q "CREATE FOREIGN TABLE hw (id bigint, ts timestamptz)
+	   SERVER ice OPTIONS (metadata_path '$MD_th')" >/dev/null
+	check_text "hour() on a naive source read as timestamptz in New York matches iceberg_scan" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id) FROM hw WHERE ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'")" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id)
+		        FROM pgcolumnar.iceberg_scan('$MD_th') AS t(id bigint, ts timestamptz)
+		        WHERE ts >= TIMESTAMPTZ '2021-03-01 06:00:00+00'")"
+	check_text "hour() on a timestamptz source read as timestamp in New York matches iceberg_scan" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id) FROM hn WHERE tt <= TIMESTAMP '2021-02-28 20:00:00'")" \
+		"$(qny "SELECT string_agg(id::text, ',' ORDER BY id)
+		        FROM pgcolumnar.iceberg_scan('$MD_hn') AS t(id bigint, tt timestamp)
+		        WHERE tt <= TIMESTAMP '2021-02-28 20:00:00'")"
+fi
+
+# ---- a declared typmod applies, and pruning respects it (#1790) ---------------
+# The foreign table returns each value as its declared type, typmod included. A
+# typmod can change a value: varchar(2) reads the stored 'eu  ' as 'eu', and
+# timestamp(0) reads 00:59:59.7 as 01:00:00. The partition value in the manifest
+# is the stored one, so a file pruned on it could hold a row the query must
+# return. warehouse_typmod (fixtures/iceberg/gen_iceberg_typmod.py) holds exactly
+# those two values, each in its own partition.
+q "CREATE FOREIGN TABLE ev_v1 (id bigint, region varchar(1), amount int)
+   SERVER ice OPTIONS (metadata_path '$MD')" >/dev/null
+# tm_state SQL -> the SQLSTATE SQL raised, or "no error (<first output line>)"
+tm_state() {
+	local out state
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	state="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	echo "${state:-no error ($(head -1 <<<"$out"))}"
+}
+check "typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001)" \
+	"$(tm_state "SELECT string_agg(region, ',' ORDER BY region) FROM ev_v1")" "22001"
+TMWH="$PGC_WORKDIR/tmwh"
+rm -rf "$TMWH"; mkdir -p "$TMWH"
+cp -r "$FX/warehouse_typmod/db" "$TMWH/db"
+chmod -R u+rwX "$TMWH"
+MD_PAD="$(ls "$TMWH"/db/byregion_pad/metadata/*.metadata.json | sort | tail -1)"
+MD_FRAC="$(ls "$TMWH"/db/byhour_frac/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE pad2 (id bigint, region varchar(2))
+   SERVER ice OPTIONS (metadata_path '$MD_PAD')" >/dev/null
+q "CREATE FOREIGN TABLE frac0 (id bigint, ts timestamp(0))
+   SERVER ice OPTIONS (metadata_path '$MD_FRAC')" >/dev/null
+check "typmod: region = 'eu' on varchar(2) returns id 1, stored as 'eu  '" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM pad2 WHERE region = 'eu'")" "1"
+check "typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM frac0
+	      WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1,2"
+# byregion_bucket is bucket[8](region): 'eu  ' (id 1) and 'eu' (id 3) sit in
+# different buckets, yet both read 'eu' as varchar(2). A bucket pruned on the
+# constant 'eu' would drop id 1. Today the planner wraps a varchar column in a
+# cast to text for "=", so its qual never reaches bucket pruning; the typmod
+# guard in ice_fdw_bucket_quals keeps id 1 if that changes.
+MD_BKT="$(ls "$TMWH"/db/byregion_bucket/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE bkt2 (id bigint, region varchar(2))
+   SERVER ice OPTIONS (metadata_path '$MD_BKT')" >/dev/null
+check "typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM bkt2 WHERE region = 'eu'")" "1,3"
+# A time type at full microsecond precision changes no value, so it keeps
+# pruning: the hour(ts) table read as timestamp(6) prunes as plain timestamp does.
+q "CREATE FOREIGN TABLE th6 (id bigint, ts timestamp(6))
+   SERVER ice OPTIONS (metadata_path '${MD_th:-}')" >/dev/null
+check "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \

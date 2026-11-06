@@ -82,8 +82,15 @@ WH="$(workers t_heap)"; WC="$(workers t_col)"
 echo "      heap: relpages=$PH workers=${WH:-none}   columnar: relpages=$PC workers=${WC:-none}"
 
 # ---- premises, or this passes while proving nothing -------------------------
+#
+# Every reading below is required to be a number before it is compared. With the
+# server gone after ANALYZE, every q came back empty and three of these six passed:
+# the row counts ("" = ""), the cap ("" read as 0, under any cap) and the degree
+# ("none" = "none").
 
-check "premise: both tables hold the same rows" \
+# Not a premise (#1339, dated 2026-10-21): the columnar arm holding the rows is
+# pgcolumnar's own work, and an insert that drops one row reddens it.
+check_num "both tables hold the same rows" \
 	"$(q 'SELECT count(*) FROM t_heap')" "$(q 'SELECT count(*) FROM t_col')"
 
 # No size difference, no penalty to detect.
@@ -93,18 +100,24 @@ check "premise: the columnar table really is smaller on disk" \
 # A serial plan has no workers to compare, so a missing count is not a zero.
 check "premise: the heap plan is parallel" \
 	"$([ -n "$WH" ] && echo yes || echo "no (no Workers Planned line)")" "yes"
-check "premise: the columnar plan is parallel" \
+# Not a premise (#1339, dated 2026-10-21): the columnar partial path is pgcolumnar's
+# own, and skipping it reddens this.
+check "the columnar plan is parallel" \
 	"$([ -n "$WC" ] && echo yes || echo "no (no Workers Planned line)")" "yes"
 
 # The one that would silently neuter this. If max_parallel_workers_per_gather
 # clamps both arms they report the same number and the suite goes green on a box
-# where the defect is fully present.
-check "premise: the worker cap is not what decides either arm" \
-	"$([ "${WH:-0}" -lt "$MAXW" ] && [ "${WC:-0}" -lt "$MAXW" ] && echo yes \
-	   || echo "no (cap=$MAXW heap=$WH col=$WC)")" "yes"
+# where the defect is fully present. A missing count is "no reading", not 0.
+# Not a premise (#1339, dated 2026-10-21): a columnar degree that over-asks into
+# the cap reddens it.
+check "the worker cap is not what decides either arm" \
+	"$(if ! pgc_is_number "$WH" || ! pgc_is_number "$WC"; then echo "no reading (heap=[$WH] col=[$WC])"
+	   elif [ "$WH" -lt "$MAXW" ] && [ "$WC" -lt "$MAXW" ]; then echo yes
+	   else echo "no (cap=$MAXW heap=$WH col=$WC)"; fi)" "yes"
 
 # ---- the assertion ----------------------------------------------------------
 
-check "identical data is granted the same parallel degree" "${WC:-none}" "${WH:-none}"
+# check_num: two plans with no Workers Planned line both read "none", and agreed.
+check_num "identical data is granted the same parallel degree" "$WC" "$WH"
 
 pgc_summary

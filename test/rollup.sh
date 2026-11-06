@@ -11,11 +11,14 @@
 #
 # The rollup is a table, one row per (bucket, group_by...) key, with columns
 # `bucket`, the group_by columns, then one per aggregate named `count`, or
-# <function>_<column> (sum_v, min_v, max_v, avg_f).
+# <function>_<column> (sum_v, min_v, max_v, avg_v, avg_f).
 #
 # THE ORACLE is a full recompute of the same GROUP BY over the source, every
 # time. Exactness is fixed by the design on #1294 so it cannot be loosened here:
-# count, integer sum, min and max exact; avg of float8 within a relative 1e-12.
+# count, integer sum, min and max exact; avg of an integer exact too (numeric
+# partials); avg of float8 within a relative 1e-12. The pytest twin checks the
+# same aggregate kinds, so a check of one name asserts one property in both
+# (#1339).
 #
 # A refresh is one statement and so one snapshot: rows committed while it runs
 # are neither folded nor recorded, and the next refresh takes them, exactly once
@@ -62,28 +65,34 @@ check_num "premise: the source holds every row" "$(q "SELECT count(*) FROM src;"
 
 # The oracle, and the rollup read the same way: exact columns hashed, avg kept apart.
 RECOMPUTE="SELECT date_bin('1 hour', ts, '$ORIGIN') AS bucket, dev, count(*) AS count,
-           sum(v)::numeric AS sum_v, min(v) AS min_v, max(v) AS max_v, avg(f) AS avg_f
+           sum(v)::numeric AS sum_v, min(v) AS min_v, max(v) AS max_v, avg(v) AS avg_v, avg(f) AS avg_f
            FROM src GROUP BY 1, 2"
 # concat_ws over coalesce: a plain || makes a row with any NULL into NULL, and
 # string_agg then drops it, so NULL keys would be compared by not being there.
 exact() { q "SELECT count(*) || '|' || md5(string_agg(concat_ws(',', coalesce(bucket::text, '~'),
              coalesce(dev::text, '~'), count, coalesce(sum_v::text, '~'), coalesce(min_v::text, '~'),
-             coalesce(max_v::text, '~')), ';' ORDER BY bucket NULLS FIRST, dev NULLS FIRST)) FROM ($1) x;"; }
-# the worst relative difference of avg_f between the rollup and the recompute
+             coalesce(max_v::text, '~'), coalesce(avg_v::text, '~')), ';' ORDER BY bucket NULLS FIRST, dev NULLS FIRST)) FROM ($1) x;"; }
+# avg_gap [ROLLUP [RECOMPUTE]] -> whether avg_f is within a relative 1e-12 of the
+# recompute's on every key the recompute has. A NULL key joins through a
+# sentinel no row holds, so NULL keys are compared too, and the join stays a
+# hash join (IS NOT DISTINCT FROM is not hashable).
 avg_gap() {
+	local r="${1:-r_hourly}" o="${2:-$RECOMPUTE}"
 	q "SELECT coalesce(max(abs(r.avg_f - o.avg_f) / greatest(abs(o.avg_f), 1e-300)), 0) < 1e-12
-	   AND count(*) = (SELECT count(*) FROM ($RECOMPUTE) z)
-	   FROM r_hourly r JOIN ($RECOMPUTE) o USING (bucket, dev);"
+	   AND count(*) = (SELECT count(*) FROM ($o) z)
+	   FROM $r r JOIN ($o) o ON coalesce(r.bucket, '-infinity') = coalesce(o.bucket, '-infinity')
+	                        AND coalesce(r.dev, -1) = coalesce(o.dev, -1);"
 }
-matches() { echo "$(exact "SELECT * FROM r_hourly")|$(avg_gap)"; }
-oracle() { echo "$(exact "$RECOMPUTE")|t"; }
+# matches [ROLLUP [RECOMPUTE]], oracle [RECOMPUTE]: the exact columns and the float avg
+matches() { echo "$(exact "SELECT * FROM ${1:-r_hourly}")|$(avg_gap "${1:-r_hourly}" "${2:-$RECOMPUTE}")"; }
+oracle() { echo "$(exact "${1:-$RECOMPUTE}")|t"; }
 
-AGGS="'{count,sum,min,max,avg}', '{*,v,v,v,f}'"
+AGGS="'{count,sum,min,max,avg,avg}', '{*,v,v,v,v,f}'"
 q "SELECT pgcolumnar.create_rollup('r_hourly', 'src', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS);" >/dev/null
 check "the rollup table exists with the documented columns" \
 	"$(q "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute
 	      WHERE attrelid = to_regclass('r_hourly') AND attnum > 0 AND NOT attisdropped;")" \
-	"bucket,dev,count,sum_v,min_v,max_v,avg_f"
+	"bucket,dev,count,sum_v,min_v,max_v,avg_v,avg_f"
 
 check_num "the first refresh folds every row" "$(q "SELECT pgcolumnar.refresh_rollup('r_hourly');")" "30000"
 check "and after the first refresh the rollup equals a full recompute" "$(matches)" "$(oracle)"
@@ -145,10 +154,17 @@ load 100001 300000 "2026-04-01 00:00:00+00"
 check_num "a refresh folds a bulk append" "$(q "SELECT pgcolumnar.refresh_rollup('r_hourly');")" "200000"
 check "and after the bulk append the rollup equals a full recompute" "$(matches)" "$(oracle)"
 load 37301 38300 "2026-03-16 00:00:00+00"
-q "SELECT pg_stat_reset();" >/dev/null
-env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At \
-	-c "SELECT pgcolumnar.refresh_rollup('r_hourly')" -c "SELECT pg_stat_force_next_flush()" >/dev/null 2>&1
-read_blocks="$(q "SELECT coalesce(heap_blks_read, 0) + coalesce(heap_blks_hit, 0) FROM pg_statio_user_tables WHERE relname = 'src';")"
+# With current statistics, as autovacuum leaves a database. Without them the arm
+# measured whichever plan the catalog's statistics happened to give: once
+# autovacuum had analyzed pgcolumnar.row_group, the refresh scanned it and called
+# get_storage_id per catalog row, each call reading the source's first page (#1614).
+q "ANALYZE;" >/dev/null
+# The refresh's own reads: a fresh session, the count read inside the refresh's
+# transaction, so no other backend's reads of src (an autovacuum) are counted. The
+# last line is the count, or the error that replaced it.
+read_blocks="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qAt \
+	-c "BEGIN" -c "SELECT pgcolumnar.refresh_rollup('r_hourly')" \
+	-c "SELECT pg_stat_get_xact_blocks_fetched('src'::regclass)" -c "COMMIT" 2>&1 | tail -1)"
 pages="$(q "SELECT pg_relation_size('src') / 8192;")"
 echo "-- refresh after a 1000-row append read $read_blocks of $pages blocks"
 check_num "the refresh after a small append read the source at all" "$(at_least "$read_blocks" 1)" "1"
@@ -167,12 +183,17 @@ groups_before="$(q "SELECT pgcolumnar.get_storage_id('src') || ':' || string_agg
 q "SELECT pgcolumnar.vacuum('src');" >/dev/null
 groups_after="$(q "SELECT pgcolumnar.get_storage_id('src') || ':' || string_agg(group_number::text, ',' ORDER BY group_number)
 	FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('src');")"
-check "premise: pgcolumnar.vacuum gave the source's row groups new identities" \
+check "pgcolumnar.vacuum gave the source's row groups new identities" \
 	"$([ -n "$groups_after" ] && [ "$groups_after" != "$groups_before" ] && echo renumbered || echo "same: $groups_after")" "renumbered"
 vb="$(exact "SELECT * FROM r_hourly")"
 check_num "the rollup holds rows before the rewrite" "$(at_least "$(q "SELECT count(*) FROM r_hourly;")" 1)" "1"
+# The SQLSTATE, whether the HINT names rebase_rollup, and the rollup: the name
+# promises all three, and the HINT was read by no arm until #1339.
+rewritten_hint="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-X -At -v VERBOSITY=verbose -c "SELECT pgcolumnar.refresh_rollup('r_hourly');" 2>&1 | sed -n 's/^HINT: *//p' | head -1)"
 check "a refresh after the source was rewritten is refused, naming rebase_rollup" \
-	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_hourly');")|$(exact "SELECT * FROM r_hourly")" "55000|$vb"
+	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_hourly');")|$(grep -q rebase_rollup <<<"$rewritten_hint" && echo rebase_rollup || echo "hint: $rewritten_hint")|$(exact "SELECT * FROM r_hourly")" \
+	"55000|rebase_rollup|$vb"
 check_num "rebase_rollup records the source's current row groups" \
 	"$(at_least "$(q "SELECT pgcolumnar.rebase_rollup('r_hourly');")" 1)" "1"
 check "and leaves the rollup's rows alone" "$(exact "SELECT * FROM r_hourly")" "$vb"
@@ -191,7 +212,7 @@ check "and after the rebase the rollup equals a full recompute" "$(matches)" "$(
 partials_at() { q "SELECT count(*) || '|' || md5(string_agg(ctid::text, ',' ORDER BY ctid)) FROM r_hourly__partials WHERE $1;"; }
 FAR="bucket >= '2026-03-05 00:00:00+00'"	# beyond the time range of every group the delete below reaches
 far_before="$(partials_at "$FAR")"
-check_num "premise: the rollup holds partials the delete below cannot reach" \
+check_num "the rollup holds partials the delete below cannot reach" \
 	"$(at_least "$(q "SELECT count(*) FROM r_hourly__partials WHERE $FAR;")" 1)" "1"
 q "DELETE FROM src WHERE dev = 3 AND ts < '2026-03-01 06:00:00+00';" >/dev/null
 check "a refresh after a delete is not refused" \
@@ -218,7 +239,7 @@ check "after a delete and an append that straddles its bucket, a refresh counts 
 
 # compact_rewrite drops a group's dead rows by rewriting the group.
 q "DELETE FROM src WHERE ts >= '2026-03-06 00:00:00+00' AND ts < '2026-03-06 12:00:00+00';" >/dev/null
-check_num "premise: compact_rewrite rewrote a row group" \
+check_num "compact_rewrite rewrote a row group" \
 	"$(at_least "$(q "SELECT pgcolumnar.compact_rewrite('src', 0.01);")" 1)" "1"
 q "SELECT pgcolumnar.refresh_rollup('r_hourly');" >/dev/null
 check "after compact_rewrite the rollup equals a full recompute" "$(matches)" "$(oracle)"
@@ -241,27 +262,27 @@ check "each row group's TID range holds exactly that group's rows" \
 # NULL group keys and NULL timestamps: the fold matches keys with IS NOT DISTINCT
 # FROM, and a NULL ts is a NULL bucket. Measured right by @jdatcmd on #1319; an
 # = in place of IS NOT DISTINCT FROM would duplicate the NULL partials.
-q "CREATE TABLE nk (ts timestamptz, dev int, v bigint) USING pgcolumnar;
+q "CREATE TABLE nk (ts timestamptz, dev int, v bigint, f float8) USING pgcolumnar;
    SELECT pgcolumnar.set_options('nk', stripe_row_limit => 1000);
    INSERT INTO nk SELECT CASE WHEN g % 11 = 0 THEN NULL ELSE '2026-06-01'::timestamptz + g * interval '61 s' END,
-          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g FROM generate_series(1, 3000) g;" >/dev/null
-q "SELECT pgcolumnar.create_rollup('r_nk', 'nk', 'ts', '1 hour', '$ORIGIN', '{dev}', '{count,sum,min,max}', '{*,v,v,v}');
+          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g, g / 3.0 FROM generate_series(1, 3000) g;" >/dev/null
+q "SELECT pgcolumnar.create_rollup('r_nk', 'nk', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS);
    SELECT pgcolumnar.refresh_rollup('r_nk');" >/dev/null
 q "INSERT INTO nk SELECT CASE WHEN g % 11 = 0 THEN NULL ELSE '2026-06-01'::timestamptz + g * interval '61 s' END,
-          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g FROM generate_series(3001, 4500) g;" >/dev/null
+          CASE WHEN g % 7 = 0 THEN NULL ELSE g % 5 END, g, g / 3.0 FROM generate_series(3001, 4500) g;" >/dev/null
 check_num "the second refresh of the NULL-key rollup folded the append" "$(q "SELECT pgcolumnar.refresh_rollup('r_nk');")" "1500"
 NKR="SELECT date_bin('1 hour', ts, '$ORIGIN') AS bucket, dev, count(*) AS count, sum(v)::numeric AS sum_v,
-     min(v) AS min_v, max(v) AS max_v FROM nk GROUP BY 1, 2"
+     min(v) AS min_v, max(v) AS max_v, avg(v) AS avg_v, avg(f) AS avg_f FROM nk GROUP BY 1, 2"
 check "a rollup with NULL keys and NULL timestamps equals a full recompute" \
-	"$(exact "SELECT * FROM r_nk")|$(q "SELECT count(*) FROM r_nk WHERE dev IS NULL;") $(q "SELECT count(*) FROM r_nk WHERE bucket IS NULL;")" \
-	"$(exact "$NKR")|$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL;") $(q "SELECT count(*) FROM ($NKR) z WHERE bucket IS NULL;")"
+	"$(matches r_nk "$NKR")|$(q "SELECT count(*) FROM r_nk WHERE dev IS NULL;") $(q "SELECT count(*) FROM r_nk WHERE bucket IS NULL;")" \
+	"$(oracle "$NKR")|$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL;") $(q "SELECT count(*) FROM ($NKR) z WHERE bucket IS NULL;")"
 check_num "premise: and the fixture has NULL-key and NULL-bucket groups" \
 	"$(at_least "$(q "SELECT count(*) FROM ($NKR) z WHERE dev IS NULL OR bucket IS NULL;")" 2)" "2"
 # A deleted row whose ts is NULL dirties the NULL bucket, which has no time range.
 q "DELETE FROM nk WHERE ts IS NULL AND dev = 2;" >/dev/null
 q "SELECT pgcolumnar.refresh_rollup('r_nk');" >/dev/null
 check "after a delete of rows whose ts is NULL the NULL-bucket rollup equals a full recompute" \
-	"$(exact "SELECT * FROM r_nk")" "$(exact "$NKR")"
+	"$(matches r_nk "$NKR")" "$(oracle "$NKR")"
 
 # Retention keeps history (owner's decision on #1294 point 2): groups that expire
 # retires are recorded in pgcolumnar.retired_group (#1314), and a refresh drops
@@ -278,7 +299,7 @@ ob="$(q "SELECT count(*) FROM r_hist WHERE bucket < now() - interval '100 days';
 check_num "the history rollup holds old buckets" "$(at_least "${ob:-0}" 1)" "1"
 q "SELECT pgcolumnar.set_options('hist', ttl_column => 'ts', ttl_interval => '30 days');" >/dev/null
 retired="$(q "SELECT pgcolumnar.expire('hist');")"
-check_num "premise: expire retired the old row groups" "$(at_least "${retired:-0}" 1)" "1"
+check_num "expire retired the old row groups" "$(at_least "${retired:-0}" 1)" "1"
 check "a refresh after retention folds nothing, refuses nothing, and keeps every bucket" \
 	"$(sqlstate_or "SELECT pgcolumnar.refresh_rollup('r_hist');")|$(q "SELECT md5(string_agg(bucket || ':' || count || ':' || sum_v, ',' ORDER BY bucket)) FROM r_hist;")" \
 	"0|$hb"
@@ -310,7 +331,7 @@ layered() {	# layered TABLE: the three groups, a daily rollup r_TABLE refreshed 
 	q "SELECT pgcolumnar.expire('$1');" >/dev/null
 }
 layered hd
-check "premise: expire retired the group in bucket D alone and kept the one that shares it" \
+check "expire retired the group in bucket D alone and kept the one that shares it" \
 	"$(q "SELECT count(*) FILTER (WHERE ts < $D + interval '12 hours') || '|' || count(*) FILTER (WHERE ts >= $D + interval '12 hours' AND ts < $D + interval '1 day') FROM hd;")" "0|47"
 HDQ="SELECT md5(string_agg(bucket || ':' || count || ':' || sum_v, ',' ORDER BY bucket)) FROM r_hd"
 HDR="SELECT md5(string_agg(b || ':' || n || ':' || s, ',' ORDER BY b)) FROM (SELECT date_bin('1 day', ts, '$ORIGIN') b, count(*) n, sum(v)::numeric s FROM hd GROUP BY 1) x"
@@ -343,7 +364,7 @@ q "CREATE TABLE dx (ts timestamptz, v int) USING pgcolumnar;
    SELECT pgcolumnar.refresh_rollup('r_dx');
    DELETE FROM dx WHERE ts < now() - interval '30 days' AND v <= 400;
    SELECT pgcolumnar.set_options('dx', ttl_column => 'ts', ttl_interval => '30 days');" >/dev/null
-check_num "premise: expire retired the group the delete thinned" "$(q "SELECT pgcolumnar.expire('dx');")" "1"
+check_num "expire retired the group the delete thinned" "$(q "SELECT pgcolumnar.expire('dx');")" "1"
 dx_before="$(q "SELECT string_agg(bucket || ':' || count, ',' ORDER BY bucket) FROM r_dx;")"
 check "a delete in a group that expire then retires is refused, and the rollup is unchanged" \
 	"$(sqlstate "SELECT pgcolumnar.refresh_rollup('r_dx');")|$(q "SELECT string_agg(bucket || ':' || count, ',' ORDER BY bucket) FROM r_dx;")" \
@@ -381,6 +402,30 @@ check_num "and refreshes it" "$(as_role ru_a "SELECT pgcolumnar.refresh_rollup('
 check "and reads what a recompute gives" \
 	"$(as_role ru_a "SELECT string_agg(bucket || ':' || count || ':' || sum_v, ' ' ORDER BY bucket) FROM own_r")" \
 	"$(q "SELECT string_agg(b || ':' || n || ':' || s, ' ' ORDER BY b) FROM (SELECT date_bin('1 day', ts, '$ORIGIN') b, count(*) n, sum(v)::numeric s FROM own_src GROUP BY 1) x;")"
+# THE WRITE SIDE AND THE DEFINER HELPERS (#1341). The policies have USING only, so
+# they also check an INSERT's new row; and an UPDATE or DELETE with no WHERE reads
+# nothing, so only the policy's USING keeps it off another owner's rows. Asked
+# before the read-side arms below, so a write that got through is what fails.
+_st() { sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p'; }
+_rg_own="$(q "SELECT count(*) FROM pgcolumnar.rollup_group WHERE rollup = 'own_r'::regclass;")"
+check "premise: the owner's rollup has group rows another role could reach" \
+	"$([ "${_rg_own:-0}" -gt 0 ] 2>/dev/null && echo some || echo "none ($_rg_own)")" "some"
+check "another role cannot add a group row to the owner's rollup (42501)" \
+	"$(as_role ru_b "INSERT INTO pgcolumnar.rollup_group VALUES ('public.own_r'::regclass, 999999, 1, 0, NULL, NULL, false)" | _st)" "42501"
+as_role ru_b "UPDATE pgcolumnar.rollup SET history_has_null = true" >/dev/null
+as_role ru_b "DELETE FROM pgcolumnar.rollup_group" >/dev/null
+check "and its unqualified UPDATE and DELETE reach none of the owner's catalog rows" \
+	"$(q "SELECT history_has_null FROM pgcolumnar.rollup WHERE rollup = 'own_r'::regclass;")|$(q "SELECT count(*) FROM pgcolumnar.rollup_group WHERE rollup = 'own_r'::regclass;")" \
+	"f|$_rg_own"
+# rollup_source_groups and rollup_source_retired run as their definer, so the
+# catalogs they read refuse no one; the caller's SELECT on the source is checked
+# by require_caller_select against the OUTER user.
+check "the owner reads its source's groups through the definer helpers" \
+	"$(as_role ru_a "SELECT (count(*) > 0)::text FROM pgcolumnar.rollup_source_groups('own_src')")|$(as_role ru_a "SELECT count(*) >= 0 FROM pgcolumnar.rollup_source_retired('own_src')")" "true|t"
+check "another role cannot read the source's groups through rollup_source_groups (42501)" \
+	"$(as_role ru_b "SELECT count(*) FROM pgcolumnar.rollup_source_groups('public.own_src')" | _st)" "42501"
+check "nor its retired groups through rollup_source_retired (42501)" \
+	"$(as_role ru_b "SELECT count(*) FROM pgcolumnar.rollup_source_retired('public.own_src')" | _st)" "42501"
 check "another role sees none of its rollup catalog rows" \
 	"$(as_role ru_b "SELECT count(*) FROM pgcolumnar.rollup") $(as_role ru_b "SELECT count(*) FROM pgcolumnar.rollup_group")" "0 0"
 # Row-level security hides the catalog row, so to that role it is no rollup at
@@ -397,8 +442,8 @@ check "a role that cannot read the source cannot create a rollup of it" \
 # serves a hot rollup better). A heap rollup folds and matches the same way.
 q "SELECT pgcolumnar.create_rollup('r_heap', 'src', 'ts', '1 hour', '$ORIGIN', '{dev}', $AGGS, 'heap');" >/dev/null
 check "a rollup kept in a heap table refreshes and equals a full recompute" \
-	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'r_heap__partials'::regclass;")|$(q "SELECT pgcolumnar.refresh_rollup('r_heap') > 0;")|$(exact "SELECT * FROM r_heap")" \
-	"heap|t|$(exact "$RECOMPUTE")"
+	"$(q "SELECT a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'r_heap__partials'::regclass;")|$(q "SELECT pgcolumnar.refresh_rollup('r_heap') > 0;")|$(matches r_heap)" \
+	"heap|t|$(oracle)"
 
 # REPEATABLE READ: the caller's snapshot would predate the refresh's lock, and a
 # refresh that waited for another would fold the same groups again.
@@ -407,6 +452,95 @@ check "a refresh at REPEATABLE READ is refused" \
 	   -v VERBOSITY=sqlstate -c "BEGIN ISOLATION LEVEL REPEATABLE READ" \
 	   -c "SELECT pgcolumnar.refresh_rollup('r_utc')" -c "ROLLBACK" 2>&1 |
 	   sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' | head -1)" "25000"
+
+# A DUMP AND RESTORE (#1377). The definition is dumped, so the rollup still exists
+# after a restore; its folded row groups are not, because they name storage that
+# a restore replaces. Neither database OID nor storage id tells a restored source
+# from the one recorded: storageid_seq restarts with the extension, so the first
+# columnar table of a new database gets the same storage id, and refresh would fold
+# every restored row into the restored partials a second time. The source's OID does
+# tell them apart: the dump writes the regclass as a name and the recorded oid as a
+# number, so after a restore they disagree, and refresh refuses, naming rebase_rollup.
+# Its own databases, so nothing above is touched. The partials are heap and the
+# source is its database's only columnar table, so the restored source gets the
+# storage id recorded for the old one: the case a storage id alone does not catch.
+RD="${PGC_DB}_rd"; RD2="${PGC_DB}_rd2"; RDUMP="$PGC_WORKDIR/rollup-1377.sql"
+rd_run() { env PATH="$PGC_BINDIR:$PATH" "$@"; }
+rd_q() { rd_run psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -X -At -c "$2" 2>/dev/null || true; }
+rd_state() {	# rd_state DB SQL -> the SQLSTATE it fails with, ok, or noconnect
+	local out rc
+	out=$(rd_run psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -X -At -v ON_ERROR_STOP=1 \
+		-v VERBOSITY=sqlstate -c "SET ROLE rd_owner" -c "$2" 2>&1 >/dev/null); rc=$?
+	[ $rc -eq 0 ] && { echo ok; return; }
+	[ $rc -eq 2 ] && { echo noconnect; return; }
+	echo "$out" | sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' | head -1
+}
+rd_as() { rd_run psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -X -At \
+	-c "SET ROLE rd_owner" -c "$2" 2>/dev/null | grep -v '^SET$' | tail -1; }
+rd_hint() {	# rd_hint DB SQL -> the HINT of the error it fails with
+	rd_run psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -X -At -v VERBOSITY=verbose \
+		-c "SET ROLE rd_owner" -c "$2" 2>&1 | sed -n 's/^HINT: *//p' | head -1
+}
+# count|md5, so a mismatch prints two short values rather than every bucket.
+RD_RECOMPUTE="SELECT count(*) || '|' || md5(string_agg(b || ':' || d || ':' || n || ':' || s, ' ' ORDER BY b, d)) FROM
+	(SELECT date_bin('1 hour', ts, '$ORIGIN') b, dev d, count(*) n, sum(v)::numeric s FROM rd.src GROUP BY 1, 2) x"
+RD_ROLLUP="SELECT count(*) || '|' || md5(string_agg(bucket || ':' || dev || ':' || count || ':' || sum_v, ' ' ORDER BY bucket, dev)) FROM rd.r"
+q "CREATE ROLE rd_owner;" >/dev/null
+for db in "$RD" "$RD2"; do q "DROP DATABASE IF EXISTS $db;" >/dev/null; done
+q "CREATE DATABASE $RD;" >/dev/null
+rd_q "$RD" "CREATE EXTENSION pgcolumnar; GRANT USAGE ON SCHEMA pgcolumnar TO rd_owner;
+	CREATE SCHEMA rd AUTHORIZATION rd_owner;" >/dev/null
+rd_as "$RD" "CREATE TABLE rd.src (ts timestamptz, dev int, v bigint) USING pgcolumnar" >/dev/null
+rd_as "$RD" "INSERT INTO rd.src SELECT '2026-06-01'::timestamptz + g * interval '1 min', g % 3, g FROM generate_series(1, 3000) g" >/dev/null
+rd_as "$RD" "SELECT pgcolumnar.create_rollup('r', 'rd.src', 'ts', '1 hour', '$ORIGIN', '{dev}', '{count,sum}', '{*,v}', 'heap')" >/dev/null
+check_num "the rollup to be dumped folds its source" "$(rd_as "$RD" "SELECT pgcolumnar.refresh_rollup('rd.r')")" "3000"
+rd_sid="$(rd_q "$RD" "SELECT pgcolumnar.get_storage_id('rd.src')")"
+rd_run pg_dump -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$RD" -f "$RDUMP"; rd_rc=$?
+check "the database holding a rollup dumps" "$rd_rc" "0"
+
+# Restored into another database.
+q "CREATE DATABASE $RD2;" >/dev/null
+rd_restore() {	# rd_restore DB -> 0, or psql's status and its first error
+	local out
+	out=$(rd_run psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -X -q -v ON_ERROR_STOP=1 -f "$RDUMP" 2>&1 >/dev/null) \
+		&& { echo 0; return; }
+	echo "$? $(grep -m1 'ERROR' <<<"$out")"
+}
+check "the dump restores into another database" "$(rd_restore "$RD2")" "0"
+check "the restored source holds the dumped rows under the storage id recorded for the old one" \
+	"$(rd_q "$RD2" "SELECT count(*) FROM rd.src")|$(rd_q "$RD2" "SELECT pgcolumnar.get_storage_id('rd.src')")" \
+	"3000|$rd_sid"
+check "a restore keeps the rollup's definition" \
+	"$(rd_q "$RD2" "SELECT source::text || ' ' || ts_column || ' ' || width || ' ' || group_by::text || ' ' || agg_functions::text
+	   FROM pgcolumnar.rollup WHERE rollup = 'rd.r'::regclass")" "rd.src ts 01:00:00 {dev} {count,sum}"
+rd_restored="$(rd_q "$RD2" "$RD_ROLLUP")"
+check "the restored rollup reads as a recompute of the restored source" "$rd_restored" "$(rd_q "$RD2" "$RD_RECOMPUTE")"
+check "after a restore into another database its owner's refresh is refused (55000), the rollup untouched" \
+	"$(rd_state "$RD2" "SELECT pgcolumnar.refresh_rollup('rd.r')")|$(rd_q "$RD2" "$RD_ROLLUP")" "55000|$rd_restored"
+check "and the refusal names rebase_rollup" \
+	"$(rd_hint "$RD2" "SELECT pgcolumnar.refresh_rollup('rd.r')" | grep -o 'rebase_rollup' | head -1)" "rebase_rollup"
+check_num "after rebase_rollup a refresh folds nothing" \
+	"$(rd_as "$RD2" "SELECT pgcolumnar.rebase_rollup('rd.r')" >/dev/null; rd_as "$RD2" "SELECT pgcolumnar.refresh_rollup('rd.r')")" "0"
+rd_as "$RD2" "INSERT INTO rd.src SELECT '2026-06-01'::timestamptz + g * interval '1 min', g % 3, g FROM generate_series(3001, 3500) g" >/dev/null
+check_num "and then folds exactly the rows appended after the restore" "$(rd_as "$RD2" "SELECT pgcolumnar.refresh_rollup('rd.r')")" "500"
+check "and the restored rollup equals a full recompute" "$(rd_q "$RD2" "$RD_ROLLUP")" "$(rd_q "$RD2" "$RD_RECOMPUTE")"
+# The restore wrote the catalog row back, and with it the view's dependency on the
+# restored source (#1376): the source cannot be dropped from under its rollup.
+check "after a restore the rollup's source cannot be dropped while the rollup exists (2BP01)" \
+	"$(rd_state "$RD2" "DROP TABLE rd.src")|$(rd_q "$RD2" "SELECT count(*) FROM rd.src")" "2BP01|3500"
+
+# Restored into the same database after DROP EXTENSION: same cluster, same database
+# OID, and the sequence restarted, so again the recorded storage id.
+# The pgcolumnar schema outlives DROP EXTENSION (not a member: alter_am_cleanup.sh),
+# and the dump creates it, so it goes too, as it would before such a restore.
+rd_q "$RD" "DROP EXTENSION pgcolumnar CASCADE; DROP SCHEMA pgcolumnar CASCADE; DROP SCHEMA rd CASCADE;" >/dev/null
+check "the dump restores into its own database after DROP EXTENSION, again under the recorded storage id" \
+	"$(rd_restore "$RD")|$(rd_q "$RD" "SELECT count(*) FROM rd.src")|$(rd_q "$RD" "SELECT pgcolumnar.get_storage_id('rd.src')")" \
+	"0|3000|$rd_sid"
+rd_restored="$(rd_q "$RD" "$RD_ROLLUP")"
+check "after a restore into the same database its refresh is refused (55000), the rollup untouched" \
+	"$(rd_state "$RD" "SELECT pgcolumnar.refresh_rollup('rd.r')")|$(rd_q "$RD" "$RD_ROLLUP")" "55000|$rd_restored"
+for db in "$RD" "$RD2"; do q "DROP DATABASE IF EXISTS $db;" >/dev/null; done
 
 # Refused at creation, each with 22023: the aggregates are structured input
 # checked against the five that combine, never SQL text (#1294 point 11).
@@ -421,9 +555,133 @@ check "aggregate functions and columns of different lengths are refused" \
 check "an aggregate column the source does not have is refused" \
 	"$(refused_create r_c '1 hour' '{min}' '{nosuch}')" "22023"
 check "* with anything but count is refused" "$(refused_create r_s '1 hour' '{sum}' '{*}')" "22023"
+# The rest of create_rollup's refusals, and rebase_rollup's (#1341). A timestamp
+# (no zone) source column would be bucketed by date_bin in whatever zone the
+# refresh runs in, so it is refused rather than converted.
+q "CREATE TABLE src_lt (ts timestamp, v int) USING pgcolumnar;" >/dev/null
+check "a ts_column that is not timestamptz is refused" \
+	"$(sqlstate "SELECT pgcolumnar.create_rollup('r_t', 'src_lt', 'ts', '1 hour', '$ORIGIN', '{}', '{count}', '{*}');")" "22023"
+check "a group_by column the source does not have is refused" \
+	"$(sqlstate "SELECT pgcolumnar.create_rollup('r_g', 'src', 'ts', '1 hour', '$ORIGIN', '{nosuch}', '{count}', '{*}');")" "22023"
+check "a sum over a column that cannot be folded is refused" "$(refused_create r_f '1 hour' '{sum}' '{ts}')" "22023"
+check "rebase_rollup of a table that is not a rollup is refused (42704)" \
+	"$(sqlstate "SELECT pgcolumnar.rebase_rollup('src');")" "42704"
 # An arm, not a premise: with a refusal removed, the create succeeds and leaves a
 # table (the months-check mutation did), so a repository change reddens it.
 check_num "and no refused rollup left a table behind" \
-	"$(q "SELECT count(*) FROM pg_class WHERE relname IN ('r_m', 'r_p', 'r_l', 'r_c', 'r_s');")" "0"
+	"$(q "SELECT count(*) FROM pg_class WHERE relname IN ('r_m', 'r_p', 'r_l', 'r_c', 'r_s', 'r_t', 'r_g', 'r_f');")" "0"
+
+# ---- a rollup and its source are dropped together (#1376) ----------------------
+#
+# The catalog held the source and the view as bare OIDs. DROP TABLE of the source
+# succeeded and left the rollup unrefreshable for good (42P01 on the dead OID, or a
+# reused OID folded silently); DROP VIEW left the partials table and the catalog rows
+# behind. Now the view depends on the source as a view over it would, so the drop is
+# refused and CASCADE takes the rollup; and dropping the view takes the rest of it.
+q "CREATE TABLE lsrc (ts timestamptz, v int) USING pgcolumnar;
+   INSERT INTO lsrc SELECT '$ORIGIN'::timestamptz + g * interval '7 minutes', g FROM generate_series(1, 500) g;" >/dev/null
+for lr in lr_a lr_b; do
+	psql_run "SELECT pgcolumnar.create_rollup('$lr', 'lsrc', 'ts', '1 hour', '$ORIGIN', '{}', '{count}', '{*}');" >/dev/null
+	psql_run "SELECT pgcolumnar.refresh_rollup('$lr');" >/dev/null
+done
+lr_a_oid="$(q "SELECT 'lr_a'::regclass::oid")"
+lr_b_oid="$(q "SELECT 'lr_b'::regclass::oid")"
+lr_left() {	# lr_left OID NAME -> "<view and partials left>|<rollup rows>|<rollup_group rows>"
+	q "SELECT (SELECT count(*) FROM pg_class WHERE relname IN ('$2', '$2__partials')) || '|' ||
+	          (SELECT count(*) FROM pgcolumnar.rollup WHERE rollup::oid = $1) || '|' ||
+	          (SELECT count(*) FROM pgcolumnar.rollup_group WHERE rollup::oid = $1)"
+}
+check "both rollups over the source refreshed, so each has a view, partials and catalog rows" \
+	"$(q "SELECT (SELECT sum(count) FROM lr_a) || '|' || (SELECT sum(count) FROM lr_b)")|$(lr_left "$lr_a_oid" lr_a | cut -d'|' -f1,2)" "500|500|2|1"
+check "DROP VIEW of a rollup takes its partials and its catalog rows with it (#1376)" \
+	"$(sqlstate "DROP VIEW lr_b")|$(lr_left "$lr_b_oid" lr_b)" "ok|0|0|0"
+check "DROP TABLE of a rollup's source is refused while the rollup exists (2BP01, #1376)" \
+	"$(sqlstate "DROP TABLE lsrc")|$(q "SELECT count(*) FROM pg_class WHERE relname = 'lsrc'")" "2BP01|1"
+check "and DROP TABLE ... CASCADE takes the rollup's view, partials and catalog rows with it (#1376)" \
+	"$(sqlstate "SET client_min_messages = warning; DROP TABLE lsrc CASCADE")|$(lr_left "$lr_a_oid" lr_a)" "ok|0|0|0"
+# The trigger that records those dependencies writes to pg_depend for whoever writes
+# a rollup row, and the row-level security on the catalog only asks that they own
+# the view. So it asks what a view over the source would: SELECT on the source.
+# Without that, a role could tie a table it cannot read to a view of its own and
+# block the table owner's DROP TABLE.
+psql_run "DROP ROLE IF EXISTS lr_stranger; CREATE ROLE lr_stranger LOGIN;
+          GRANT USAGE, CREATE ON SCHEMA public TO lr_stranger; GRANT USAGE ON SCHEMA pgcolumnar TO lr_stranger;
+          CREATE TABLE lr_victim (ts timestamptz, v int) USING pgcolumnar; REVOKE ALL ON lr_victim FROM PUBLIC;"
+lr_tie="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U lr_stranger -d "$PGC_DB" \
+	-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "CREATE TABLE lr_mine (bucket timestamptz) USING pgcolumnar;
+	CREATE VIEW lr_my_view AS SELECT bucket FROM lr_mine;
+	INSERT INTO pgcolumnar.rollup (rollup, partials, source, source_storage, source_oid, ts_column, width, origin,
+	  group_by, agg_functions, agg_columns)
+	VALUES ('lr_my_view', 'lr_mine', 'lr_victim', 0, 0, 'ts', '1 hour', '$ORIGIN', '{}', '{count}', '{*}');" 2>&1 >/dev/null)"
+check "a role cannot tie a rollup row to a table it cannot read (42501, #1376)" \
+	"$(st="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$lr_tie" | head -1)"; echo "${st:-${lr_tie:+other}}")|$(sqlstate "DROP TABLE lr_victim")" "42501|ok"
+# The partials table goes with the view by an AUTO dependency, and a drop deletes AUTO
+# dependents with no ownership check. So the trigger requires the writer to own the
+# partials too, and the rollup to be a view and the partials a table (#1406 review):
+# otherwise a role names another role's table as its partials and drops its own view.
+as_stranger() {	# as_stranger SQL -> ok, the SQLSTATE it fails with, or other
+	local out st
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U lr_stranger -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1 >/dev/null)"
+	[ -z "$out" ] && { echo ok; return; }
+	st="$(sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1)"
+	echo "${st:-other}"
+}
+psql_run "CREATE TABLE lr_others (bucket timestamptz) USING pgcolumnar; GRANT SELECT ON lr_others TO lr_stranger;
+          CREATE TABLE lr_src2 (ts timestamptz, v int) USING pgcolumnar; GRANT SELECT ON lr_src2 TO lr_stranger;"
+lr_row() {	# lr_row VIEW PARTIALS -> a rollup row over lr_src2
+	echo "INSERT INTO pgcolumnar.rollup (rollup, partials, source, source_storage, source_oid, ts_column, width, origin,
+	  group_by, agg_functions, agg_columns) VALUES ('$1', '$2', 'lr_src2', 0, 0, 'ts', '1 hour', '$ORIGIN', '{}', '{count}', '{*}');"
+}
+check "a role cannot name another role's table as its rollup's partials (42501), and that table survives its view's drop (#1376)" \
+	"$(as_stranger "CREATE TABLE lr_p2 (bucket timestamptz) USING pgcolumnar; CREATE VIEW lr_v2 AS SELECT bucket FROM lr_p2; $(lr_row lr_v2 lr_others)")|$(as_stranger "SET client_min_messages = warning; DROP VIEW IF EXISTS lr_v2")|$(q "SELECT count(*) FROM pg_class WHERE relname = 'lr_others'")" \
+	"42501|ok|1"
+check "a rollup row whose rollup is not a view is refused (42809, #1376)" \
+	"$(as_stranger "CREATE TABLE lr_notview (bucket timestamptz) USING pgcolumnar; CREATE TABLE lr_p4 (bucket timestamptz) USING pgcolumnar; $(lr_row lr_notview lr_p4)")" "42809"
+psql_run "CREATE TABLE lr_p5 (bucket timestamptz) USING pgcolumnar; CREATE VIEW lr_v5 AS SELECT bucket FROM lr_p5;
+          CREATE TABLE lr_p6 (bucket timestamptz) USING pgcolumnar; $(lr_row lr_v5 lr_p5)"
+check "a rollup row's view, partials and source cannot be changed once written (0A000, #1376)" \
+	"$(sqlstate "UPDATE pgcolumnar.rollup SET partials = 'lr_p6' WHERE rollup = 'lr_v5'::regclass")" "0A000"
+
+# ---- min and max keep the source column's collation (#1341) ------------------
+#
+# The partials columns are created with the type alone, so they carry the
+# database's default collation. A refresh that updates a bucket folds the new
+# partial into the stored one with least()/greatest(), and that comparison must be
+# the source column's. Two text columns, "C" and en_US, so whichever is the
+# database default, the other differs from it. Lower-case rows first, then
+# upper-case rows into the SAME buckets: under C 'B' sorts before 'a', under en_US
+# after it, and only the second refresh's fold can get that wrong.
+CT_COLL="$(q "SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US') ORDER BY collname LIMIT 1;")"
+if [ -n "$CT_COLL" ]; then
+	q "CREATE TABLE ct (ts timestamptz, sc text COLLATE \"C\", su text COLLATE \"$CT_COLL\") USING pgcolumnar;
+	   SELECT pgcolumnar.set_options('ct', stripe_row_limit => 1000);
+	   INSERT INTO ct SELECT '$ORIGIN'::timestamptz + (g % 24) * interval '1 hour', 'a'||g, 'a'||g FROM generate_series(1, 2000) g;" >/dev/null
+	q "SELECT pgcolumnar.create_rollup('r_ct', 'ct', 'ts', '1 day', '$ORIGIN', '{}', '{min,max,min,max}', '{sc,sc,su,su}');" >/dev/null
+	q "SELECT pgcolumnar.refresh_rollup('r_ct');" >/dev/null
+	q "INSERT INTO ct SELECT '$ORIGIN'::timestamptz + (g % 24) * interval '1 hour', 'B'||g, 'B'||g FROM generate_series(1, 2000) g;" >/dev/null
+	# A check, not a premise (#1236; #1372 review): refresh_rollup's return value and
+	# the bucket count are both product output.
+	check "the second refresh folds new rows into the existing bucket" \
+		"$(q "SELECT pgcolumnar.refresh_rollup('r_ct');")|$(q "SELECT count(*) FROM r_ct;")" "2000|1"
+	check "min and max over a C column and an en_US column keep each column's own order across a refresh" \
+		"$(q "SELECT min_sc || '|' || max_sc || '|' || min_su || '|' || max_su FROM r_ct;")" \
+		"$(q "SELECT min(sc) || '|' || max(sc) || '|' || min(su) || '|' || max(su) FROM ct;")"
+	check "premise: the two collations disagree on these rows, so the arm can tell them apart" \
+		"$(q "SELECT (min(sc) COLLATE \"C\" <> min(su) COLLATE \"C\")::text FROM ct;")" "true"
+else
+	for _n in "the second refresh folds new rows into the existing bucket" \
+			"min and max over a C column and an en_US column keep each column's own order across a refresh" \
+			"premise: the two collations disagree on these rows, so the arm can tell them apart"; do
+		check_skip "$_n" "SKIP  $_n (no en_US collation)" "the server has no en_US collation"
+	done
+fi
+
+# Row numbers start at 1 (#1341). LAST IN THE SUITE ON PURPOSE: without the floor,
+# row_tid(0) crashed the backend (measured on PG17), and a crash mid-suite takes the
+# checks after it down with it, premises included.
+check "row_tid refuses a row number below 1 (22003), and row 1 is accepted" \
+	"$(sqlstate "SELECT pgcolumnar.row_tid(0)")|$(sqlstate "SELECT pgcolumnar.row_tid(-1)")|$(sqlstate "SELECT pgcolumnar.row_tid(1)")" \
+	"22003|22003|ok"
 
 pgc_summary

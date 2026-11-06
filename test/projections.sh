@@ -113,9 +113,11 @@ check "fp row count matches base" \
 # projection gives tight ranges the planner can use (gap 26). Native projections
 # carry the same skip metadata in the zone map (D6e).
 fp_sid="(SELECT proj_storage_id FROM pgcolumnar.projection WHERE storage_id = pgcolumnar.get_storage_id('fo') AND name='fp')"
-fp_minmax="$(q "SELECT count(*) FROM pgcolumnar.zone_map WHERE storage_id = $fp_sid AND minimum IS NOT NULL;")"
+# EVERY zone map, not one (#1339). "-ge 1" held for a projection whose chunks
+# carried min/max in one zone map and not in the rest.
+fp_minmax="$(q "SELECT count(*) FILTER (WHERE minimum IS NOT NULL) || '/' || count(*) FROM pgcolumnar.zone_map WHERE storage_id = $fp_sid;")"
 check "fp chunks carry min/max skip metadata" \
-	"$([ "$fp_minmax" -ge 1 ] && echo yes || echo no)" "yes"
+	"$([ "${fp_minmax%/*}" = "${fp_minmax#*/}" ] && [ "${fp_minmax#*/}" -ge 2 ] && echo yes || echo "no ($fp_minmax zone maps carry min/max)")" "yes"
 
 echo "-- phase 2: deletes reflected via the base delete_vector"
 psql_run "DELETE FROM fo WHERE a BETWEEN 1000 AND 2000;"
@@ -192,6 +194,19 @@ check "projection-scan results match heap oracle" \
 check "aggregate over projection scan matches oracle" \
 	"$(q "SELECT count(*), sum(a) FROM ps WHERE c BETWEEN 100 AND 200;")" \
 	"$(q "SELECT count(*), sum(a) FROM ps_h WHERE c BETWEEN 100 AND 200;")"
+# THE EXECUTOR, NOT THE PLANNER (#1339). The first arm reads the name from
+# EXPLAIN, which takes it before the executor decides what to open, and the two
+# oracle arms pass whichever storage is read. So a scan that EXPLAINs as `pc` and
+# reads the base passed all three. Executed, the sorted projection lets the
+# reader skip the vectors outside 100..200 and the filter sees only part of the
+# table; the base, unsorted on c, sends every row to the filter.
+pj_removed="$(q "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT a, c FROM ps WHERE c BETWEEN 100 AND 200;" |
+	grep -m1 'Rows Removed by Filter:' | grep -oE '[0-9.]+$')"
+pj_outside="$(q "SELECT count(*) FROM ps_h WHERE NOT (c BETWEEN 100 AND 200);")"
+check "executing it reads the projection, so the filter sees fewer rows than the base holds" \
+	"$(if pgc_is_number "$pj_removed" && pgc_is_number "$pj_outside"; then
+		awk -v r="$pj_removed" -v o="$pj_outside" 'BEGIN { print (r + 0 < o + 0 ? "fewer" : "all " r " of " o) }'
+	else echo "unread: [$pj_removed] [$pj_outside]"; fi)" "fewer"
 
 check "GUC off: no projection scan" \
 	"$(q "SET pgcolumnar.enable_projection_scan=off; EXPLAIN (COSTS OFF) SELECT a, c FROM ps WHERE c BETWEEN 100 AND 200;" | grep -c 'Columnar Projection')" "0"
@@ -204,7 +219,14 @@ psql_run "DELETE FROM ps_h WHERE a BETWEEN 5000 AND 6000;"
 check "projection scan matches oracle after delete" \
 	"$(pgc_set_hash "SELECT a, c FROM ps WHERE c BETWEEN 100 AND 200")" \
 	"$(pgc_set_hash "SELECT a, c FROM ps_h WHERE c BETWEEN 100 AND 200")"
-check "full-range projection scan matches oracle" \
+# WHAT THE UNRESTRICTED QUERY READS (#1339). Named "full-range projection scan", it
+# read the base: a projection is considered only when its first sort-key column is
+# restricted, and even c BETWEEN 0 AND 999 plans the base because nothing prunes.
+# The arm above reads the projection after the delete; this one is named for what
+# it reads, with the plan asserted so the name cannot drift from it again.
+check "an unrestricted query reads the base, not the projection" \
+	"$(q "EXPLAIN (COSTS OFF) SELECT a, c FROM ps;" | grep -c 'Columnar Projection')" "0"
+check "an unrestricted base scan matches oracle after delete" \
 	"$(pgc_set_hash "SELECT a, c FROM ps")" \
 	"$(pgc_set_hash "SELECT a, c FROM ps_h")"
 
@@ -257,6 +279,12 @@ psql_run "CREATE TABLE pm (a int, c int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.add_projection('pm', 'pmp', ARRAY['a','c'], ARRAY['c']);"
 psql_run "INSERT INTO pm SELECT g, g FROM generate_series(1,10000) g;"   # batch 1
 
+# THE PLAN THE ARMS BELOW NAME (#1339). Four of them say "via projection" or
+# "projection scan", and nothing asked how this count plans. Planned on the base,
+# every one of them passes whatever the projection scan does with the snapshot.
+check "the old-snapshot count is planned as a projection scan" \
+	"$(q "SET pgcolumnar.enable_projection_scan = on; EXPLAIN (COSTS OFF) SELECT count(a) FROM pm WHERE c BETWEEN 1 AND 20000;" | grep -c 'Columnar Projection: pmp')" "1"
+
 A_IN="$PGC_WORKDIR/pmA.in"; A_OUT="$PGC_WORKDIR/pmA.out"
 mkfifo "$A_IN"; : > "$A_OUT"
 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
@@ -264,7 +292,10 @@ env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 A_PID=$!
 exec 9> "$A_IN"
 pa_send() { printf '%s\n' "$*" >&9; }
-pa_wait() { local t="$1" i; for i in $(seq 1 200); do grep -q "$t" "$A_OUT" && return 0; sleep 0.1; done; return 1; }
+# The token must carry a count. An ERROR echoes the statement, token included
+# ("LINE 1: SELECT 'PMA_' || ..."), so matching the bare token read a failed
+# query as an answer and the timeout arms below could not fire on it (#1339).
+pa_wait() { local t="$1" i; for i in $(seq 1 200); do grep -qE "${t}[0-9]+" "$A_OUT" && return 0; sleep 0.1; done; return 1; }
 
 # A opens a snapshot that sees batch 1, using a projection scan.
 pa_send "SET pgcolumnar.enable_projection_scan = on;"
@@ -400,7 +431,7 @@ psql_run "BEGIN;
 	  SELECT pgcolumnar.drop_projection('dt', 'dp');
 	  INSERT INTO dt SELECT g, g FROM generate_series(200, 210) g;
 	  COMMIT;"
-check "premise: the drop really removed the projection" \
+check "the drop really removed the projection" \
 	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'dp';")" "0"
 check "and the base table still took every row" \
 	"$(q "SELECT count(*) FROM dt;")" "66"
@@ -440,5 +471,22 @@ psql_run "SELECT pgcolumnar.drop_projection('dt2', 'dp2');"
 psql_run "INSERT INTO dt2 SELECT g, g FROM generate_series(200, 300) g;"
 check "control: a drop in its own transaction never left one" \
 	"$(proj_orphans dt2)" "0"
+
+# ---- a sort key with no ordering is refused (#1341) --------------------------
+#
+# add_projection does not check the sort column's type. The writer does, when it
+# is built: json has no btree comparison, so the back-fill over existing rows
+# must refuse with 0A000 rather than sort by a comparison function that does not
+# exist. Last in the suite, because without the check that sort crashes the
+# backend (measured).
+psql_run "CREATE TABLE pjs (id int, j json) USING pgcolumnar;
+	  INSERT INTO pjs SELECT g, json_build_object('k', g) FROM generate_series(1, 500) g;"
+check "a projection sorted on a type with no ordering (json) is refused (0A000)" \
+	"$(proj_sqlstate "SELECT pgcolumnar.add_projection('pjs', 'pjp', ARRAY['id','j'], ARRAY['j'])")" "0A000"
+# On a server that accepts connections again: without the check the sort crashes
+# its backend (measured), and this arm must answer for the catalog, not for that.
+for _i in $(seq 1 60); do [ "$(q 'SELECT 1' 2>/dev/null)" = 1 ] && break; sleep 0.5; done
+check "and nothing of it is declared" \
+	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE name = 'pjp';")" "0"
 
 pgc_summary

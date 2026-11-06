@@ -273,8 +273,12 @@ def _branch_carries(node):
     return not isinstance(node, ast.Constant)
 
 
-def collapsing_arms(directory):
-    """-> ["file:line  <test source>", ...] for every arm that discards its measurement."""
+def collapsing_arms(directory, classified=None):
+    """-> ["file:line  <test source>", ...] for every arm that discards its measurement.
+
+    `classified`, when given, collects "file:line" for every conditional arm the sweep
+    examined, so the coverage premise below can count the sweep's own work rather than
+    a second walk of its own that a broken sweep would not share (#1339)."""
     out = []
     for path in sorted(pathlib.Path(directory).glob("test_*.py")):
         try:
@@ -285,6 +289,8 @@ def collapsing_arms(directory):
             if not call.args or not isinstance(call.args[0], ast.IfExp):
                 continue
             arg = call.args[0]
+            if classified is not None:
+                classified.append(f"{path.name}:{call.lineno}")
             if _branch_carries(arg.body) or _branch_carries(arg.orelse):
                 continue
             if _is_lossy(arg.test):
@@ -306,16 +312,12 @@ def test_the_sweep_finds_the_arms_it_is_meant_to_classify(expect):
     corpus reports. So count what it CLASSIFIED, not only what it rejected -- the
     same shape `test_loop_coverage_premise` needs for the same reason.
     """
-    seen = 0
-    for path in sorted(HERE.glob("test_*.py")):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for call in [n for n in ast.walk(tree) if _counted(n)]:
-            if call.args and isinstance(call.args[0], ast.IfExp):
-                seen += 1
-    expect.at_least(seen, 100,
+    # THE SWEEP'S OWN COUNT. This walked the corpus a second time with its own glob
+    # and its own filter, so a sweep that examined nothing -- its glob broken, say --
+    # still met the premise while reporting "none" for the corpus (#1339).
+    classified = []
+    collapsing_arms(HERE, classified)
+    expect.at_least(len(classified), 100,
                     "premise: the sweep found conditional arms to classify")
 
 
@@ -380,6 +382,14 @@ def test_an_aggregate_over_several_operands_stays_in_scope(tmp_path, expect):
                                  "    expect.text('yes' if min(runs) > 0 else 'no', 'yes', 'n')\n")
     expect.num(len(collapsing_arms(one_arg)), 1,
                "a single-argument min aggregates a sequence, so it is lossy too")
+
+    # EVERY AGGREGATE THE RULE NAMES, not min alone: a classifier that lost max or
+    # sum from its set passed this test while min stayed (#1339).
+    for agg in ("max", "sum"):
+        d = _fixture(tmp_path, "def test_x(expect):\n"
+                               f"    expect.text('yes' if {agg}(a, b, c, d) > 0 else 'no', 'yes', 'n')\n")
+        expect.num(len(collapsing_arms(d)), 1,
+                   f"{agg} over several operands is lossy against 0 as well")
 
     plain = _fixture(tmp_path, "def test_x(expect):\n"
                                "    expect.text('yes' if rows > 0 else 'no', 'yes', 'n')\n")

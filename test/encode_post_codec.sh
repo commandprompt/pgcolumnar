@@ -95,23 +95,29 @@ psql_run "SET pgcolumnar.compression = 'zstd';"
 # THE TAIL FIXTURE. 99.9% of values sit in a 5,000-wide band; one in a thousand
 # is drawn from a 1.7-billion-wide range. Seeded, so the arms below are reading
 # one corpus and not one sample of a family of corpora.
-psql_run "SELECT setseed(0.11);"
-psql_run "CREATE TABLE epc_tail (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO epc_tail
-	SELECT CASE WHEN random() < 0.001
+#
+# THE SEED AND THE INSERTS ARE ONE CALL, and the heap mirror is written from the same
+# seeded generator, not copied from the table (#1339). Each psql_run is its own
+# session, so a setseed in one call never reached the INSERT in the next: the
+# fixture was unseeded. And a CREATE TABLE ... AS SELECT FROM epc_tail reads
+# through the decoder under test, so a decode defect landed on both sides: with the
+# reader returning row 5 of every row group as NULL, the read-back arms stayed green.
+EPC_TAIL_GEN="SELECT CASE WHEN random() < 0.001
 	            THEN 31525449 + floor(random() * 1700000000)::bigint
 	            ELSE 1739000000 + floor(random() * 5000)::bigint END
-	FROM generate_series(1, $ROWS) g;"
-psql_run "CREATE TABLE epc_tail_h AS SELECT * FROM epc_tail;"
+	FROM generate_series(1, $ROWS) g"
+psql_run "CREATE TABLE epc_tail (v bigint) USING pgcolumnar;
+	CREATE TABLE epc_tail_h (v bigint);
+	SELECT setseed(0.11); INSERT INTO epc_tail $EPC_TAIL_GEN;
+	SELECT setseed(0.11); INSERT INTO epc_tail_h $EPC_TAIL_GEN;"
 
 # THE CONTROL FIXTURE. A narrow range where every value repeats many times, the
 # shape hits.EventTime has. Encoding earns its place here: measured 0.29x, so an
 # over-eager decline would cost 3.5x on this column.
-psql_run "SELECT setseed(0.11);"
-psql_run "CREATE TABLE epc_rep (v bigint) USING pgcolumnar;"
-psql_run "INSERT INTO epc_rep
-	SELECT 1700000000 + (g % 86400)::bigint FROM generate_series(1, $ROWS) g;"
-psql_run "CREATE TABLE epc_rep_h AS SELECT * FROM epc_rep;"
+psql_run "CREATE TABLE epc_rep (v bigint) USING pgcolumnar;
+	CREATE TABLE epc_rep_h (v bigint);
+	INSERT INTO epc_rep SELECT 1700000000 + (g % 86400)::bigint FROM generate_series(1, $ROWS) g;
+	INSERT INTO epc_rep_h SELECT 1700000000 + (g % 86400)::bigint FROM generate_series(1, $ROWS) g;"
 
 tail_range="$(q "SELECT max(v) - min(v) FROM epc_tail;" | tail -1)"
 # 1st to 99th percentile, NOT 0.1st to 99.9th. One row in a thousand is an

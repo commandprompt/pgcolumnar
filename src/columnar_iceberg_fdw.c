@@ -36,6 +36,7 @@
 #include "fmgr.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
+#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/cost.h"
@@ -69,6 +70,7 @@ typedef enum IceTemporalKind
 	ICE_TEMPORAL_HOUR
 }			IceTemporalKind;
 
+#include "columnar.h"
 #include "columnar_avro.h"
 #include "columnar_compat.h"
 #include "columnar_iceberg.h"
@@ -299,6 +301,21 @@ icefdwGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 	 * restriction clauses (baserestrictinfo is populated by now), so a filtered
 	 * scan estimates its filtered rows rather than the whole table.
 	 */
+	/*
+	 * ONLY FOR A ROLE THE SCAN WOULD ADMIT. The executor refuses a caller without
+	 * pg_read_server_files at icefdwBeginForeignScan, but planning ran first and
+	 * read the metadata for anyone: EXPLAIN then told such a role how many rows a
+	 * server-side table holds, and a metadata_path that did not exist failed
+	 * planning with 58P01, so planning probed whether a server path exists. The
+	 * Parquet wrapper has gated its planner the same way since #330. Others get
+	 * the flat estimate and learn nothing from the plan.
+	 */
+	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
+	{
+		baserel->tuples = 1000.0;
+		set_baserel_size_estimates(root, baserel);
+		return;
+	}
 	if (mdpath != NULL)
 		est = PgColumnarIcebergEstimateRows(mdpath);
 	baserel->tuples = (est > 0) ? (double) est : 1.0;
@@ -391,6 +408,27 @@ ice_fdw_partition_quals(ForeignScanState *node, TupleDesc tupdesc,
 	return compiled;
 }
 
+/*
+ * Can the column's declared typmod change a value the scan returns (#1790)? The
+ * reader applies the typmod to every value: varchar(2) returns a stored 'eu  ' as
+ * 'eu', and timestamp(0) returns 00:59:59.7 as 01:00:00. A partition value in the
+ * manifest is the stored one, so it need not describe the returned rows, and the
+ * FDW must not prune on such a column. A time or timestamp at full microsecond
+ * precision changes nothing.
+ */
+static bool
+ice_fdw_typmod_changes_values(TupleDesc tupdesc, int attno)
+{
+	Form_pg_attribute att = TupleDescAttr(tupdesc, attno - 1);
+
+	if (att->atttypmod < 0)
+		return false;
+	if ((att->atttypid == TIMESTAMPOID || att->atttypid == TIMESTAMPTZOID ||
+		 att->atttypid == TIMEOID) && att->atttypmod >= MAX_TIMESTAMP_PRECISION)
+		return false;
+	return true;
+}
+
 /* Is `typid` an identity-partition column type this increment can prune on? Only
  * these are put in the partition mask, so a qual over, say, a date-partitioned
  * column is never compiled and its files are read in full (sound). */
@@ -430,6 +468,14 @@ ice_fdw_cell_datum(const PgColumnarAvroPartCell *c, Oid typid, bool *ok)
 		case TEXTOID:
 		case VARCHAROID:
 			if (!c->is_bytes)
+				break;
+			/*
+			 * The manifest's bytes are not known to be valid text (#1821). A
+			 * value that is not valid in the server encoding is undecidable,
+			 * not unequal: compared as raw bytes it matches nothing, and the
+			 * file would be pruned with rows in it that the qual keeps.
+			 */
+			if (!pg_verify_mbstr(GetDatabaseEncoding(), c->bytes, c->blen, true))
 				break;
 			return PointerGetDatum(cstring_to_text_with_len(c->bytes, c->blen));
 		case INT2OID:
@@ -674,7 +720,8 @@ ice_fdw_metric_quals(ForeignScanState *node, TupleDesc tupdesc,
  * Compile "bucket-source-column = const" predicates into IceBucketQuals. A
  * bucket[N] partition stores the bucket of the source value; an equality
  * predicate on the source column can prune a file whose stored bucket differs
- * from bucket(const, N). Only "=" prunes (the hash destroys order).
+ * from bucket(const, N). Only "=" prunes (the hash destroys order), and only
+ * under a deterministic collation, where equal values are equal bytes.
  */
 static List *
 ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
@@ -717,6 +764,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 			continue;
 		if (var->varattno < 1 || contain_volatile_functions((Node *) op))
 			continue;
+		/*
+		 * The stored bucket need not match a value the typmod changed (#1790).
+		 * Not reachable today: the only bucket source types with a typmod are
+		 * varchar(n), and "=" on varchar wraps the Var in a cast to text, which
+		 * the test above rejects. The guard keeps this sound if that changes.
+		 */
+		if (var->varattno <= tupdesc->natts &&
+			ice_fdw_typmod_changes_values(tupdesc, var->varattno))
+			continue;
 
 		interp = PgColumnarGetOpInterpretation(op->opno);
 		foreach(ic, interp)
@@ -730,6 +786,15 @@ ice_fdw_bucket_quals(ForeignScanState *node, TupleDesc tupdesc,
 		}
 		if (strategy != BTEqualStrategyNumber)
 			continue;			/* bucket prunes on equality only */
+
+		/*
+		 * Iceberg buckets a string by its bytes. Under a nondeterministic
+		 * collation two equal values need not share bytes, nor a bucket, so
+		 * bucket(const) cannot rule a file out (#1818): read it, and let the
+		 * executor's filter decide.
+		 */
+		if (!PgColumnarCollationIsDeterministic(op->inputcollid))
+			continue;
 
 		/* is this Var the source column of a bucket partition field? */
 		for (bi = 0; bi < bcount; bi++)
@@ -1024,6 +1089,8 @@ ice_fdw_temporal_quals(ForeignScanState *node, TupleDesc tupdesc,
 
 			if (!ice_temporal_source_ok(kind, atttypid))
 				continue;
+			if (ice_fdw_typmod_changes_values(tupdesc, var->varattno))
+				continue;		/* the stored bucket need not match (#1790) */
 			if (con->constisnull || con->consttype != atttypid)
 				continue;		/* only a constant of the column's own type */
 			if (!ice_const_to_timestamp(atttypid, con->constvalue, &cts))
@@ -1443,7 +1510,8 @@ icefdwBeginForeignScan(ForeignScanState *node, int eflags)
 		 * covers a per-file mismatch of a supported-type column at read time.
 		 */
 		if (a >= 1 && a <= tupdesc->natts &&
-			ice_fdw_type_supported(TupleDescAttr(tupdesc, a - 1)->atttypid))
+			ice_fdw_type_supported(TupleDescAttr(tupdesc, a - 1)->atttypid) &&
+			!ice_fdw_typmod_changes_values(tupdesc, a))
 		{
 			partMask[a - 1] = true;
 			any = true;
@@ -1559,7 +1627,8 @@ icefdwIterateForeignScan(ForeignScanState *node)
 		st->filesPruned = PgColumnarIcebergScanCore(st->metadata_path, st->tupdesc,
 													NULL, st->tupstore,
 													prune ? ice_fdw_file_excludes : NULL,
-													st, st->needTop);
+													st, st->needTop,
+													"the pgcolumnar_iceberg foreign-data wrapper");
 		st->started = true;
 	}
 

@@ -86,12 +86,12 @@ def test_projection_scan_cost(pgc_conn, expect):
     expect.text(
         (tp or {}).get("Columnar Projection") or "none",
         "onk",
-        "premise: the tight plan uses the covering projection",
+        "the tight plan uses the covering projection",
     )
     expect.text(
         (lp or {}).get("Columnar Projection") or "none",
         "onk",
-        "premise: the loose plan uses the covering projection",
+        "the loose plan uses the covering projection",
     )
     expect.text(
         "none" if tb is None or "Columnar Projection" not in tb else tb["Columnar Projection"],

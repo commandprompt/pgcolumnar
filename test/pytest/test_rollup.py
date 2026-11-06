@@ -8,7 +8,8 @@ points and the owner's decisions are on #1294.
 THE ORACLE is a full recompute of the same GROUP BY, every time. Exactness was
 fixed by the design so it cannot be loosened here: count, integer sum, min and
 max exact; avg of an integer column exact too (numeric partials); avg of
-float8 within a relative 1e-12. This file uses an integer avg, so it is exact.
+float8 within a relative 1e-12. This file uses both avgs, as the shell twin
+does, so a float avg kept in float4 partials is seen here too (#1339).
 
 Two things the shell twin found while the code was written, held here too: a
 lateral per-group subquery pulled up into a join read every row group (a TID
@@ -17,8 +18,10 @@ superuser bypassed the row-level security on the rollup catalogs, so an owner
 and a stranger are tested as ordinary roles.
 
 ON A PRIVATE DATABASE (`pgc_own_db`): the roles and pg_stat_reset. Independent
-of `test/rollup.sh`: its own table, 15-minute buckets, aggregates (count, sum,
-max, avg of an integer), zones, row counts and roles.
+of `test/rollup.sh`: its own table, 15-minute buckets, zones, row counts and
+roles. The aggregates are the same kinds as the shell's (count, sum, min, max,
+avg of an integer, avg of a float8), so a check of one name asserts one
+property in both twins (#1339).
 """
 
 import threading
@@ -26,9 +29,11 @@ import time
 
 import psycopg
 
+from pgc_vacuity import query_error
+
 ORIGIN = "2025-12-29 06:00:00+00"
-AGG_FUNCS = "{count,sum,max,avg}"
-AGG_COLS = "{*,reading,temp,reading}"
+AGG_FUNCS = "{count,sum,min,max,avg,avg}"
+AGG_COLS = "{*,reading,reading,temp,reading,temp}"
 
 
 def _one(conn, sql):
@@ -53,25 +58,41 @@ def _load(conn, lo, hi, start):
 
 
 RECOMPUTE = (f"SELECT date_bin('15 minutes', at, '{ORIGIN}') AS bucket, sensor, count(*) AS count,"
-             " sum(reading)::numeric AS sum_reading, max(temp) AS max_temp, avg(reading) AS avg_reading"
+             " sum(reading)::numeric AS sum_reading, min(reading) AS min_reading, max(temp) AS max_temp,"
+             " avg(reading) AS avg_reading, avg(temp) AS avg_temp"
              " FROM feed GROUP BY 1, 2")
 
 
 def _digest(conn, rel_sql):
-    # concat_ws over coalesce: a plain || turns a row with any NULL into NULL, and
-    # string_agg drops it, so NULL keys would be compared by their absence.
+    # The exact columns. concat_ws over coalesce: a plain || turns a row with any
+    # NULL into NULL, and string_agg drops it, so NULL keys would be compared by
+    # their absence. avg_temp is a float8 avg and is held apart, by _avg_gap.
     return _one(conn, "SELECT count(*) || '|' || md5(string_agg(concat_ws(',', coalesce(bucket::text, '~'),"
                       " coalesce(sensor::text, '~'), count, coalesce(sum_reading::text, '~'),"
-                      " coalesce(max_temp::text, '~'), coalesce(avg_reading::text, '~')), ';'"
+                      " coalesce(min_reading::text, '~'), coalesce(max_temp::text, '~'),"
+                      " coalesce(avg_reading::text, '~')), ';'"
                       f" ORDER BY bucket NULLS FIRST, sensor NULLS FIRST)) FROM ({rel_sql}) x")
 
 
-def _matches(conn, rollup="gauge_15m"):
-    return _digest(conn, f"SELECT * FROM {rollup}")
+def _avg_gap(conn, rollup, recompute):
+    # The float8 avg within a relative 1e-12 of the recompute's, on every key the
+    # recompute has. A NULL key joins through a sentinel no row holds, so NULL keys
+    # are compared too; an equality, not IS NOT DISTINCT FROM, keeps it a hash
+    # join (IS NOT DISTINCT FROM ran past the statement timeout).
+    return str(_one(conn, "SELECT coalesce(max(abs(r.avg_temp - o.avg_temp)"
+                          " / greatest(abs(o.avg_temp), 1e-300)), 0) < 1e-12"
+                          f" AND count(*) = (SELECT count(*) FROM ({recompute}) z)"
+                          f" FROM {rollup} r JOIN ({recompute}) o"
+                          " ON coalesce(r.bucket, '-infinity') = coalesce(o.bucket, '-infinity')"
+                          " AND coalesce(r.sensor, -1) = coalesce(o.sensor, -1)"))
 
 
-def _oracle(conn):
-    return _digest(conn, RECOMPUTE)
+def _matches(conn, rollup="gauge_15m", recompute=RECOMPUTE):
+    return f"{_digest(conn, f'SELECT * FROM {rollup}')}|{_avg_gap(conn, rollup, recompute)}"
+
+
+def _oracle(conn, recompute=RECOMPUTE):
+    return f"{_digest(conn, recompute)}|True"
 
 
 def _refresh(conn, rollup="gauge_15m"):
@@ -105,7 +126,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                     f" '{{sensor}}', '{AGG_FUNCS}', '{AGG_COLS}')")
     expect.text(_one(conn, "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute"
                            " WHERE attrelid = to_regclass('gauge_15m') AND attnum > 0 AND NOT attisdropped"),
-                "bucket,sensor,count,sum_reading,max_temp,avg_reading",
+                "bucket,sensor,count,sum_reading,min_reading,max_temp,avg_reading,avg_temp",
                 "the rollup table exists with the documented columns")
 
     expect.text(_refresh(conn), "24000", "the first refresh folds every row")
@@ -152,17 +173,22 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 "two refreshes started together fold the new rows once between them")
     expect.text(_matches(conn), _oracle(conn), "and after two refreshes started together the rollup equals a full recompute")
 
-    # Zones.
+    # Zones. One-hour buckets, not this file's 15 minutes: every zone offset is a
+    # whole number of 15 minutes, so an origin or bucket read in the session's zone
+    # (St John's is -3:30) moves no 15-minute bucket edge, and the arm could not
+    # fail. Measured (#1339): the origin cut to the hour in the creating session's
+    # zone left the 15-minute arm green.
+    hourly = RECOMPUTE.replace("'15 minutes'", "'1 hour'")
     for zone, name in (("UTC", "z_utc"), ("America/St_Johns", "z_stjohns")):
         with conn.cursor() as cur:
             cur.execute(f"SET TimeZone = '{zone}'")
-            cur.execute(f"SELECT pgcolumnar.create_rollup('{name}', 'feed', 'at', '15 minutes', '{ORIGIN}',"
+            cur.execute(f"SELECT pgcolumnar.create_rollup('{name}', 'feed', 'at', '1 hour', '{ORIGIN}',"
                         f" '{{sensor}}', '{AGG_FUNCS}', '{AGG_COLS}')")
             cur.execute(f"SELECT pgcolumnar.refresh_rollup('{name}')")
             cur.execute("SET TimeZone = 'UTC'")
-    expect.text(_matches(conn, "z_utc"), _matches(conn, "z_stjohns"),
+    expect.text(_digest(conn, "SELECT * FROM z_utc"), _digest(conn, "SELECT * FROM z_stjohns"),
                 "refreshes from sessions in different time zones build the same rollup")
-    expect.num(_one(conn, "SELECT count(*) FROM z_utc"), _one(conn, f"SELECT count(*) FROM ({RECOMPUTE}) z"),
+    expect.num(_one(conn, "SELECT count(*) FROM z_utc"), _one(conn, f"SELECT count(*) FROM ({hourly}) z"),
                "the zone rollups hold a row per key of the recompute")
     expect.at_least(_one(conn, "SELECT count(*) FROM z_utc"), 1, "and that is not zero")
 
@@ -171,13 +197,21 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_refresh(conn), "160000", "a refresh folds a bulk append")
     expect.text(_matches(conn), _oracle(conn), "and after the bulk append the rollup equals a full recompute")
     _load(conn, 30021, 30820, "2026-02-11 00:00:00+00")
+    # With current statistics, as autovacuum leaves a database. Without them the arm
+    # measured whichever plan the catalog's statistics happened to give: once
+    # autovacuum had analyzed pgcolumnar.row_group, the refresh scanned it and called
+    # get_storage_id per catalog row, each call reading the source's first page, and
+    # it read 93 of 132 blocks (#1614).
     with conn.cursor() as cur:
-        cur.execute("SELECT pg_stat_force_next_flush()")
-        cur.execute("SELECT pg_stat_reset()")
-        cur.execute("SELECT pgcolumnar.refresh_rollup('gauge_15m')")
-        cur.execute("SELECT pg_stat_force_next_flush()")
-    read = _one(conn, "SELECT coalesce(heap_blks_read, 0) + coalesce(heap_blks_hit, 0)"
-                      " FROM pg_statio_user_tables WHERE relname = 'feed'")
+        cur.execute("ANALYZE")
+    # The refresh's own reads: a fresh session, the count read inside the refresh's
+    # transaction, so no other backend's reads of feed (an autovacuum) are counted.
+    try:
+        with psycopg.connect(dsn) as own:
+            own.execute("SELECT pgcolumnar.refresh_rollup('gauge_15m')")
+            read = own.execute("SELECT pg_stat_get_xact_blocks_fetched('feed'::regclass)").fetchone()[0]
+    except psycopg.Error as exc:
+        read = query_error(str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
     pages = _one(conn, "SELECT pg_relation_size('feed') / 8192")
     print(f"-- refresh after an 800-row append read {read} of {pages} blocks")
     expect.at_least(read, 1, "the refresh after a small append read the source at all")
@@ -194,10 +228,18 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     with conn.cursor() as cur:
         cur.execute("SELECT pgcolumnar.vacuum('feed')")
     expect.text("renumbered" if identity() != before else "same", "renumbered",
-                "premise: pgcolumnar.vacuum gave the source's row groups new identities")
+                "pgcolumnar.vacuum gave the source's row groups new identities")
     vb = _matches(conn)
     expect.at_least(_one(conn, "SELECT count(*) FROM gauge_15m"), 1, "the rollup holds rows before the rewrite")
-    expect.text(f"{_refresh(conn)}|{_matches(conn)}", f"55000|{vb}",
+    # The SQLSTATE, whether the HINT names rebase_rollup, and the rollup: the name
+    # promises all three, and the HINT was read by no arm until #1339.
+    try:
+        _one(conn, "SELECT pgcolumnar.refresh_rollup('gauge_15m')")
+        refused, hint = "folded", None
+    except psycopg.Error as e:
+        refused, hint = e.sqlstate or "?", e.diag.message_hint
+    named = "rebase_rollup" if hint and "rebase_rollup" in hint else f"hint: {hint}"
+    expect.text(f"{refused}|{named}|{_matches(conn)}", f"55000|rebase_rollup|{vb}",
                 "a refresh after the source was rewritten is refused, naming rebase_rollup")
     # Not through _state: a SQLSTATE such as 42883 is all digits and would read as a count.
     try:
@@ -219,7 +261,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
               f" FROM gauge_15m__partials WHERE {far}")
     far_before = _one(conn, at_far)
     expect.at_least(_one(conn, f"SELECT count(*) FROM gauge_15m__partials WHERE {far}"), 1,
-                    "premise: the rollup holds partials the delete below cannot reach")
+                    "the rollup holds partials the delete below cannot reach")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM feed WHERE sensor = 4 AND at < '2026-02-01 01:00:00+00'")
     expect.text(_folds(conn), "folded",
@@ -253,7 +295,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
         rewrote = _one(conn, "SELECT pgcolumnar.compact_rewrite('feed', 0.02)")
     except psycopg.Error:
         rewrote = -1
-    expect.at_least(rewrote, 1, "premise: compact_rewrite rewrote a row group")
+    expect.at_least(rewrote, 1, "compact_rewrite rewrote a row group")
     _refresh(conn)
     expect.text(_matches(conn), _oracle(conn), "after compact_rewrite the rollup equals a full recompute")
     expect.text(_refresh(conn), "0", "and the refresh after the rewrite recomputes nothing")
@@ -287,15 +329,15 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_refresh(conn, "holes_15m"), "1300", "the second refresh of the NULL-key rollup folded the append")
     holes_recompute = RECOMPUTE.replace("FROM feed", "FROM holes")
     nulls = f"SELECT count(*) FILTER (WHERE sensor IS NULL) || ' ' || count(*) FILTER (WHERE bucket IS NULL) FROM ({{}}) z"
-    expect.text(f"{_digest(conn, 'SELECT * FROM holes_15m')}|{_one(conn, nulls.format('SELECT * FROM holes_15m'))}",
-                f"{_digest(conn, holes_recompute)}|{_one(conn, nulls.format(holes_recompute))}",
+    expect.text(f"{_matches(conn, 'holes_15m', holes_recompute)}|{_one(conn, nulls.format('SELECT * FROM holes_15m'))}",
+                f"{_oracle(conn, holes_recompute)}|{_one(conn, nulls.format(holes_recompute))}",
                 "a rollup with NULL keys and NULL timestamps equals a full recompute")
     expect.at_least(_one(conn, f"SELECT count(*) FROM ({holes_recompute}) z WHERE sensor IS NULL OR bucket IS NULL"), 2,
                     "premise: and the fixture has NULL-key and NULL-bucket groups")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM holes WHERE at IS NULL AND sensor = 1")
     _refresh(conn, "holes_15m")
-    expect.text(_digest(conn, "SELECT * FROM holes_15m"), _digest(conn, holes_recompute),
+    expect.text(_matches(conn, "holes_15m", holes_recompute), _oracle(conn, holes_recompute),
                 "after a delete of rows whose ts is NULL the NULL-bucket rollup equals a full recompute")
 
     # Retention keeps history: groups expire retires (pgcolumnar.retired_group,
@@ -316,7 +358,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.at_least(old_buckets, 1, "the history rollup holds old buckets")
     with conn.cursor() as cur:
         cur.execute("SELECT pgcolumnar.set_options('aged', ttl_column => 'at', ttl_interval => '14 days')")
-    expect.at_least(_one(conn, "SELECT pgcolumnar.expire('aged')"), 1, "premise: expire retired the old row groups")
+    expect.at_least(_one(conn, "SELECT pgcolumnar.expire('aged')"), 1, "expire retired the old row groups")
     expect.text(f"{_refresh(conn, 'aged_hourly')}|{_one(conn, hist)}", f"0|{before_hist}",
                 "a refresh after retention folds nothing, refuses nothing, and keeps every bucket")
     expect.num(_one(conn, "SELECT count(*) FROM pgcolumnar.rollup_group rg JOIN pgcolumnar.retired_group t"
@@ -361,7 +403,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(_one(conn, f"SELECT count(*) FILTER (WHERE at < {h} + interval '40 min') || '|'"
                            f" || count(*) FILTER (WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour')"
                            " FROM layered"), "0|1",
-                "premise: expire retired the group in bucket D alone and kept the one that shares it")
+                "expire retired the group in bucket D alone and kept the one that shares it")
     lq = "SELECT md5(string_agg(bucket || ':' || count || ':' || max_reading, ',' ORDER BY bucket)) FROM layered_hourly"
     lr = (f"SELECT md5(string_agg(b || ':' || n || ':' || m, ',' ORDER BY b)) FROM (SELECT date_bin('1 hour', at,"
           f" '{ORIGIN}') b, count(*) n, max(reading) m FROM layered GROUP BY 1) x")
@@ -373,8 +415,11 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 "a delete in buckets with no history, next to retired ones, folds: "
                 "those buckets equal a recompute and D keeps its history")
     before_layered = _one(conn, lq)
+    # Inside D, the bucket that holds retired history: KEPT's one row there. The
+    # delete was two buckets later, which holds no history, and was refused only
+    # because a refresh dirties a changed group's whole time range (#1339).
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM layered WHERE at >= {h} + interval '2 hours' AND at < {h} + interval '3 hours'")
+        cur.execute(f"DELETE FROM layered WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour'")
     expect.text(f"{_refresh(conn, 'layered_hourly')}|{_one(conn, lq)}", f"0A000|{before_layered}",
                 "a delete in a bucket that holds retired history is refused, and the rollup is unchanged")
 
@@ -384,7 +429,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     rq = lq.replace("layered_hourly", "relayered_hourly")
     before_re = _one(conn, rq)
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM relayered WHERE at >= {h} + interval '2 hours' AND at < {h} + interval '3 hours'")
+        cur.execute(f"DELETE FROM relayered WHERE at >= {h} + interval '40 min' AND at < {h} + interval '1 hour'")
     expect.text(f"{_refresh(conn, 'relayered_hourly')}|{_one(conn, rq)}", f"0A000|{before_re}",
                 "a delete in a bucket whose history the same refresh retires is refused, and the rollup is unchanged")
 
@@ -403,7 +448,7 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
         cur.execute("DELETE FROM thinned WHERE at < now() - interval '14 days' AND reading % 5 = 0")
         cur.execute("SELECT pgcolumnar.set_options('thinned', ttl_column => 'at', ttl_interval => '14 days')")
     expect.num(_one(conn, "SELECT pgcolumnar.expire('thinned')"), 1,
-               "premise: expire retired the group the delete thinned")
+               "expire retired the group the delete thinned")
     tq = "SELECT string_agg(bucket || ':' || count || ':' || max_reading, ',' ORDER BY bucket) FROM thinned_hourly"
     before_thin = _one(conn, tq)
     expect.text(f"{_refresh(conn, 'thinned_hourly')}|{_one(conn, tq)}", f"0A000|{before_thin}",
@@ -459,6 +504,34 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
                 _one(conn, f"SELECT string_agg(b || ':' || n || ':' || m, ' ' ORDER BY b) FROM"
                            f" (SELECT date_bin('1 day', at, '{ORIGIN}') b, count(*) n, max(kwh) m FROM meter GROUP BY 1) x"),
                 "and reads what a recompute gives")
+    # THE WRITE SIDE AND THE DEFINER HELPERS (#1341). The policies have USING only,
+    # so they also check an INSERT's new row; an UPDATE or DELETE with no WHERE reads
+    # nothing, so only the policy's USING keeps it off another owner's rows. Asked
+    # before the read-side arms, so a write that got through is what fails.
+    rg_sql = "SELECT count(*) FROM pgcolumnar.rollup_group WHERE rollup = 'meter_daily'::regclass"
+    rg_own = _one(conn, rg_sql)
+    expect.text("some" if rg_own > 0 else f"none ({rg_own})", "some",
+                "premise: the owner's rollup has group rows another role could reach")
+    expect.text(as_role("rp_other", "INSERT INTO pgcolumnar.rollup_group VALUES"
+                                    " ('public.meter_daily'::regclass, 999999, 1, 0, NULL, NULL, false)"),
+                "42501", "another role cannot add a group row to the owner's rollup (42501)")
+    as_role("rp_other", "UPDATE pgcolumnar.rollup SET history_has_null = true")
+    as_role("rp_other", "DELETE FROM pgcolumnar.rollup_group")
+    has_null = _one(conn, "SELECT history_has_null FROM pgcolumnar.rollup"
+                          " WHERE rollup = 'meter_daily'::regclass")
+    expect.text(f"{has_null}|{_one(conn, rg_sql)}", f"False|{rg_own}",
+                "and its unqualified UPDATE and DELETE reach none of the owner's catalog rows")
+    # rollup_source_groups and rollup_source_retired run as their definer, so the
+    # catalogs they read refuse no one; the caller's SELECT on the source is checked
+    # by require_caller_select against the OUTER user.
+    own_groups = as_role("rp_owner", "SELECT (count(*) > 0)::text FROM pgcolumnar.rollup_source_groups('meter')")
+    own_retired = as_role("rp_owner", "SELECT count(*) >= 0 FROM pgcolumnar.rollup_source_retired('meter')")
+    expect.text(f"{own_groups}|{own_retired}", "true|True",
+                "the owner reads its source's groups through the definer helpers")
+    expect.text(as_role("rp_other", "SELECT count(*) FROM pgcolumnar.rollup_source_groups('public.meter')"), "42501",
+                "another role cannot read the source's groups through rollup_source_groups (42501)")
+    expect.text(as_role("rp_other", "SELECT count(*) FROM pgcolumnar.rollup_source_retired('public.meter')"), "42501",
+                "nor its retired groups through rollup_source_retired (42501)")
     expect.text(f"{as_role('rp_other', 'SELECT count(*) FROM pgcolumnar.rollup')} "
                 f"{as_role('rp_other', 'SELECT count(*) FROM pgcolumnar.rollup_group')}", "0 0",
                 "another role sees none of its rollup catalog rows")
@@ -505,5 +578,300 @@ def test_rollup_phase_one(pgc_own_db, pgc_cluster, expect):
     expect.text(refused("q_c", "1 hour", "{min}", "{humidity}"), "22023",
                 "an aggregate column the source does not have is refused")
     expect.text(refused("q_s", "1 hour", "{max}", "{*}"), "22023", "* with anything but count is refused")
-    expect.num(_one(conn, "SELECT count(*) FROM pg_class WHERE relname IN ('q_m', 'q_p', 'q_l', 'q_c', 'q_s')"), 0,
+    # The rest of create_rollup's refusals, and rebase_rollup's (#1341). A timestamp
+    # (no zone) source column would be bucketed in whatever zone the refresh runs in.
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE feed_lt (at timestamp, temp float8) USING pgcolumnar")
+    expect.text(_state(conn, f"SELECT pgcolumnar.create_rollup('q_t', 'feed_lt', 'at', '1 hour', '{ORIGIN}',"
+                             f" '{{}}', '{{count}}', '{{*}}')"),
+                "22023", "a ts_column that is not timestamptz is refused")
+    expect.text(_state(conn, f"SELECT pgcolumnar.create_rollup('q_g', 'feed', 'at', '1 hour', '{ORIGIN}',"
+                             f" '{{humidity}}', '{{count}}', '{{*}}')"),
+                "22023", "a group_by column the source does not have is refused")
+    expect.text(refused("q_f", "1 hour", "{sum}", "{at}"), "22023",
+                "a sum over a column that cannot be folded is refused")
+    expect.text(_state(conn, "SELECT pgcolumnar.rebase_rollup('feed')"), "42704",
+                "rebase_rollup of a table that is not a rollup is refused (42704)")
+    expect.num(_one(conn, "SELECT count(*) FROM pg_class WHERE relname IN ('q_m', 'q_p', 'q_l', 'q_c', 'q_s', 'q_t', 'q_g', 'q_f')"), 0,
                "and no refused rollup left a table behind")
+
+
+def test_a_rollup_and_its_source_are_dropped_together(pgc_conn, pgc_cluster, expect):
+    """The catalog held the source and the view as bare OIDs (#1376). DROP TABLE of the
+    source succeeded and left the rollup unrefreshable for good (42P01 on the dead OID,
+    or a reused OID folded silently); DROP VIEW left the partials table and the catalog
+    rows behind. Now the view depends on the source as a view over it would, so the drop
+    is refused and CASCADE takes the rollup; and dropping the view takes the rest of it."""
+    conn = pgc_conn
+
+    def ddl(sql):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+            return "ok"
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    def left(oid, name):
+        return _one(conn, f"SELECT (SELECT count(*) FROM pg_class WHERE relname IN ('{name}', '{name}__partials'))"
+                          f" || '|' || (SELECT count(*) FROM pgcolumnar.rollup WHERE rollup::oid = {oid})"
+                          f" || '|' || (SELECT count(*) FROM pgcolumnar.rollup_group WHERE rollup::oid = {oid})")
+
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE lsrc (ts timestamptz, v int) USING pgcolumnar")
+        cur.execute(f"INSERT INTO lsrc SELECT '{ORIGIN}'::timestamptz + g * interval '7 minutes', g"
+                    " FROM generate_series(1, 500) g")
+        for lr in ("lr_a", "lr_b"):
+            cur.execute(f"SELECT pgcolumnar.create_rollup('{lr}', 'lsrc', 'ts', '1 hour', '{ORIGIN}',"
+                        " '{}', '{count}', '{*}')")
+            cur.execute(f"SELECT pgcolumnar.refresh_rollup('{lr}')")
+    a_oid = _one(conn, "SELECT 'lr_a'::regclass::oid")
+    b_oid = _one(conn, "SELECT 'lr_b'::regclass::oid")
+
+    sums = _one(conn, "SELECT (SELECT sum(count) FROM lr_a) || '|' || (SELECT sum(count) FROM lr_b)")
+    a_parts = "|".join(left(a_oid, "lr_a").split("|")[:2])
+    expect.text(f"{sums}|{a_parts}", "500|500|2|1",
+                "both rollups over the source refreshed, so each has a view, partials and catalog rows")
+    expect.text(f"{ddl('DROP VIEW lr_b')}|{left(b_oid, 'lr_b')}", "ok|0|0|0",
+                "DROP VIEW of a rollup takes its partials and its catalog rows with it (#1376)")
+    expect.text(f"{ddl('DROP TABLE lsrc')}|{_one(conn, 'SELECT count(*) FROM pg_class WHERE relname = ' + chr(39) + 'lsrc' + chr(39))}",
+                "2BP01|1", "DROP TABLE of a rollup's source is refused while the rollup exists (2BP01, #1376)")
+    expect.text(f"{ddl('DROP TABLE lsrc CASCADE')}|{left(a_oid, 'lr_a')}", "ok|0|0|0",
+                "and DROP TABLE ... CASCADE takes the rollup's view, partials and catalog rows with it (#1376)")
+
+    # The trigger that records those dependencies writes to pg_depend for whoever writes
+    # a rollup row, and the catalog's row-level security only asks that they own the
+    # view. So it asks what a view over the source would: SELECT on the source.
+    schema = _one(conn, "SELECT current_schema()")
+    with conn.cursor() as cur:
+        cur.execute("DO $$ BEGIN CREATE ROLE lr_stranger_py LOGIN; "
+                    "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+        cur.execute(f'GRANT USAGE, CREATE ON SCHEMA "{schema}" TO lr_stranger_py')
+        cur.execute("GRANT USAGE ON SCHEMA pgcolumnar TO lr_stranger_py")
+        cur.execute("CREATE TABLE lr_victim (ts timestamptz, v int) USING pgcolumnar")
+        cur.execute("REVOKE ALL ON lr_victim FROM PUBLIC")
+    db = _one(conn, "SELECT current_database()")
+    try:
+        with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user=lr_stranger_py dbname={db}",
+                             autocommit=False) as c:
+            c.execute(f'SET search_path TO "{schema}", public')
+            c.execute("CREATE TABLE lr_mine (bucket timestamptz) USING pgcolumnar")
+            c.execute("CREATE VIEW lr_my_view AS SELECT bucket FROM lr_mine")
+            c.execute("INSERT INTO pgcolumnar.rollup (rollup, partials, source, source_storage, source_oid, ts_column,"
+                      " width, origin, group_by, agg_functions, agg_columns) VALUES ('lr_my_view', 'lr_mine',"
+                      f" 'lr_victim', 0, 0, 'ts', '1 hour', '{ORIGIN}', '{{}}', '{{count}}', '{{*}}')")
+            c.commit()
+        tie = "ok"
+    except psycopg.Error as e:
+        tie = e.sqlstate or "?"
+    expect.text(f"{tie}|{ddl('DROP TABLE lr_victim')}", "42501|ok",
+                "a role cannot tie a rollup row to a table it cannot read (42501, #1376)")
+
+    # The partials go with the view by an AUTO dependency, and a drop deletes AUTO
+    # dependents with no ownership check. So the trigger requires the writer to own
+    # the partials too, and the rollup to be a view and the partials a table.
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE lr_others (bucket timestamptz) USING pgcolumnar")
+        cur.execute("GRANT SELECT ON lr_others TO lr_stranger_py")
+        cur.execute("CREATE TABLE lr_src2 (ts timestamptz, v int) USING pgcolumnar")
+        cur.execute("GRANT SELECT ON lr_src2 TO lr_stranger_py")
+
+    def row(view, partials):
+        return ("INSERT INTO pgcolumnar.rollup (rollup, partials, source, source_storage, source_oid, ts_column,"
+                f" width, origin, group_by, agg_functions, agg_columns) VALUES ('{view}', '{partials}', 'lr_src2', 0,"
+                f" 0, 'ts', '1 hour', '{ORIGIN}', '{{}}', '{{count}}', '{{*}}')")
+
+    def as_stranger(*stmts):
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user=lr_stranger_py dbname={db}",
+                                 autocommit=False) as c:
+                c.execute(f'SET search_path TO "{schema}", public')
+                for st in stmts:
+                    c.execute(st)
+                c.commit()
+            return "ok"
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    named = as_stranger("CREATE TABLE lr_p2 (bucket timestamptz) USING pgcolumnar",
+                        "CREATE VIEW lr_v2 AS SELECT bucket FROM lr_p2", row("lr_v2", "lr_others"))
+    dropped = as_stranger("DROP VIEW IF EXISTS lr_v2")
+    survives = _one(conn, "SELECT count(*) FROM pg_class WHERE relname = 'lr_others'")
+    expect.text(f"{named}|{dropped}|{survives}", "42501|ok|1",
+                "a role cannot name another role's table as its rollup's partials (42501), and that table survives its view's drop (#1376)")
+    expect.text(as_stranger("CREATE TABLE lr_notview (bucket timestamptz) USING pgcolumnar",
+                            "CREATE TABLE lr_p4 (bucket timestamptz) USING pgcolumnar", row("lr_notview", "lr_p4")),
+                "42809", "a rollup row whose rollup is not a view is refused (42809, #1376)")
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE lr_p5 (bucket timestamptz) USING pgcolumnar")
+        cur.execute("CREATE VIEW lr_v5 AS SELECT bucket FROM lr_p5")
+        cur.execute("CREATE TABLE lr_p6 (bucket timestamptz) USING pgcolumnar")
+        cur.execute(row("lr_v5", "lr_p5"))
+    expect.text(ddl("UPDATE pgcolumnar.rollup SET partials = 'lr_p6' WHERE rollup = 'lr_v5'::regclass"), "0A000",
+                "a rollup row's view, partials and source cannot be changed once written (0A000, #1376)")
+
+
+def test_rollup_dump_and_restore(pgc_cluster, tmp_path, expect):
+    """A DUMP AND RESTORE (#1377). The definition is dumped, so the rollup exists
+    after a restore; the row groups it folded are not, as they name storage a restore
+    replaces. Neither the database OID nor the storage id tells a restored source from
+    the recorded one: storageid_seq restarts with the extension, so the first columnar
+    table of a new database gets the same storage id, and a refresh would fold every
+    restored row into the restored partials a second time. The OID does: the dump
+    writes the source as a name and its recorded OID as a number.
+
+    Its own databases and role. The partials are heap and the source is its database's
+    only columnar table, so the restored source gets the recorded storage id: the case
+    a storage id alone does not catch."""
+    import subprocess
+
+    src_db, dst_db = "pgc_rq_src", "pgc_rq_dst"
+    dump = tmp_path / "rollup-1377.sql"
+    bindir = pgc_cluster.bindir
+    conn_args = ["-h", "127.0.0.1", "-p", str(pgc_cluster.port), "-U", "postgres"]
+
+    def admin(db, sql):
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as c:
+            row = c.execute(sql).fetchone() if sql.lstrip().upper().startswith("SELECT") else c.execute(sql)
+            return str(row[0]) if isinstance(row, tuple) else None
+
+    def owner(db, sql):
+        """(value, sqlstate, hint) of SQL run as the rollup's owner, not a superuser."""
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as c:
+            c.execute("SET ROLE rq_owner")
+            try:
+                row = c.execute(sql).fetchone()
+                return (str(row[0]) if row else "", "ok", None)
+            except psycopg.Error as e:
+                return (None, e.sqlstate or "?", e.diag.message_hint)
+
+    def restore(db):
+        p = subprocess.run([f"{bindir}/psql", *conn_args, "-d", db, "-X", "-q", "-v", "ON_ERROR_STOP=1",
+                            "-f", str(dump)], capture_output=True, text=True)
+        return "0" if p.returncode == 0 else \
+            f"{p.returncode} " + next((l for l in p.stderr.splitlines() if "ERROR" in l), p.stderr[:200])
+
+    recompute = ("SELECT count(*) || '|' || md5(string_agg(b || ':' || n || ':' || m, ' ' ORDER BY b)) FROM"
+                 " (SELECT date_bin('30 minutes', at, '2026-01-01') b, count(*) n, max(level) m"
+                 " FROM rq.tank GROUP BY 1) x")
+    rollup = ("SELECT count(*) || '|' || md5(string_agg(bucket || ':' || count || ':' || max_level, ' '"
+              " ORDER BY bucket)) FROM rq.tank_30m")
+
+    admin("postgres", "DO $$ BEGIN CREATE ROLE rq_owner; EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+    for db in (src_db, dst_db):
+        admin("postgres", f"DROP DATABASE IF EXISTS {db}")
+    try:
+        admin("postgres", f"CREATE DATABASE {src_db}")
+        admin(src_db, "CREATE EXTENSION pgcolumnar")
+        admin(src_db, "GRANT USAGE ON SCHEMA pgcolumnar TO rq_owner")
+        admin(src_db, "CREATE SCHEMA rq AUTHORIZATION rq_owner")
+        owner(src_db, "CREATE TABLE rq.tank (at timestamptz, level int) USING pgcolumnar")
+        owner(src_db, "INSERT INTO rq.tank SELECT '2026-07-01'::timestamptz + g * interval '50 s', (g * 7) % 1000"
+                      " FROM generate_series(1, 4000) g")
+        owner(src_db, "SELECT pgcolumnar.create_rollup('tank_30m', 'rq.tank', 'at', '30 minutes', '2026-01-01',"
+                      " '{}', '{count,max}', '{*,level}', 'heap')")
+        expect.text(owner(src_db, "SELECT pgcolumnar.refresh_rollup('rq.tank_30m')")[0], "4000",
+                    "the rollup to be dumped folds its source")
+        sid = admin(src_db, "SELECT pgcolumnar.get_storage_id('rq.tank')")
+        p = subprocess.run([f"{bindir}/pg_dump", *conn_args, "-d", src_db, "-f", str(dump)],
+                           capture_output=True, text=True)
+        expect.text(str(p.returncode), "0", "the database holding a rollup dumps")
+
+        # Into another database.
+        admin("postgres", f"CREATE DATABASE {dst_db}")
+        expect.text(restore(dst_db), "0", "the dump restores into another database")
+        expect.text(admin(dst_db, "SELECT count(*) || '|' || pgcolumnar.get_storage_id('rq.tank') FROM rq.tank"),
+                    f"4000|{sid}", "the restored source holds the dumped rows under the storage id recorded for the old one")
+        expect.text(admin(dst_db, "SELECT coalesce((SELECT source::text || ' ' || ts_column || ' ' || width || ' '"
+                                  " || agg_functions::text || ' ' || agg_columns::text FROM pgcolumnar.rollup"
+                                  " WHERE rollup = 'rq.tank_30m'::regclass), 'none')"),
+                    "rq.tank at 00:30:00 {count,max} {*,level}", "a restore keeps the rollup's definition")
+        before = admin(dst_db, rollup)
+        expect.text(before, admin(dst_db, recompute),
+                    "the restored rollup reads as a recompute of the restored source")
+        _, st, hint = owner(dst_db, "SELECT pgcolumnar.refresh_rollup('rq.tank_30m')")
+        expect.text(f"{st}|{admin(dst_db, rollup)}", f"55000|{before}",
+                    "after a restore into another database its owner's refresh is refused (55000), the rollup untouched")
+        expect.text("rebase_rollup" if hint and "rebase_rollup" in hint else f"hint: {hint}", "rebase_rollup",
+                    "and the refusal names rebase_rollup")
+        owner(dst_db, "SELECT pgcolumnar.rebase_rollup('rq.tank_30m')")
+        expect.text(owner(dst_db, "SELECT pgcolumnar.refresh_rollup('rq.tank_30m')")[0], "0",
+                    "after rebase_rollup a refresh folds nothing")
+        owner(dst_db, "INSERT INTO rq.tank SELECT '2026-07-01'::timestamptz + g * interval '50 s', (g * 7) % 1000"
+                      " FROM generate_series(4001, 4600) g")
+        expect.text(owner(dst_db, "SELECT pgcolumnar.refresh_rollup('rq.tank_30m')")[0], "600",
+                    "and then folds exactly the rows appended after the restore")
+        expect.text(admin(dst_db, rollup), admin(dst_db, recompute), "and the restored rollup equals a full recompute")
+        # The restore wrote the catalog row back, and with it the view's dependency on
+        # the restored source (#1376).
+        expect.text(f"{owner(dst_db, 'DROP TABLE rq.tank')[1]}|{admin(dst_db, 'SELECT count(*) FROM rq.tank')}",
+                    "2BP01|4600", "after a restore the rollup's source cannot be dropped while the rollup exists (2BP01)")
+
+        # Into its own database after DROP EXTENSION: the same cluster and database
+        # OID, and the sequence restarted, so again the recorded storage id.
+        admin(src_db, "DROP EXTENSION pgcolumnar CASCADE")
+        # The schema is no member of the extension, so it outlives it; the dump creates it.
+        admin(src_db, "DROP SCHEMA pgcolumnar CASCADE")
+        admin(src_db, "DROP SCHEMA rq CASCADE")
+        expect.text(f"{restore(src_db)}|"
+                    + str(admin(src_db, "SELECT count(*) || '|' || pgcolumnar.get_storage_id('rq.tank') FROM rq.tank")),
+                    f"0|4000|{sid}",
+                    "the dump restores into its own database after DROP EXTENSION, again under the recorded storage id")
+        before = admin(src_db, rollup)
+        _, st, _ = owner(src_db, "SELECT pgcolumnar.refresh_rollup('rq.tank_30m')")
+        expect.text(f"{st}|{admin(src_db, rollup)}", f"55000|{before}",
+                    "after a restore into the same database its refresh is refused (55000), the rollup untouched")
+    finally:
+        for db in (src_db, dst_db):
+            admin("postgres", f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+
+
+def test_min_and_max_keep_each_columns_collation(pgc_own_db, expect):
+    """The partials columns carry the database's default collation, and a refresh
+    that updates a bucket folds with least()/greatest(), which must compare in the
+    SOURCE column's collation (#1341). One "C" column and one en_US column, so
+    whichever is the default, the other differs from it. Lower-case rows first,
+    then upper-case into the same bucket: under C 'B' sorts before 'a', under en_US
+    after it, and only the second refresh's fold can get that wrong."""
+    conn = pgc_own_db
+    coll = _one(conn, "SELECT collname FROM pg_collation WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US')"
+                      " ORDER BY collname LIMIT 1")
+    if coll is None:
+        expect.cannot_run("MISSING_DEPENDENCY", "no en_US collation",
+                          name="the server has no en_US collation")
+        return
+    with conn.cursor() as cur:
+        cur.execute(f'CREATE TABLE ct (ts timestamptz, sc text COLLATE "C", su text COLLATE "{coll}") USING pgcolumnar')
+        cur.execute("SELECT pgcolumnar.set_options('ct', stripe_row_limit => 1000)")
+        cur.execute(f"INSERT INTO ct SELECT '{ORIGIN}'::timestamptz + (g % 24) * interval '1 hour', 'a'||g, 'a'||g"
+                    " FROM generate_series(1, 2000) g")
+        cur.execute(f"SELECT pgcolumnar.create_rollup('r_ct', 'ct', 'ts', '1 day', '{ORIGIN}', '{{}}',"
+                    " '{min,max,min,max}', '{sc,sc,su,su}')")
+        cur.execute("SELECT pgcolumnar.refresh_rollup('r_ct')")
+        cur.execute(f"INSERT INTO ct SELECT '{ORIGIN}'::timestamptz + (g % 24) * interval '1 hour', 'B'||g, 'B'||g"
+                    " FROM generate_series(1, 2000) g")
+    folded = _one(conn, "SELECT pgcolumnar.refresh_rollup('r_ct')")
+    expect.text(f"{folded}|{_one(conn, 'SELECT count(*) FROM r_ct')}", "2000|1",
+                "the second refresh folds new rows into the existing bucket")
+    expect.text(_one(conn, "SELECT min_sc || '|' || max_sc || '|' || min_su || '|' || max_su FROM r_ct"),
+                _one(conn, "SELECT min(sc) || '|' || max(sc) || '|' || min(su) || '|' || max(su) FROM ct"),
+                "min and max over a C column and an en_US column keep each column's own order across a refresh")
+    # Both sides in "C": the two columns' collations differ, so a bare comparison
+    # has no collation to use. Equality does not depend on which one is chosen.
+    expect.text(str(_one(conn, 'SELECT min(sc) COLLATE "C" <> min(su) COLLATE "C" FROM ct')), "True",
+                "premise: the two collations disagree on these rows, so the arm can tell them apart")
+
+
+def test_row_tid_refuses_a_row_number_below_one(pgc_conn, expect):
+    """Row numbers start at 1 (#1341). LAST IN THE FILE, AND A TEST OF ITS OWN: without
+    the floor, row_tid(0) crashed the backend (measured on PG17), which would take the
+    checks after it in the same test down with it."""
+    def state(n):
+        try:
+            _one(pgc_conn, f"SELECT pgcolumnar.row_tid({n})")
+            return "ok"
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    expect.text(f"{state(0)}|{state(-1)}|{state(1)}", "22003|22003|ok",
+                "row_tid refuses a row number below 1 (22003), and row 1 is accepted")

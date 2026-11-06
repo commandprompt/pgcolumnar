@@ -99,6 +99,17 @@ count_cov() {
 		| grep -v '^SET$'
 }
 
+explain_count() {
+	# The count arm's OWN plan (#1339): its query is not the one explain_cov shows.
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -Atq \
+		-c "$PAR" \
+		-c "SET max_parallel_workers_per_gather = 2;" \
+		-c "SET pgcolumnar.enable_projection_scan = on;" \
+		-c "EXPLAIN (COSTS OFF) SELECT count(*) FROM cvppar WHERE ik BETWEEN $LO AND $HI;" \
+		| grep -v '^SET$'
+}
+
 shape() {
 	local plan="$1"
 	local g p
@@ -125,12 +136,26 @@ worker_rows() {
 serial_plan="$(explain_cov 0 on)"
 par_off_plan="$(explain_cov 2 off)"
 par_on_plan="$(explain_cov 2 on)"
-par_on_ana="$(analyze_cov 2 on)"
 par_on_count="$(count_cov 2 on)"
 
-rows_list="$(worker_rows "$par_on_ana")"
-n_lines="$(echo "$rows_list" | grep -c . || true)"
-n_busy="$(echo "$rows_list" | awk '$1>0{n++} END{print n+0}')"
+# UP TO FIVE ANALYZE ATTEMPTS, STOPPING AT THE FIRST THAT SHOWS BOTH WORKERS BUSY
+# (#1336). On a correct build a worker that starts late can find every row group
+# already claimed: legitimate parallel behaviour, seen once in a 19beta2 cassert
+# matrix (1 of 12 runs on that host) and in 0 of 44 here, idle and 8-way loaded.
+# The defect the arm is named for is single BY CONSTRUCTION -- one claimer on every
+# run -- so it still fails all five, while a correct build fails only if the race
+# goes the wrong way five times running. The premises read the attempt that was
+# used, and every attempt is printed.
+attempts=""
+for _try in 1 2 3 4 5; do
+	par_on_ana="$(analyze_cov 2 on)"
+	rows_list="$(worker_rows "$par_on_ana")"
+	n_lines="$(echo "$rows_list" | grep -c . || true)"
+	n_busy="$(echo "$rows_list" | awk '$1>0{n++} END{print n+0}')"
+	attempts="$attempts${attempts:+; }try $_try: $(echo "$rows_list" | tr '\n' ' ')"
+	[ "$n_busy" = 2 ] && break
+done
+echo "-- worker rows per ANALYZE attempt: $attempts"
 
 echo "-- serial:"
 printf '%s\n' "$serial_plan"
@@ -160,6 +185,11 @@ check "premise: a parallel base scan is available when the projection is off" \
 check "a covering projection can be a parallel scan" \
 	"$(shape "$par_on_plan")" "gather+projection"
 
+# THE COUNT'S OWN PLAN (#1339). The count comes from a different query from the one
+# whose shape is asserted above; if it planned serially or as a base scan, this arm
+# would check nothing about the parallel covering path.
+check "the parallel count is a parallel covering projection scan" \
+	"$(shape "$(explain_count)")" "gather+projection"
 check "a parallel covering projection returns the covering rows once" \
 	"$par_on_count" "$WANT"
 
@@ -247,16 +277,25 @@ check "premise: the covering plan is parallel at the default page cost" \
 check "a page cost that makes I/O dominate costs the parallel covering path" \
 	"$(shape "$(explain_cov_spc $SPC_HI)")" "projection-only"
 
-check "premise: EXPLAIN ANALYZE launched two workers" \
+# NOT PREMISES (#1339, #1236). The worker count is the projection path's own
+# parallel_workers: with it set to 1, Workers Launched reads 1 and both of these
+# go red. A check a pgcolumnar change can redden is an arm.
+check "EXPLAIN ANALYZE launched two workers" \
 	"$(echo "$par_on_ana" | grep -oE 'Workers Launched: [0-9]+' | head -1 | grep -oE '[0-9]+')" "2"
 
-check "premise: ANALYZE printed a rows= line per launched worker" \
+check "ANALYZE printed a rows= line per launched worker" \
 	"$n_lines" "2"
 
 # THE DEFECT the plan-shape arms cannot see: Gather is present and the count
 # is right when one backend claims every stripe. Sharing means both launched
-# workers produced rows.
+# workers produced rows, in at least one of the attempts above.
 check "workers share the covering projection scan, it is not a single claimer" \
 	"$n_busy" "2"
+# AND SHARE IT, NOT DUPLICATE IT (#1339). Two busy workers is also what two workers
+# each scanning every group look like. With the leader not participating, the
+# workers' rows are everything the Gather returns, so they must add up to the
+# covering rows exactly once.
+check "the workers' rows add up to the covering rows, each returned once" \
+	"$(echo "$rows_list" | awk '{s+=$1} END{print s+0}')" "$WANT"
 
 pgc_summary

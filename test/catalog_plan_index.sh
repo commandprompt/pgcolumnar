@@ -210,13 +210,10 @@ plan_work() {
 	for ((i = 0; i < n; i++)); do
 		body="${body}EXPLAIN (COSTS OFF) SELECT count(*) FROM plan_cat WHERE id > 0;"
 	done
-	q "SELECT pg_stat_reset();" >/dev/null
-	q "${set_clause}${body}" >/dev/null
-	q "SELECT pg_stat_force_next_flush();" >/dev/null
-	q "SELECT coalesce(sum(heap_blks_read + heap_blks_hit
-			       + coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0)
-		FROM pg_statio_all_tables
-		WHERE schemaname = 'pgcolumnar' AND relname IN ($PLAN_CATS);"
+	# Counted in the plans' own transaction (pgc_xact_blocks in lib.sh, #1298).
+	local out
+	out="$(pgc_xact_blocks "$PLAN_CATS" "${set_clause}${body}")"
+	echo "${out%%|*}"
 }
 
 # THE PREMISE THE WHOLE SECTION RESTS ON. If either catalog had rows, the heap
@@ -388,15 +385,35 @@ echo "-- pgcolumnar.storage $(q "SELECT count(*) FROM pgcolumnar.storage;") rows
 check_num "premise: the newest relation's storage row is far enough in to tell the routes apart" \
 	"$(margin "$new_page" 5)" "5"
 
-storage_blks() {	# storage_blks RELNAME -> blocks of pgcolumnar.storage per plan
-	q "SELECT pg_stat_reset();" >/dev/null
-	q "EXPLAIN (BUFFERS, COSTS OFF) SELECT a, b FROM $1 WHERE a BETWEEN 3 AND 900;" >/dev/null
-	q "SELECT pg_stat_force_next_flush();" >/dev/null
-	q "SELECT coalesce(heap_blks_read,0) + coalesce(heap_blks_hit,0)
-		+ coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)
-		FROM pg_statio_all_tables
-		WHERE schemaname = 'pgcolumnar' AND relname = 'storage';"
+# stor_blocks SQL -- blocks of pgcolumnar.storage, heap and index, read while SQL
+# ran, counted in SQL's own transaction (pgc_xact_blocks in lib.sh, #1298).
+stor_blocks() {
+	local out
+	out="$(pgc_xact_blocks "'storage'" "$1")"
+	echo "${out%%|*}"
 }
+storage_blks() {	# storage_blks RELNAME -> blocks of pgcolumnar.storage per plan
+	stor_blocks "EXPLAIN (BUFFERS, COSTS OFF) SELECT a, b FROM $1 WHERE a BETWEEN 3 AND 900;"
+}
+
+# ANOTHER SESSION'S READS ARE NOT THIS PLAN'S WORK (#1298). The arm below the
+# readings compares two of them a block or two apart, so a reading that takes in
+# another session's reads of the catalog can hide a regression. The measured
+# statement here reads no catalog itself; inside it, COPY ... TO PROGRAM runs a
+# second session that scans pgcolumnar.storage and exits. The reading must be zero.
+OTHER_SESSION="COPY (SELECT 1) TO PROGRAM '$PGC_BINDIR/psql -h 127.0.0.1 -p $PGC_PORT -U postgres -d $PGC_DB -Atqc \"SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*) FROM pgcolumnar.storage\" >/dev/null';"
+q "SELECT pg_stat_reset();" >/dev/null
+q "$OTHER_SESSION" >/dev/null
+for _ in $(seq 50); do
+	other_reads="$(q "SELECT coalesce(heap_blks_read,0) + coalesce(heap_blks_hit,0) FROM pg_statio_all_tables
+		WHERE schemaname = 'pgcolumnar' AND relname = 'storage';")"
+	[ "${other_reads:-0}" -gt 0 ] && break
+	sleep 0.1
+done
+check_num "premise: the second session's reads of pgcolumnar.storage reach the shared statistics" \
+	"$(margin "${other_reads:-0}" 1)" "1"
+check "a reading takes in none of another session's reads of pgcolumnar.storage (#1298)" \
+	"$(stor_blocks "$OTHER_SESSION")" "0"
 
 q "SELECT pg_stat_reset();" >/dev/null
 q "EXPLAIN (BUFFERS, COSTS OFF) SELECT a, b FROM stor_new WHERE a BETWEEN 3 AND 900;" >/dev/null
@@ -486,9 +503,14 @@ echo "-- stor_proj owns $rows_for storage rows carrying $limits distinct row_gro
 # WITHOUT TWO ROWS THERE IS NO AMBIGUITY, and without two DIFFERENT limits the
 # ambiguity cannot be seen. Both are premises, and both are read from the
 # catalog rather than assumed from the fixture's DDL.
-check_num "premise: a covering projection gave the table a second storage row" \
+# Not premises (#1339): the projection's own storage row, the limit it was written
+# with and the planner's use of that limit are pgcolumnar's, so a change to it
+# reddens each -- a projection row written with the base's limit, or the planner
+# ignoring the written limit. The three about the no-op update below read where
+# PostgreSQL's heap puts an updated catalog row, and stay premises.
+check_num "a covering projection gave the table a second storage row" \
 	"$rows_for" "2"
-check_num "premise: the two storage rows disagree about row_group_limit" \
+check_num "the two storage rows disagree about row_group_limit" \
 	"$limits" "2"
 
 # THE PREMISE THAT STOPS THIS ARM GOING QUIET, and it is the one a future
@@ -506,7 +528,7 @@ cost_lo="$(proj_cost)"
 q "UPDATE pgcolumnar.storage SET row_group_limit = 150000 WHERE storage_id = $base_sid;" >/dev/null
 echo "-- the shape is group-sensitive: limit 150000 -> $cost_hi, limit 3000 -> $cost_lo"
 
-check_num "premise: this query shape is priced differently under the two limits" \
+check_num "this query shape is priced differently under the two limits" \
 	"$(if [ "$cost_hi" = "$cost_lo" ]; then echo 0; else echo 1; fi)" "1"
 
 # PUT THE BASE ROW FIRST, by writing the OTHER row so it moves to the end. Which

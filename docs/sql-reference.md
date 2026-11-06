@@ -53,6 +53,27 @@ SELECT pgcolumnar.set_options('events', ttl_column => 'ts',
                               ttl_interval => '90 days');
 ```
 
+### pgcolumnar.approx_count_distinct(value anyelement) returns bigint
+
+An aggregate: the approximate number of distinct non-NULL values, from a
+HyperLogLog of 2048 registers. The standard error is about 2.3%, so most answers
+fall within 5% of the exact `count(DISTINCT value)`. It runs on any table, heap
+or columnar, and in parallel plans, where it returns the serial answer exactly.
+
+```sql
+SELECT pgcolumnar.approx_count_distinct(device_id) FROM readings;
+```
+
+The value's type needs an extended hash function, and a text value a
+deterministic collation; anything else is refused with SQLSTATE 0A000. Its hash
+and registers are those of the sketches a column named in `set_options(t,
+sketch_columns => ...)` stores per row group. A query with no WHERE and no
+GROUP BY is answered from those sketches, unless another aggregate in it needs
+the rows. Each row group's sketch is merged, and only a group with deleted rows,
+or one written before the column was named, is read. The answer is the same as
+reading every row. EXPLAIN ANALYZE shows `Columnar Sketch Groups Folded` and
+`Columnar Sketch Groups Scanned`.
+
 ### pgcolumnar.get_storage_id(rel regclass) returns bigint
 
 Returns the internal storage identifier of a columnar table. Used to join the
@@ -199,6 +220,13 @@ SELECT pgcolumnar.recluster_hilbert('events', 'customer_id', 'ts');
 Retires row groups that are fully deleted, dropping their metadata so scans skip
 them. Holds only `ShareUpdateExclusiveLock`, so it runs against a live table.
 Returns the number of groups retired.
+
+A group counts as fully deleted only when no transaction can still see its
+rows. While a transaction in the same database is older than the `DELETE`,
+`compact` retires none of those groups and can return 0. Such a transaction
+holds a snapshot or a transaction ID from before the `DELETE` committed. A
+prepared transaction or a replication slot holds rows back the same way. Call
+`compact` again after that transaction ends.
 
 ```sql
 SELECT pgcolumnar.compact('events');
@@ -468,6 +496,9 @@ commit. Every operation that drops or rewrites row groups recomputes it before
 committing: `expire`, `compact_rewrite`, `VACUUM`, `recluster`. So it can be
 wider than the data only by rows that are deleted but still stored.
 
+It needs `SELECT` on the table, and it refuses a table whose row-level security
+policies apply to the caller (see [limitations](limitations.md#row-level-security)).
+
 No row means the planner reads every row group's zone map instead, which gives
 the same answer at a cost that grows with the table. That happens for:
 
@@ -587,7 +618,9 @@ inspection and testing, not for query use.
 
 ## Import and export
 
-These functions read and write Arrow IPC stream files and Parquet files. They read
+These functions read and write Arrow IPC files and Parquet files. `export_arrow`
+writes the IPC stream format; `import_arrow` reads the stream format and the IPC
+file format. They read
 and write files on the server host, so a reader needs the `pg_read_server_files`
 role and a writer needs the `pg_write_server_files` role. Superusers hold both.
 The Parquet functions also read from and write to object storage. See
@@ -600,14 +633,49 @@ and types that they do not support. See
 ### pgcolumnar.export_arrow(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
-number of rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+number of rows written. The file has no `ARROW1` header or footer, so pyarrow
+reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local
+file or an `s3://` URL. See [Object storage](#object-storage). A record batch
+holds at most 16384 rows and at most `pgcolumnar.export_group_bytes` of buffered
+data, 256 MiB by default, unless one row alone is larger. See
+[Export size limits](limitations.md#export-size-limits).
 
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
 rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage).
+[Object storage](#object-storage). A row group holds at most 65536 rows and at most
+`pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
+alone is larger. See [Export size limits](limitations.md#export-size-limits).
+
+### pgcolumnar.export_parquet(rel regclass, path text, server name) returns bigint
+
+Writes the file as the two-argument form does, but a remote `path` is written
+with the settings of `server`. These are the settings that a foreign table of
+`server` reads with, so a foreign table on `path` can read the file back.
+
+- The endpoint and region come from the server's `endpoint` and `region`
+  options. If the server has no such option, the value comes from
+  `AWS_ENDPOINT_URL` or `AWS_REGION` in the environment, whoever the caller is.
+  A read does the same.
+- The credentials come from your user mapping on the server, or from its
+  `PUBLIC` mapping. The environment's keys are used only where a read may use
+  them: see [Endpoints and credentials](#endpoints-and-credentials). A role that
+  is not a superuser and has no mapping is refused (`28000`).
+
+The function refuses these before it writes anything:
+
+- a null `server` (`22004`);
+- a `server` that does not exist (`42704`);
+- a `server` whose wrapper does not have pgcolumnar's Parquet handler,
+  `pgcolumnar.parquet_fdw_handler` (`42809`). A wrapper made with that
+  handler under another name is accepted, as `tier_partition` accepts it (#1963);
+- a caller without `USAGE` on `server` (`42501`).
+
+A local `path` writes no object and uses no endpoint, region or key. The
+function still makes every check above and still looks up your credentials on
+the server. So a mapping that holds only half a credential refuses a local
+`path` too (`28000`).
 
 ### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
 
@@ -682,10 +750,29 @@ rollup is right as it stands.
 ### pgcolumnar.tier_partition(partition regclass, server name, path text, lock_wait interval DEFAULT '10 seconds') returns bigint
 
 Moves the columnar partition `partition` to a Parquet file at `path`. Then
-attaches the file as a foreign table of `server`, which must use the
-`pgcolumnar_parquet` wrapper. The foreign table takes the partition's name,
+attaches the file as a foreign table of `server`. The server's wrapper must
+have pgcolumnar's Parquet handler, `pgcolumnar.parquet_fdw_handler`. That is
+the `pgcolumnar_parquet` wrapper, or a wrapper you made with that handler
+under another name (#1963). The foreign table takes the partition's name,
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
+
+The function writes the file with the settings of `server`, as
+`export_parquet(partition, path, server)` does: the server's endpoint and
+region, and your user mapping on the server. A mapping that the object store
+rejects stops the move before anything is detached, and the rows stay in the
+columnar partition.
+
+After the attach, the function counts the rows through the new foreign
+partition, as you, before it commits. If that read fails or counts a different
+number, the move rolls back and the rows stay in the columnar partition. This
+catches a key that can write but not read. The file that the export wrote stays
+in place; a retry with the same `path` overwrites it.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
+the function writes the file and then reads it. Every role that queries the
+parent after the move needs `pg_read_server_files` and a mapping on `server` that
+can read the file.
 
 The function runs as one transaction, at READ COMMITTED only (`25000`
 otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
@@ -693,20 +780,186 @@ commit. Every lock waits at most `lock_wait` (`55P03`).
 
 The function refuses these:
 
-- a `path` that a foreign table in this database reads (`58P02`);
+- a `path` that a foreign table in this database reads (`58P02`). That is
+  the same path, a path under the table's directory, or a path that matches
+  the table's glob (#1941). A glob is matched by
+  [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
+  as the reader matches it (#1957). The scheme and the host of an http(s) URL match in any case,
+  and `s3a://` or `s3n://` match `s3://`. A local path is compared as
+  written, and again in a folded form (#1965, #1959). The folded form reads
+  `//` as `/`, drops a `.` name, and drops a name followed by `..`. In a
+  glob, a name such as `\.` counts as `.`, because `glob(3)` removes the
+  backslash. So `/w//*.parquet`, `/w/./*.parquet`, `/w/\./*.parquet` and
+  `/w/x/../*.parquet` refuse `/w/a.parquet`. The folded form is the file the
+  kernel opens only when no symbolic link comes before a `..`. When one does,
+  the kernel goes up from the directory the link leads to. The check can then
+  refuse a file the reader does not read, and allow the file it does read.
+  A symbolic link is not resolved. A relative local path names a file in the
+  data directory, where the server opens it. Every comparison also resolves
+  it there, by the rule of `path_glob_matches` (#2001, #2004). So a table on
+  `x/a.parquet` refuses the same file spelled in full under the data
+  directory, and a table on that full path refuses `x/a.parquet`. When
+  `path_glob_matches` cannot resolve a relative path soundly (see below), a
+  table on a local path refuses every local `path` if either one is relative.
+  So does a caller without `pg_read_all_settings`, who cannot read
+  `data_directory`. A table on a relative glob is the exception (#2013).
+  `path_glob_matches` resolves its pattern without that privilege. So the
+  table refuses what its glob matches, and a path under the glob as
+  written, as under a directory.
+  A remote key is compared as written, because `//` is part of a
+  key. A new file under a directory a foreign table reads is refused too;
+  docs/how-to.md shows ways around it.
+  Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
+  For a `pgcolumnar_iceberg` foreign table, a path under the table location is
+  refused: the parent of the directory that holds `metadata_path` (#1949).
+  The same two comparisons apply to that location. The Iceberg reader resolves
+  a symbolic link in it, but this check does not. So a path in the directory
+  the link leads to is not refused.
+  The error detail names the foreign table and its path. A control character
+  in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
+  stays on one line (#1960). A backslash before an `x` prints as `\x5C`, so a
+  path that holds the characters `\x0A` does not print like a newline. In a
+  `WIN1252` database the euro sign, byte `0x80`, prints as written;
+- a `path` when a foreign table's glob is too large to match (`54000`, see
+  `path_glob_matches` below). This is a local glob for a local `path`, and an
+  `s3://` glob with more than 128 `*` for an `s3://` `path`. The function
+  cannot tell whether that table reads `path`, so it refuses. The error
+  detail names the foreign table and its glob, escaped as above (#1974). A
+  table that does read `path` is reported as `58P02` instead. This holds
+  also when its glob is too large as written but not in the folded form.
+  The reader bounds a local glob in its own folded form too, so it reads
+  such a table (see
+  [Glob patterns too large to match](#glob-patterns-too-large-to-match));
 - a `DEFAULT` partition (`0A000`);
 - a parent with a `UNIQUE` index or primary key (`0A000`);
 - a partition that other objects depend on (`2BP01`);
-- a relation that is not a columnar partition (`42809`).
+- a relation that is not a columnar partition (`42809`);
+- a `server` whose wrapper does not have pgcolumnar's Parquet handler
+  (`42809`);
+- a caller that is not a member of both `pg_write_server_files` and
+  `pg_read_server_files` (`42501`), before anything is written.
 
 See
 [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
 
+### pgcolumnar.path_glob_matches(pattern text, path text) returns boolean
+
+Returns true when a foreign table whose `path` is `pattern` expands it, as a
+glob, to `path` (#1957). `tier_partition` uses it to find a file that a
+foreign table reads. It matches with the Parquet reader's own code:
+
+- For an `s3://` key, the reader's `fnmatch`, with `FNM_PATHNAME` and
+  `FNM_PERIOD`. The scheme matches in any case, and `s3a://` and `s3n://`
+  match `s3://`.
+- For a local path, `glob(3)`, as the reader calls it. The function runs it
+  over a tree in memory that holds only `path`, so it reads no directory and
+  `path` need not exist. A `path` that ends in `/` is a directory; otherwise
+  its last name is a file.
+
+It returns false for a pattern that the reader does not read as a glob:
+
+- a local path without `*`, `?` or `[`;
+- an `s3://` URL with none of them in its key;
+- any other remote URL.
+
+A local pattern does not match a remote `path`.
+A `path` of 4096 bytes (`PATH_MAX`) or more returns false, because no file
+can be opened by such a path.
+
+A relative local pattern or `path` names a path under the data directory.
+The server's working directory is the data directory, so the reader's
+`glob(3)` and `export_parquet` start there. The function first resolves a
+relative pattern and a relative `path` against the data directory (#2001).
+So `../*/x/a.parquet` matches `x/a.parquet`, and the same file spelled in
+full. Here `..` climbs to the data directory's parent, and `*` matches the
+data directory's own name. In two cases the function cannot read a relative
+pattern as `glob(3)` does, so it answers true for every `path`. One is a data
+directory whose name holds `*`, `?`, `[` or `\`. The other is a data
+directory that is not the working directory as `getcwd(3)` spells it, such as
+through a symbolic link.
+
+A pattern that is too large for glibc to match safely raises error 54000
+(`program_limit_exceeded`) instead of an answer:
+
+- a pattern of 4096 bytes or more;
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`;
+- an `s3://` pattern with more than 128 `*`.
+
+`glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
+`fnmatch` uses stack space for each `*`. A larger pattern could crash the
+server. The Parquet reader refuses the same patterns with the same error
+(#1968, #1972). It counts the levels of a local pattern in a folded form; see
+[Glob patterns too large to match](#glob-patterns-too-large-to-match).
+
+A local pattern that makes the walk too long also raises error 54000 (#1973).
+Each directory in the tree in memory lists `.` and `..`, as a real one does,
+and a name such as `.*` matches both. So each level of `/.*` doubles the
+walk. The function stops after 1,000,000 steps of the walk. The number of
+steps depends on the glibc `glob(3)` code, not on the PostgreSQL version.
+With glibc 2.43, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)`
+is refused after about 60 ms. The function never answers false for a walk it
+stopped. The step count starts again at zero for each call, so a refused
+pattern does not affect later calls in the same session.
+
+For a local pattern, the function compares each path `glob(3)` returns with
+`path`, first as spelled and then in a folded form (#1982). The folded form
+reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
+`/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
+name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
+`\.*`. So `/w/x/.*/a.parquet` matches `/w/x/a.parquet`, through
+`/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
+`/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
+pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
+`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
+function cannot know which directory a wildcard matched. So when a wildcard
+name comes before a name that can match `..`, it also assumes that a
+directory the wildcard matches exists (#1991). It assumes as well that each
+name the pattern spells there exists as a directory. So
+`/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
+`/w/x` holds any directory. Without such a directory, `tier_partition` then
+refuses more than it must. A name such as `??` cannot match `..`, so
+`/w/x/*/??/a.parquet` does not match `/w/x/a.parquet`. If the walk with
+these assumptions passes 1,000,000 steps, the function answers true. The
+folded form does not resolve a symbolic link before a `..`. So it can match a
+file the reader does not open, and `tier_partition` then refuses more than it
+must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
+table's path and the target. So it refuses what the reader opens under either
+spelling, unless a symbolic link comes before a `..` (#1965).
+
+```sql
+SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
+SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
+```
+
+In an `s3://` key a class can match `/`. A local glob is split at every `/`
+first, so there `[a` and `b]` are two names. It reads no file, so any role may
+call it.
+
+A range such as `[a-c]` follows the database's `LC_COLLATE` setting
+(`datcollate`), as in the reader. In `en_US.UTF-8`, `[a-c]` matches `á`; in
+`C` it does not. A database with the ICU provider still uses its
+`LC_COLLATE`, not its ICU locale. Take a range that ends in a collating
+symbol, such as `[!-[.a.]]`. In a UTF-8 locale such as `en_US.UTF-8`, glibc
+can answer it differently from one call to the next. The reader has the same
+limit, because it calls the same `fnmatch`. So the function is `VOLATILE`,
+not `IMMUTABLE`: do not use it in an index or a generated column. It is
+`STRICT` and `PARALLEL SAFE`.
+
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
-Inserts the rows of an Arrow IPC stream file at `path` into the existing table
+Inserts the rows of an Arrow IPC file at `path` into the existing table
 `rel`. The column types of the table define the types that the function accepts. Returns the number of
 rows inserted.
+
+`path` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `rel` first, so
+a caller without INSERT gets `42501` for a URL too.
+
+The file can be in the IPC stream format, which `export_arrow` writes, or in the
+IPC file format, which starts and ends with `ARROW1`. Feather v2 is the IPC file
+format. The function reads the stream inside an IPC file and ignores its footer.
+A message or body length larger than the rest of the file is refused with
+`XX001` before any memory is allocated for it.
 
 Temporal columns are read in the unit the file declares, not the unit
 `export_arrow` writes. A `date` column accepts `date32` and `date64`. A `time`
@@ -722,6 +975,15 @@ falls in. Sub-microsecond precision is lost; nothing else is.
 A temporal Arrow type the target column cannot hold is refused with `42804`
 rather than read. A `time64` file does not import into a `date` column. A file
 whose type is not temporal is unaffected.
+
+A nested Arrow type the target column cannot hold is refused with `42804`, and
+the message names the column (#1932). An array column reads one `List` level.
+A `Map` reads into an array of a two-field composite. A list of lists, or a
+plain column, is refused for an array column. A list, map or struct is refused
+where the column, or an array's element type, is a scalar. A large list,
+fixed-size list, list view, union or run-end encoded column is refused for every
+column type. A file whose offsets run past
+its buffers is still refused with `XX001`.
 
 ### pgcolumnar.import_parquet(rel regclass, path text) returns bigint
 
@@ -749,6 +1011,9 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
+`filename` is a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). The function checks INSERT on `target` first,
+so a caller without INSERT gets `42501` for a URL too.
 
 The target may be one of two kinds:
 
@@ -826,15 +1091,20 @@ its own `part-NNNN.parquet` file, and `pgcolumnar.read_parquet` reads the whole
 directory back as one relation.
 
 The `path` may also be an `s3://` prefix. Each worker writes one
-`part-NNNN.parquet` object under it, exactly as for a local directory. See
+`part-NNNN.parquet` object under it, exactly as for a local directory. No other
+remote scheme is accepted. The export lists its prefix, as the next sentences
+explain, and only an `s3://` prefix can be listed. So a `gs://`, `http://` or
+`https://` prefix is refused with SQLSTATE 0A000 before any worker starts, and
+nothing is uploaded. See
 [Object storage](#object-storage) for the endpoint and credential rules, which
 are the same as for `export_parquet`. One difference applies to a remote prefix.
 The local path is created and checked for emptiness before the export. A remote
-prefix cannot be checked for emptiness without a bucket listing, which pgColumnar
-does not yet perform. The prefix must therefore be new or empty by the caller's
-own account. A stale higher-numbered object left in the prefix by a larger prior
-export would be read back by a later directory read. Read each object by its
-exact key until prefix reads land.
+prefix is not checked, so a re-run may write into a used prefix. Before it
+writes the `_SUCCESS` marker, the export lists the prefix to remove stale parts
+a larger prior run left. Its credentials therefore need list permission
+(`s3:ListBucket` on AWS) as well as write and delete. If the listing fails,
+those stale parts can remain, as described below under "A failed listing can
+leave a larger earlier run's parts".
 
 The target may be one of two kinds:
 
@@ -848,11 +1118,32 @@ every worker imports it. The files together are the committed image of the table
 at call time. This holds even when the call runs inside a transaction with
 uncommitted rows. There is no coordinator and no shared write state. If any worker
 fails, or the statement is cancelled, the dispatcher removes the files it wrote.
-A partial directory is never left for `read_parquet` to union. Over an `s3://`
-prefix the dispatcher deletes the same objects by key. A worker terminated
-mid-upload can leave one incomplete multipart upload that the dispatcher cannot
-address. Set a bucket lifecycle rule that expires incomplete multipart uploads to
-reclaim it, as the object-storage notes recommend for `export_parquet`.
+It also removes them when every worker has finished but a later step fails:
+removing stale parts or writing the `_SUCCESS` marker. Over an `s3://` prefix
+the dispatcher deletes the same objects by key. On a cancel or a dispatcher
+error, it first waits up to 5 seconds for the stopped workers to exit. It
+waits for a local directory and an `s3://` prefix alike. A stopped
+worker that was committing its part waits for the store's answer. The store can
+apply that commit after a DELETE sent meanwhile. Waiting puts
+the DELETE after the commit. A local worker that was renaming its finished part
+has renamed it before it exits. A worker that is still running after 5 seconds,
+such as one waiting on a store that does not answer, can still leave its part.
+A worker terminated mid-upload
+can leave one incomplete multipart upload that the dispatcher cannot address.
+Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
+it, as [Exporting to object storage](#exporting-to-object-storage)
+recommends.
+
+**A failed listing can leave a larger earlier run's parts.** The cleanup
+above removes a failed run's own parts. So a partial directory is never left for
+`read_parquet` to union, with one exception: a failed listing of a remote prefix.
+A key that may write but not list fails the run, and the dispatcher removes the
+parts this run wrote. Without the listing, though, the export cannot find the
+higher-numbered parts that a larger earlier run left in the prefix, so they
+remain. A run of 4 workers followed by a failed run of 2 leaves `part-0002` and
+`part-0003`, with no `_SUCCESS` marker. A later directory or prefix read would
+read those stale objects back as if they were a whole table. So check for
+`_SUCCESS` before you read a prefix, and read only a prefix that carries it.
 
 On success the function writes an empty `_SUCCESS` marker at the destination, the
 Hadoop and Spark convention. Its presence means a complete run's output is there;
@@ -861,8 +1152,9 @@ The marker is written last, after every worker has finished, so a directory or
 prefix that carries it is a whole export. A remote prefix allows a re-run to
 overwrite a used prefix. A smaller re-run there first removes the stale
 higher-numbered parts a larger prior run left, so the marker certifies exactly
-the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it, as
-they skip any name beginning with an underscore.
+the parts this run wrote. `read_parquet` and the foreign-data wrapper skip it
+when they read the directory or prefix. They skip any name below it that begins
+with an underscore.
 
 When `workers` is omitted the function derives a value from the target.
 
@@ -882,8 +1174,90 @@ little-endian hosts. In each function, `path`
 can be one of three things. It can be a single file. It can be a directory, and
 then the function reads all the `*.parquet` files below it at any depth as one
 relation, in sorted order. It can also be a glob pattern. A local `path` can be
-any of these; an object-storage URL must be a single object key. See
-[Object storage](#object-storage).
+any of these. An object-storage URL can be an exact key, and an `s3://` URL can
+also be a prefix or a pattern. A remote prefix ends in `/`. Every remote read,
+of a single key as well as a prefix or pattern, needs the object-store module.
+See [Object storage](#object-storage).
+
+The readers return each value as the declared column type, including its type
+modifier. They apply it as PostgreSQL's input functions do. A `numeric(p,s)`
+column rounds each value to scale `s`. A value with more than `p - s` digits
+before the point is an error, SQLSTATE 22003 (`numeric field overflow`). A
+`varchar(n)` column refuses a longer value with SQLSTATE 22001 (`value too long`),
+unless the extra characters are spaces; those it drops. A `timestamp(p)` or
+`time(p)` column rounds to `p` fractional digits. This holds for `read_parquet`,
+`import_parquet`, `iceberg_scan` and both foreign-data wrappers, and for array
+elements and composite fields. So `CREATE TABLE AS` or `INSERT ... SELECT` from a
+reader never stores a value that breaks the declared type. A row that an Iceberg
+delete removes is not checked.
+
+### Glob patterns too large to match
+
+The readers refuse a glob pattern that is too large for glibc to match
+safely, with error 54000 (`program_limit_exceeded`), before they read
+anything (#1968, #1972):
+
+- a pattern of 4096 bytes (`PATH_MAX`) or more, measured for a local
+  pattern in its folded form (see below);
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`,
+  counted in its folded form;
+- an `s3://` pattern with more than 128 `*`. The reader refuses it before it
+  lists the prefix.
+
+The reader counts and expands a local pattern in a folded form. In that
+form, each run of `/` becomes one `/`, and a `.` name followed by `/` is
+dropped. The kernel
+opens the same file by either spelling, so the files read do not change. So
+`'/w/s[p]' || repeat('/.', 200) || '/a.parquet'` has 201 levels as written,
+but 1 in the folded form, and the reader reads `/w/sp/a.parquet`. With
+`repeat('/.', 5000)` the pattern is over 4096 bytes as written but not in
+the folded form, and the reader reads it too. Two names are kept as written:
+
+- a `.` at the end, or a `.` that only `/` follow, because it makes the
+  pattern match only directories. Without it, `glob(3)` matches a pattern
+  that ends in `/` against a file, so `'/w/s[p]/a.parquet/./'` would read
+  `/w/sp/a.parquet` (#1977 review);
+- a name followed by `..`, because when that name is a symbolic link, the
+  kernel goes up from the directory the link leads to.
+
+A backslash before a `/` keeps the `/` from being folded with what follows
+it, and a name such as `\.` is not dropped. So `tier_partition`, which folds
+these as well as a name followed by `..`, can find fewer levels than the
+reader does.
+
+`glob(3)` and `fnmatch` use stack space for each such level, and a larger
+pattern could crash the server. The limits are those of
+[`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean).
+The reader checks the pattern before it looks for an object of that exact
+name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
+
+The reader also bounds the walk of a local pattern on the filesystem
+(#1984). Each real directory lists `.` and `..`, and a name such as `.*`
+matches both. So each level of `.*/` in a local pattern multiplies the walk.
+The reader counts each directory it opens, each name it reads and each
+`stat` as one step. It stops after 1,000,000 steps with error 54000, the
+error of `path_glob_matches`, and reads no file. The count covers every
+name the walk reads in every directory the pattern reaches, not only the
+names that match. So a glob fails when the directories it walks hold more
+than about 1,000,000 names in all. That includes a partitioned tree such as
+`<tree>/*/*.parquet` whose directories are each small: 400 directories of
+2,600 names each are refused. Read such a tree as a directory instead. A
+directory read finds every `*.parquet` in its subdirectories and does not
+count steps. We measured on PostgreSQL 18 with glibc 2.43. A pattern of 18
+levels of `.*/` is refused after about 0.25 s. A glob that matches 2000
+files among 12,000 names reads every match.
+
+A cancel, a `statement_timeout`, a `transaction_timeout` (PostgreSQL 17
+and later) or `pg_terminate_backend` stops the walk. Before, the walk did not stop for any of them: with 15
+levels of `.*/` it ran for minutes, and only SIGKILL stopped it. An
+interrupt that raises no error, such as the one
+`client_connection_check_interval` sets, does not stop the walk; the reader
+handles it once the walk ends.
+
+If a cancel arrives while interrupts are held off, the reader cannot process
+it, and the walk stops again at once on every attempt. After 100 such
+attempts the read fails with error 57014,
+`could not expand pattern "...": interrupted 100 times`.
 
 ### pgcolumnar.read_parquet(path text) returns setof record
 
@@ -895,11 +1269,20 @@ compatibility as the import functions.
 The list must contain each leaf column in the file. A list with fewer columns is
 an error and not a projection. The read stops and gives a message. The message
 contains the number of leaf columns in the file and the number that the target
-expands to. The same rule applies to a foreign
+expands to. Its DETAIL names the file, so a read of a directory, a prefix or a
+glob says which of its files does not match. Every other error about a file that
+does not match the list has the same DETAIL. The same rule applies to a foreign
 table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
-`parquet_schema` to generate the full list.
+`parquet_schema` to generate the full list: declare one column for each row it
+reports. A composite column covers all the leaves of its struct.
+
+A string cell read into a `text` or `varchar` column must be valid in the
+server encoding (#1821). A cell with an invalid byte sequence or an embedded
+NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
+the Parquet column and the first bad bytes. This applies to the foreign table,
+the import functions and `iceberg_scan` too, because they share the reader.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
@@ -922,9 +1305,15 @@ old name, and columns are selected by id.
 
 The file must carry field ids. A file written without them is an error that
 directs you to the positional form above. Each requested id must match exactly
-one scalar column of a compatible type. An absent id is an error. So is an id
-that matches more than one column, or an array or composite output column. None
-is a silent wrong column. Read the ids a file carries with `parquet_schema`.
+one scalar column of a compatible type. A compatible type includes Iceberg's two
+exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
+column as `double precision`. The positional form above does not widen. An
+absent id is an error. So is an id that matches more than one column, or an
+array or composite output column. An id that belongs to a struct, list or map is
+refused as nested, whatever the output column's type (#1788). None is a silent
+wrong column. Read the ids a file carries with `parquet_schema`. It does not
+list the ids of a struct's fields; the `parquet_schema` section below says how
+to find them.
 
 ```sql
 -- the file has columns alpha (id 7), beta (id 3), gamma (id 12);
@@ -935,10 +1324,72 @@ SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet', ARRAY[12, 7])
 
 ### pgcolumnar.parquet_schema(path text) returns table(column_name text, data_type text, nullable bool, field_id int)
 
-Reports the leaf columns of a Parquet file and the PostgreSQL type each maps to,
-without reading the data. Useful for writing the column definition list for
+Reports the top-level columns of a Parquet file and the PostgreSQL type each maps
+to, without reading the data. Useful for writing the column definition list for
 `read_parquet` or a foreign table. For a directory or glob it describes the first
-file.
+file. The type it reports holds every value the column can store. So an unsigned
+`UINT_32` column reports `bigint`, and a `UINT_64` column reports `numeric(20,0)`.
+
+A millisecond or microsecond timestamp column that holds instants
+(`isAdjustedToUTC=true`, or the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS`
+type) is reported as `timestamp with time zone`. A column of wall times
+(`isAdjustedToUTC=false`) is reported as `timestamp without time zone`. Each
+advised type reads the value unchanged. See
+[Timestamps and time zones](user-guide.md#read-parquet-files-in-place).
+
+A legacy `INT96` timestamp column, which Spark, Hive and Impala write, is reported
+as `timestamp with time zone`. The reader takes an `INT96` value as an instant in
+UTC, as Spark and Hive write it. Impala writes wall time instead, so its values
+read shifted; see [Limitations](limitations.md#reading-external-parquet). A read keeps
+whole microseconds and drops the nanosecond digits by rounding down. The column
+also reads into `timestamp`, which gets the wall time in the session time zone.
+A value whose nanoseconds fall outside the day, or whose Julian day is outside the
+timestamp range, is refused with SQLSTATE 22008. The DETAIL names both the Julian
+day and the nanoseconds the file stores.
+
+The rows are the column definition list that `read_parquet` needs: declare one
+column per row, with the reported type. A nested column that `read_parquet` reads
+as one column gets one row under its own name:
+
+- A list of a scalar reports that type's array type, for example `bigint[]`.
+- A struct of scalar fields reports its field list, for example
+  `composite (a bigint, b text)`. Create a composite type with those fields,
+  `CREATE TYPE s_t AS (a bigint, b text)`, and declare the column as `s_t`.
+  A field name that needs quotes comes quoted, so the list works as written.
+
+`read_parquet` reads any other nesting leaf by leaf, so `parquet_schema` reports
+one row for each leaf. A map, a list of structs, a struct of a struct and a struct
+that holds a list are examples. Each row is named by the leaf's path in the file,
+joined with dots, for example `m.key_value.key`. Its type is an array type when
+the leaf repeats. So a map with string keys and bigint values reports
+`m.key_value.key` as `text[]` and `m.key_value.value` as `bigint[]`. A dotted name
+must be quoted in a column definition list, or you can use any other name: the
+reader matches columns by position.
+Two rows can share a name, for example when the file also has a top-level column
+named `s.t.list.element`. Give one of them another name in your list.
+
+`data_type` is NULL for a leaf that no column type reads correctly. A leaf under
+two repeated levels, such as the elements of a list of lists, is one example.
+`read_parquet` cannot read a file that holds such a leaf. Declared as an array,
+the leaf fails with SQLSTATE 42804, because a one-dimensional array would lose
+the inner lists. Declared as a scalar, it fails as unexpectedly repeated.
+`read_parquet` binds every column by position, so you cannot leave it out
+either. `import_parquet` and the `pgcolumnar_parquet` foreign table refuse the
+file the same way, even for a query that does not use that column (#1917).
+
+`nullable` for a nested column says whether the column itself can be NULL. A
+NULL list element or struct field does not make it true. On a leaf row it is true
+when an OPTIONAL element sits on the leaf's path above its first repeated element.
+
+`field_id` for a list or struct row is the column's own id. A leaf row carries
+the leaf's own id. The ids of a struct's fields do not appear when the struct has
+its own row. `read_parquet(path, ids)` still reads a struct field by its id, as a
+scalar column. Read those ids with another Parquet tool, for example pyarrow's
+`ParquetFile(path).schema`.
+
+When a reader refuses a declared column type, the message names the function or
+foreign-data wrapper you used, for example
+`column "c" has type money, which pgcolumnar.read_parquet does not support`.
 
 `field_id` is the Parquet schema field id the column carries. Formats such as
 Apache Iceberg use it to select columns by id rather than by name. It is NULL when
@@ -952,8 +1403,9 @@ SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 ### pgcolumnar.read_avro_manifest(path text) returns table(status int, content int, file_path text, file_format text, record_count bigint, file_size_in_bytes bigint, partition text, sequence_number bigint)
 
 Decodes an Apache Iceberg Avro manifest file and reports its data-file entries.
-Each row is one entry: the file path, format, row count, byte size, the
-partition rendered as `name=value`, and the entry's data sequence number. The
+Each row is one entry: the file path, format, row count, byte size, partition,
+and the entry's data sequence number. The partition is rendered as `name=value`
+(see [How a partition value is shown](#how-a-partition-value-is-shown)). The
 sequence number is NULL when the entry inherits it from the manifest. That is
 the usual case for a freshly written manifest. It is the ordering key for
 reading tables with deletes. A position delete applies to data files with a
@@ -962,8 +1414,10 @@ applies to a strictly lower one. The caller needs the `pg_read_server_files`
 role, which superusers hold. This is the first step of Iceberg support (#388).
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
-file. It does not resolve a table's snapshot or apply delete files, which are
-later steps.
+file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's snapshot or apply delete
+files. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -980,8 +1434,10 @@ writer recorded. The caller needs the `pg_read_server_files` role, which
 superusers hold. This is step two of Iceberg support (#388). It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
-a local file. It does not resolve a table's current snapshot or open the
-manifests it names, which are later steps.
+a local file. An object-storage URL is refused with `0A000`; see
+[Object storage](#object-storage). A caller without `pg_read_server_files` gets
+`42501` for a URL too. It does not resolve a table's current snapshot or open the
+manifests it names. To read a whole table, use `iceberg_scan`.
 
 ```sql
 SELECT manifest_path, added_files_count, added_rows_count
@@ -991,17 +1447,18 @@ SELECT manifest_path, added_files_count, added_rows_count
 ### pgcolumnar.iceberg_current_snapshot(metadata_path text) returns table(snapshot_id bigint, parent_snapshot_id bigint, sequence_number bigint, timestamp_ms bigint, operation text, manifest_list text, schema_id int)
 
 Reads an Apache Iceberg table `metadata.json` and reports the current snapshot
-the table declares. The current snapshot is the one whose id equals the file's
+the table declares. The file may be plain or gzip-compressed (`*.gz.metadata.json`
+or `*.metadata.json.gz`). The current snapshot is the one whose id equals the file's
 `current-snapshot-id`. The row carries its sequence number, commit timestamp,
 and operation (`append`, `overwrite`, `delete`, `replace`). It also carries the
 manifest-list file the snapshot points at and its schema id. It returns one row,
 or no rows when the table has no current snapshot. The caller needs the
-`pg_read_server_files` role, which superusers hold. This is the start of Iceberg
-catalog support (#388 phase 3): it resolves the metadata pointer from the
-filesystem without a network. It reports the `manifest_list` path as the file
-records it. It does not yet open that file or resolve the table's data files.
-Those are later steps. The manifest-list it names can then be decoded with
-`read_manifest_list`.
+`pg_read_server_files` role, which superusers hold. The metadata path can be a
+local file or an `s3://`, `http://` or `https://` URL, as for `iceberg_scan`.
+A remote path is read with the server process environment's credentials. The
+function reports the `manifest_list` path as the file records it, without
+opening it. Decode that file with `read_manifest_list`, or read the table with
+`iceberg_scan`.
 
 ```sql
 SELECT snapshot_id, operation, manifest_list
@@ -1013,7 +1470,8 @@ SELECT snapshot_id, operation, manifest_list
 Lists the live data files of an Apache Iceberg table at its current snapshot.
 It resolves the current snapshot from `metadata.json`, reads that snapshot's
 manifest list, then each manifest. It returns one row per data-file entry: the
-file path, format, row count, and partition rendered as `name=value`. The
+file path, format, row count, and partition rendered as `name=value` (see
+[How a partition value is shown](#how-a-partition-value-is-shown)). The
 caller needs the `pg_read_server_files` role, which superusers hold. It returns
 no rows when the table has no current snapshot.
 
@@ -1022,10 +1480,39 @@ location. That location is taken from where `metadata.json` sits. A table copied
 to a new directory therefore still reads. A recorded path that points outside
 the table location is refused, not read.
 
-Delete files are refused, not ignored. A snapshot that carries any delete
-manifest or delete entry raises an error here. It does not return rows the table
-says are gone. To read a table that uses deletes, use `iceberg_scan`, which
-applies position, equality, and deletion-vector deletes.
+A data file that the current snapshot removed is not live, so it is skipped. A
+copy-on-write delete or a filtered overwrite records the file it replaced this
+way, as a manifest entry with status 2 (DELETED).
+
+Delete files are refused, not ignored. A snapshot that carries a live delete
+file raises an error here. It does not return rows the table says are gone. To
+read a table that uses deletes, use `iceberg_scan`, which applies position,
+equality, and deletion-vector deletes. A delete file that the current snapshot
+removed is not live, so it is skipped too. A rewrite or compaction that removes
+every old delete file leaves a delete manifest that holds only such entries
+(#1829); that table lists normally. A delete manifest that holds a live
+data-file entry is corrupt, and is refused with SQLSTATE XX001.
+
+#### How a partition value is shown
+
+`iceberg_data_files` and `read_avro_manifest` show the partition as text. Each
+field is `name=value`, and fields are joined by commas. The text is always valid
+in the database encoding, and each value can be read back exactly:
+
+| Partition value | Shown as | Example |
+|---|---|---|
+| integer, long, and the `date`, `time`, `timestamp`, `bucket`, `truncate` and temporal transform results | the stored integer (days, hours or microseconds for the temporal ones) | `id=7`, `ts_day=19783` |
+| boolean | `true` or `false` | `flag=true` |
+| decimal | the exact value, with the column's scale | `price=-0.50` |
+| float, double | the shortest text that reads back as the same value | `x=0.1` |
+| binary, fixed, uuid | `\x` and lowercase hex, as `bytea` prints it | `b=\xfffe` |
+| string | the value, with `%`, `,`, `=`, control characters and DEL written as `%` and two hex digits | `s=a%2Cb%3Dc` |
+| NULL | the field name alone, with no `=` | `s` |
+
+An empty string is `s=`, so it differs from NULL. In a database whose encoding is
+not UTF8 or SQL_ASCII, a non-ASCII string is also percent-encoded, byte by byte
+of its UTF-8 form (`city=caf%C3%A9`). So is a string that is not valid UTF-8.
+Field names follow the string rule.
 
 ```sql
 SELECT file_path, record_count, partition
@@ -1061,10 +1548,26 @@ ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
 the property. The mapping is read for top-level scalar columns.
 
+Only top-level primitive columns can be read. An output column that names a
+struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
+type the column definition list gives it. The error names the column and its
+kind (#1788). The same holds for `iceberg_rest_scan` and the
+`pgcolumnar_iceberg` foreign-data wrapper.
+
 A projected column that the file does not carry reads as null. This covers a
 column added to the schema after the file was written. It also covers a column
 an id-less file has but the mapping does not bind. The file's other columns
 return their real values.
+
+A column whose type was promoted reads as its current type. Iceberg allows three
+promotions: `int` to `long`, `float` to `double`, and a `decimal` to a larger
+precision at the same scale. A data file written before the promotion still
+stores the old type, and its values are widened as they are read. Declare such a
+column with the current schema's type: `bigint`, `double precision` or `numeric`.
+Files from before and after the promotion read together. An equality delete on a
+promoted column applies to both, whichever type its own file stores. A declared
+type narrower than a file's stored type is refused. So a column declared with its
+pre-promotion type errors once a file written after the promotion is live.
 
 Row-level deletes are applied, each kind under its own Iceberg sequence rule.
 A position delete drops the row ordinals it lists from the data file it names.
@@ -1103,11 +1606,20 @@ value, is refused. The recorded file paths are rebased
 onto the table's actual location and resolved against a path boundary. A
 relocated table reads, and a path pointing outside the table is refused.
 Applying equality deletes reads each affected data file's delete columns
-twice. A probe pass computes the row ordinals to drop.
+twice. A probe pass computes the row ordinals to drop. Each applicable
+equality-delete file is read once per scan into an in-memory hash table keyed
+on its `equality_ids` columns. The probe hashes each data row once per delete
+file and walks only that hash's bucket. There it compares the data row only
+with delete rows that have the same hash. The cost therefore grows with the number of data
+rows times the number of applicable delete files, plus the number of delete
+rows. It no longer grows with data rows times delete rows. All delete rows stay
+in memory until the scan ends.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
-schema is not well formed.
+schema is not well formed. An enum value outside the Iceberg spec is refused with
+`XX001` and the value in the message. A data file `content` or an entry
+`status` must be 0, 1 or 2. A manifest list `content` must be 0 or 1.
 
 ```sql
 SELECT id, region, sum(amount)
@@ -1118,6 +1630,9 @@ SELECT id, region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_table_location(catalog_uri text, namespace text, table_name text) returns text
 
+Also `iceberg_rest_table_location(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
+
 Resolves a table named by an Iceberg REST catalog to the URI of its current
 metadata file. The function calls the catalog over HTTP or HTTPS. It reads the
 catalog configuration, loads the table, and returns the reported metadata
@@ -1125,8 +1640,10 @@ location. That location is an ordinary metadata path, so it is read with
 `iceberg_scan` and the other functions above.
 
 The catalog endpoint is subject to `pgcolumnar.objstore_allowed_endpoints`, the
-allow-list that governs every other remote access. A host that resolves to a
-link-local or instance-metadata address is refused whether or not it is listed.
+allow-list that governs every other remote access. The module refuses a host
+that resolves to a link-local range or a known instance-metadata address, whether
+or not it is listed. See
+[the refused ranges](best-practices.md#run-object-storage-safely).
 The request is carried by the `pgcolumnar_objstore` module, so no additional TLS
 library is loaded into the server process. HTTPS requires the module to be built
 with OpenSSL, as for object storage.
@@ -1141,7 +1658,11 @@ is never a function argument, so it does not appear in the statement log or in
 `pg_stat_activity`. A catalog that needs no token is queried without one.
 
 When the first argument names a server, the catalog URI comes from the server
-and the token comes from the current role's user mapping. The token lives in
+and the token comes from the current role's user mapping. The role needs `USAGE`
+on the server, as `dblink` requires for a named server. Without it the call is
+refused with SQLSTATE 42501 before any mapping is read or any request is made,
+even through a `PUBLIC` mapping. So `REVOKE USAGE ON FOREIGN SERVER` takes the
+server away from a role. The token lives in
 `pg_user_mapping`, which is not world-readable, so one role's token is not
 visible to another. A role with no mapping and no token is refused. A superuser,
 or a mapping that sets `credentials_required 'false'`, uses the environment token
@@ -1153,10 +1674,87 @@ mint a bearer by the client-credentials grant. The request goes to
 `oauth_token_uri` when set, otherwise to `{catalog_uri}/v1/oauth/tokens`, with an
 optional `oauth_scope`. The client secret travels in the request body, never a
 URL or a log line. A mapping that sets only one of the pair is refused before any
-request is made.
+request is made, even when it also sets a static `token`. A mapping that sets a
+`token` and the complete pair uses the token and mints no bearer.
 
-Multi-level namespaces are given dot-separated, and the function requires the
-`pg_read_server_files` role, like the other Iceberg functions.
+The function requires the `pg_read_server_files` role, like the other Iceberg
+functions. The server form also requires `USAGE` on the server.
+
+#### Name a namespace
+
+Every REST function that takes a namespace accepts it in two forms:
+
+- **`text`**, with levels separated by dots, such as `'analytics.daily'`. The
+  function splits the text on every dot. So this form cannot name a level that
+  itself contains a dot.
+- **`text[]`**, one element per level, such as `ARRAY['analytics', 'daily']`.
+  Each element is one level, exactly as given, so a level may contain a dot:
+  `ARRAY['analytics.v2']` is the single level `analytics.v2` (#1865).
+
+A bare string literal, such as `'analytics'`, selects the `text` form. The
+`text[]` array must have one dimension, at least one element, and no `NULL`
+element. Otherwise the call fails with SQLSTATE 22023 (22004 for a `NULL`
+level).
+
+A level may be empty. The Iceberg REST catalog accepts a namespace with an
+empty level, so pgcolumnar sends it as given. A `text[]` element `''` is an
+empty level. In the `text` form, a leading, trailing or doubled dot makes one,
+as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
+one by mistake. So when the catalog answers 404 (not found), the error carries
+a hint that names the empty level, such as
+`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
+
+A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
+SQLSTATE 22023 (#1922). The refusal comes before any request, including a
+server's OAuth token request, so it does not depend on whether the catalog can
+be reached. Its request path would hold
+an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
+catalog answers that path with HTTP 400, and a proxy may collapse `//` to `/`.
+The REST spec has no other way to write it. The error's hint reads
+`Level 1 of 1 of the namespace is empty`.
+
+`iceberg_rest_table_location` and `iceberg_rest_scan` refuse an empty table
+name, `''`, with SQLSTATE 22023 (#1931). The error reads
+`iceberg: the table name is empty`. The refusal comes before any request,
+including a server's OAuth token request. The request path would end in an
+empty segment, as in `/v1/namespaces/db/tables/`. A proxy that strips the
+trailing slash would send it to the table list instead.
+
+A table named `.` or `..` is refused with SQLSTATE 22023 too (#1948). So is a
+namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`. Such a
+segment is a dot segment. A server or proxy that normalises the path removes
+it, so `/v1/namespaces/db/tables/..` would reach `/v1/namespaces/db` instead.
+The refusal comes before any request, including a server's OAuth token
+request. On a catalog whose separator is `.`, the `text` forms `'.'` and `'..'`
+are refused as well. Their levels join to `%2E` and `%2E%2E`, which a
+normaliser may decode to dots. That check follows the request for
+`/v1/config`, which names the separator. A name that only holds dots, such as
+`a.b`, `...` or `.hidden`, is not a dot segment and is sent as given. So is
+`ARRAY['db','..']`, whose path segment is not only dots.
+
+A catalog cannot be asked about a level that contains its own namespace
+separator, because the catalog would split that level in two. The function
+then fails with SQLSTATE 22023 before it sends any request that names the
+namespace. The Apache Iceberg REST
+catalog uses `.` as its separator. On it, no form can name a level that
+contains a dot, and pgcolumnar refuses `ARRAY['a.b']`. The check applies to the
+`text` form too. For example, on a catalog with the default separator, a level
+that holds the byte 0x1F is refused.
+
+The error message names the level. It shows a control byte as `\xNN`, such as
+`db\x1Fx`.
+
+Every REST function first reads the catalog configuration (`GET /v1/config`) and
+follows it:
+
+- The `prefix` goes after `/v1/` in every later request. A prefix may contain
+  `/`, such as `catalogs/main`; each part is sent as its own path segment.
+- The `namespace-separator` joins the levels of a multi-level namespace in a
+  request. The default is the unit separator, sent as `%1F`. The Apache Iceberg
+  REST catalog advertises `%2E`.
+- A key can be set in more than one place. The value in `overrides` wins.
+  Next comes a top-level key of the same name, and last the value in `defaults`.
 
 ```sql
 -- URI form: the token, if any, comes from the server environment, not the query
@@ -1164,9 +1762,14 @@ SELECT pgcolumnar.iceberg_rest_table_location(
          'https://catalog.example.com', 'analytics', 'events');
 --> s3://warehouse/analytics/events/metadata/00042-....metadata.json
 
+-- a namespace level that contains a dot: give the levels as text[]
+SELECT pgcolumnar.iceberg_rest_table_location(
+         'https://catalog.example.com', ARRAY['analytics.v2'], 'events');
+
 -- server form: the token is per-role and stays in pg_user_mapping
 CREATE SERVER cat FOREIGN DATA WRAPPER pgcolumnar_iceberg_catalog
   OPTIONS (catalog_uri 'https://catalog.example.com');
+GRANT USAGE ON FOREIGN SERVER cat TO analyst;
 CREATE USER MAPPING FOR analyst SERVER cat OPTIONS (token 's3cr3t');
 
 SELECT count(*) FROM pgcolumnar.iceberg_scan(
@@ -1183,7 +1786,23 @@ multi-warehouse catalog and is sent as the `?warehouse=` parameter on the
 `credentials_required`. A secret on a server, where options are world-readable,
 is rejected. Setting `credentials_required 'false'` is restricted to a superuser.
 
+When the catalog answers with an error status, the call fails with one of these
+SQLSTATEs:
+
+| Catalog reply | SQLSTATE |
+|---|---|
+| HTTP 401 or 403 | `28000` |
+| HTTP 404 of type `NoSuchNamespaceException` | `3F000` |
+| any other HTTP 404 | `42P01` |
+| any other status but 200 | `08P01` |
+
+When the reply carries the catalog's own error message, the error detail repeats
+it as `The catalog said: <message>`. The message is cut to 512 bytes.
+
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
+
+Also `iceberg_rest_scan(catalog_uri text, namespace text[], table_name text)`.
+See [Name a namespace](#name-a-namespace).
 
 Reads a table named by an Iceberg REST catalog at its current snapshot. It takes
 a column definition list exactly like `iceberg_scan`. The catalog resolves the
@@ -1194,10 +1813,16 @@ the allow-list, the link-local refusal, and the environment bearer token.
 
 A catalog can vend storage credentials in its `loadTable` reply. The data,
 metadata, and delete files are then read with those credentials, not the server
-environment. Both the flat `config` keys and the `storage-credentials` array are
-read, and the longest-prefix match is used. Vended credentials do not bypass the
-allow-list. The endpoint is still checked. A table that vends no credentials is
-read with the ambient environment, as before.
+environment. Each file gets its own credential. For each file, the reader uses
+the `storage-credentials` entry whose `prefix` is the longest match for the
+file's location. A file that no prefix covers uses the flat `config` keys. If
+the flat `config` vends no keys either, the read fails with SQLSTATE 28000 and
+names the file. The server's own `AWS_*` credentials are never used for a table
+whose catalog vends credentials. An entry, or a flat `config`, counts as a
+credential only when it has both `s3.access-key-id` and `s3.secret-access-key`.
+Vended credentials do not bypass the allow-list. The endpoint is still checked.
+A table that vends no credentials is read with the ambient environment, as
+before.
 
 ```sql
 SELECT region, sum(amount)
@@ -1209,12 +1834,90 @@ SELECT region, sum(amount)
 
 ### pgcolumnar.iceberg_rest_namespaces(catalog_uri text) returns setof text
 
-Lists the namespaces of a catalog, one per row. A multi-level namespace is
-returned dot-joined. Same catalog and authentication rules as above.
+Lists the namespaces of a catalog, one per row, at every level. A multi-level
+namespace is returned dot-joined, for example `analytics.daily`. Same catalog and
+authentication rules as above.
+
+The catalog lists only the direct children of a namespace. So the function asks
+for the top level, then asks for the children of each namespace it finds
+(`?parent=`). That is one request for the top level, plus one for each
+namespace. A namespace can be up to 64 levels deep. If the catalog has a
+namespace 65 levels deep, the function raises an error.
+
+The function needs every one of these requests to succeed. If the catalog
+answers an error to any of them, the function raises that error and returns no
+rows. This includes a catalog that does not accept `?parent=`. On such a
+catalog, list the tables of a namespace you know with `iceberg_rest_tables`.
+
+Some catalogs also list nested namespaces at the top level. The function
+returns each namespace once.
+
+The dot-joined form is ambiguous: the single level `a.b` and the two levels
+`a`, `b` both come out as `a.b`. To tell them apart, use
+`iceberg_rest_namespace_levels`. An empty level keeps its dot: the levels `""`,
+`x` come out as `.x` (#1922).
+
+### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
+
+Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
+its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
+levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
+argument of the other REST functions, with two exceptions, described next. A
+row with an empty level, such as `{db,""}`, passes back too (#1891). The
+function also lists the children of such a namespace, such as `{db,"",x}`,
+and their children, such as `{db,"",x,y}` (#1939).
+
+A level may contain the catalog's separator. No request can name such a
+namespace, so the function returns it but does not ask for its children.
+Passing that row back fails with SQLSTATE 22023.
+
+A catalog may also hold the namespace whose only level is empty. The function
+returns it as `{""}`. Passing that row back fails with SQLSTATE 22023 too
+(#1922). The function still asks for its children, with an empty `?parent=`.
+The Apache Iceberg REST catalog reads an empty `?parent=` as `{""}`, so a child
+such as `{"",x}` is listed, and passes back. A catalog that reads an empty
+`?parent=` as the top level gives no children of `{""}`.
+
+The rows `{"."}` and `{".."}` are listed too, and passing either back fails
+with SQLSTATE 22023 (#1948). The function asks for their children with
+`?parent=.` or `?parent=..`. A query value is not a path segment, so a
+normaliser leaves it alone.
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t;
+```
+
+> **Caution:** One level that holds the catalog's namespace separator makes
+> this whole query fail with SQLSTATE 22023. The default separator is the byte
+> 0x1F. Some catalogs use `.`, such as the Apache Iceberg REST catalog. Skip
+> those rows first. On a catalog whose separator is `.`:
+
+```sql
+SELECT ns, t
+  FROM pgcolumnar.iceberg_rest_namespace_levels('https://catalog.example.com') AS ns,
+       LATERAL pgcolumnar.iceberg_rest_tables('https://catalog.example.com', ns) AS t
+ WHERE NOT EXISTS (SELECT FROM unnest(ns) AS level WHERE level LIKE '%.%');
+```
+
+On a catalog with the default separator, replace `level LIKE '%.%'` with
+`strpos(level, chr(31)) > 0`.
+
+The row `{""}` also makes the whole query fail with SQLSTATE 22023 (#1922). To
+skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause. The rows `{"."}` and
+`{".."}` do too (#1948). Add `AND ns NOT IN (ARRAY['.'], ARRAY['..'])` to skip
+them.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
 
+Also `iceberg_rest_tables(catalog_uri text, namespace text[])`.
+See [Name a namespace](#name-a-namespace).
+
 Lists the table names in a namespace, one per row.
+
+Both list functions follow the catalog's `next-page-token`, so a catalog that
+splits a list into pages is read to the end.
 
 ```sql
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
@@ -1231,6 +1934,13 @@ query's predicate are skipped, and only referenced columns are decoded. Skipping
 requires a `column op constant` clause over an integer or floating-point column
 with a constant of the same type; [limitations.md](limitations.md) lists the
 conditions. A scan that skips nothing still returns correct rows.
+
+The wrapper skips no row group on a column whose type modifier can change a
+value, because the statistics hold the stored values. Examples are
+`numeric(18,1)` over a file whose DECIMAL scale is 2, which reads a stored 99.99
+as 100.0, and `timestamp(3)`, which rounds microseconds. A `timestamp(6)` column,
+or a `numeric(p,s)` column with the file's own scale and at least its precision,
+still skips.
 
 The `path` option can name a local file, directory, or glob, or an
 object-storage URL. A remote URL is an exact object, a prefix ending in a slash,
@@ -1275,14 +1985,23 @@ column can prune this way. All read from the manifest, so a file is skipped
 without a read. Pruning is only an optimization. A file that is not pruned is read
 normally, so a predicate the wrapper cannot decide never changes the rows
 returned. Field-id projection and every delete rule are those of `iceberg_scan`.
+A foreign table may declare a nested Iceberg column (a struct, list or map) as a
+scalar. Such a table refuses every query, even one that does not read that
+column (#1788).
 
 The one table option is `metadata_path`, the table's current `metadata.json`
-(a local path or an object-storage URL). The wrapper requires the
-`pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
+(a local path or an object-storage URL). The wrapper takes no server or
+user-mapping options. It reads a remote table with the server process
+environment's credentials, as `iceberg_scan` does (see
+[Endpoints and credentials](#endpoints-and-credentials)). The wrapper requires
+the `pg_read_server_files` role. `EXPLAIN (ANALYZE)` reports `Files Pruned`.
 
 Partition pruning covers the identity, `bucket[N]`, `truncate[W]`, and temporal
 transforms. Identity partitioning prunes on any predicate. `bucket[N]` prunes on
-an equality predicate on the source column. `truncate[W]` prunes on a predicate
+an equality predicate on the source column under a deterministic collation.
+Iceberg buckets a string by its UTF-8 bytes, and under a nondeterministic
+collation two equal strings can differ in bytes. So such an equality reads every
+file. `truncate[W]` prunes on a predicate
 on an integer source column. `day()` on a date source column prunes on a
 predicate on that column.
 
@@ -1295,6 +2014,11 @@ is read, not skipped, and the row filter runs on it. A `timestamp with time zone
 value is compared as its UTC instant, matching the catalog. Metrics pruning
 covers integer and boolean columns; other column types are read in full.
 
+A column whose type modifier can change a value is never used to prune. Examples
+are `varchar(2)`, which reads a stored `'eu  '` as `'eu'`, and `timestamp(0)`,
+which reads `00:59:59.7` as `01:00:00`. The manifest holds the stored value, so
+it does not describe the value the scan returns.
+
 ```sql
 CREATE SERVER ice FOREIGN DATA WRAPPER pgcolumnar_iceberg;
 CREATE FOREIGN TABLE events (id bigint, region text, amount int)
@@ -1306,16 +2030,42 @@ SELECT sum(amount) FROM events WHERE region = 'eu';
 
 ## Object storage
 
-The Parquet read and export functions, and the foreign-data wrapper, accept an
-object-storage URL wherever they accept a local path. These URL schemes are
-recognized:
+The Parquet read and export functions, `export_arrow` and the Iceberg reader
+accept an object-storage URL wherever they accept a local path. So do the
+`pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data wrappers. The third
+wrapper, `pgcolumnar_iceberg_catalog`, takes no path. `import_arrow`,
+`file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+`read_manifest_list` read local files only. Each of them refuses a URL in any of
+the schemes below with SQLSTATE 0A000 before it reads anything, for example
+`columnar: import_arrow does not read "s3://bucket/m.arrow"`. These URL schemes
+are recognized:
 
 | Scheme | Meaning |
 | --- | --- |
 | `s3://bucket/key` | An S3 or S3-compatible object. The request is signed with AWS Signature Version 4. |
+| `s3a://bucket/key`, `s3n://bucket/key` | The Hadoop names for S3, matched in any case. The readers read them as `s3://bucket/key`: the Parquet functions, the `pgcolumnar_parquet` wrapper and the Iceberg reader. The exports refuse them with SQLSTATE 0A000, for example `columnar: export_parquet does not write "s3a://bucket/t.parquet"`, with a hint that names the `s3://` URL. The local-only functions above refuse them too. |
 | `gs://bucket/key` | A Google Cloud Storage object, read and written through the interoperable XML API. It signs with the same Signature Version 4 as `s3://`, so a GCS HMAC key is given as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The endpoint defaults to `https://storage.googleapis.com` and the region to `auto`; set `AWS_ENDPOINT_URL` to override. |
-| `http://host[:port]/path` | A plain-HTTP object. For a trusted network only, because a plain-HTTP request carries any credential in clear. |
+| `http://host[:port]/path` | A plain-HTTP object. The request carries no credential, but the data crosses the network in clear, so use it on a trusted network only. |
 | `https://host[:port]/path` | An HTTPS object. Available when the object-store module was built with OpenSSL. The server certificate is verified. |
+| `az://container/key` | Reserved for Azure Blob Storage, which no module reads yet. pgcolumnar treats the URL as remote, not as a local path, and refuses it with SQLSTATE 0A000: `reading "az://..." is not supported`, or, without the object-store module, `reading "az://..." requires the object-store module`. |
+
+A reader rewrites an `s3a://` or `s3n://` URL to `s3://` before it lists, signs or
+opens anything. So the request, the endpoint and the credentials are those of the
+`s3://` URL. Error messages name the `s3://` URL too, because that is the URL that was
+requested. Only the start of the URL counts: `xs3a://` or `s3ax://` is a local path.
+
+Requests to an `http://` or `https://` URL are never signed and carry no
+credential, for reads and for exports alike. An export sends one `PUT`, or, for a
+large object, the multipart `POST` and `PUT` requests and the `DELETE` that aborts a
+failed upload. None of them has an `Authorization` header. Use these schemes for a
+server that accepts unsigned requests, and `s3://` or `gs://` for a store that needs
+credentials. If such a server refuses a request with HTTP 403, the error hint says
+the request was unsigned.
+
+Credentials go over plain HTTP only when an `s3://` or `gs://` URL has an `http://`
+`AWS_ENDPOINT_URL`. The request is then signed, and the signature, the access key ID
+and any `AWS_SESSION_TOKEN` cross the network in clear. The secret access key is
+never sent.
 
 S3 requests use path-style addressing (`endpoint/bucket/key`) by default. Set
 `pgcolumnar.objstore_s3_addressing` to `virtual` for virtual-host addressing
@@ -1328,19 +2078,80 @@ without it reads and writes local files as before, and a remote URL reports that
 the module is required.
 
 A remote path is read as an exact key, a prefix, or a pattern. An `s3://` URL
-that names an object reads that one object with a single GET, no listing. An
+that names an object reads that one object, with no listing. A key that holds
+`*`, `?` or `[` is the exception described below. The read starts
+with one HEAD, then fetches the footer and the column data with ranged GETs. When
+the HEAD returns a strong ETag of at most 79 characters, every GET sends that
+ETag in an `If-Match` header. The 79 includes the ETag's two quote marks. If
+another client then overwrites the object during the read, the server answers 412. The query then fails with `changed while it was
+being read`, instead of returning rows from two versions. Run the statement again
+to read the new version. When the HEAD also returns `x-amz-version-id`, as a
+versioned S3 bucket does, every GET asks for that version with `versionId=`. An
+overwrite during the read then leaves the read on the version it started on,
+and the query succeeds. A GET that names a version needs the
+`s3:GetObjectVersion` permission. If the store answers such a GET with 403, the
+reader asks again without the version, for the rest of that read, and keeps
+`If-Match`. The reader also compares the total length in each 206
+`Content-Range` with the length from the HEAD. When they differ, the query fails
+with `changed while it was being read`, whatever the server sends as ETag. The
+query fails the same way when a GET for bytes inside the HEAD's length gets 416:
+the object has shrunk. Without a strong ETag of at most 79 characters and
+without a version id, the read is not pinned. A server that sends no ETag, a
+weak one, or a longer one pins the read only by version id (see
+[limitations](limitations.md#reading-external-parquet)). Set
+`pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
+one request to the next: the reader then sends no `If-Match` and no
+`versionId`. Two reads of one object in a statement, such as a self-join, read
+one version (#1894). The second read asks for the version the first one
+opened. When the store names no version, the second read fails with `changed
+while it was being read` if the ETag or the length changed in between. With
+no strong ETag, only a change of length is caught. The pin lasts one
+top-level statement (see
+[limitations](limitations.md#reading-external-parquet)). An
 `s3://bucket/prefix/` URL that ends in a slash lists every object under the
 prefix, at any depth, like a local directory. An `s3://bucket/prefix/*.parquet`
 URL lists the literal prefix and matches the pattern segment by segment, like a
-local glob. Listing is a paged ListObjectsV2 call. `_SUCCESS`, `_temporary`, and
-dot-hidden names are skipped, as they are for a local directory. Hive
-`partition_columns` work over a remote prefix. A pattern or a prefix requires the
-object-store module, since only it can issue the listing.
+local glob. Listing is a paged ListObjectsV2 call. Below a prefix, `_SUCCESS`,
+`_temporary`, and other names that begin with `_` or `.` are skipped, as they are
+below a local directory. The prefix you name may itself begin with `_` or `.`,
+such as `s3://bucket/_landing/`. A pattern matches names as a local glob does.
+It matches a name that begins with `_`. It matches a name that begins with `.`
+only when the pattern spells the dot, such as `.*.parquet`. The scheme is
+compared without case, so `S3://` reads as `s3://` does. Hive
+`partition_columns` work over a remote prefix. The object-store module issues the
+listing, as it issues every remote read.
 
-On write, `parallel_export_parquet` treats a remote URL as a prefix. It writes one
+Only the key of an `s3://` URL, the part after the bucket, can be a pattern. The
+scheme and the bucket never are. An `http://` or `https://` URL is always one
+object, so a `?` in it starts a query string, which is sent to the server. A key
+may itself contain `*`, `?` or `[`, because S3 allows them. When an `s3://` URL
+holds one of these characters, the reader lists the prefix and first looks for
+an object with exactly that key. If one exists, the reader reads that object
+alone, whatever its suffix. Only when none exists is the key matched as a
+pattern. A backslash before a character makes the pattern match that character
+literally, so `s3://bucket/a/q\?.parquet` matches only `a/q?.parquet`. A read
+from a host written as an IPv6 literal in brackets, such as
+`http://[::1]:9000/`, is refused with SQLSTATE 0A000. When an `http(s)://` URL
+has a query string, the reader and the writer add their own parameters to it
+with `&`. Examples are `versionId=` and `uploadId=`.
+
+On write, `parallel_export_parquet` treats an `s3://` URL as a prefix, and
+refuses every other remote URL before any worker starts. It writes one
 `part-NNNN.parquet` object under the prefix per worker, and an empty `_SUCCESS`
-marker beside them on completion. Every other write function writes a single
-object at the exact key.
+marker beside them on completion. Trailing slashes on the prefix make no
+difference: `s3://bucket/out/`, `s3://bucket/out//` and `s3://bucket/out` all
+write `out/part-0000.parquet` and `out/_SUCCESS`. The scheme may be written in
+any case, so `S3://bucket/out` writes the same keys. Before it writes the marker,
+the export deletes any `part-NNNN.parquet` directly under `out/` that a larger
+earlier run left behind. It looks only directly under `out/`, so objects under
+`outer/`, `out2/` or a deeper prefix such as `out/sub/` are never touched. The prefix must name something under the bucket:
+`s3://bucket/` and `s3://bucket` are refused before any worker starts, with
+SQLSTATE 22023. The workers use the calling session's values of
+`pgcolumnar.objstore_allowed_endpoints`, `pgcolumnar.objstore_s3_addressing` and
+`pgcolumnar.objstore_part_size`, including any set with `SET`. The endpoint is
+checked against the session's allow-list before any worker starts, so a refused
+endpoint fails before anything is uploaded. Every other write function writes a
+single object at the exact key.
 
 Remote paths carry the same privilege as local ones. A read needs
 `pg_read_server_files` and a write needs `pg_write_server_files`, over and above
@@ -1362,9 +2173,13 @@ credentials come from the environment of the server process:
 | `AWS_SESSION_TOKEN` | A session token, when the credentials are temporary. Optional. |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | The signing region. |
 
-For the foreign-data wrapper the endpoint and credentials come from the catalog,
-which keeps them out of a world-readable place. The non-secret settings go on the
-server and the secret ones go on a user mapping:
+Two calls take a server instead: `export_parquet(rel, path, server)`, and
+`tier_partition`, which writes through it. They resolve the endpoint and the
+credentials as the foreign-data wrapper does, as described next.
+
+For the `pgcolumnar_parquet` foreign-data wrapper the endpoint and credentials
+come from the catalog, which keeps them out of a world-readable place. The
+non-secret settings go on the server and the secret ones go on a user mapping:
 
 ```sql
 CREATE SERVER s3 FOREIGN DATA WRAPPER pgcolumnar_parquet
@@ -1383,12 +2198,22 @@ only on a user mapping. Any other placement is an error at `CREATE` or `ALTER`
 time. `pg_user_mapping` is not world-readable, so a secret placed there is not
 exposed the way a server option is.
 
+A server with no `endpoint` or `region` option takes that value from
+`AWS_ENDPOINT_URL` or `AWS_REGION` (or `AWS_DEFAULT_REGION`) in the environment.
+This applies to every caller, because an endpoint and a region are not secrets.
+
 A read resolves the scanning user's mapping first, then a `PUBLIC` mapping. When a
 mapping supplies no credentials, the server process environment is used only in
 two cases. The caller is a superuser. Or a superuser has marked the mapping
 `credentials_required 'false'`. Ambient credentials are a privilege, not a
 default. An ordinary role with no mapping is refused rather than given the server
 process identity.
+
+The `pgcolumnar_iceberg` wrapper works differently. It takes no server or
+user-mapping options, so it has no per-role credentials and no
+`credentials_required`. It reads with the server process environment, as
+`iceberg_scan` does, for every role that may read the foreign table. Its gate is
+the `pg_read_server_files` role.
 
 ### The endpoint allow-list
 
@@ -1403,18 +2228,71 @@ SELECT pg_reload_conf();
 ```
 
 Each entry is a host or a `host:port`. A request whose endpoint matches no entry
-is refused before any connection is made. Link-local addresses, including the
-cloud instance-metadata address `169.254.169.254`, are refused unconditionally,
-whether or not they appear in the list. The setting is superuser-only, so a role
-cannot widen its own reach.
+is refused before any connection is made. The link-local ranges and the known
+cloud instance-metadata addresses are refused unconditionally, whether or not
+they appear in the list. These include `169.254.169.254` and Alibaba Cloud's
+`100.100.100.200`. For every refused range, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
+setting is superuser-only, so a role cannot widen its own reach.
 
 ### Exporting to object storage
 
 `export_parquet` and `export_arrow` write to an `s3://` URL as well as a local
 path. A small object goes in one request. A large one is written as a multipart
 upload. It becomes visible at its final name only when the upload completes, so a
-reader never sees a partial object. A failed export removes what it wrote,
-including an incomplete multipart upload.
+reader never sees a partial object. An export that fails before its last request
+removes what it wrote, including an incomplete multipart upload. The last request
+is different, as the next paragraphs explain.
+
+A request whose body is over 1 MiB, a single request or a part, sends its headers
+first with `Expect: 100-continue`. It waits up to one second for the store to
+answer them before it sends the body. A store can refuse the request from its
+headers alone, with a 403 for example. The export then reports that status and its
+hint, over `https://` as well as `http://`. A store that ignores `Expect` costs
+that second once per object written. After a wait runs out, the later parts of
+that object go without `Expect`. A store that answers `417` gets the request again without
+`Expect`. A `2xx` answer to the headers alone still gets the body, and stands as
+the answer once the body is sent.
+
+This cleanup holds when you cancel or terminate the export while it waits for the
+store to start the upload. The export then has no id for that upload. It lists
+the open uploads for its own key and aborts each one, within 10 seconds. Uploads
+at other keys stay open. An upload that another writer started at the same key is
+aborted too. This works for `s3://` and `gs://` URLs.
+
+A multipart upload holds at most 10000 parts of `pgcolumnar.objstore_part_size`
+bytes each, 8 MiB by default. An export that needs more parts fails with SQLSTATE
+54000 before it sends part 10001, and aborts the upload. Raise the part size for
+an object over about 78 GiB. AWS S3, Google Cloud Storage and Cloudflare R2
+refuse parts under 5 MiB, except the last. To those stores, an export with a
+smaller part size fails with SQLSTATE 22023 when it starts a multipart upload,
+before it sends a part. A small object that fits in one part still goes in one
+request. Other stores are not checked.
+
+The export reads each reply from the store by the HTTP/1.1 framing rules. A reply
+with neither a `Content-Length` nor chunked framing ends when the store closes
+the connection; a 204 reply has no body. Some stores send such a reply to a
+write and keep the connection open. The export then waits 60 seconds and fails
+with "timeout reading". A chunked or close-delimited write reply over 1 MiB fails
+the export with "response exceeded". This holds even when the store has already
+written the object.
+
+The last request commits the object. It is the single request of a small object,
+or the request that completes a multipart upload. Once the store has that whole
+request, a cancel or terminate waits for its answer. The wait ends when the answer
+arrives, or when the store sends nothing for 60 seconds. A store that keeps
+sending slowly can make it wait longer. If the store accepted the request, the
+export issues a warning that it wrote the object. The statement can still end with
+the cancel error. The new object is then at the key and has replaced any earlier
+object there. A store cannot take a committed object back.
+
+If the connection closes during that wait, the export does not send the request
+again. It fails with an error that says the store may have written the object.
+Check the key to see whether it holds the new object.
+
+A backend killed with `SIGKILL`, or a lost connection to the store, can still
+leave an incomplete multipart upload. To reclaim one, set a bucket lifecycle rule
+that expires incomplete multipart uploads after a few days.
 
 Export to object storage is not transactional. An export whose transaction later
 rolls back has already written the object. This is true of a local export as

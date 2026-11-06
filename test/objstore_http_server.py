@@ -13,6 +13,165 @@
 #   /stall/<file>    answer the first ranged GET's headers, send half the body,
 #                    then sleep: the cancel arm proves statement_timeout gets the
 #                    backend back while the transfer is wedged.
+#   /short/<file>    answer each ranged GET with an honest 206 one byte SHORT of
+#                    the range asked for (Content-Range and Content-Length agree):
+#                    the client must refuse the short body, never pad or use it.
+#   /trunc/<file>    answer each ranged GET's headers with the full length, send
+#                    half the body, then close: EOF mid-body is an error.
+#   /dropka/<file>   serve normally, but close the connection after every
+#                    response WITHOUT a Connection: close header: the client's
+#                    next request on it fails before a status line, and must be
+#                    retried once on a fresh connection (the keep-alive race).
+#   /hangup/<file>   close every connection without answering at all: on a fresh
+#                    connection that is the server's answer, not a race to retry.
+#   /swap/<file>     serve normally, but after the 4th ranged GET of <file> move
+#                    <file>.next over <file>, once: another writer overwrote the
+#                    key mid-read (#1805). The 4th GET is the first data chunk
+#                    (open = 1 HEAD + 3 GETs), so the footer is the old object's.
+#   /weak/<file>     send a weak ETag (W/"..."): If-Match compares strongly, so a
+#                    weak ETag never matches and any If-Match is answered 412.
+#   /swap79/<file>   as /swap/, with a strong ETag of 79 characters: the longest
+#                    the client keeps, so the read is still pinned.
+#   /etag79/<file>   send a strong ETag of 79 characters and never swap: the
+#                    pinned read of an unchanged object must succeed whole, so a
+#                    pin cut shorter than the ETag shows up (#1805 review).
+#   /longetag/<file> send a strong ETag of 80 characters: one too long for the
+#                    client's buffer, which must keep none rather than a cut one.
+#   /fickle/<file>   send a different strong ETag on every request for the same
+#                    bytes, as nodes behind a load balancer can (#1805 review).
+#   /vswap/<file>    a versioned bucket (#1867): HEAD and GET send
+#                    x-amz-version-id, an id with '+' and '/' in it, as AWS ids
+#                    can have. The server keeps the bytes of every version it
+#                    named, and a GET with ?versionId= reads that version, or
+#                    gets 404 NoSuchVersion. After the 4th ranged GET without a
+#                    versionId, or with one, it moves <file>.next over <file>
+#                    once, as /swap/ does.
+#   /lenswap/<file>  send no ETag, and after the 4th ranged GET move <file>.next
+#                    over <file> once: an overwrite with a new length that only
+#                    the Content-Range total can show (#1867). A GET past the
+#                    new end gets 416 with Content-Range: bytes */<length>.
+#   /vnull/<file>    as /vswap/, but the version id is "null", as S3 gives an
+#                    object written while versioning was off (#1888 review).
+#   /vlong/<file>    as /vswap/, but the version id is 1100 bytes, longer than
+#                    the 1024 S3 allows (#1888 review).
+#   /vdeny/<file>    as /vswap/, but a GET that names a version gets 403
+#                    AccessDenied, as S3 answers a caller that has
+#                    s3:GetObject but not s3:GetObjectVersion (#1888 review).
+#   /hswap/<file>    serve normally, but on the 2nd HEAD of <file> move
+#                    <file>.next over <file> before answering, once: another
+#                    writer overwrote the key between two reads of it in one
+#                    statement, each with its own HEAD (#1894).
+#   /vhswap/<file>   as /hswap/, in a versioned bucket as /vswap/ is.
+#   /whswap/<file>   as /hswap/, with a weak ETag as /weak/ sends (#1907
+#                    review): only the length can show the overwrite.
+#
+# Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
+# GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
+#
+# Hook file, read per request from --dir:
+#   __delete_delay__ holds a number of seconds; every DELETE is logged at once and
+#                    answered only after that long. The double-cancel suite uses it
+#                    to hold the dispatcher's cleanup DELETE in flight while a
+#                    second cancel lands (#1741).
+#   __deny_reads__   when it exists, every HEAD and every GetObject is refused
+#                    with 403 AccessDenied after the signature check; PUT, POST,
+#                    DELETE and the listings go on. This is a key that can write
+#                    but not read, an IAM policy with s3:PutObject and no
+#                    s3:GetObject (#1795).
+#
+# Multipart introspection and hooks (#1743), read per request from --dir:
+#   __open_uploads__      written by the server, never read: the key of every
+#                         upload created and neither completed nor aborted, one
+#                         per line, rewritten on each change. These are the
+#                         billable orphans a real store would keep.
+#   __uploads_delay__     a number of seconds: CreateMultipartUpload (POST
+#                         ?uploads) creates the upload at once and answers only
+#                         after that long, so a suite can end the client while
+#                         the upload exists and its id has not reached it.
+#   __part_delay__        a number of seconds: every part PUT is stored at once
+#                         and answered only after that long, so a suite can end
+#                         the client while its uploads are in progress.
+#   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
+#                         ?uploads) is answered only after that long, a silent
+#                         store for the client's bounded wait.
+#   __complete_delay__    a number of seconds (#1813): CompleteMultipartUpload
+#                         (POST ?uploadId=) writes the object at once and
+#                         answers only after that long, so a suite can end the
+#                         client after the store committed the object.
+#   __put_delay__         a number of seconds (#1813): a single-request PUT
+#                         (no partNumber) writes the object at once and answers
+#                         only after that long, for the same window.
+#   __put_hold__          a number of seconds (#1864): a single-request PUT
+#                         (no partNumber) is held that long after its whole
+#                         body arrived, and only then written and answered: a
+#                         store that applies a commit late, after a DELETE of
+#                         the same key that was sent later.
+#   __complete_drop__     a number of seconds (#1846): CompleteMultipartUpload
+#                         writes the object at once, waits that long, and then
+#                         closes the connection with no answer, as a store
+#                         that applied the request and lost the connection.
+#   __uploads_unframed__  "close" or "http10" (#1830): CreateMultipartUpload
+#                         answers with no framing the client can count on.
+#                         "close": an HTTP/1.1 reply with no Content-Length, no
+#                         Transfer-Encoding and no Connection header; the body
+#                         ends when the server shuts down its sending side. The
+#                         server then waits as for "http10" and logs REUSED for
+#                         a request that comes on that connection.
+#                         "http10": an HTTP/1.0 reply with a Content-Length and
+#                         no Connection header, so the connection does not
+#                         persist. The server then waits up to 5 s for another
+#                         request on that connection and, if one comes, logs
+#                         "REUSED <its request line>" and closes unanswered.
+#   __delete_unframed__   a number of seconds (#1830 review): every DELETE
+#                         that succeeds is answered as Garage answers it, an
+#                         HTTP/1.1 204 with a Date header only: no
+#                         Content-Length and no Connection header. The server
+#                         keeps the connection open for that many seconds of
+#                         quiet and then closes it, as Garage closes an idle
+#                         connection. A client that reads that reply until the
+#                         connection closes waits the whole time.
+#   __list_uploads_status__ an HTTP status: ListMultipartUploads (GET ?uploads)
+#                         is answered with it and an AccessDenied body, so a
+#                         suite can refuse the upload listing alone (#1869).
+#   __put_status__        "STATUS KEY": a plain PUT (no multipart) of exactly
+#                         "bucket/KEY" is answered with STATUS and not stored,
+#                         so a suite can refuse one object, such as a parallel
+#                         export's _SUCCESS marker, and let every other through.
+#   __expect_log__        when it exists, every request that carries
+#                         Expect: 100-continue appends "METHOD <path> <value>"
+#                         to it (#1902). A request with Expect is answered 100
+#                         Continue only when its body is about to be read, as
+#                         a real store does: one refused from its headers gets
+#                         the refusal instead of 100.
+#   __expect_ignore__     when it exists, Expect is ignored: no 100 Continue is
+#                         sent and the body is read when it comes, so a client
+#                         must send it after its own wait (#1902).
+#   __expect_delay__      a number of seconds: the 100 Continue is sent that
+#                         late, after a client's own wait, so it arrives ahead
+#                         of the final answer to a body already sent (#1902).
+#   __deny_delay__        a number of seconds: a refusal that leaves the body
+#                         unread waits that long first, so a client past its
+#                         Expect wait is sending the body when it comes (#1902).
+#   __expect_417__        when it exists, a request carrying Expect is answered
+#                         417 Expectation Failed from its headers and the
+#                         connection closed (#1902).
+#   __expect_early_200__  when it exists, a single PUT (no partNumber) carrying
+#                         Expect is answered 200 from its headers, before its
+#                         body is read; the body is then read and stored, and
+#                         the answer the handler gives after it is discarded,
+#                         since a request has one final answer (#1903 review).
+#                         A client that takes the 200 for the write and never
+#                         sends the body leaves no object.
+#   __expect_early_200_close__  when it exists, a single PUT (no partNumber)
+#                         carrying Expect is answered 200 from its headers with
+#                         no Content-Length and no chunked framing, a reply that
+#                         ends at connection close. The body, if it comes, is
+#                         read, then the connection is closed and nothing is
+#                         stored. A client that takes that 200 for the write
+#                         reports an object that does not exist (#1903 merge).
+# --seed-upload KEY (repeatable) opens an upload at KEY ("bucket/key") before
+# the first request: an upload some other writer left, which a client must not
+# abort as its own.
 #
 # SigV4 verification mode (#393 M2): with --sigv4-key/--sigv4-secret/
 # --sigv4-region, every request must carry a valid AWS Signature Version 4
@@ -23,17 +182,23 @@
 # x-amz-security-token header, with the right value, inside the signed set.
 # --tamper-bucket names a top-level path component whose requests are verified
 # against a deliberately different secret, so a correctly signing client is
-# always refused there: the suite's 403-surface arm.
+# always refused there: the suite's 403-surface arm. The refusal comes before
+# the body is read, and closes the connection with the body unread, as a real
+# store does: a body larger than the socket buffers then fails to send after
+# the 403 has arrived (#1796 D).
 #
 # Written fresh for pgColumnar.
 
 import argparse
 import hashlib
 import hmac
+import io
 import os
 import re
+import socket
 import ssl
 import sys
+import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,6 +226,7 @@ class TLSServer(ThreadingHTTPServer):
         return self.tls_ctx.wrap_socket(sock, server_side=True), addr
 
 RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
+VERSIONED = ("vswap", "vnull", "vlong", "vdeny", "vhswap")
 AUTH_RE = re.compile(
     r"^AWS4-HMAC-SHA256 Credential=([^/]+)/(\d{8})/([^/]+)/s3/aws4_request,\s*"
     r"SignedHeaders=([^,]+),\s*Signature=([0-9a-f]{64})$")
@@ -101,6 +267,72 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):   # silence stderr chatter
         pass
 
+    def parse_request(self):
+        # The handler serves every request of a connection: forget the last
+        # request's body, so _deny can tell whether this one's was read.
+        self._body = None
+        self._expect = False
+        self._drop = False
+        real = getattr(self, "_real_wfile", None)
+        if real is not None:
+            self.wfile = real
+            self._real_wfile = None
+        return super().parse_request()
+
+    def handle_expect_100(self):
+        # Expect: 100-continue (#1902). The stdlib answers 100 at once, before
+        # the handler has looked at the request. A real store first checks
+        # the headers and refuses from them alone, so 100 is sent only when
+        # the body is about to be read (_read_body), and a refusal before
+        # that is the answer the client sees instead of 100.
+        root = self.server.rootdir
+        if os.path.exists(os.path.join(root, "__expect_log__")):
+            with open(os.path.join(root, "__expect_log__"), "a") as f:
+                f.write("%s %s %s\n" % (self.command, self.path.partition("?")[0],
+                                        self.headers.get("Expect", "-")))
+        if os.path.exists(os.path.join(root, "__expect_417__")):
+            self._log_line()
+            self.send_response(417)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            return False
+        self._expect = True
+        return True
+
+    def _read_body(self, clen):
+        """The request body, after a 100 Continue when the client asked for one
+        (unless the __expect_ignore__ hook plays a store that ignores Expect)."""
+        if self._expect:
+            self._expect = False
+            if (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200_close__"))):
+                # 200 to the headers alone, framed by connection close; the
+                # body is read and dropped, and do_PUT closes (#1903 merge).
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.flush()
+                self._drop = True
+                self.close_connection = True
+            elif (self.command == "PUT" and "partNumber=" not in self.path and
+                    os.path.exists(os.path.join(self.server.rootdir,
+                                                "__expect_early_200__"))):
+                # 200 to the headers alone; whatever the handler answers after
+                # the body goes nowhere, as a request has one final answer.
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                self._real_wfile = self.wfile
+                self.wfile = io.BytesIO()
+            elif not os.path.exists(os.path.join(self.server.rootdir,
+                                                 "__expect_ignore__")):
+                _hook_sleep(self.server.rootdir, "__expect_delay__")
+                self.send_response_only(100)
+                self.end_headers()
+        return self.rfile.read(clen) if clen else b""
+
     def _log_line(self):
         rng = self.headers.get("Range", "-").replace(" ", "")
         rawpath, _, query = self.path.partition("?")
@@ -108,13 +340,35 @@ class Handler(BaseHTTPRequestHandler):
             f.write("%s %s %s %s\n" % (self.command, rawpath,
                                         query or "-", rng))
 
+    def _vhost_bucket(self):
+        """The bucket a virtual-host request names in its Host header (the
+        leftmost label(s) before --virtual-host-base), or None for a
+        path-style request."""
+        base = getattr(self.server, "vhost_base", None)
+        if base:
+            hosthdr = self.headers.get("Host", "").split(":", 1)[0]
+            if hosthdr.endswith("." + base):
+                return hosthdr[: -len(base) - 1]
+        return None
+
+    def _list_bucket(self):
+        """The bucket a LIST names: from the Host header under virtual-host
+        addressing (#1783), else the first path segment."""
+        bucket = self._vhost_bucket()
+        if bucket is not None:
+            return bucket
+        return self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+
     def _resolve(self):
         # SigV4 verification runs over the RAW request target (that is what
         # the client signed); only the filesystem lookup decodes it, and the
         # query never names a file.
         path = urllib.parse.unquote(self.path.partition("?")[0])
         mode = "normal"
-        for prefix in ("/norange/", "/stall/"):
+        for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
+                       "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
+                       "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
+                       "/hswap/", "/vhswap/", "/whswap/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -122,12 +376,9 @@ class Handler(BaseHTTPRequestHandler):
         # virtual-host addressing (#621): the bucket is the leftmost Host
         # label(s) before the configured base, and the request path is the key
         # alone, so re-attach the bucket for the on-disk lookup.
-        base = getattr(self.server, "vhost_base", None)
-        if base:
-            hosthdr = self.headers.get("Host", "").split(":", 1)[0]
-            if hosthdr.endswith("." + base):
-                bucket = hosthdr[: -len(base) - 1]
-                path = "/" + bucket + path
+        bucket = self._vhost_bucket()
+        if bucket is not None:
+            path = "/" + bucket + path
         local = os.path.join(self.server.rootdir, path.lstrip("/"))
         return mode, local
 
@@ -136,14 +387,40 @@ class Handler(BaseHTTPRequestHandler):
                 % code).encode()
         self.send_response(status)
         self.send_header("Content-Length", str(len(body)))
+        # A refusal that leaves a request body unread closes the connection, as
+        # a real store does (#1796 D): the unread bytes are not a next request.
+        # Closing with them unread resets the connection, so a client still
+        # sending a body larger than the socket buffers fails its send after
+        # the answer has arrived.
+        clen = int(self.headers.get("Content-Length", "0") or "0")
+        if clen > 0 and getattr(self, "_body", None) is None:
+            # __deny_delay__ holds the refusal of an unread body for that many
+            # seconds: past a client's Expect wait, so the client is sending
+            # the body when the refusal comes (#1902).
+            _hook_sleep(self.server.rootdir, "__deny_delay__")
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _reads_denied(self):
+        """True, with a 403 sent, when the __deny_reads__ hook exists."""
+        if os.path.exists(os.path.join(self.server.rootdir, "__deny_reads__")):
+            self._deny(403, "AccessDenied")
+            return True
+        return False
 
     def _sigv4_check(self):
         """True when the request may proceed. Answers 403 itself otherwise."""
         srv = self.server
         if srv.sigv4_secret is None:
+            # Unsigned mode still reads a write's body (#1779): the PUT and
+            # POST handlers use self._body, which only the verifier below set,
+            # so an unsigned write killed the handler before any answer.
+            if self.command in ("PUT", "POST"):
+                clen = int(self.headers.get("Content-Length", "0") or "0")
+                self._body = self._read_body(clen)
             return True
         auth = self.headers.get("Authorization", "")
         m = AUTH_RE.match(auth)
@@ -188,7 +465,7 @@ class Handler(BaseHTTPRequestHandler):
         # arms are cross-implementation checks of the payload hash too.
         clen = int(self.headers.get("Content-Length", "0") or "0")
         if self.command in ("PUT", "POST") :
-            self._body = self.rfile.read(clen) if clen else b""
+            self._body = self._read_body(clen)
             if payload_hash != "UNSIGNED-PAYLOAD" and                hashlib.sha256(self._body).hexdigest() != payload_hash:
                 self._deny(403, "XAmzContentSHA256Mismatch")
                 return False
@@ -202,16 +479,62 @@ class Handler(BaseHTTPRequestHandler):
             return -1
         return os.path.getsize(local)
 
+    def _etag(self, local, mode):
+        with open(local, "rb") as f:
+            md5 = hashlib.md5(f.read()).hexdigest()
+        if mode in ("weak", "whswap"):
+            return 'W/"%s"' % md5
+        if mode in ("swap79", "etag79", "longetag"):
+            width = 80 if mode == "longetag" else 79
+            return '"%s"' % (md5 + "x" * (width - 2 - len(md5)))
+        if mode == "fickle":
+            with self.server.uploads_lock:
+                self.server.fickle_seq += 1
+                return '"%s-%d"' % (md5, self.server.fickle_seq)
+        return '"%s"' % md5
+
+    def _version_of(self, local, data):
+        """/vswap/: the version id of these bytes, kept so a GET can ask for it."""
+        if self._mode == "vnull":
+            vid = "null"
+        elif self._mode == "vlong":
+            vid = "3HL4+kq/" + "x" * 1092
+        else:
+            vid = "3HL4+kq/" + hashlib.md5(data).hexdigest()[:24]
+        with self.server.uploads_lock:
+            self.server.versions[(local, vid)] = data
+        return vid
+
     def do_HEAD(self):
         self._log_line()
         if not self._sigv4_check():
             return
-        size = self._head_common(self._resolve()[1])
+        if self._reads_denied():
+            return
+        mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
+        if mode in ("hswap", "vhswap", "whswap"):
+            with self.server.uploads_lock:
+                seen = self.server.swap_heads.get(local, 0) + 1
+                self.server.swap_heads[local] = seen
+                if seen == 2 and os.path.exists(local + ".next"):
+                    os.replace(local + ".next", local)
+        size = self._head_common(local)
         if size < 0:
             return
+        if mode == "dropka":
+            self.close_connection = True
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
+        if mode != "lenswap":
+            self.send_header("ETag", self._etag(local, mode))
+        if mode in VERSIONED:
+            self._mode = mode
+            with open(local, "rb") as f:
+                self.send_header("x-amz-version-id", self._version_of(local, f.read()))
         self.end_headers()
 
     def _do_list_v2(self, query):
@@ -222,6 +545,18 @@ class Handler(BaseHTTPRequestHandler):
         # Fuzz hook: if <rootdir>/__listing_override__ exists, its raw bytes are
         # returned verbatim as the listing body, so a harness can feed the C
         # parser arbitrary (malformed) XML and check the backend survives.
+        #
+        # Status hook: if <rootdir>/__listing_status__ exists, its content is an
+        # HTTP status every listing is answered with, an empty body, so a harness
+        # can prove a failed LIST is refused rather than read as an empty prefix.
+        status = os.path.join(self.server.rootdir, "__listing_status__")
+        if os.path.exists(status):
+            with open(status) as f:
+                code = int(f.read().strip())
+            self.send_response(code)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         override = os.path.join(self.server.rootdir, "__listing_override__")
         if os.path.exists(override):
             with open(override, "rb") as f:
@@ -233,7 +568,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         q = urllib.parse.parse_qs(query)
-        bucket = self.path.partition("?")[0].lstrip("/").split("/", 1)[0]
+        bucket = self._list_bucket()
         prefix = q.get("prefix", [""])[0]
         token = q.get("continuation-token", [None])[0]
         base = os.path.join(self.server.rootdir, bucket)
@@ -276,17 +611,116 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _do_list_uploads(self):
+        # ListMultipartUploads (#1743): the uploads in progress whose key starts
+        # with `prefix`, sorted by key then upload id, paged by --list-page-size
+        # with key-marker/upload-id-marker as S3 does it.
+        _hook_sleep(self.server.rootdir, "__list_uploads_delay__")
+        lust = os.path.join(self.server.rootdir, "__list_uploads_status__")
+        if os.path.exists(lust):
+            with open(lust) as f:
+                self._deny(int(f.read().strip()), "AccessDenied")
+            return
+        q = self._qdict()
+        bucket = self._list_bucket()
+        prefix = q.get("prefix", "")
+        kmark = q.get("key-marker")
+        umark = q.get("upload-id-marker", "")
+        base = os.path.join(self.server.rootdir, bucket)
+        with self.server.uploads_lock:
+            ups = []
+            for uid, up in self.server.uploads.items():
+                key = os.path.relpath(up["local"], base).replace(os.sep, "/")
+                if key.startswith(prefix) and not key.startswith(".."):
+                    ups.append((key, uid))
+        ups.sort()
+        if kmark is not None:
+            ups = [u for u in ups if u > (kmark, umark)]
+        page_size = self.server.list_page_size
+        page = ups[:page_size]
+        truncated = len(ups) > page_size
+
+        def esc(x):
+            return (x.replace("&", "&amp;").replace("<", "&lt;")
+                     .replace(">", "&gt;"))
+        parts = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                 "<ListMultipartUploadsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">",
+                 "<Bucket>%s</Bucket>" % esc(bucket),
+                 "<Prefix>%s</Prefix>" % esc(prefix),
+                 "<MaxUploads>%d</MaxUploads>" % page_size,
+                 "<IsTruncated>%s</IsTruncated>" % ("true" if truncated else "false")]
+        if truncated and page:
+            parts.append("<NextKeyMarker>%s</NextKeyMarker>" % esc(page[-1][0]))
+            parts.append("<NextUploadIdMarker>%s</NextUploadIdMarker>" % esc(page[-1][1]))
+        for key, uid in page:
+            parts.append("<Upload><Key>%s</Key><UploadId>%s</UploadId>"
+                         "<Initiated>2026-10-22T00:00:00.000Z</Initiated></Upload>"
+                         % (esc(key), esc(uid)))
+        parts.append("</ListMultipartUploadsResult>")
+        body = "".join(parts).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         self._log_line()
         if not self._sigv4_check():
             return
         _rawpath, _, _query = self.path.partition("?")
-        if "list-type=2" in _query:
+        # Under virtual-host addressing a LIST goes to the bucket root, "/".
+        # S3 reads a GET with any other path as a GetObject of that key, so
+        # this server does too (#1783): a client that sends
+        # GET /bucket?list-type=2 to bucket.endpoint gets the 404 S3 gives it.
+        is_get_object = self._vhost_bucket() is not None and _rawpath != "/"
+        if "list-type=2" in _query and not is_get_object:
             self._do_list_v2(_query)
             return
+        if "uploads" in self._qdict() and not is_get_object:
+            self._do_list_uploads()
+            return
+        if self._reads_denied():
+            return
         mode, local = self._resolve()
+        if mode == "hangup":
+            self.close_connection = True
+            return
         size = self._head_common(local)
         if size < 0:
+            return
+        if mode == "dropka":
+            self.close_connection = True
+        etag = self._etag(local, mode)
+        # /vswap/: a GET that names a version reads that version's bytes.
+        data, vid = None, None
+        if mode in VERSIONED:
+            self._mode = mode
+            # unquote_plus, as S3 reads a query: a '+' sent unencoded is a space.
+            asked = None
+            for part in self.path.partition("?")[2].split("&"):
+                k, _, v = part.partition("=")
+                if k == "versionId":
+                    asked = urllib.parse.unquote_plus(v)
+            if asked is not None and mode == "vdeny":
+                self._deny(403, "AccessDenied")
+                return
+            if asked is not None:
+                with self.server.uploads_lock:
+                    data = self.server.versions.get((local, asked))
+                if data is None:
+                    self._deny(404, "NoSuchVersion")
+                    return
+                vid = asked
+            else:
+                with open(local, "rb") as f:
+                    data = f.read()
+                vid = self._version_of(local, data)
+            size = len(data)
+            etag = '"%s"' % hashlib.md5(data).hexdigest()
+        want = self.headers.get("If-Match")
+        if want is not None and (mode in ("weak", "whswap") or want.strip() != etag):
+            self._deny(412, "PreconditionFailed")
             return
 
         rng = self.headers.get("Range")
@@ -296,8 +730,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(size))
             self.end_headers()
-            with open(local, "rb") as f:
-                self.wfile.write(f.read())
+            if data is None:
+                with open(local, "rb") as f:
+                    data = f.read()
+            self.wfile.write(data)
             return
 
         if m.group(1) == "":                     # suffix form bytes=-N
@@ -309,24 +745,45 @@ class Handler(BaseHTTPRequestHandler):
         hi = min(hi, size - 1)
         if lo > hi or lo >= size:
             self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
 
+        if mode == "short" and hi > lo:
+            hi -= 1
         n = hi - lo + 1
-        with open(local, "rb") as f:
-            f.seek(lo)
-            body = f.read(n)
+        if data is not None:
+            body = data[lo:lo + n]
+        else:
+            with open(local, "rb") as f:
+                f.seek(lo)
+                body = f.read(n)
         self.send_response(206)
         self.send_header("Content-Range", "bytes %d-%d/%d" % (lo, hi, size))
         self.send_header("Content-Length", str(n))
+        if mode != "lenswap":
+            self.send_header("ETag", etag)
+        if vid is not None:
+            self.send_header("x-amz-version-id", vid)
         self.end_headers()
+        if mode == "trunc":
+            self.wfile.write(body[: n // 2])
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if mode == "stall":
             self.wfile.write(body[: n // 2])
             self.wfile.flush()
             time.sleep(300)                      # the suite cancels long before
             return
         self.wfile.write(body)
+        if mode in ("swap", "swap79", "vswap", "lenswap"):
+            with self.server.uploads_lock:
+                seen = self.server.swap_gets.get(local, 0) + 1
+                self.server.swap_gets[local] = seen
+                if seen == 4 and os.path.exists(local + ".next"):
+                    os.replace(local + ".next", local)
 
 
     # ---- write side (#394): plain PUT, and a faithful multipart emulation --
@@ -342,6 +799,10 @@ class Handler(BaseHTTPRequestHandler):
         self._log_line()
         if not self._sigv4_check():
             return
+        if self._drop:
+            # __expect_early_200_close__: answered already; store nothing
+            self.close_connection = True
+            return
         q = self._qdict()
         _, local = self._resolve()
         if "uploadId" in q and "partNumber" in q:
@@ -349,16 +810,42 @@ class Handler(BaseHTTPRequestHandler):
             if up is None or up["local"] != local:
                 self._deny(404, "NoSuchUpload")
                 return
+            # Part-failure hook: if <rootdir>/__part_status__ exists, it holds
+            # "STATUS FROM": every part numbered FROM or above is answered with
+            # STATUS and not stored, so a harness can prove a failed part fails
+            # the export rather than completing a short object.
+            pstat = os.path.join(self.server.rootdir, "__part_status__")
+            if os.path.exists(pstat):
+                with open(pstat) as f:
+                    code, first = (int(x) for x in f.read().split())
+                if int(q["partNumber"]) >= first:
+                    self._deny(code, "InternalError")
+                    return
+            # S3 numbers parts 1 to 10000 and refuses any other number with
+            # 400 InvalidArgument (#1857).
+            if not 1 <= int(q["partNumber"]) <= 10000:
+                self._deny(400, "InvalidArgument")
+                return
             up["parts"][int(q["partNumber"])] = self._body
+            _hook_sleep(self.server.rootdir, "__part_delay__")
             etag = hashlib.md5(self._body).hexdigest()
             self.send_response(200)
             self.send_header("ETag", '"%s"' % etag)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        putst = os.path.join(self.server.rootdir, "__put_status__")
+        if os.path.exists(putst):
+            with open(putst) as f:
+                code, key = f.read().split()
+            if os.path.relpath(local, self.server.rootdir) == key:
+                self._deny(int(code), "AccessDenied")
+                return
+        _hook_sleep(self.server.rootdir, "__put_hold__")
         os.makedirs(os.path.dirname(local), exist_ok=True)
         with open(local, "wb") as f:
             f.write(self._body)
+        _hook_sleep(self.server.rootdir, "__put_delay__")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -375,25 +862,76 @@ class Handler(BaseHTTPRequestHandler):
             # in the canonical query or its signature diverges. With this id the
             # multipart round trip passes ONLY if that encoding is correct
             # (#394 review turned from "unproven" to pinned).
-            uid = "up/%d+x" % (len(self.server.uploads) + 1)
-            self.server.uploads[uid] = {"local": local, "parts": {}}
+            with self.server.uploads_lock:
+                self.server.upload_seq += 1
+                uid = "up/%d+x" % self.server.upload_seq
+                self.server.uploads[uid] = {"local": local, "parts": {}}
+                _write_open_uploads(self.server)
+            _hook_sleep(self.server.rootdir, "__uploads_delay__")
             body = ("<?xml version=\"1.0\"?><InitiateMultipartUploadResult>"
                     "<UploadId>%s</UploadId>"
                     "</InitiateMultipartUploadResult>" % uid).encode()
+            unframed = _hook_text(self.server.rootdir, "__uploads_unframed__")
+            if unframed in ("close", "http10"):
+                if unframed == "close":
+                    self.wfile.write(b"HTTP/1.1 200 OK\r\n"
+                                     b"Content-Type: application/xml\r\n\r\n" + body)
+                    self.wfile.flush()
+                    # end the body for the client, but keep reading, so a
+                    # request sent on this connection shows as REUSED
+                    self.connection.shutdown(socket.SHUT_WR)
+                else:
+                    self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n"
+                                     % len(body) + body)
+                    self.wfile.flush()
+                self.close_connection = True
+                self.connection.settimeout(5)
+                try:
+                    line = self.rfile.readline(65537)
+                except OSError:
+                    line = b""
+                if line:
+                    with open(self.server.reqlog, "a") as f:
+                        f.write("REUSED %s\n" % line.decode("latin-1").strip())
+                return
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
         if "uploadId" in q:
-            up = self.server.uploads.pop(q["uploadId"], None)
-            if up is None or up["local"] != local:
-                self._deny(404, "NoSuchUpload")
-                return
+            # As S3 does, the object is the parts the request LISTS, in order,
+            # each checked against its stored ETag; an unlisted part is
+            # dropped, and a listed part that was never stored fails the
+            # complete and leaves the upload open (abortable).
+            listed = [(int(n), e.replace(b"&quot;", b"").strip(b'"')) for n, e in re.findall(
+                rb"<PartNumber>\s*(\d+)\s*</PartNumber>\s*<ETag>([^<]*)</ETag>",
+                self._body)]
+            with self.server.uploads_lock:
+                up = self.server.uploads.get(q["uploadId"])
+                if up is None or up["local"] != local:
+                    self._deny(404, "NoSuchUpload")
+                    return
+                nums = [n for n, _ in listed]
+                if not listed or nums != sorted(set(nums)):
+                    self._deny(400, "InvalidPartOrder" if listed else "MalformedXML")
+                    return
+                for n, e in listed:
+                    if n not in up["parts"] or (e and e.decode() !=
+                                                hashlib.md5(up["parts"][n]).hexdigest()):
+                        self._deny(400, "InvalidPart")
+                        return
+                del self.server.uploads[q["uploadId"]]
+                _write_open_uploads(self.server)
             os.makedirs(os.path.dirname(local), exist_ok=True)
             with open(local, "wb") as f:
-                for n in sorted(up["parts"]):
+                for n, _ in listed:
                     f.write(up["parts"][n])
+            if os.path.exists(os.path.join(self.server.rootdir, "__complete_drop__")):
+                _hook_sleep(self.server.rootdir, "__complete_drop__")
+                self.close_connection = True
+                return
+            _hook_sleep(self.server.rootdir, "__complete_delay__")
             body = b"<?xml version=\"1.0\"?><CompleteMultipartUploadResult/>"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -406,18 +944,60 @@ class Handler(BaseHTTPRequestHandler):
         self._log_line()
         if not self._sigv4_check():
             return
+        try:
+            with open(os.path.join(self.server.rootdir, "__delete_delay__")) as fh:
+                time.sleep(float(fh.read().strip() or 0))
+        except (OSError, ValueError):
+            pass
         q = self._qdict()
         _, local = self._resolve()
         if "uploadId" in q:
-            up = self.server.uploads.pop(q["uploadId"], None)
+            with self.server.uploads_lock:
+                up = self.server.uploads.pop(q["uploadId"], None)
+                if up is not None:
+                    _write_open_uploads(self.server)
             if up is None:
                 self._deny(404, "NoSuchUpload")
                 return
         elif os.path.isfile(local):
             os.unlink(local)
+        idle = _hook_text(self.server.rootdir, "__delete_unframed__")
+        if idle is not None:
+            self.wfile.write(b"HTTP/1.1 204 No Content\r\nDate: %s\r\n\r\n"
+                             % self.date_time_string().encode())
+            self.wfile.flush()
+            # the next read on this connection times out after `idle` seconds,
+            # and the base handler then closes the connection
+            self.connection.settimeout(float(idle) if idle else 8.0)
+            return
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+
+def _write_open_uploads(srv):
+    # <rootdir>/__open_uploads__: one key per open upload. Call with uploads_lock.
+    with open(os.path.join(srv.rootdir, "__open_uploads__"), "w") as f:
+        for up in srv.uploads.values():
+            f.write(os.path.relpath(up["local"], srv.rootdir) + "\n")
+
+
+def _hook_text(rootdir, name):
+    # The stripped text of <rootdir>/<name>, or None when it does not exist.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _hook_sleep(rootdir, name):
+    # Sleep for the number of seconds in <rootdir>/<name>, when it exists.
+    try:
+        with open(os.path.join(rootdir, name)) as fh:
+            time.sleep(float(fh.read().strip() or 0))
+    except (OSError, ValueError):
+        pass
 
 
 def main():
@@ -437,6 +1017,8 @@ def main():
                          "bucket (S3 virtual-host addressing, #621)")
     ap.add_argument("--list-page-size", type=int, default=1000,
                     help="ListObjectsV2 keys per page; small values force paging")
+    ap.add_argument("--seed-upload", action="append", default=[],
+                    help="open a multipart upload at bucket/key before serving")
     args = ap.parse_args()
 
     if args.tls_cert:
@@ -454,6 +1036,17 @@ def main():
     srv.vhost_base = args.virtual_host_base
     srv.list_page_size = args.list_page_size
     srv.uploads = {}
+    srv.uploads_lock = threading.Lock()
+    srv.swap_gets = {}
+    srv.swap_heads = {}
+    srv.fickle_seq = 0
+    srv.versions = {}
+    srv.upload_seq = 0
+    for key in args.seed_upload:
+        srv.upload_seq += 1
+        srv.uploads["seed/%d+x" % srv.upload_seq] = {
+            "local": os.path.join(args.dir, key), "parts": {}}
+    _write_open_uploads(srv)
     open(args.log, "a").close()
     # Readiness marker for the suite: print once the socket is bound.
     print("READY", flush=True)

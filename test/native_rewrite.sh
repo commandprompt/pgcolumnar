@@ -34,7 +34,7 @@ deletedrows() { q "SELECT COALESCE(sum(deletedrows), 0) FROM pgcolumnar.stats('n
 psql_run "DELETE FROM h WHERE id % 3 = 0;"
 psql_run "DELETE FROM n WHERE id % 3 = 0;"
 
-check "row count after delete" "$(q 'SELECT count(*) FROM n;')" "$(q 'SELECT count(*) FROM h;')"
+check_num "row count after delete" "$(q 'SELECT count(*) FROM n;')" "$(q 'SELECT count(*) FROM h;')"
 check "there are deleted rows to reclaim" "$([ "$(deletedrows)" -gt 0 ] && echo yes || echo no)" "yes"
 check "parity after delete" \
 	"$(pgc_set_hash 'SELECT id, v, payload FROM n ORDER BY id')" \
@@ -50,31 +50,47 @@ check "dead-row space reclaimed" "$(deletedrows)" "0"
 check "parity after rewrite" \
 	"$(pgc_set_hash 'SELECT id, v, payload FROM n ORDER BY id')" \
 	"$(pgc_set_hash 'SELECT id, v, payload FROM h ORDER BY id')"
-check "row count after rewrite" \
+check_num "row count after rewrite" \
 	"$(q 'SELECT count(*) FROM n;')" \
 	"$(q 'SELECT count(*) FROM h;')"
 
+# The threshold, measured from both sides. A rewrite with nothing deleted must leave
+# every group alone, and a group deleted below min_deleted_fraction is not a
+# candidate. With every undeleted group rewritten, or the threshold ignored, all 17
+# checks above and below passed on main.
+check_num "a second rewrite with nothing deleted rewrites no group" \
+	"$(q "SELECT pgcolumnar.compact_rewrite('n', 0.2);")" "0"
+psql_run "DELETE FROM h WHERE id = 2;"
+psql_run "DELETE FROM n WHERE id = 2;"
+check_num "a group deleted below the threshold is not rewritten" \
+	"$(q "SELECT pgcolumnar.compact_rewrite('n', 0.2);")" "0"
+
 # Index-scan correctness: force an index scan and confirm each live row is
 # returned exactly once (no duplicate from lingering old-number index entries).
-idxcount() {
+idxcount() {	# [UPPER] -> live rows with id in 1..UPPER read through the index, or nothing
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At 2>/dev/null -c \
 		"SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off;
-		 SELECT count(*) FROM n WHERE id BETWEEN 1 AND 8192;" | tail -1
+		 SELECT count(*) FROM n WHERE id BETWEEN 1 AND ${1:-8192};" | tail -1
 }
-check "index scan returns each live row once" "$(idxcount)" "$(q 'SELECT count(*) FROM h;')"
+check_num "index scan returns each live row once" "$(idxcount)" "$(q 'SELECT count(*) FROM h;')"
 # Point lookups via the unique index.
 check "live id present via index" "$(q 'SELECT count(*) FROM n WHERE id = 4097;')" "1"
 check "deleted id absent via index" "$(q 'SELECT count(*) FROM n WHERE id = 4098;')" "0"
 
 # Uniqueness still enforced after the rewrite (no stale live duplicate).
+# dupfails -> "yes" only when the insert is refused by n_id_uq itself (23505 and its
+# message). Any other failure is not enforcement: with the server stopped, the old
+# "psql failed, so yes" passed.
 dupfails() {
-	if env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 -c "INSERT INTO n VALUES (4097, 0, 'x');" >/dev/null 2>&1; then
-		echo no
-	else
-		echo yes
-	fi
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 -v VERBOSITY=verbose \
+		-c "INSERT INTO n VALUES (4097, 0, 'x');" 2>&1)" && { echo "no (the duplicate was inserted)"; return; }
+	case "$out" in
+	*'23505'*'duplicate key value violates unique constraint "n_id_uq"'*) echo yes ;;
+	*) echo "no ($(head -1 <<<"$out"))" ;;
+	esac
 }
 check "unique constraint still enforced" "$(dupfails)" "yes"
 
@@ -138,7 +154,22 @@ check "vacuum rewrites into a fresh storage id" \
 	"$([ "$sid_after" != "$sid_before" ] && echo yes || echo no)" "yes"
 
 # And the rows survive all of it, which is what the invariants are for.
-check "every live row still reads back after rewrite and vacuum" \
+check_num "every live row still reads back after rewrite and vacuum" \
 	"$(q 'SELECT count(*) FROM n;')" "$(q 'SELECT count(*) FROM h;')"
+# vacuum assigned every row a fresh number, so the indexes had to be rebuilt to point
+# at them. A stale entry still fetches A row, just the wrong one, and over the whole
+# table the stale entries land on every live row once: with the rebuild skipped, a
+# count and a hash of everything read through the index both still matched, and every
+# check above passed on main. A narrow range is what tells: its entries fetch rows
+# from elsewhere in the table (id 4097 read back as 6146).
+idxids() {	# LO HI -> the ids an index range read of n returns, or nothing
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At 2>/dev/null -c \
+		"SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off;
+		 SELECT string_agg(id::text, ',' ORDER BY id) FROM n WHERE id BETWEEN $1 AND $2;" | tail -1
+}
+check_text "an index range read after vacuum returns the rows asked for" \
+	"$(idxids 4090 4100)" \
+	"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM h WHERE id BETWEEN 4090 AND 4100;")"
 
 pgc_summary

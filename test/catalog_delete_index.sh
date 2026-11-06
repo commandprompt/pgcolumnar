@@ -20,8 +20,9 @@
 # measures at three catalog sizes rather than one.
 #
 # WHAT IT ASSERTS, AND WHAT IT DELIBERATELY DOES NOT. It asserts the WORK --
-# buffers served out of the six catalogs, heap and index, from
-# pg_statio_all_tables -- and never the access path. An earlier version of this
+# buffers served out of the six catalogs, heap and index, counted in the
+# measured statement's own transaction (cat_blocks, #1298) -- and never the
+# access path. An earlier version of this
 # file asserted `seq_scan = 0` and `idx_scan >= 1` on each catalog. That is a
 # claim about WHICH PATH WAS TAKEN, and it is wrong twice over:
 #
@@ -147,39 +148,44 @@ catpages() {
 		WHERE n.nspname = 'pgcolumnar' AND relname IN ($CATS);"
 }
 
+# cat_blocks CATLIST SQL -- buffers the listed catalogs served while SQL ran,
+# counted in SQL's own transaction (pgc_xact_blocks, #1298). The per-catalog
+# breakdown is kept for cat_detail.
+CB_DETAIL="${TMPDIR:-/tmp}/catalog_delete_index.detail.$$"
+cat_blocks() {
+	local out
+	out="$(pgc_xact_blocks "$1" "$2")"
+	printf '%s\n' "${out#*|}" >"$CB_DETAIL"
+	echo "${out%%|*}"
+}
+
+# ANOTHER SESSION'S READS ARE NOT THIS STATEMENT'S WORK (#1298). The arms below
+# compare two readings a few buffers apart, so a reading that takes in another
+# session's catalog reads can hide a regression on either side. The measured
+# statement here reads no catalog itself; inside it, COPY ... TO PROGRAM runs a
+# second session that scans row_group and column_chunk and exits. The reading
+# must be zero.
+OTHER_SESSION="COPY (SELECT 1) TO PROGRAM '$PGC_BINDIR/psql -h 127.0.0.1 -p $PGC_PORT -U postgres -d $PGC_DB -Atqc \"SELECT count(*) FROM pgcolumnar.row_group; SELECT count(*) FROM pgcolumnar.column_chunk\" >/dev/null';"
+
 # compact_work TABLE [INDEX_MIN_BLOCKS] -- buffers the six catalogs served
 # while TABLE was compacted. Heap AND index blocks: counting only the heap
 # would make a probe look free, which is the error this file exists to avoid.
 #
-# The SET and the compaction share one q, so they share a backend. The harness
-# runs every other statement in a fresh backend, which flushes its statistics on
-# exit, so the reset and the reading need no flush of their own.
+# The SET and the compaction share one q, so they share a transaction, and
+# cat_blocks counts in it.
 compact_work() {
 	local set_clause=""
 	[ $# -ge 2 ] && set_clause="SET pgcolumnar.index_min_blocks = $2; "
-	q "SELECT pg_stat_reset();" >/dev/null
-	q "${set_clause}SELECT pgcolumnar.compact('$1');" >/dev/null
-	q "SELECT pg_stat_force_next_flush();" >/dev/null
-	q "SELECT coalesce(sum(heap_blks_read + heap_blks_hit
-				   + coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0)
-		FROM pg_statio_all_tables
-		WHERE schemaname = 'pgcolumnar' AND relname IN ($CATS);"
+	cat_blocks "$CATS" "${set_clause}SELECT pgcolumnar.compact('$1');"
 }
 
-# cat_detail -- the per-catalog breakdown of the reading compact_work just took.
-# Valid only until the next reset, so it is called immediately after.
+# cat_detail -- the per-catalog breakdown of the reading cat_blocks just took,
+# from the same transaction, so it always adds up to that reading.
 #
 # It is diagnosis, not decoration. It is what showed that under a full revert
 # five of the six catalogs return identical numbers across every reading and the
 # whole drift is row_group -- the one catalog the compaction writes to.
-cat_detail() {
-	q "SELECT string_agg(relname || '=' ||
-			(heap_blks_read + heap_blks_hit
-			 + coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0))::text,
-			' ' ORDER BY relname)
-		FROM pg_statio_all_tables
-		WHERE schemaname = 'pgcolumnar' AND relname IN ($CATS);"
-}
+cat_detail() { cat "$CB_DETAIL" 2>/dev/null; }
 
 # permille PART WHOLE. A WHOLE of zero gives 0, which fails every arm rather
 # than dividing by it.
@@ -248,6 +254,24 @@ phase() {
 		"$(( $(q "SELECT count(*) FROM pg_class c JOIN pg_am a ON a.oid = c.relam
 			WHERE a.amname = 'pgcolumnar';") - carried ))" "3"
 
+	# WAIT FOR THE HORIZON FIRST (#2010). compact retires a dead group only when
+	# no transaction is older than the DELETE. A snapshot another session held
+	# from before make_target's DELETE made each compaction retire nothing: the
+	# check on retired groups read 0, and the work readings measured a compaction
+	# with nothing to do. Each compaction is measured once, inside its own
+	# transaction, so it cannot be repeated. pgc_wait_delete_past_horizon waits
+	# until nothing holds the horizon at each table's DELETE, and the count is
+	# checked before the compactions run.
+	local held=0 b
+	for t in "$t_control" "$t_default" "$t_other"; do
+		b="$(pgc_wait_delete_past_horizon "$t")"
+		echo "--   horizon blockers/calls before compacting $t: $b"
+		case "${b%/*}" in ''|*[!0-9]*) held="$b ($t)"; break ;; esac
+		held=$((held + ${b%/*}))
+	done
+	check_num "no transaction older than the phase $ph deletes was open before the compactions" \
+		"$held" "0"
+
 	control="$(compact_work "$t_control")";      echo "--   control:      $(cat_detail)"
 	default="$(compact_work "$t_default")";      echo "--   default:      $(cat_detail)"
 	other_work="$(compact_work "$t_other" "$other")"; echo "--   $label: $(cat_detail)"
@@ -258,7 +282,7 @@ phase() {
 
 	# DERIVED FROM `groups`, NOT ASSUMED EVEN. make_target empties every other
 	# group, so an odd count retires the larger half.
-	check_num "premise: the phase $ph compaction retired the emptied groups" \
+	check_num "the phase $ph compaction retired the emptied groups" \
 		"$(( groups - $(groups_of "$t_default") ))" "$retired"
 	check_num "premise: the phase $ph compaction kept every surviving row" \
 		"$(q "SELECT count(*) FROM $t_default;")" "$surviving"
@@ -266,8 +290,7 @@ phase() {
 	# A catalog missing from the reading would read as a catalog nothing touched,
 	# which is the answer these arms are looking for.
 	check_num "premise: the phase $ph reading covers every catalog the arms name" \
-		"$(q "SELECT count(*) FROM pg_statio_all_tables
-			WHERE schemaname = 'pgcolumnar' AND relname IN ($CATS);")" "6"
+		"$(cat_detail | wc -w)" "6"
 	check_num "premise: the phase $ph reading measured something" \
 		"$(margin "$default" 1)" "1"
 
@@ -434,8 +457,18 @@ echo "-- row_group pages=$rg_pages, threshold=$min_blocks"
 # come back equal and the arm reports 0. That reads as "the fix is gone" and
 # means "the fixture is too small". The port failed exactly that way the moment
 # its fixture was corrected to a private database.
-check_num "premise: row_group is larger than the threshold, so the two paths differ" \
+check_num "row_group is larger than the threshold, so the two paths differ" \
 	"$(margin "$((rg_pages - min_blocks))" 1)" "1"
+
+# WAIT FOR THE HORIZON FIRST (#2010), as the compactions above do. The vacuum
+# walks a group's deletes only when no transaction is older than the DELETE. A
+# snapshot another session held from before that DELETE left delete_vector
+# unread, and "premise: the vacuum walked this table's groups" read 0. Once the
+# count reads 0 it stays 0, so one wait covers all three vacuums.
+v_b="$(pgc_wait_delete_past_horizon del_vac)"
+echo "-- horizon blockers/calls before the vacuums: $v_b"
+check_num "no transaction older than the vacuumed table's delete was open before the vacuums" \
+	"${v_b%/*}" "0"
 
 v_d="$(vac_work del_vac)"
 v_c="$(vac_work del_vac)"
@@ -493,13 +526,7 @@ DCATS="$CATS,'storage'"
 drop_work() {
 	local set_clause=""
 	[ $# -ge 2 ] && set_clause="SET pgcolumnar.index_min_blocks = $2; "
-	q "SELECT pg_stat_reset();" >/dev/null
-	q "${set_clause}DROP TABLE $1;" >/dev/null
-	q "SELECT pg_stat_force_next_flush();" >/dev/null
-	q "SELECT coalesce(sum(heap_blks_read + heap_blks_hit
-			   + coalesce(idx_blks_read,0) + coalesce(idx_blks_hit,0)), 0)
-		FROM pg_statio_all_tables
-		WHERE schemaname = 'pgcolumnar' AND relname IN ($DCATS);"
+	cat_blocks "$DCATS" "${set_clause}DROP TABLE $1;"
 }
 
 # Enough neighbours that the catalogs are worth an index. The conversion is
@@ -507,6 +534,21 @@ drop_work() {
 # readings converge -- which is the second arm, not a failure of the first.
 for i in $(seq 1 24); do make_target "drp_fill_$i" 6; done
 for t in drp_default drp_whole; do make_target "$t" 6; done
+
+# The control first: the second session really ran and really read the catalogs.
+# Its counts reach the shared view when it exits, so wait for them there.
+q "SELECT pg_stat_reset();" >/dev/null
+q "$OTHER_SESSION" >/dev/null
+for _ in $(seq 50); do
+	other_reads="$(q "SELECT coalesce(sum(heap_blks_read + heap_blks_hit), 0) FROM pg_statio_all_tables
+		WHERE schemaname = 'pgcolumnar' AND relname IN ('row_group', 'column_chunk');")"
+	[ "${other_reads:-0}" -gt 0 ] && break
+	sleep 0.1
+done
+check_num "premise: the second session's catalog reads reach the shared statistics" \
+	"$(margin "${other_reads:-0}" 1)" "1"
+check "a reading takes in none of another session's catalog reads (#1298)" \
+	"$(cat_blocks "$DCATS" "$OTHER_SESSION")" "0"
 
 # `margin`, not a 1-or-0: this arm reports the page count it saw. Part 540
 # refused the first version by name, and its rule is why -- a `-ge` against
@@ -555,4 +597,5 @@ check_num "with few catalog pages the drop's default does less work than probing
 	"$(margin "$(permille "$((s_probe - s_default))" "$s_default")" $FLOOR_PERMILLE)" \
 	"$FLOOR_PERMILLE"
 
+rm -f "$CB_DETAIL"
 pgc_summary

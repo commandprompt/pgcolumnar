@@ -84,7 +84,7 @@ for t in ts_m ts_h; do
 	q "INSERT INTO $t SELECT date_trunc('day', now()) - interval '40 days' + g * interval '17 min', g
 	   FROM generate_series(1, 3000) g;" >/dev/null
 done
-check_num "premise: the rows went in" "$(q "SELECT count(*) FROM ts_m;")" "3000"
+check_num "the rows went in" "$(q "SELECT count(*) FROM ts_m;")" "3000"
 check "and the rows land in columnar partitions" \
 	"$(q "SELECT string_agg(DISTINCT a.amname, ',') FROM ts_m t
 	      JOIN pg_class c ON c.oid = t.tableoid JOIN pg_am a ON a.oid = c.relam;")" "pgcolumnar"

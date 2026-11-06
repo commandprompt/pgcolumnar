@@ -177,6 +177,15 @@ def test_layer_refuses_a_zero_expectation(pytester, expect):
     pytester.makepyfile("def test_one(expect): expect.num(1, 1, 'one')")
     result = pytester.runpytest("-p", "pgc_vacuity", "--pgc-expect-tests", "0")
     expect.run_failed(result, "an expectation of zero asserts nothing")
+    # AND FOR THAT REASON (#1339). One test collected against an expectation of 0 also
+    # fails the count check, so with the zero refusal removed the arm above stayed
+    # green. The refusal's own words, on stderr where a UsageError is written, are what
+    # only the refusal produces.
+    err = result.stderr.str()
+    expect.text("refused as zero" if "--pgc-expect-tests 0 would be satisfied by a run "
+                "that collected nothing" in err
+                else f"not refused as zero: {err.strip().splitlines()[-1:]!r}",
+                "refused as zero", "and it is refused because zero asserts nothing")
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +331,109 @@ def test_a_listed_test_that_runs_makes_the_list_stale(pytester, expect):
     result.stderr.fnmatch_lines(["*RAN, so the list is stale*"])
 
 
+# ---------------------------------------------------------------------------
+# A ROW WITH A CONDITION: `MAJOR NODEID unless-env VAR=VALUE` (#1767 review).
+#
+# An opt-in arm declines unless its variable is set, so it is listed for every
+# major. Without a condition, the run that SETS the variable cannot exit green:
+# the arm runs, and a listed test that runs is a stale list (exit 67, measured by
+# @OffgridwithJD on PG 17 with PGC_RUN_OVER_1GB=1). The row now applies only while
+# the variable does not have that value; with it, the test is expected to RUN, so
+# a decline then is refused like any unlisted one.
+# ---------------------------------------------------------------------------
+
+def _optin_fixture(pytester, body, row):
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(body)
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(row)
+    return str(listing)
+
+
+_OPTIN_BODY = """
+import os
+
+
+def test_optin_flag(expect):
+    if os.environ.get("PGC_OPTIN_PROBE") != "1":
+        expect.cannot_run("UNMET_PRECONDITION", "PGC_OPTIN_PROBE is not 1")
+        return
+    expect.num(1, 1, "the opt-in arm ran")
+"""
+
+
+def _optin_run(pytester, listing):
+    return pytester.runpytest(
+        "-p", "pgc_vacuity",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", listing)
+
+
+def test_a_conditional_row_lets_the_arm_decline_while_its_condition_is_unmet(pytester, monkeypatch, expect):
+    monkeypatch.delenv("PGC_OPTIN_PROBE", raising=False)
+    listing = _optin_fixture(pytester, _OPTIN_BODY, "17 test_a_conditional_row_lets_the_arm_decline_while_its_"
+                             "condition_is_unmet.py::test_optin_flag unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "a conditional row covers the decline while its condition is unmet")
+
+
+def test_a_conditional_row_lets_the_arm_run_once_its_condition_is_met(pytester, monkeypatch, expect):
+    monkeypatch.setenv("PGC_OPTIN_PROBE", "1")
+    listing = _optin_fixture(pytester, _OPTIN_BODY, "17 test_a_conditional_row_lets_the_arm_run_once_its_"
+                             "condition_is_met.py::test_optin_flag unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "an opted-in run of a conditional row exits green, not stale")
+
+
+def test_a_conditional_row_refuses_a_decline_once_its_condition_is_met(pytester, monkeypatch, expect):
+    """The control: with the condition met the row does not apply, so the arm is
+    expected to run, and declining is the unlisted decline it would be anywhere."""
+    monkeypatch.setenv("PGC_OPTIN_PROBE", "1")
+    body = """
+def test_optin_declines(expect):
+    expect.cannot_run("UNMET_PRECONDITION", "declines even when opted in")
+"""
+    listing = _optin_fixture(pytester, body, "17 test_a_conditional_row_refuses_a_decline_once_its_"
+                             "condition_is_met.py::test_optin_declines unless-env PGC_OPTIN_PROBE=1\n")
+    expect.num(_optin_run(pytester, listing).ret, 67,
+               "an opted-in arm that still declines is refused")
+
+
+def test_a_bare_variable_condition_is_met_by_any_value(pytester, monkeypatch, expect):
+    """`unless-env VAR` with no value: met whenever VAR is set and non-empty, for an
+    opt-in variable that carries an endpoint rather than a flag."""
+    monkeypatch.setenv("PGC_OPTIN_ENDPOINT", "http://127.0.0.1:9")
+    body = """
+import os
+
+
+def test_optin_endpoint(expect):
+    if not os.environ.get("PGC_OPTIN_ENDPOINT"):
+        expect.cannot_run("UNMET_PRECONDITION", "PGC_OPTIN_ENDPOINT is unset")
+        return
+    expect.num(1, 1, "the opt-in arm ran")
+"""
+    listing = _optin_fixture(pytester, body, "17 test_a_bare_variable_condition_is_met_by_any_value.py"
+                             "::test_optin_endpoint unless-env PGC_OPTIN_ENDPOINT\n")
+    expect.num(_optin_run(pytester, listing).ret, 0,
+               "an opted-in run of a bare-variable row exits green, not stale")
+
+
+def test_a_row_with_any_other_suffix_is_refused(tmp_path, expect):
+    """Fail closed. A suffix the parser does not know would otherwise be read as
+    part of the nodeid, never match, and leave the row silently dead."""
+    from pgc_vacuity import expected_unrunnable
+
+    listing = tmp_path / "expected_unrunnable.txt"
+    listing.write_text("17 test_x.py::test_y unless PGC_OPTIN_PROBE=1\n")
+    try:
+        expected_unrunnable(17, listing)
+        got = "accepted"
+    except ValueError as exc:
+        got = "refused" if "unless-env" in str(exc) else f"refused without naming the form: {exc}"
+    expect.text(got, "refused", "a row with an unknown suffix is refused, naming the form it must take")
+
+
 def test_a_listed_test_the_run_never_collected_is_not_a_stale_row(pytester, expect):
     """`allowed - actual` is only answerable for a test the run COLLECTED (#1204).
 
@@ -356,6 +468,164 @@ def test_a_listed_test_the_run_never_collected_is_not_a_stale_row(pytester, expe
         "--pgc-expected-unrunnable", str(listing))
     expect.num(result.ret, 0,
                "a listed test the run never collected is not judged")
+
+
+# THE UNRUNNABLE LIST UNDER XDIST (#1892). Each worker collects every test but runs
+# only its share, and the controller collects nothing. So a worker judged tests it
+# never ran, and the controller judged against an empty collection. A one-file run
+# with -n 4 exited 67 while every test passed. A subprocess, because xdist's
+# workers are, and so their stderr reaches the captured output.
+_XDIST_UNRUNNABLE_BODY = """
+def test_xdist_inner_decliner(expect):
+    expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")
+def test_xdist_inner_one(expect): expect.num(1, 1, "one")
+def test_xdist_inner_two(expect): expect.num(1, 1, "two")
+def test_xdist_inner_three(expect): expect.num(1, 1, "three")
+"""
+
+
+def _xdist_unrunnable_run(pytester, monkeypatch, body, rows, *extra):
+    import pathlib
+    here = pathlib.Path(__file__).resolve().parent
+    monkeypatch.setenv("PYTHONPATH", f"{pytester.path}:{here}")
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(test_xd=body)
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(rows)
+    result = pytester.runpytest_subprocess(
+        "-p", "pgc_vacuity", "-p", "no:cacheprovider", "-n", "2",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", str(listing), *extra)
+    out = result.stdout.str() + result.stderr.str()
+    return result, out
+
+
+def test_a_listed_decliner_under_xdist_leaves_the_run_green(pytester, monkeypatch, expect):
+    """#1892. The listed decline, run with -n 2, exits 0 as the serial run does.
+
+    Before the fix the controller printed `unrunnable on PG17, and not expected to
+    be` for the listed test and exited 67, and the worker that did not run it
+    printed `expected to be unrunnable ... and RAN`.
+
+    THE SECOND ROW IS IN A FILE THIS RUN NEVER COLLECTS, as most rows are in the
+    issue's one-file run. The controller must intersect the list with what the
+    workers collected, as a serial run intersects with `session.items` (#1204).
+    Mutant M6 skipped that intersection whenever the workers reported ids, and
+    then called the uncollected row stale. Measured under M6: `got 1 want 0`.
+    """
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, _XDIST_UNRUNNABLE_BODY,
+        "17 test_xd.py::test_xdist_inner_decliner\n"
+        "17 test_elsewhere.py::test_never_collected\n")
+    expect.num(out.count("and not expected to be"), 0,
+               "under -n 2 a listed decline is not reported as unexpected")
+    expect.num(out.count("so the list is stale"), 0,
+               "under -n 2 no listed row, collected or not, is reported as stale")
+    expect.num(int(result.ret), 0,
+               "under -n 2 a run whose only decline is listed exits 0")
+
+
+def test_a_stale_row_under_xdist_is_still_refused(pytester, monkeypatch, expect):
+    """#1892, the other direction. A listed test that RAN under -n 2 is a stale row.
+
+    The controller must judge it once. Before the fix the controller collected
+    nothing, so it dropped the row, and both workers named it instead. Measured:
+    `got 2 want 1`. A worker's exit status is discarded by xdist, so only the
+    controller's verdict can redden the run.
+    """
+    # The same file, with the listed test running instead of declining.
+    body = _XDIST_UNRUNNABLE_BODY.replace(
+        'expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")',
+        'expect.num(1, 1, "it ran after all")')
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, body, "17 test_xd.py::test_xdist_inner_decliner\n")
+    expect.num(out.count("so the list is stale"), 1,
+               "under -n 2 the stale row is reported exactly once")
+    expect.num(int(result.ret), 67, "and the -n 2 run with a stale row exits 67")
+
+
+def test_a_listed_test_that_fails_is_not_a_stale_row(pytester, expect):
+    """#1914. A listed test that FAILED did not run to a pass, so the list is right.
+
+    The stale-row message tells the reader to delete the row. Before the fix the
+    check read "did not decline" as "ran", so a failing listed test got that
+    message beside its own failure. The failure already makes the run exit 1.
+    """
+    pytester.makeconftest(_INNER_CONFTEST)
+    pytester.makepyfile(
+        """
+        def test_fails(expect):
+            expect.num(1, 2, "it fails")
+        """
+    )
+    listing = pytester.path / "expected_unrunnable.txt"
+    listing.write_text(
+        "17 test_a_listed_test_that_fails_is_not_a_stale_row.py::test_fails\n")
+    result = pytester.runpytest(
+        "-p", "pgc_vacuity",
+        "--pg-config", _stub_pg_config(pytester, "PostgreSQL 17.10"),
+        "--pgc-expected-unrunnable", str(listing))
+    out = result.stdout.str() + result.stderr.str()
+    expect.num(out.count("so the list is stale"), 0,
+               "a listed test that failed is not reported as a stale row")
+    expect.num(int(result.ret), 1, "and the run exits 1 for the failure")
+
+
+def test_a_listed_test_lost_to_a_crashed_worker_is_not_a_stale_row(pytester, monkeypatch, expect):
+    """#1914. A listed test lost to a crashed xdist worker is not a stale row.
+
+    The review of PR #1905 measured this: with the listed test's body replaced by
+    `os._exit(3)` and `-n 2 --max-worker-restart=0`, the run exited 1, said
+    `worker gw0 crashed` and that tests never reported an outcome, and ALSO
+    called the list stale for that test. The loss is the finding; the row is
+    correct.
+    """
+    body = "import os\n" + _XDIST_UNRUNNABLE_BODY.replace(
+        'expect.cannot_run("UNSUPPORTED_MAJOR", "the feature arrived in 18")',
+        'os._exit(3)')
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, body, "17 test_xd.py::test_xdist_inner_decliner\n",
+        "--max-worker-restart=0")
+    expect.at_least(out.count("crashed while running"), 1, "the premise: a worker crashed")
+    expect.num(out.count("so the list is stale"), 0,
+               "a listed test lost to a crashed worker is not reported as a stale row")
+    expect.num(int(result.ret), 1, "and the run exits 1 for the lost test")
+
+
+def test_an_unlisted_decliner_under_xdist_is_still_refused(pytester, monkeypatch, expect):
+    """#1892. An unlisted decline under -n 2 still exits 67, and is named once.
+
+    Before the fix the worker that ran it named it too, beside the controller.
+    Measured: `got 2 want 1`.
+    """
+    result, out = _xdist_unrunnable_run(
+        pytester, monkeypatch, _XDIST_UNRUNNABLE_BODY, "")
+    expect.num(out.count("and not expected to be"), 1,
+               "under -n 2 the unlisted decline is reported exactly once")
+    expect.num(int(result.ret), 67, "and the -n 2 run with an unlisted decline exits 67")
+
+
+def test_the_unrunnable_collector_registers_without_xdist(expect):
+    """#1892 review. The collector's xdist hook must be optional.
+
+    Without xdist, pluggy has no spec for `pytest_xdist_node_collection_finished`,
+    so a plain hookimpl fails validation with "unknown hook". A fresh plugin
+    manager stands in for a run with `-p no:xdist`: it knows pytest's own hooks
+    and nothing else. The test prints the error it caught, so a failure names it.
+    """
+    import pgc_vacuity
+    from _pytest.config import PytestPluginManager
+    from pluggy import PluginValidationError
+    pm = PytestPluginManager()
+    pm.register(pgc_vacuity._UnrunnableCollector(), "collector_under_test")
+    try:
+        pm.check_pending()
+        error = ""
+    except PluginValidationError as exc:
+        error = str(exc)
+    expect.num(error.count("unknown hook"), 0,
+               "unknown-hook errors registering the collector with no xdist specs"
+               f" (caught: {error or 'none'})")
 
 
 def test_the_list_is_read_for_the_running_major_only(pytester, expect):
@@ -834,7 +1104,9 @@ def _hand_rolled_inequalities(source, filename="<probe>"):
                          and isinstance(target.value, ast.Name)
                          and target.value.id in ("expect", "e"))
             if is_expect:
-                for arg in node.args:
+                # Keyword values too (#1339 :837): `expect.num(got=int(a != b), ...)`
+                # is the same collapse, and reading only positional arguments missed it.
+                for arg in list(node.args) + [k.value for k in node.keywords]:
                     if (isinstance(arg, ast.Call)
                             and isinstance(arg.func, ast.Name)
                             and arg.func.id == "int"
@@ -860,6 +1132,12 @@ def test_the_inequality_scan_finds_a_planted_offence(expect):
         "def test_y(expect):\n"
         "    expect.at_least(int(a != b), 1, 'moved')\n")), 1,
         "and finds it through at_least too")
+    # PASSED BY KEYWORD (#1339 :837). The scan read positional arguments only, so
+    # `got=int(a != b)` was invisible to it and to the population arm below.
+    expect.num(len(_hand_rolled_inequalities(
+        "def test_k(expect):\n"
+        "    expect.num(got=int(a != b), want=1, name='moved')\n")), 1,
+        "and finds it when passed by keyword")
     # THE INVERTED SPELLING, which is the one the manual count missed. The third site
     # wrote `int(stated == disk) == 0` -- the same assertion with the comparison
     # flipped -- so a scan that looked only for `!=` would have left it in place and
@@ -1010,7 +1288,7 @@ def test_a_conftest_cannot_switch_off_the_order_collapse_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the collapse is refused when nobody rebinds")
+    expect.run_failed(plain, "the collapse is refused when nobody rebinds")
     plain.stderr.fnmatch_lines(["*order-killed*"])
 
     pytester.makeconftest(_rebind("_sorted_ordered_sites"))
@@ -1034,7 +1312,7 @@ def test_a_conftest_cannot_switch_off_the_broad_except_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: the broad except is refused")
+    expect.run_failed(plain, "the broad except is refused")
     plain.stderr.fnmatch_lines(["*catches Exception broadly*"])
 
     pytester.makeconftest(_rebind("_broad_except_sites"))
@@ -1064,7 +1342,7 @@ def test_a_conftest_cannot_switch_off_the_raises_scan(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.run_failed(plain, "premise: an unpinned compound raises block is refused")
+    expect.run_failed(plain, "an unpinned compound raises block is refused")
     plain.stderr.fnmatch_lines(["*not pinned*"])
 
     pytester.makeconftest(_rebind("_raises_sites"))
@@ -1095,7 +1373,7 @@ def test_a_conftest_cannot_stub_an_expect_method_so_a_false_claim_passes(pyteste
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(plain, "premise: a false claim fails when nobody stubs",
+    expect.outcomes(plain, "a false claim fails when nobody stubs",
                     failed=1, passed=0)
 
     import pgc_vacuity
@@ -1163,7 +1441,7 @@ def test_the_refusal_names_the_binding_that_changed(pytester, expect):
         """
     )
     plain = pytester.runpytest("-p", "pgc_vacuity")
-    expect.outcomes(plain, "premise: an honest test passes", passed=1, failed=0)
+    expect.outcomes(plain, "an honest test passes", passed=1, failed=0)
 
     pytester.makeconftest(_rebind("_broad_except_sites"))
     hatched = pytester.runpytest("-p", "pgc_vacuity")

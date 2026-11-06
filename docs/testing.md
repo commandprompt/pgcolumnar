@@ -277,6 +277,159 @@ records happening, and check the observation reaches it. A marker that means two
 different things under two invocations is not a marker until the invocation is
 pinned.
 
+## A check after compact or truncate must wait for the horizon
+
+This section is for anyone who writes a suite that reads what `compact` retired
+or what `truncate` removed.
+
+`compact` retires a dead row group only when no transaction in the database is
+older than the `DELETE`. `truncate` removes a freed range only when no
+transaction is older than the `compact` that freed it. While such a transaction
+is open, the call returns 0. An autoanalyze or a session that another test left
+open is enough. A suite that calls `compact` once then measures an empty free
+list (#1975, #1979).
+
+Do these three things:
+
+1. Create the fixture tables `WITH (autovacuum_enabled = false)`. Otherwise an
+   autovacuum retires the groups itself, and `compact` finds none to retire.
+2. Call the statement through the shared helper, with the count you expect:
+
+   ```sh
+   retired="$(pgc_retry_past_horizon 18 "SELECT pgcolumnar.compact('n');")"
+   ```
+
+   ```python
+   from pgc_horizon import retry_past_horizon
+   retired, calls = retry_past_horizon(conn, "SELECT pgcolumnar.compact('n')", 18)
+   ```
+
+   The helper runs the statement again every 0.5 s, up to 60 calls, until the
+   counts add up. The shell helper prints `<total>/<calls>`. A third argument
+   (`calls=` in Python) sets a different call limit.
+3. Check the total as a number, for example
+   `check_num "compact retired every dead group" "${retired%/*}" "18"`.
+
+When the total is still short after the last call, the helper prints what holds the
+horizon back (#1981). Each line names a session with its pid, backend type,
+database, state, `backend_xmin`, `backend_xid`, transaction start and query, or
+a prepared transaction or replication slot. For example:
+
+```
+  [SET pgcolumnar.reclaim_coalesce = on; SELECT pgcolumnar.compact('n');] returned 0 of 18 in 60 calls. What holds the horizon back:
+    session pid=3946121 backend_type=client backend database=regress state=active backend_xid=- backend_xmin=759 xact_start=2026-11-02 15:48:11.251063+00 query=SELECT pg_sleep(40)
+```
+
+An error from the statement stops the wait at once. The shell helper prints it,
+and the Python helper raises it, so an error does not read as a held horizon.
+
+### A compact that must run once
+
+Sometimes `compact` must run once, inside a statement that the check reads, so
+the helper cannot repeat it. `native_fetch_group_memo` does this (#1993). Then
+wait until nothing holds the horizon at the `DELETE`, check that count, and run
+the statement once:
+
+```sh
+blockers="$(pgc_wait_delete_past_horizon fd)"
+check_num "no transaction older than the DELETE from fd was open before the same-statement compact" "${blockers%/*}" "0"
+```
+
+```python
+from pgc_horizon import wait_delete_past_horizon
+blockers, calls = wait_delete_past_horizon(conn, "fd")
+```
+
+The helper reads the newest `DELETE` from the `xmin` of the table's rows in
+`pgcolumnar.delete_vector`. It counts and waits the same way as the freed-range
+helper below. Once the count is 0 it stays 0: a snapshot taken later has a newer
+`xmin`.
+
+`catalog_delete_index`, `maintenance_crash` and `maintenance_rollback` wait the
+same way (#2010). Each `compact` they check runs only once, so it cannot be
+repeated. `maintenance_rollback` and the first loop of `maintenance_crash` read
+`compact` inside its open transaction. The second loop of `maintenance_crash`
+reads what `compact` committed, after the crash. `catalog_delete_index` also
+waits before its `VACUUM` readings: the vacuum reads a group's deletes only
+past the horizon.
+
+### A check that truncate does nothing must wait too
+
+A check that `truncate` leaves the file alone, for example with
+`pgcolumnar.enable_end_truncation` off, has the opposite problem. While a
+transaction older than the `compact` is open, `truncate` leaves the file alone
+anyway. The check then passes whatever it means to test (#1988).
+
+So wait until nothing holds the horizon at the freed range, then call
+`truncate`, and check the count of what still holds it:
+
+```sh
+blockers="$(pgc_wait_freed_range_past_horizon n)"
+check_num "GUC off: no transaction older than the compact was open" "${blockers%/*}" "0"
+```
+
+```python
+from pgc_horizon import wait_freed_range_past_horizon
+blockers, calls = wait_freed_range_past_horizon(conn, "n")
+```
+
+A check that a rewrite reuses freed space needs the same wait. `compact_rewrite`
+reuses a freed range only when no transaction is older than the one that freed
+it. Otherwise it appends, and the file grows. `native_scale` waits with this
+helper before the rewrites in rounds 2 to 4, which its steady-state check
+compares (#2010). `native_reclaim` waits with it before each of its four
+repeated reclusters, whose file size its plateau check compares.
+
+The helper reads the newest `freed_xid` in `pgcolumnar.free_space` for the
+table. It counts what has a transaction ID or `xmin` not newer than that:
+
+- each session with a transaction ID, in any database;
+- each session with a snapshot (`backend_xmin`) in the current database, and
+  each session with no database, such as a walsender;
+- each prepared transaction, in any database;
+- each replication slot, physical or logical.
+
+A standby with `hot_standby_feedback` on is counted through one of two of these
+terms. When the standby streams through a replication slot, the primary keeps
+the standby's oldest `xmin` in that slot, the last term. With no slot, the
+primary keeps it in the standby's walsender, the second term.
+`replication.sh` checks that the helper counts both (#1999).
+
+A snapshot with no transaction ID in another database does not hold truncate
+back. A transaction ID in another database does (#1992). truncate's own snapshot
+takes as its `xmin` the oldest transaction ID running in any database, and that
+`xmin` is part of the horizon. An ID equal to `freed_xid` counts too: a snapshot
+taken just before the `compact` has the `compact`'s own ID as its `xmin`. The
+helper counts one thing the horizon skips: a backend running `VACUUM`. That only
+makes the wait longer.
+
+It asks every 0.5 s, up to 60 times. The shell helper prints `<count>/<calls>`.
+When the count is not 0 after the last call, it prints what holds the horizon
+back, as above. When the table has no freed range, there is nothing to compare
+against. The helper then stops after one call and gives no count: the shell
+helper prints `none/1`, and the Python helper returns `None`. A check that wants
+0 then fails.
+
+`truncate` also returns 0, and leaves the file alone, when it cannot take its
+ACCESS EXCLUSIVE lock on the table at once (#1994). First it takes SHARE UPDATE
+EXCLUSIVE, and waits for it. Then it asks for ACCESS EXCLUSIVE without waiting.
+That request fails while another session holds a weaker lock on the table, or
+waits for any lock on it. The weaker locks are ACCESS SHARE, ROW SHARE and ROW
+EXCLUSIVE. A
+session that holds SHARE UPDATE EXCLUSIVE or a stronger lock makes `truncate`
+wait instead.
+
+So any check that wants `truncate` to return 0 counts the locks too. The session
+that makes the call counts the other sessions' locks on the table in
+`pg_locks`, just before and just after the call. It counts every lock, which
+covers both cases. The check wants both counts to be 0. In `native_truncate`,
+`truncate_alone` (shell) and `_truncate_alone` (Python) do this for each call
+that wants 0.
+
+The counts are separate statements, so a lock taken and released between a
+count and the call goes unseen. No other session uses the table while the
+suite runs, so the gap only matters if one did.
+
 ## Before merging: build every major
 
 ```sh
@@ -510,6 +663,25 @@ compiler warning as a failure. The suites run on 17 and 18. The build preflight
 catches an API change between majors. The suite run catches a change in
 behaviour.
 
+Every suite in the `SUITES` list of `test/run_all_versions.sh` runs in both
+workflows, except the four timing suites that `PGC_SKIP_TIMING` drops. A suite
+outside that list runs in no job. `native_scale` was outside
+it until #2018. It checks compaction, recluster and reclaim against a heap
+mirror at 500000 rows, and nothing ran it. It is in the list now, and its pytest
+twin runs in the pytest-cluster job. The nightly runs the suite on 15 to 18 on
+x86_64 and on 18 on aarch64. The twin runs at 200000 rows in CI
+(`SCALE_N=200000` in the pytest-cluster jobs), because those jobs run close to
+their 40-minute limit. The suite checks that every `recluster` and
+`compact_rewrite` call returned a group count. A failed call rolls back, so
+parity still holds and the file stops growing, and only that check sees it.
+Each of the four reclaim rounds also has two checks. The delete must remove its
+whole slice, and `compact_rewrite` must rewrite at least one group.
+A rewrite that returns 0 leaves the file the same size, and the plateau check
+alone reads that as reuse (#2024).
+On a shared 8-core machine under heavy load
+it took 36 s of test time at 200000 rows and 157 s at 500000. Its server used
+at most 120 MB of memory and its data directory 301 MB of disk.
+
 **Nightly at 06:00 UTC** (`.github/workflows/nightly.yml`): the full packaged
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an
@@ -599,6 +771,62 @@ upgrade gate above. The second is the set of timing suites, because a shared
 runner cannot hold their wall-clock ratios steady. Skipping them there is a deliberate trade. A gate that goes red for
 reasons unrelated to the change teaches its readers to discount red, which is
 worse than not running it.
+
+## Running on a shared machine
+
+This section is for anyone who runs suites on a machine that others also use.
+It assumes that runs are serialised with a lock file and `flock(1)`. Several
+sessions then build and install into the same `/usr/local/<prefix>/lib`.
+
+Do these four things:
+
+1. Build, install and test in one lock hold. Run the suite without
+   `PGC_SKIP_BUILD`, or run the whole sequence inside one `flock` command.
+2. Take the lock with `flock <lock> bash test/smoke.sh`. Do not use
+   `flock -F <lock> bash test/smoke.sh`, and do not take the lock on a
+   descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock` or
+   `exec 9>lock; flock 9`. In those forms the suite holds the only copy of the
+   descriptor, so the harness cannot close it. Every server the suite starts
+   then holds the lock until the server stops.
+3. Start a server by hand with `flock -o <lock> <command>`. Without `-o`, the
+   server inherits the lock's descriptor and holds the lock until it stops.
+4. Stop a throwaway cluster before the lock hold ends.
+
+The harness also protects a run (#1915):
+
+- When a suite loads `test/portlib.sh`, it closes every descriptor whose lock
+  another live process took. Under `flock <lock> bash test/smoke.sh`, that process
+  is `flock` itself. It keeps its own descriptor, so runs stay serialised, but
+  no server that the suite starts holds the lock. A lock that the suite's own
+  process took stays held, and so does a lock taken with `flock -F` or on a
+  descriptor (step 2).
+- `pgc_setup` refuses a library that this tree did not install (#959).
+- `pgc_summary` fails the run when the installed library changed after
+  `pgc_setup`. It prints both digests, for example
+  `FAIL  the installed library changed during this run: 44d276203348 at setup, 8777edbdfec1 now (/usr/local/pgsql/lib/pgcolumnar.so)`.
+- `harness_selftest` part 580 checks that `test/rebuild.sh` did not touch the
+  installed library. It reads the library's inode, size and modification time
+  before and after the rebuild, and reads the target that the rebuild printed.
+  It reads the time to the nanosecond, so it sees a write in the same second
+  (#1950). A library missing before or after the rebuild fails the check, on a
+  shared box and in GitHub Actions. This includes a library that another
+  session's `rebuild.sh` deletes during the part, because `rebuild.sh` removes
+  the library before it installs. A separate check confirms that both live
+  readings have this form, so a reading put back to whole seconds fails. When the
+  library changed and the rebuild did not target it, the part skips that check
+  and prints what it measured (#1942). Usually another session's install into
+  the same prefix causes this. A write by the rebuild outside its target would
+  look the same. The part cannot tell who wrote the library, because root owns
+  every install. The skip line prints both readings, the owner and the
+  rebuild's target. In GitHub Actions no other
+  session installs, so the same change fails the check there.
+- The pytest corpus starts servers through `subprocess`, which closes inherited
+  descriptors. Its session teardown raises when the library changed during the
+  session.
+
+A suite with its own harness that does not call `pgc_setup` gets the first
+protection only. `test/harness_isolation.sh` and `test_harness_isolation.py`
+check all of this.
 
 ## Stopping a run
 

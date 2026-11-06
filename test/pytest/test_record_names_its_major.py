@@ -20,33 +20,46 @@ A STATIC RULE CANNOT DO THIS JOB, and two attempts failed in different direction
 `objstore_stash_recovery`, which uses lib.sh's `check()` so the string never appears.
 Whether a suite records is a runtime property, so the guard reads the records.
 
-Read INDEPENDENTLY of `test/selftest/530-a-record-must-name-its-major.sh`: that part
-evals the shell reader out of the runner, this one parses the record format directly
-in Python. Neither file names the other.
+THE ARMS CALL THE RUNNER'S OWN READER, `pgc_unknown_major_records`, in a subprocess
+(#1339). An earlier version parsed the record format with a Python copy of the
+reader, so it tested itself: the runner's reader mutated to read field five left all
+six tests green. Independence from `test/selftest/530-a-record-must-name-its-major.sh`
+is about the harness, not the product: this file shares no helper with that part, and
+neither file names the other.
 """
 
+import os
 import pathlib
+import subprocess
+import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 RUNNER = REPO / "test" / "run_all_versions.sh"
 
-# The producer writes tab-separated fields and the major is the SIXTH:
-#   RESULT <tab> suite <tab> part <tab> name <tab> verdict <tab> major <tab> reason
-MAJOR_FIELD = 5   # zero-based
-
-
 def _unknown_major_records(text):
-    """Records whose MAJOR field is the literal `unknown`.
+    """How many records name no major, by the RUNNER's reader, not a copy of it.
 
-    Field six, not "the word appears on the line": the reason field is free text and
-    may legitimately contain it.
+    The function is taken out of run_all_versions.sh and run on the text as a log
+    file. A runner that no longer defines it raises here instead of answering 0,
+    because 0 is also what a correct reader says about a clean log.
     """
-    out = []
-    for line in text.splitlines():
-        f = line.split("\t")
-        if f and f[0] == "RESULT" and len(f) > MAJOR_FIELD and f[MAJOR_FIELD] == "unknown":
-            out.append(line)
-    return out
+    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as f:
+        f.write(text)
+        log = f.name
+    try:
+        r = subprocess.run(
+            ["bash", "-c",
+             'fn="$(sed -n "/^pgc_unknown_major_records()/,/^}/p" "$1")"; '
+             '[ -n "$fn" ] || { echo "the runner defines no pgc_unknown_major_records" >&2; exit 3; }; '
+             'eval "$fn"; pgc_unknown_major_records "$2"',
+             "_", str(RUNNER), log],
+            capture_output=True, text=True)
+    finally:
+        os.unlink(log)
+    if r.returncode != 0 or not r.stdout.strip().isdigit():
+        raise RuntimeError(f"the runner's reader did not answer: rc={r.returncode} "
+                           f"out={r.stdout!r} err={r.stderr!r}")
+    return int(r.stdout.strip())
 
 
 GOOD = ("RESULT\tdemo\tpart1\tone\tPASS\t17\t\n"
@@ -65,37 +78,37 @@ def test_a_clean_log_counts_none_while_a_mixed_one_counts_its_own(expect):
     Zero is also what a wrong field number, an empty input and a broken parser all
     produce, so the clean case is never asserted alone.
     """
-    expect.text((len(_unknown_major_records(GOOD)), len(_unknown_major_records(MIXED))),
+    expect.text((_unknown_major_records(GOOD), _unknown_major_records(MIXED)),
                 (0, 2),
                 "a clean log yields none and a mixed one yields its two")
 
 
 def test_every_offending_record_is_counted_not_just_the_first(expect):
     """A suite can record some checks before `pgc_setup` and some after."""
-    expect.num(len(_unknown_major_records(MIXED)), 2,
+    expect.num(_unknown_major_records(MIXED), 2,
                "both offending records are found, not just the first")
 
 
 def test_a_log_with_no_records_is_not_an_offender(expect):
-    expect.num(len(_unknown_major_records("checks run: 0\n")), 0,
+    expect.num(_unknown_major_records("checks run: 0\n"), 0,
                "a log carrying no records names no bad major")
 
 
 def test_the_word_in_a_reason_field_is_not_an_offending_record(expect):
     """Reasons are free text. Matching the line rather than the field counts them."""
     line = "RESULT\tdemo\tpart1\tfour\tPASS\t17\tthe major was unknown at first\n"
-    expect.num(len(_unknown_major_records(line)), 0,
+    expect.num(_unknown_major_records(line), 0,
                "the word in a reason is not a record that names no major")
     # And the control: the same text in the MAJOR field is caught, so the arm above
     # is about the field and not about the word being absent.
     caught = "RESULT\tdemo\tpart1\tfour\tPASS\tunknown\tthe major was unknown at first\n"
-    expect.num(len(_unknown_major_records(caught)), 1,
+    expect.num(_unknown_major_records(caught), 1,
                "while the same word in field six is")
 
 
 def test_a_short_record_does_not_crash_or_count(expect):
     """A truncated line has no field six. Indexing it blindly raises."""
-    expect.num(len(_unknown_major_records("RESULT\tdemo\tpart1\n")), 0,
+    expect.num(_unknown_major_records("RESULT\tdemo\tpart1\n"), 0,
                "a record too short to have a major is not counted")
 
 

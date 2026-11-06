@@ -89,7 +89,7 @@ def test_partition_create_ahead(pgc_conn, expect):
         cur.execute("CREATE TABLE gauge (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at)")
     made = _create_ahead(conn, "gauge")
     expect.num(made, LEAD + 1, "from no partitions it creates enough to reach now plus the lead")
-    expect.num(_kids(conn, "gauge"), made, "premise: the parent now has the partitions it reported")
+    expect.num(_kids(conn, "gauge"), made, "the parent now has the partitions it reported")
     expect.text(_one(conn, "SELECT string_agg(DISTINCT a.amname, ',') FROM pg_inherits i"
                            " JOIN pg_class c ON c.oid = i.inhrelid JOIN pg_am a ON a.oid = c.relam"
                            " WHERE i.inhparent = 'gauge'::regclass"),
@@ -143,17 +143,21 @@ def test_partition_create_ahead(pgc_conn, expect):
         expect.at_least(west, 5, f"premise: a {key} parent continued from a hand-made partition, in a session west of UTC")
         expect.text(_contiguous(_bounds(conn, t)), "ok",
                     f"a {key} parent's partitions are contiguous across a non-UTC session")
-        # One row at the lower bound of every partition: each must route.
-        firsts = [f for f, _ in _bounds(conn, t)]
+        # One row at every boundary, each computed HERE from the seed's lower bound and
+        # the width (#1339), as the shell twin does. Taken from the function's own
+        # FROM bounds, every row landed on a partition's inclusive lower edge whatever
+        # the function did, so a gap between partitions could not fail it.
+        n = len(_bounds(conn, t))
         routed = 0
-        for f in firsts:
+        for g in range(n):
             try:
                 with conn.cursor() as cur:
-                    cur.execute(f"INSERT INTO {t} VALUES ('{f}'::{key}, 1)")
+                    cur.execute(f"INSERT INTO {t} VALUES ((date_trunc('day', now() - interval '1 day')"
+                                f" + {g} * interval '{WIDTH}')::{key}, 1)")
                 routed += 1
             except psycopg.Error:
                 pass
-        expect.num(routed, len(firsts),
+        expect.num(routed, n,
                    f"and a row at every boundary has exactly one partition to go to ({key})")
         with conn.cursor() as cur:
             cur.execute("SET TimeZone = 'UTC'")
@@ -192,16 +196,18 @@ def test_partition_create_ahead(pgc_conn, expect):
     expect.text(f"{gen}|{doubled}", "3|4.5",
                 "a parent with a generated column gets its partitions, and the column stays generated")
 
-    # 31 two-byte characters, 62 bytes: the date suffix must still fit, so the
-    # prefix is shortened by whole characters, never by a broken byte.
-    long_name = "\u00e9" * 31
+    # 63 bytes, the longest an identifier holds, as the shell twin's name is: 31
+    # two-byte characters and one ASCII (#1339; it was 62 bytes under a name that
+    # said 63 characters). The date suffix must still fit, so the prefix is
+    # shortened by whole characters, never by a broken byte.
+    long_name = "\u00e9" * 31 + "x"
     with conn.cursor() as cur:
         cur.execute(f'CREATE TABLE "{long_name}" (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at)')
     long_made = value_or_state(f"""SELECT pgcolumnar.partition_create_ahead('"{long_name}"', '6 hours', 2)""")
     kept = _one(conn, "SELECT count(*) FILTER (WHERE c.relname ~ '_[0-9]{8}T[0-9]{6}$' AND octet_length(c.relname) <= 63)"
                       f""" FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = '"{long_name}"'::regclass""")
     expect.text(f"{long_made}|{kept}", "3|3",
-                "a parent with a 63-character name gets partitions whose names keep their dates")
+                "a parent with a 63-byte name gets partitions whose names keep their dates")
 
     with conn.cursor() as cur:
         cur.execute("CREATE TABLE swarm (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at)")
@@ -218,6 +224,82 @@ def test_partition_create_ahead(pgc_conn, expect):
     capped = value_or_state("SELECT pgcolumnar.partition_create_ahead('capped', '1 day', 2)")
     expect.text(f"{capped}|{_kids(conn, 'capped')}", "55000|1",
                 "a parent with a partition bounded by MAXVALUE is refused, and nothing is created")
+
+    # Refused before any DDL, each by its own check (#1341). The message is in the
+    # want: with the width check gone, a zero or negative width never moves the
+    # counting loop on, and the 1000-partition cap answers with the same 22023.
+    def refusal(sql):
+        try:
+            return f"ok: {_one(conn, sql)}"
+        except psycopg.Error as e:
+            return f"{e.sqlstate} {e.diag.message_primary}"
+
+    def name(t):
+        # As the function's messages name it: regclass formatted under its own
+        # search_path (pg_catalog, pg_temp), so always schema-qualified.
+        return _one(conn, "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c"
+                          f" JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = '{t}'::regclass")
+
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE wid (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at)")
+    bad = "22023 width must be positive and ahead not negative"
+    expect.text("|".join([refusal("SELECT pgcolumnar.partition_create_ahead('wid', '0 seconds', 1)"),
+                          refusal("SELECT pgcolumnar.partition_create_ahead('wid', '-6 hours', 1)"),
+                          refusal("SELECT pgcolumnar.partition_create_ahead('wid', '6 hours', -1)"),
+                          str(_kids(conn, "wid"))]),
+                f"{bad}|{bad}|{bad}|0",
+                "a width that is not positive, or a negative lead, is refused before any DDL")
+    # AND THE NULL HALVES OF THAT GUARD (#1339). The function is not STRICT, so a NULL
+    # reaches the body; without `width IS NULL OR ... ahead IS NULL` the comparison is
+    # NULL, the guard does not fire and the call answers instead of refusing.
+    expect.text("|".join([refusal("SELECT pgcolumnar.partition_create_ahead('wid', NULL, 1)"),
+                          refusal("SELECT pgcolumnar.partition_create_ahead('wid', '6 hours', NULL)"),
+                          str(_kids(conn, "wid"))]),
+                f"{bad}|{bad}|0",
+                "a NULL width or a NULL lead is refused before any DDL")
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE lst (at timestamptz NOT NULL, reading float8) PARTITION BY LIST (at)")
+        cur.execute("CREATE TABLE two (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at, reading)")
+        cur.execute("CREATE TABLE flat (at timestamptz NOT NULL, reading float8) USING pgcolumnar")
+    expect.text("|".join([refusal(f"SELECT pgcolumnar.partition_create_ahead('{t}', '6 hours', 1)")
+                          for t in ("lst", "two", "flat")] + [str(_kids(conn, "lst")), str(_kids(conn, "two"))]),
+                "|".join(f"55000 {name(t)} is not RANGE-partitioned on one column"
+                         for t in ("lst", "two", "flat")) + "|0|0",
+                "a parent that is not RANGE-partitioned on one column is refused before any DDL")
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE bydate (day date NOT NULL, reading float8) PARTITION BY RANGE (day)")
+        cur.execute("CREATE TABLE byint (n int NOT NULL, reading float8) PARTITION BY RANGE (n)")
+    expect.text("|".join([refusal("SELECT pgcolumnar.partition_create_ahead('bydate', '6 hours', 1)"),
+                          refusal("SELECT pgcolumnar.partition_create_ahead('byint', '6 hours', 1)"),
+                          str(_kids(conn, "bydate")), str(_kids(conn, "byint"))]),
+                f"55000 {name('bydate')} is partitioned on date, not on a timestamp"
+                f"|55000 {name('byint')} is partitioned on integer, not on a timestamp|0|0",
+                "a parent partitioned on a key that is not a timestamp is refused before any DDL")
+
+    # Month and year widths (#1341): date_bin cannot bin by either, so the first
+    # partition starts on the first of this month and each bound adds the width.
+    def calendar(t, key, step, now_expr):
+        return _one(conn, f"SELECT count(*) FILTER (WHERE f = date_trunc('month', f) AND t = f + interval '{step}')"
+                          f" || '|' || (min(f) = date_trunc('month', {now_expr}))"
+                          f" FROM (SELECT (regexp_match(pg_get_expr(c.relpartbound, c.oid),"
+                          f" 'FROM \\(''([^'']+)''\\) TO \\(''([^'']+)''\\)'))[1]::{key} AS f,"
+                          f" (regexp_match(pg_get_expr(c.relpartbound, c.oid),"
+                          f" 'FROM \\(''([^'']+)''\\) TO \\(''([^'']+)''\\)'))[2]::{key} AS t"
+                          f" FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid"
+                          f" WHERE i.inhparent = '{t}'::regclass) b")
+
+    for key, now_expr in (("timestamptz", "now()"), ("timestamp", "localtimestamp")):
+        t = f"monthly_{key}"
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE {t} (at {key} NOT NULL, reading float8) PARTITION BY RANGE (at)")
+        made = value_or_state(f"SELECT pgcolumnar.partition_create_ahead('{t}', '1 month', 2)")
+        expect.text(f"{made}|{calendar(t, key, '1 month', now_expr)}", "3|3|true",
+                    f"a {key} parent with a month width starts at this month's first and steps by calendar months")
+    with conn.cursor() as cur:
+        cur.execute("CREATE TABLE yearly (at timestamptz NOT NULL, reading float8) PARTITION BY RANGE (at)")
+    made = value_or_state("SELECT pgcolumnar.partition_create_ahead('yearly', '1 year', 1)")
+    expect.text(f"{made}|{calendar('yearly', 'timestamptz', '1 year', 'now()')}", "2|2|true",
+                "a year width starts at this month's first and steps by calendar years")
 
     # Refused: a DEFAULT partition.
     with conn.cursor() as cur:
@@ -351,6 +433,9 @@ def test_partition_drop_plan(pgc_conn, pgc_cluster, expect):
     expect.text(sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xw', '2019-05-01 06:00+00'::timestamptz)") + "|"
                 + sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xl', '2019-04-01 00:00'::timestamp)"),
                 "42804|42804", "a cutoff of the other timestamp type is refused")
+    expect.text(sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xl', NULL::timestamptz)") + "|"
+                + sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xw', NULL::timestamp)"),
+                "22023|22023", "a NULL cutoff is refused, in both overloads")
 
     # MINVALUE below is listed once its upper bound is past; MAXVALUE above never.
     with conn.cursor() as cur:
@@ -492,8 +577,72 @@ def test_partition_drop_plan(pgc_conn, pgc_cluster, expect):
         cur.execute("CREATE TABLE xd_default PARTITION OF xd DEFAULT USING pgcolumnar")
         cur.execute("CREATE TABLE xn (k bigint NOT NULL) PARTITION BY RANGE (k)")
         cur.execute("CREATE TABLE xnl (k int)")
+        cur.execute("CREATE TABLE xls (ts timestamptz NOT NULL) PARTITION BY LIST (ts)")
+        cur.execute("CREATE TABLE xr2 (ts timestamptz NOT NULL, k int NOT NULL) PARTITION BY RANGE (ts, k)")
     expect.text(sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xd', now())"), "55000",
                 "a drop plan for a parent with a DEFAULT partition is refused")
-    expect.text(sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xn', now())") + "|"
-                + sqlstate("SELECT * FROM pgcolumnar.partition_drop_plan('xnl', now())"), "55000|55000",
+    # Each by its own check, so the message is in the want (#1339): both answer
+    # 55000, and with one check gone the other could still answer it.
+    def refusal(sql):
+        try:
+            return f"ok: {_one(conn, sql)}"
+        except psycopg.Error as e:
+            return f"{e.sqlstate} {e.diag.message_primary}"
+
+    def name(t):
+        return _one(conn, "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c"
+                          f" JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = '{t}'::regclass")
+
+    expect.text(refusal("SELECT count(*) FROM pgcolumnar.partition_drop_plan('xn', now())"),
+                f"55000 {name('xn')} is partitioned on bigint, not on a timestamp",
                 "a drop plan for a parent not partitioned on a timestamp is refused")
+    # The RANGE-on-one-column check had only an unpartitioned table to refuse, which
+    # NOT FOUND refuses alone. A LIST parent and a two-column RANGE parent, both led
+    # by a timestamptz, pass the key check: only strat and natts stop them.
+    expect.text("|".join(refusal(f"SELECT count(*) FROM pgcolumnar.partition_drop_plan('{t}', now())")
+                         for t in ("xnl", "xls", "xr2")),
+                "|".join(f"55000 {name(t)} is not RANGE-partitioned on one column" for t in ("xnl", "xls", "xr2")),
+                "a drop plan for a parent not RANGE-partitioned on one column is refused, LIST and two-column RANGE included")
+
+
+def test_partition_create_ahead_runs_on_the_callers_own_privileges(pgc_conn, pgc_cluster, expect):
+    """partition_create_ahead is not SECURITY DEFINER, so its CREATE TABLE ... PARTITION
+    OF runs as the caller and core refuses a role that does not own the parent (#1341).
+    Made SECURITY DEFINER, it would run as the extension's owner and let any caller add
+    partitions to a table it does not own. Both roles hold USAGE and CREATE on the
+    schema, so ownership is all that separates them."""
+    conn = pgc_conn
+    schema = _one(conn, "SELECT current_schema()")
+    with conn.cursor() as cur:
+        for r in ("pl_own_py", "pl_peer_py"):
+            cur.execute(f"DO $$ BEGIN CREATE ROLE {r} LOGIN NOSUPERUSER; "
+                        "EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+            cur.execute(f'GRANT USAGE, CREATE ON SCHEMA "{schema}" TO {r}')
+            cur.execute(f"GRANT USAGE ON SCHEMA pgcolumnar TO {r}")
+        # The owner's control has a parent of its own (pw2), so a refusal that let the
+        # peer through cannot make the control fail for the peer's reason.
+        for t in ("pv", "pw2"):
+            cur.execute(f"CREATE TABLE {t} (ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts)")
+            cur.execute(f"ALTER TABLE {t} OWNER TO pl_own_py")
+
+    def as_role(role, sql):
+        try:
+            with psycopg.connect(f"host=127.0.0.1 port={pgc_cluster.port} user={role} dbname=postgres",
+                                 autocommit=True) as c:
+                c.execute(f'SET search_path TO "{schema}", pgcolumnar, public')
+                return str(c.execute(sql).fetchone()[0])
+        except psycopg.Error as e:
+            return e.sqlstate or "?"
+
+    ahead_pv = "SELECT pgcolumnar.partition_create_ahead('pv', '1 day', 2)"
+    owner = _one(conn, "SELECT string_agg(DISTINCT pg_get_userbyid(relowner), ',') FROM pg_class"
+                       " WHERE oid IN ('pv'::regclass, 'pw2'::regclass)")
+    supers = _one(conn, "SELECT count(*) FROM pg_roles WHERE rolname IN ('pl_own_py', 'pl_peer_py') AND rolsuper")
+    expect.text(f"{owner}|{supers}", "pl_own_py|0",
+                "premise: pl_own owns the parent, and neither role is a superuser")
+    expect.text(as_role("pl_peer_py", "SELECT 1"), "1", "premise: pl_peer can open a session")
+    expect.text(f"{as_role('pl_peer_py', ahead_pv)}|{_kids(conn, 'pv')}",
+                "42501|0", "a role that does not own the parent is refused by its own privileges (42501), and creates nothing")
+    ahead_pw2 = "SELECT pgcolumnar.partition_create_ahead('pw2', '1 day', 2)"
+    expect.text(f"{as_role('pl_own_py', ahead_pw2)}|{_kids(conn, 'pw2')}",
+                "3|3", "a non-superuser owner creates partitions ahead on its own table")

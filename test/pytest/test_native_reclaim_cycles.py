@@ -44,9 +44,12 @@ printed. The shell twin asserts the same property under the same name.
 """
 import psycopg
 
+from pgc_horizon import retry_past_horizon
+
 ROWS = 30_000
 GROUP = 1_000
 DEL_LO, DEL_HI = 6001, 24000
+DEAD_GROUPS = (DEL_HI - DEL_LO + 1) // GROUP   # 18 whole groups of 1000 rows
 CYCLES = 5
 # The steady-state assertion's NAME carries this number as a literal, because the bash
 # suite states it literally and a template cannot match a literal. Pinned so the two
@@ -78,8 +81,9 @@ def test_native_reclaim_cycles(pgc_conn, expect):
     with pgc_conn.cursor() as cur:
         # OFF for the whole test, so every free range stays its own row.
         cur.execute("SET pgcolumnar.reclaim_coalesce = off")
-        cur.execute("CREATE TABLE h (id int, v int, payload text)")
-        cur.execute("CREATE TABLE n (id int, v int, payload text) USING pgcolumnar")
+        cur.execute("CREATE TABLE h (id int, v int, payload text) WITH (autovacuum_enabled = false)")
+        cur.execute("CREATE TABLE n (id int, v int, payload text) USING pgcolumnar "
+                    "WITH (autovacuum_enabled = false)")
         cur.execute(
             f"SELECT pgcolumnar.set_options('n', stripe_row_limit => {GROUP}, "
             f"chunk_group_row_limit => {GROUP})"
@@ -101,11 +105,21 @@ def test_native_reclaim_cycles(pgc_conn, expect):
 
     # Free a large CONTIGUOUS block of whole groups and compact, which is what puts
     # many separate reusable ranges on the free list.
+    #
+    # WAIT FOR THE HORIZON (#1979). compact retires a dead group only when no
+    # transaction in the database is older than the DELETE. With one call, a
+    # snapshot held by another session left the free list empty, and the cycles
+    # below then started from no reusable space. So compact runs again until it has
+    # retired all 18 groups, for up to 30 s, and the count is checked. The fixture
+    # tables have autovacuum off, because an autovacuum would retire the groups itself.
     with pgc_conn.cursor() as cur:
         cur.execute(f"DELETE FROM h WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
         cur.execute(f"DELETE FROM n WHERE id BETWEEN {DEL_LO} AND {DEL_HI}")
-        cur.execute("SELECT pgcolumnar.compact('n')")
+    retired, calls = retry_past_horizon(pgc_conn, "SELECT pgcolumnar.compact('n')",
+                                        DEAD_GROUPS)
     free = _free_rows(pgc_conn)
+    print(f"-- compact retired {retired} of {DEAD_GROUPS} groups in {calls} calls")
+    expect.num(retired, DEAD_GROUPS, "compact retired every dead group")
     print(f"-- free_space rows after the block delete: {free}")
     # THE PRECONDITION FOR #84, ASSERTED RATHER THAN HOPED FOR. With a free list of
     # one row -- which is what coalescing produces -- no command allocates from it
@@ -138,6 +152,14 @@ def test_native_reclaim_cycles(pgc_conn, expect):
         expect.text(
             verdict, "ok",
             f"compact_rewrite cycle {r} returns a count (no self-conflict)",
+        )
+        # THE COUNT IS READ, NOT ONLY ITS TYPE (#1339): 0 is an int, so a
+        # compact_rewrite that rewrote nothing passed every arm in this file. Every
+        # group loses one row in eight per cycle, and #84 needs several groups
+        # rewritten in one command to reach the defect.
+        expect.text(
+            "several" if verdict == "ok" and got >= 2 else f"only:{got!r}", "several",
+            f"compact_rewrite cycle {r} rewrites several groups in one command, the shape #84 needs",
         )
         expect.rows(
             _rows(pgc_conn, "n"), _rows(pgc_conn, "h"),

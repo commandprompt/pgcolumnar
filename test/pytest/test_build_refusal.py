@@ -109,11 +109,16 @@ def test_a_successful_build_is_silent(expect):
 
 
 def _fake_tree(tmp_path, verdict_rc):
-    """A tree whose test/lib.sh defines the function with a fixed verdict."""
+    """A tree whose test/lib.sh defines the function with a fixed verdict.
+
+    It reports its argument count and each argument on stderr (#1339), so an arm can
+    see the quoting and the order rather than only the exit status.
+    """
     (tmp_path / "test").mkdir(parents=True, exist_ok=True)
     (tmp_path / "test" / "lib.sh").write_text(
         "pgc_build_and_install() {\n"
         "  echo '-- building'\n"
+        "  printf 'ARGS %s [%s] [%s] [%s]\\n' \"$#\" \"$1\" \"$2\" \"$3\" >&2\n"
         f"  [ {verdict_rc} -eq 0 ] || {{ echo 'FATAL: the build failed' >&2; return 1; }}\n"
         "  return 0\n"
         "}\n"
@@ -124,11 +129,16 @@ def _fake_tree(tmp_path, verdict_rc):
 def test_the_shell_path_really_refuses(tmp_path, expect):
     """The real bash invocation, not an injected runner: sourcing, quoting and
     the exit status all have to work for the refusal to arrive."""
-    tree = _fake_tree(tmp_path / "broken", 1)
+    # A SPACE AND A `$` IN THE PATH (#1339). The tree used to sit in a plain tmp_path
+    # and the fake ignored its arguments, so dropping the quotes or swapping the
+    # arguments left both arms green.
+    tree = _fake_tree(tmp_path / "broken tree $HOME", 1)
     with pytest.raises(RuntimeError) as exc:
         build_and_install(tree, "/bin/false", "18")
     expect.at_least(str(exc.value).count("FATAL: the build failed"), 1,
                     "the shell's own FATAL reaches the Python caller")
+    expect.contains(str(exc.value), f"ARGS 3 [{tree}] [/bin/false] [18]",
+                    "and lib.sh received the tree, pg_config and major, each one whole")
 
 
 def test_the_shell_path_accepts_a_good_build(tmp_path, expect):
@@ -160,6 +170,20 @@ def _answerable(tmp_path, name="cfg"):
     return _pg_config_answering(tmp_path, libdir), libdir
 
 
+def _installs_into(libdir, calls):
+    """A runner that does what an install does: record the call and write the library.
+
+    THE SAME BYTES EACH TIME, so an unchanged prefix still matches its marker. The
+    runners these replace wrote nothing, so the prefix held no library and the arms
+    passed only because build_once certified "absent" (#1339), which it now refuses.
+    """
+    def run(argv):
+        calls.append(argv)
+        (pathlib.Path(libdir) / "pgcolumnar.so").write_bytes(b"build")
+        return _Proc(0)
+    return run
+
+
 def test_build_once_builds_once_and_then_skips(tmp_path, expect):
     """The xdist workers share one prefix, so the install is serialised rather
     than skipped."""
@@ -169,10 +193,7 @@ def test_build_once_builds_once_and_then_skips(tmp_path, expect):
     pgc, libdir = _answerable(tmp_path)
     lock = str(tmp_path / "lock")
     calls = []
-
-    def counting(argv):
-        calls.append(argv)
-        return _Proc(0)
+    counting = _installs_into(libdir, calls)
 
     first = build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
     second = build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
@@ -181,20 +202,66 @@ def test_build_once_builds_once_and_then_skips(tmp_path, expect):
     expect.num(len(calls), 1, "and the build ran exactly once")
 
 
+def test_build_once_serialises_concurrent_callers(tmp_path, expect):
+    """The docstring above is about workers that call AT ONCE, and two calls in a row
+    say nothing about that: with the lock removed they still build once, because the
+    first has written its marker before the second starts (#1339). Two threads call
+    together here, with a runner slow enough that the second arrives mid-build; the
+    lock makes it wait and then find the marker."""
+    import threading
+    import time
+
+    tree = _tree_with_source(tmp_path, "ok4", "int a = 1;\n")
+    pgc, libdir = _answerable(tmp_path, "concurrent")
+    lock = str(tmp_path / "lock4")
+    calls = []
+    quick = _installs_into(libdir, calls)
+
+    def slow(argv):
+        time.sleep(1.0)
+        return quick(argv)
+
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(
+        build_once(tree, str(pgc), "18", lock_path=lock, runner=slow))) for _ in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.2)
+    for t in threads:
+        t.join()
+    expect.text(",".join(sorted(results)), "already-built,built",
+                "two callers at once: one builds and the other waits for its marker")
+    expect.num(len(calls), 1, "and the concurrent build ran exactly once")
+
+
 def test_build_once_rebuilds_for_a_different_prefix(tmp_path, expect):
     """Keying the marker on 'did anyone build' would reintroduce the defect for
-    anyone who runs the corpus against two majors in turn."""
+    anyone who runs the corpus against two majors in turn.
+
+    THE PREFIX MUST BE THE ONLY DIFFERENCE (#1339). The first version passed two
+    pg_config paths that do not exist, so no library was ever observed, no marker
+    was ever written, and every call built whatever the key held: with the prefix
+    and major dropped from the key, it stayed green. Here both prefixes answer, and
+    answer the SAME library directory, at the same major, and a control shows the
+    marker is written and honoured for an unchanged prefix.
+    """
     tree = _tree_with_source(tmp_path, "ok3", "int a = 1;\n")
     lock = str(tmp_path / "lock2")
+    shared = tmp_path / "shared_lib"
+    shared.mkdir()
+    pfx = []
+    for n in ("pfx_a", "pfx_b"):
+        (tmp_path / n).mkdir()
+        pfx.append(str(_pg_config_answering(tmp_path / n, shared)))
     calls = []
+    counting = _installs_into(shared, calls)
 
-    def counting(argv):
-        calls.append(argv)
-        return _Proc(0)
-
-    build_once(tree, "/usr/local/pg18a/bin/pg_config", "18", lock_path=lock, runner=counting)
-    build_once(tree, "/usr/local/pg19a/bin/pg_config", "19", lock_path=lock, runner=counting)
+    build_once(tree, pfx[0], "18", lock_path=lock, runner=counting)
+    build_once(tree, pfx[1], "18", lock_path=lock, runner=counting)
     expect.num(len(calls), 2, "a different prefix builds again")
+    again = build_once(tree, pfx[1], "18", lock_path=lock, runner=counting)
+    expect.text(f"{again}|{len(calls)}", "already-built|2",
+                "control: the same prefix again finds the marker and does not build")
 
 
 def _tree_with_source(tmp_path, name, body):
@@ -217,10 +284,7 @@ def test_editing_the_source_rebuilds(tmp_path, expect):
     pgc, libdir = _answerable(tmp_path)
     lock = str(tmp_path / "lock3")
     calls = []
-
-    def counting(argv):
-        calls.append(argv)
-        return _Proc(0)
+    counting = _installs_into(libdir, calls)
 
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
@@ -311,6 +375,24 @@ def test_build_once_rebuilds_when_the_library_was_deleted(tmp_path, expect):
     expect.num(len(calls), 2, "and the build ran")
 
 
+def test_an_install_that_leaves_no_library_is_refused(tmp_path, expect):
+    """Absent is not fresh, and that includes absent straight after an install (#1339).
+
+    The install reported success and the prefix holds no library: a broken install
+    target. build_once used to write "absent" into the marker and certify it, so the
+    next call skipped the build over a prefix with nothing in it.
+    """
+    tree = _tree_with_source(tmp_path, "noinstall", "int a = 1;\n")
+    pgc, libdir = _answerable(tmp_path)
+    lock = str(tmp_path / "lock-noinstall")
+    with pytest.raises(RuntimeError) as exc:
+        build_once(tree, str(pgc), "18", lock_path=lock, runner=lambda argv: _Proc(0))
+    expect.contains(str(exc.value), "no library",
+                    "an install that leaves no library is refused, and says why")
+    expect.num(1 if pathlib.Path(lock + ".done").exists() else 0, 0,
+               "and no marker was written, so the next call cannot skip")
+
+
 def test_a_prefix_that_cannot_be_observed_never_certifies(tmp_path, expect):
     """The degraded path FAILS CLOSED (#956 review, @jdatcmd).
 
@@ -359,14 +441,20 @@ def test_an_unfingerprintable_tree_always_rebuilds(tmp_path, expect):
     expect.text(repr(source_fingerprint(tree)), "None",
                 "a tree with nothing to compile has no fingerprint")
     lock = str(tmp_path / "lock4")
+    # AN ANSWERING PREFIX THAT HOLDS A LIBRARY (#1339). With `/bin/pg_config` the arm
+    # depended on the machine: where that path does not exist the prefix is
+    # unobservable, no marker is written, and both calls build whatever the
+    # fingerprint says -- so removing the `fp and` guard left it green there.
+    pgc, libdir = _answerable(tmp_path)
     calls = []
 
-    def counting(argv):
+    def installing(argv):
         calls.append(argv)
+        (libdir / "pgcolumnar.so").write_bytes(b"build")
         return _Proc(0)
 
-    build_once(tree, "/bin/pg_config", "18", lock_path=lock, runner=counting)
-    build_once(tree, "/bin/pg_config", "18", lock_path=lock, runner=counting)
+    build_once(tree, str(pgc), "18", lock_path=lock, runner=installing)
+    build_once(tree, str(pgc), "18", lock_path=lock, runner=installing)
     expect.num(len(calls), 2, "both calls build, because neither could be certified")
 
 
@@ -397,11 +485,14 @@ def test_a_server_started_after_the_library_is_fresh(expect):
                 "fresh", "the server started after the .so was installed")
 
 
-def test_equal_timestamps_are_fresh_not_predates(expect):
-    """The exact boundary. A one-second-resolution mtime and a start time in the
-    same second must not read as stale, or every fast run refuses itself."""
+def test_equal_timestamps_are_unknown_not_fresh_or_predates(expect):
+    """The exact boundary. Both sides are read below the second, so an equal pair
+    cannot say which came first: it is unknown, as in test/lib.sh since #1956.
+    It must not read as stale either, or a fast run would refuse itself."""
     expect.text(_C().server_binary_verdict(so_mtime=100, postmaster_epoch=100),
-                "fresh", "same second is not stale")
+                "unknown", "an equal pair does not say which came first")
+    expect.text(_C().server_binary_verdict(so_mtime=100.5, postmaster_epoch=100.5),
+                "unknown", "an equal pair below the second does not either")
 
 
 def test_an_unreadable_side_is_unknown_not_fresh(expect):
@@ -454,8 +545,10 @@ def test_the_fingerprint_covers_a_separately_built_module(tmp_path, expect):
     """
     tree = _tree_with_objstore(tmp_path, "fp")
     before = source_fingerprint(tree)
+    # Not a premise (#1339): source_fingerprint is the code under test, so a change to
+    # it can redden this.
     expect.text(repr(before is None), "False",
-                "premise: the tree fingerprints at all")
+                "the tree fingerprints at all")
 
     (tree / "objstore" / "module.c").write_text("int b = 2;\n")
     after = source_fingerprint(tree)
@@ -470,17 +563,15 @@ def test_the_fingerprint_covers_a_separately_built_module(tmp_path, expect):
 def test_an_objstore_edit_forces_a_second_build(tmp_path, expect):
     """The consequence, end to end, which is what the finding was about."""
     tree = _tree_with_objstore(tmp_path, "fp2")
-    pgc, _libdir = _answerable(tmp_path, "objstore")
+    pgc, libdir = _answerable(tmp_path, "objstore")
     lock = str(tmp_path / "lock_obj")
     calls = []
-
-    def counting(argv):
-        calls.append(argv)
-        return _Proc(0)
+    counting = _installs_into(libdir, calls)
 
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
-    expect.num(len(calls), 1, "premise: an unchanged tree builds once")
+    # Not a premise (#1339): build_once's skip is the behaviour under test.
+    expect.num(len(calls), 1, "an unchanged tree builds once")
 
     (tree / "objstore" / "module.c").write_text("int b = 2;\n")
     build_once(tree, str(pgc), "18", lock_path=lock, runner=counting)
@@ -502,8 +593,15 @@ def test_make_cluster_leaves_nothing_behind_when_setup_fails(tmp_path, expect):
     handled `is_ours()` path leaked too: it stopped the cluster and left the
     directory.
     """
-    import glob
-    before = set(glob.glob("/tmp/pgc-pytest-*"))
+    # THE DIRECTORY make_cluster CREATED, recorded rather than globbed for (#1339).
+    # A glob of /tmp/pgc-pytest-* missed every tree when TMPDIR points elsewhere,
+    # which is where mkdtemp puts them, so a leak there passed as "none".
+    made = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def recording(*a, **k):
+        made.append(real_mkdtemp(*a, **k))
+        return made[-1]
 
     # NARROW, and named rather than caught broadly. The broad-except guard that
     # arrives with the vacuity inventory refuses `except Exception` here and is
@@ -513,13 +611,17 @@ def test_make_cluster_leaves_nothing_behind_when_setup_fails(tmp_path, expect):
     # else escapes and fails the test loudly, which is what should happen to an
     # error this arm did not predict.
     raised = "no"
+    tempfile.mkdtemp = recording
     try:
         make_cluster("/nonexistent/bin/pg_config", "gw77")
     except (FileNotFoundError, RuntimeError, OSError):
         raised = "yes"
+    finally:
+        tempfile.mkdtemp = real_mkdtemp
 
     expect.text(raised, "yes", "premise: setup really failed, so the arm is not vacuous")
-    leaked = sorted(set(glob.glob("/tmp/pgc-pytest-*")) - before)
+    expect.num(len(made), 1, "premise: make_cluster created its tree before it failed")
+    leaked = [d for d in made if pathlib.Path(d).exists()]
     expect.text(", ".join(leaked) or "none", "none",
                 "a failed make_cluster leaves no directory behind")
 
@@ -577,9 +679,15 @@ def test_this_module_keeps_no_private_fingerprint(expect):
     import pgc_cluster
     src = pathlib.Path(inspect.getsourcefile(pgc_cluster)).read_text(encoding="utf-8")
     expect.at_least(len(src), 200, "premise: the module's own source was read")
+    # Every digest and every source walk, not one spelling of each: a private copy
+    # hashed with sha256, or walking with os.walk, passed when only "hashlib.md5" and
+    # one glob were refused (#1339). pgc_cluster calls no hashlib function at all,
+    # and its one rglob is the chown walk over a datadir, not a source walk.
     for fragment, name in (
-        ("hashlib.md5", "no private md5 digest"),
+        ("hashlib.", "no private digest of any kind"),
         ('glob("*/Makefile")', "and no private build-directory walk"),
+        ("os.walk(", "and no private directory walk by os.walk"),
+        ('rglob("*.c")', "and no private walk over source files"),
     ):
         expect.num(src.count(fragment), 0, name)
 
@@ -672,12 +780,30 @@ def _fp_cli(tree, user="", env=None):
     could not be read. lib.sh's wrapper passes that through unchanged.
     """
     argv = [sys.executable, str(_FP_MODULE), "fingerprint", str(tree)]
+    scratch = None
     if user:
-        argv = ["runuser", "-u", user, "--"] + argv
+        # THE UNPRIVILEGED USER MUST REACH THE INTERPRETER AND THE MODULE, not only
+        # the tree. A checkout under a 0750 home, or a venv under a 0700 directory,
+        # left both unreachable: the read failed with EACCES before it began, the
+        # premise "the tree fingerprints at all" read empty, and the arm reported a
+        # product failure that was the box's permissions (#1337, measured as root on
+        # a 0750 $HOME). The module is stdlib-only, so a copy of it in a traversable
+        # directory and the base interpreter are the same entry point.
+        scratch = pathlib.Path(tempfile.mkdtemp(prefix="pgc-fpmod-"))
+        scratch.chmod(0o755)
+        mod = scratch / _FP_MODULE.name
+        shutil.copyfile(_FP_MODULE, mod)
+        mod.chmod(0o644)
+        base = getattr(sys, "_base_executable", None) or sys.executable
+        argv = ["runuser", "-u", user, "--", base, str(mod), "fingerprint", str(tree)]
     e = dict(os.environ)
     if env:
         e.update(env)
-    p = subprocess.run(argv, capture_output=True, text=True, env=e)
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, env=e)
+    finally:
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
     return p.stdout.strip(), p.returncode
 
 

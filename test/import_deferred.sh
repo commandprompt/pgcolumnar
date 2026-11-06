@@ -57,16 +57,19 @@ mk() {  # table, access method, constraint clause
 		ALTER TABLE $1 ADD CONSTRAINT ${1}_uq UNIQUE (id) $3;" >/dev/null 2>&1
 }
 
-# Run a transaction and report just whether it committed. The error text differs
-# between an insert-time and a commit-time failure in ways that are not the
-# property under test; committed-or-not is.
+# Run a transaction and report whether it committed, and if not, the SQLSTATE
+# it failed with. The error TEXT differs between an insert-time and a
+# commit-time failure in ways that are not the property under test; the CODE
+# does not. Any error used to count: with every import reading a file that does
+# not exist, all five "rejects" arms passed (measured).
 outcome() {  # sql
-	local out
-	out="$(psql_run "$1" 2>&1)"
-	case "$out" in
-		*ERROR*) echo "error" ;;
-		*) echo "committed" ;;
-	esac
+	local out code
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -q -c "$1" 2>&1)"
+	code="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1)"
+	if [ -n "$code" ]; then echo "error $code"
+	elif [ "$(printf '%s\n' "$out" | grep -ci 'error')" -gt 0 ]; then echo "error (no SQLSTATE): $out"
+	else echo "committed"; fi
 }
 
 # --- 1. a transient collision is allowed to commit -----------------------------
@@ -78,7 +81,7 @@ heap_transient="$(outcome "BEGIN;
 	INSERT INTO df_h VALUES (1);
 	DELETE FROM df_h WHERE ctid = (SELECT min(ctid) FROM df_h);
 	COMMIT;")"
-check "heap allows a transient collision under a deferred constraint" \
+check "premise: heap allows a transient collision under a deferred constraint" \
 	"$heap_transient" "committed"
 
 # the same shape through pgcolumnar's ordinary insert path, which already
@@ -115,8 +118,8 @@ mk df_h2 heap "DEFERRABLE INITIALLY DEFERRED"
 heap_permanent="$(outcome "BEGIN;
 	INSERT INTO df_h2 VALUES (1);
 	COMMIT;")"
-check "heap rejects a duplicate that is still there at commit" \
-	"$heap_permanent" "error"
+check "premise: heap rejects a duplicate that is still there at commit" \
+	"$heap_permanent" "error 23505"
 
 mk df_a2 pgcolumnar "DEFERRABLE INITIALLY DEFERRED"
 check "import_arrow rejects a duplicate that survives to commit" \
@@ -133,7 +136,7 @@ check "an IMMEDIATE constraint still rejects at insert time" \
 		SELECT pgcolumnar.import_arrow('df_a3', '$ARROW');
 		DELETE FROM df_a3 WHERE ctid = (SELECT min(ctid) FROM df_a3);
 		COMMIT;")" \
-	"error"
+	"error 23505"
 
 # The deletion that would have rescued it happens after SET CONSTRAINTS, so a
 # build that honours the setting fails and one that ignores it commits.
@@ -144,7 +147,7 @@ check "SET CONSTRAINTS IMMEDIATE is honoured mid-transaction" \
 		SET CONSTRAINTS df_a4_uq IMMEDIATE;
 		DELETE FROM df_a4 WHERE ctid = (SELECT min(ctid) FROM df_a4);
 		COMMIT;")" \
-	"error"
+	"error 23505"
 
 # --- 3. what the executor route must not have dropped --------------------------
 
@@ -156,7 +159,7 @@ check "an exclusion constraint is still enforced on import" \
 	"$(outcome "BEGIN;
 		SELECT pgcolumnar.import_arrow('df_x', '$ARROW');
 		COMMIT;")" \
-	"error"
+	"error 23P01"
 
 # A partial index must still be maintained, and only for rows it covers. The
 # executor decides this now; before, this file's own predicate check did.
@@ -170,7 +173,7 @@ psql_run "SELECT pgcolumnar.import_arrow('df_pi', '${ARROW}.pi');" >/dev/null
 
 check "a partial unique index accepts rows it does not cover" \
 	"$(outcome "SELECT pgcolumnar.import_arrow('df_pi', '${ARROW}.pi');")" \
-	"error"
+	"error 23505"
 check "rows outside the partial index are all present" \
 	"$(q "SELECT count(*) FROM df_pi WHERE NOT keep;")" "100"
 
@@ -183,8 +186,13 @@ psql_run "DROP TABLE IF EXISTS df_rw;
 	INSERT INTO df_rw SELECT g FROM generate_series(1, 500) g;
 	CREATE UNIQUE INDEX df_rw_uq ON df_rw (id);
 	DELETE FROM df_rw WHERE id % 3 = 0;" >/dev/null
+#
+# THROUGH compact_rewrite, NOT vacuum(). vacuum() rewrites the whole relation and
+# then reindexes it, so it never reaches the per-row loop this arm is about, and
+# routing that loop through the enforcing path passed it (measured).
+# compact_rewrite over a table with deleted rows does reach it.
 check "a rewrite of a uniquely-indexed table still succeeds" \
-	"$(outcome "SELECT pgcolumnar.vacuum('df_rw');")" "committed"
+	"$(outcome "SELECT pgcolumnar.compact_rewrite('df_rw', 0.0);")" "committed"
 check "and the surviving rows are intact" \
 	"$(q "SELECT count(*) FROM df_rw;")" \
 	"$(q "SELECT count(*) FROM generate_series(1,500) g WHERE g % 3 <> 0;")"

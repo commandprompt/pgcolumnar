@@ -53,8 +53,26 @@ psql_run "DROP TABLE IF EXISTS lz_c; DROP TABLE IF EXISTS lz_h;
 	INSERT INTO lz_c SELECT g$sel, 'v' || g FROM generate_series(1, $ROWS) g;
 	CREATE INDEX lz_c_id ON lz_c (id);
 	CREATE TABLE lz_h (LIKE lz_c);
-	INSERT INTO lz_h SELECT * FROM lz_c;
+	INSERT INTO lz_h SELECT g$sel, 'v' || g FROM generate_series(1, $ROWS) g;
 	CREATE INDEX lz_h_id ON lz_h (id);" >/dev/null
+
+# THE HEAP MIRROR IS WRITTEN FROM THE GENERATOR, NOT COPIED FROM lz_c. A copy reads
+# lz_c through the reader under test, so a value the writer stored wrong was wrong on
+# both sides: with the writer storing c40 off by one, every check passed (#1341).
+
+# qv SIDE SQL -> the statement's last output line, or "SIDE_ERROR (first line)" when
+# psql fails or prints nothing. The side is in the failure, so two failed reads are two
+# different values: with the server stopped after setup, five comparisons and the
+# ratio passed on two empty strings.
+qv() {
+	local out
+	if out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v ON_ERROR_STOP=1 -c "$2" 2>&1)" && [ -n "$out" ]; then
+		printf '%s\n' "$out" | tail -1
+	else
+		printf '%s_ERROR (%s)\n' "$1" "$(printf '%s' "$out" | head -1)"
+	fi
+}
 
 # force the index path, and keep the custom scan out of the way so the fetch
 # really is index_fetch_tuple
@@ -71,27 +89,27 @@ check "the fetch really is an index scan" \
 # and count(*) asks for nothing at all.
 bad=""
 for expr in "c1" "c2" "c20" "c${NCOLS}" "txt" "c1 + c${NCOLS}" "id"; do
-	cv="$(q "$FORCE SELECT $expr FROM lz_c WHERE id = 7777;" | tail -1)"
-	hv="$(q "$FORCE SELECT $expr FROM lz_h WHERE id = 7777;" | tail -1)"
+	cv="$(qv COL "$FORCE SELECT $expr FROM lz_c WHERE id = 7777;")"
+	hv="$(qv HEAP "$FORCE SELECT $expr FROM lz_h WHERE id = 7777;")"
 	[ "$cv" = "$hv" ] || bad="$bad [$expr: $cv vs $hv]"
 done
 check "single-row index fetches match heap for every column position" \
 	"${bad:-same}" "same"
 
 # a whole-row fetch, which needs the full decode
-check "SELECT * through the index matches heap" \
-	"$(q "$FORCE SELECT md5(lz_c::text) FROM lz_c WHERE id = 999;" | tail -1)" \
-	"$(q "$FORCE SELECT md5(lz_h::text) FROM lz_h WHERE id = 999;" | tail -1)"
+check_text "SELECT * through the index matches heap" \
+	"$(qv COL "$FORCE SELECT md5(lz_c::text) FROM lz_c WHERE id = 999;")" \
+	"$(qv HEAP "$FORCE SELECT md5(lz_h::text) FROM lz_h WHERE id = 999;")"
 
 # many rows, so the cache is reused across fetches within one statement
-check "a range of rows sums the same as heap" \
-	"$(q "$FORCE SELECT sum(c1) + sum(c${NCOLS}) FROM lz_c WHERE id <= 2000;" | tail -1)" \
-	"$(q "$FORCE SELECT sum(c1) + sum(c${NCOLS}) FROM lz_h WHERE id <= 2000;" | tail -1)"
+check_text "a range of rows sums the same as heap" \
+	"$(qv COL "$FORCE SELECT sum(c1) + sum(c${NCOLS}) FROM lz_c WHERE id <= 2000;")" \
+	"$(qv HEAP "$FORCE SELECT sum(c1) + sum(c${NCOLS}) FROM lz_h WHERE id <= 2000;")"
 
 # count(*) reads no column at all
-check "count(*) through the index matches heap" \
-	"$(q "$FORCE SELECT count(*) FROM lz_c WHERE id <= 2000;" | tail -1)" \
-	"$(q "$FORCE SELECT count(*) FROM lz_h WHERE id <= 2000;" | tail -1)"
+check_text "count(*) through the index matches heap" \
+	"$(qv COL "$FORCE SELECT count(*) FROM lz_c WHERE id <= 2000;")" \
+	"$(qv HEAP "$FORCE SELECT count(*) FROM lz_h WHERE id <= 2000;")"
 
 # --- 2. rows that are still buffered ------------------------------------------
 
@@ -109,11 +127,11 @@ check "a row fetched before it is flushed reads correctly" \
 
 # Each of these goes through a different callback: materialize, copy_heap_tuple
 # via a tuplestore, copyslot, and copy_minimal_tuple via a sort.
-check "an ORDER BY over index-fetched rows matches heap" \
-	"$(q "$FORCE SELECT string_agg(c1::text, ',' ORDER BY c1)
-		FROM (SELECT c1 FROM lz_c WHERE id <= 20) s;" | tail -1)" \
-	"$(q "$FORCE SELECT string_agg(c1::text, ',' ORDER BY c1)
-		FROM (SELECT c1 FROM lz_h WHERE id <= 20) s;" | tail -1)"
+check_text "an ORDER BY over index-fetched rows matches heap" \
+	"$(qv COL "$FORCE SELECT string_agg(c1::text, ',' ORDER BY c1)
+		FROM (SELECT c1 FROM lz_c WHERE id <= 20) s;")" \
+	"$(qv HEAP "$FORCE SELECT string_agg(c1::text, ',' ORDER BY c1)
+		FROM (SELECT c1 FROM lz_h WHERE id <= 20) s;")"
 
 psql_run "DROP TABLE IF EXISTS lz_copy;" >/dev/null
 check "copying index-fetched rows into a heap table keeps every column" \
@@ -160,10 +178,14 @@ build_w() {  # table, ncols
 		INSERT INTO $1 SELECT g$s2 FROM generate_series(1, $CLIFF_ROWS) g;
 		CREATE INDEX ${1}_id ON $1 (id);" >/dev/null
 }
-ms_of() {  # table
+ms_of() {  # table -> milliseconds, or "no reading" when the statement failed: a
+	# statement that errors at once is fast, and two of them used to pass the ratio
 	local t0 t1
 	t0=$(date +%s%N)
-	psql_run "$FORCE SELECT count(c1) FROM $1 WHERE id <= 2000;" >/dev/null 2>&1
+	if ! env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-At -v ON_ERROR_STOP=1 -c "$FORCE SELECT count(c1) FROM $1 WHERE id <= 2000;" >/dev/null 2>&1; then
+		echo "no reading"; return
+	fi
 	t1=$(date +%s%N)
 	echo $(( (t1 - t0) / 1000000 ))
 }
@@ -175,7 +197,8 @@ echo "-- 2000 index fetches of one column: 3 cols ${narrow} ms, $((NCOLS + 1)) c
 
 check "a wide table is not in a different class from a narrow one" \
 	"$(awk -v n="$narrow" -v w="$wide" \
-		'BEGIN { print (n > 0 && w / n < 25) ? "yes" : "no (" n "ms vs " w "ms)" }')" \
+		'BEGIN { if (n !~ /^[0-9]+$/ || w !~ /^[0-9]+$/) print "no reading (" n " / " w ")";
+		         else print (n > 0 && w / n < 25) ? "yes" : "no (" n "ms vs " w "ms)" }')" \
 	"yes"
 
 pgc_summary

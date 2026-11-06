@@ -66,11 +66,13 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/timestamp.h"
 
 #define PEXPORT_MAGIC		0x50455850	/* 'PEXP' */
 #define PEXPORT_KEY_HEADER	0
 #define PEXPORT_KEY_SLOTS	1
 #define PEXPORT_KEY_LEAVES	2
+#define PEXPORT_KEY_GUCS	3
 #define PEXPORT_MAX_WORKERS 32
 
 typedef enum PexportState
@@ -94,7 +96,10 @@ typedef struct PexportWorkerSlot
 typedef struct PexportHeader
 {
 	Oid			dbid;
-	Oid			roleid;
+	Oid			roleid;			/* the caller's user id, with secContext */
+	int			secContext;
+	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
+	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
 	Oid			relid;			/* single columnar table, or partitioned parent */
 	uint64		storageId;		/* single-table storage id (0 when partitioned) */
 	int			nworkers;
@@ -114,6 +119,24 @@ typedef struct PexportSpawn
 } PexportSpawn;
 
 PGDLLEXPORT void pgcolumnar_parallel_export_worker(Datum main_arg);
+
+/*
+ * The caller's settings a worker needs: the ones the object-store module
+ * reads by name (#1780), and the Parquet writer's byte cap (#1811). A background
+ * worker gets postgresql.conf, ALTER SYSTEM, and the ALTER ROLE and ALTER
+ * DATABASE settings applied when it connects, but never the caller's SET, so
+ * without these a worker ignored the caller's SET: it uploaded to an endpoint the session
+ * had refused, and ignored its part size and addressing. The dispatcher copies
+ * the caller's values into the segment, in this order, each ending in a NUL,
+ * and every worker applies them before it writes.
+ */
+static const char *const pexport_session_gucs[] = {
+	"pgcolumnar.objstore_allowed_endpoints",
+	"pgcolumnar.objstore_s3_addressing",
+	"pgcolumnar.objstore_part_size",
+	"pgcolumnar.export_group_bytes",	/* the Parquet writer's byte cap (#1811) */
+};
+#define PEXPORT_NGUCS lengthof(pexport_session_gucs)
 
 /* ------------------------------------------------------------------------- */
 
@@ -195,14 +218,19 @@ pexport_prepare_dir(const char *dir)
 	struct dirent *de;
 
 	/*
-	 * A remote prefix (#623) has no directory to create, and require-empty
-	 * cannot be checked without a bucket listing, which is #619 and
-	 * deliberately deferred. So the remote branch does not verify the prefix
-	 * is empty: the documented rule is that a remote prefix must be new or
-	 * empty, and a stale higher-numbered part from a larger prior export into
-	 * the same prefix would be unioned by a later read. The one thing done
-	 * here is to load the module and reject an unsupported scheme up front, so
-	 * a missing module fails before any worker is spawned rather than N times.
+	 * A remote prefix (#623) has no directory to create, so this branch runs
+	 * the checks that must fail once, in the dispatcher, before any worker
+	 * starts, rather than once per worker:
+	 *   - the object-store module is installed;
+	 *   - the scheme is s3://. The module also writes gs:// and http(s)://,
+	 *     but the stale-part reconcile below lists the prefix, and only an
+	 *     s3:// prefix can be listed. Such an export used to upload every part
+	 *     and then fail at the listing (#1832);
+	 *   - this session's pgcolumnar.objstore_allowed_endpoints lists the
+	 *     endpoint (#1780). The module checks the list without a request.
+	 * It does not require the prefix to be empty. A stale part from a larger
+	 * earlier export into the same prefix is removed after the workers finish
+	 * (pexport_remove_stale_remote_parts), before the _SUCCESS marker.
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -215,13 +243,22 @@ pexport_prepare_dir(const char *dir)
 							dir),
 					 errdetail("Object storage support is a separate library, "
 							   "pgcolumnar_objstore, which is not installed.")));
-		if (!api->handles_url(dir))
+		if (pg_strncasecmp(dir, "s3://", 5) != 0 || !api->handles_url(dir))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar: writing to \"%s\" is not supported", dir),
-					 errhint("A remote prefix must be new or empty; "
-							 "pgcolumnar cannot verify this without a bucket "
-							 "listing.")));
+					 errmsg("columnar: parallel_export_parquet cannot write to \"%s\"",
+							dir),
+					 errhint("The export lists its prefix to delete stale parts "
+							 "that an earlier, larger export left, and only an "
+							 "s3:// prefix can be listed. Use an s3:// prefix or "
+							 "a local directory.")));
+
+		/*
+		 * The workers apply this session's allow-list too (see
+		 * pexport_session_gucs), but each would refuse on its own, and the
+		 * error would arrive as "worker N failed".
+		 */
+		api->check_endpoint(dir, NULL);
 		return;
 	}
 
@@ -288,11 +325,9 @@ pexport_remove_outputs(const char *dir, int nkeys)
 	 * Remote (#623): the dispatcher knows its own key set exactly, so no
 	 * listing is needed. The keys are dir/part-0000.parquet through
 	 * dir/part-(nkeys-1).parquet; delete each through the module, best-effort
-	 * like the local unlink. A worker the dispatcher TERMINATES dies FATAL
-	 * with its multipart upload neither completed nor aborted, and the ABI's
-	 * delete_object removes a completed key, not an in-progress upload, so an
-	 * orphaned upload is left to the bucket's incomplete-multipart lifecycle
-	 * rule (the same residue #622 documented for a single object).
+	 * like the local unlink. delete_object removes a completed key, not an
+	 * upload in progress: a worker that ended FATAL leaves its upload open,
+	 * and pexport_abort_own_uploads aborts those (#1743).
 	 */
 	if (PgColumnarPathIsRemote(dir))
 	{
@@ -372,19 +407,35 @@ static void
 pexport_remove_stale_remote_parts(const char *dir, int nkeys)
 {
 	const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
+	char	   *prefix;
+	size_t		plen;
 	char	  **keys;
 	int			n = 0;
 	int			i;
 
 	if (api == NULL || api->list_objects == NULL)
 		return;
-	keys = api->list_objects(dir, NULL, &n);
+	/*
+	 * List "<dir>/", not "<dir>": a listing matches leading characters, so
+	 * "out" would also return "outer/..." and "out2/...", and their parts would
+	 * be deleted (#1782). The listing has no delimiter, so it also returns
+	 * keys below the prefix, such as "out/sub/part-0009.parquet", which belong
+	 * to another export. So the name is taken as the whole key after the
+	 * prefix, not as the text after the key's last '/': pexport_part_index
+	 * accepts only "part-NNNN.parquet", so a name with a further '/' is never
+	 * one of this export's parts.
+	 */
+	prefix = psprintf("%s/", dir);	/* never truncated, so always ends in '/' */
+	plen = strlen(prefix);
+	keys = api->list_objects(prefix, NULL, &n);
 	for (i = 0; i < n; i++)
 	{
-		const char *slash = strrchr(keys[i], '/');
-		const char *base = slash ? slash + 1 : keys[i];
+		const char *base;
 		int			idx;
 
+		if (strncmp(keys[i], prefix, plen) != 0)
+			continue;
+		base = keys[i] + plen;
 		if (pexport_part_index(base, &idx) && idx >= nkeys)
 			api->delete_object(keys[i], NULL);
 	}
@@ -416,14 +467,188 @@ pexport_write_success_marker(const char *dir)
 	}
 	PG_CATCH();
 	{
-		PgColumnarSinkAbort(snk);
-		PG_RE_THROW();
+		PgColumnarSinkAbortAndRethrow(snk);	/* never returns (#1741) */
 	}
 	PG_END_TRY();
 }
 
-/* error-cleanup: stop every worker so a dispatcher FATAL cannot leave them
- * reading after the exported snapshot is gone, and remove any partial output */
+/*
+ * How long the dispatcher's upload cleanup may take (#1743): first for the
+ * terminated workers to stop, then for the listing and the aborts together.
+ * Interrupts are held across both, so both are bounded.
+ */
+#define PEXPORT_STOP_WAIT_MS		5000
+#define PEXPORT_UPLOAD_CLEANUP_MS	10000
+
+/*
+ * Wait, bounded by PEXPORT_STOP_WAIT_MS, for the terminated workers to stop.
+ * It raises nothing and does not check for interrupts, so it is safe in a
+ * cleanup callback and with interrupts held.
+ */
+static void
+pexport_wait_workers_stopped(BackgroundWorkerHandle **handles, int nhandles)
+{
+	TimestampTz start = GetCurrentTimestamp();
+
+	for (;;)
+	{
+		int			running = 0;
+		int			i;
+
+		for (i = 0; i < nhandles; i++)
+		{
+			pid_t		pid;
+
+			if (handles != NULL && handles[i] != NULL &&
+				GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
+				running++;
+		}
+		if (running == 0 ||
+			TimestampDifferenceExceeds(start, GetCurrentTimestamp(),
+									   PEXPORT_STOP_WAIT_MS))
+			break;
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 100L, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+	}
+}
+
+/*
+ * pexport_abort_own_uploads
+ *		Abort every multipart upload this export left open on a remote prefix
+ *		(#1743). A worker learns its upload id only from the answer to
+ *		CreateMultipartUpload, and the store creates the upload when the request
+ *		arrives. A worker that ends while it waits for that answer (a cancel
+ *		terminates it, or it is terminated directly) leaves an upload nobody
+ *		holds the id of, and a worker that ends FATAL never runs its own abort.
+ *		So the dispatcher lists the uploads under the prefix and aborts each one
+ *		whose key is one of this export's part names, dir/part-0000.parquet to
+ *		dir/part-(nkeys-1).parquet, exactly. Any other key under the prefix is
+ *		someone else's upload and is left alone.
+ *
+ *		The workers must have stopped first, so none starts an upload after the
+ *		listing. A caller that has already waited for them passes no handles.
+ *		Interrupts are held from the wait to the last abort, and every
+ *		wait is bounded: the worker wait by PEXPORT_STOP_WAIT_MS on a timed
+ *		latch, the store's answers by the module's timeout_ms, which ends each
+ *		wait at PEXPORT_UPLOAD_CLEANUP_MS after the listing starts.
+ *
+ *		Best effort, and never raises: anything the listing or an abort raises
+ *		ends the cleanup and is discarded. The caller must have an empty error
+ *		stack, so discarding it discards nothing else. What was discarded is
+ *		LOGged first (#1869): the uploads it leaves open are billed until
+ *		someone aborts them, and the log is the only place that says why.
+ */
+static void
+pexport_abort_own_uploads(const char *dir, int nkeys,
+						  BackgroundWorkerHandle **handles, int nhandles)
+{
+	const PgColumnarObjStoreApi *api;
+	TimestampTz start;
+	MemoryContext cxt = CurrentMemoryContext;
+	uint32		held;
+	uint32		cancelHeld;
+
+	if (dir == NULL || !PgColumnarPathIsRemote(dir) || nkeys <= 0)
+		return;
+	api = PgColumnarObjStoreGet();
+	if (api == NULL || api->list_uploads == NULL || api->abort_upload == NULL)
+		return;
+
+	HOLD_INTERRUPTS();
+	held = InterruptHoldoffCount;
+	cancelHeld = QueryCancelHoldoffCount;
+
+	/* wait, bounded, for the terminated workers to stop */
+	pexport_wait_workers_stopped(handles, nhandles);
+
+	start = GetCurrentTimestamp();
+	PG_TRY();
+	{
+		char	   *prefix;
+		size_t		plen;
+		char	  **keys;
+		char	  **ids = NULL;
+		int			n = 0;
+		int			i;
+
+		/*
+		 * psprintf, as in the reconcile (#1799), so the prefix always ends in
+		 * '/' and never matches a sibling prefix (#1849). The dispatcher's
+		 * length probe already refuses a dir this long, so this is defence in
+		 * depth, not a reachable truncation.
+		 */
+		prefix = psprintf("%s/", dir);
+		plen = strlen(prefix);
+		keys = api->list_uploads(prefix, NULL, PEXPORT_UPLOAD_CLEANUP_MS,
+								 &ids, &n);
+		for (i = 0; i < n; i++)
+		{
+			const char *base = keys[i] + plen;
+			int			idx;
+			long		left;
+			char	   *own;
+			bool		mine;
+
+			/* this export's own part name, character for character */
+			if (strncmp(keys[i], prefix, plen) != 0 ||
+				!pexport_part_index(base, &idx) || idx < 0 || idx >= nkeys)
+				continue;
+			own = psprintf("%s/part-%04d.parquet", dir, idx);
+			mine = strcmp(keys[i], own) == 0;
+			pfree(own);
+			if (!mine)
+				continue;
+
+			left = PEXPORT_UPLOAD_CLEANUP_MS -
+				TimestampDifferenceMilliseconds(start, GetCurrentTimestamp());
+			if (left <= 0)
+				break;
+			(void) api->abort_upload(keys[i], ids[i], NULL, (int) left);
+		}
+	}
+	PG_CATCH();
+	{
+		ErrorData  *edata;
+
+		/*
+		 * errfinish zeroed the holdoff counts before the longjmp; put back what
+		 * this function held, so the RESUME below balances the HOLD above.
+		 */
+		InterruptHoldoffCount = held;
+		QueryCancelHoldoffCount = cancelHeld;
+		MemoryContextSwitchTo(cxt);
+		edata = CopyErrorData();
+		FlushErrorState();		/* the caller's stack was empty: only ours */
+		ereport(LOG,
+				(errmsg("columnar: parallel_export_parquet could not clean up "
+						"the open uploads under \"%s\": %s",
+						dir, edata->message)));
+		FreeErrorData(edata);
+	}
+	PG_END_TRY();
+
+	RESUME_INTERRUPTS();
+}
+
+/*
+ * error-cleanup: stop every worker so a dispatcher FATAL cannot leave them
+ * reading after the exported snapshot is gone, and remove any partial output.
+ *
+ * Wait, bounded, for the workers to exit before removing the parts (#1864). A
+ * terminated worker that has sent its commit request (the PUT of a small part,
+ * or CompleteMultipartUpload) waits for the answer before it exits (#1813), and
+ * the store can apply that request after a DELETE of the same key sent
+ * meanwhile. The part would then appear after the DELETE and stay. Once the
+ * worker has exited, its commit has been answered, so the DELETE comes after.
+ * A worker still running when the wait ends can still leave its part.
+ *
+ * A local directory needs the same wait. A terminated worker stops only at its
+ * next CHECK_FOR_INTERRUPTS, and PgColumnarSinkFinish has none between its fsync
+ * and its rename to the final name. Without the wait, that rename could land
+ * between the directory listing below and the unlink of the temporary name, and
+ * the final part would stay.
+ */
 static void
 pexport_cleanup(int code, Datum arg)
 {
@@ -433,6 +658,39 @@ pexport_cleanup(int code, Datum arg)
 	for (i = 0; i < s->n; i++)
 		if (s->handles[i] != NULL)
 			TerminateBackgroundWorker(s->handles[i]);
+	pexport_wait_workers_stopped(s->handles, s->n);
+	pexport_remove_outputs(s->dirpath, s->nkeys);
+}
+
+/*
+ * The ERROR path's form of pexport_cleanup, for PgColumnarCleanupAndRethrow,
+ * which has copied the handled error out and emptied the error stack. On a
+ * remote prefix, the uploads the workers left open are then aborted (#1743):
+ * a second cancel that lands in a part DELETE cuts short only that DELETE.
+ */
+static void
+pexport_cleanup_in_catch(void *arg)
+{
+	PexportSpawn *s = (PexportSpawn *) arg;
+
+	pexport_cleanup(0, PointerGetDatum(s));
+	/*
+	 * pexport_cleanup has already waited for the workers. No handles, so the
+	 * abort does not wait a second PEXPORT_STOP_WAIT_MS for a worker that the
+	 * first wait could not see stop.
+	 */
+	pexport_abort_own_uploads(s->dirpath, s->nkeys, NULL, 0);
+}
+
+/*
+ * For PgColumnarCleanupAndRethrow once every worker has stopped (#1781): remove
+ * the run's parts and any marker, as the failed-worker branch does.
+ */
+static void
+pexport_remove_outputs_in_catch(void *arg)
+{
+	PexportSpawn *s = (PexportSpawn *) arg;
+
 	pexport_remove_outputs(s->dirpath, s->nkeys);
 }
 
@@ -452,7 +710,6 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	Oid		   *leaves;
 	PexportWorkerSlot *me;
 	int			widx;
-	uint32		conn_flags = BGWORKER_BYPASS_ALLOWCONN;
 	Snapshot	snap;
 
 	memcpy(&widx, MyBgworkerEntry->bgw_extra, sizeof(int));
@@ -475,10 +732,20 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	leaves = (Oid *) shm_toc_lookup(toc, PEXPORT_KEY_LEAVES, false);
 	me = &slots[widx];
 
-#if PG_VERSION_NUM >= 170000
-	conn_flags |= BGWORKER_BYPASS_ROLELOGINCHECK;
-#endif
-	BackgroundWorkerInitializeConnectionByOid(hdr->dbid, hdr->roleid, conn_flags);
+	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
+							   hdr->roleIsSuperuser);
+
+	/* the caller's object-store settings (#1780); the caller could SET each */
+	{
+		const char *v = (const char *) shm_toc_lookup(toc, PEXPORT_KEY_GUCS, false);
+		int			g;
+
+		for (g = 0; g < (int) PEXPORT_NGUCS; g++)
+		{
+			SetConfigOption(pexport_session_gucs[g], v, PGC_SUSET, PGC_S_SESSION);
+			v += strlen(v) + 1;
+		}
+	}
 
 	/*
 	 * Adopt the dispatcher's exact snapshot. ImportSnapshot requires a
@@ -486,6 +753,8 @@ pgcolumnar_parallel_export_worker(Datum main_arg)
 	 * exactly as SET TRANSACTION SNAPSHOT does.
 	 */
 	StartTransactionCommand();
+	/* the caller's security context, now that a transaction is open (#1612) */
+	columnar_worker_take_context(hdr->roleid, hdr->secContext);
 	XactIsoLevel = XACT_REPEATABLE_READ;
 	ImportSnapshot(hdr->snapname);
 	snap = GetTransactionSnapshot();
@@ -596,6 +865,9 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	PexportHeader *hdr;
 	PexportWorkerSlot *slots;
 	Oid		   *leafchunk;
+	char	   *gucvals[PEXPORT_NGUCS];
+	Size		gucsize;
+	char	   *gucchunk;
 	uint32		dsmh;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
@@ -614,6 +886,58 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 				 errmsg("target and path must not be null")));
 	relid = PG_GETARG_OID(0);
 	dir = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	PgColumnarRefuseS3AliasWrite("parallel_export_parquet", dir);
+
+	/*
+	 * Every key below is built as "<dir>/...", and every listing of the prefix
+	 * as "<dir>/". A remote prefix written in the documented
+	 * "s3://bucket/prefix/" form would otherwise give keys such as
+	 * "prefix//part-0000.parquet", which S3 stores as a different key and the
+	 * documented glob never matches (#1782). So strip every trailing slash,
+	 * down to the first '/' after "scheme://" and never past it.
+	 *
+	 * What is left must name a prefix under the bucket. "s3://bucket/" and
+	 * "s3://bucket" name none: the parts would go to the bucket root and the
+	 * reconcile would list the whole bucket. Refuse them here, before any
+	 * worker starts. A local path is left as given, since the filesystem
+	 * already collapses "//".
+	 *
+	 * Both rules treat the first segment after "scheme://" as the bucket,
+	 * which holds for s3:// and gs:// style URLs. For a path-style
+	 * http(s)://host/bucket/ URL the first segment is the host, so the strip
+	 * may remove the slash after the bucket, and "http://host/bucket/" is not
+	 * refused as naming no prefix.
+	 */
+	if (PgColumnarPathIsRemote(dir))
+	{
+		const char *sep;
+		const char *slash;
+		size_t		len;
+
+		/*
+		 * The scheme is matched in any case, but a listing returns every key
+		 * spelled "s3://". Spell the scheme that way here, so the reconcile and
+		 * the upload cleanup, which compare listed keys with "<dir>/", match
+		 * them for "S3://bucket/prefix" too (#1782).
+		 */
+		if (pg_strncasecmp(dir, "s3://", 5) == 0)
+			memcpy(dir, "s3", 2);
+		sep = strstr(dir, "://");
+		slash = sep ? strchr(sep + 3, '/') : NULL;
+		len = strlen(dir);
+
+		if (slash != NULL)
+			while (len > (size_t) (slash - dir) + 1 && dir[len - 1] == '/')
+				dir[--len] = '\0';
+		if (slash == NULL || slash[1] == '\0')
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("columnar: \"%s\" names no prefix under the bucket",
+							dir),
+					 errhint("parallel_export_parquet writes its parts under a "
+							 "prefix, as in s3://bucket/prefix/.")));
+	}
+
 	workers = PG_ARGISNULL(2) ? pexport_auto_workers() : PG_GETARG_INT32(2);
 	if (workers < 1)
 		ereport(ERROR,
@@ -742,7 +1066,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_estimate_chunk(&est, sizeof(PexportHeader));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PexportWorkerSlot), workers));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(Oid), Max(npart, 1)));
-	shm_toc_estimate_keys(&est, 3);
+	gucsize = 0;
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		gucvals[i] = pstrdup(GetConfigOption(pexport_session_gucs[i], false, false));
+		gucsize = add_size(gucsize, strlen(gucvals[i]) + 1);
+	}
+	shm_toc_estimate_chunk(&est, gucsize);
+	shm_toc_estimate_keys(&est, 4);
 	segsize = shm_toc_estimate(&est);
 
 	seg = dsm_create(segsize, 0);
@@ -756,10 +1087,21 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	shm_toc_insert(toc, PEXPORT_KEY_LEAVES, leafchunk);
 	for (i = 0; i < npart; i++)
 		leafchunk[i] = leafoids[i];
+	gucchunk = (char *) shm_toc_allocate(toc, gucsize);
+	shm_toc_insert(toc, PEXPORT_KEY_GUCS, gucchunk);
+	for (i = 0; i < (int) PEXPORT_NGUCS; i++)
+	{
+		size_t		len = strlen(gucvals[i]) + 1;
+
+		memcpy(gucchunk, gucvals[i], len);
+		gucchunk += len;
+	}
 	dsmh = dsm_segment_handle(seg);
 
 	hdr->dbid = MyDatabaseId;
-	hdr->roleid = GetUserId();
+	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
+	hdr->authid = GetAuthenticatedUserId();
+	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
 	hdr->relid = relid;
 	hdr->storageId = storageId;
 	hdr->nworkers = workers;
@@ -811,11 +1153,19 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	bw.bgw_notify_pid = MyProcPid;
 
 	/*
-	 * PG_ENSURE_ERROR_CLEANUP so a FATAL in this backend still terminates the
-	 * workers before it exits, rather than orphaning them to read on after the
-	 * exported snapshot is gone.
+	 * PG_ENSURE_ERROR_CLEANUP's shape, spelled out: before_shmem_exit so a FATAL
+	 * in this backend still terminates the workers before it exits, rather than
+	 * orphaning them to read on after the exported snapshot is gone. The ERROR
+	 * path runs the same cleanup through PgColumnarCleanupAndRethrow, not the
+	 * macro's PG_CATCH (#1741): the cleanup's remote DELETEs wait on the store,
+	 * a second cancel lands there, and swallowing it with the cancel being
+	 * handled still on the error stack lost that error ("errstart was not
+	 * called"). On a remote prefix that cleanup then aborts the uploads the
+	 * workers left open (#1743), so a second cancel cannot skip the aborts
+	 * either.
 	 */
-	PG_ENSURE_ERROR_CLEANUP(pexport_cleanup, PointerGetDatum(&spawn));
+	before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
+	PG_TRY();
 	{
 		for (i = 0; i < workers; i++)
 		{
@@ -850,7 +1200,13 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 			ResetLatch(MyLatch);
 		}
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(pexport_cleanup, PointerGetDatum(&spawn));
+	PG_CATCH();
+	{
+		cancel_before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
+		PgColumnarCleanupAndRethrow(pexport_cleanup_in_catch, &spawn);
+	}
+	PG_END_TRY();
+	cancel_before_shmem_exit(pexport_cleanup, PointerGetDatum(&spawn));
 
 	for (i = 0; i < workers; i++)
 	{
@@ -870,6 +1226,8 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		/* all workers have stopped; drop any part files they wrote so the failed
 		 * run leaves a clean directory and a retry is not half-read or blocked */
 		pexport_remove_outputs(dir, single_table ? workers : npart);
+		pexport_abort_own_uploads(dir, single_table ? workers : npart,
+								  handles, workers);
 		dsm_detach(seg);
 		if (pushed)
 			PopActiveSnapshot();
@@ -889,14 +1247,22 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 	 * Every worker completed. On a remote prefix, first drop any stale
 	 * higher-numbered parts a larger prior run left (see
 	 * pexport_remove_stale_remote_parts), so the marker certifies exactly this
-	 * run's parts. Then write the _SUCCESS marker (#394). Both are past the
-	 * error-cleanup region (PG_END_ENSURE_ERROR_CLEANUP above), so a failure here
-	 * raises without deleting the parts the workers already committed -- the data
-	 * is preserved and the caller learns the completion signal could not be
-	 * finalized, rather than losing a good export to a marker hiccup.
+	 * run's parts. Then write the _SUCCESS marker (#394). A failure in either
+	 * (a key that may write but not list, a refused marker PUT) fails the run,
+	 * and a failed run leaves no parts (#1781): the parts are removed, with any
+	 * marker an earlier run left, before the error is re-thrown, as for a
+	 * failed worker.
 	 */
-	if (PgColumnarPathIsRemote(dir))
-		pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
-	pexport_write_success_marker(dir);
+	PG_TRY();
+	{
+		if (PgColumnarPathIsRemote(dir))
+			pexport_remove_stale_remote_parts(dir, single_table ? workers : npart);
+		pexport_write_success_marker(dir);
+	}
+	PG_CATCH();
+	{
+		PgColumnarCleanupAndRethrow(pexport_remove_outputs_in_catch, &spawn);
+	}
+	PG_END_TRY();
 	PG_RETURN_INT64(total);
 }

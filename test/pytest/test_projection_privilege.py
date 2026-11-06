@@ -189,19 +189,19 @@ def test_the_premises_the_fixture_is_what_the_suite_assumes(pgc_cluster, pgc_con
         for f in FUNCS:
             cur.execute(f"SELECT count(*) FROM pgcolumnar.{f}('prj_secret','p1')")
             expect.num(cur.fetchone()[0], ROWS,
-                       "premise: the owner reads the projection, and gets rows" if f == "read_projection"
-                       else "premise: the owner reconstructs, and gets rows")
+                       "the owner reads the projection, and gets rows" if f == "read_projection"
+                       else "the owner reconstructs, and gets rows")
         cur.execute(
             "SELECT pgcolumnar.reconstruct_via_projection('prj_secret','p1') "
             "LIKE '%note-%' LIMIT 1"
         )
         expect.text(str(cur.fetchone()[0]), "True",
-                    "premise: reconstruct really does return the NON-COVERED column")
+                    "reconstruct really does return the NON-COVERED column")
         cur.execute(
             "SELECT pgcolumnar.read_projection('prj_secret','p1') LIKE '%note-%' LIMIT 1"
         )
         expect.text(str(cur.fetchone()[0]), "False",
-                    "premise: and read_projection does NOT, so the two differ as the issue says")
+                    "and read_projection does NOT, so the two differ as the issue says")
         cur.execute(
             "SELECT count(*) FROM pg_roles WHERE rolname = ANY(%s) AND rolsuper", (list(ROLES),)
         )
@@ -254,11 +254,18 @@ def test_a_role_with_execute_but_no_select_is_refused(pgc_cluster, pgc_conn, exp
         schema = _fixture(cur)
     _, err = _as(pgc_cluster, EXEC,
                  f"SELECT count(*) FROM pgcolumnar.{func}('prj_secret','p1')", schema)
-    expect.sqlstate(err, "42501", name)
     if func == "read_projection":
+        # TWO PROPERTIES, TWO ARMS, as in `projection_privilege.sh` (#1339). The first
+        # asks only that the call was refused; the second asks which code refused it.
+        # Both used to assert 42501 on the same error, so the second could never fail
+        # alone: with read_projection's aclcheck_error replaced by a plain elog
+        # (XX000), the first arm went red under the second's name.
+        expect.text("refused" if err is not None else "noerror", "refused", name)
         expect.sqlstate(
             err, "42501",
             "and THAT refusal is the C check, which raises 42501 from aclcheck_error")
+    else:
+        expect.sqlstate(err, "42501", name)
 
 
 def test_which_layer_refused_without_reading_the_message(pgc_cluster, pgc_conn, expect):
@@ -289,6 +296,18 @@ def test_which_layer_refused_without_reading_the_message(pgc_cluster, pgc_conn, 
     expect.sqlstate(err, "42704",
                     "while the EXECUTE role reaches the projection lookup on the same call")
 
+    # THE SAME QUESTION OF reconstruct_via_projection (#1339). It has its own REVOKE
+    # and its own copy of the C check, and only read_projection was asked: with its
+    # REVOKE deleted, t_prjnone reached the C body, got 42501 there, and every arm in
+    # this file stayed green.
+    rcall = call.replace("read_projection", "reconstruct_via_projection")
+    _, err = _as(pgc_cluster, NONE, rcall, schema)
+    expect.sqlstate(err, "42501",
+                    "reconstruct: the no-EXECUTE role never reaches the body, so the grant is what stopped it")
+    _, err = _as(pgc_cluster, EXEC, rcall, schema)
+    expect.sqlstate(err, "42704",
+                    "reconstruct: the EXECUTE role reaches the projection lookup on the same call")
+
 
 def test_the_base_acl_is_checked_before_the_projection_is_looked_up(
         pgc_cluster, pgc_conn, expect):
@@ -310,6 +329,11 @@ def test_the_base_acl_is_checked_before_the_projection_is_looked_up(
                  "'prj_secret','no_such_proj')", schema)
     expect.sqlstate(err, "42501",
                     "the base ACL is checked before the projection name is looked up")
+    _, err = _as(pgc_cluster, EXEC,
+                 "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection("
+                 "'prj_secret','no_such_proj')", schema)
+    expect.sqlstate(err, "42501",
+                    "reconstruct: the base ACL is checked before the projection name is looked up")
 
 
 @pytest.mark.parametrize("func,name", WITH_SELECT)
@@ -340,7 +364,7 @@ def test_a_policy_restricted_caller_is_refused(pgc_cluster, pgc_conn, expect, fu
     `PgColumnarRequireNoRowSecurity` raises ERRCODE_FEATURE_NOT_SUPPORTED, so this arm
     asserts 0A000 where the shell suite greps `^ERROR:.*row-level security`. The codes are
     from different SQLSTATE CLASSES -- 0A and 42 -- so this cannot be confused with either
-    ACL refusal by any amount of rewording, and the premise below shows the policy really
+    ACL refusal by any amount of rewording, and the check below shows the policy really
     took effect rather than the call having broken for some other reason.
     """
     with pgc_conn.cursor() as cur:
@@ -351,16 +375,20 @@ def test_a_policy_restricted_caller_is_refused(pgc_cluster, pgc_conn, expect, fu
 
     rows, err = _as(pgc_cluster, SEL, "SELECT count(*) FROM prj_secret", schema)
     assert err is None, f"{SEL} could not read the table under the policy: {err}"
-    expect.num(rows[0][0], 1, "premise: the policy is in force for ordinary SQL")
+    expect.num(rows[0][0], 1, "the policy is in force for ordinary SQL")
 
     _, err = _as(pgc_cluster, SEL,
                  f"SELECT count(*) FROM pgcolumnar.{func}('prj_secret','p1')", schema)
-    expect.sqlstate(err, "0A000", name)
     if func == "read_projection":
+        # Refused, then WHICH refusal, as in the shell suite (#1339): asserting 0A000
+        # twice on one error left the second arm unable to fail on its own.
+        expect.text("refused" if err is not None else "noerror", "refused", name)
         expect.sqlstate(
             err, "0A000",
             "and the refusal says the feature is not supported, not that a privilege "
             "is missing")
+    else:
+        expect.sqlstate(err, "0A000", name)
 
 
 def test_the_acl_is_checked_before_rls_so_no_privilege_discloses_no_rls_state(
@@ -392,3 +420,8 @@ def test_the_acl_is_checked_before_rls_so_no_privilege_discloses_no_rls_state(
                  schema)
     expect.sqlstate(err, "42501",
                     "a caller with no SELECT is told a privilege is missing, not that RLS is in force")
+    _, err = _as(pgc_cluster, EXEC,
+                 "SELECT count(*) FROM pgcolumnar.reconstruct_via_projection('prj_secret','p1')",
+                 schema)
+    expect.sqlstate(err, "42501",
+                    "reconstruct: a caller with no SELECT is told a privilege is missing, not that RLS is in force")

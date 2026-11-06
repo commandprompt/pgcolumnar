@@ -80,6 +80,13 @@ check_num "without the btree the LATERAL form reads the table once per device" \
 
 check "the GROUP BY form returns what DISTINCT ON returns" \
 	"$(q "$GROUP_SQL" | md5sum | cut -c1-12)" "$ORACLE"
+# The document says this form reads the table once (#1339): rows alone cannot tell it
+# from a per-device subquery, which returns the same rows and reads the table once
+# per device. Reading nothing is refused, as for the LATERAL form below.
+grp_blocks="$(blocks "$GROUP_SQL")"
+echo "-- table $pages pages; the GROUP BY form read $grp_blocks blocks"
+check_num "the GROUP BY form reads the table once" \
+	"$( [ -n "$grp_blocks" ] && [ "$grp_blocks" -ge 1 ] && at_least $((pages + 1 - grp_blocks)) 1 || echo "read ${grp_blocks:-nothing}" )" "1"
 
 q "$INDEX_SQL" >/dev/null
 check_num "premise: the document's index exists" \

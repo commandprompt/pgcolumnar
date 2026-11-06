@@ -74,9 +74,16 @@ build() {  # table, expression, compression
 # would score the table's own bytes as encoding types. An earlier version of
 # this file assumed a 13-byte stride from offset 0 and reported Gorilla and
 # delta-of-delta on a text column, which is how the header was found.
-fsst_vectors() {  # table -> count
-	q "SELECT coalesce(sum(n), 0) FROM (
-		SELECT (SELECT count(*)
+#
+# "no vectors" when the column has none: a table whose load failed has no chunks, and
+# "no FSST vector" read from it as 0 passed both "not chosen" checks.
+fsst_vectors() {  # table -> count, or "no vectors"
+	q "SELECT CASE WHEN coalesce(sum(total), 0) > 0 THEN sum(n)::text ELSE 'no vectors' END FROM (
+		SELECT get_byte(c.encoding_descriptor, 2)
+					+ get_byte(c.encoding_descriptor, 3) * 256
+					+ get_byte(c.encoding_descriptor, 4) * 65536
+					+ get_byte(c.encoding_descriptor, 5) * 16777216 AS total,
+			(SELECT count(*)
 				FROM generate_series(0,
 					get_byte(c.encoding_descriptor, 2)
 					+ get_byte(c.encoding_descriptor, 3) * 256
@@ -89,41 +96,49 @@ fsst_vectors() {  # table -> count
 		  AND c.column_index = 1) t;" | tail -1
 }
 
+# mismatches/rows of two tables joined on id, missing rows on either side counted as
+# mismatches. Counting only the mismatches of an inner join read an empty table as
+# "0 differ", which passed every round-trip check with nothing loaded.
+roundtrip() {  # table, table -> "mismatches/rows"
+	q "SELECT count(*) FILTER (WHERE a.id IS NULL OR b.id IS NULL OR a.v IS DISTINCT FROM b.v)
+		|| '/' || count(*) FROM $1 a FULL JOIN $2 b USING (id);" | tail -1
+}
+
 # --- 1. values round-trip through both outcomes --------------------------------
 
 # nulls, empty strings and values below the FSST minimum are mixed in, because
 # the fix changes the encoding of every vector in a chunk at once and those are
 # the values whose handling differs between encodings.
+#
+# EVERY HEAP MIRROR IS BUILT FROM ITS GENERATOR, never copied from the columnar table:
+# a decoder that is wrong consistently would write its wrong values into a copy, and
+# the round-trip would read 0 mismatches (measured by OffgridwithJD reviewing #1548:
+# 57230 of 300000 e-mail values wrong, both suites green).
+mixed_expr="CASE g % 11 WHEN 0 THEN NULL WHEN 1 THEN '' WHEN 2 THEN 'x' ELSE 's' || g END"
 psql_run "DROP TABLE IF EXISTS fc_c; DROP TABLE IF EXISTS fc_h;
 	CREATE TABLE fc_c (id int, v text) USING pgcolumnar;
-	INSERT INTO fc_c SELECT g,
-		CASE g % 11
-			WHEN 0 THEN NULL
-			WHEN 1 THEN ''
-			WHEN 2 THEN 'x'
-			ELSE 's' || g
-		END
-		FROM generate_series(1, $ROWS) g;
-	CREATE TABLE fc_h (LIKE fc_c);
-	INSERT INTO fc_h SELECT * FROM fc_c;" >/dev/null 2>&1
+	INSERT INTO fc_c SELECT g, $mixed_expr FROM generate_series(1, $ROWS) g;
+	CREATE TABLE fc_h (id int, v text);
+	INSERT INTO fc_h SELECT g, $mixed_expr FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 
 check "every value round-trips on a shape where FSST is dropped" \
-	"$(q "SELECT count(*) FROM fc_c c JOIN fc_h h USING (id)
-		WHERE c.v IS DISTINCT FROM h.v;" | tail -1)" "0"
+	"$(roundtrip fc_c fc_h)" "0/$ROWS"
 
+# nulls/empties/rows, and the heap side must hold every row, so two empty tables
+# cannot agree on 0/0/0
+fc_heap_ne="$(q "SELECT count(*) FILTER (WHERE v IS NULL) || '/' || count(*) FILTER (WHERE v = '')
+		|| '/' || count(*) FROM fc_h;" | tail -1)"
+case "$fc_heap_ne" in */"$ROWS") ;; *) fc_heap_ne="heap holds [$fc_heap_ne], not $ROWS rows" ;; esac
 check "the null and empty values survive" \
 	"$(q "SELECT count(*) FILTER (WHERE v IS NULL) || '/' || count(*) FILTER (WHERE v = '')
-		FROM fc_c;" | tail -1)" \
-	"$(q "SELECT count(*) FILTER (WHERE v IS NULL) || '/' || count(*) FILTER (WHERE v = '')
-		FROM fc_h;" | tail -1)"
+		|| '/' || count(*) FROM fc_c;" | tail -1)" "$fc_heap_ne"
 
 build fc_e "$email_expr" zstd
-psql_run "DROP TABLE IF EXISTS fc_eh; CREATE TABLE fc_eh (LIKE fc_e);
-	INSERT INTO fc_eh SELECT * FROM fc_e;" >/dev/null 2>&1
+psql_run "DROP TABLE IF EXISTS fc_eh; CREATE TABLE fc_eh (id int, v text);
+	INSERT INTO fc_eh SELECT g, $email_expr FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 
 check "every value round-trips on a shape where FSST is kept" \
-	"$(q "SELECT count(*) FROM fc_e c JOIN fc_eh h USING (id)
-		WHERE c.v IS DISTINCT FROM h.v;" | tail -1)" "0"
+	"$(roundtrip fc_e fc_eh)" "0/$ROWS"
 
 # --- 2. the choice goes the right way on each shape ----------------------------
 
@@ -139,8 +154,23 @@ check "FSST is not chosen where it cost 5.8x the write time for a larger file" \
 
 # The control. FSST beats zstd-alone on this shape by 23% and must be kept, so
 # this is what separates the fix from simply removing FSST.
+# chosen N -> yes when N is a count above 0. Not awk: awk compares "no vectors" > 0 as
+# strings, which is true, and an empty table would pass as chosen.
+chosen() { [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -gt 0 ] && echo yes || echo "no ($1)"; }
+# EVERY vector of the control, not some: a verdict reused wrongly dropped FSST in one
+# stripe of two and still left "some" (found by OffgridwithJD reviewing #1548).
+vectors() {  # table -> how many vectors the text column has
+	q "SELECT coalesce(sum(get_byte(c.encoding_descriptor, 2)
+			+ get_byte(c.encoding_descriptor, 3) * 256
+			+ get_byte(c.encoding_descriptor, 4) * 65536
+			+ get_byte(c.encoding_descriptor, 5) * 16777216), 0)
+		FROM pgcolumnar.column_chunk c JOIN pgcolumnar.storage s ON s.storage_id = c.storage_id
+		WHERE s.relation_oid = '$1'::regclass AND c.column_index = 1;" | tail -1
+}
+fc_e_fsst="$(fsst_vectors fc_e)"; fc_e_all="$(vectors fc_e)"
 check "FSST is still chosen where it genuinely wins after compression" \
-	"$(awk -v n="$(fsst_vectors fc_e)" 'BEGIN { print (n > 0) ? "yes" : "no" }')" "yes"
+	"$([ "$(chosen "$fc_e_fsst")" = yes ] && [ "$fc_e_fsst" = "$fc_e_all" ] && echo yes \
+	   || echo "no ($fc_e_fsst of $fc_e_all vectors)")" "yes"
 
 # --- 3. no codec, no change ----------------------------------------------------
 
@@ -151,12 +181,12 @@ for shape in short hient; do
 	eval "expr=\$${shape}_expr"
 	build "fc_n_$shape" "$expr" none
 	check "with compression off FSST is still chosen for $shape" \
-		"$(awk -v n="$(fsst_vectors "fc_n_$shape")" 'BEGIN { print (n > 0) ? "yes" : "no" }')" \
-		"yes"
+		"$(chosen "$(fsst_vectors "fc_n_$shape")")" "yes"
 done
 
+psql_run "DROP TABLE IF EXISTS fc_sh; CREATE TABLE fc_sh (id int, v text);
+	INSERT INTO fc_sh SELECT g, $short_expr FROM generate_series(1, $ROWS) g;" >/dev/null 2>&1
 check "values round-trip with compression off" \
-	"$(q "SELECT count(*) FROM fc_n_short a JOIN fc_s b USING (id)
-		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)" "0"
+	"$(roundtrip fc_n_short fc_sh)" "0/$ROWS"
 
 pgc_summary

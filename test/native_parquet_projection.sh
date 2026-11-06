@@ -9,6 +9,18 @@
 # for SELECT *), and -- the load-bearing proof -- that a column which would error
 # on decode is not read when it is projected out.
 #
+# THE ORACLE IS THE GENERATOR, NOT THE READER (#1341). h used to be filled with
+# read_parquet of the same file, and read_parquet shares the scan's decoders: with a
+# text decoder dropping a byte, or an INT64 decoder off by one, both sides read the
+# same wrong values and every projection agreed (main passed 15/15 under each). h is
+# now built in SQL from the generator the crafter wrote the file from.
+#
+# A DROPPED COLUMN SHIFTS ATTRIBUTE NUMBERS. Projection matches each target column's
+# attribute number against the planner's needed set. With no dropped column the
+# attribute number equals the target's index, so a reader matching by index passed
+# 15/15. ftd drops a column ahead of the others, and its projection must still read
+# exactly the column asked for.
+#
 # Usage:  test/native_parquet_projection.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
 
@@ -23,28 +35,25 @@ fi
 W="$PGC_WORKDIR"
 psql_run "CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;"
 
-python3 - "$W" <<'PY'
-import sys, pyarrow as pa, pyarrow.parquet as pq
-W = sys.argv[1]
-n = 5000
-pq.write_table(pa.table({
-    "a": pa.array(range(n), pa.int32()),
-    "b": pa.array([i * 2 for i in range(n)], pa.int64()),
-    "c": pa.array([f"s{i%20}" for i in range(n)]),
-    "d": pa.array([i / 3.0 for i in range(n)], pa.float64()),
-}), f"{W}/proj.parquet", row_group_size=1000)
-PY
+python3 "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_projection.py" "$W"
 
 cols="a int, b int8, c text, d float8"
 psql_run "CREATE FOREIGN TABLE ft ($cols) SERVER pq OPTIONS (path '$W/proj.parquet');"
 psql_run "CREATE TABLE h ($cols);"
-psql_run "INSERT INTO h SELECT * FROM pgcolumnar.read_parquet('$W/proj.parquet') AS t($cols);"
+# the generator the crafter wrote proj.parquet from, in SQL: never read back through
+# the reader under test
+psql_run "INSERT INTO h SELECT g, g * 2, 's' || (g % 20), g::float8 / 3.0 FROM generate_series(0, 4999) g;"
+# the same file behind a table whose first declared column is dropped: every later
+# column's attribute number is one more than its position among the live columns
+psql_run "CREATE FOREIGN TABLE ftd (z int, $cols) SERVER pq OPTIONS (path '$W/proj.parquet');"
+psql_run "ALTER FOREIGN TABLE ftd DROP COLUMN z;"
 
 # ---- correctness: projected columns match the oracle -----------------------
-for sel in "a" "c" "a, d" "b, c, d" "*"; do
-	check "projection [$sel] == oracle" \
-		"$(pgc_set_hash "SELECT $sel FROM ft")" "$(pgc_set_hash "SELECT $sel FROM h")"
-done
+check "projection [a] == oracle" "$(pgc_set_hash "SELECT a FROM ft")" "$(pgc_set_hash "SELECT a FROM h")"
+check "projection [c] == oracle" "$(pgc_set_hash "SELECT c FROM ft")" "$(pgc_set_hash "SELECT c FROM h")"
+check "projection [a, d] == oracle" "$(pgc_set_hash "SELECT a, d FROM ft")" "$(pgc_set_hash "SELECT a, d FROM h")"
+check "projection [b, c, d] == oracle" "$(pgc_set_hash "SELECT b, c, d FROM ft")" "$(pgc_set_hash "SELECT b, c, d FROM h")"
+check "projection [*] == oracle" "$(pgc_set_hash "SELECT * FROM ft")" "$(pgc_set_hash "SELECT * FROM h")"
 # a qual column that is not selected must still be read for the recheck
 check "qual on unselected column == oracle" \
 	"$(pgc_set_hash "SELECT a FROM ft WHERE c = 's7'")" \
@@ -59,6 +68,11 @@ check "one column reads 1" "$(cols_read "SELECT a FROM ft")" "1"
 check "two columns read 2" "$(cols_read "SELECT a, d FROM ft")" "2"
 check "select star reads 4" "$(cols_read "SELECT * FROM ft")" "4"
 check "count(*) reads 0"    "$(cols_read "SELECT count(*) FROM ft")" "0"
+
+# ---- a dropped column ahead of the others ------------------------------------
+check "after a dropped column, projection [d] == oracle" \
+	"$(pgc_set_hash "SELECT d FROM ftd")" "$(pgc_set_hash "SELECT d FROM h")"
+check "after a dropped column, one column reads 1" "$(cols_read "SELECT d FROM ftd")" "1"
 # a qual column counts as read even when not selected
 check "selected 1 + qual 1 reads 2" "$(cols_read "SELECT a FROM ft WHERE c = 's7'")" "2"
 
@@ -68,22 +82,7 @@ check "selected 1 + qual 1 reads 2" "$(cols_read "SELECT a FROM ft WHERE c = 's7
 # first column must succeed (the second is never decoded), while reading the
 # second must fail. If projection did not skip decode, selecting only the first
 # would also hit the corruption.
-python3 - "$W" <<'PY'
-import sys, pyarrow as pa, pyarrow.parquet as pq
-W = sys.argv[1]
-pq.write_table(pa.table({"g": pa.array(range(1000), pa.int32()),
-                         "bad": pa.array(range(1000), pa.int32())}),
-               f"{W}/corrupt.parquet", row_group_size=1000, use_dictionary=False)
-md = pq.ParquetFile(f"{W}/corrupt.parquet").metadata.row_group(0).column(1)
-off = md.data_page_offset
-raw = bytearray(open(f"{W}/corrupt.parquet", "rb").read())
-# smash the second column's page header + start of its data so decode fails,
-# leaving the first column and the footer intact.
-for i in range(off, off + 32):
-    raw[i] = 0xFF
-open(f"{W}/corrupt.parquet", "wb").write(bytes(raw))
-print(f"  corrupted column 'bad' at offset {off}", file=sys.stderr)
-PY
+# corrupt.parquet was written by the crafter above, its second column's page smashed.
 
 psql_run "CREATE FOREIGN TABLE ftc (g int, bad int) SERVER pq OPTIONS (path '$W/corrupt.parquet');"
 psql_run "CREATE FUNCTION pgc_try_proj(q text) RETURNS text LANGUAGE plpgsql AS \$\$

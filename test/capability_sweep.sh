@@ -115,9 +115,9 @@ check_text "premise: the population is the size this tree holds" \
 # Two arms now, neither reusing that variable. The first is a LITERAL, which no
 # invocation can rename; the second asks whether any member IS this file, by
 # realpath, which is the property the exclusion is about.
-check_num "premise: the sweep is not in the population it sweeps" \
+check_num "the sweep is not in the population it sweeps" \
 	"$(printf '%s\n' "$NARROW" | grep -c '^capability_sweep\.sh$')" "0"
-check_num "premise: and no member of the population is this very file" \
+check_num "and no member of the population is this very file" \
 	"$(_cap_n=0
 	   for _cap_b in $NARROW; do
 		[ "$(realpath "$TESTDIR/$_cap_b" 2>/dev/null)" = "$PGC_CAP_SELF_PATH" ] &&
@@ -147,9 +147,9 @@ cap_rc() {	# cap_rc PYTHONPATH_VALUE CODE -> exit status
 	echo "$?"
 }
 
-check_num "premise: the shim makes pyarrow unimportable" \
+check_num "the shim makes pyarrow unimportable" \
 	"$(cap_rc "$SHIM" 'import pyarrow')" "1"
-check_num "premise: and pyarrow.parquet with it" \
+check_num "and pyarrow.parquet with it" \
 	"$(cap_rc "$SHIM" 'import pyarrow.parquet')" "1"
 check_num "premise: while python itself still runs under the shim" \
 	"$(cap_rc "$SHIM" 'print(2 + 2)')" "0"
@@ -244,7 +244,7 @@ done
 echo "-- preserved=$n_preserved refused=$n_refused declined=$n_declined silent=$n_silent of $n_narrow"
 [ -n "$silent_names" ] && echo "-- silent:$silent_names"
 
-check_num "premise: the mask held for every run in the sweep" "$mask_failures" "0"
+check_num "the mask held for every run in the sweep" "$mask_failures" "0"
 check_num "premise: every suite in the population was classified" \
 	"$((n_preserved + n_refused + n_declined + n_silent))" "$n_narrow"
 check_num "no suite loses a check without recording a skip or a refusal" \

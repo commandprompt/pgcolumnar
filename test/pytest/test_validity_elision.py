@@ -126,14 +126,21 @@ def _load(cur):
 
     cur.execute("CREATE TABLE vb_full (k bigint, v bigint) USING pgcolumnar")
     cur.execute(f"INSERT INTO vb_full SELECT g, g FROM generate_series(1, {ROWS}) g")
-    cur.execute("CREATE TABLE vb_full_h AS SELECT * FROM vb_full")
+    # THE HEAP MIRRORS ARE WRITTEN FROM THE GENERATOR, NOT COPIED (#1339): a copy
+    # reads through the reader under test, so a read defect lands on both sides.
+    cur.execute("CREATE TABLE vb_full_h (k bigint, v bigint)")
+    cur.execute(f"INSERT INTO vb_full_h SELECT g, g FROM generate_series(1, {ROWS}) g")
 
     cur.execute("CREATE TABLE vb_nulls (k bigint, v bigint) USING pgcolumnar")
     cur.execute(
         f"INSERT INTO vb_nulls SELECT g, CASE WHEN g % {NULL_EVERY} = 0 THEN NULL "
         f"ELSE g END FROM generate_series(1, {ROWS}) g"
     )
-    cur.execute("CREATE TABLE vb_nulls_h AS SELECT * FROM vb_nulls")
+    cur.execute("CREATE TABLE vb_nulls_h (k bigint, v bigint)")
+    cur.execute(
+        f"INSERT INTO vb_nulls_h SELECT g, CASE WHEN g % {NULL_EVERY} = 0 THEN NULL "
+        f"ELSE g END FROM generate_series(1, {ROWS}) g"
+    )
 
 
 def _count(cur, sql, args=()):
@@ -180,12 +187,12 @@ def test_a_column_with_no_nulls_stores_no_validity_bitmap(pgc_conn, expect):
         )
 
         full_nulls = _count(c, "SELECT count(*) FROM vb_full WHERE v IS NULL")
-        expect.num(full_nulls, 0, "premise: the first fixture holds no nulls at all")
+        expect.num(full_nulls, 0, "the full column reads back no nulls at all")  # an arm: counted through the reader (#1339)
 
         some_nulls = _count(c, "SELECT count(*) FROM vb_nulls WHERE v IS NULL")
         expect.text(
             "has-nulls" if some_nulls > 0 else "none", "has-nulls",
-            "premise: the second fixture holds nulls, so its bitmap is load-bearing",
+            "the second fixture holds nulls, so its bitmap is load-bearing",
         )
 
         expect.num(full_res, 0,
@@ -243,16 +250,27 @@ def test_the_layout_change_returns_the_same_rows(pgc_conn, expect):
             )
 
 
+def _guard(exc, phrase, label):
+    """`SQLSTATE|label` when the error is the guard whose message holds `phrase`;
+    otherwise `SQLSTATE|another guard: <message>`, so a red names what fired."""
+    if exc is None:
+        return "NOERR"
+    msg = getattr(getattr(exc, "diag", None), "message_primary", None) or str(exc)
+    state = getattr(exc, "sqlstate", None) or "none"
+    return f"{state}|{label}" if phrase in msg else f"{state}|another guard: {msg}"
+
+
 def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
     """The two guards, each corrupted into firing.
 
     Neither is reachable from a table written correctly, so the catalog is
     poisoned the way corruption.sh poisons the fields that predate this change.
 
-    THE SQLSTATE IS THE ASSERTION, not the message. `XX001` is
-    ERRCODE_DATA_CORRUPTED and comes only from a guard that ran; a message grep
-    is equally satisfied by a missing function, a bad argument or a login
-    failure.
+    THE SQLSTATE AND THE GUARD'S OWN MESSAGE. `XX001` is ERRCODE_DATA_CORRUPTED
+    and comes only from a guard that ran; a message grep alone is equally
+    satisfied by a missing function, a bad argument or a login failure. But
+    sixteen guards in the reader raise XX001, so the SQLSTATE alone cannot say
+    WHICH ran (#1339): `_guard` asks for both.
     """
     import psycopg
 
@@ -278,16 +296,26 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
             raised = None
         except psycopg.Error as exc:
             raised = exc
-        expect.sqlstate(
-            raised, "XX001",
-            "a chunk claiming no bitmap while it holds fewer values than rows is refused",
-        )
+        # WHICH GUARD, not only that one ran (#1339). XX001 comes from sixteen guards in
+        # the reader: with this one disabled, the scan still raised XX001 and the arm
+        # stayed green. So the message must be this guard's own.
+        expect.text(_guard(raised, "claims no nulls but does not account for every row",
+                           "the no-nulls guard"),
+                    "XX001|the no-nulls guard",
+                    "a chunk claiming no bitmap while it holds fewer values than rows is refused")
         expect.num(_count(c, "SELECT 1"), 1, "and the backend survives that refusal")
 
         # GUARD 2: a row count the chunk cannot hold. The descriptor still
         # accounts for its own rows, so the claim is false in the other
-        # direction and the reader refuses BEFORE synthesizing half a gigabyte
-        # of bits.
+        # direction and the reader refuses BEFORE synthesizing any bits.
+        #
+        # NINE BILLION, NOT FOUR, SO THE ORDER IS VISIBLE (#1339 review): 1.125 GB
+        # of bits is over MaxAllocSize, so the "implausible row count" backstop sits
+        # between the no-nulls guard and the allocation, and a no-nulls guard moved
+        # below the allocation is met by the backstop first. At four billion (500 MB)
+        # that move stayed green. A guard placed between the backstop and the
+        # allocation is still unseen. A reworded guard message reddens both arms in
+        # both twins, which must then be updated together.
         #
         # BOUNDING THE SYNTHESIZED BITMAP BY THE ROW GROUP'S BYTE LENGTH DOES
         # NOT WORK: an elided group of two well-encoded bigint columns measured
@@ -296,7 +324,7 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
         c.execute(
             """
             UPDATE pgcolumnar.row_group r
-               SET row_count = 4000000000
+               SET row_count = 9000000000
               FROM pgcolumnar.storage s
              WHERE s.storage_id = r.storage_id
                AND s.relation_oid = 'vb_full'::regclass
@@ -307,10 +335,14 @@ def test_the_guards_the_elision_added_refuse_a_lying_catalog(pgc_conn, expect):
             raised = None
         except psycopg.Error as exc:
             raised = exc
-        expect.sqlstate(
-            raised, "XX001",
-            "an implausible row count on an elided chunk is refused before anything is allocated",
-        )
+        # Refused BEFORE anything is allocated means by the value-count guard, which
+        # runs first; the MaxAllocSize check after it is only a backstop. With the
+        # value-count guard disabled at four billion rows, the bitmap was allocated,
+        # a later guard raised XX001, and this arm stayed green (#1339).
+        expect.text(_guard(raised, "claims no nulls but does not account for every row",
+                           "the no-nulls guard"),
+                    "XX001|the no-nulls guard",
+                    "an implausible row count on an elided chunk is refused before anything is allocated")
         expect.num(_count(c, "SELECT 1"), 1, "and the backend survives that refusal too")
 
 
@@ -337,7 +369,7 @@ def test_the_fetch_path_reads_an_elided_chunk_correctly(pgc_conn, expect):
         plan = [row[0] for row in c.fetchall()]
         expect.num(
             sum(1 for line in plan if line.lstrip().startswith("Index Scan using")), 1,
-            "premise: the arms below reach the row through an index scan",
+            "the arms below reach the row through an index scan",
         )
 
         # AND THE SHAPE THE NEXT ARMS ACTUALLY RUN. The premise above plans a

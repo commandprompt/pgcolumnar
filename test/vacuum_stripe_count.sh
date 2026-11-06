@@ -76,6 +76,20 @@ err_of() {  # err_of <sql> -> the ERROR line, connfail, or the literal noerror
 	esac
 }
 
+# refused_by_us <sql> -> "refused" only for pgcolumnar's own stripe_count refusal,
+# "accepted" when the call succeeds, or the other error. A refusal read as "anything
+# but noerror" passed on any error: aimed at a missing table, the call failed with
+# `relation "vsc_missing" does not exist` and read as the refusal.
+refused_by_us() {
+	local e
+	e="$(err_of "$1")"
+	case "$e" in
+		*"does not support a stripe_count bound"*) echo refused ;;
+		noerror) echo accepted ;;
+		*) echo "other error: $e" ;;
+	esac
+}
+
 # The helper is itself a claim, so prove it can say all three things before any
 # arm depends on it. Without this, the rewrite above could have been wrong in a
 # new way and every arm would still have looked fine.
@@ -126,10 +140,8 @@ check_num "and 0 also did the work" "$(groups_now)" "1"
 # A non-default stripe_count must be refused rather than accepted and ignored.
 # On unfixed code these calls SUCCEED, which is the defect.
 build_fixture
-before="$(groups_now)"
-refusal="$(err_of "SELECT pgcolumnar.vacuum('vsc', 4);")"
 check "a non-default stripe_count is refused rather than ignored" \
-	"$([ "$refusal" = noerror ] && echo accepted || echo refused)" "refused"
+	"$(refused_by_us "SELECT pgcolumnar.vacuum('vsc', 4);")" "refused"
 # The hint is a separate line of psql output, so it is read from the FULL error
 # block rather than from err_of, which deliberately returns only the ERROR line.
 # A refusal that does not name a working alternative is a dead end for the user.
@@ -143,7 +155,8 @@ check "and it is offered as a HINT, where psql shows it to the user" \
 # The refusal must not have done the work anyway. A message is not a behaviour:
 # if the rewrite ran before the argument was inspected, the table would already
 # be compacted and only the error would differ.
-check_num "the refused call did no work: the groups are untouched" "$(groups_now)" "$before"
+# NGROUPS, not a count read before the call: an empty rebuild read 0 both times
+check_num "the refused call did no work: the groups are untouched" "$(groups_now)" "$NGROUPS"
 check_num "and no rows were lost to it" "$(rows_now)" "$(( NGROUPS * ROWS_PER ))"
 
 # ---- the second instance, inherited rather than fixed separately ------------
@@ -152,9 +165,8 @@ check_num "and no rows were lost to it" "$(rows_now)" "$(( NGROUPS * ROWS_PER ))
 # pgcolumnar.vacuum, so it must inherit the refusal. If that propagation ever
 # stops, this arm is the only thing that would notice.
 check "vacuum_full inherits the refusal for a non-default stripe_count" \
-	"$([ "$(err_of "SELECT pgcolumnar.vacuum_full('public', 0.0, 4);")" = noerror ] && echo accepted || echo refused)" \
-	"refused"
-check_num "the refused vacuum_full did no work either" "$(groups_now)" "$before"
+	"$(refused_by_us "SELECT pgcolumnar.vacuum_full('public', 0.0, 4);")" "refused"
+check_num "the refused vacuum_full did no work either" "$(groups_now)" "$NGROUPS"
 check "vacuum_full's own default form still works" \
 	"$(err_of "SELECT pgcolumnar.vacuum_full('public', 0.0);")" "noerror"
 check_num "and it combined the groups" "$(groups_now)" "1"
@@ -165,9 +177,17 @@ check_num "and it combined the groups" "$(groups_now)" "1"
 # either, the refusal would be trading one false promise for another.
 build_fixture
 psql_run "DELETE FROM vsc WHERE id % 2 = 0;"
+# THE WORK, NOT THE GROUP COUNT. Each rewritten group is replaced by one new group, so
+# the table holds six groups whether compact_rewrite rewrote two, all six or none, and
+# the old "left more than one group" check passed all three (measured: with the bound
+# ignored, and with the rewrite made a no-op). Every group holds deleted rows going in,
+# so the groups that still hold some are the ones it did not rewrite.
+cr_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -At -v ON_ERROR_STOP=0 -c "SELECT pgcolumnar.compact_rewrite('vsc', 0.1, 2);" 2>&1)"
 check "premise: compact_rewrite's bounded form is accepted" \
-	"$(err_of "SELECT pgcolumnar.compact_rewrite('vsc', 0.1, 2);")" "noerror"
-check "the named alternative left more than one group, so the bound did something" \
-	"$([ "$(groups_now)" -gt 1 ] && echo bounded || echo unbounded)" "bounded"
+	"$(case "$cr_out" in *ERROR:*) printf '%s\n' "$cr_out" | grep -m1 'ERROR:' ;; *) echo noerror ;; esac)" "noerror"
+check "the named alternative rewrote exactly its bound and left the other groups alone" \
+	"rewrote ${cr_out:-nothing} of $NGROUPS groups, $(q "SELECT count(*) FROM pgcolumnar.stats('vsc') WHERE deletedrows > 0;") still hold deleted rows" \
+	"rewrote 2 of $NGROUPS groups, $(( NGROUPS - 2 )) still hold deleted rows"
 
 pgc_summary

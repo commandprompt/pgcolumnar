@@ -106,9 +106,10 @@ fail=0
 # return nothing on this log, it REFUSED it: "no RESULT records, so there is
 # nothing to reconcile".
 #
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
+# THROUGH pgc_pass AND pgc_fail, NOT pgc_record (#1341). A suite that calls the
+# primitive directly can have no pytest twin (test_compare_to_bash.py's
+# extractor arm), and this one now has one. A failure still shows the measured
+# values; a pass shows the name, as lib.sh's own `check` does.
 #
 # `fail` is still set, so this suite's exit logic is untouched. Its verdict line
 # stays for the same reason: under `set -euo pipefail` a failing command aborts the
@@ -122,37 +123,51 @@ fail=0
 check() {
 	local name="$1" got="$2" want="$3"
 	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
+		pgc_pass "$name"
 	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
+		pgc_fail "$name" "got [$got] want [$want]"
 		fail=1
 	fi
 }
 
-# Run a query with vectorization on and with it off; assert the two results are
-# identical (and non-empty), and optionally equal to a known expected value.
+# Run a query with vectorization on, with it off, and against the HEAP ORACLE;
+# assert all three agree (and are non-empty), and optionally equal a known value.
+#
+# ON AGAINST OFF IS NOT AN ORACLE (#1341). Both read the same columnar decode,
+# and for every filtered query, every fallback aggregate and every row scan below
+# the two plans are identical (measured on 17: 21 of the 39 queries plan the same
+# with vectorization on and off), so the comparison is of a path with itself. A
+# float decode that changed one value per vector passed every check here. The
+# oracle is schema `oracle`, heap tables of the same names, filled by the same
+# generator statements and the same DELETE, never copied from the columnar
+# tables; the query runs there unchanged under its search_path.
 eq_on_off() {
 	local name="$1" query="$2" expect="${3:-}"
-	local on off
+	local on off heap
 	on="$(run_pg "$PSQL -c \"SET pgcolumnar.enable_vectorization=on;  $query\"")"
 	off="$(run_pg "$PSQL -c \"SET pgcolumnar.enable_vectorization=off; $query\"")"
+	heap="$(run_pg "$PSQL -c \"SET search_path = oracle; $query\"")"
 	# THREE OUTCOMES, ONE RECORD EACH, including both early returns. A `return`
 	# that skips the record would leave the check counted nowhere, which is the
 	# state this whole conversion exists to end.
-	if [ -z "$on" ] || [ "$on" != "$off" ]; then
-		pgc_record FAIL "$name" "FAIL  $name: vectorized [$on] != scalar [$off]"
+	if [ -z "$on" ] || [ "$on" != "$off" ] || [ "$on" != "$heap" ]; then
+		pgc_fail "$name" "vectorized [$on] scalar [$off] heap [$heap]"
 		fail=1
 		return
 	fi
 	if [ -n "$expect" ] && [ "$on" != "$expect" ]; then
-		pgc_record FAIL "$name" "FAIL  $name: got [$on] want [$expect]"
+		pgc_fail "$name" "got [$on] want [$expect]"
 		fail=1
 		return
 	fi
-	pgc_record PASS "$name" "PASS  $name: $on"
+	pgc_pass "$name"
 }
 
+# heap() runs the same statement against the oracle schema
+heap() { q "SET search_path = oracle; $1"; }
+
 q "CREATE EXTENSION pgcolumnar;" >/dev/null
+q "CREATE SCHEMA oracle;" >/dev/null
 
 # ---------------------------------------------------------------------------
 # A multi-chunk-group table: 50000 rows at the default 10000-row chunk group is
@@ -162,6 +177,9 @@ q "CREATE EXTENSION pgcolumnar;" >/dev/null
 echo "-- multi-chunk-group table"
 q "CREATE TABLE t (id int, s smallint, big bigint, f float8, n numeric, label text) USING pgcolumnar;" >/dev/null
 q "INSERT INTO t SELECT g, (g%1000)::smallint, g::bigint, g*0.5, (g||'.75')::numeric, 'row'||g
+     FROM generate_series(1,50000) g;" >/dev/null
+heap "CREATE TABLE t (id int, s smallint, big bigint, f float8, n numeric, label text);" >/dev/null
+heap "INSERT INTO t SELECT g, (g%1000)::smallint, g::bigint, g*0.5, (g||'.75')::numeric, 'row'||g
      FROM generate_series(1,50000) g;" >/dev/null
 check "row count" "$(q "SELECT count(*) FROM t;")" "50000"
 check "vectors formed" \
@@ -216,6 +234,12 @@ q "INSERT INTO nt SELECT
      CASE WHEN g % 3 = 0 THEN NULL ELSE g % 10 END,
      CASE WHEN g % 7 = 0 THEN NULL ELSE 'v'||g END
      FROM generate_series(1,30000) g;" >/dev/null
+heap "CREATE TABLE nt (a int, code int, txt text);" >/dev/null
+heap "INSERT INTO nt SELECT
+     CASE WHEN g % 5 = 0 THEN NULL ELSE g END,
+     CASE WHEN g % 3 = 0 THEN NULL ELSE g % 10 END,
+     CASE WHEN g % 7 = 0 THEN NULL ELSE 'v'||g END
+     FROM generate_series(1,30000) g;" >/dev/null
 eq_on_off "count(*) with nulls"   "SELECT count(*) FROM nt;"        "30000"
 eq_on_off "count(a) skips nulls"  "SELECT count(a) FROM nt;"        "24000"
 eq_on_off "sum(a) ignores nulls"  "SELECT sum(a) FROM nt;"
@@ -266,6 +290,7 @@ eq_on_off "count distinct"        "SELECT count(DISTINCT s) FROM t;" "1000"
 # ---------------------------------------------------------------------------
 echo "-- aggregate and scan honor the delete vector (deletes)"
 q "DELETE FROM t WHERE id % 2 = 0;" >/dev/null
+heap "DELETE FROM t WHERE id % 2 = 0;" >/dev/null
 eq_on_off "count after delete"  "SELECT count(*) FROM t;"  "25000"
 eq_on_off "sum after delete"    "SELECT sum(id) FROM t;"
 eq_on_off "scan after delete"   "SELECT md5(string_agg(id::text, ',' ORDER BY id)) FROM t WHERE id < 1000;"

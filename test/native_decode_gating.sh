@@ -84,38 +84,40 @@ PLAN_CONTROL="$(explain_of "$CONTROLQ")"
 
 # ---- premises --------------------------------------------------------------
 
-check "premise: the needle plan is a columnar custom scan" \
+check "the needle plan is a columnar custom scan" \
 	"$(has_line "$PLAN_NEEDLE" 'Columnar Projected Columns')" "yes"
-check "premise: one row group, so every count below is one group's" \
+check "one row group, so every count below is one group's" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('n');")" \
 	"1"
-check "premise: the width gate is pinned off, so this narrow projection still gates" \
+check "the width gate is pinned off, so this narrow projection still gates" \
 	"$(q "SHOW pgcolumnar.qual_skipvec_min_payload_cols;")" "0"
 
 # The whole point of the fixture is that this qual is NOT admitted to the reader.
 # If a future #426 taught the reader to prune an infix LIKE, numPredicates would
 # be non-zero, 1b-ii would do the ruling out, and this suite would pass without
 # phase 2 existing. So assert the unprunable shape rather than assume it.
-check "premise: the reader has no usable skip predicate for this LIKE" \
+check "the reader has no usable skip predicate for this LIKE" \
 	"$(counter_in "$PLAN_NEEDLE" 'Columnar Usable Skip Predicates')" "0"
-check "premise: no whole row group is pruned" \
+check "no whole row group is pruned" \
 	"$(counter_in "$PLAN_NEEDLE" 'Columnar Chunk Groups Removed by Filter')" "0"
-check "premise: no vector is ruled out by VALUE either (that is 1b-ii's path)" \
+check "no vector is ruled out by VALUE either (that is 1b-ii's path)" \
 	"$(counter_in "$PLAN_NEEDLE" 'Columnar Vectors Ruled Out by Value')" "0"
 
 # Phase 2 rides on 1a's callback, so 1a's path must be the one in use. Its
 # counter is present only when late materialization is active, which is also what
 # puts the qual on the scan with tag as a qual column. If this line is absent the
 # qual is being applied somewhere else and no count below measures phase 2.
-check "premise: the needle query takes the late-materialization path" \
+check "the needle query takes the late-materialization path" \
 	"$(has_line "$PLAN_NEEDLE" 'Columnar Rows Filtered Before Materialization')" "yes"
 
+# The fixture's shape, read from the heap mirror the same generator filled (#1339):
+# read from the columnar table, a one-line reader change reddened these premises.
 check "premise: the needle really matches one vector's worth of rows" \
-	"$(q "SELECT count(*) FROM n WHERE tag LIKE '%needle%';")" "1024"
+	"$(q "SELECT count(*) FROM h WHERE tag LIKE '%needle%';")" "1024"
 check "premise: the nomatch predicate matches no row" \
-	"$(q "SELECT count(*) FROM n WHERE tag LIKE '%zzzzz%';")" "0"
+	"$(q "SELECT count(*) FROM h WHERE tag LIKE '%zzzzz%';")" "0"
 check "premise: the control matches every row" \
-	"$(q "SELECT count(*) FROM n WHERE tag LIKE '%row%';")" "$ROWS"
+	"$(q "SELECT count(*) FROM h WHERE tag LIKE '%row%';")" "$ROWS"
 
 # ---- the observable, and its unit ------------------------------------------
 
@@ -172,6 +174,20 @@ check "the zero-match query removes every row by filter, counted once" \
 check "and skips every vector" \
 	"$(counter_in "$PLAN_NOMATCH" 'Columnar Vectors Skipped')" "$VECTORS"
 
+# A SURVIVING VECTOR WITH REJECTS IN IT (#1341). Every row of the needle's
+# surviving vector matches, so the producer, re-testing that vector to find its
+# rows, finds nothing to reject: a producer that counted those rejections a second
+# time read exactly right above. Measured, with the producer's non-counting filter
+# disabled, this file stayed 26/26. Half of vector 0 passes this qual (p1 % 2 = 0 is
+# an expression, so it is no skip predicate either), so its 512 rejections are
+# counted twice by that mistake.
+HALFQ="SELECT * FROM n WHERE tag LIKE '%needle%' AND p1 % 2 = 0"
+PLAN_HALF="$(explain_of "$HALFQ")"
+check "premise: the half-needle survives in one vector, half of its rows" \
+	"$(q "SELECT count(*) || '|' || count(DISTINCT (p1 - 1) / 1024) FROM h WHERE tag LIKE '%needle%' AND p1 % 2 = 0;")" "512|1"
+check "rejections inside a surviving vector are counted once" \
+	"$(counter_in "$PLAN_HALF" 'Rows Removed by Filter')" "$(( ROWS - 512 ))"
+
 # ---- correctness -----------------------------------------------------------
 #
 # The mask must never drop a row. Without these, an implementation that marks
@@ -205,13 +221,18 @@ MGEN="SELECT 'x' || CASE WHEN g % 4096 = 7 THEN 'needle' ELSE 'miss' END || g::t
 psql_run "INSERT INTO hm $MGEN;"
 psql_run "INSERT INTO m  $MGEN;"
 psql_run "DELETE FROM hm WHERE p1 % 17 = 0;"
-psql_run "DELETE FROM m  WHERE p1 % 17 = 0;"
+# The fixture's DELETE must not depend on the gating under test: its WHERE is an
+# unprunable qual too, so it is run with the width gate out of reach (#1341).
+psql_run "SET pgcolumnar.qual_skipvec_min_payload_cols = 100000; DELETE FROM m  WHERE p1 % 17 = 0;"
 
-check "premise: the columnar table spans more than one row group" \
+check "the columnar table spans more than one row group" \
 	"$(q "SELECT count(*) > 1 FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('m');")" \
 	"t"
-check "premise: rows really were deleted (so the mask is non-NULL)" \
-	"$(q "SELECT count(*) FROM m WHERE p1 % 17 = 0;")" "0"
+# count(*) rather than a count WHERE p1 % 17 = 0: that WHERE is an unprunable qual
+# too, so it ran through the very gating under test, and a gating mutant broke this
+# premise rather than the arms below (#1341).
+check "rows really were deleted (so the mask is non-NULL)" \
+	"$(q "SELECT count(*) FROM m;")" "$(( MROWS - MROWS / 17 ))"
 
 check "deletes + multiple groups + unprunable qual: columnar matches the heap" \
 	"$(pgc_set_hash "SELECT * FROM m  WHERE tag LIKE '%needle%'")" \
@@ -219,5 +240,14 @@ check "deletes + multiple groups + unprunable qual: columnar matches the heap" \
 check "and the full scan across every group's mask matches too" \
 	"$(pgc_set_hash "SELECT * FROM m")" \
 	"$(pgc_set_hash "SELECT * FROM hm")"
+
+# AND THE COUNTER SKIPS DELETED ROWS (#1341). The evaluator must not count a deleted
+# row as filtered: it is invisible. Only the single-group table above had its
+# counters checked, and it has no deletes, so with the evaluator's deleted-row test
+# removed this file stayed 26/26.
+PLAN_M="$(explain_of "SELECT * FROM m WHERE tag LIKE '%needle%'")"
+check "rows removed by filter across deleted rows count only live rows" \
+	"$(counter_in "$PLAN_M" 'Rows Removed by Filter')" \
+	"$(q "SELECT count(*) FROM hm WHERE tag NOT LIKE '%needle%';")"
 
 pgc_summary

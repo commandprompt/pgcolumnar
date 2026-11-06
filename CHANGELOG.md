@@ -18,6 +18,42 @@ true until the next version shipped.
 
 ### Added
 
+- `pgcolumnar.objstore_pin_reads`, a new setting, turns off the version pin of a
+  remote read (#1866). It is on by default. Since #1805 a remote read sends the
+  HEAD's ETag as `If-Match`, so a server whose ETag changes on every request for
+  the same bytes failed every read with `changed while it was being read`. Off,
+  the reader sends no `If-Match` and no `versionId`, and such a server reads
+  again. The read can then mix two versions of an object overwritten with the
+  same length. docs/configuration.md and docs/limitations.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+
+- `pgcolumnar.export_group_bytes`, a new setting, caps the bytes `export_parquet`,
+  `export_arrow` and `parallel_export_parquet` buffer for one Parquet row group or
+  Arrow record batch (#1811). It is 256 MiB by default, which is also its maximum,
+  and at least 1024. Lower it to bound the memory an export holds.
+  docs/configuration.md and docs/limitations.md.
+- `pgcolumnar.approx_count_distinct(col)` with no WHERE or GROUP BY is answered from
+  the sketches `sketch_columns` stores (#1309, phase 3). It merges each row group's
+  sketch, and reads only the groups with deleted rows or with no sketch. The answer
+  equals reading every row. On 8.75M rows it took 0.8 ms, against 254 ms reading
+  the rows and 310 ms for `hll_add_agg`. EXPLAIN ANALYZE reports the groups folded
+  and scanned. `test/native_sketch_fold.sh` and `test_native_sketch_fold.py`.
+- `pgcolumnar.approx_count_distinct(value)` estimates the number of distinct
+  non-NULL values with a HyperLogLog of 2048 registers, a standard error of about
+  2.3% (#1309, phase 2). It works on any table and in parallel plans. It uses the
+  same hash and register rule as the per-row-group sketches `sketch_columns`
+  writes, which a later phase will fold instead of scanning. A type with no
+  extended hash function, or a nondeterministic collation, is refused with
+  SQLSTATE 0A000. `test/native_sketch_agg.sh` and `test_native_sketch_agg.py`.
+- `set_options(t, sketch_columns => ARRAY[...])` gives each named column a
+  distinct-count sketch in every row group it writes from then on (#1309, phase 1):
+  a HyperLogLog of 2048 one-byte registers in the new catalog `pgcolumnar.sketch`,
+  about 2 KB per row group per column. Nothing reads the sketches yet; the
+  aggregate that does arrives in a later phase. The option refuses a column whose
+  type has no extended hash function or whose collation is nondeterministic
+  (SQLSTATE 0A000). Hashing a column adds about 3% to insert time for a bigint and
+  4% for a 96-byte text column, measured on #1309; a table that names no column
+  pays nothing. `test/native_sketch.sh` and `test_native_sketch.py`.
 - `pgcolumnar.partition_drop_plan(parent, cutoff)` returns the statements that
   retire every time partition whose whole range is older than `cutoff`: a
   `DETACH PARTITION ... CONCURRENTLY` and a `DROP TABLE` each, in range order,
@@ -235,7 +271,104 @@ true until the next version shipped.
   depends on. A path a foreign table in the database reads is refused; a retry
   over a failed attempt's file is allowed.
 
+- Three object-storage and row-group behaviours that the docs state now have
+  checks (#1887). `iceberg_current_snapshot` reads an `s3://` metadata file
+  (`test/iceberg_objstore.sh`). A role with no user mapping reads through a
+  `pgcolumnar_iceberg` table with the server's credentials, and is refused on a
+  `pgcolumnar_parquet` table (`test/objstore_credentials.sh`). An int4 constant
+  on an int2 column, an int8 constant on an int4 column, a float8 constant on a
+  float4 column and a date constant on a timestamp column each skip row groups
+  (`test/parquet_skip_cross_type.sh`). Each has a pytest twin.
+
 ### Changed
+
+- `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
+  file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
+  snapshot records its position-delete file as ORC and another records its
+  equality-delete file as AVRO. Both files are really Parquet, so a reader
+  without the refusal would read them and drop rows with no error. Before, the
+  two refusals could be removed with every check still green.
+  `gen_delete_fixture.py` writes the two snapshots.
+- `iceberg_scan` finds each data file's position deletes through an index
+  built once per scan (#1868). It used to walk every position-delete row for
+  each data file, so the work grew with data files times delete rows. The rows
+  are now grouped by data file, and each data file reads only its own group.
+  Two paths share a group exactly when the walk's comparison called them the
+  same file: `file://` is dropped, `s3://`, `s3a://` and `s3n://` are one
+  prefix, and `file://s3://b/k` is not `s3://b/k`. On a table of 32 data files
+  and 106 delete rows the scan visits 104 rows, where the walk visited 3392.
+  Two DEBUG1 lines report the index and each lookup. `test/iceberg_deletes.sh`
+  and `test_iceberg_deletes.py` check the counts and the survivors, against a
+  new fixture, `warehouse_posmany`, and a delete file that names its `s3://`
+  data file as `s3a://` and as `file://s3://`.
+- `test/objstore_listing.sh` and `test_objstore_listing.py` now run their listing
+  arms against a real S3 implementation when `PGC_S3_INTEGRATION_ENDPOINT` is set
+  (#1798). The real-S3 block used to be empty, so prefix, glob, paged and
+  hidden-name listing had only met the repo's fixture server. The arms upload a
+  layout under a per-run prefix and compare each remote prefix and glob read with
+  the same layout read from local disk. One prefix holds 1100 objects, which a real
+  server cannot list in one 1000-key page, so its 1100 rows prove the client
+  followed a real continuation token. With `PGC_S3_INTEGRATION_VHOST_ENDPOINT` also
+  set, a virtual-host prefix read must match the path-style one. The arms are
+  opt-in, as the sibling suites' are, and CI does not run them.
+- With `PGC_S3_INTEGRATION_*` set, `test/objstore_sink_write.sh` no longer ends at
+  its restart into the real endpoint when an earlier arm crashed a backend
+  (#1850). A fast stop sent while the server replayed WAL after the crash did not
+  finish in 60 s, and the suite exited before its summary. The restart now waits
+  for recovery first, and a restart that still fails is a named red, so the other
+  arms' reds reach the summary. The listing suite and both twins do the same.
+- The Iceberg REST functions report a missing namespace as SQLSTATE `3F000`, not
+  `42P01` (#1820). They do this when the catalog's 404 reply has the type
+  `NoSuchNamespaceException`. The message now says "no such namespace". A client
+  that caught `42P01` for a missing namespace must now catch `3F000`. A missing
+  table is still `42P01`. Every error reply from the catalog, not only a 404,
+  now puts the catalog's own message in the error detail, as
+  `The catalog said: <message>`. `docs/sql-reference.md` lists the SQLSTATE for
+  each catalog reply. An error reply nested too deep to parse now raises the
+  parser's own error, SQLSTATE `54001`, instead of being dropped.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+- The ledger budget, `test/check_ledger_budget.txt`, holds only its header and its
+  two numbers (#1431). Every PR that changed the ledger used to append its
+  derivation above the census line, so any two such PRs conflicted there. The
+  derivation now goes in the commit message, which ends with a
+  `Ledger-census: rows=N never=N dated=N` trailer.
+  `pgc_ledger.py census-commits` checks the trailer of every commit that
+  changes the tsv against the tsv at that commit, and the runner calls it after
+  the ledger gate. The 7142 lines of history are in git:
+  `git show 6ae11a38:test/check_ledger_budget.txt`.
+  `test/selftest/410-a-check-must-have-been-red.sh` and
+  `test_mutation_ledger.py`.
+- Past `pgcolumnar.groupagg_max_groups`, a grouped vectorized aggregate whose
+  aggregates all have a partial state no longer errors (#1300). The node runs as
+  a Partial node under a core `Finalize HashAggregate`; at the cap it hands its
+  groups' partial states to the `Finalize`, empties its table and carries on, and
+  `EXPLAIN ANALYZE` counts the hand-offs as `Columnar Group Table Flushes`, and
+  reports the most the table held at once as `Columnar Group Table Peak Memory`. This
+  covers `count`, `sum` and `avg` over integer and float columns, and `min` and
+  `max`. A plan that outlives its bound (the cap lowered under a prepared
+  statement, or the table grown past it) now answers what core answers. The
+  other aggregates, `sum` and `avg` over `bigint` and `numeric`, keep the
+  serial node, which at the cap writes its groups to a sort (spilling within
+  `work_mem`), empties its table, and at the end merges each group's parts and
+  finishes them once, so the value and scale are core's. A group key with no
+  ordering gets the ordinary plan. The `groupagg_max_groups` error is no longer
+  reached. The `Finalize` is priced as
+  free, measured on #1300: 0.97 to 1.02 of the bare node's runtime from 10 to 1M
+  groups, so no plan choice changes.
+
+- **A Parquet timestamp read into the other PostgreSQL timestamp type is
+  converted in the session's time zone.** The reader ignored the file's
+  `isAdjustedToUTC` flag. A wall-time column read into `timestamptz` was taken as
+  UTC (12:00 read as 08:00-04 in a New York session), and a UTC-adjusted column
+  read into `timestamp` kept its UTC wall time. Both now follow PostgreSQL's casts.
+  Same-type reads are unchanged, and so is any read in a UTC session (#1706).
+  A legacy `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` column with no logical type,
+  as pgcolumnar's own exporter wrote before #1707, is read as UTC-adjusted, as
+  the Parquet format defines it. The Iceberg foreign table no longer prunes on a
+  `year()`, `month()`, `day()` or `hour()` partition whose source column is the
+  other timestamp type: its partition values are in the source's type, so they
+  no longer bound the converted rows.
+  `test/parquet_timestamp_zone.sh`, `test/iceberg_fdw.sh` and their twins.
 
 - `GROUP BY` is vectorized by default (#1292).
   `pgcolumnar.enable_group_vectorization` is now `on`. The planner takes the
@@ -401,6 +534,1740 @@ true until the next version shipped.
 
 ### Fixed
 
+- Self-test part 540 now reads a `[[ ]]` test whose unquoted regex after `=~`
+  holds a bracket class, as in `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]`
+  (#2027). The test ended at the `]` of the class, so the part never examined
+  such an arm. It now reads the regex as one word, as bash does: a group with
+  `|` or a blank, a quoted part and an escaped blank stay in it. No arm in the
+  tree has this shape, so `test/lossy_arms.tsv` and every suite are unchanged.
+- Self-test part 540 reads a check arm whose operands are unquoted array
+  elements (#2023). In `[ ${sizes[3]} -le ${sizes[1]} ]` the `]` of the first
+  subscript ended the test, so the sweep never examined the arm, and a lossy
+  arm passed. The `[[ ]]` and if/then/else spellings had the same gap. Now the
+  sweep hides each `${` up to the first `]` with no `}` before it, then looks
+  for the end of the test. The quoted form, `"${sizes[3]}"`, from the issue's
+  own probe, was already read since #2002. The new control "control: the sweep
+  reads array elements, quoted or not, in every spelling" pins each part of
+  the pattern with a fixture arm. No live arm changes: the tree sweep still
+  gives the 136 rows in `test/lossy_arms.tsv`. A `]` or `}` inside the
+  `${...}` that is not quoted, in the subscript or after it, as in
+  `${s[${i}]}`, `${s[3]%]*}` or `${s[3]:-[0]}`, still ends the test early.
+- `harness_selftest` fails on a suite listed twice in `SUITES`, and on a suite
+  in `SUITES` that a `not_a_suite` list excuses (#2025, #2026). Part 060's
+  sorted check compares the list with `sort`, which keeps duplicates, so a
+  name listed twice next to itself passed, and the matrix ran that suite twice
+  in every job. Part 220 checks only that the two `not_a_suite` lists agree, so
+  a registered suite that both lists excuse dropped out of the coverage report
+  with every check green. The new check "no suite is listed twice in SUITES
+  (#2025)" prints the duplicate names. The new check "no suite in SUITES is
+  excused by either not_a_suite list (#2026)" puts every registered name
+  through both lists and prints each one excused, with the lists that excuse
+  it. Each has a fixture copy of the runner that must be reported by name: the
+  first suite listed twice, and a test file both lists excuse registered as a
+  suite. With `native_scale` listed twice, or registered while both lists
+  excuse it, the matching check now fails and names it.
+- Self-test part 540 reads three more check arms correctly (#2007, #2011,
+  #2012). It excuses `[ -a = "$arg" ]` and `[ -o != "$arg" ]`, where the first
+  word `-a` or `-o` is an operand of `=`, `!=` or `==` and not a join. A later
+  join, as in `[ -a = x -a "$b" -le 3 ]`, is still refused. It reads a branch
+  written with `printf` as it reads `echo`, so `&& printf yes || echo no` and an
+  if/then/else with a `printf` branch are refused, while `printf '%s' "$x"`
+  carries its value and stays excused. It looks for a carried `$` only up to
+  the `)` that closes the arm, so a `$` in a later argument such as
+  `"$(want)"` no longer excuses the arm; a `)` in quotes or in a subshell does
+  not end it. A branch that ends in a bare `$`, as in `|| echo no$)`, still
+  excuses the arm, as on main, and is recorded as a known limit. A mutant
+  sweep changed the regular expressions and conditions this change added or
+  touched in 225 ways. Under mawk and gawk alike, 134 fail a named check and 91
+  pass, and the 91 give the same verdict as the fixed sweep on about 45,000
+  generated arms. The tree sweep still finds the same 70
+  arms, so no suite changed.
+- `catalog_delete_index`, `maintenance_crash`, `maintenance_rollback`,
+  `native_reclaim` and `native_scale` no longer fail while another session holds an old snapshot
+  (#2010). In the first three, `compact` returned 0 while a transaction older
+  than the `DELETE` was open, so the checks on what it retired read 0 or
+  `unchanged`. Each `compact` is measured once, so it cannot be repeated. These
+  suites and their pytest twins now wait until nothing holds the horizon at
+  the `DELETE`, and new checks want that count to be 0. Each wait lasts up to
+  30 s; `catalog_delete_index` waits once per target table, so up to 90 s per
+  phase.
+  `catalog_delete_index` and its twin also wait before their `VACUUM`
+  readings: the vacuum reads a group's deletes only past the horizon, so
+  `premise: the vacuum walked this table's groups` read 0. In
+  `native_scale`, a held snapshot kept each rewrite from reusing freed space,
+  so the file grew and `reclaim reached steady state` failed. Rounds 2 to 4,
+  which that check reads, now wait until nothing holds the horizon at the
+  newest freed range, and a new check per round wants that count to be 0.
+  `native_reclaim` and its twin had the same defect in their recluster loop:
+  under a held snapshot each recluster appended, so `repeated recluster
+  reuses space (file plateaus)` and `free space is being reused` failed.
+  Each of the four repeated reclusters now waits the same way, with a new
+  check per recluster. The other 21 suites that #2010 lists were checked and
+  need no change.
+  docs/testing.md.
+- `native_scale` now runs in CI (#2018). No job ran it before: it was missing
+  from the `SUITES` list in `test/run_all_versions.sh`, and `run_coverage.sh`
+  refused it by name. It is in the list now, so the per-PR gate runs it on
+  PostgreSQL 17 and 18, and the nightly runs it on 15 to 18 on x86_64, on 18 on
+  aarch64, and in the coverage report. A new pytest twin, `test_native_scale.py`,
+  runs in the pytest-cluster job at 200000 rows (`SCALE_N=200000`), so that job
+  stays inside its 40-minute limit. The harness self-test no longer excuses it
+  from "every suite is registered in run_all_versions.sh".
+  The suite's steady-state check now prints both file sizes when it fails.
+  The suite now checks that each `recluster` and `compact_rewrite` call returned
+  a group count, and prints the error when one did not. Before, it threw the
+  error away: with the allocator's `CommandCounterIncrement` removed, `recluster`
+  failed with "tuple already updated by self" and the suite still passed 14/14.
+- `native_scale`: reclaim round 4 now deletes rows, so the steady-state check
+  tests a fourth round of reuse (#2024). Round 4 deleted `id % 8 = 4`, but every
+  such id also has `id % 4 = 0`, and an earlier delete removed those. So round 4
+  deleted nothing and rewrote nothing, and the check really compared round 3
+  with round 2. A mutant that turned off free-space reuse from round 4 on passed
+  all 20 checks. Round 4 now deletes `id % 8 = 5`. A new check per round and
+  table wants the delete to remove the whole slice. The suite and its pytest
+  twin change together; the twin's two "round 4 deletes no rows" checks are
+  gone. A second new check per round wants `compact_rewrite` to rewrite at
+  least one group. Before, a rewrite that returned 0 passed: the file kept its
+  size, and the plateau check read that as reuse.
+- Self-test part 540 now reads three more spellings of a check arm that
+  prints only `no` when it fails (#1986, #1989). It reads `[[ ... ]]` and the
+  `test` builtin, as well as `[ ... ]`. It excuses the mirrored
+  nothing-versus-something tests `[ 0 -lt "$x" ]` and `[ 1 -le "$x" ]`, which
+  it used to refuse. `-lt 1` and `-le 0` stay refused: they fail on every count
+  above 0. It no longer excuses a compound test joined by `-a`, `-o`, `&&` or
+  `||`. Such a test used to pass when it ended in `-gt 0` or held an equality,
+  so `no` hid which half failed. `&&` and `||` count without spaces around
+  them. A `-a` or `-o` with no test after it, as in `[ "$arg" = -a ]`, is an
+  operand and not a join. It ignores quotes, command substitutions and
+  backticks when it looks for a compound, so
+  `"$(grep -c "x)" f || true)" -gt 0` is still excused. A `test` no longer
+  ends at a `<` or `|` inside a substitution, so `test "$(wc -l < f)" -ge 20`
+  is read whole. A redirect into a quoted path with a space, in double or
+  single quotes such as `2>"a b"` or `2>'a b'`, no longer hides an arm, and
+  nor does a noclobber redirect such as `>|x`. New fixture arms pin the end
+  anchors of the `-gt 0` and `-ge 1` excuses. Mutant sweeps changed each
+  regular expression this change added. A review sweep found 8 changes to the
+  single-quoted redirect target that hid a valid arm while every check passed,
+  such as `2>'a b'x`. Three new fixture arms make each of the 8 fail the
+  redirect control. The changes that still pass either give the same verdict
+  on every generated arm or differ only on shapes the part records as known
+  limits: `&& printf` (#2011), `[ ""0 -lt "$x" ]`, and a redirect target that
+  joins a word or quoted part to a quoted part with a space, such as
+  `2>x"y z"` (#2019).
+  The wider sweep finds no new arm in the test suites, so no suite changed.
+- Self-test part 540 now examines three more shapes of a check arm that prints
+  only `no` when it fails (#1997, #2002, #2019), and pins more of its own rules
+  (#2006).
+  - Two tests chained outside the brackets, as in
+    `[ "$b" -le "$c" ] && [ "$a" -gt 0 ] && echo yes || echo no`, are a
+    compound, and the part refuses them (#1997). It used to read only the
+    first test, so it never examined these arms. It also joins a line whose
+    code ends in `&&` or `||` inside a `$(` that is still open to the next,
+    as bash does. It skips a comment line there and cuts off a trailing
+    comment. It does not join a line whose `&&` or `||` sits in a comment, an
+    open string or top-level code, a line where an earlier `$(` already
+    closed back to the top level, or a next line that holds a check call. The
+    compound probe pins each shape the reviews found, and on each one the arm
+    main read keeps its name and its verdict.
+    The tree holds 66 such
+    arms in 39 suites. `test/lossy_arms.tsv` lists them, and grows from 70 to
+    136 rows. No suite changed for this.
+  - A `]` inside quotes or a substitution, as in `"${sizes[5]}"`, no longer
+    ends a test early (#2002). This hid seven lossy arms in six suites:
+    `native_reclaim_cycles`, `native_scale`, `logical_decoding_cdc_recipe`
+    and self-test parts 250, 300 and 510. Each arm now prints its numbers
+    when it fails, for example `no (cycle 5 size 16384, cycle 2 size 8192)`.
+    No check is renamed and no pass condition changed.
+  - A redirect target made of several parts, where a later part is quoted and
+    holds a space, such as `2>x"y z"` or `>'a''b c'`, no longer hides an arm.
+    Nor does an ANSI-C quoted target such as `2>$'a b'` (#2019).
+  - New fixture arms pin parts of the older regular expressions that a mutant
+    sweep could change while every check stayed green (#2006).
+  - The part sorts and compares the lists of arms with `LC_ALL=C`. Under
+    `en_US.UTF-8`, `comm` called the lists unsorted, and a red run named an
+    arm that was tracked.
+  - The `logical_decoding_cdc_recipe` premise arm shows an empty INSERT count
+    as `[]` when it fails, and no longer prints an `integer expected` error.
+- `native_fetch_group_memo` and its pytest twin no longer fail when another
+  session holds an old snapshot during the same-statement `compact` arm
+  (#1993). `compact` runs once, inside the checked statement, and returned 0
+  while a transaction older than the `DELETE` was open. The check then read
+  `10|f|0`. Both harnesses now wait up to 30 s until nothing holds the horizon
+  at the `DELETE`, and a new check wants that count to be 0. New helpers:
+  `pgc_wait_delete_past_horizon` in `test/lib.sh` and
+  `wait_delete_past_horizon` in `test/pytest/pgc_horizon.py`. Table `fd` has
+  autovacuum off. docs/testing.md.
+- `native_truncate`'s `GUC off: truncate does nothing` no longer passes when
+  another session locks the table (#1994). `truncate` returns 0 when it cannot
+  take its lock at once, whatever the setting says. A new check in both
+  harnesses, `GUC off: no other session held a lock on n before or after the
+  call`, wants 0 locks just before and just after the call. The same false
+  pass hit `truncate before any delete is a no-op` and `second truncate is a
+  no-op`, so each now has a lock check too: `truncate before any delete: no
+  other session held a lock on n before or after the call` and `second
+  truncate: no other session held a lock on n before or after the call`.
+  docs/testing.md.
+- `replication` and its pytest twin now check that the horizon helper counts a
+  standby that holds truncate back with `hot_standby_feedback` on, through its
+  replication slot and, with no slot, through its walsender (#1999). Before,
+  the helper could leave out either term and both harnesses still passed.
+  docs/testing.md.
+- The Parquet reader's walk of a local glob now stops after 1,000,000 steps
+  with error 54000, and a cancel stops it (#1984). The reader expands a local
+  pattern with `glob(3)` on the filesystem. Each real directory lists `.` and
+  `..`, and `.*` matches both, so each level of `.*/` multiplies the walk.
+  `glob(3)` does not check for interrupts. So
+  `read_parquet('<empty dir>/' || repeat('.*/', 18) || 'x.parquet')` ran for
+  minutes, grew the backend to 2.2 GB, and ignored `statement_timeout`,
+  `pg_cancel_backend` and `pg_terminate_backend`. Now the reader passes
+  `glob(3)` callbacks that count each directory opened, name read and `stat`.
+  They use the bound and the error of `path_glob_matches` (#1973). When a
+  cancel, a timeout or a termination is pending they end the walk, and the
+  reader then raises its error. An interrupt that raises no error, such as
+  `client_connection_check_interval`, does not end the walk. The reader
+  never reads the list of a walk that stopped. If a cancel cannot be
+  processed, because interrupts are held off, the reader walks again, and
+  after 100 attempts it fails with 57014 `could not expand pattern "...":
+  interrupted 100 times`. The 18-level pattern is refused after about
+  0.25 s on PostgreSQL 18. The bound counts every name the walk reads across
+  all the directories it reaches. So a glob over about 1,000,000 names in
+  all is refused too, even a partitioned tree whose directories are each
+  small; a directory read of the same tree works. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  twin.
+- `native_compact`, `replication` and their pytest twins no longer fail when
+  another session holds an old snapshot during `compact` or `truncate` (#1987).
+  They called each one once, and a held snapshot made the call do nothing. Now
+  they call it through the shared helper `pgc_retry_past_horizon` (Python:
+  `retry_past_horizon`), which retries for up to 30 s. The fixture tables have
+  autovacuum turned off. `replication` gains a check that `compact` retired the
+  15 trailing row groups of `t` before `truncate` runs.
+- `native_truncate`'s check `GUC off: truncate does nothing` now tests the
+  setting (#1988). Before, it passed while a transaction older than the
+  `compact` was open, because `truncate` then does nothing whatever the setting
+  says. The arm now waits until nothing holds the horizon at the freed range,
+  and a new check, `GUC off: no transaction older than the compact was open`,
+  counts what still holds it. The new helper is
+  `pgc_wait_freed_range_past_horizon` in `test/lib.sh` and
+  `wait_freed_range_past_horizon` in `test/pytest/pgc_horizon.py`.
+  docs/testing.md describes it.
+- The horizon helper `pgc_wait_freed_range_past_horizon` (Python:
+  `wait_freed_range_past_horizon`) no longer counts a snapshot with no
+  transaction ID in another database (#1992). truncate's horizon ignores it. So
+  a long read-only transaction in another database made the wait run its full
+  30 s, and the check `GUC off: no transaction older than the compact was open`
+  failed although truncate was not held back. A transaction ID in another
+  database, from a session or a prepared transaction, does hold truncate back,
+  and the helper still counts it. The helper also gives no count, instead of 0,
+  for a table with no freed range. `native_truncate` and its twin gain checks
+  for each case: a snapshot, a writer and a prepared transaction in another
+  database, and a snapshot taken just before the `compact`.
+- Self-test part 540 now finds more check arms that print only `no` when
+  they fail (#1980). It missed an arm with a redirect after the test, such as
+  `[ ... ] 2>/dev/null && echo yes || echo no`, `2> x`, `&>x` or `2>"$LOG"`.
+  A redirect into a variable also hid an arm in the `if/then/else` form. It
+  excused `-gt 1`, which fails on 0 and on 1, so `no` does not say which. It
+  also excused `-ge 0`, which a count always passes. Of the `-gt` and `-ge`
+  forms, it now excuses only `-gt 0` and `-ge 1`, as its awk rule already did.
+  The `-eq`, `-ne`, `=` and file-test excuses are unchanged. The wider sweep
+  found 13 such arms in 9 suites. Each now prints its measurement when it
+  fails, for example `no (groups=1)`. No check changed its name or what it
+  passes on.
+- `catalog_scan_index`, `native_reclaim_cycles`, `native_truncate` and their
+  pytest twins no longer fail when another session holds an old snapshot during
+  `compact` (#1979). They called `compact` once, as `native_reclaim_frag` did
+  before #1975. A held snapshot made `compact` retire nothing, and the checks
+  after it measured an empty free list. Now each suite calls `compact` through
+  one shared helper that retries for up to 30 s. `native_truncate` calls
+  `truncate` through it too. The helper is `pgc_retry_past_horizon` in
+  `test/lib.sh` and `retry_past_horizon` in `test/pytest/pgc_horizon.py`.
+  `native_reclaim_frag` uses it too. New checks print how many groups each
+  `compact` retired. The fixture tables have autovacuum turned off.
+  `catalog_scan_index` also retries `compact` on its noise tables until each
+  holds its two free ranges, and retries its end-truncation arm until the
+  truncation takes effect. A new premise counts the noise tables' free ranges.
+  `native_reclaim_reconcile` needs no change. No `compact` in it has a whole
+  group to retire. It stays green with a snapshot held through the whole suite.
+- When the retry runs out, the helper now prints what holds the horizon back
+  (#1981). It lists each session with a snapshot or a transaction ID, and any
+  prepared transaction or replication slot. For a session it prints the pid,
+  backend type, database, state, `backend_xmin`, `backend_xid`, transaction
+  start and query. A CI red then names the holder. `native_reclaim_frag` and its
+  twin check this: while a second session holds a snapshot, a wait that cannot
+  reach its count must print a report that names that session.
+  docs/testing.md describes the helper.
+
+- `tier_partition` now refuses a local path that a foreign table reads under
+  another spelling of the same file (#1965, #1959). It compares each local
+  path as written and again in a folded form: a run of `/` as one, without a
+  `.` name, and without a name followed by `..`. In a glob, `\.` counts as
+  `.`, as `glob(3)` reads it. Before, a foreign table on `/w//*.parquet`,
+  `/w/./*.parquet` or `/w/\./*.parquet` did not block a move to
+  `/w/a.parquet`, although the reader reads that file, so the move overwrote
+  it. An Iceberg location that holds `..` now refuses the directory the reader
+  reads. A symbolic link is still not resolved. The folded form is the file
+  the kernel opens only when no symbolic link comes before a `..`; when one
+  does, the check can refuse the wrong file and allow the file the reader
+  reads. The docs state this limit.
+- `tier_partition` and `export_parquet(rel, path, server)` now accept a
+  server whose wrapper has pgcolumnar's Parquet handler under another name
+  (#1963). Before, they refused it with `42809`, while the path check already
+  read that wrapper's foreign tables as Parquet tables (#1955).
+- When a foreign table's glob is too large to match, `tier_partition` still
+  refuses the move with `54000`, and the error detail now names that foreign
+  table and its glob (#1974). This holds for a local glob and a local path,
+  and for an `s3://` glob with more than 128 `*` and an `s3://` path. Before,
+  the error named neither, and a table that really read the path could be
+  reported as `54000` instead of `58P02`. A glob too large only as written,
+  and not once folded, is now matched in its folded form.
+
+  All three change the install script and the alpha4 to alpha5 upgrade
+  script. docs/sql-reference.md, docs/how-to.md. `test/tier_partition.sh` and
+  `test_tier_partition.py`.
+- `native_reclaim_frag` and its pytest twin no longer fail when another session
+  holds an old snapshot during `compact` (#1975). `compact` retires a dead group
+  only after every transaction older than the `DELETE` is gone. While one remains,
+  it retires nothing, and the coalesce-off run counted 0 `free_space` rows in CI.
+  The fixture tables now have autovacuum turned off, and both harnesses call
+  `compact` again for up to 30 s until it has retired all 18 groups. Three new
+  arms run before the on/off comparison and print their counts when they fail:
+  `coalesce on: compact retired every dead group`, `coalesce off: compact
+  retired every dead group` and `coalesce off: compact leaves more than one
+  free_space row`. Before, a snapshot held through the coalesce-on run let every
+  coalescing arm pass with nothing measured. The shell suite now prints an error
+  from `compact` and stops waiting, as the pytest twin raises it. The product
+  does not change. docs/sql-reference.md now says that `compact` can return 0
+  while such a transaction is open.
+
+- `iceberg_rest_vended` now waits up to 30 seconds for its S3 fixture, and
+  says why when the fixture does not start (#1961). It waited 5 seconds. On a
+  busy CI runner that was too short, and 12 of 18 checks failed. The wait now
+  stops early when the fixture process has exited. When the fixture is not up,
+  the premise "the SigV4 S3 fixture is up" prints whether the process is still
+  running or exited, whether its port accepts a connection, and what `s3.out`
+  holds. When the fixture exited and another process answers on its port, the
+  premise says so: in CI run 41425423611 a REST catalog the suite started took
+  the port before the slow fixture bound it, and the arms got HTTP 501 from it.
+  The suite starts its REST catalogs only after the wait, so that collision
+  cannot recur. The 11 checks that read S3 are then unrunnable, not failed. The
+  premise itself still fails. A new environment variable,
+  `PGC_VENDED_S3_START_DELAY`, delays the fixture's start, to test the wait.
+  `test_iceberg_rest_vended.py` does the same.
+- The pytest harness now reads an exactly equal library install time and
+  postmaster start time as unknown, not fresh, as the shell harness has since
+  #1956 (#1969). `Cluster.server_binary_verdict` in
+  `test/pytest/pgc_cluster.py` answered fresh for an equal pair. Only the label
+  changes: an unknown verdict still lets the run go ahead, and only a server
+  that started before the install is refused.
+- A deep glob pattern no longer crashes the Parquet reader (#1968, #1972). The
+  reader passed a local pattern to `glob(3)` and matched an `s3://` pattern with
+  `fnmatch`, with no bound. Both use stack space for each level, so a pattern
+  such as `'/tmp/' || repeat('*/', 4000) || 'x.parquet'` killed the backend
+  with SIGSEGV, and the server restarted every session. An `s3://` pattern of
+  1000 `*/` levels did the same when a key had that many levels. Now
+  `read_parquet`, `parquet_schema`, `import_parquet` and the
+  `pgcolumnar_parquet` foreign table refuse such a pattern with error 54000, as
+  `path_glob_matches` does since #1964: 4096 bytes or more, more than 128 `/`
+  after the first `*`, `?` or `[` in a local pattern, or more than 128 `*` in an
+  `s3://` pattern. The reader and `path_glob_matches` share one check.
+  The reader counts and expands a local pattern in a folded form, with each
+  run of `/` as one `/` and without a `.` name followed by `/`. The kernel
+  opens the same files by either spelling. So a table on
+  `'/w/s[p]' || repeat('/.', 200) || '/a.parquet'`, which #1978's
+  `tier_partition` check reads, is read and not refused (#1977 review). A `.`
+  at the end, a `.` that only `/` follow, and a name followed by `..` are
+  kept as written, so `'/w/s[p]/a.parquet/./'` matches nothing, as `glob(3)`
+  of it does.
+  docs/sql-reference.md. `test/native_parquet_multifile.sh`,
+  `test/objstore_listing.sh` and their pytest twins.
+- `pgcolumnar.path_glob_matches` no longer walks 2^n paths for a pattern of
+  repeated `/.*` (#1973). Each directory in its tree in memory lists `.` and
+  `..`, and `.*` matches both, so `repeat('/.*', 40)` grew the backend to 2 GB
+  in memory that glibc allocates outside PostgreSQL. The walk now stops after
+  1,000,000 steps with error 54000, in about 60 ms, and never answers false.
+  Each call starts the count again, so a refused pattern does not fail later
+  calls in the same session. The reader's own walk on the real filesystem is
+  bounded too since #1984. docs/sql-reference.md. `test/native_parquet_multifile.sh` and its pytest
+  twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a name that matches `.` or `..` (#1982). `glob(3)` lists `.` and
+  `..` in each directory, and `.*`, `.?`, `.[.]` and `\.*` match them, so a
+  table on `/w/x/.*/a.parquet` reads `/w/x/./a.parquet`, which is
+  `/w/x/a.parquet`. `path_glob_matches` compared the names `glob(3)` returned
+  with the target as spelled, so it answered false, and the move overwrote
+  the file. It now also compares each name in its folded form with the
+  target's: a run of `/` as one, without a `.` name, and without a name
+  followed by `..`, as `tier_partition` folds paths since #1965. It also takes
+  the directories a glob names before its first `*`, `?`, `[` or `\` to
+  exist, so `/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`. Both only add
+  matches. A `*` alone still does not match `.` or `..`. An `s3://` key is not
+  folded. docs/sql-reference.md. `test/tier_partition.sh` and its pytest
+  twin.
+- `tier_partition` now refuses a file that a foreign table's local glob reads
+  through a wildcard directory and then a name that matches `..` (#1991). A
+  table on `/w/x/*/.?/a.parquet` reads `/w/x/a.parquet` whenever `/w/x` holds
+  any directory: `*` matches it and `.?` matches `..`. `path_glob_matches`
+  walks a tree that holds only the target, so `*` had nothing to match, and it
+  answered false. When a wildcard name comes before a name that can match
+  `..`, and the first walk finds no match, a second walk now assumes a
+  directory each wildcard there matches, and each name the pattern spells
+  there, to exist. Measured against glibc `glob(3)` on a real tree, over
+  317,454 patterns: no file the reader reads gets false. A name such as `??`
+  cannot match `..`, so `/w/x/*/??/a.parquet` still does not match
+  `/w/x/a.parquet`. docs/sql-reference.md. `test/tier_partition.sh` and its
+  pytest twin.
+- `tier_partition` now refuses a file that a foreign table's relative local
+  glob reads through a `..` above the glob's start (#2001). The server reads
+  a relative path from the data directory, so a table on
+  `../*/x/a.parquet` reads `x/a.parquet` there: `..` climbs to the data
+  directory's parent and `*` matches its name. `path_glob_matches` rooted a
+  relative path at `/`, so that `..` had nowhere to go, and it answered
+  false. It also missed a relative glob against the same file spelled in
+  full, and the other way round. It now resolves a relative pattern and a
+  relative path against the data directory before it walks. A relative
+  pattern matches every path when the data directory's name holds a glob
+  character, or is not the working directory as `getcwd(3)` spells it.
+  docs/sql-reference.md. `test/tier_partition.sh` and its pytest twin.
+- `tier_partition` now resolves a relative local path against the data
+  directory in every comparison, not only in the glob arm (#2004). A foreign
+  table on `x/a.parquet` reads `x/a.parquet` in the data directory, but a
+  move to that file spelled in full was not refused, nor the other way round.
+  The same held under a directory, under an Iceberg location and in the
+  folded form, where a `..` can climb out of the data directory and back in.
+  The rule is `path_glob_matches`'s: an absolute path and `''` are kept, and
+  a remote URL is never resolved. Where that function cannot resolve a
+  relative path soundly, a table on a local path refuses every local target
+  if either one is relative. So does a caller without
+  `pg_read_all_settings`, who cannot read `data_directory`.
+  docs/sql-reference.md and docs/how-to.md.
+  `test/tier_partition.sh` and its pytest twin.
+- `tier_partition` no longer refuses every local move beside a foreign
+  table on a relative glob for a caller without `pg_read_all_settings`
+  (#2013). Since #2004, such a caller was refused a local target beside a
+  table on any relative path, because it cannot read `data_directory`. A
+  glob does not need that: `path_glob_matches` resolves a relative pattern
+  itself, with no privilege. Such a table now refuses what its glob matches,
+  and a path under the glob as written, as under a directory. Beside a
+  table on a relative path without a glob, and for a relative target beside
+  a table on a path in full, glob or not, such a caller is still refused as
+  before. docs/sql-reference.md and docs/how-to.md.
+  `test/tier_partition.sh` and its pytest twin.
+
+- `tier_partition` now refuses a path under the location of a
+  `pgcolumnar_iceberg` foreign table (#1949). Before, it read only `path`
+  options, and an Iceberg foreign table has none, so a move could overwrite a
+  data file an Iceberg table reads. The location is the parent of the directory
+  that holds `metadata_path`, as the Iceberg reader takes it. The reader
+  refuses a file outside the location, so the location covers every file the
+  table can read. The error detail names the foreign table and the location.
+  The function also reads the `path` option only of foreign tables whose
+  wrapper uses pgcolumnar's Parquet handler. Before, a `path` of `/` on any
+  other wrapper's foreign table blocked every local move. Both the install script and the
+  alpha4 to alpha5 upgrade script change. docs/how-to.md,
+  docs/sql-reference.md. Reported by @OffgridwithJD.
+- The shell harness now refuses a server that started earlier in the same
+  second as the library install (#1956). `pgc_check_running_binary` in
+  `test/lib.sh` compared the library's modification time and the postmaster
+  start time in whole seconds, and an equal pair read as fresh. So the backends
+  could run the old library while the check passed. Both times now keep their
+  sub-second part, and `pgc_running_binary_verdict` compares them as exact
+  decimals. A server that started strictly after the install is fresh. A
+  server that started strictly before is refused. An exactly equal pair is
+  unknown, not fresh, and the message prints both times. `harness_selftest`
+  part 340 now drives this against the live cluster: a library stamped a few
+  hundred nanoseconds after the real postmaster start is refused.
+
+- `harness_selftest` part 580 now sees every write to the installed library
+  and fails when the library is missing (#1950). The check "the installed
+  library of the running major was never touched" compared whole-second
+  modification times. A write in the same second as the first reading read as
+  untouched. A library missing before and after gave two empty readings, which
+  also read as untouched. The check now compares the inode, the size and the
+  modification time to the nanosecond. An empty reading on either side fails
+  the check as `missing`, with both readings printed. A new check confirms
+  that both live readings carry the inode, the size and the nanosecond time.
+  docs/testing.md.
+
+- `harness_selftest` part 580 no longer blames `test/rebuild.sh` when another
+  session installs into the same prefix during the run (#1942). The check
+  "the installed library of the running major was never touched" now reads the
+  rebuild's own target. A change to the installed library that the rebuild did
+  not target skips the check, with the measurement as the reason. In GitHub
+  Actions the same change still fails the check. The check reads
+  `GITHUB_ACTIONS` itself, so no caller can drop it. A failure now prints both
+  modification times, both inodes, the owner and the target. docs/testing.md.
+
+- The pytest harness no longer needs `/usr/local/pg18a` when `PGC_PG_CONFIG` is
+  unset (#1933). That fixed default does not exist in the dev container, so
+  every cluster fixture failed at setup, and
+  `test_a_cluster_test_still_needs_the_driver` reported a missing shim name.
+  conftest now takes the first executable `pg_config` from a list of the
+  prefixes the project installs into, PG18 first, then the one on `PATH`. The
+  control now checks that the `pg_config` it hands its child resolves to an
+  executable, and names the value if not. A bare name such as `pg_config` is
+  looked up on `PATH`, as the harness itself does. `test/pytest/README.md`
+  describes the default. Every run now prints which `pg_config` it used, how it
+  chose it, and the version it reports: in the header, or at the end under `-q`.
+  Three new tests in `test_harness_deps_classifier.py`. Reported by @OffgridwithJD.
+- The Parquet reader now refuses a page header whose required i32 fields, or
+  whose own header struct, have the wrong Thrift type (#1935). It raises SQLSTATE
+  XX001, as pyarrow refuses such a header. This covers the fields the reader uses
+  and the required fields it does not use: the level encodings of a v1 page,
+  `num_nulls` and `num_rows` of a v2 page, and a dictionary page's `encoding`.
+  Before, it read each field by its id alone. A fuzz run found two corrupt files
+  whose encoding field had type BOOL_TRUE or UUID instead of i32. Both read
+  without an error and with wrong values. Optional fields keep Thrift's rule: a
+  v2 page's `is_compressed` field of another type is skipped, and the page is
+  read as compressed, as in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- `import_arrow` now refuses a nested Arrow type that the target column cannot
+  hold with SQLSTATE 42804, naming the column (#1932). Before, a list of
+  lists, of structs or of maps for a `bigint[]` column was refused with XX001.
+  The message, "value buffer too small for the row count", said the file was
+  damaged. A large list was worse: it imported into `bigint[]` or `bigint` as
+  wrong values, with no error. A list of lists now fails as `import_parquet`
+  fails for the same shape (#1917), and the message gives its depth. A plain
+  column for an array column, and a list, map or struct for a scalar column,
+  are refused the same way. A file whose offsets run past its buffers is still
+  refused with XX001. docs/sql-reference.md and docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
+- `tier_partition` now matches a foreign table's glob with the reader's own
+  code, through the new function `pgcolumnar.path_glob_matches(pattern,
+  path)` (#1957, #1962). Before, the check read the glob with SQL regular
+  expressions, and these disagreed with glibc. Three families of path got
+  past the check, so a move could overwrite a file that a foreign table
+  reads: a negated bracket that glibc cannot close after a member matched,
+  as in `[![-x[!-[=a=]` (#1957); a local `[\/]`, which `glob(3)` splits into
+  the names `[` and `]`; and a local glob that ends in `//` (#1962). The
+  check also refused paths that the table does not read, such as a name
+  that starts with `.` under `*`, and any path in a bracket's place. Now an
+  `s3://` key is matched by the reader's `fnmatch` call, and a local path by
+  `glob(3)` over a tree in memory that holds only that path. A fuzz run in
+  the C locale compared 131 million pattern and path pairs with glibc
+  `fnmatch` and a real `glob(3)`: of 256,691 matches it missed none, and it
+  refused no pair glibc does not match. The function is `VOLATILE`, because
+  its answer follows `LC_COLLATE` and glibc. An interrupt that raises no
+  error, such as a request to log memory contexts, makes it walk again; it
+  never turns a match into no match. The error detail now prints a control
+  character in the foreign table's name or path as `\xHH`, such as `\x0A`
+  for a newline, so neither can add a line under the refusal that reads like
+  a server `HINT` (#1960). A backslash before an `x` prints as `\x5C`, and a
+  printable character such as the `WIN1252` euro sign prints as written.
+  A local pattern of 4096 bytes or more, or with more than 128 `/` after its
+  first `*`, `?` or `[`, raises error 54000 before `glob(3)` runs. So does
+  an `s3://` pattern of 4096 bytes or more, or with more than 128 `*`, before
+  `fnmatch` runs. A deeper pattern overflowed the stack and crashed the
+  server, for any role. A `path` of 4096 bytes
+  or more returns false at once; before, a long one kept the backend busy for
+  minutes, past a cancel.
+  docs/sql-reference.md and
+  docs/how-to.md. `test/tier_partition.sh`, `test/entry_point_privilege.sh`,
+  `test/server_file_privilege.sh` and their pytest twins. Reported by
+  @OffgridwithJD.
+- `tier_partition` now refuses a path that a foreign table's glob matches when
+  the glob holds a rare bracket (#1951). Before this the check could read such
+  a bracket as ending at another `]` than glibc's `fnmatch` does, so a move
+  could overwrite an object that table reads. Three cases were wrong. A `-`
+  after a POSIX class, an equivalence class or a range is a plain member, not
+  a range. An empty `[::]` and a `[.ab.]` are one unit. And when a range ends
+  in a plain `[` that a POSIX or an equivalence class seems to follow, as in
+  `[1a-[:alpha:]]`, glibc closes the bracket at a later `]` once a member
+  before the range has matched. The check cannot follow that, so it refuses
+  every path that has one character other than `/` in the bracket's place and
+  anything after it. A `!` or `^` right after `[` always negates; the check
+  no longer reads it as a member to make a longer bracket (#1953 review).
+  One known family still gets past the check (#1957): a negated bracket whose
+  closing `]` glibc looks for past the end of the pattern.
+  The error detail now prints the foreign table's path as written, except
+  that a `'` in it is doubled, so the path cannot close its quotes. A path
+  that holds a backslash printed as `E'...'` with the backslash doubled.
+  docs/how-to.md. `test/tier_partition.sh` and its pytest twin. Reported by
+  @OffgridwithJD.
+- `tier_partition` now refuses a path under a directory or matching a glob
+  that a foreign table reads (#1941). Before this it compared one path with
+  one other path. A foreign table on `s3://b/dir/` or `s3://b/g/*.parquet` did
+  not stop a move to `s3://b/dir/x.parquet` or `s3://b/g/x.parquet`, so the
+  move could overwrite an object that table reads. The check now follows the
+  Parquet reader: a remote directory ends in `/`, a local directory may end in
+  `/` or not, and a glob's `*` and `?` do not match `/`. It treats a `[...]`
+  class as any one character other than `/`, so it can refuse more than the
+  class matches. It reads a bracket as the reader does: a `[` with no closing
+  `]` is a literal `[`, a backslash in a class escapes the next character,
+  `[^` negates like `[!`, and a POSIX class such as `[[:digit:]]` is one class.
+  In a local glob a class does not span a `/`. The check gives the same answer
+  when the session turns `standard_conforming_strings` off.
+  The host of an http(s) URL now matches in any case. The error detail names
+  the foreign table and its path. This also refuses a new file under a
+  directory that a foreign table reads, so one foreign table on the whole
+  archive prefix now blocks the next move into it. docs/how-to.md shows that
+  layout and three ways around it. A local path is still compared as written:
+  SQL cannot resolve a symbolic link or `..`, so docs/how-to.md states that
+  limit. A `file://` path is not a local alias, because the reader opens it as
+  a literal file name. docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin. Reported by @OffgridwithJD.
+- `tier_partition` now refuses a path that a foreign table reads under another
+  spelling of the same object (#1936). Before this it compared the `path`
+  option as text. A foreign table on `s3a://b/k` or `S3://b/k` did not stop a
+  move to `s3://b/k`, and the move overwrote the object that table reads. The
+  check now matches the scheme in any case, as the Parquet readers do, and
+  reads `s3a://` and `s3n://` as `s3://`, as the readers do since #1930. A
+  `NULL` path still gets SQLSTATE 22004. The check still does not see a
+  directory or glob table, a local path spelled another way, or a host in
+  another case (#1941). docs/how-to.md and docs/sql-reference.md.
+  `test/tier_partition.sh` and its pytest twin.
+- Test harness: when a suite runs as `flock <lock> bash test/smoke.sh`, a
+  server that it starts no longer holds the lock, and a run fails when the
+  installed library changes during it (#1915). Before, the suite passed the
+  lock's descriptor to its postmaster. A cluster that outlived the command
+  blocked every other run of that major; one such cluster blocked the PG18
+  queue for about 25 minutes. `test/portlib.sh` now closes a descriptor whose
+  lock another live process took. That process still holds the lock. A lock
+  the suite took itself stays held. The fix does not cover a lock taken with
+  `flock -F` or on a descriptor, as in `( flock 9; bash test/smoke.sh ) 9>lock`:
+  there the suite holds the only copy, so closing it would release the lock. docs/testing.md
+  says what to do instead. A suite that sets `set -e` before it loads lib.sh
+  still runs under flock. On a shared machine, another session can also
+  install into the same prefix during a run. `pgc_summary` now fails the run
+  when the library's digest changed after `pgc_setup`, and names both
+  digests. The pytest session's teardown does the same. docs/testing.md.
+  `test/harness_isolation.sh` and `test_harness_isolation.py`.
+  Reported by @OffgridwithJD.
+
+- `iceberg_rest_table_location` and `iceberg_rest_scan` now refuse an empty
+  table name, `''`, with SQLSTATE 22023 (#1931). Before, they sent
+  `GET /v1/namespaces/db/tables/`, a path that ends in an empty segment. A
+  proxy that strips the trailing slash would send it to listTables. The
+  client would then fail with a misleading error: the loadTable response is
+  missing the "metadata-location" field. The refusal comes before any
+  request, including a server's OAuth token request. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+  Reported by @OffgridwithJD.
+- The Iceberg REST functions now refuse a table name of `.` or `..`, and a
+  namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`,
+  with SQLSTATE 22023 (#1948). Before, `rest_pct_encode` kept the dots, so
+  `iceberg_rest_table_location(cat, 'db', '..')` sent
+  `GET /v1/namespaces/db/tables/..`. A server or proxy that removes dot
+  segments would have sent that to `/v1/namespaces/db`, and
+  `/v1/namespaces/../tables` to `/v1/tables`. The refusal comes before any
+  request, including a server's OAuth token request. On a catalog whose
+  separator is `%2E`, levels that join to `%2E` or `%2E%2E`, such as the
+  `text` forms `'.'` and `'..'`, are refused after `/v1/config`. Names that
+  only hold dots, such as `a.b` or `...`, are still sent. The namespace walk
+  still lists `{".."}` and asks for its children with `?parent=..`, a query
+  value. docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`. Reported by @OffgridwithJD.
+- Tests: checks now show that `iceberg_rest_namespace_levels` lists a child
+  of a namespace with an empty level among other levels, such as `{db,"",x}`
+  under `{db,""}`, and `{db,"",x,y}` under `{db,"",x}`, where the empty level
+  sits in the middle (#1939). A third check shows that the text form,
+  `iceberg_rest_namespaces`, lists `db`, `db.`, `db..x` and `db..x.y`. Before,
+  no check covered these, so a walk that stopped at `{db,""}` passed every
+  check. The code was already correct. The `emptylevel` fixture in
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py` now serves
+  `{db,"",x,y}`. docs/sql-reference.md.
+
+- The Iceberg REST functions now refuse a namespace whose only level is empty,
+  `''` or `ARRAY['']`, with SQLSTATE 22023 (#1922). Its request path held an
+  empty segment, as in `/v1/namespaces//tables`. The Apache Iceberg REST
+  catalog answers that path with HTTP 400, and a proxy may collapse `//` to
+  `/` and reach another resource. The REST spec has no other way to write it.
+  The refusal comes before any request, including a server's OAuth token
+  request, so it does not depend on whether the catalog is up. The hint names level 1 as empty. `iceberg_rest_namespace_levels`
+  still lists `{""}` and still asks for its children with an empty `?parent=`,
+  which is a query value, not a path segment. The Apache Iceberg REST catalog
+  reads it as `{""}`. `iceberg_rest_namespaces` now writes the levels `""`, `x`
+  as `.x`; before, it wrote `x`, the name of another namespace. A namespace with
+  an empty level among other levels, such as `{db,""}`, still works (#1891).
+  docs/sql-reference.md. `test/iceberg_rest_scan.sh` and
+  `test_iceberg_rest_scan.py`.
+
+- The Parquet reader now refuses a Snappy page whose decompressed size differs
+  from the size in its page header (#1910). It raises SQLSTATE XX001, as it
+  already did for GZIP, ZSTD and LZ4_RAW. Before, it trusted the size inside the
+  Snappy stream alone. The nightly fuzz found a corrupt page that read 50 rows
+  with wrong values and no error, where pyarrow refuses the file. An
+  uncompressed page still reads when its header size is wrong, in a v1 or a v2
+  page, as it does in pyarrow.
+  docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- The Parquet reader now refuses a schema element whose `num_children` is
+  negative or wider than a 32-bit integer (#1921). It raises SQLSTATE XX001 and
+  names the element. Before,
+  `parquet_schema` returned the columns before that element and dropped the rest
+  without an error. docs/limitations.md. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+- `test/fuzz_parquet.sh` reads its `struct` seed again (#1920). Since #1909,
+  `parquet_schema` reports a struct of scalars as its field list, such as
+  `composite (x integer, y text)`, which is not a type name. The fuzzer now
+  creates a composite type from that field list and declares the column with
+  it. Before, the seed was refused, so none of its mutants could be compared
+  with the seed's answer. The pytest twin does the same. If a composite type
+  cannot be created, a named check now fails and shows the error. Before, the
+  error was discarded and the seed dropped out of the fuzz without a word.
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+  now refuse a list of lists read into an array column (#1917). Before, they
+  flattened it without an error: the cell `[[1], [2, 3]]` read as `{1,2,3}`. A
+  list of maps flattened the same way. A Parquet leaf under two or more
+  repeated levels now fails with SQLSTATE 42804, and the message gives its
+  depth. PostgreSQL does not tell `int[]` from `int[][]` in a declared type,
+  and the reader builds only one-dimensional arrays, so no column list reads
+  such a leaf. These three entry points therefore cannot read such a file at
+  all, even for a query that does not use that column: they bind every column
+  by position, and a scalar declaration fails as unexpectedly repeated. Before,
+  such a query returned the other columns correctly. docs/limitations.md and
+  docs/sql-reference.md. `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py`.
+
+- The pytest layer no longer calls `expected_unrunnable.txt` stale for a listed
+  test that failed or was lost to a crashed xdist worker (#1914). The check read
+  "did not decline" as "ran", and its message told the reader to delete a
+  correct row. Now only a listed test that passed makes its row stale. The run
+  still exits 1 for the failure or the lost test. `test_layer.py`.
+
+- Two provenance comments in `test/pytest/expected_tests.txt` now give counts
+  that add up (#1919). A merge renumbered their `cluster_tests` values but kept
+  the counts collected on the branch. The comments now say where each count
+  was taken. No count changes.
+
+- The five functions that read local files only now also refuse an `s3a://` or
+  `s3n://` URL with SQLSTATE 0A000 (#1918): `import_arrow`,
+  `file_split_offsets`, `parallel_copy`, `read_avro_manifest` and
+  `read_manifest_list`. These are the Hadoop names for S3, which the Iceberg
+  reader accepts (#1825). Before this they failed with
+  `58P01 could not open file "s3a://..." for reading`, which says the object
+  does not exist. The match ignores case, and the message and hint are #1886's.
+  Only this refusal changes here. The Parquet readers read such a path as
+  `s3://` since #1930. docs/sql-reference.md. `test/arrow_import.sh`,
+  `test/parallel_copy.sh`, `test/avro_manifest.sh` and their pytest twins.
+- The Parquet readers read an `s3a://` or `s3n://` URL as `s3://`, in any case,
+  as the Iceberg reader does (#1930). These are `read_parquet`,
+  `parquet_schema`, `import_parquet` and the `pgcolumnar_parquet` wrapper.
+  Before this they took such a URL for a local path and failed with
+  `58P01 could not open file "s3a://..." for reading`. The reader rewrites the
+  URL before it routes, lists, globs or signs it, so a prefix, a glob and a Hive
+  root all work, and an error names the `s3://` URL that was requested. Only the
+  start of the path counts, so `xs3a://` and `s3ax://` stay local paths. The
+  exports write `s3://` only: `export_parquet`, `export_arrow` and
+  `parallel_export_parquet` refuse an alias with SQLSTATE 0A000 and a hint that
+  names the `s3://` URL, where they failed with 58P01 before.
+  docs/sql-reference.md. `test/objstore_listing.sh` and its pytest twin.
+- `read_avro_manifest` and `read_manifest_list` now refuse an object-storage URL
+  with SQLSTATE 0A000 (#1913), as `import_arrow` does since #1886. They read
+  local files only, and before this an `s3://` or `http://` URL failed with
+  `58P01 could not open file "s3://..." for reading`, which says the object does
+  not exist. Every scheme the readers treat as remote is refused: `s3://`,
+  `gs://`, `az://`, `http://` and `https://`, in any case, with #1886's message
+  and hint, for example
+  `columnar: read_avro_manifest does not read "s3://bucket/m.avro"`. Both check
+  `pg_read_server_files` first, so a caller without it gets 42501 for a URL as
+  for a local path. docs/sql-reference.md. `test/avro_manifest.sh` and its
+  pytest twin.
+- Two reads of one remote object in one statement now read the same version
+  (#1894). Before, each read pinned the version its own HEAD saw. If another
+  client overwrote the object between the two reads, a self-join or a
+  `UNION ALL` of the same foreign table returned rows from both versions
+  without an error. Now the first read of an object in a statement keeps its
+  ETag, version id and length for the rest of the statement. A later read of
+  that object asks for the same version when the store names one. Otherwise
+  it fails with `changed while it was being read` when the ETag or length
+  differs; with no strong ETag, only the length is compared. The object is
+  the endpoint host, port and path, so one `s3://` URL on two servers with
+  different endpoints is two objects. The pin lasts one top-level statement,
+  also when one query string holds several statements, as `psql -c` sends
+  them: the next statement reads the new version. The queries a function or
+  a `DO` block runs share the pin of the statement that runs them. A
+  statement that writes the object drops its pin.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+  Reported by @OffgridwithJD.
+
+- `parquet_schema` now reports a nested column under its top-level name (#1893).
+  It used to report the column's leaves instead: a list as `element`, a struct as
+  its field names. Those names do not match the file's columns. A list of a
+  scalar now reports an array type such as `bigint[]`. A struct of scalar fields
+  reports its field list, such as `composite (a bigint, b text)`. Other nesting,
+  such as a map or a list of structs, `read_parquet` reads leaf by leaf, so it
+  still gets one row per leaf. Each leaf row is now named by its path, such as
+  `m.key_value.key`, and reports an array type where the leaf repeats. A leaf
+  under two repeated levels reports `data_type` NULL, because `read_parquet`
+  flattens it (#1917). So the rows are always the column list `read_parquet`
+  needs. A list or struct row is nullable only when the column itself is
+  OPTIONAL: a REQUIRED list of REQUIRED elements used to report nullable. Its
+  `field_id` is the column's own id, so the ids of a struct's fields no longer
+  appear. docs/sql-reference.md.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`, with the
+  files from `test/craft_parquet_nested.py`.
+  `test/native_parquet_fieldid.sh` and its twin now read the leaf ids of their
+  nested file with pyarrow, and check the nested columns' own ids.
+
+- The REST functions now say when a namespace level is empty (#1891). The
+  text form `'db..x'`, `'db.'`, `'.db'` or `''`, and a `text[]` element `''`,
+  name a namespace with an empty level. The catalog accepts such a namespace,
+  so pgcolumnar still sends it as given and can reach it. When the catalog
+  answers 404 for such a namespace, its "no such namespace" or "no such table"
+  error now carries a hint, such as `Level 2 of 3 of the namespace is empty`.
+  docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`.
+- A pytest run with `-n` no longer exits 67 when every test passed (#1892). Each
+  xdist worker checked `expected_unrunnable.txt` against tests it never ran, and
+  the controller checked it against an empty collection. So one file run with
+  `-n 4` called the list both stale and incomplete. Now only the controller
+  checks the list, against the tests every worker collected. On PostgreSQL 18,
+  `pytest -n 4 test_objstore_sink_write.py` exited 67 before and exits 0 now.
+  Three new arms in `test/pytest/test_layer.py` hold this. A fourth checks that
+  the new xdist hook is optional, so it adds no error to a run without xdist.
+  Reported by @OffgridwithJD.
+
+- `import_arrow`, `file_split_offsets` and `parallel_copy` now refuse an
+  object-storage URL with SQLSTATE 0A000 (#1886). They read local files only,
+  and before this an `s3://` or `http://` URL failed with
+  `could not open file "s3://...": No such file or directory`, which says the
+  object does not exist. Every scheme the readers treat as remote is refused:
+  `s3://`, `gs://`, `az://`, `http://` and `https://`, in any case. The message
+  names the function and the URL, for example
+  `columnar: import_arrow does not read "s3://bucket/m.arrow"`, and the hint says
+  the function reads local files only. `import_arrow` and `parallel_copy` check
+  INSERT on the target first, so a caller without INSERT gets 42501 for a URL as
+  for a local path. They refuse the URL before they check the target's kind, so
+  a heap target gets 0A000, not 42809. docs/sql-reference.md.
+  `test/arrow_import.sh`, `test/parallel_copy.sh`,
+  `test/import_export_privilege.sh` and their pytest twins.
+- A single-PUT export to an `https://` store that refuses it before reading the
+  body now reports the 403 and its hint (#1902). It used to report `PUT to "..."
+  failed before a response`: after a failed send a TLS session cannot be read,
+  so the answer that had arrived was lost. A write whose body is over 1 MiB now
+  sends `Expect: 100-continue` and waits up to one second for the store to answer
+  its headers, so a refusal arrives before any of the body is sent. `100
+  Continue`, or no answer within the second (a store that ignores `Expect`),
+  sends the body; a `417` sends the request again without `Expect`. This applies
+  to `http://` stores too, and to multipart parts. A store that ignores `Expect`
+  costs the second once per object, not once per part: after a wait runs out,
+  the object's later parts go without it. Only an answer of 300 or more ends the request before the body; a
+  `2xx` to the headers alone still gets the body, and stands as the answer once
+  the body is sent (HTTP gives a request one final answer), so the write is not
+  taken as done with its body unsent. A `2xx` before the body that closes the
+  connection, or whose own body runs until the close, is not taken as done.
+  `test/objstore_error_advice.sh` and its twin.
+- A read over a prefix or glob names the file it refused (#1902). When one file
+  did not match the declared columns, the error gave the column and the types
+  but not the file, so the file could not be found among thousands of objects.
+  Each binding error now has `DETAIL: The mismatched file is "<path>".` The
+  same holds for `read_parquet` by position or by field id, for the Parquet
+  foreign table, and for a single file. `test/objstore_listing.sh` and its
+  twin.
+- The docs no longer contradict the code on object storage, credentials and
+  row-group skipping (#1797). `import_arrow`, `file_split_offsets` and
+  `parallel_copy` read local files only; the docs had said every Arrow and
+  server-file path takes an object-storage URL. `read_parquet` reads a remote
+  prefix and a remote pattern, not only one object key. The
+  `pgcolumnar_iceberg` wrapper takes no server or user-mapping options and reads
+  with the server process environment. `iceberg_current_snapshot` reads an
+  `s3://` metadata file. A cross-type constant such as `bigint_col < 5` or
+  `timestamp_col < DATE '2026-01-01'` skips row groups; the docs had said it
+  does not. docs/administration.md, docs/configuration.md, docs/features.md,
+  docs/how-to.md, docs/limitations.md, docs/sql-reference.md and
+  docs/user-guide.md. A clear refusal of a remote URL by those three functions
+  is tracked in #1886.
+- A remote read of a versioned object now finishes on the version it opened
+  (#1867). When the HEAD sends `x-amz-version-id`, every ranged GET asks for that
+  version with `versionId=`, signed for `s3://` URLs. Before, an overwrite during
+  the read failed the query with `changed while it was being read`. The reader
+  also checks the total in each 206 `Content-Range` against the HEAD's length.
+  Before, an overwrite that changed the length, on a server with no strong ETag,
+  returned rows from both versions without an error. Now the query fails with
+  `changed while it was being read` (SQLSTATE 55000). So does a GET that gets
+  416 because the object shrank below its offset; before, that failed with
+  `unexpected HTTP status 416` (SQLSTATE 08P01). A GET that names a version needs
+  the `s3:GetObjectVersion` permission. When the store answers it with 403, the
+  reader asks again without the version and keeps `If-Match`, so a policy that
+  grants only `s3:GetObject` reads as before. docs/sql-reference.md,
+  docs/configuration.md and docs/limitations.md. `test/objstore_http_read.sh`, `test/objstore_s3_read.sh`
+  and their pytest twins.
+
+- An `http://` or `https://` URL with a query string now gets well-formed
+  requests when the reader or the writer adds a parameter of its own (#1904).
+  Since #1785 the URL keeps its query string. The version pin (#1867) then sent
+  `?raw=true?versionId=<id>`, so the server did not see a version parameter.
+  Depending on the server, the read failed or the pin was ignored. A multipart
+  export sent
+  `?raw=true?uploads=`, and the server refused it with HTTP 400. Now the second
+  parameter joins the query with `&`. The abort of a failed multipart export
+  does the same. An `s3://` key that holds a literal `?` still starts each
+  request's own query with `?`, because the request path encodes that `?` as
+  `%3F`. docs/sql-reference.md. `test/objstore_http_read.sh`,
+  `test/objstore_sink_write.sh` and their pytest twins.
+
+- The REST functions can now name a namespace level that contains a dot (#1865).
+  Before, `iceberg_rest_table_location`, `iceberg_rest_scan` and
+  `iceberg_rest_tables` split their namespace argument on every dot, so the
+  single level `a.b` reached the catalog as the two levels `a` and `b`. Each now
+  also takes the namespace as a `text[]` of levels, such as `ARRAY['a.b']`. The
+  new `iceberg_rest_namespace_levels` lists namespaces in the `text[]` form, so
+  a row passes back unchanged, unless one of its levels holds the catalog's
+  separator. A level that contains the catalog's own namespace separator is
+  refused with SQLSTATE 22023 in both forms, because the catalog would split it;
+  the Apache Iceberg REST catalog's separator is `.`. This also changes the
+  dotted `text` form: a level that holds the separator, such as one with the
+  byte 0x1F on a default-separator catalog, was sent and named the wrong
+  namespace, and is now refused. `iceberg_rest_namespaces` no longer asks for
+  the children of such a level. The error message shows a control byte in the
+  level as `\xNN`. The separator matches whole characters of the database
+  encoding only. So in a UTF-8 database, a one-byte separator at or above 0x80
+  does not match inside a multibyte character. In a LATIN1 database, `é` is one
+  byte, and a dot after it is still refused. docs/sql-reference.md.
+  `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`; gate checks in
+  `test/server_file_privilege.sh`.
+  Found in review of PR #1859.
+- The Parquet reader refuses a footer whose schema does not match its pages, instead
+  of returning wrong values with no error (#1855). A `repetition_type` that is not
+  0, 1 or 2 is refused when the file is opened. A level histogram whose length does
+  not fit the schema is refused on read: a column marked REQUIRED whose pages carry
+  definition levels used to have those levels read as values. In a 3000-row file,
+  `sum(id)` came back as 3019995 instead of 4498500. A file without level
+  histograms is not checked this way; see Limitations. The same check refuses a
+  list group marked OPTIONAL whose pages carry repetition levels.
+- The Parquet reader refuses a schema element that has no `name`, a required
+  field (#1852). A single changed byte can end the element early and leave the
+  rest of the footer read as something else. A missing `num_rows` or `row_groups`
+  and a row-count sum that does not match were already refused by #1822.
+- The Parquet reader keeps a `repetition_type` as the file stores it. It used to
+  cast the value to `int`, so 2^32 became 0 (REQUIRED) and got past the check
+  above. In a 3000-row file without level histograms, `sum(id)` came back as
+  3019995 instead of 4498500. `test/native_parquet_hardening.sh`.
+- `test/fuzz_parquet.sh` now checks the answer of every mutant that reads without
+  an error (#1852). The answer must equal the seed's, or pgColumnar's answer for
+  pyarrow's rewrite of the mutant (`test/parquet_oracle.py`). After the random
+  mutants, the suite sweeps every byte of one seed's schema, which found #1855.
+  A read the oracle cannot judge now fails the suite, and a wrong answer from a
+  random mutant names the first byte that differs from its seed.
+  `test_fuzz_parquet.py` runs the same checks.
+- `parquet_schema` now advises `timestamp with time zone` for a legacy `INT96`
+  timestamp column, and the readers read one (#1870). It used to report no type,
+  and every declared type was refused. The value is read as an instant in UTC,
+  as Spark and Hive write it, with the nanoseconds rounded down to microseconds.
+  Impala's wall-time `INT96` reads shifted; see Limitations. A value whose nanoseconds or
+  Julian day are out of range is refused with 22008, and the DETAIL names both.
+  `test/native_parquet_units.sh` and `test/native_parquet_hardening.sh`.
+- A reader's type refusal names the function the user called (#1871). It named
+  `columnar.import_parquet` for `read_parquet` and the Parquet foreign table, and
+  `columnar.read_parquet` for `iceberg_scan`. It now names
+  `pgcolumnar.read_parquet`, `pgcolumnar.import_parquet`,
+  `pgcolumnar.iceberg_scan`, `pgcolumnar.iceberg_rest_scan`, or the
+  `pgcolumnar_parquet` or `pgcolumnar_iceberg` foreign-data wrapper.
+- A `parallel_export_parquet` to a `gs://`, `http://` or `https://` prefix is now
+  refused before any worker starts, with SQLSTATE 0A000 (#1832). Before, the
+  workers uploaded every part, and the export then failed at the stale-part
+  listing, which works for `s3://` only. The documentation of the function names
+  `s3://` as its only remote scheme. The refusal's hint no longer says that
+  pgColumnar cannot list a remote prefix (#1831). It says that the export lists
+  its prefix and that only an `s3://` prefix can be listed.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- A cancelled or failed `parallel_export_parquet` to `s3://` no longer leaves a
+  part that a worker was committing (#1864). The dispatcher deleted the part keys
+  as soon as it had terminated the workers. A terminated worker that had sent its
+  commit request waits for the answer, and the store could apply that commit
+  after the DELETE, so the part appeared afterwards and stayed. The dispatcher now
+  waits up to 5 seconds for the workers to exit before it deletes the parts. It
+  now also waits before it cleans a local directory. A local worker stops only at
+  its next interrupt check, so it could rename its finished part between the
+  dispatcher's directory listing and its unlink, and that part stayed. The
+  dispatcher now waits once per cleanup. Before, it waited a second time before
+  it aborted the open uploads, so a cancel against a store that never answered
+  took about 10 seconds, not 5. `test/objstore_sink_write.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
+- The upload cleanup of `parallel_export_parquet` builds its listing prefix with
+  `psprintf`, as the stale-part reconcile does (#1849). The fixed buffer could not
+  truncate in practice: the export refuses a prefix too long for its generated
+  names before any worker starts.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- A remote export reads a write reply whose body ends when the store closes the
+  connection (#1830). HTTP/1.1 allows that framing. The write path read a reply
+  body only when it had a `Content-Length` or chunked framing, so it dropped the
+  UploadId of such a reply and the export failed with "could not start a
+  multipart upload (HTTP 200)". It now reads write replies with the same reader
+  as the listing, and closes the connection after a body that ends at close. An
+  HTTP/1.0 reply without `keep-alive` now also closes the connection: the export
+  used to send its next request into it. A 204 reply, which Garage sends to a
+  DELETE with no `Content-Length` on a connection it keeps open, is read as
+  having no body, so an abort returns at once rather than after about 60 s.
+  Two behaviours change for a store that breaks the HTTP framing rules. A write
+  reply other than 1xx, 204 or 304 with neither a length nor chunked framing
+  ends only when the store closes the connection (RFC 9112 section 6.3). If the
+  store keeps the connection open, the export used to go on and now waits 60 s,
+  then fails with "timeout reading". A chunked or close-delimited write reply
+  over 1 MiB now fails with "response exceeded" instead of being skipped. That
+  holds for a 200 to CompleteMultipartUpload too: the store has then written the
+  object, but the export reports an error. `test/objstore_sink_write.sh` and its
+  pytest twin.
+- A remote export checks the S3 multipart limits before the store refuses it
+  (#1857). An upload that would need part 10001 fails with SQLSTATE 54000 before
+  sending that part, names the part size, and aborts the upload. To AWS S3,
+  Google Cloud Storage or Cloudflare R2, an export whose part size is under 5 MiB fails with
+  SQLSTATE 22023 when it starts a multipart upload, before the store holds
+  anything. Those stores used to refuse it only at the last step, after every part
+  had gone up. Other endpoints still accept any part size. An object of exactly
+  one part under 5 MiB is refused too, although those stores would accept it.
+  `test/objstore_sink_write.sh` and its pytest twin.
+- A serial `export_parquet` or `export_arrow` to `gs://`, cancelled or terminated
+  while it waits for the store to start its multipart upload, now aborts that
+  upload (#1854). The upload listing that #1846 added for `s3://` now also works
+  for `gs://`, through the GCS XML API. `test/objstore_export_open_uploads.sh` and
+  its pytest twin.
+- `iceberg_data_files` and `read_avro_manifest` now show every partition value
+  exactly, as valid text (#1816, #1791). A decimal, float or double value used to
+  show as `?`. A binary value was copied raw into the text: invalid UTF-8 that
+  `pg_dump` output could not restore, cut short at a NUL byte. Now a decimal shows
+  its exact value (`-0.50`), a float or double the shortest text that reads back
+  the same (`0.1`), and binary, fixed and uuid values `\x` and hex (`\xfffe`). A
+  NULL value shows as the field name alone, so it no longer looks like an empty
+  string, and `%`, `,` and `=` in a string or field name are percent-encoded. The
+  format is in docs/sql-reference.md, under "How a partition value is shown".
+  `iceberg_scan` was not affected. `test/iceberg_data_files.sh` and its twin, with
+  a new pyiceberg fixture (`test/fixtures/iceberg/gen_iceberg_partvals.py`).
+  Reported by @OffgridwithJD.
+
+- `iceberg_data_files` no longer refuses a table whose delete manifest holds only
+  removed entries (#1829). A rewrite or compaction that removes every old delete
+  file leaves such a manifest, with status 2 (DELETED) on every entry. The lister
+  refused it as "has delete files" without opening it. It now refuses a delete
+  manifest unopened only when the manifest list counts a live (added or existing)
+  file in it; otherwise it opens the manifest, skips removed entries and refuses a
+  live delete file. A live data-file entry in a delete manifest is refused as
+  corrupt (XX001). `test/iceberg_data_files.sh` and its twin.
+  Reported by @OffgridwithJD.
+- The Iceberg reader refuses a `default-spec-id` or a snapshot `schema-id` outside
+  the 32-bit integer range (#1853). It used to cut such a value to 32 bits, so
+  4294967296 read as 0. `iceberg_current_snapshot` then reported the wrong
+  `schema_id`, and the foreign-data wrapper took the wrong current spec id. Both
+  now fail with SQLSTATE XX001 and name the value. `test/iceberg_malformed.sh`
+  and `test_iceberg_malformed.py`.
+- The object-storage module now refuses a host that resolves to Alibaba Cloud's
+  instance-metadata address `100.100.100.200`, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1848). Before, it tried to connect.
+  It also refuses it inside an IPv6 address: IPv4-mapped, IPv4-compatible, and
+  behind the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`. On an IPv6-only
+  network with DNS64, that is the only address such a name resolves to. It refuses
+  only `100.100.100.200`. The rest of `100.64.0.0/10` is carrier-grade NAT and
+  stays reachable. The module cannot recognise a NAT64 prefix that your network
+  chose, so a metadata address behind such a prefix is still not refused.
+  [Limitations](docs/limitations.md#object-storage-address-refusal) says so.
+  `test/objstore_allowlist.sh` and `test_objstore_allowlist.py`.
+- A remote read tests only the key of an `s3://` URL for `*`, `?` and `[`
+  (#1785). The whole URL used to be tested, with three effects. An exact key that
+  holds one of those characters read other objects or none: `b/q?mark.parquet`
+  also returned `b/qXmark.parquet`, and `a/brack[1].parquet` was "no objects
+  match". An `http(s)://` URL with a query string, and any host written as an
+  IPv6 literal such as `http://[::1]:3900/`, failed with "listing a prefix is
+  only supported for s3:// URLs". Now an `s3://` pattern that names an existing
+  object exactly reads that object alone, and expands only when no object has
+  that name; a backslash still escapes a character in the pattern. An
+  `http(s)://` URL is always one object, its query string sent to the server. A
+  bracketed IPv6 host is refused with its own SQLSTATE 0A000 message.
+  `test/objstore_listing.sh`, `test/objstore_http_read.sh` and their twins.
+- `test/vm_clear_on_renumber.sh` and `test_vm_clear_on_renumber.py` no longer
+  fail their VACUUM premises on a busy cluster (#1875). A VACUUM marks a row group
+  all-visible only once the group's catalog row precedes the database's horizon.
+  A private database keeps other databases' sessions out of that horizon, but not
+  a session connected to it, such as an autovacuum worker. That worker's snapshot
+  starts below any xid open elsewhere. Holding an xid open in `postgres` and a
+  snapshot in the suite's database turned seven checks red on both PG 17 and 18,
+  the seven CI reported. Each VACUUM now repeats, up to 100 times, until the
+  blocks the arms read are set. Three new premises report a budget that runs out,
+  with the sessions holding an xmin. Test-only.
+- Three object-store refusals now give advice that fits them (#1796). A 403's
+  hint names where the refused key was configured: the user mapping, the
+  credentials a REST catalog vended (in its flat config or in a
+  `storage-credentials` entry), or the server's `AWS_*` environment. It used to
+  name the environment for every key.
+  The allow-list refusal's hint suggests the `host:port` the message names,
+  added to the current list. It used to suggest the bare host as the whole list,
+  which opened every port on that host and dropped every other entry.
+  A single-PUT export to an `http://` endpoint that the store refuses before
+  reading the body now reports the 403 or other status. When the body was larger
+  than the socket buffers, it used to report `failed before a response`. An
+  `https://` store kept reporting `failed before a response` there until #1902.
+  The object-store module ABI is now 8, so the module and the extension must
+  come from the same build.
+  `test/objstore_error_advice.sh` and `test_objstore_error_advice.py`.
+- An object-store error no longer names `s3://<bucket>/_`, a key nobody gave
+  (#1869). Three bucket-level requests are resolved from that dummy key: the
+  upload listing an export's cleanup makes, the object listing behind
+  `read_parquet` on a prefix, and the endpoint check `parallel_export_parquet`
+  makes before it starts workers. A refusal in any of them named the dummy
+  key. A refused ListMultipartUploads, or a
+  region or credential refusal in any of the three, now names the URL the caller
+  gave. The export's upload cleanup still never raises, but it now LOGs what it
+  discarded, so the server log says why an export's uploads were left open.
+  `test/objstore_export_open_uploads.sh` and
+  `test_objstore_export_open_uploads.py`.
+- `iceberg_rest_scan` now chooses a vended storage credential for each file it
+  reads (#1820). Before, it matched each `storage-credentials` prefix against the
+  metadata location only, and that one credential signed every file. So a
+  catalog that vended separate keys for `metadata/` and `data/` had its data
+  files read with the metadata key. A catalog that vended a key for `data/` only
+  had the whole table read with the server's own `AWS_*` credentials. Now each
+  file uses the entry with the longest prefix of its location, then the flat
+  `config`. When neither covers a file, the read fails with SQLSTATE 28000 and
+  names the file. `test/iceberg_rest_vended.sh` and `test_iceberg_rest_vended.py`.
+  Reported by @OffgridwithJD.
+- A remote `read_parquet` or `pgcolumnar_parquet` foreign table no longer mixes
+  two versions of an object (#1805). The reader sends one HEAD and then one ranged
+  GET per footer or column chunk. When another client overwrote the key during
+  the read, later GETs read the new object, and one query returned rows from both
+  versions without an error. The reader now keeps the ETag from the HEAD and sends
+  it as `If-Match` on every ranged GET. After an overwrite the server answers 412,
+  and the query fails with `"<url>" changed while it was being read` (SQLSTATE
+  55000). The reader pins only a strong ETag of at most 79 characters, its two
+  quote marks included. A server that sends no ETag, a weak one or a longer one
+  is not pinned, and a server that sends a new ETag for the same bytes on each
+  request is refused (#1866 asks for an opt-out); docs/limitations.md says so.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- `tier_partition` now writes the Parquet file with the server it names and
+  your user mapping on that server (#1795). Before, it wrote with the endpoint
+  and keys of the server process environment, but the foreign partition reads
+  with the server and the mapping. When the two differed, the move committed and
+  every query on the parent then failed (HTTP 403 or 400). Now a mapping the
+  object store rejects stops the move, and the rows stay in the columnar
+  partition. The write goes through a new form,
+  `export_parquet(rel, path, server)`, which you can also call directly.
+  Before it commits, the move now counts the rows through the new foreign
+  partition, so a key that can write but not read rolls the move back.
+  Three changes can refuse a call that used to succeed. A role that is not a
+  superuser and has no mapping on the server is now refused (`28000`); before,
+  it wrote with the environment's keys. `tier_partition` now needs both
+  `pg_write_server_files` and `pg_read_server_files` (`42501`), because it
+  reads the file back. And a local `path` is refused (`28000`) when your
+  mapping on the server holds only half a credential. `test/tier_partition.sh`
+  and `test_tier_partition.py`.
+- `read_parquet`, `import_parquet`, `iceberg_scan` and both foreign-data wrappers
+  now apply the declared type modifier to every value they return (#1790). A
+  `numeric(5,2)` column read `12345.678` unchanged and `1.005` as `1.005`, and
+  `CREATE TABLE AS` stored those values in a `numeric(5,2)` column. Now
+  `numeric(p,s)` rounds to scale `s` and refuses an overflow with SQLSTATE 22003,
+  `varchar(n)` refuses a longer value with SQLSTATE 22001 unless the excess is
+  spaces, and `timestamp(p)` rounds, as PostgreSQL's input functions do. Array
+  elements and composite fields follow their own declared types. The Iceberg
+  foreign table no longer prunes files on a column whose type modifier can
+  change a value, and the Parquet foreign table no longer skips row groups on
+  one. `test/native_read_parquet.sh`, `native_parquet_fdw.sh`,
+  `native_parquet_pushdown.sh`, `iceberg_scan.sh`, `iceberg_fdw.sh`,
+  `iceberg_deletes.sh` and their pytest twins.
+- `iceberg_scan` applies equality deletes through a hash table (#1817). It used
+  to compare every data row with every delete row, so the cost grew with their
+  product: 50,000 rows against 32,000 delete keys took 6 s, and a table with
+  many upserts could take minutes. Each delete file is now hashed once, on its
+  `equality_ids` columns, and each data row is compared only with delete rows
+  that share its hash. On the test fixture, 4,005 data rows against two delete
+  files with 3,001 delete rows, the probe now walks 7,824 hash-chain rows in
+  8,010 walks, at most 5 in one walk, and makes 20 comparisons, one per deleted
+  row. The old walk made 12,008,895 comparisons. A NULL still matches only a
+  NULL, and a zero-row delete file deletes nothing. A new DEBUG1 line reports
+  the probe's data rows, delete files, delete rows, chain rows visited, longest
+  walk, comparisons and matches. `test/iceberg_deletes.sh` and
+  `test_iceberg_deletes.py`.
+- The Iceberg reader now reads gzip-compressed table metadata (#1815). A writer
+  makes it when `write.metadata.compression-codec` is `gzip`, and names it
+  `*.gz.metadata.json` or `*.metadata.json.gz`. Before, every Iceberg function
+  failed on it with `22P02 invalid input syntax for type json`, which did not name
+  the cause. The reader detects gzip by its first two bytes. The 64 MiB cap holds
+  on the inflated size (SQLSTATE 54000), and a cut-short stream is refused as
+  corrupt (XX001). A file of several gzip members reads as their joined text, and
+  bytes after the last member that do not start a new one are ignored, as Java's
+  `GZIPInputStream` ignores them. `test/iceberg_scan.sh` and `test_iceberg_scan.py`.
+- `iceberg_scan` now reads a data file whose `file_format` is `parquet`, the
+  spelling the Iceberg spec uses (#1825). It compared the value with `PARQUET`
+  case-sensitively, for data, position-delete, and equality-delete files.
+  `test/iceberg_scan.sh` covers data files, and `test/iceberg_deletes.sh` the two
+  kinds of delete file.
+- The Iceberg reader treats `s3a://` and `s3n://` paths as `s3://` (#1825). Before,
+  an `s3a://` metadata path was opened as a local file and failed with "could not
+  open file". A table whose location used `s3://` while its files used `s3a://`
+  was refused as "not under the table location". `test/iceberg_objstore.sh` covers
+  the metadata path over S3, and `test/iceberg_scan.sh` the mixed schemes. Matching
+  a delete row to its data file allocates nothing, so an `s3a://` table with
+  position deletes uses the same memory as an `s3://` one. `test/iceberg_deletes.sh`
+  measures this with a million delete rows.
+- docs/limitations.md now lists the Avro codecs a manifest may use (`null` and
+  `deflate`) and the URL schemes the Iceberg reader accepts (#1825).
+  docs/sql-reference.md lists `az://`, which pgcolumnar treats as remote and
+  refuses, since no module reads it yet. `zstandard`
+  and `snappy` manifests are still refused.
+- The object-storage module now refuses the IPv6 instance-metadata addresses of
+  AWS and Google Compute Engine, and `169.254.169.254` behind the standard NAT64
+  prefixes, even when the host is listed in
+  `pgcolumnar.objstore_allowed_endpoints` (#1808). Before, it refused only
+  `169.254.0.0/16`, `fe80::/10` and `::ffff:169.254.0.0/112`. A listed name that
+  resolved to `fd00:ec2::254` (AWS), `fd20:ce::254` (Google), or to
+  `169.254.169.254` behind a NAT64 prefix, got a connection attempt instead of
+  SQLSTATE 42501. The guard now also refuses `fd00:ec2::/32`, `fd20:ce::254`,
+  and `169.254.0.0/16` inside an IPv4-compatible (`::/96`) or NAT64
+  (`64:ff9b::/96`, `64:ff9b:1::/48`) address. Under the local-use prefix
+  `64:ff9b:1::/48` the module cannot tell the prefix length, so it checks every
+  RFC 6052 position. This also refuses some ordinary addresses, such as
+  `10.169.254.5` behind a /48 prefix; `docs/best-practices.md` explains. Other
+  metadata addresses were not refused by this change; #1848 adds Alibaba Cloud's
+  `100.100.100.200`. `test/objstore_allowlist.sh` and `test_objstore_allowlist.py` resolve
+  test names to each address through a `getaddrinfo()` shim.
+- `export_parquet` and `export_arrow` now export a table with more than 1 GiB of
+  one column in a group (#1811). They cut Parquet row groups every 65536 rows and
+  Arrow record batches every 16384 rows only. Each group buffers in allocations
+  that PostgreSQL caps at 1 GiB, so such a table failed with a raw
+  `string buffer exceeds maximum allowed length` error. The writers now also start
+  a new group before a row that would take it past `pgcolumnar.export_group_bytes`,
+  256 MiB by default. They count each row as written, so a numeric or jsonb
+  counts by its text, which can be far longer than the stored value.
+  `parallel_export_parquet` passes the caller's setting to its workers. A 1.1 GB
+  column of 2200 values of 500 KB exports in 5 groups. One row whose written form
+  passes about 1 GiB still fails with the raw error; docs/limitations.md says so.
+  `test/parquet_export.sh`, `test/arrow_export.sh`,
+  `test/parallel_export_parquet.sh` and their pytest twins.
+- `pgcolumnar.objstore_part_size` now refuses a value above 512 MiB (#1812). The
+  docs gave its range as 0 to INT_MAX, but the export holds one part in one
+  allocation, capped at 1 GiB, so a part of 1 GiB or more failed every remote
+  export over 1 GiB. The remote sink also appended a whole chunk from the writer
+  before it cut a part, so it could hold one part plus one chunk; it now fills
+  the part, uploads it and goes on. docs/limitations.md now lists the S3 part
+  limits. `test/objstore_sink_write.sh` and its pytest twin. If you set a value
+  between 512 MiB and 1 GiB in `postgresql.conf`, it is now out of range:
+  PostgreSQL logs a warning and uses `0`, the 8 MiB module default. Set 512 MiB
+  or less.
+
+- The Parquet reader now refuses a footer it cannot parse exactly (#1822). A
+  Thrift field header with type 13, 14 or 15 was skipped as zero bytes, so the
+  parser lost its place and read the value bytes as more headers. One bad
+  footer byte could then return 0, 2000 or 2016 rows of a 3000-row file with
+  no error. Types 14 and 15 are not compact types, so the reader now refuses
+  them, as a field and as a list element. Type 13 is UUID, a 16-byte value that
+  parquet.thrift does not use; the reader skips it as 16 bytes. It also skips a
+  map field and a list of bools by their real size, which it could not do
+  before. A skipped byte or double that would run past the footer's end now
+  stops the parse at once: a list of 4294967295 of them took 10 to 12 seconds
+  to fail before. A header whose type nibble is 0 but whose field-id delta is
+  not is now refused too; it used to end the struct early, like STOP.
+  It refuses a footer that lacks `row_groups`, its own `num_rows`, or a row
+  group's `num_rows`, and one whose `num_rows` differs from the sum of its row
+  groups. `read_parquet`, the Parquet foreign table and `iceberg_scan` share
+  this reader. `test/native_parquet_hardening.sh` sets the type nibble of each
+  of the 209 field headers in a test footer, and every copy is now refused.
+- `iceberg_scan` now refuses malformed numbers in `metadata.json` (#1824). A
+  schema field id above INT32 truncated to another field's id, and a fraction
+  such as `1.4` rounded to 1, so a column returned another column's values.
+  The reader now refuses any fractional number where the spec wants an integer,
+  and a field id outside 0 to 2147483647. It refuses a `format-version` other
+  than 1, 2 or 3, which it used to read as version 2. It refuses a
+  `current-snapshot-id` that is present but not an integer, which it used to
+  read as an empty table. Absent, `null` and `-1` still mean no snapshot.
+
+- `export_parquet` and `export_arrow` to an allow-listed `http://` or `https://`
+  URL now write the object instead of crashing the backend (#1779). Every write
+  request was signed, and a plain-HTTP target has no region or credentials, so the
+  signer read a NULL region: signal 11, and the postmaster restarted every session.
+  Writes are now signed only for `s3://` and `gs://`, as reads already were, so an
+  `http(s)://` export goes unsigned: one `PUT`, or a multipart upload for a large
+  object, and an abort on failure. `https://` takes the same code path but is not
+  tested. A 403 from an unsigned `http(s)://` target now hints that the request
+  was unsigned and that `s3://` or `gs://` is for a store that needs credentials; the hint
+  used to send the reader to the `AWS_*` credentials, which such a request never
+  carries. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py` export to an unsigned fixture server both ways and
+  read each object back.
+
+- `parallel_export_parquet` to an `s3://` prefix that ends in `/` now writes
+  `prefix/part-NNNN.parquet` and `prefix/_SUCCESS` (#1782). It used to write
+  `prefix//part-NNNN.parquet`, which S3 stores as a different key, so the
+  documented read-back `read_parquet('s3://bucket/prefix/*.parquet')` found
+  nothing. The export now strips every trailing slash from a remote prefix,
+  never into the bucket name. A local directory is unchanged.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- `parallel_export_parquet` to a remote prefix no longer deletes part objects
+  under a sibling prefix (#1782). Before writing `_SUCCESS`, the export deletes
+  the stale `part-NNNN.parquet` objects a larger earlier run left. It listed
+  `s3://bucket/out` without the closing `/`, and an S3 listing matches leading
+  characters, so it also deleted `outer/part-0007.parquet` and
+  `out2/part-0005.parquet`. It now lists `out/` only, and deletes only keys
+  directly under it: a part under a deeper prefix, such as
+  `out/sub/part-0009.parquet`, belongs to another export and is kept.
+- `parallel_export_parquet` refuses `s3://bucket/` and `s3://bucket`, which name
+  no prefix, with SQLSTATE 22023 before any worker starts (#1782). Before,
+  `s3://bucket` wrote the parts at the bucket root and then failed, leaving them
+  there, and `s3://bucket/` wrote them at the bucket root and succeeded.
+- A serial `export_parquet` or `export_arrow` to `s3://` that is cancelled or
+  terminated while it waits for the store to start its multipart upload no
+  longer leaves that upload open (#1810). The export had no upload id, so it
+  sent no abort. It now lists the open uploads for its own key and aborts them,
+  within 10 seconds. Uploads at other keys stay open. A `gs://` export still
+  leaves the upload open (#1854).
+- An `export_parquet` or `export_arrow` to `s3://` that is cancelled while the
+  store holds the answer to its last request now says what it wrote (#1813).
+  That request commits the object: the single PUT, or the completion of the
+  multipart upload. The statement used to end with the cancel error only, while
+  the new object had already replaced the old one at the key. The export now
+  waits for that answer and issues a warning that it wrote the object. The wait
+  ends when the answer arrives or after 60 seconds in which the store sends
+  nothing. The store cannot take a committed object back, so the object stays.
+  If the connection closes during the wait, the export does not resend the
+  request. It fails with an error that says the store may have written the
+  object (#1846).
+- `pgcolumnar.import_arrow` now reads the Arrow IPC file format, including
+  Feather v2 (#1806). Before, a file that starts with `ARROW1` failed with
+  `invalid memory alloc request size 1330795073`, because the reader took
+  `ARRO` as a message length. The reader now skips the 8-byte header, reads the
+  stream inside the file, and ignores the footer. A file that starts with
+  `ARROW1` but does not end with it is refused with `XX001`, and so is one whose
+  footer length is negative or larger than the file. A file without the
+  optional end-of-stream marker before its footer is read too. A message or
+  body length larger than the rest of the file is now refused with `XX001`
+  before anything is allocated. `export_arrow` still writes the IPC stream
+  format.
+  `docs/how-to.md` said both functions use the IPC file format; it now names
+  each format and says to read an export with `pyarrow.ipc.open_stream`.
+  `test/arrow_import.sh` and `test_arrow_import.py`. Reported by @OffgridwithJD.
+- `pgcolumnar.parquet_schema` now advises `timestamp with time zone` for a
+  millisecond or microsecond timestamp column that holds instants (#1807). It
+  advised `timestamp without time zone` for every such column, and reading an
+  instant into `timestamp` converts it to a wall time in the session
+  `TimeZone`. This changes the advice for `timestamptz` columns that
+  `export_parquet` writes, for Iceberg `timestamptz` columns, and for files
+  that carry only the older `TIMESTAMP_MILLIS` or `TIMESTAMP_MICROS` type,
+  which the Parquet format defines as UTC-adjusted. Wall-time columns
+  (`isAdjustedToUTC=false`) are still advised as `timestamp`.
+  `test/parquet_timestamp_zone.sh` and `test_parquet_timestamp_zone.py`.
+  Reported by @OffgridwithJD.
+- The REST catalog functions now follow the catalog's `GET /v1/config` (#1793).
+  They use the advertised `namespace-separator`, so a nested namespace such as
+  `db.x` works on the Apache Iceberg 1.12 REST catalog, which answered HTTP 400
+  before. `iceberg_rest_namespaces` now lists every level: it asks for the
+  children of each namespace with `?parent=`, where it listed only the top level
+  before. `iceberg_rest_namespaces` and `iceberg_rest_tables` now read the
+  config too, so they send the server's `warehouse` and use the catalog's
+  prefix; on a prefixed catalog they returned HTTP 404 before. A prefix with a
+  `/` in it, such as `catalogs/main`, is sent as path segments, not as one
+  `%2F`-encoded segment, and a prefix in the config `defaults` is used. Both list
+  functions follow `next-page-token`, and refuse a page token the catalog
+  already sent. `iceberg_rest_namespaces` returns each namespace once, also on a
+  catalog that lists nested namespaces at the top level. It now makes one more
+  request per namespace, and if the catalog answers an error to any of them,
+  for example to `?parent=`, the whole call fails, where it listed the top level
+  before. `test/iceberg_rest_scan.sh` and `test_iceberg_rest_scan.py`. Reported
+  by @OffgridwithJD.
+
+- A remote prefix or pattern that names a directory beginning with `_` or `.`,
+  such as `s3://bucket/_landing/` or `s3://bucket/.staging/*.parquet`, now reads
+  the objects under it (#1784). Before, it raised `no objects under ... match`,
+  because the hidden-name skip judged every segment of the key, including the
+  prefix you named. The skip now applies only below the prefix, as it does for a
+  local directory. A remote pattern now matches as a local glob does: `*.parquet`
+  returns `_b.parquet`, `_*.parquet` matches at all, and a name beginning with `.`
+  matches only when the pattern spells the dot. The scheme is compared without
+  case for a pattern as for a prefix, so `S3://bucket/_landing/*.parquet` reads
+  as `s3://bucket/_landing/*.parquet` does; before, the pattern raised
+  `no objects ... match`. Measured against Garage S3: each of 8 remote reads
+  returns the same count as the same local read.
+  `test/objstore_listing.sh` and `test_objstore_listing.py`.
+
+  **Behaviour change:** a remote pattern no longer skips `_` names below the
+  literal prefix. Before, `s3://bucket/out/*/*.parquet` skipped
+  `out/_temporary/x.parquet`. Now it reads it, as a local glob of
+  `/data/out/*/*.parquet` does. To skip Spark staging output, read the prefix
+  `s3://bucket/out/` instead, or a pattern such as `s3://bucket/out/[!_]*/*.parquet`.
+- `parallel_export_parquet` now removes the run's parts when it fails after
+  every worker has finished (#1781). Before it writes `_SUCCESS` on an `s3://`
+  prefix, the export lists the prefix to remove stale parts, and then it PUTs
+  the marker. A failure in either step, such as a key that may write but not
+  list or a refused marker PUT, raised an ERROR and left every part, with no
+  marker, and with any earlier run's marker still in place. `read_parquet` read
+  those parts as a whole table. Now the dispatcher removes the parts and any
+  marker before the error is raised, as the documentation promises for a
+  failed run. The docs no longer say that no bucket listing is done, and they
+  say that a remote prefix needs list permission. They also say what a failed
+  listing cannot clean up: without it, the export cannot find a larger earlier
+  run's higher-numbered parts, so those remain with no marker, and a reader
+  should check for `_SUCCESS` before reading the prefix. A refused listing's
+  error now names the prefix it listed, not the dummy key `s3://<bucket>/_`
+  its connection was resolved from.
+  `test/objstore_sink_write.sh` and `test_objstore_sink_write.py`.
+- `read_parquet`, `iceberg_scan` and the `pgcolumnar_parquet` and
+  `pgcolumnar_iceberg` foreign tables now read a Parquet fixed-length binary
+  column with no logical type into `bytea` (#1792). Iceberg writes `fixed(L)`
+  that way, and `parquet_schema` reports the column as `bytea`, but the bind
+  step accepted `bytea` only over a variable-length binary column, so the
+  column definition `parquet_schema` advised was refused with `physical type is
+  not compatible`. A `uuid` declared over a fixed-length column that is not 16
+  bytes wide is now refused at bind with that message (42804), where it used to
+  reach the decoder and fail as `could not decode Parquet column N`.
+  `test/native_parquet_flba.sh` and `test_native_parquet_flba.py`, over a
+  committed pyiceberg table, `test/fixtures/iceberg/warehouse_fixed`.
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign-data
+  wrapper now refuse a struct, list or map column declared with a scalar type
+  (#1788). Such a column used to read as null on every row, with no error, even
+  when the data file held values for it. The error is `0A000` and names the
+  column and its kind. `read_parquet(path, field_ids)` now refuses an id that a
+  struct, list or map carries the same way. It used to say the file had no
+  column with that id. `test/iceberg_scan.sh`, `test/native_parquet_fieldid.sh`
+  and their pytest twins.
+- `iceberg_scan`, `iceberg_data_files` and the `pgcolumnar_iceberg` foreign
+  table now refuse a manifest whose `content` or `status` value is outside the
+  Iceberg spec, with `XX001` and a message that names the file and the value
+  (#1823). A data file `content` other than 0, 1 or 2 was treated as an
+  equality delete. When that file was the oldest in the snapshot, the delete was
+  skipped as never applicable, so the file's rows dropped out of the result with
+  no error. A newer one failed with a misleading `has no equality_ids`, and the
+  lister called it a delete file (`0A000`). An entry `status` other than 0, 1 or
+  2 was read as a live entry, and a manifest list `content` other than 0 or 1
+  was read as a data manifest. A value outside the 32-bit range, such as
+  4294967296, is refused the same way. It used to wrap to a valid value, 0 or
+  1, and read as data. `test/iceberg_malformed.sh` and
+  `test_iceberg_malformed.py`.
+- A manifest list whose `partition_spec_id` is outside the 32-bit range is now
+  refused with `XX001`, and the message names the manifest and the value
+  (#1878). A value such as 4294967296 used to wrap to spec 0. The manifest's
+  files were then pruned with spec 0's partition filters, which belong to
+  another spec. `test/iceberg_malformed.sh` and `test_iceberg_malformed.py`.
+- The `iceberg_rest_*` functions now check `USAGE` on the
+  `pgcolumnar_iceberg_catalog` server they are given, as dblink does before it
+  uses a named server's user mapping (#1819). Before, any role with `pg_read_server_files` could
+  name a server it held no `USAGE` on, and the function sent that server's mapping
+  token for it: through a `PUBLIC` mapping, and through the role's own mapping
+  after `REVOKE USAGE ON FOREIGN SERVER`. Such a call is now refused with SQLSTATE
+  42501 (`permission denied for foreign server ...`) before any mapping is read or
+  any request reaches the catalog. The catalog-URI form is unchanged. Grant
+  `USAGE` on the server to each role that uses the server form.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py`.
+- `read_parquet`, the `pgcolumnar_parquet` foreign table, `import_parquet` and
+  `iceberg_scan` now refuse a Parquet string cell that is not valid in the
+  server encoding, with 22021 and a message that names the column:
+  `invalid byte sequence for encoding "UTF8" in Parquet column "name": 0xff`
+  (#1821). The reader used to turn the bytes into `text` unchecked, so invalid
+  UTF-8 came back as text the server would never accept from COPY, `INSERT ...
+  SELECT` stored it, and later queries on the table failed; a cell with an
+  embedded NUL read as a shorter string that was not equal to it. PLAIN and
+  dictionary-encoded columns are both checked, the dictionary once per distinct
+  value, and a value that is all 7-bit ASCII with no NUL skips the encoding
+  verifier. The `pgcolumnar_iceberg` foreign table no longer prunes a data file
+  whose manifest partition value is not valid text: it reads the file and
+  re-filters its rows, where comparing the raw bytes had dropped rows the qual
+  keeps. `test/native_parquet_hardening.sh` and
+  `test_native_parquet_hardening.py`.
+
+- `read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table now
+  read an unsigned Parquet integer as the value it stores (#1814). pyarrow writes
+  `uint32` and `uint64` columns as INT32 and INT64 marked `UINT_32` and `UINT_64`.
+  The reader ignored the mark, so a value of 2^31 or more (`UINT_32`) or 2^63 or
+  more (`UINT_64`) came back negative with no error, through the very types
+  `parquet_schema` advised: `integer` and `bigint`. `bigint` for a `UINT_32`
+  column and `numeric` for a `UINT_64` column were refused. Now those two types
+  read every value, `parquet_schema` advises them (`numeric(20,0)` for
+  `UINT_64`), and a narrower type raises `value out of range` (22003) for a value
+  it cannot hold. The pushdown suite's inverted-statistics file, which relied on
+  the signed decode, now swaps the footer's min and max instead.
+  `test/native_parquet_hardening.sh` and `test_native_parquet_hardening.py`.
+- The `pgcolumnar_iceberg` foreign-data wrapper no longer prunes `bucket[N]`
+  files for an equality compared under a nondeterministic collation (#1818).
+  Iceberg buckets a string by its UTF-8 bytes, and the wrapper hashed the
+  constant's bytes and skipped every file in another bucket. Under a
+  case-insensitive ICU collation, `'abc'`, `'Abc'` and `'aBc'` equal `'ABC'` but
+  sit in other buckets, so `WHERE s = 'ABC' COLLATE ci` returned 1 row where
+  `iceberg_scan` returned 4, with no error. The same happened with the column
+  declared `COLLATE ci`. The wrapper now prunes by bucket only when the
+  comparison's collation is deterministic, as the bloom filters already do, and
+  otherwise reads every file. Identity pruning evaluates the qual itself and
+  was correct. `truncate[W]` and metrics pruning do not prune on a string column.
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`, on a new pyiceberg fixture
+  (`test/fixtures/iceberg/gen_iceberg_bucket_text.py`).
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign table
+  now read a column after an Iceberg `int` to `long` or `float` to `double`
+  promotion (#1789). A data file written before the promotion still stores
+  `INT32` or `FLOAT`, and the field-id binder required the exact type the output
+  column wanted, so it refused `bigint` and `double precision` with `Parquet
+  column with field id N has a physical type incompatible with output column`.
+  Once files from both sides of the promotion were live, no declared type read
+  the column. An equality delete on a promoted column made every query on the
+  table fail, because its probe always binds the current schema's type. The
+  binder now accepts a plain integer `INT32` for `bigint` and a `FLOAT` for
+  `double precision`, and the decoder widens the value. Both widenings are
+  exact. A narrower declared type is still refused, as is a date read as
+  `bigint`. `read_parquet` by field id widens the same way; the positional form
+  does not. A wider `decimal` already read. `test/iceberg_scan.sh`,
+  `test/iceberg_rest_scan.sh` and their pytest twins.
+- `pgcolumnar.iceberg_data_files` lists an Iceberg table after a copy-on-write
+  delete or a filtered overwrite, instead of refusing it with "has delete files"
+  (#1791). Such a commit records the data file it replaced as a removed entry
+  (status 2, DELETED) in the new snapshot's manifest. The lister treated that
+  entry as a delete file and refused the whole table, although the table had no
+  delete files; `iceberg_scan` already skipped it. The lister now skips it too, and
+  still refuses delete manifests and delete files. Measured on a pyiceberg table
+  with 10 rows after deleting 5: an error before, and the one live 5-row file
+  after. `test/iceberg_data_files.sh` and `test_iceberg_data_files.py`, with a new
+  pyiceberg fixture, `test/fixtures/iceberg/warehouse_cow`.
+
+- A user mapping for an Iceberg REST catalog server that sets a static `token`
+  and only one of `oauth_client_id` and `oauth_client_secret` is now refused
+  (#1794), as the docs say. Before, the static token was used and the stray half
+  of the pair was ignored without a word. The call now fails with SQLSTATE 28000,
+  `incomplete OAuth2 credential`, before any request reaches the catalog.
+  `test/iceberg_rest_server.sh` and `test_iceberg_rest_server.py` check both halves.
+- `iceberg_rest_table_location` and `iceberg_rest_scan` read a catalog reply
+  that ends when the server closes the connection (#1787). Such a reply carries
+  neither `Content-Length` nor chunked framing, which HTTP/1.1 allows, and the
+  client refused it with `listing has no length`. The Apache Iceberg REST
+  catalog sends every reply over about 32 KB this way, so a table with about 41
+  or more snapshots could not be read through it. Measured against Apache
+  Iceberg 1.12.0: a 60-snapshot table now resolves, and `iceberg_rest_scan`
+  returns its 60 rows. The 64 MB response cap still applies, and an over-cap
+  reply is refused with SQLSTATE 54000 and the message `response from "..."
+  exceeded ... bytes`, which used to say `object listing from`.
+  `test/iceberg_rest.sh` and `test_iceberg_rest.py`.
+
+- `parallel_export_parquet` to a remote prefix now obeys the calling session's
+  `pgcolumnar.objstore_allowed_endpoints`, `objstore_s3_addressing` and
+  `objstore_part_size` (#1780). Its background workers started from
+  `postgresql.conf` and ignored a `SET`. A session that set the allow-list to
+  `''` still had its workers upload their parts (two objects with two
+  workers); the call then failed and left them behind. The dispatcher now checks the endpoint against the
+  session's list before any worker starts, and passes the three settings to
+  the workers. The check sends no request: the object-store module gains the
+  entry `check_endpoint` (module ABI 7), so the module and the extension must
+  come from the same build. `test/objstore_sink_write.sh` and
+  `test_objstore_sink_write.py`.
+
+- Prefix and pattern reads of `s3://` paths now work under
+  `pgcolumnar.objstore_s3_addressing = 'virtual'` (#1783). The listing request put
+  the bucket in the path although the bucket was already in the host name, so S3
+  read it as a fetch of an object named after the bucket and answered HTTP 404:
+  `LIST to "s3://bucket/_" returned HTTP 404`. Exact-key reads were not affected.
+  The cleanup listing a failed `parallel_export_parquet` runs to abort its
+  unfinished multipart uploads had the same fault. That cleanup discards its
+  errors, so the uploads it should have aborted could stay open. Under virtual-host addressing both listings now
+  go to the bucket root, `/`. Path-style addressing is unchanged.
+  `test/objstore_addressing.sh` and `test_objstore_addressing.py`.
+- `read_parquet`, the `pgcolumnar_parquet` foreign table and `iceberg_scan` now
+  read a Parquet column that is NULL in every row when the file uses GZIP, ZSTD
+  or LZ4_RAW (#1786). pyarrow writes such a column with a dictionary page that
+  holds no values, so the page declares an uncompressed size of 0, and the
+  decoder refused every size-0 page for those three codecs: the query failed
+  with `could not decode Parquet column N in row group M`. pyiceberg writes ZSTD
+  by default, so an Iceberg table became unreadable as soon as one data file held
+  an all-NULL column. A size-0 page now decodes to an empty page, as it already
+  did for uncompressed and Snappy files. `test/native_parquet_codecs.sh` and
+  `test_native_parquet_codecs.py`.
+- A rewriting `ALTER TABLE` (a type change, `ADD COLUMN` with a volatile
+  default, `SET ACCESS METHOD`) and `REFRESH MATERIALIZED VIEW` now keep the
+  table's own pgColumnar options for the rows they rewrite (#1309). They write
+  into a transient relation that core names `pg_temp_<oid>`, and the options
+  were looked up under the transient's OID, so they were found missing:
+  `stripe_row_limit`, `chunk_group_row_limit`, `compression`, `encode_effort`
+  and `sketch_columns` all fell back to the defaults. Measured: one row group
+  of 3,334 rows under a `stripe_row_limit` of 1,000, chunks compressed on a
+  table set to `compression => 'none'`, and no distinct-count sketch for any
+  rewritten row group. The rewrite now reads the options of the relation it is
+  rewriting.
+
+- `min` and `max` with a `COLLATE` override answer under that collation (#1771).
+  The grouped and the ungrouped vectorized aggregate compared values under the
+  column's collation, so on an ICU column `min(t COLLATE "C")` returned the ICU
+  answer. They now decline such an aggregate, and core answers it.
+  `test/native_agg_collation.sh` and `test_native_agg_collation.py`.
+- **A `timestamp` column compared with a `timestamptz` constant no longer loses
+  rows across a spring-forward gap.** The zone maps compared each chunk group's
+  min/max through the cross-type ordering proc, which reads a wall time as an
+  instant in the session zone, and that is not order-preserving inside the gap:
+  in New York on 2024-03-10, `02:30` is 07:30Z but `03:00` is 07:00Z, so a group
+  whose max was `03:00` was skipped for `ts > '07:15+00'` although its `02:30` row
+  matched. That pair is no longer used to skip; the reverse pair and same-type
+  comparisons still are (#1738). `test/native_skip.sh` and `test_native_skip.py`.
+- **A second cancel during a remote export's cleanup no longer reports "errstart
+  was not called".** When a `parallel_export_parquet` to `s3://` was cancelled
+  again while the first cancel's cleanup was still deleting its parts, the export
+  failed with `XX000: errstart was not called` instead of its own 57014. The
+  cleanup ran with the first cancel's error still on the error stack, and the
+  object-store module's best-effort catch, swallowing the second cancel, emptied
+  the whole stack. That cleanup, and the sink abort in the Parquet, Arrow and
+  `_SUCCESS` writers, now copies the error out first and re-throws it afterwards
+  (#1741). `test/objstore_export_double_cancel.sh` and
+  `test_objstore_export_double_cancel.py`.
+- **A parallel flush worker that fails after publishing its output no longer leaks
+  it.** A worker pinned its shared memory output and then committed; an error in
+  between reported the worker as failed, and the dispatcher, which collects only
+  finished workers, never freed the segment, so it stayed until the server
+  restarted. The worker now commits before it publishes, and the dispatcher frees
+  any output it did not collect (#1747).
+- **A second cancel during a parallel flush's error cleanup no longer leaks the
+  workers' output segments.** With `pgcolumnar.parallel_flush` on, a cancel during
+  the flush terminates the workers and frees the shared memory segments they
+  published. A second cancel landing while the cleanup waited for a worker to exit
+  ended the cleanup early: the segments stayed pinned until the server restarted, and
+  the second cancel was reported instead of the first. The cleanup now finishes
+  whatever arrives, in the time a single cancel already took (#1745).
+- **Parquet row-group skipping now uses a constant of another integer or float
+  type.** A bare integer literal is `int4`, so `WHERE id > 150000` on a `bigint`
+  column of a Parquet foreign table read every row group; only `150000::int8`
+  skipped. The check now compares through the operator family's cross-type
+  comparison, as the native columnar scan already did. Answers were always correct;
+  this only reads less (#1712). A `timestamp` column compared with a `timestamptz`
+  constant still does not skip: across a spring-forward gap the session zone's
+  conversion does not keep the statistics' order. `test/parquet_skip_cross_type.sh`
+  and `test_parquet_skip_cross_type.py`.
+- **A cancelled `parallel_export_parquet` to `s3://` no longer leaves its multipart
+  uploads open.** A worker learns its upload id only from the answer to
+  CreateMultipartUpload, and the store creates the upload when the request
+  arrives. A worker that ended while it waited for that answer left an upload
+  open on the store that nothing could abort, billed until a lifecycle rule
+  removed it. The dispatcher's cleanup now lists the uploads under the export's
+  prefix and aborts each one whose key is one of the export's own part names.
+  Uploads under the same prefix with any other key are left alone. The aborts run
+  inside the cleanup that #1741 made safe from a second cancel, so a second cancel
+  during the cleanup does not skip them. The cleanup holds interrupts only while
+  it waits, and those waits are bounded: 5 s for the workers to stop, then 10 s
+  for the listing and the aborts. The object-store module gains two entries for
+  this, `list_uploads` and `abort_upload` (module ABI 6), so the module and the
+  extension must come from the same build (#1743, #1722).
+  `test/objstore_export_open_uploads.sh` and `test_objstore_export_open_uploads.py`.
+- **`export_parquet` no longer marks a `timestamp` column as a UTC instant.** Both
+  `timestamp` and `timestamptz` were written as the converted type `TIMESTAMP_MICROS`,
+  which the Parquet spec defines as adjusted to UTC. Every other reader (pyarrow,
+  DuckDB, Spark) then took a wall time for an instant: `12:00` read back as
+  `12:00 UTC`, which is 08:00 under a New York session. Each column now carries the
+  `TIMESTAMP` logical type, with `isAdjustedToUTC=false` for `timestamp` and `true`
+  for `timestamptz`, and only `timestamptz` keeps the converted type (#1706).
+  pgcolumnar's own `read_parquet` returns both unchanged, as before.
+  `test/native_parquet_schema.sh` and `test_native_parquet_schema.py`.
+- **`pgcolumnar.stats()` and `pgcolumnar.sort_status()` no longer read more as
+  the database holds more columnar tables.** Both filtered a shared catalog on
+  `pgcolumnar.get_storage_id(rel)`. Once the catalog had statistics, the planner
+  could choose a sequential scan, which called that function once per catalog row,
+  and each call reads the table's first page. With 20 other tables of 5 row groups
+  each, `stats()` read 104 blocks of the table and `sort_status()` 170. Each now reads
+  the storage id once: 1 block (#1637). `test/catalog_filter_reads.sh` and
+  `test_catalog_filter_reads.py`.
+- **`pgcolumnar.recluster` no longer duplicates rows inserted while it waits for
+  its groups.** The online recluster listed the groups it would retire, then
+  locked them and read the table under a later snapshot, and retired only the
+  groups it had listed. A row committed in between, including while the recluster
+  waited for another session's group lock, sat in a group it never listed: it was
+  read and rewritten, and its own group was kept, so the row appeared twice. The
+  rewrite now reads only the groups it listed. A row written in that window stays
+  where it is and is counted as appended, and a row deleted in that window stays
+  deleted (#1633). `test/recluster_extent.sh` and `test_recluster_extent.py`.
+- **A NOLOGIN role can run `parallel_export_parquet`, `parallel_copy` and the
+  parallel flush on PostgreSQL 15 and 16.** After `SET ROLE` to a role without
+  LOGIN, the export failed `worker 0 failed: worker exited without reporting a
+  result`, `parallel_copy` failed `coordinator exited without reporting a result`,
+  and the parallel flush encoded every column serially. Each background worker
+  connected as the calling role, which these majors refuse for a role that cannot
+  log in. A worker now connects as the session's authenticated user and then takes
+  the caller's user id and security context, as PostgreSQL's own parallel workers
+  do, so triggers, privilege checks and `current_user` inside it still see the
+  caller. PostgreSQL 17 and later already worked (#1585).
+  `test/nologin_workers.sh` and `test_nologin_workers.py`.
+- **In the upgrade window, a refusal for a missing catalog table names `ALTER
+  EXTENSION UPDATE`.** After the new library is installed and the server restarted,
+  but before `ALTER EXTENSION pgcolumnar UPDATE`, `DROP TABLE`, `TRUNCATE` and
+  `pgcolumnar.vacuum()` on a columnar table fail, because the 1.0-alpha5 library
+  needs `pgcolumnar.retired_group` and a 1.0-alpha4 catalog lacks it. They change
+  nothing. The error used to name only the missing table, and it now carries a hint:
+  `The pgcolumnar catalog in this database may be older than the installed library.
+  Run ALTER EXTENSION pgcolumnar UPDATE in this database.` Reads and writes work
+  throughout, and after the update every one of these succeeds on the same rows
+  (#1341 item 66). `test/native_upgrade_converge.sh` and
+  `test_native_upgrade_converge.py`.
+
+
+- **A join whose runtime-filter build is empty no longer reads the fact table.** When
+  a large dimension filtered to no row was joined to a columnar table, the hash join
+  fetched its first fact row before building, and the runtime filter then rejected
+  every fact row one at a time: every chunk group was read for an answer of no rows.
+  The coordinator now ends the join as soon as it finds the build empty, since an
+  inner join with an empty build has no rows (#1447). `test/native_join_runtime_filter.sh`
+  and `test_join_runtime_filter.py`.
+
+- **A vectorized aggregate no longer shows a non-leakproof function rows that row-level
+  security hides.** Under a policy, a query such as `SELECT grp, count(*) FROM t WHERE
+  f(secret) GROUP BY grp` ran `f` on every row, the other owners' included, through the
+  grouped vectorized node (the default for a GROUP BY) and the ungrouped one
+  (`pgcolumnar.enable_ungrouped_vector_agg`). The answers were right; only the function
+  saw too much. Both nodes now leave a WHERE whose clauses could leak past the policy to
+  the custom scan, which orders its quals as PostgreSQL does. A WHERE with only leakproof
+  clauses, or a table with no policy, vectorizes as before. Found by OffgridwithJD in
+  review. `test/rls_query_paths.sh` and `test_rls_query_paths.py`.
+
+- **`pgcolumnar.column_extent` refuses a table whose row-level security policies
+  apply to the caller.** It returned the column's stored smallest and largest value
+  over every row, so a caller limited by a policy could read values from rows it
+  cannot see. It now raises `row-level security is in force`, as the other functions
+  that read storage directly do. Found by OffgridwithJD in review.
+- **An ungrouped aggregate on a columnar table applies a WHERE that references no
+  column.** `SELECT count(*), min(v) FROM t WHERE (SELECT false)`, or a WHERE on
+  `now()` or `current_user`, returned every row's aggregates instead of none. The
+  vectorized aggregate answered from the zone maps and never applied the one-time
+  filter. It now leaves such a query to the ordinary plan. Found by OffgridwithJD in
+  review (#1435). `test/native_agg.sh` and `test_native_agg.py`.
+- **A join to a columnar table with a WHERE that names no column no longer fails.**
+  `SELECT count(*) FROM fact JOIN dim USING (k) WHERE (SELECT false)`, or a gate on
+  `now()`, failed with `pgcolumnar runtime filter expected a core Hash Join`, EXPLAIN
+  included, and on a build with assertions it aborted the backend. The planner puts a
+  gating Result over such a join, and the join runtime filter expected the Hash Join
+  itself. The runtime filter now leaves such a join to the ordinary plan. Found by
+  OffgridwithJD (#1437). `test/native_join_runtime_filter.sh` and
+  `test_join_runtime_filter.py`.
+- **A cidr or varchar column, or a domain over either, prunes chunk groups.** A
+  comparison on such a column resolves to inet's or text's operator, and the reader
+  called the key cross-type and dropped it, because the opfamily orders only
+  (inet, inet) and (text, text). The column was read whole, while EXPLAIN still
+  counted the filter as pushed down. Such a key now uses the column's own ordering
+  and hash, which the writer used to build the zone maps and bloom filters. Found
+  by OffgridwithJD reviewing #1426 (#1433). `test/native_skip.sh` and
+  `test_native_skip.py`.
+
+- **A concurrent `UPDATE` of the same row now fails with 40001 on a table with a
+  unique index, as documented, not 23505 (#1421).** Two sessions updating one row of
+  a table with a PRIMARY KEY or UNIQUE index: the second used to wait on the first's
+  new key and then fail with `unique_violation`, naming a duplicate the user never
+  wrote, so an application retrying on `serialization_failure` did not retry. The
+  same happened to a row two sessions moved between partitions of a parent with a
+  key. The update path now serializes the row before its new version reaches the
+  unique check. On such tables each row is serialized as the `UPDATE` reaches it, so
+  two multi-row `UPDATE`s reaching shared rows in opposite orders can now deadlock
+  (40P01), as a heap can. Each row's check reads its row group's committed delete
+  marks. On PostgreSQL 17, an `UPDATE` of a keyed table took about 25% to 50%
+  longer: 100,000 rows updated where half the table was deleted, and 200,000 where
+  nothing was (three runs each, by both of us). A table without a unique index is
+  unchanged. `test/update_conc.sh` and the new
+  `test/partition_rows.sh`, with `test_partition_rows.py`, which also holds such an
+  `UPDATE` to bounded memory.
+
+- **The Iceberg wrapper no longer reads server files while planning for a role the scan
+  would refuse.** `EXPLAIN` on an Iceberg foreign table read its `metadata_path` for any
+  role holding SELECT on it. That showed a role without `pg_read_server_files` the
+  table's row count, and a `metadata_path` that did not exist failed planning with
+  `58P01`, which probed whether a server path exists. The planner now reads the metadata
+  only for a role the scan would admit, and gives everyone else the flat estimate, as the
+  Parquet wrapper has since #330. `test/fdw_plan_privilege.sh` and
+  `test_fdw_plan_privilege.py` pin both wrappers' gates.
+- **A plpgsql EXCEPTION block that rolls back no longer loses the enclosing statement's
+  rows (#1341).** A statement ending inside the block flushed every buffered write,
+  including the enclosing INSERT's or DELETE's, under the block's subtransaction; the
+  rollback then took them away. `INSERT INTO t SELECT f(g) FROM generate_series(1,
+  5000) g`, where `f`'s block wrote a columnar table and raised, kept 1 row. Now a
+  statement's end flushes only its own subtransaction's buffers. The same loss through a
+  READ of that table inside the block is #1360, not yet fixed.
+- **A unique index is no longer violated by an insert racing an uncommitted delete of
+  its key (#1341).** The index fetch answered a row whose delete was still in progress
+  as gone, so the uniqueness check did not wait; when the delete rolled back, the key had
+  two rows. It now reports the row present, as heap does, and the check waits.
+- **An index built after a DELETE serves a transaction whose snapshot began before it
+  (#1341).** The build left deleted rows out, so that transaction's index scan missed a
+  row its table scan returned. Deleted rows are now indexed as not alive, as heap indexes
+  a recently dead tuple; a UNIQUE index still builds over a key whose other holder was
+  deleted.
+- **`INSERT ... ON CONFLICT DO NOTHING` works on a columnar table with a unique index
+  (#1341).** It raised `0A000` ("speculative insert is not supported yet") on any table
+  with a primary key or unique index, which is every table it is used on.
+  `docs/limitations.md` said it worked. Speculative insertion now inserts the row as an
+  ordinary row, and withdraws it again (a delete mark) when a concurrent inserter won the
+  key. `ON CONFLICT DO UPDATE` still refuses when a row conflicts, because updating it
+  takes a row lock; with no conflict it inserts. Tested in `am_contracts`, in both
+  twins, including eight sessions racing on the same keys: 0 duplicate keys, against
+  407 to 507 with the withdrawal disabled.
 - Changing a text column's collation without a rewrite no longer gives wrong
   answers (#1327). `ALTER COLUMN ... TYPE text COLLATE <other>` keeps the
   table's files, so the zone maps kept minima and maxima ordered under the old

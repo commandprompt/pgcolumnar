@@ -86,9 +86,22 @@ jobs:
       # Measured: at depth 1 `git rev-parse HEAD~1` fails, at depth 2 it resolves.
       # `upgrade-guard` already takes 0 for its tags, and it was the only job
       # running this matrix that passed the night this broke.
+      #
+      # fetch-depth: 0 since #1431: census-commits reads every commit from HEAD~1 to
+      # HEAD, and for a merge commit those are the merged PR's own commits, which a
+      # depth-2 checkout cuts at its shallow boundary.
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
+
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read, and it leaves the
+      # checkout's own history as it was.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       # The packages are ~102 MB, of which ~91 MB is the LLVM toolchain that
       # postgresql-server-dev-N depends on. That download is what stalls: every
@@ -116,7 +129,7 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # See ci.yml's build job for why the key hashes the resolved versions: a
       # fixed key freezes the archives, and the next routine PGDG minor then
@@ -154,7 +167,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip 2>&1 | tee /tmp/apt-install.log
@@ -257,8 +270,8 @@ jobs:
       - name: Install clang, build tools, codec headers, pyarrow; create the postgres user
         run: |
           set -euo pipefail
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 100 3 update
+          .github/scripts/apt-retry.sh 200 3 install -y --no-install-recommends \
             clang llvm bison flex make perl \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip
           clang --version | head -1
@@ -409,7 +422,7 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
 
       # See ci.yml's build job for why the key hashes the resolved versions: a
       # fixed key freezes the archives, and the next routine PGDG minor then
@@ -419,7 +432,7 @@ jobs:
         run: |
           set -euo pipefail
           v=$(apt-cache policy \
-                postgresql-18 postgresql-server-dev-18 \
+                postgresql-18 postgresql-server-dev-18 postgresql-18-partman postgresql-18-hll postgresql-18-tdigest \
                 liblz4-dev libzstd-dev zlib1g-dev python3-pip lcov \
               | awk '/Candidate:/ {print $2}' | sort)
           # $ImageOS, from the shell, where it actually has a value. Reported
@@ -447,9 +460,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$HOME/apt-archives/partial"
-          sudo timeout 600 apt-get -o Acquire::Retries=5 \
+          .github/scripts/apt-retry.sh 200 3 \
             -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
-            postgresql-18 postgresql-server-dev-18 \
+            postgresql-18 postgresql-server-dev-18 postgresql-18-partman postgresql-18-hll postgresql-18-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip lcov 2>&1 | tee /tmp/apt-install.log
           # Installed with sudo because the suites run under sudo; a plain
           # pip3 install lands in ~/.local where root cannot see it, which is how
@@ -596,12 +609,28 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
+
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as the cluster-test job is
+      # (#1758). Uncached, this job downloads ~100 MB, most of it the LLVM toolchain
+      # postgresql-server-dev-18 depends on, and that download stalls: the
+      # capability sweep failed all three 200-second attempts on 2026-10-23 (run
+      # 39944578717) and 2026-10-26 (run 40367661645). It derives no key and never
+      # saves; a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL 18 packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install PostgreSQL 18 and the codec headers
         run: |
           set -euo pipefail
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-18 postgresql-server-dev-18 \
             liblz4-dev libzstd-dev zlib1g-dev
 
@@ -681,12 +710,28 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
+          .github/scripts/apt-retry.sh 100 3 update
+
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as the cluster-test job is
+      # (#1758). Uncached, this job downloads ~100 MB, most of it the LLVM toolchain
+      # postgresql-server-dev-18 depends on, and that download stalls: the
+      # capability sweep failed all three 200-second attempts on 2026-10-23 (run
+      # 39944578717) and 2026-10-26 (run 40367661645). It derives no key and never
+      # saves; a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL 18 packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg18-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install PostgreSQL 18, the codec headers, and pyarrow
         run: |
           set -euo pipefail
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-18 postgresql-server-dev-18 \
             liblz4-dev libzstd-dev zlib1g-dev python3-pip
           sudo pip3 install --break-system-packages --quiet pyarrow \
@@ -719,7 +764,11 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 40, not 20, as in ci.yml's job of the same name (#1740). The run is serial and
+    # grows with every ported twin: on 2026-10-26 PG 16 finished its tests in 18m52s,
+    # and PG 15, 17 and 18 were cancelled at the 20-minute limit, PG 15 after its
+    # accounting line had printed 7305 pass + 0 fail (#1757).
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -727,7 +776,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add the PGDG repository and install PostgreSQL ${{ matrix.pg }} with its headers
+      # THE RELEASE TAGS, FOR native_upgrade_converge'S FIXTURE ARMS (#1341). Each
+      # released fixture must be byte-identical to what its tag shipped, compared by
+      # blob id against `v<version>:pgcolumnar--<version>.sql`. actions/checkout
+      # fetches no tags, so these arms used to skip on every CI run. Depth 1 is
+      # enough: only the file at each tagged commit is read, and it leaves the
+      # checkout's own history as it was.
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
+
+      - name: Resolve the object-storage suite host names
+        # test_objstore_addressing.py, the twin of objstore_addressing.sh, reads
+        # through virtual-host-style S3 addressing (pgc-bucket.s3.local) against
+        # its own loopback fixture server, as the suites job's shells do. Without
+        # the names its tests decline UNAVAILABLE_ENDPOINT and the run ends 67.
+        run: echo "127.0.0.1 s3.local pgc-bucket.s3.local" | sudo tee -a /etc/hosts
+
+      - name: Add the PGDG repository and refresh the package lists
         run: |
           set -euo pipefail
           sudo install -d /usr/share/postgresql-common/pgdg
@@ -741,13 +806,30 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
             https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
-          sudo timeout 300 apt-get -o Acquire::Retries=5 update
-          sudo timeout 600 apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+          .github/scripts/apt-retry.sh 100 3 update
+
+      # SEEDED FROM ci.yml's BUILD JOB CACHE, READ-ONLY, as ci.yml's job of the same
+      # name is (#1754). Without it this job downloads ~110 MB per run, most of it the
+      # LLVM toolchain postgresql-server-dev-N depends on, and that download stalls: on
+      # 2026-10-26 PG 16 and 17 failed all three 200-second attempts (#1758's run
+      # 40365017512). It derives no key and never saves; apt resolves every version
+      # and downloads what the archive lacks, so a miss falls back to the full download.
+      - name: Restore the build job's PostgreSQL ${{ matrix.pg }} packages, if any
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+          restore-keys: |
+            apt-pgdev-codecs-pg${{ matrix.pg }}-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install PostgreSQL ${{ matrix.pg }} with its headers
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/apt-archives/partial"
+          .github/scripts/apt-retry.sh 200 3 \
+            -o Dir::Cache::archives="$HOME/apt-archives" install -y --no-install-recommends \
             postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }} postgresql-${{ matrix.pg }}-partman postgresql-${{ matrix.pg }}-hll postgresql-${{ matrix.pg }}-tdigest \
             liblz4-dev libzstd-dev zlib1g-dev
-          # NOT cached, deliberately. The suites job caches because it runs a matrix for
-          # an hour; a second copy of that cache-key derivation is a thing that goes
-          # stale silently, and this job is minutes long.
 
       # ASSERTED, not assumed. A missing pg_config would otherwise surface as a
       # confusing failure inside conftest's build rather than here.
@@ -818,6 +900,12 @@ jobs:
           test -n "$WANT"
           echo "running $(set -- $FILES; echo $#) cluster file(s): $FILES"
           echo "expecting $WANT collected test(s)"
+          # TWIN OF native_scale AT 200000 ROWS (#2018, review of #2021). The job runs
+          # close to its 40-minute limit, and the twin's default is 500000. At
+          # 200000 the twin still fails the two regressions it guards: the
+          # allocator's missing CommandCounterIncrement and broken free-space
+          # reuse. The shell suite keeps its default in the suites job.
+          export SCALE_N=200000
           PYTHONPATH=. /tmp/pgcvenv/bin/pytest -q \
             --pg-config /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config \
             --pgc-expect-tests "$WANT" \

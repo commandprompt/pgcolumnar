@@ -59,3 +59,5 @@
 600-a-missing-pyarrow-declines.sh
 610-a-declined-capability-is-not-silent.sh
 620-a-suite-s-own-trap-must-stop.sh
+630-a-build-with-no-pg-config-must.sh
+640-every-suite-job-installs-the-extensions.sh

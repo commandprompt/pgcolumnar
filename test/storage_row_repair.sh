@@ -47,7 +47,7 @@ names_itself() {	# names_itself RELNAME -> 1 when its storage row names it
 	   WHERE storage_id = pgcolumnar.get_storage_id('$1');"
 }
 
-check_num "premise: no row names a missing relation before the damage" "$(found)" "0"
+check_num "no row names a missing relation before the damage" "$(found)" "0"
 
 q "UPDATE pgcolumnar.storage SET relation_oid = $gone_a
 	WHERE storage_id = pgcolumnar.get_storage_id('srr_t');

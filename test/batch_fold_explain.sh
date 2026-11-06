@@ -104,14 +104,19 @@ case "$pplan" in
 			*"Columnar Batch Fold"*) par_planned=yes ;;
 		esac ;;
 esac
+# A PREMISE, NOT A NOTE. The partial fold is planned on every major (15-19,
+# measured), and when it was not, this printed a note and the check below simply
+# did not run: the suite reported 6/6 and rc=0 with its parallel arm gone.
+check "premise: with parallelism free, the planner gives the parallel partial fold" \
+	"$par_planned" "yes"
 if [ "$par_planned" = yes ]; then
 	perr_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At -c "$PGUC $Q_OLD;" 2>&1)"
 	perr_hits="$(printf '%s\n' "$perr_out" | grep -c "cannot fold a relation with a column added")"
 	check_num "parallel partial fold refuses the fallback relation" "$perr_hits" "1"
 else
-	echo "note: no parallel partial fold planned on major $PGC_MAJOR;" \
-		"the ANALYZE 'no' check above carries the fallback proof alone"
+	# recorded either way, so the arm cannot leave the count by not running
+	check_num "parallel partial fold refuses the fallback relation" "not planned" "1"
 fi
 
 pgc_summary

@@ -38,7 +38,12 @@
 # definition (pg_get_functiondef, which includes the AS '...','symbol' clause, so
 # a wrong link symbol shows up here), its ACL, and its comment; every relation's
 # kind, ACL, and comment; every column's type, NOT NULL, and comment; every
-# non-base type; and every foreign-data wrapper's handler and validator.
+# non-base type; every foreign-data wrapper's handler and validator; and every
+# column default, index definition, constraint, row-level-security flag and policy.
+# AN AGGREGATE HAS NO pg_get_functiondef: it raises "is an aggregate function", and the
+# whole snapshot with it, so the fresh install read as having nothing to compare
+# (#1309's approx_count_distinct). An aggregate is snapshotted by its pg_aggregate row,
+# whose function columns print as names, so it compares across installs.
 # Convergence = an empty diff on all of it. The comment (pg_description) is in the
 # snapshot on purpose: pg_get_functiondef does NOT emit COMMENT, so without this a
 # generator that diffs only function definitions is blind to a missing comment,
@@ -219,23 +224,26 @@ _fx_git() { git -C "$HERE/.." "$@" 2>/dev/null; }
 if ! _fx_git rev-parse --git-dir >/dev/null; then
 	_fx_why="no git repository in the tree under test"
 elif [ -z "$(_fx_git tag -l 'v1.0-alpha*')" ]; then
-	# CI checks out at depth 1 with no tags, so this cannot run there. It runs
-	# locally and in the five-major release gate, which is where a fixture is
-	# captured and therefore where it can be captured wrongly.
+	# actions/checkout fetches no tags, so CI fetches the release tags in a step
+	# of its own for these arms (#1341). A local checkout without them still
+	# lands here, and the arms skip rather than compare against nothing.
 	_fx_why="no release tags in this checkout"
 else
 	_fx_why=""
 fi
 
+# The name is written out in each call rather than held in a variable: the twin
+# grader reads a check's name from the call, and `check "$_fx_name"` was invisible
+# to it, so a port could drop this arm and still grade complete.
 for v in $_FX_TAGGED; do
-	_fx_name="the $v fixture is byte-identical to what v$v shipped"
 	if [ -n "$_fx_why" ]; then
-		check_skip "$_fx_name" "SKIP  $_fx_name ($_fx_why)" "$_fx_why"
+		check_skip "the $v fixture is byte-identical to what v$v shipped" \
+			"SKIP  the $v fixture is byte-identical to what v$v shipped ($_fx_why)" "$_fx_why"
 		continue
 	fi
 	_fx_tag="$(_fx_git rev-parse "v$v:pgcolumnar--$v.sql" || echo "no such path at v$v")"
 	_fx_fix="$(_fx_git hash-object "$HERE/fixtures/pgcolumnar--$v.sql" || echo "fixture missing")"
-	check "$_fx_name" "$_fx_fix" "$_fx_tag"
+	check "the $v fixture is byte-identical to what v$v shipped" "$_fx_fix" "$_fx_tag"
 done
 
 # THE ARM THAT CATCHES THE QUIET HALF. Staging unconditionally fixes it; this
@@ -266,7 +274,7 @@ P() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres 
 # Comprehensive catalog snapshot of the pgcolumnar schema, one line per object.
 snap() {
 	P -d "$1" -F'|' -c "
-	  SELECT 'FN|'||p.oid::regprocedure||'|'||md5(pg_get_functiondef(p.oid))||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
+	  SELECT 'FN|'||p.oid::regprocedure||'|'||CASE WHEN p.prokind='a' THEN md5((SELECT ag::text FROM pg_aggregate ag WHERE ag.aggfnoid=p.oid)) ELSE md5(pg_get_functiondef(p.oid)) END||'|'||coalesce(p.proacl::text,'(def)')||'|'||md5(coalesce(obj_description(p.oid,'pg_proc'),''))
 	    FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pgcolumnar'
 	  UNION ALL SELECT 'REL|'||c.relkind::text||'|'||c.relname||'|'||coalesce(c.relacl::text,'(def)')||'|'||md5(coalesce(obj_description(c.oid,'pg_class'),''))
 	    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
@@ -278,6 +286,19 @@ snap() {
 	  UNION ALL SELECT 'FDW|'||w.fdwname||'|'||coalesce(h.oid::regproc::text,'-')||'|'||coalesce(v.oid::regproc::text,'-')
 	    FROM pg_foreign_data_wrapper w LEFT JOIN pg_proc h ON h.oid=w.fdwhandler LEFT JOIN pg_proc v ON v.oid=w.fdwvalidator
 	    WHERE w.fdwname LIKE 'pgcolumnar%'
+	  UNION ALL SELECT 'DEF|'||c.relname||'.'||a.attname||'|'||pg_get_expr(d.adbin,d.adrelid)
+	    FROM pg_attrdef d JOIN pg_class c ON c.oid=d.adrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+	    JOIN pg_attribute a ON a.attrelid=d.adrelid AND a.attnum=d.adnum WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'IDX|'||pg_get_indexdef(i.indexrelid)
+	    FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'CON|'||coalesce(k.conrelid::regclass::text,k.contypid::regtype::text)||'|'||k.conname||'|'||pg_get_constraintdef(k.oid)
+	    FROM pg_constraint k JOIN pg_namespace n ON n.oid=k.connamespace WHERE n.nspname='pgcolumnar'
+	  UNION ALL SELECT 'RLS|'||c.relname||'|'||c.relrowsecurity::text||'|'||c.relforcerowsecurity::text
+	    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar' AND c.relkind IN ('r','p')
+	  UNION ALL SELECT 'POL|'||c.relname||'|'||p.polname||'|'||p.polcmd::text||'|'||p.polpermissive::text||'|'
+	      ||array_to_string(ARRAY(SELECT CASE WHEN r=0 THEN 'public' ELSE r::regrole::text END FROM unnest(p.polroles) r ORDER BY 1),',')
+	      ||'|'||coalesce(pg_get_expr(p.polqual,p.polrelid),'-')||'|'||coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'-')
+	    FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgcolumnar'
 	  ORDER BY 1;" | sort
 }
 
@@ -309,5 +330,54 @@ for from in "${_NUC_FIXTURES[@]}"; do
 done
 rm -f "$REF"
 P -d postgres -c "DROP DATABASE IF EXISTS conv_fresh;" >/dev/null
+
+# ---- the window: this library over the previous release's catalog (#1341 item 66) ----
+#
+# docs/installation.md steps 1 and 2 put the new library in place; step 3,
+# ALTER EXTENSION UPDATE, brings the catalog up to it. Between them a database
+# runs this library over its previous release's catalog. The library deletes
+# from retired_group unconditionally (columnar_metadata.c, PgColumnarDeleteMetadata),
+# which that catalog does not have, so DROP TABLE, TRUNCATE and pgcolumnar.vacuum()
+# fail there: measured, with 42P01 'columnar metadata table
+# "pgcolumnar.retired_group" does not exist', which names neither the cause nor step 3.
+#
+# The arms hold what the window must keep: reads and writes work, a refused
+# operation changes nothing and names the remedy, and step 3 makes every one of
+# them work on the same rows. PREV is the newest fixture, so these follow the
+# release they describe rather than naming it.
+PREV="${_NUC_FIXTURES[${#_NUC_FIXTURES[@]}-1]}"
+WIN=conv_window
+P -d postgres -c "DROP DATABASE IF EXISTS $WIN;" >/dev/null
+P -d postgres -c "CREATE DATABASE $WIN;" >/dev/null
+P -d "$WIN" -c "CREATE EXTENSION pgcolumnar VERSION '$PREV';" >/dev/null
+check "premise: the window database runs this library over the previous release's catalog" \
+	"$(P -d "$WIN" -c "SELECT extversion FROM pg_extension WHERE extname='pgcolumnar';")" "$PREV"
+check "premise: that catalog has no retired_group, which this library deletes from" \
+	"$(P -d "$WIN" -c "SELECT count(*) FROM pg_class WHERE relname = 'retired_group' AND relnamespace = 'pgcolumnar'::regnamespace;")" "0"
+P -d "$WIN" -c "CREATE TABLE w (a int, b text) USING pgcolumnar;" >/dev/null
+P -d "$WIN" -c "INSERT INTO w SELECT g, 'x' || g FROM generate_series(1, 20000) g;" >/dev/null
+P -d "$WIN" -c "DELETE FROM w WHERE a % 3 = 0;" >/dev/null
+win_rows() { P -d "$WIN" -c "SELECT count(*) || '|' || sum(a) FROM w;"; }
+check "in the window, a columnar table is written, deleted from and read" "$(win_rows)" "13334|133346667"
+win_refusal() {	# win_refusal SQL -> SQLSTATE|whether the HINT names step 3, or what happened instead
+	local out
+	out="$(P -d "$WIN" -v VERBOSITY=verbose -c "$1" 2>&1)" && { echo accepted; return; }
+	echo "$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)|$(grep -q '^HINT:  .*ALTER EXTENSION pgcolumnar UPDATE' <<<"$out" && echo names-the-update || echo no-hint)"
+}
+check "in the window, DROP TABLE is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "DROP TABLE w;")" "42P01|names-the-update"
+check "in the window, TRUNCATE is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "TRUNCATE w;")" "42P01|names-the-update"
+check "in the window, pgcolumnar.vacuum() is refused and names ALTER EXTENSION UPDATE" \
+	"$(win_refusal "SELECT pgcolumnar.vacuum('w');")" "42P01|names-the-update"
+check "in the window, the refused operations changed nothing" "$(win_rows)" "13334|133346667"
+
+P -d "$WIN" -c "ALTER EXTENSION pgcolumnar UPDATE;" >/dev/null
+check "after ALTER EXTENSION UPDATE, the same rows are there" "$(win_rows)" "13334|133346667"
+check "after ALTER EXTENSION UPDATE, pgcolumnar.vacuum() succeeds and keeps them" \
+	"$(P -d "$WIN" -c "SELECT pgcolumnar.vacuum('w');" >/dev/null 2>&1 && win_rows || echo refused)" "13334|133346667"
+check "after ALTER EXTENSION UPDATE, TRUNCATE and DROP TABLE succeed" \
+	"$(P -d "$WIN" -c "TRUNCATE w;" >/dev/null 2>&1 && P -d "$WIN" -c "DROP TABLE w;" >/dev/null 2>&1 && echo succeeded || echo refused)" "succeeded"
+P -d postgres -c "DROP DATABASE IF EXISTS $WIN;" >/dev/null
 
 pgc_summary

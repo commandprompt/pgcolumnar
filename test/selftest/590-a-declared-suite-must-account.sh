@@ -19,7 +19,7 @@
 
 _da_lib="$PGC_TESTDIR/lib.sh"
 
-check_num "premise: lib.sh is where the exits and the trap both live" \
+check_num "lib.sh is where the exits and the trap both live" \
 	"$(grep -c '^pgc_on_exit()' "$_da_lib")" "1"
 
 # THE POPULATION, DERIVED RATHER THAN ASSERTED. Both halves matter: the number

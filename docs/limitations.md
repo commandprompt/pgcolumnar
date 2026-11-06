@@ -173,7 +173,9 @@ caller every row, so the call is refused instead.
 
 The functions affected are `read_projection`, `reconstruct_via_projection`,
 `export_arrow`, `export_parquet`, `parallel_export_parquet`, `import_arrow`,
-`import_parquet` and `parallel_copy`.
+`import_parquet`, `parallel_copy` and `column_extent`. `column_extent` reports a
+column's stored smallest and largest value over every row. Under a policy, that
+would show values from rows the caller cannot see.
 
 A superuser, a role with `BYPASSRLS`, and a table's owner without `FORCE ROW
 LEVEL SECURITY` are not refused. Each already reads every row by other means.
@@ -383,6 +385,24 @@ returning no rows.
   across each chunk group. A query that filters a *different* dimension can
   therefore skip fewer groups than the natural insertion order permits. Sort by
   the key that your selective queries filter on.
+
+## Distinct-count sketches
+
+- `pgcolumnar.approx_count_distinct` has a standard error of about 2.3%, from
+  2,048 registers. Between about 5,000 and 10,000 distinct values the raw
+  estimator is biased upward, which HyperLogLog++ corrects and pgColumnar does
+  not. Answers there can sit a few percent above the true count.
+- A sketch costs about 2 KB per row group for each column named in
+  `sketch_columns`. Only the base storage gets sketches. A projection's storage
+  gets none.
+- A row group written before a column was named in `sketch_columns` has no
+  sketch for it. A rewrite fills that gap, because every rewrite writes a
+  sketch for each row group it writes. The rewrites are `pgcolumnar.vacuum`,
+  `compact_rewrite`, `recluster`, `vacuum_sorted`, a rewriting `ALTER TABLE`,
+  `REFRESH MATERIALIZED VIEW` and `TRUNCATE`.
+- On a materialized view the sketches are written but not read. A query on a
+  materialized view takes no vectorized aggregate path, so
+  `approx_count_distinct` reads its rows there. The answer is the same.
 
 ## Parallel scans
 
@@ -601,7 +621,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   is lost. This holds at every isolation level and needs no unique index. Retry
   the transaction on this error, as you retry one at `REPEATABLE READ`. The
   behavior is stricter than a heap at `READ COMMITTED`. A heap re-applies both
-  updates transparently there; pgColumnar makes the loser retry. The GUC
+  updates transparently there; pgColumnar makes the loser retry. The same holds
+  for a row an `UPDATE` moves to another partition. On a table with a unique index,
+  an `UPDATE` serializes each row as it reaches it, not at the end of the statement.
+  Two multi-row `UPDATE`s that reach shared rows in opposite orders can therefore
+  deadlock. One of them then gets `deadlock_detected` (40P01), which is also
+  retryable. The GUC
   `pgcolumnar.enable_row_update_lock` (default on) controls this serialization.
   The GUC `pgcolumnar.row_lock_buckets` (default 1024) bounds the held locks per
   storage, so a bulk update cannot exhaust the lock table. Unrelated rows may
@@ -609,6 +634,14 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   reason, two multi-statement transactions can rarely deadlock, even on disjoint
   rows. This happens when their bucketed locks collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
+- `SERIALIZABLE` works on columnar tables: a write skew between two serializable
+  transactions fails one of them with `serialization_failure` (40001), as on a
+  heap. The access method takes no predicate locks of its own. The protection comes
+  from PostgreSQL's serializable isolation on pgColumnar's own catalog tables, which
+  every read of a columnar table consults and every write changes.
+  `test/serializable.sh` covers two shapes. In one, each transaction updates a row,
+  in the same row group or in different ones. In the other, each inserts a row after
+  a scan of the whole table or an index scan.
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key
@@ -652,10 +685,13 @@ other than where the feature is used:
   partitions. Drop the constraint first if the table must be
   columnar. A conversion of the referencing side is permitted. A conversion of a
   table that no foreign key refers to is also permitted.
-- `INSERT ... ON CONFLICT DO UPDATE` takes a row lock and raises the same error.
-  `ON CONFLICT DO NOTHING` does not, and works.
+- `INSERT ... ON CONFLICT DO UPDATE` raises the same error when a conflicting row
+  exists, because updating it takes a row lock. When no row conflicts, it inserts.
+  `ON CONFLICT DO NOTHING` takes no row lock and works, with or without a conflict
+  target.
 
-`CREATE TABLE` refuses an unlogged columnar table for the same reason. Both cases
+`CREATE TABLE` refuses an unlogged columnar table for the same reason, and so does
+`ALTER TABLE ... SET UNLOGGED`. Both cases
 follow one rule. This access method refuses a configuration that it cannot
 support at the point where you choose it. It does not refuse it at each later
 use.
@@ -777,9 +813,15 @@ therefore still be cheaper as a scan.
 ## Indexes
 
 - Stale index entries left by deletes and updates are filtered on fetch and
-  reclaimed by `REINDEX`, not removed opportunistically.
+  reclaimed by `REINDEX`, not removed opportunistically. `REINDEX` keeps the entry
+  of a deleted row only while a transaction that began before the delete is still
+  running, as it does on heap.
 - `CREATE INDEX CONCURRENTLY` (the concurrent validate path) and partial
-  block-range index builds are not supported.
+  block-range index builds are not supported. A refused `CREATE INDEX
+  CONCURRENTLY` leaves its index behind, marked invalid, as PostgreSQL does for any
+  concurrent build that fails. Drop that index before you build it again.
+- `ALTER TABLE ... SET TABLESPACE` is not supported on a columnar table. It is
+  refused, and the table stays where it was.
 
 ## Constraints on the import path
 
@@ -954,6 +996,17 @@ hosts.
 They support one-dimensional arrays and composite types built from the scalar
 types below, with nulls at every level. Multi-dimensional arrays and types not
 listed are rejected.
+`read_parquet`, `import_parquet` and the `pgcolumnar_parquet` foreign table
+cannot read a file that holds a list of lists or a list of maps. They fail with
+SQLSTATE 42804, even for a query that does not use that column. Such a column
+has two repeated levels, and a one-dimensional array holds only one, so a read
+would lose the inner lists. The readers bind every Parquet column by position,
+so you cannot leave the column out, and declaring it as a scalar fails too
+(#1917). To read the other columns, rewrite the file without that column, for
+example with pyarrow.
+`import_arrow` refuses a list of lists or a list of maps for an array column
+too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
+a large list, which it does not read.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |
@@ -964,16 +1017,28 @@ listed are rejected.
 | `bytea` | yes | yes | yes | yes |
 | `date`, `time`, `timestamp`, `timestamptz` | yes | yes | yes | yes |
 | `uuid` | yes | yes | yes | yes |
-| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL only) |
+| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL, or UINT_64) |
 | `json`, `jsonb` | yes | yes | yes | no |
 | one-dimensional array of the above | yes | yes | yes | yes |
 | composite of the above | yes | yes | yes | yes |
 
 The reader imports `uuid` from a fixed-length binary column of 16 bytes. It
-imports `numeric` from a DECIMAL column with a precision up to 38. That column
-holds big-endian bytes, of fixed or variable length. The reader also imports
-`numeric` from an INT32 or an INT64 that holds the unscaled integer. Writers use
-that form for a small precision.
+refuses `uuid` over a fixed-length column of any other width. It imports
+`bytea` from a binary column of variable or fixed length. Iceberg writes
+`fixed(L)` as a fixed-length column. `parquet_schema` reports one as
+`bytea`, or as `uuid` when it is 16 bytes wide. It imports `numeric` from a
+DECIMAL column with a precision up to 38. That column holds big-endian
+bytes, of fixed or variable length. The reader also imports `numeric` from
+an INT32 or an INT64 that holds the unscaled integer. Writers use that form
+for a small precision.
+
+An unsigned Parquet integer reads as the value it stores. A `UINT_32` column reads
+into `bigint`, and a `UINT_64` column reads into `numeric`, the types that hold its
+whole range. `parquet_schema` advises those two types. A narrower type is allowed
+too. A value that does not fit it raises `value out of range` (SQLSTATE 22003).
+Examples are 2^31 or more read into `integer`, and 2^63 or more read into `bigint`.
+`UINT_8` and `UINT_16` read into `integer`, and into `smallint` while each value
+fits.
 
 `numeric` needs a declared precision for a Parquet round trip. The exporter writes DECIMAL only for a column that you
 declare as `numeric(p,s)`, with `p` up to 38. It writes a `numeric` column with
@@ -984,6 +1049,35 @@ column. Arrow export and import carry `numeric` in either form.
 The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
+
+## Export size limits
+
+`export_parquet`, `export_arrow` and `parallel_export_parquet` write a table of any
+total size. They cap the bytes they buffer for one Parquet row group or Arrow record
+batch at `pgcolumnar.export_group_bytes`, 256 MiB by default. A row that would pass
+the cap starts a new group. A row larger than the cap goes in a group of its own.
+
+The writers count each row in the form they write it, not the form PostgreSQL
+stores it. An unconstrained `numeric` and a `jsonb` are written as text. The text
+can be far longer than the stored value: `1e100000` stores in a few bytes but is
+written as 100001 digits.
+
+One row can still fail an export. PostgreSQL caps one buffer at 1 GiB. An Arrow
+record batch is one buffer, so a row whose written form passes about 1 GiB fails. In
+Parquet each column has its own buffer, so a row fails when one of its columns, as
+written, passes about 1 GiB. The export then stops with PostgreSQL's error
+`string buffer exceeds maximum allowed length (1073741823 bytes)`. pgColumnar does
+not raise an error of its own for this case.
+
+A remote export holds one multipart part in memory. `pgcolumnar.objstore_part_size`
+is at most 512 MiB, because PostgreSQL caps one allocation at 1 GiB. S3 sets its own
+limits, which pgColumnar does not check:
+
+- Each part but the last must be at least 5 MiB. The test suites use smaller parts
+  against a local test server; against S3, keep the setting at `0` (8 MiB) or at
+  5242880 and above.
+- An upload holds at most 10000 parts. At the default 8 MiB part, that is an object
+  of about 78 GiB. Raise the part size for a larger export.
 
 ## Compression codecs
 
@@ -1038,10 +1132,50 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   executor and prunes nothing. Stable and immutable functions still prune.
 - `parquet_schema` describes the first file of a directory or glob, assuming the
   set is uniform. The read paths still bind every file against the declared
-  columns, so a mismatched file raises rather than returning wrong rows.
+  columns, so a mismatched file raises rather than returning wrong rows. The
+  error's DETAIL names the file.
 - A `TIMESTAMP` column with nanosecond precision is advised as `bigint`, which is
   exact; declaring it `timestamp` reads it with the sub-microsecond digits
   truncated.
+- A legacy `INT96` timestamp reads into `timestamp with time zone` or `timestamp`
+  only. Its nanosecond digits are rounded down to whole microseconds. A row group
+  of an `INT96` column is never skipped by its statistics, because the format
+  defines no order for them.
+- The reader takes every `INT96` value as an instant in UTC, as Spark and Hive
+  write it. Impala writes `INT96` as wall time with no time zone by default, so
+  an Impala file reads shifted. Read into `timestamp`, its values move by the
+  session time zone's offset. Read into `timestamp with time zone`, they are taken
+  as UTC instants. With the session time zone set to `UTC`, `timestamp` gets the
+  wall time Impala wrote. No real Impala file has been tested.
+- The reader checks that each column's `repetition_type` is REQUIRED, OPTIONAL or
+  REPEATED, and that the row groups add up to the footer's row count. It also
+  checks each level histogram against the schema, when the file has one. A file
+  without level histograms whose schema marks a column REQUIRED, while its pages
+  carry definition levels, still reads wrong values without an error. pyarrow 23
+  and 26 write the histograms by default.
+- The reader refuses a schema element whose `num_children` is negative or wider
+  than a 32-bit integer, with SQLSTATE XX001 (#1921). `parquet_schema` refuses it
+  too. It used to return the columns before that element and drop the rest
+  without an error.
+- The reader checks that each compressed page decompresses to the size its page
+  header declares (#1910). A page that does not is refused with SQLSTATE XX001.
+  Before, the reader did not check a Snappy page's size, so a corrupt Snappy page
+  could read wrong values without an error. One case is not checked. When the
+  header declares a size of 0, the reader does not decompress a GZIP, ZSTD or
+  LZ4_RAW page and takes it as empty. A page that holds values is then refused
+  later, when its values are missing. An uncompressed page is not refused when its two header
+  sizes differ, in a v1 or a v2 page. The reader reads the bytes the page holds,
+  as pyarrow does.
+- The reader checks the Thrift type of each required i32 field of a page header,
+  and of the page's own header struct (#1935). A field of the wrong type is
+  refused with SQLSTATE XX001, as pyarrow refuses it. Optional fields follow
+  Thrift's rule instead: one of the wrong type is skipped. So a v2 page's
+  `is_compressed` field of the wrong type is skipped, and the page is read as
+  compressed, as pyarrow does. pgColumnar refuses a wrong-typed header struct
+  even where pyarrow skips it. That differs from pyarrow only for a page that
+  carries a second, wrong-typed header struct as well as its own. Then pgColumnar
+  refuses a page that pyarrow might read. The footer is not checked this way: the
+  reader still reads a footer field by its id alone.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does
@@ -1052,6 +1186,59 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   written with smaller ones.
 - The column definition list, or a foreign table's column list, must cover every
   leaf column in the file. A shorter list is an error rather than a projection.
+- An object-storage URL cannot name its host as an IPv6 literal, such as
+  `http://[::1]:9000/key`. The reader refuses it with SQLSTATE 0A000. Name the
+  endpoint by a host name or an IPv4 address.
+- An `s3://` key that contains `*`, `?` or `[` costs a listing of its prefix
+  before the read, even when it names one object. The reader looks for an object
+  with exactly that key first, and matches the key as a pattern only when none
+  exists.
+- A remote read is pinned to one version of the object by the ETag of its first
+  HEAD. The reader cannot pin the read when the server sends no ETag, only a weak
+  one (`W/"..."`), or one longer than 79 characters. That count includes the
+  ETag's two quote marks. If such an object is overwritten during the read, the
+  query can return rows from both versions without an error. Garage v2.1.0 sends
+  a strong ETag; we tested it. Amazon S3
+  documents a strong ETag, but we have not tested against it.
+  The reader still checks the total length in each 206 `Content-Range`. When it
+  differs from the length the HEAD gave, the query fails. The query also fails
+  when a GET for bytes inside that length gets 416, because the object shrank. An overwrite that keeps
+  the length is not caught.
+- The reader treats a changed ETag as a changed object. Some servers send a
+  different ETag for the same bytes on different requests. Nodes behind a load
+  balancer can do this when each node builds the ETag from its own file time. A read
+  from such a server fails with `changed while it was being read`, and running
+  the statement again can fail the same way. Set `pgcolumnar.objstore_pin_reads`
+  to `off` for such a server (#1866). The read is then not pinned. If another
+  client overwrites the object during the read and keeps its length, the query
+  can return rows from both versions without an error. The length check stays on.
+- The reader pins by version id only when the HEAD sends `x-amz-version-id`
+  (#1867). It ignores the id `null`, which S3 gives an object written while
+  versioning was off. A GET that names a version needs the
+  `s3:GetObjectVersion` permission, and `s3:GetObject` alone is not enough. When
+  the store answers such a GET with 403, the reader asks again without the
+  version and keeps `If-Match`. That read is then pinned by ETag alone. We tested
+  the version pin and the 403 fallback against the suite's fixture server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
+  is pinned by ETag alone.
+- The pin also covers later reads of the same object in a statement (#1894).
+  Two reads of one object in a statement, such as a self-join, read the
+  version the first read opened. When the store names no version, the second
+  read fails with `changed while it was being read` if the ETag or the length
+  changed between the two reads. When the first read got no strong ETag (a
+  weak one, or one longer than 79 characters), the second read compares only
+  the length. An overwrite of the same length then goes unnoticed, and the
+  statement can return rows from both versions.
+- "The same object" means the same endpoint host, port and path. One
+  `s3://` URL on two foreign servers with different endpoints names two
+  objects, and each read gets its own pin.
+- The pin lasts one top-level statement, so the next statement reads the
+  object as it is then. That holds inside one transaction too. It also holds
+  when one query string has several statements, such as
+  `psql -c 'SELECT ...; SELECT ...'`. The queries that a function or a `DO`
+  block runs are part of the statement that runs them, so they share its pin.
+  A statement that writes the object drops its pin, so a later read in that
+  statement reads the new object. The pin needs `pgcolumnar.objstore_pin_reads`
+  on.
 
 ### Row-group skipping
 
@@ -1067,20 +1254,35 @@ correct rows; these are the conditions under which it can skip at all:
   bytea, uuid, and boolean columns are filtered but never skipped, whatever their
   statistics. A `numeric` column follows its storage: one written as an INT32 or
   INT64 DECIMAL does skip, one written as a byte-array DECIMAL does not.
-- The constant's type must match the column's type exactly. A cross-type
-  comparison such as `ts >= DATE '2026-01-01'` against a `timestamp` column, or
-  `bigint_col > 5::int`, does not skip.
+- The constant may be of another type in the operator's family. So
+  `bigint_col > 5` skips, though `5` is an `int4`. So do `real_col < 0.4` and
+  `ts >= DATE '2026-01-01'` on a `timestamp` column. A comparison that casts the
+  column instead does not skip. An example is `bigint_col < 5.0`, where `5.0` is a
+  `numeric`. A `timestamp` column compared with a `timestamptz` constant does not
+  skip either. The comparison turns each wall time into an instant in the session's
+  time zone. Across a spring-forward gap that does not keep their order, so the
+  statistics would not bound the rows.
 - The row group's statistics must carry both a minimum and a maximum, and the
-  interval must not be inverted. Two cases decode to an interval that the reader
-  does not trust for skipping. The first is an unsigned Parquet column that
-  crosses the sign boundary. The second is a column that the reader makes
-  narrower, into a smaller PostgreSQL type.
+  interval must not be inverted. A corrupt file can carry an inverted interval,
+  and so can an old writer that ordered an unsigned column's statistics as
+  signed. The reader does not skip on such an interval. A minimum or maximum
+  that does not fit the column's declared type also turns skipping off for that
+  row group.
+- The column's type modifier must not be able to change a value, because the
+  statistics hold the stored values, not the values the scan returns. A
+  `numeric(p,s)` column does not skip when its scale `s` differs from the file's
+  DECIMAL scale. Nor does it skip when its precision `p` is below the file's.
+  For example, `numeric(18,1)` reads a stored 99.99 as 100.0, above the group's
+  stored maximum. A `timestamp(p)`, `timestamptz(p)` or `time(p)` column with `p`
+  below 6 does not skip either, because it rounds the stored microseconds. A column
+  with no type modifier, `timestamp(6)`, and `numeric(p,s)` with the file's scale
+  and at least its precision still skip.
 
 The `Row Groups Skipped` counter in `EXPLAIN ANALYZE` reports what was actually
 skipped.
 
 From 1.0-alpha3, `pgcolumnar.export_parquet` writes per-row-group statistics, so
-a file pgColumnar wrote can be skipped. Three limits apply to what those files
+a file pgColumnar wrote can be skipped. Two limits apply to what those files
 carry:
 
 - Bounds are written for the columns stored as INT32, INT64, FLOAT or DOUBLE.
@@ -1089,27 +1291,6 @@ carry:
   `timestamp with time zone`. A `text`, `bytea`, `uuid`, `boolean` or
   byte-array `numeric` column carries a null count and no bounds. A predicate on
   one of those filters, but it never skips.
-- The constant must still match the column's type exactly, per the condition
-  above. How the literal is written decides its type, in three ways.
-
-    - **Quoted, with no type named.** The literal is `unknown` and takes the
-      column's type, so all nine types skip. `smallint_col < '500'` skips.
-      `smallint_col < 500` does not. A temporal literal is usually written this
-      way, which is why it skips as written.
-    - **Named type, quoted or cast.** The literal is that type, not `unknown`.
-      The exact-type condition then applies to it like any other constant.
-      `DATE '2026-01-01'` is a `date`, so `date_col < DATE '2026-01-01'` skips
-      and `timestamp_col < DATE '2026-01-01'` does not.
-    - **Unquoted.** The literal is typed by its own text, so it matches the
-      column only sometimes. A digit string is an `integer` while the value fits
-      in one, and a `bigint` when it does not. It matches whichever of those two
-      widths the column is, and never the other: `bigint_col < 5000000000`
-      skips, while `bigint_col < 5` and `integer_col < 5000000000` do not. It
-      always matches `double precision`, whose operand is widened. A literal
-      with a decimal point is a `numeric`, and it matches `double precision`
-      alone. Against an integer column PostgreSQL casts the column rather than
-      the constant, so `bigint_col < 5.0` skips nothing. `smallint` and `real`
-      match no unquoted literal at all.
 - A file exported by 1.0-alpha2 or earlier carries no statistics. Nothing
   rewrites it in place. Export it again to make it skippable.
 
@@ -1131,7 +1312,70 @@ table at its current snapshot. It has these limits:
   returning wrong rows. It rejects a non-regular file, such as a FIFO, named as a
   path. It also rejects a null manifest sequence number, a null or negative
   position-delete position, and a `current-schema-id` that names no schema.
+  It refuses a fractional number where the spec wants an integer, and a field
+  id outside 0 to 2147483647. It refuses a `format-version` other than 1, 2 or
+  3, and a `current-snapshot-id` that is present but not an integer (#1824).
+  It also rejects a manifest `content` or `status` value outside the Iceberg
+  spec. A file of unknown kind is never skipped as a delete.
+- Two metadata ids must fit a 32-bit integer, and only the surface that reads
+  an id checks it. The `pgcolumnar_iceberg` foreign-data wrapper refuses a scan
+  when `default-spec-id` is out of range. `iceberg_current_snapshot` refuses a
+  current snapshot whose `schema-id` is out of range. `iceberg_scan` and
+  `iceberg_data_files` read neither id, so they still read such a table.
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
-  vectors. The data files must be Parquet.
+  vectors. The data files must be Parquet. The reader accepts the file format in
+  any case, so `parquet` and `PARQUET` both read.
+- The table metadata file may be plain JSON or gzip-compressed. Writers produce a
+  gzip file when the table property `write.metadata.compression-codec` is `gzip`,
+  and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects
+  gzip by its first two bytes, not by the name. The cap of 64 MiB applies to the
+  inflated JSON. A larger file is refused with SQLSTATE 54000.
+- Manifests and manifest lists must use the Avro codec `null` or `deflate`. The
+  reader refuses `zstandard`, `snappy`, `bzip2`, and `xz` with SQLSTATE 0A000.
+  Java Iceberg writes `zstd` or `snappy` manifests when the table property
+  `write.avro.compression-codec` asks for them. Rewrite such a table with
+  `gzip` (deflate) or no compression to read it here.
+- The metadata path and every path the table records may be a local path, or an
+  `s3://`, `gs://`, `http://`, or `https://` URL. The reader treats `s3a://` and
+  `s3n://`, the Hadoop names for S3, as `s3://`. So a table may record its location
+  under one of the three names and its files under another. An `az://` URL is
+  refused with SQLSTATE 0A000, because no module reads Azure Blob Storage yet.
+  Other schemes, such as `abfs://` or `hdfs://`, are opened as local paths and fail
+  with "could not open file".
+- A scan holds every applicable equality-delete row in memory until it ends.
+  The memory is not bounded by `work_mem`, so a table with very many
+  equality-delete rows needs memory in proportion to them.
+- Only top-level primitive columns can be read. A column that names a struct,
+  list or map field is an error, whatever type it is declared with (#1788).
+- A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
+  reads as its current type. Files from before the promotion are widened.
+  Declaring it with a narrower type than a live file stores is refused.
 - The reader does not write or commit to an Iceberg table, and it reads only the
   current snapshot. Time travel to an older snapshot is not supported.
+- The foreign-data wrapper does not prune `bucket[N]` files for an equality
+  compared under a nondeterministic collation. Two equal values there need not
+  share bytes, so they need not share a bucket. The wrapper reads every file, and
+  the query returns the same rows.
+
+## Object storage address refusal
+
+The object-storage module refuses a host that resolves to a link-local or known
+instance-metadata address, even when the host is in
+`pgcolumnar.objstore_allowed_endpoints`. The refusal has SQLSTATE 42501. For the
+full list of refused addresses, see
+[Run object storage safely](best-practices.md#run-object-storage-safely). The
+refusal has these limits:
+
+- The module refuses only `100.100.100.200` in `100.64.0.0/10`. The rest of that
+  range is shared address space for carrier-grade NAT, which can serve object
+  storage legitimately.
+- The module recognises the NAT64 prefixes `64:ff9b::/96` and `64:ff9b:1::/48`.
+  It cannot recognise a NAT64 prefix that your network chose (a network-specific
+  prefix, RFC 6052). An address under such a prefix can reach `169.254.169.254`
+  or `100.100.100.200` through the NAT64 gateway, and the module does not refuse
+  it. On a network with NAT64, do not list a host that can resolve under its
+  prefix.
+- Under `64:ff9b:1::/48` the module checks every place the IPv4 address can sit,
+  so it also refuses some ordinary addresses behind that prefix.
+- Any other address that reaches instance metadata is not refused. Keep the list
+  to the hosts you need.

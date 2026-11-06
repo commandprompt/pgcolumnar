@@ -94,36 +94,11 @@ run_pg "createdb -p $PORT p5"
 PSQL="psql -p $PORT -d p5 -qAtX -v ON_ERROR_STOP=1"
 q() { run_pg "$PSQL -c \"$1\""; }
 
-fail=0
-# RECORDS RATHER THAN ONLY PRINTING (#965). This suite emitted human PASS lines
-# and no RESULT records, so every mechanism built on the record vocabulary -- the
-# ledger, the census, checks_never_observed_red, the red-observation record,
-# duplicate-name detection -- was blind to all of them. The ledger did not merely
-# return nothing on this log, it REFUSED it: "no RESULT records, so there is
-# nothing to reconcile".
-#
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
-#
-# `fail` is still set, so this suite's exit logic is untouched. Its verdict line
-# stays for the same reason: under `set -euo pipefail` a failing command aborts the
-# suite, and the verdict is what distinguishes finished from stopped.
-#
-# The `checks run:` line is READ BY NOTHING YET. The matrix gates reconciliation on
-# the ACCOUNTING line via `pgc_log_shows_accounting`, and this suite emits none
-# because it emits no accounting line. The line is still correct and wanted --
-# it is the total the records reconcile against -- so the remaining step is a gate
-# flip rather than new work (@jdatcmd, #969 review).
-check() {
-	local name="$1" got="$2" want="$3"
-	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
-	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
-		fail=1
-	fi
-}
+# lib.sh's `check` records every result (#965), and since #1341 this suite uses
+# it rather than a local wrapper around pgc_record. The local one printed the
+# measured value on a PASS too. lib.sh's prints it on a FAIL, which is when it is
+# read, and a pytest twin's grading can read the names, which it could not before.
+# pgc_summary at the end prints the accounting line the matrix reconciles.
 
 # assert an EXPLAIN plan contains / omits text
 assert_plan() {
@@ -132,11 +107,10 @@ assert_plan() {
 	local plan
 	plan="$(run_pg "$PSQL -c \"$sql\"")"
 	if grep -q "$want" <<<"$plan" && { [ -z "$notwant" ] || ! grep -q "$notwant" <<<"$plan"; }; then
-		pgc_record PASS "$name" "PASS  $name"
+		check "$name" "matches" "matches"
 	else
-		pgc_record FAIL "$name" "FAIL  $name: plan was:
+		pgc_fail "$name" "plan was:
 $(echo "$plan" | sed 's/^/        /')"
-		fail=1
 	fi
 }
 
@@ -367,9 +341,17 @@ q "CREATE INDEX vi_a_idx ON vi (a);" >/dev/null
 q "DELETE FROM vi WHERE a BETWEEN 100 AND 5000;" >/dev/null
 q "SELECT pgcolumnar.vacuum('vi');" >/dev/null
 check "vi count after vacuum" "$(q "SELECT count(*) FROM vi;")" "15099"
-check "vi index point after vacuum" "$(q "SET enable_seqscan=off; SELECT b FROM vi WHERE a = 12345;")" "i12345"
-check "vi index sees deletion after vacuum" "$(q "SET enable_seqscan=off; SELECT count(*) FROM vi WHERE a BETWEEN 100 AND 5000;")" "0"
-check "vi index survivor after vacuum" "$(q "SET enable_seqscan=off; SELECT count(*) FROM vi WHERE a BETWEEN 1 AND 99;")" "99"
+# THE LOOKUPS MUST REACH THE INDEX (#432). enable_seqscan does not discourage the
+# custom scan, so with it alone the point lookup planned as a PgColumnarScan and never
+# read vi_a_idx: with the reindex after the rewrite dropped, "vi index point" stayed
+# green. The custom scan is taken out of the running too, and the plan is asserted.
+VI_IDX="SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off;"
+vi_plan="$(run_pg "$PSQL -c \"$VI_IDX EXPLAIN (COSTS OFF) SELECT b FROM vi WHERE a = 12345;\"")"
+check "the vi point lookup really uses the index" \
+	"$(grep -q 'Index Scan using vi_a_idx' <<<"$vi_plan" && echo yes || echo "no: $(tr '\n' ' ' <<<"$vi_plan")")" "yes"
+check "vi index point after vacuum" "$(q "$VI_IDX SELECT b FROM vi WHERE a = 12345;")" "i12345"
+check "vi index sees deletion after vacuum" "$(q "$VI_IDX SELECT count(*) FROM vi WHERE a BETWEEN 100 AND 5000;")" "0"
+check "vi index survivor after vacuum" "$(q "$VI_IDX SELECT count(*) FROM vi WHERE a BETWEEN 1 AND 99;")" "99"
 
 # vacuum_full across a schema
 q "SELECT pgcolumnar.vacuum_full('public');" >/dev/null
@@ -399,14 +381,5 @@ assert_plan "disable custom scan -> seq scan" \
 check "seq-scan fallback returns correct rows" \
 	"$(q "SET pgcolumnar.enable_custom_scan=off; SELECT count(*) FROM t WHERE a BETWEEN 12000 AND 12100;")" "101"
 
-echo
-if [ "$fail" = "0" ]; then
-	echo "checks run: $PGC_CHECKS"
-	echo "PHASE 5 TEST PASSED"
-else
-	echo "checks run: $PGC_CHECKS"
-	echo "PHASE 5 TEST FAILED"
-	echo "---- server log tail ----"
-	run_pg "tail -60 '$LOGFILE'" || true
-fi
-exit $fail
+[ "$PGC_FAILED" = 0 ] || { echo "---- server log tail ----"; run_pg "tail -60 '$LOGFILE'" || true; }
+pgc_summary

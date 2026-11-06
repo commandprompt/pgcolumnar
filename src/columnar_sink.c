@@ -16,13 +16,18 @@
 
 #include <unistd.h>
 
+#include "access/xact.h"
+#include "lib/ilist.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "utils/memutils.h"
+#include "storage/ipc.h"
 
 #include "columnar_objstore.h"
 #include "columnar_sink.h"
 
 int			pgcolumnar_sink_fail_after = -1;	/* dev injection; see header */
+int			pgcolumnar_export_group_bytes = PGC_EXPORT_GROUP_BYTES_MAX;	/* #1811 */
 
 struct PqSink
 {
@@ -34,7 +39,61 @@ struct PqSink
 	/* remote (#394): NULL api => local sink */
 	const PgColumnarObjStoreApi *api;
 	PgColumnarObjSink *rsink;
+	dlist_node	openNode;		/* on sink_open_remote while rsink is live */
 };
+
+/*
+ * Remote sinks with an upload in progress (#1722). A FATAL exit (SIGTERM, as
+ * pexport_cleanup sends each parallel_export worker on cancel, or
+ * pg_terminate_backend) calls proc_exit without unwinding, so the writers'
+ * PG_CATCH never reaches PgColumnarSinkAbort and the multipart upload stays
+ * open on the store, billed until a lifecycle rule reaps it. A
+ * before_shmem_exit callback aborts whatever is still on this list. It is
+ * registered after InitPostgres's ShutdownPostgres, so it runs first, while
+ * the transaction and the module's handles are still intact. Transaction end
+ * empties the list: every writer finishes or aborts its sink inside its own
+ * statement, so an entry still listed then belongs to memory being released.
+ */
+static dlist_head sink_open_remote = DLIST_STATIC_INIT(sink_open_remote);
+static bool sink_exit_registered = false;
+
+static void
+sink_abort_open_at_exit(int code, Datum arg)
+{
+	dlist_mutable_iter it;
+
+	/*
+	 * The module's abort never raises through PG_TRY, but under proc_exit an
+	 * ERROR is promoted to FATAL, which no CATCH sees. A failed DELETE then
+	 * ends this callback with one more FATAL line; shmem_exit has already
+	 * popped it, so the remaining callbacks still run.
+	 */
+	dlist_foreach_modify(it, &sink_open_remote)
+	{
+		PqSink	   *snk = dlist_container(PqSink, openNode, it.cur);
+
+		dlist_delete(&snk->openNode);
+		snk->api->sink_abort(snk->rsink);
+		snk->rsink = NULL;
+	}
+}
+
+static void
+sink_xact_callback(XactEvent event, void *arg)
+{
+	switch (event)
+	{
+		case XACT_EVENT_COMMIT:
+		case XACT_EVENT_PARALLEL_COMMIT:
+		case XACT_EVENT_ABORT:
+		case XACT_EVENT_PARALLEL_ABORT:
+		case XACT_EVENT_PREPARE:
+			dlist_init(&sink_open_remote);
+			break;
+		default:
+			break;
+	}
+}
 
 PqSink *
 PgColumnarSinkOpenLocal(const char *path)
@@ -61,6 +120,12 @@ PgColumnarSinkOpenLocal(const char *path)
 PqSink *
 PgColumnarSinkOpen(const char *path)
 {
+	return PgColumnarSinkOpenWith(path, NULL);
+}
+
+PqSink *
+PgColumnarSinkOpenWith(const char *path, const PgColumnarObjStoreConfig *cfg)
+{
 	if (PgColumnarPathIsRemote(path))
 	{
 		const PgColumnarObjStoreApi *api = PgColumnarObjStoreGet();
@@ -82,7 +147,14 @@ PgColumnarSinkOpen(const char *path)
 		snk = (PqSink *) palloc0(sizeof(PqSink));
 		snk->finalPath = pstrdup(path);
 		snk->api = api;
-		snk->rsink = api->sink_create(path, NULL);
+		snk->rsink = api->sink_create(path, cfg);
+		if (!sink_exit_registered)
+		{
+			before_shmem_exit(sink_abort_open_at_exit, (Datum) 0);
+			RegisterXactCallback(sink_xact_callback, NULL);
+			sink_exit_registered = true;
+		}
+		dlist_push_head(&sink_open_remote, &snk->openNode);
 		return snk;
 	}
 	return PgColumnarSinkOpenLocal(path);
@@ -140,6 +212,8 @@ PgColumnarSinkFinish(PqSink *snk)
 	if (snk->api != NULL)
 	{
 		snk->api->sink_finish(snk->rsink);
+		/* only now: a complete that raised leaves it listed for the abort */
+		dlist_delete(&snk->openNode);
 		snk->rsink = NULL;
 		return;
 	}
@@ -173,6 +247,7 @@ PgColumnarSinkAbort(PqSink *snk)
 	{
 		if (snk->rsink != NULL)
 		{
+			dlist_delete(&snk->openNode);
 			snk->api->sink_abort(snk->rsink);
 			snk->rsink = NULL;
 		}
@@ -184,4 +259,114 @@ PgColumnarSinkAbort(PqSink *snk)
 		snk->f = NULL;
 	}
 	(void) unlink(snk->tmpPath);
+}
+
+/*
+ * PgColumnarCleanupAndRethrow
+ *		Called from a PG_CATCH. The error being handled is copied out and the
+ *		error stack emptied BEFORE the cleanup runs, so whatever the cleanup
+ *		raises and swallows (the module's best-effort DELETEs flush the error
+ *		stack, and a second cancel lands exactly there, #1741) cannot take the
+ *		handled error with it. An error the cleanup does not swallow ends the
+ *		cleanup early and is dropped: the error to report is the one being
+ *		handled. That one is then re-thrown, as PG_RE_THROW would have.
+ */
+void
+PgColumnarCleanupAndRethrow(void (*cleanup) (void *arg), void *arg)
+{
+	/* in a transaction for every caller; the copy only needs to outlive this */
+	MemoryContext keep = TopTransactionContext ? TopTransactionContext : TopMemoryContext;
+	ErrorData  *edata;
+
+	MemoryContextSwitchTo(keep);
+	edata = CopyErrorData();
+	FlushErrorState();
+	PG_TRY();
+	{
+		cleanup(arg);
+	}
+	PG_CATCH();
+	{
+		MemoryContextSwitchTo(keep);
+		FlushErrorState();
+	}
+	PG_END_TRY();
+	ReThrowError(edata);
+}
+
+static void
+sink_abort_cleanup(void *arg)
+{
+	PgColumnarSinkAbort((PqSink *) arg);
+}
+
+void
+PgColumnarSinkAbortAndRethrow(PqSink *snk)
+{
+	PgColumnarCleanupAndRethrow(sink_abort_cleanup, snk);
+}
+
+/*
+ * PgcTextQueuePush
+ *		Keep the text made from one value of the current row. A queue whose
+ *		texts were all popped starts over, so it holds at most one row's texts.
+ *		A text longer than PGC_TEXT_QUEUE_KEEP_MAX is freed and its slot kept
+ *		empty, so a row of huge values does not hold every text twice; the
+ *		append converts that value again.
+ */
+void
+PgcTextQueuePush(PgcTextQueue *q, Datum value, char *text, int len)
+{
+	if (q->next == q->n)
+		q->n = q->next = 0;
+	if (q->n == q->cap)
+	{
+		int			cap = Max(q->cap * 2, 8);
+
+		if (q->text == NULL)
+		{
+			q->text = palloc(sizeof(char *) * cap);
+			q->len = palloc(sizeof(int) * cap);
+			q->value = palloc(sizeof(Datum) * cap);
+		}
+		else
+		{
+			q->text = repalloc(q->text, sizeof(char *) * cap);
+			q->len = repalloc(q->len, sizeof(int) * cap);
+			q->value = repalloc(q->value, sizeof(Datum) * cap);
+		}
+		q->cap = cap;
+	}
+	if (len > PGC_TEXT_QUEUE_KEEP_MAX)
+	{
+		pfree(text);
+		text = NULL;
+	}
+	q->text[q->n] = text;
+	q->len[q->n] = len;
+	q->value[q->n] = value;
+	q->n++;
+}
+
+/*
+ * PgcTextQueuePop
+ *		The next kept text and its length, when it was made from this value.
+ *		Otherwise NULL, and the caller converts the value itself: the slot was
+ *		empty, or it belongs to another value, in which case the queue is
+ *		dropped. The caller frees a returned text.
+ */
+char *
+PgcTextQueuePop(PgcTextQueue *q, Datum value, int *len)
+{
+	if (q->next >= q->n)
+		return NULL;
+	if (q->value[q->next] != value)
+	{
+		for (; q->next < q->n; q->next++)
+			if (q->text[q->next])
+				pfree(q->text[q->next]);
+		return NULL;
+	}
+	*len = q->len[q->next];
+	return q->text[q->next++];
 }

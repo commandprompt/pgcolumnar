@@ -81,17 +81,18 @@ field() {	# $1 = plan text, $2 = EXPLAIN label
 PLAN="$(explain_with "$BIG" "SELECT k, sum(v) FROM gts GROUP BY k")"
 
 # ---- premises -------------------------------------------------------------
-# The grouped vectorized path is OFF by default, so "the GUC took effect" is the
-# premise that can silently fail and leave these numbers describing some other
-# node.
-check "premise: the vectorized grouped aggregate is the node that ran" \
+# The grouped vectorized path is OFF by default, so "the GUC took effect" can
+# silently fail and leave these numbers describing some other node. It and the
+# counter check below read pgcolumnar's own plan choice and EXPLAIN output, so
+# neither is a premise (#1339).
+check "the vectorized grouped aggregate is the node that ran" \
 	"$(grep -q 'Columnar Vectorized Group Keys' <<<"$PLAN" && echo yes \
 	   || echo "no -- $(grep -m1 -oE 'HashAggregate|GroupAggregate|Custom Scan' <<<"$PLAN")")" "yes"
 
 check "premise: it built the group count this suite is sized for" \
 	"$(q1 "SELECT count(DISTINCT k) FROM gts")" "$NGROUPS"
 
-check "premise: the work-done counter is reported at all" \
+check "the work-done counter is reported at all" \
 	"$(grep -qE 'Columnar Group Table Entries Rehashed: [0-9]+' <<<"$PLAN" && echo yes || echo no)" "yes"
 
 EST="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
@@ -159,7 +160,14 @@ check "a wrong estimate cannot inflate a table that never needed to grow (#810 r
 	"$([ "${EXPR_CAP:-99999}" -le 1024 ] && echo "not inflated" \
 	   || echo "INFLATED ($EXPR_CAP entries for $EXPR_REAL real groups)")" "not inflated"
 
-check "and the expression key still answers correctly" "$EXPR_REAL" \
+# A real group count must be a positive number: an empty table reads 0 on both
+# sides and agreed (measured, with gts_expr's load removed). The answer is read
+# THROUGH the node, with $ON and a counted aggregate: EXPR_REAL above ran core's
+# HashAggregate, so comparing it with core's count(DISTINCT) tested PostgreSQL
+# only (#1596 review).
+groups_or_why() { pgc_is_number "$1" && [ "$1" -gt 0 ] && echo "$1" || echo "no groups read [$1]"; }
+check_text "and the expression key still answers correctly" \
+	"$(groups_or_why "$(q1 "$ON $BIG SELECT count(c) FROM (SELECT v / 100000 d, count(*) c FROM gts_expr GROUP BY 1) s")")" \
 	"$(q1 "SELECT count(DISTINCT v / 100000) FROM gts_expr")"
 
 # ---- the jump bound -------------------------------------------------------
@@ -183,14 +191,25 @@ check "a grow cannot jump to a wrong estimate, only toward it (#810 review)" \
 	"$(awk -v c="${MIN_CAP:-0}" -v n="${MIN_NEED:-1}" \
 	   'BEGIN { print (c > 0 && c <= 8 * n) ? "bounded" : "UNBOUNDED (" c " for a need of " n ")" }')" "bounded"
 
-check "and the minute key answers correctly too" "$MIN_REAL" \
+# Through the node too: a grow that dropped one group in 16 lost 46 of 8334
+# minute groups, and core's MIN_REAL (kept, since MIN_NEED is sized from it)
+# still matched core's count(DISTINCT) (#1596 review).
+check_text "and the minute key answers correctly too" \
+	"$(groups_or_why "$(q1 "$ON $BIG SELECT count(c) FROM (SELECT v / 60 d, count(*) c FROM gts_expr GROUP BY 1) s")")" \
 	"$(q1 "SELECT count(DISTINCT v / 60) FROM gts_expr")"
 
+# Both answers are read THROUGH the vectorized node, with $ON. Without it they ran
+# core's HashAggregate, which this suite does not size: a grow that dropped one
+# group in 1024 passed all 15 checks (measured). And count(s), not count(*): with
+# the sum unused, the planner pruned it and chose HashAggregate even with $ON.
 check "and the answer is the same under a small work_mem" \
-	"$(q1 "SET work_mem='1MB'; SELECT count(*) FROM (SELECT k, sum(v) FROM gts GROUP BY k) s")" "$NGROUPS"
+	"$(q1 "$ON SET work_mem='1MB'; SELECT count(s) FROM (SELECT k, sum(v) AS s FROM gts GROUP BY k) t")" "$NGROUPS"
 
-check "the aggregate itself is still right" \
-	"$(q1 "SELECT sum(s) FROM (SELECT k, sum(v) AS s FROM gts GROUP BY k) t")" \
-	"$(q1 "SELECT sum(v)::numeric FROM gts")"
+# The oracle must hold the fixture: on an empty gts both sums were NULL and agreed
+# as "" == "" (measured, with gts's load removed).
+check_text "the aggregate itself is still right" \
+	"$(q1 "$ON $BIG SELECT sum(s) FROM (SELECT k, sum(v) AS s FROM gts GROUP BY k) t")" \
+	"$(q1 "SELECT CASE WHEN count(*) = $NROWS THEN sum(v)::numeric::text
+	              ELSE 'gts holds ' || count(*) || ' rows' END FROM gts")"
 
 pgc_summary

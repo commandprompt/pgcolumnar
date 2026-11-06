@@ -1640,6 +1640,12 @@ pgcolumnar_sorted_pathkeys(PlannerInfo *root, RelOptInfo *rel, Oid relid)
 		 *
 		 * Lifting the refusal means recording the collations beside the names,
 		 * which needs a catalog column.
+		 *
+		 * A TYPE can change under a stored value without a rewrite, though: int4
+		 * to oid is binary-coercible, so PostgreSQL relabels the column and the
+		 * rows keep int4's order, which oid's unsigned order is not (#1341 item
+		 * 19). That case does not reach here: the ALTER clears the recorded kind
+		 * (pgcolumnar_forget_sorted_claim), and condition 1 refuses it above.
 		 */
 		if (OidIsValid(att->attcollation))
 			break;

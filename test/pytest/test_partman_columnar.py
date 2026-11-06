@@ -90,7 +90,7 @@ def test_pg_partman_makes_columnar_partitions_with_one_setting(pgc_own_db, expec
         for t in ("metrics", "metrics_heap"):
             cur.execute(f"INSERT INTO {t} SELECT date_trunc('day', now()) - interval '30 days'"
                         f" + g * interval '11 min', g * 3 FROM generate_series(1, 3600) g")
-    expect.num(_one(conn, "SELECT count(*) FROM metrics"), 3600, "premise: the rows went in")
+    expect.num(_one(conn, "SELECT count(*) FROM metrics"), 3600, "the rows went in")
     expect.text(_one(conn, "SELECT string_agg(DISTINCT a.amname, ',') FROM metrics t"
                            " JOIN pg_class c ON c.oid = t.tableoid JOIN pg_am a ON a.oid = c.relam"),
                 "pgcolumnar", "and the rows land in columnar partitions")

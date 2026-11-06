@@ -67,7 +67,13 @@ decide_corpus="md5(g::text) || md5((g * 7)::text)"
 # The content corpus. Deliberately the nastiest one: NULLs, empty strings and
 # values below the FSST minimum, because the decision applies to a whole chunk
 # at once and those are the values whose handling differs between encodings.
-content_corpus="CASE g % 13
+#
+# ONE IN 97, NOT ONE IN 13. At one in 13 no vector of the content tables chose
+# FSST at ANY margin (measured: 0 FSST vectors in fm_c0, fm_c90 and fm_cd), so
+# section 3's invariant never read FSST-encoded data, and a decoder that wrote
+# the wrong symbol passed it. At one in 97 the margin-0 table stores FSST and
+# the margin-90 one does not, and the check before section 3's reads asserts it.
+content_corpus="CASE g % 97
 			WHEN 0 THEN NULL
 			WHEN 1 THEN ''
 			WHEN 2 THEN 'ab'
@@ -134,12 +140,15 @@ check "at margin 0 this corpus keeps FSST" \
 
 load fm_drop 90 "$decide_corpus"
 dropped="$(fsst_vectors fm_drop)"
-check "at margin 90 the same corpus drops FSST" "$dropped" "0"
+# Each drop is read with the table's row count, so an empty table -- whose
+# chunks are none and whose FSST count is therefore 0 -- cannot read as a drop.
+rows_and() { echo "$(q "SELECT count(*) FROM $1;" | tail -1)/$2"; }
+check "at margin 90 the same corpus drops FSST" "$(rows_and fm_drop "$dropped")" "$ROWS/0"
 
 # Without this the pair above could both be true of a corpus FSST never helped:
 # the drop is only meaningful because the keep is real.
 check "so the margin is what changed the decision, not the corpus" \
-	"$([ "$kept" -gt "$dropped" ] && echo yes || echo no)" "yes"
+	"$([ "$kept" -gt "$dropped" ] 2>/dev/null && echo yes || echo "no (kept $kept, dropped $dropped)")" "yes"
 
 # --- 2. margin 0 is the original behaviour -----------------------------------
 #
@@ -148,7 +157,7 @@ check "so the margin is what changed the decision, not the corpus" \
 # pinning rather than deriving.
 load fm_default "" "$decide_corpus"   # no SET at all: whatever the build ships
 default_v="$(fsst_vectors fm_default)"
-check "the shipped default drops FSST on a marginal corpus" "$default_v" "0"
+check "the shipped default drops FSST on a marginal corpus" "$(rows_and fm_default "$default_v")" "$ROWS/0"
 check "and 0 still keeps it, so the default is a decision and not a rewrite" \
 	"$([ "$kept" -gt 0 ] && echo yes || echo no)" "yes"
 
@@ -173,7 +182,7 @@ check "and 0 still keeps it, so the default is a decision and not a rewrite" \
 load fm_none 90 "$decide_corpus" none
 none_v="$(fsst_vectors fm_none)"
 
-check "premise: the paired arm dropped FSST at this margin with a codec" "$dropped" "0"
+check "the paired arm dropped FSST at this margin with a codec" "$(rows_and fm_drop "$dropped")" "$ROWS/0"
 
 check "with no codec the same corpus keeps FSST at the same margin" \
 	"$([ "$none_v" -gt 0 ] && echo yes || echo no)" "yes"
@@ -191,20 +200,26 @@ load fm_c0  0   "$content_corpus"
 load fm_c90 90  "$content_corpus"
 load fm_cd  ""  "$content_corpus"
 
-for t in fm_c0 fm_c90 fm_cd; do
-	check "$t reads back exactly what the heap holds" \
-		"$(q "SELECT md5(string_agg(t::text, '' ORDER BY t::text)) FROM $t t;")" "$heap_hash"
-done
+# What makes the invariant below about FSST at all: the margin-0 copy really is
+# stored as FSST. Without it, every content check passed on a decoder that
+# wrote the wrong symbol, because no content table held an FSST vector.
+check "the margin-0 content copy really is stored as FSST, so the invariant reads FSST" \
+	"$([ "$(fsst_vectors fm_c0)" -gt 0 ] 2>/dev/null && echo yes || echo "no ($(fsst_vectors fm_c0))")" "yes"
+
+# Unrolled, so each name is a literal the grader can read. check_text: a failed
+# reading is empty, and the heap hash an empty heap gives is empty too.
+row_hash() { q "SELECT md5(string_agg(t::text, '' ORDER BY t::text)) FROM $1 t;"; }
+check_text "fm_c0 reads back exactly what the heap holds" "$(row_hash fm_c0)" "$heap_hash"
+check_text "fm_c90 reads back exactly what the heap holds" "$(row_hash fm_c90)" "$heap_hash"
+check_text "fm_cd reads back exactly what the heap holds" "$(row_hash fm_cd)" "$heap_hash"
 
 # Nulls and empty strings survive the encoding switch, which is where a
 # whole-chunk encoding change is most likely to go wrong.
-for t in fm_c0 fm_c90; do
-	check "$t preserves NULLs" \
-		"$(q "SELECT count(*) FROM $t WHERE v IS NULL;")" \
-		"$(q "SELECT count(*) FROM fm_h WHERE v IS NULL;")"
-	check "$t preserves empty strings" \
-		"$(q "SELECT count(*) FROM $t WHERE v = '';")" \
-		"$(q "SELECT count(*) FROM fm_h WHERE v = '';")"
-done
+nulls() { q "SELECT count(*) FROM $1 WHERE v IS NULL;"; }
+empties() { q "SELECT count(*) FROM $1 WHERE v = '';"; }
+check_text "fm_c0 preserves NULLs" "$(nulls fm_c0)" "$(nulls fm_h)"
+check_text "fm_c0 preserves empty strings" "$(empties fm_c0)" "$(empties fm_h)"
+check_text "fm_c90 preserves NULLs" "$(nulls fm_c90)" "$(nulls fm_h)"
+check_text "fm_c90 preserves empty strings" "$(empties fm_c90)" "$(empties fm_h)"
 
 pgc_summary

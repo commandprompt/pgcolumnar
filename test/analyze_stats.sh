@@ -46,6 +46,16 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 ROWS=${PGC_ANALYZE_ROWS:-500000}
 
+# Backends killed by a signal, from the server log: a number, or nothing when the
+# log can't be read, so that a blind count never reads as "no crashes". grep -c
+# prints 0 itself when nothing matches.
+as_crashes() {
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+AS_CRASHES_BEFORE="$(as_crashes)"
+
 # --- 1. the statistics agree with heap on identical data -----------------------
 
 psql_run "DROP TABLE IF EXISTS as_c; DROP TABLE IF EXISTS as_h;
@@ -63,8 +73,9 @@ stat() {  # table, column, field
 	local v
 	v="$(q "SELECT $3 FROM pg_stats WHERE tablename = '$1' AND attname = '$2';")"
 	# A missing statistic reads as a sentinel rather than the empty string, so a
-	# failure says "(no statistic)" against "3" instead of "" against "3". It does
-	# not make an absent-vs-absent comparison fail; see the note below.
+	# failure says "(no statistic)" against "3" instead of "" against "3". The
+	# sentinel is not a number, which is what fails the checks below when both
+	# sides are missing.
 	echo "${v:-(no statistic)}"
 }
 
@@ -76,9 +87,21 @@ stat() {  # table, column, field
 # and the suite reports missing statistics instead of a crash.
 #
 # This check is the tripwire for that: it runs before anything reads pg_stats and
-# fails loudly if the server is gone.
+# fails loudly if the server is gone. Answering a query is not enough on its own:
+# the postmaster restarts a killed backend and a fresh connection answers again,
+# so with a backend SIGKILLed in the middle of "ANALYZE as_c" main passed this
+# check, and null_frac and all three n_distinct checks with it. The check also
+# requires that no backend has died since the count noted above.
+as_up="$(q "SELECT 'alive';")"
+as_now="$(as_crashes)"
 check "the server survived ANALYZE" \
-	"$(q "SELECT 'alive';")" "alive"
+	"$(if ! [[ "$AS_CRASHES_BEFORE" =~ ^[0-9]+$ && "$as_now" =~ ^[0-9]+$ ]]; then
+		echo "no (crash count unreadable)"
+	elif [ "$as_up" = alive ] && [ "$as_now" = "$AS_CRASHES_BEFORE" ]; then
+		echo alive
+	else
+		echo "no ([$as_up], $(( as_now - AS_CRASHES_BEFORE )) backend crashes)"
+	fi)" "alive"
 
 check "ANALYZE now collects statistics at all" \
 	"$(q "SELECT count(*) > 0 FROM pg_stats WHERE tablename = 'as_c';")" "t"
@@ -86,23 +109,30 @@ check "ANALYZE now collects statistics at all" \
 # null_frac: true value is 0.25, and both should land near it
 cnull="$(stat as_c nullable null_frac)"
 hnull="$(stat as_h nullable null_frac)"
+# awk reads "(no statistic)" as 0, so two missing statistics agreed exactly;
+# both must be numbers before they are compared
 check "null_frac matches heap within 0.02" \
-	"$(awk -v a="$cnull" -v b="$hnull" \
-		'BEGIN { d = a - b; if (d < 0) d = -d; print (d < 0.02) ? "yes" : "no (" a " vs " b ")" }')" \
+	"$(if ! pgc_is_number "$cnull" || ! pgc_is_number "$hnull"; then
+		echo "no reading ($cnull vs $hnull)"
+	else
+		awk -v a="$cnull" -v b="$hnull" \
+			'BEGIN { d = a - b; if (d < 0) d = -d; print (d < 0.02) ? "yes" : "no (" a " vs " b ")" }'
+	fi)" \
 	"yes"
 
 # n_distinct: these are small enough that ANALYZE reports them exactly, so an
 # exact comparison is the right assertion rather than a tolerance
-# Note what these differential checks do NOT cover. If the server has died, both
-# sides return no statistic, the two agree, and the check passes -- a differential
-# oracle agrees with itself when both halves are missing. That is why the two
-# checks above run first and are not differential: "the server survived ANALYZE"
-# and "ANALYZE now collects statistics at all" are what catch a dead cluster. The
-# sentinel below only makes the failure readable when one side is missing.
-for col in status v nullable; do
-	check "n_distinct on $col matches heap" \
-		"$(stat as_c $col n_distinct)" "$(stat as_h $col n_distinct)"
-done
+# A differential oracle agrees with itself when both halves are missing: with
+# neither table analyzed both sides read "(no statistic)", and main passed all
+# three. check_num requires a number on each side, so absent-vs-absent fails here
+# too rather than only in the two checks above. The names are literal, not a loop
+# variable, so the grader can see each one.
+check_num "n_distinct on status matches heap" \
+	"$(stat as_c status n_distinct)" "$(stat as_h status n_distinct)"
+check_num "n_distinct on v matches heap" \
+	"$(stat as_c v n_distinct)" "$(stat as_h v n_distinct)"
+check_num "n_distinct on nullable matches heap" \
+	"$(stat as_c nullable n_distinct)" "$(stat as_h nullable n_distinct)"
 
 # the MCV list should hold the same values, though not necessarily in the same
 # order: three equally common values have no stable ranking between samples
@@ -268,6 +298,10 @@ discarded() {  # extra SET statements -> rows the filter threw away
 	local ea
 	ea="$(q "$1 EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off)
 		SELECT * FROM as_c WHERE id = $target;")"
+	# Nothing when no plan came back: the awk below prints 0 for an empty input, and
+	# 0 rows discarded with the index is the passing answer, so a failed EXPLAIN
+	# ANALYZE passed the check below (found by jdatcmd reviewing #1559).
+	grep -q 'Scan' <<<"$ea" || return 0
 	awk 'match($0, /Rows Removed by Filter: [0-9]+/) {
 		s = substr($0, RSTART, RLENGTH); sub(/[^0-9]+/, "", s); t += s } END { print t + 0 }' <<<"$ea"
 }
@@ -277,8 +311,12 @@ no_index="$(discarded "SET enable_indexscan = off; SET enable_bitmapscan = off;"
 echo "-- rows discarded to return one row: ${with_index} with the index, ${no_index} without it"
 
 check "having an index available saves the point lookup real work" \
-	"$(awk -v a="$with_index" -v b="$no_index" \
-		'BEGIN { print (b > 0 && a < b / 2) ? "yes" : "no (" a " with the index, " b " without)" }')" \
+	"$(if ! pgc_is_number "$with_index" || ! pgc_is_number "$no_index"; then
+		echo "no reading ([$with_index] with the index, [$no_index] without)"
+	else
+		awk -v a="$with_index" -v b="$no_index" \
+			'BEGIN { print (b > 0 && a < b / 2) ? "yes" : "no (" a " with the index, " b " without)" }'
+	fi)" \
 	"yes"
 
 # --- 5. ANALYZE is not proportional to the table ------------------------------
@@ -320,6 +358,7 @@ ins_ms=$(( (_as_t1 - _as_t0) / 1000000 ))
 
 t0=$(date +%s%N)
 psql_run "ANALYZE as_w;" >/dev/null
+an_rc=$?
 t1=$(date +%s%N)
 an_ms=$(( (t1 - t0) / 1000000 ))
 
@@ -404,8 +443,12 @@ check_num "and an insert time past int64 yields the floor rather than a cap that
 	"$(pgc_analyze_cap_ms '99999999999999999999' 2>/dev/null)" "5000"
 
 check "ANALYZE on a wide table completes well inside its derived cap" \
-	"$(awk -v a="$an_ms" -v c="$cap_ms" \
-		'BEGIN { print (a < c) ? "yes" : "no (" a "ms against a " c "ms cap)" }')" \
+	"$(if [ "$an_rc" -ne 0 ]; then
+		echo "no (ANALYZE failed, rc $an_rc, after $an_ms ms)"
+	else
+		awk -v a="$an_ms" -v c="$cap_ms" \
+			'BEGIN { print (a < c) ? "yes" : "no (" a "ms against a " c "ms cap)" }'
+	fi)" \
 	"yes"
 
 # --- 6. the fetch cost keeps the planner off an unclustered ordered index (#355) --
@@ -557,8 +600,11 @@ check "an early column's short decode prefix leaves it on the index (#363)" \
 plan_late="$(plan_of "${ord_setup} EXPLAIN (COSTS off)
 	SELECT max(a10) FROM o363 WHERE id BETWEEN 1 AND 2000;")"
 echo "-- max(a10), prefix is 11 columns: $(printf '%s' "$plan_late" | grep -m1 -E 'Scan|Sort')"
+# The plan must scan o363 at all: this assertion is a negative, so an EXPLAIN
+# that failed, or one of the wrong table, passed it on main.
 check "a late column's wide decode prefix costs it off the index (#363)" \
-	"$(  ! grep -q 'Index Scan using o363_id' <<<"$plan_late" && echo yes \
+	"$(  grep -qE ' on o363( |$)' <<<"$plan_late" \
+		&& ! grep -q 'Index Scan using o363_id' <<<"$plan_late" && echo yes \
 		|| echo "no ($(printf '%s' "$plan_late" | head -1))")" \
 	"yes"
 
@@ -714,6 +760,22 @@ check "premise: both estimates were taken (#507)" \
 		|| echo "no (a=$iosc_gap_a b=$iosc_gap_b)")" \
 	"yes"
 
+# The saving itself, after VACUUM. Nothing above reads it: with the fraction
+# hardcoded to zero in relation_estimate_size the index-only scan is still
+# chosen on this fixture, and the growth check below compares two equal gaps, so
+# every #507 check passed (measured: the gap is 3244.00 on the fix and 0.00 with
+# the zero). This is the "catalog looks right and the plan stays wrong" case the
+# callback's comment describes.
+check "the all-visible pages buy the index-only scan a saving (#507)" \
+	"$(if ! pgc_is_number "$iosc_gap_a"; then
+		echo "no reading (a=[$iosc_gap_a])"
+	elif awk -v a="$iosc_gap_a" 'BEGIN{exit !(a > 0)}'; then
+		echo yes
+	else
+		echo "no (index scan minus index-only scan is $iosc_gap_a)"
+	fi)" \
+	"yes"
+
 # The saving is worth a fixed number of all-visible PAGES, and growth adds none
 # of them -- so it must not grow. Against the live count the fraction decays as
 # the fetch estimate rises and the two cancel; against a stale relpages the
@@ -732,9 +794,16 @@ check "premise: both estimates were taken (#507)" \
 # noise and nearly three below the signal -- it cannot be reached by rounding and
 # cannot hide the stale divisor.
 iosc_tol="$(awk -v a="${iosc_gap_a:-0}" 'BEGIN{printf "%.2f", a * 1.05}')"
+# Both estimates are required here as well as in the premise: a missing grown
+# estimate read as 1, under any real tolerance, and passed on main.
 check "growth without vacuum does not inflate the all-visible saving (#507)" \
-	"$(awk -v b="${iosc_gap_b:-1}" -v t="$iosc_tol" 'BEGIN{exit !(b <= t)}' && echo yes \
-		|| echo "no (grown $iosc_gap_b above vacuumed $iosc_gap_a, tolerance $iosc_tol)")" \
+	"$(if ! pgc_is_number "$iosc_gap_a" || ! pgc_is_number "$iosc_gap_b"; then
+		echo "no reading (a=[$iosc_gap_a] b=[$iosc_gap_b])"
+	elif awk -v b="$iosc_gap_b" -v t="$iosc_tol" 'BEGIN{exit !(b <= t)}'; then
+		echo yes
+	else
+		echo "no (grown $iosc_gap_b above vacuumed $iosc_gap_a, tolerance $iosc_tol)"
+	fi)" \
 	"yes"
 
 pgc_summary

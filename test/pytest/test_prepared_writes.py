@@ -86,7 +86,10 @@ def test_a_write_prepared_and_finished_in_one_session(pgc_own_db, pgc_cluster, e
         for s in ("SET enable_seqscan = off", "SET enable_bitmapscan = off",
                   "SET pgcolumnar.enable_custom_scan = off"):
             c.execute(s)
-        plan = "\n".join(r[0] for r in c.execute("EXPLAIN SELECT tag FROM pq WHERE k = 77").fetchall())
+        # The arm's own query (#1339): a premise about `k = 77` vouched for a different
+        # statement than the `k IN (...)` the arm runs.
+        plan = "\n".join(r[0] for r in c.execute(
+            "EXPLAIN SELECT string_agg(tag, ',') FROM pq WHERE k IN (77, 78, 79)").fetchall())
     expect.num(plan.count("Index Scan using pq_k"), 1,
                "premise: the fetch is an index scan, which is what reaches the fetch cache")
     expect.text(_session(dsn, "SET enable_seqscan = off", "SET enable_bitmapscan = off",

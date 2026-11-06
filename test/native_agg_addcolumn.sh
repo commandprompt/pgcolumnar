@@ -41,12 +41,25 @@ ROWS=${PGC_ADDCOL_ROWS:-3000}
 # the metadata path at all -- so both sides fell back to a scan, agreed with each
 # other, and the suite passed against the unfixed build. Anything wrapped around
 # the aggregate here silently turns this file into a test of nothing.
+#
+# A NULL answer prints as "(null)" through psql itself, and the oracle's setting
+# rides in PGOPTIONS rather than a SET, so a failed query on either side prints
+# nothing and check_text refuses it. The earlier form mapped empty to "(null)" and
+# kept only the last line, which for a failed oracle was the SET's own tag: two
+# failures disagreed only because one printed "SET".
+#
+# A reading that crashes the backend puts the server through recovery, so each
+# reading first waits until it answers: a crash fails its own arm, not whichever
+# arms happen to run while recovery is under way.
+qn() {	# SQL [PGOPTIONS]
+	local _i
+	for _i in $(seq 120); do [ "$(q 'SELECT 1;')" = "1" ] && break; sleep 0.5; done
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS="${2:-}" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -At -P 'null=(null)' -c "$1" 2>/dev/null || true
+}
 both() {  # label, aggregate expression, table
-	local m s
-	m="$(q "SELECT $2 FROM $3;" | tail -1)"
-	s="$(q "SET pgcolumnar.enable_vectorization = off;
-		SELECT $2 FROM $3;" | tail -1)"
-	check "$1" "${m:-(null)}" "${s:-(null)}"
+	check_text "$1" "$(qn "SELECT $2 FROM $3;")" \
+		"$(qn "SELECT $2 FROM $3;" "-c pgcolumnar.enable_vectorization=off")"
 }
 
 # --- a column added with a constant default ------------------------------------
@@ -60,6 +73,27 @@ psql_run "DROP TABLE IF EXISTS ac_t;
 check "the metadata aggregate path is the one under test" \
 	"$(q "EXPLAIN (COSTS off) SELECT count(d) FROM ac_t;" \
 		| grep -c 'Columnar Vectorized Aggregates')" "1"
+# the oracle's setting arrives through PGOPTIONS, where a mistyped or unloaded GUC
+# would leave both sides on the metadata path. The scan is named by its node, so a
+# failed EXPLAIN ("no plan") or some other plan cannot pass as it
+path_of() {	# PGOPTIONS -> metadata | scan | other plan | no plan
+	local plan
+	plan="$(qn "EXPLAIN (COSTS off) SELECT count(d) FROM ac_t;" "$1")"
+	case "$plan" in
+		'') echo "no plan" ;;
+		*'Columnar Vectorized Aggregates'*) echo metadata ;;
+		*'Custom Scan (PgColumnarScan)'*) echo scan ;;
+		*) echo "other plan" ;;
+	esac
+}
+check "premise: the oracle reads the rows" \
+	"$(path_of "-c pgcolumnar.enable_vectorization=off")" "scan"
+# Both paths read an old group's added column from the reader's missing value, so a
+# reader that lost it would leave them agreeing on the wrong answer: the oracle's own
+# answer is pinned once, to the rows and the default (7) that went in
+check_text "the scan reads an added column's default for the rows written before it" \
+	"$(qn "SELECT count(d) || '|' || sum(d) FROM ac_t;" "-c pgcolumnar.enable_vectorization=off")" \
+	"$ROWS|$((ROWS * 7))"
 
 both "count over an added int column"   "count(d)" ac_t
 both "sum over an added int column"     "sum(d)"   ac_t
@@ -99,8 +133,10 @@ both "max across groups written either side of the ALTER"   "max(d)"   ac_t
 both "min over text across both sides"                      "min(e)"   ac_t
 
 # and a delete, so the per-group delete handling and the missing-column handling
-# have to work together
-psql_run "DELETE FROM ac_t WHERE id = 5;" >/dev/null
+# have to work together. A group with deletes goes whole to the scan, so the delete
+# is in the newer group: in the old one (id 5, the only group before the ALTER) it
+# sent that group to the scan and the fold under test never saw it (#1530 review)
+psql_run "DELETE FROM ac_t WHERE id = $((ROWS + 5));" >/dev/null
 both "count with both a delete and an added column" "count(d)" ac_t
 both "sum with both a delete and an added column"   "sum(d)"   ac_t
 

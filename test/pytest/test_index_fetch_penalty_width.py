@@ -169,7 +169,8 @@ def test_index_fetch_penalty_width(pgc_conn, expect):
         "overflow blend is inactive on both arms",
     )
 
-    # THE SUBJECT MUST BE WHAT MOVES THE PLAN. If the penalty never moves one there
+    # THE SUBJECT MUST BE WHAT MOVES THE PLAN. Not a premise (#1339): pgcolumnar's own
+    # costing, which the penalty switched off in the source reddens. If the penalty never moves one there
     # is no ordering to check and every arm below would pass vacuously.
     sql = "SELECT c1,c2 FROM ifw_w WHERE scat BETWEEN 1 AND 400"
     pen_off = _plan(pgc_conn, sql, penalty="off")
@@ -179,7 +180,7 @@ def test_index_fetch_penalty_width(pgc_conn, expect):
     expect.text(
         "yes" if off_idx and not on_idx else f"no (off={off_idx} on={on_idx})",
         "yes",
-        "premise: the penalty is what moves this plan (index without it, not with it)",
+        "the penalty is what moves this plan (index without it, not with it)",
     )
 
     # ---- the check --------------------------------------------------------
@@ -189,7 +190,7 @@ def test_index_fetch_penalty_width(pgc_conn, expect):
           f"  wide prefix {ww}B = {fw} rows")
 
     expect.at_least(
-        fn, 1, "premise: the narrow table does fetch by index somewhere on the ladder"
+        fn, 1, "the narrow table does fetch by index somewhere on the ladder"
     )
     # AND THE WIDE ONE DOES TOO, which is the arm's other side. `FW <= FN` is
     # satisfied by FW = 0, and 0 is what an OVER-charged width weight produces as
@@ -197,7 +198,7 @@ def test_index_fetch_penalty_width(pgc_conn, expect):
     # one-sided: it catches the #803 under-charge and reports `ordered` for any
     # over-charge severe enough to take the wide table off the index entirely.
     expect.at_least(
-        fw, 1, "premise: and the wide table fetches by index somewhere on it too"
+        fw, 1, "and the wide table fetches by index somewhere on it too"
     )
 
     # A wider decoded prefix makes every row-group decode dearer, so the wide table

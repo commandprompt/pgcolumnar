@@ -78,12 +78,13 @@ check "an expression over a text column projects that column" \
 
 # Correctness. An index built from under-projected data indexes unset slot values, so
 # each of these must find what a sequential scan finds.
+# The custom scan off as well: measured, the expression lookup ran as a Custom Scan.
 check "plain index finds the row" \
-	"$(qset 'SET enable_seqscan=off' 'SELECT k2 FROM w WHERE k = 12345')" "24690"
+	"$(qset 'SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off' 'SELECT k2 FROM w WHERE k = 12345')" "24690"
 check "expression index finds the row" \
-	"$(qset 'SET enable_seqscan=off' 'SELECT count(*) FROM w WHERE (k + k2) = 30000')" "1"
+	"$(qset 'SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off' 'SELECT count(*) FROM w WHERE (k + k2) = 30000')" "1"
 check "partial index finds the row inside its predicate" \
-	"$(qset 'SET enable_seqscan=off' 'SELECT count(*) FROM w WHERE k = 50000 AND k2 > 100')" "1"
+	"$(qset 'SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off' 'SELECT count(*) FROM w WHERE k = 50000 AND k2 > 100')" "1"
 
 # The oracle, depending on nothing but PostgreSQL. Compare the FULL ordered result of a
 # forced index scan against a forced seq scan.
@@ -96,26 +97,38 @@ check "partial index finds the row inside its predicate" \
 # The emptiness half is `check_text` in `test/lib.sh` now (#418, #422), so this file no
 # longer carries its own version of it. The shape half stays here: an md5 is 32 hex
 # characters, and this file knows that where the shared helper only knows "not empty".
-agree() {  # $1 label, $2 predicate, $3 selected expression
-	local viaix viaseq
-	viaix=$(qset "SET enable_seqscan=off; SET enable_bitmapscan=off" \
-	              "SELECT md5(string_agg(t::text, ',' ORDER BY t))
-	                 FROM (SELECT $3 AS t FROM w WHERE $2) s")
-	viaseq=$(qset "SET enable_indexscan=off; SET enable_bitmapscan=off; SET enable_indexonlyscan=off" \
-	              "SELECT md5(string_agg(t::text, ',' ORDER BY t))
-	                 FROM (SELECT $3 AS t FROM w WHERE $2) s")
+# THE INDEX SIDE MUST READ THE INDEX (#1341). enable_seqscan=off does not disable the
+# columnar custom scan, and measured, the late-column, expression and text-expression
+# oracles ran as Custom Scan on BOTH sides: a sequential scan compared with itself,
+# whatever the index held. So the custom scan is off too, and each oracle names the
+# index it must read and asserts the plan does.
+IXOFF="SET enable_seqscan=off; SET enable_bitmapscan=off; SET pgcolumnar.enable_custom_scan=off"
+#
+# The premise reads the plan of the oracle query ITSELF, fenced with OFFSET 0. Without
+# the fence the aggregate's ORDER BY asked for rows in key order, and the planner took
+# a full scan of w_k12 with the late-column predicate as a filter: every row fetched
+# through the index, two minutes at 60,000 rows and hours at this size.
+agree() {  # $1 label, $2 predicate, $3 selected expression, $4 the index it must read
+	local viaix viaseq ixplan oq
+	oq="SELECT md5(string_agg(t::text, ',' ORDER BY t)) FROM (SELECT $3 AS t FROM w WHERE $2 OFFSET 0) s"
+	ixplan="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-At -q -c "$IXOFF" -c "EXPLAIN (COSTS OFF) $oq" 2>/dev/null)"
+	check "premise: $1 -- the index side reads $4" \
+		"$(grep -cE "Index (Only )?Scan using $4 on w" <<<"$ixplan")" "1"
+	viaix=$(qset "$IXOFF" "$oq")
+	viaseq=$(qset "SET enable_indexscan=off; SET enable_bitmapscan=off; SET enable_indexonlyscan=off" "$oq")
 	if ! grep -qE '^[0-9a-f]{32}$' <<<"$viaix" || ! grep -qE '^[0-9a-f]{32}$' <<<"$viaseq"; then
-		check "$1 (both sides must be a real md5, not empty or an error)" \
-			"index=[$viaix] seq=[$viaseq]" "two md5 hashes"
+		# under the oracle's own name, so a red here is a red of that check
+		check "$1" "index=[$viaix] seq=[$viaseq] (both sides must be a real md5)" "two md5 hashes"
 		return
 	fi
 	check_text "$1" "$viaix" "$viaseq"
 }
-agree "plain index agrees with a sequential scan"   "k BETWEEN 1000 AND 9999"        "k"
-agree "late-column index agrees"                    "c18 > repeat('x',80)||'99000'"  "k"
-agree "expression index agrees"                     "(k + k2) BETWEEN 300 AND 30000" "k"
-agree "partial index agrees on its subset"          "k2 > 100 AND k < 5000"          "k"
-agree "text expression index agrees"                "length(c1) = 83"                "k"
+agree "plain index agrees with a sequential scan"   "k BETWEEN 1000 AND 9999"        "k" "w_k(12)?"
+agree "late-column index agrees"                    "c18 > repeat('x',80)||'99000'"  "k" "w_c18"
+agree "expression index agrees"                     "(k + k2) BETWEEN 300 AND 30000" "k" "w_expr"
+agree "partial index agrees on its subset"          "k2 > 100 AND k < 5000"          "k" "w_part"
+agree "text expression index agrees"                "length(c1) = 83"                "k" "w_len"
 
 # The PARALLEL build, which is the default path for any table of consequential size and
 # was the one left unprojected.
@@ -178,7 +191,7 @@ usesix() {  # $1 = query -> the index name the plan scans
 }
 check "the oracle below really reads the parallel-built index" \
 	"$(usesix 'SELECT k2 FROM w WHERE k2 BETWEEN 2000 AND 19998')" "w_par2"
-agree "parallel-built index agrees with a sequential scan" "k2 BETWEEN 2000 AND 19998" "k2"
+agree "parallel-built index agrees with a sequential scan" "k2 BETWEEN 2000 AND 19998" "k2" "w_par2"
 check "parallel-built index returns each row once" \
 	"$(qset 'SET enable_seqscan=off; SET enable_bitmapscan=off' \
 		'SELECT count(*) FROM w WHERE k2 BETWEEN 2 AND 2000')" "1000"

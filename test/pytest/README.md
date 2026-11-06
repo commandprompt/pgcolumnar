@@ -32,6 +32,18 @@ PYTHONPATH=. /root/pyenv/bin/pytest --pgc-expect-tests N  # assert the run's sha
 PGC_PG_CONFIG=/usr/local/pg19a/bin/pg_config PYTHONPATH=. /root/pyenv/bin/pytest
 ```
 
+Without `--pg-config` or `PGC_PG_CONFIG`, the run uses the first `pg_config` it finds
+in `PG_CONFIG_CANDIDATES` in `conftest.py`, then the one on `PATH` (#1933). Set
+`PGC_PG_CONFIG` to choose the build yourself.
+
+Every run names the build it tested, in one line such as
+`pg_config: /usr/local/pgsql/bin/pg_config (from candidate) -- PostgreSQL 18.6`.
+The part in brackets says how the run chose it: `--pg-config`, `PGC_PG_CONFIG`,
+`candidate`, `PATH`, or `first candidate, none found`. The line is in the header,
+or at the end of the run when `-q` or `--no-header` hides the header. When that
+`pg_config` does not run or exits non-zero, the line gives the error in place of the
+version.
+
 `--pgc-expect-tests` takes the number of **collected tests**, not files. `N` above
 is whatever the set you ran collects; the two numbers the gate uses are in
 `expected_tests.txt`. A literal here would name the wrong quantity and go stale,
@@ -40,6 +52,12 @@ which is the mistake the previous text made: it passed 24, the number of files
 
 Each worker builds its own throwaway cluster on a port derived from its worker id,
 and drops it at session end. Nothing survives a run.
+
+Run the over-1-GiB arms serially. With `PGC_RUN_OVER_1GB=1`, the export arms of
+`test_parquet_export.py`, `test_arrow_export.py` and `test_objstore_sink_write.py`
+each hold several GB of memory. One `-n 4` run with `PGC_RUN_OVER_1GB=1` lost the
+objstore fixture's server during its over-1-GiB arm, and every later test in that
+file failed at setup; the cause is not known. The same file passed when run alone.
 
 ## Checking a port against its bash original
 
@@ -105,7 +123,18 @@ four round-trips, each failure in a different registry from the one just fixed.
    already covered: the gate cannot refuse a check in a suite it has never seen.
    New rows arrive as `never`, so `checks_never_observed_red` MOVES and has to
    match the census. Regenerate with one log per gated major in a single `merge`,
-   because a row covers only the majors it was merged from.
+   because a row covers only the majors it was merged from. Write the derivation
+   in the commit message, not the budget, which holds only its two numbers. The
+   commit that changes the tsv ends with this trailer, in the same final block as
+   any `Co-Authored-By:` line, derived from the tsv in that commit:
+
+   ```
+   Ledger-census: rows=8096 never=4567 dated=3529
+   ```
+
+   `pgc_ledger.py census-commits` refuses a missing, stale or self-inconsistent
+   trailer (#1431). A restate re-derives it for each commit rather than carrying
+   the old one.
 
 4. **`expected_unrunnable.txt`**, per major. A test that declines for an entirely
    correct reason still reddens until its reason is written down for each major
@@ -133,6 +162,10 @@ different one under the same exit. Read the list the layer prints under
 `unrunnable on PG<major>, and not expected to be:` (`pgc_vacuity.py`, and the
 exit is `EXIT_INCOMPLETE`, 67) and check whether your test is one of the names
 in it.
+
+A run with `-n` checks the list once, in the controller, over the tests every
+worker collected. The workers do not check it (#1892). So each name appears once,
+and a one-file `-n` run exits as the serial run does.
 
 ## Warnings
 

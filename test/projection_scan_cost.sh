@@ -86,10 +86,10 @@ check "premise: the table holds every inserted row" \
 check "premise: a covering projection exists" \
 	"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE rel = 'prsc'::regclass AND name = 'byk'")" "1"
 
-check "premise: the tight plan uses the covering projection" \
+check "the tight plan uses the covering projection" \
 	"$(echo "$tight_proj" | grep -c 'Columnar Projection: byk')" "1"
 
-check "premise: the loose plan uses the covering projection" \
+check "the loose plan uses the covering projection" \
 	"$(echo "$loose_proj" | grep -c 'Columnar Projection: byk')" "1"
 
 check "premise: without the projection scan, the tight plan is a base columnar scan" \

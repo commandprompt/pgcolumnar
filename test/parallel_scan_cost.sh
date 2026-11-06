@@ -76,19 +76,24 @@ echo "-- parallel Custom Scan cost=$p_start..$p_total run=$p_run ratio=$ratio"
 check "premise: the table holds every inserted row" \
 	"$(q "SELECT count(*) FROM psc")" "$N"
 
-check "premise: the serial plan is a columnar scan" \
+# ARMS, NOT PREMISES (#1339, #1236). Which scan the planner picks, whether it
+# gathers and with how many workers are decided by this extension's own paths, so a
+# change here can redden each one: the scan renamed in EXPLAIN reddens the three
+# "columnar scan" arms, a partial path planned with one worker reddens "has Gather",
+# and one planned with workers + 1 reddens "uses two workers".
+check "the serial plan is a columnar scan" \
 	"$(echo "$serial_plan" | grep -c "Custom Scan (PgColumnarScan)")" "1"
 
 check "premise: the serial plan has no Gather" \
 	"$(echo "$serial_plan" | grep -c "Gather")" "0"
 
-check "premise: the parallel plan has Gather" \
+check "the parallel plan has Gather" \
 	"$(echo "$par_plan" | grep -c "Gather")" "1"
 
-check "premise: the parallel plan uses two workers" \
+check "the parallel plan uses two workers" \
 	"$(echo "$par_plan" | grep -oE "Workers Planned: [0-9]+" | head -1 | grep -oE "[0-9]+")" "2"
 
-check "premise: the parallel plan is a columnar scan" \
+check "the parallel plan is a columnar scan" \
 	"$(echo "$par_plan" | grep -c "Custom Scan (PgColumnarScan)")" "1"
 
 # CARRIES BOTH. Collapsed to yes/no this said one of two was not positive and
@@ -147,7 +152,7 @@ scan_rows() {
 rows_off="$(scan_rows "$par_plan")"
 rows_on="$(scan_rows "$par_plan_on")"
 
-check "premise: the leader-on plan is still a parallel columnar scan" \
+check "the leader-on plan is still a parallel columnar scan" \
 	"$(printf '%s' "$par_plan_on" | grep -c 'Custom Scan (PgColumnarScan)')" "1"
 
 check "premise: both leader settings produced a row estimate to compare" \

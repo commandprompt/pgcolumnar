@@ -335,8 +335,12 @@ if [ "$(_cdb "SELECT datcollate FROM pg_database WHERE datname = current_databas
 	check "and it returns the right rows (#426)" \
 		"$(_cdb "SELECT count(*) FROM nc WHERE t LIKE 'k00005000%';")" "1"
 else
-	echo "-- SKIP: could not create a --locale=C database, so the widened guard is"
-	echo "         NOT covered by this run"
+	# RECORDED, NOT ECHOED (#1510 review): an echo dropped these checks without a
+	# trace, which is the shape that hid the non-C probe's quote bug for every run.
+	for _n in "a default-collation column in a --locale=C database derives the bounds (#426)" \
+	          "and it returns the right rows (#426)"; do
+		check_unrunnable "$_n" MISSING_DEPENDENCY "a --locale=C database could not be created on this host"
+	done
 fi
 
 # ...and the refusal, on a collation that is genuinely not byte ordering. This is
@@ -356,17 +360,25 @@ fi
 # reports a red on a box missing btree_gist (#505). If none is usable the checks
 # say so and are skipped, rather than passing vacuously or failing for the
 # environment.
+# THE IDENTIFIER WAS CLOSED WITH A SINGLE QUOTE (#1341): `COLLATE \"$_c\')` is
+# malformed SQL, the probe failed for every candidate, and this whole half -- the
+# refusal under a genuinely non-C collation -- skipped on every run while reading as
+# a host without one. Found by the pytest twin, whose discovery works.
 NSK_NONC=""
 for _c in "en_US.utf8" "en_US.UTF-8" "unicode" "pg_unicode_fast"; do
 	if [ "$(q "SELECT 'x' LIKE 'x' COLLATE \"$_c\";" 2>/dev/null)" = "t" ] &&
-	   [ "$(q "SELECT ('b' < 'a' COLLATE \"$_c\');" 2>/dev/null)" = "f" ]; then
+	   [ "$(q "SELECT ('b' < 'a' COLLATE \"$_c\");" 2>/dev/null)" = "f" ]; then
 		NSK_NONC="$_c"; break
 	fi
 done
 
 if [ -z "$NSK_NONC" ]; then
-	echo "-- SKIP: no usable non-C collation on this build, so the refusal half of"
-	echo "         the #426 collation guard is NOT covered by this run"
+	# RECORDED, NOT ECHOED (#1510 review), for the same reason as above
+	for _n in "premise: a range still prunes under a non-C collation (#426)" \
+	          "anchored LIKE does not prune under a non-C collation (#426)" \
+	          "non-C collation LIKE result parity (#426)"; do
+		check_unrunnable "$_n" MISSING_DEPENDENCY "no usable non-C collation on this build"
+	done
 else
 	echo "-- non-C collation under test: $NSK_NONC"
 	psql_run "CREATE TABLE hu (t text COLLATE \"$NSK_NONC\");"
@@ -427,5 +439,93 @@ check "a partition takes the columnar custom scan (#436)" \
 # everything.
 check "and it prunes row groups (#436)" \
 	"$(gt0 "$(skipped 'SELECT id FROM nskp WHERE id BETWEEN 5000 AND 5100')")" "yes"
+
+
+# ---- a type binary-coercible to its opclass's type must prune (#1433) --------
+#
+# A comparison on a cidr column resolves to inet's operator and a varchar
+# column's to text's, with the column relabelled. The key reached the reader
+# with a column of cidr (or varchar) and an argument of inet (or text), so it
+# was cross-type, and the opfamily registers an ordering proc only for
+# (inet, inet) and (text, text). The key was dropped, and the column pruned
+# nothing while EXPLAIN still counted the filter as pushed down. inet and text
+# hold the same values and are the controls: the fixture prunes when the key is
+# kept. Parity first in every arm, as above.
+psql_run "CREATE DOMAIN nsk_cidr AS cidr;"
+psql_run "CREATE DOMAIN nsk_vc AS varchar(20);"
+psql_run "CREATE TABLE hb (id int, ip inet, cd cidr, dcd nsk_cidr, t text, vc varchar(20), dvc nsk_vc);"
+psql_run "CREATE TABLE nb (id int, ip inet, cd cidr, dcd nsk_cidr, t text, vc varchar(20), dvc nsk_vc) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nb', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+NB_GEN="SELECT g, a::inet, a::cidr, a::cidr, s, s, s
+  FROM (SELECT g, '10.0.' || (g / 256) || '.' || (g % 256) AS a,
+               lpad(g::text, 6, '0') AS s
+        FROM generate_series(1, 20480) g) x"
+psql_run "INSERT INTO hb $NB_GEN;"
+psql_run "INSERT INTO nb $NB_GEN;"
+NB_IP="BETWEEN '10.0.20.0' AND '10.0.20.100'"
+NB_S="BETWEEN '005000' AND '005100'"
+for arm in "ip|inet|$NB_IP" "cd|cidr|$NB_IP" "dcd|a domain over cidr|$NB_IP" \
+	"t|text|$NB_S" "vc|varchar|$NB_S" "dvc|a domain over varchar|$NB_S"; do
+	col=${arm%%|*}; rest=${arm#*|}; what=${rest%%|*}; pred=${rest#*|}
+	check "a range on $what returns the same rows as heap (#1433)" \
+		"$(pgc_set_hash "SELECT id FROM nb WHERE $col $pred")" \
+		"$(pgc_set_hash "SELECT id FROM hb WHERE $col $pred")"
+	check "and a range on $what skips groups (#1433)" \
+		"$(gt0 "$(skipped "SELECT id FROM nb WHERE $col $pred")")" "yes"
+done
+# equality also takes the bloom probe, which hashes the constant with the
+# column's hash proc: the same proc for both types of each pair
+for arm in "cd|cidr|'10.0.40.7'" "vc|varchar|'012345'"; do
+	col=${arm%%|*}; rest=${arm#*|}; what=${rest%%|*}; val=${rest#*|}
+	check "equality on $what returns the same rows as heap (#1433)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM nb WHERE $col = $val")" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM hb WHERE $col = $val")"
+	check "and equality on $what skips groups (#1433)" \
+		"$(gt0 "$(skipped "SELECT id FROM nb WHERE $col = $val")")" "yes"
+done
+
+# ---- a timestamp column against a timestamptz constant (#1738) ----------------
+# The cross-type ordering proc for (timestamp, timestamptz) turns each group's
+# min/max wall time into an instant in the session zone, and across a
+# spring-forward gap that is not order-preserving. In New York on 2024-03-10 the
+# nonexistent 02:30 is read as standard time, 07:30Z, while 03:00 is 07:00Z. A
+# group whose max is 03:00 therefore looked wholly below 07:15Z although its 02:30
+# row is above it; a group whose min is 02:30 looked wholly above 07:15Z although
+# its 03:00 row is below. Four chunk groups of 2048 (two vectors each): early March (the controls' skip
+# target), the gap hour with max 03:00, 02:30..03:30 with min 02:30, and the
+# fall-back hour, whose repeated wall times keep the conversion monotonic.
+# Every psql below runs in New York, through the environment.
+export PGOPTIONS="-c timezone=America/New_York"
+psql_run "CREATE TABLE hz (id int, ts timestamp, tz timestamptz);"
+psql_run "CREATE TABLE nz (id int, ts timestamp, tz timestamptz) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nz', stripe_row_limit => 2048, chunk_group_row_limit => 1024);"
+NZ_GEN="SELECT g, v, v::timestamptz FROM (SELECT g, CASE
+    WHEN g <= 2048 THEN '2024-03-01 00:00'::timestamp + g * interval '1 minute'
+    WHEN g <= 4096 THEN '2024-03-10 01:00'::timestamp + ((g - 2049) % 121) * interval '1 minute'
+    WHEN g <= 6144 THEN '2024-03-10 02:30'::timestamp + ((g - 4097) % 61) * interval '1 minute'
+    ELSE '2024-11-03 00:00'::timestamp + ((g - 6145) % 181) * interval '1 minute' END AS v
+  FROM generate_series(1, 8192) g) x"
+psql_run "INSERT INTO hz $NZ_GEN;"
+psql_run "INSERT INTO nz $NZ_GEN;"
+for arm in ">|'2024-03-10 07:15+00'" ">=|'2024-03-10 07:30+00'" "=|'2024-03-10 07:30+00'" \
+	"<|'2024-03-10 07:15+00'" "<=|'2024-03-10 07:14+00'"; do
+	op=${arm%%|*}; val=${arm#*|}
+	check "premise: heap finds rows for ts $op a timestamptz across the gap (#1738)" \
+		"$(gt0 "$(q "SELECT count(*) FROM hz WHERE ts $op $val::timestamptz")")" "yes"
+	check "ts $op a timestamptz constant across a spring-forward gap returns heap's rows (#1738)" \
+		"$(pgc_set_hash "SELECT id FROM nz WHERE ts $op $val::timestamptz")" \
+		"$(pgc_set_hash "SELECT id FROM hz WHERE ts $op $val::timestamptz")"
+done
+check "across the fall-back hour, ts > a timestamptz constant returns heap's rows (#1738)" \
+	"$(pgc_set_hash "SELECT id FROM nz WHERE ts > '2024-11-03 05:30+00'::timestamptz")" \
+	"$(pgc_set_hash "SELECT id FROM hz WHERE ts > '2024-11-03 05:30+00'::timestamptz")"
+check "the reverse pair, tz > a timestamp constant in the gap, returns heap's rows (#1738)" \
+	"$(pgc_set_hash "SELECT id FROM nz WHERE tz > '2024-03-10 02:30'::timestamp")" \
+	"$(pgc_set_hash "SELECT id FROM hz WHERE tz > '2024-03-10 02:30'::timestamp")"
+check "a timestamp column against a timestamp constant still skips groups (#1738)" \
+	"$(gt0 "$(skipped "SELECT id FROM nz WHERE ts > '2024-03-05'::timestamp")")" "yes"
+check "the reverse pair, tz against a timestamp constant, still skips groups (#1738)" \
+	"$(gt0 "$(skipped "SELECT id FROM nz WHERE tz > '2024-03-05'::timestamp")")" "yes"
+unset PGOPTIONS
 
 pgc_summary

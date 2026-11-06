@@ -63,17 +63,28 @@ SQLFILE="$_epp_root/pgcolumnar--$_epp_ver.sql"
 #   iceberg_rest_table_location  reads an external REST catalog, server-file role (#388 phase 7)
 #   iceberg_rest_scan      reads a REST-cataloged table's FILES, server-file role (#388 phase 7)
 #   iceberg_rest_namespaces / iceberg_rest_tables  list a REST catalog, server-file role (#388 phase 7)
+#   iceberg_rest_namespace_levels  lists a REST catalog's namespaces as text[], server-file role (#1865)
 #   read_manifest_list     reads an Avro FILE, gated by the server-file role (#388)
 #   row_tid                maps a row number to a TID by arithmetic (#1294): it
 #                          takes no relation and reads nothing. A version that
 #                          took a relation would need the SELECT check the others have.
+#   path_glob_matches      compares a glob with a path as strings (#1957): it
+#                          takes no relation and reads nothing, as row_tid.
+#   rollup_record_dependencies  a TRIGGER function (#1376): PostgreSQL refuses to call it
+#                          directly, and it runs only on writes to pgcolumnar.rollup,
+#                          whose row-level security asks that the writer own the
+#                          view; it checks SELECT on the source itself (rollup.sh).
+#   approx_count_distinct and its _transfn, _combinefn, _serialfn, _deserialfn and
+#                          _finalfn  the aggregate and its support functions (#1309):
+#                          they take values and registers, never a relation, and core
+#                          checks SELECT on whatever table the values come from.
 #
 # Kept on ONE line and matched after whitespace normalisation. A multi-line list
 # here is matched by `case " $EXEMPT " in *" $fn "*`, and the name sitting at a
 # line end is followed by a newline rather than a space, so it silently fails to
 # match and reads as an unbucketed function. That is not hypothetical: it is what
 # the first run of this suite reported for parquet_fdw_validator.
-EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_tables read_avro_manifest read_manifest_list row_tid"
+EXEMPT="columnar_handler parquet_fdw_handler parquet_fdw_validator iceberg_fdw_handler iceberg_fdw_validator iceberg_catalog_fdw_validator parquet_schema read_parquet file_split_offsets iceberg_current_snapshot iceberg_data_files iceberg_scan iceberg_rest_table_location iceberg_rest_scan iceberg_rest_namespaces iceberg_rest_namespace_levels iceberg_rest_tables read_avro_manifest read_manifest_list row_tid path_glob_matches rollup_record_dependencies approx_count_distinct approx_count_distinct_transfn approx_count_distinct_combinefn approx_count_distinct_serialfn approx_count_distinct_deserialfn approx_count_distinct_finalfn"
 EXEMPT="$(echo $EXEMPT)"
 
 # Relation-taking entry points with NO privilege check of any kind on main.
@@ -132,7 +143,10 @@ CATALOG_GOVERNED="$(echo $CATALOG_GOVERNED)"
 
 # Relation-taking entry points that are supposed to REFUSE an unprivileged
 # caller, asserted behaviourally rather than believed.
-GUARDED_BEHAVIOURAL="read_projection reconstruct_via_projection vm_is_visible vm_selftest get_storage_id"
+# #1386 added the four after get_storage_id: each had no arm anywhere that calls it as
+# a caller its bar should stop (cluster_hilbert and recluster_hilbert share cluster's
+# owner check in code, which is a reason to expect a refusal, not an assertion of one).
+GUARDED_BEHAVIOURAL="read_projection reconstruct_via_projection vm_is_visible vm_selftest get_storage_id cluster_hilbert recluster_hilbert truncate require_caller_select"
 GUARDED_BEHAVIOURAL="$(echo $GUARDED_BEHAVIOURAL)"
 
 # ---- the enumeration, from the catalog -------------------------------------
@@ -273,6 +287,70 @@ check_num "the catalog-governed class is the six from #560" "$catalog_n" "6"
 #    engineer who closes one must come here and remove the name.
 check_num "no relation-taking C entry point is still ungated" "$pinned_n" "0"
 
+# ---- every claimed-guarded entry point names where its bar is asserted (#1386) ----
+#
+# "Claimed-guarded" was the else branch: every relation-taking name that is neither
+# catalog-governed nor pinned. A new relation-taking function with no check at all
+# landed there and nothing reddened (measured: zz_mutant_leak(regclass) left this
+# suite 31/31). So the claim is now written down, name by name, with the suite whose
+# arms call it as a caller the bar should stop. A name with no entry is red, and so
+# is an entry whose suite does not exist or never calls the function, or that names
+# a function this population no longer has.
+BAR_ASSERTED_IN="
+add_projection:vacuum_lock_privilege
+drop_projection:vacuum_lock_privilege
+vacuum:vacuum_lock_privilege
+vacuum_sorted:vacuum_lock_privilege
+cluster:vacuum_lock_privilege
+recluster:vacuum_lock_privilege
+compact:vacuum_lock_privilege
+compact_rewrite:vacuum_lock_privilege
+export_arrow:import_export_privilege
+export_parquet:import_export_privilege
+import_arrow:import_export_privilege
+import_parquet:import_export_privilege
+parallel_copy:import_export_privilege
+parallel_export_parquet:import_export_privilege
+expire:ttl_expire
+column_extent:column_extent
+maintenance_due:maintenance_due
+refresh_rollup:rollup
+rebase_rollup:rollup
+rollup_source_groups:rollup
+rollup_source_retired:rollup
+tier_partition:tier_partition
+partition_create_ahead:partition_lifecycle
+"
+# Relation-taking, with no bar to assert, each for its reason:
+#   partition_drop_candidates, partition_drop_plan  return what pg_inherits and the
+#     partition bounds already tell any role, and the plan is text: the statements
+#     it lists run as whoever runs them, under core's own privilege checks.
+#   check_sketch_column                             reads only the named column's type
+#                                                   and collation, which pg_attribute shows
+#                                                   any role, and writes nothing (#1309);
+#                                                   set_options, its caller, is catalog-governed
+NO_BAR_NEEDED="partition_drop_candidates partition_drop_plan check_sketch_column"
+bar_home() { awk -v f="$1" -F: '$1 == f { print $2 }' <<<"$BAR_ASSERTED_IN"; }
+unhomed="" badhome="" stalehome=""
+for fn in $relfns; do
+	case " $CATALOG_GOVERNED $KNOWN_UNGUARDED $NO_BAR_NEEDED " in *" $fn "*) continue ;; esac
+	# The behavioural arms below are this suite's own home for the names they call.
+	case " $GUARDED_BEHAVIOURAL " in *" $fn "*) continue ;; esac
+	home="$(bar_home "$fn")"
+	if [ -z "$home" ]; then unhomed="$unhomed $fn"; continue; fi
+	f="$(dirname "${BASH_SOURCE[0]}")/$home.sh"
+	[ -r "$f" ] && grep -q "pgcolumnar\.$fn(" "$f" || badhome="$badhome $fn:$home"
+done
+for fn in $(awk -F: 'NF == 2 { print $1 }' <<<"$BAR_ASSERTED_IN") $NO_BAR_NEEDED; do
+	case " $relfns " in *" $fn "*) ;; *) stalehome="$stalehome $fn" ;; esac
+done
+check "every claimed-guarded entry point names the suite that asserts its bar (#1386)" \
+	"$([ -z "${unhomed// /}" ] && echo none || echo "$unhomed")" "none"
+check "and each named suite exists and calls that entry point" \
+	"$([ -z "${badhome// /}" ] && echo none || echo "$badhome")" "none"
+check "and no entry names a function that is not a relation-taking entry point" \
+	"$([ -z "${stalehome// /}" ] && echo none || echo "$stalehome")" "none"
+
 # THE COUNT ABOVE IS NOT ENOUGH, AND THIS SUITE PROVED IT ON ITSELF.
 #
 # When #558 and #562 merged, four of the nine names here became genuinely
@@ -349,7 +427,8 @@ call_for() {  # call_for <fn> -> a valid argument vector for that function
 	case "$1" in
 		read_projection|reconstruct_via_projection) echo "SELECT pgcolumnar.$1('ep_target','p1');" ;;
 		vm_is_visible|vm_selftest)                  echo "SELECT pgcolumnar.$1('ep_target',0);" ;;
-		get_storage_id)                             echo "SELECT pgcolumnar.$1('ep_target');" ;;
+		get_storage_id|truncate|require_caller_select) echo "SELECT pgcolumnar.$1('ep_target');" ;;
+		cluster_hilbert|recluster_hilbert)          echo "SELECT pgcolumnar.$1('ep_target', 'id');" ;;
 		export_arrow|export_parquet|import_arrow|import_parquet)
 			echo "SELECT pgcolumnar.$1('ep_target','/nonexistent/dir/x');" ;;
 		*) echo "" ;;
@@ -369,19 +448,31 @@ call_for() {  # call_for <fn> -> a valid argument vector for that function
 #
 # Granting EXECUTE puts the role PAST the SQL layer on purpose, so the only thing
 # left that can refuse it is the C check. Now 42501 attributes to one layer.
+#
+# On every overload, by OID (#1387 review): a grant on a hard-coded signature, with
+# its error discarded, left the role without EXECUTE when a declaration changed, and
+# the premise below then reddened for the fixture's reason rather than the product's.
 for fn in $GUARDED_BEHAVIOURAL; do
-	psql_run "GRANT EXECUTE ON FUNCTION pgcolumnar.$fn($(case "$fn" in read_projection|reconstruct_via_projection) echo "regclass,text" ;; *) echo "regclass,int" ;; esac)) TO t_ep;" 2>/dev/null
+	while IFS= read -r sig; do
+		[ -n "$sig" ] && psql_run "GRANT EXECUTE ON FUNCTION $sig TO t_ep;"
+	done <<<"$(q "SELECT p.oid::regprocedure FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+	              WHERE n.nspname = 'pgcolumnar' AND p.proname = '$fn';")"
 done
 check "premise: t_ep now holds EXECUTE, so a refusal below can only be the C check" \
 	"$(q "SELECT bool_and(has_function_privilege('t_ep', p.oid, 'EXECUTE'))
 	      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-	      WHERE n.nspname='pgcolumnar' AND p.proname IN ('read_projection','reconstruct_via_projection','vm_is_visible','vm_selftest');")" \
+	      WHERE n.nspname='pgcolumnar' AND p.proname IN ('read_projection','reconstruct_via_projection','vm_is_visible','vm_selftest',
+	                                   'cluster_hilbert','recluster_hilbert','truncate','require_caller_select');")" \
 	"t"
 
 for fn in $GUARDED_BEHAVIOURAL; do
 	sql="$(call_for "$fn")"
-	check "premise: the owner can call $fn, so a refusal below is a refusal" \
-		"$(q "$sql" >/dev/null 2>&1 && echo ok || echo broken)" "ok"
+	# A check, not a premise (#1236; #1387 review): a function refusing even its owner
+	# is a product change. Read by psql's exit status: q ends in "|| true", so
+	# "q ... && echo ok" printed ok whatever the call did.
+	check "the owner can call $fn, so a refusal below is a refusal" \
+		"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+			-X -At -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1 && echo ok || echo broken)" "ok"
 	check "$fn refuses an unprivileged caller with 42501" \
 		"$(as_ep "$sql")" "42501"
 done
@@ -405,7 +496,7 @@ check "premise: t_ep holds the server-file roles, so it reaches the table check"
 # at which point they reddened and named themselves, which is what a pin is for.
 for fn in export_arrow export_parquet import_arrow import_parquet; do
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U t_ep -d "$PGC_DB" -At \
-		-c "SELECT pgcolumnar.$fn('ep_target','/nonexistent/dir/x');" 2>&1 | head -1)"
+		-c "SELECT pgcolumnar.$fn('ep_target','/nonexistent/dir/x');" 2>&1 | grep -m1 'ERROR:')"
 	case "$out" in
 		*"permission denied for table"*) state=refused ;;
 		*"could not open file"*)         state=reached-the-file-layer ;;

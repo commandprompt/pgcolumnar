@@ -13,6 +13,7 @@
 # chain, and any field the reader trusts as a length, a count, or an offset.
 #
 # Usage:  python3 test/parquet_mutate.py SEEDFILE SEED OUTFILE
+#         python3 test/parquet_mutate.py --schema-sweep SEEDFILE OUTDIR
 #
 import os
 import random
@@ -232,7 +233,106 @@ def mutate(data, seed):
     return bytes(b)
 
 
+def schema_span(b):
+    """-> (start, end) of the footer's schema list (FileMetaData field 2), as byte
+    offsets into the whole file. A plain Thrift compact walk; the seeds are valid."""
+    flen = struct.unpack("<I", bytes(b[-8:-4]))[0]
+    st = {"pos": len(b) - 8 - flen}
+
+    def byte():
+        v = b[st["pos"]]
+        st["pos"] += 1
+        return v
+
+    def uvar():
+        shift = out = 0
+        while True:
+            v = byte()
+            out |= (v & 0x7F) << shift
+            if not v & 0x80:
+                return out
+            shift += 7
+
+    def lhdr():
+        v = byte()
+        n = (v >> 4) & 0x0F
+        if n == 0x0F:
+            n = uvar()
+        return n, v & 0x0F
+
+    def fhdr(last):
+        v = byte()
+        if v == 0:
+            return 0, 0
+        t, d = v & 0x0F, v >> 4
+        if d:
+            return t, last + d
+        u = uvar()
+        return t, (u >> 1) ^ -(u & 1)
+
+    def skip(t):
+        if t in (1, 2):
+            return
+        if t == 3:
+            st["pos"] += 1
+        elif t in (4, 5, 6):
+            uvar()
+        elif t == 7:
+            st["pos"] += 8
+        elif t == 8:
+            n = uvar()
+            st["pos"] += n
+        elif t in (9, 10):
+            n, et = lhdr()
+            for _ in range(n):
+                skip(et)
+        elif t == 12:
+            last = 0
+            while True:
+                ft, f = fhdr(last)
+                if ft == 0:
+                    break
+                last = f
+                skip(ft)
+
+    last = 0
+    while True:
+        start = st["pos"]
+        ft, fid = fhdr(last)
+        if ft == 0:
+            raise ValueError("no schema list in the footer")
+        last = fid
+        skip(ft)
+        if fid == 2:
+            return start, st["pos"]
+
+
+def schema_sweep(src, outdir):
+    """The sweep that found #1855, narrowed to the schema: one copy of SRC per byte of
+    the footer's schema list and per low-nibble value 0..15, skipping the copy that
+    changes nothing. Writes OUTDIR/sweep-<offset>-<nibble>.parquet, prints each path."""
+    with open(src, "rb") as f:
+        data = f.read()
+    start, end = schema_span(data)
+    os.makedirs(outdir, exist_ok=True)
+    for off in range(start, end):
+        for nib in range(16):
+            v = (data[off] & 0xF0) | nib
+            if v == data[off]:
+                continue
+            b = bytearray(data)
+            b[off] = v
+            path = os.path.join(outdir, "sweep-%d-%d.parquet" % (off, nib))
+            with open(path, "wb") as f:
+                f.write(bytes(b))
+            os.chmod(path, 0o644)
+            print(path)
+
+
 def main():
+    if sys.argv[1] == "--schema-sweep":
+        schema_sweep(sys.argv[2], sys.argv[3])
+        return
     src, seed, dst = sys.argv[1], int(sys.argv[2]), sys.argv[3]
     with open(src, "rb") as f:
         data = f.read()

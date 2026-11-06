@@ -45,7 +45,7 @@ psql_run "SELECT pgcolumnar.add_projection('prem','pp',ARRAY['a','b'],ARRAY['a']
 check "PREMISE base holds its rows" "$(q 'SELECT count(*) FROM prem;')" "$N"
 check "PREMISE projection answers before any rewrite" \
 	"$(q "SELECT count(*) FROM pgcolumnar.read_projection('prem','pp');")" "$N"
-check "PREMISE projection agrees with base before any rewrite" \
+check_text "PREMISE projection agrees with base before any rewrite" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('prem','pp')")" \
 	"$(pgc_set_hash "SELECT a::text||'|'||b FROM prem")"
 check "PREMISE two catalog rows under the current storage" \
@@ -85,92 +85,120 @@ check "PREMISE no retired projection rows to begin with" "$(retired_rows)" "0"
 #   $1 table    $2 operation SQL    $3 what the operation must DO
 #   $4 the base-table projection of the covered columns, AFTER the operation
 # ---------------------------------------------------------------------------
+# arm TAG OP -> runs OP on a fresh copy of the fixture, and sets ARM_DID to NOOP,
+# REWROTE or "FAILED: <error>". The checks are written at each call site, by literal
+# name (#1341): built here from $tag, no grader could read them, and the operation's
+# own check was recorded under one name when it passed and another when it failed.
+ARM_DID=""
 arm() {
-	local tag="$1" op="$2" wantdid="$3" oracle="$4"
-	local sid0 did err
-
+	local tag="$1" op="$2" sid0 err
 	psql_run "CREATE TABLE $tag (id int, a int, b text) USING pgcolumnar;" >/dev/null
 	psql_run "INSERT INTO $tag SELECT g, g%50, 'b'||g FROM generate_series(1,$N) g;" >/dev/null
 	psql_run "SELECT pgcolumnar.add_projection('$tag','pp',ARRAY['a','b'],ARRAY['a']);" >/dev/null
 	sid0="$(q "SELECT pgcolumnar.get_storage_id('$tag');")"
-
 	if err="$(psql_run "$op" 2>&1)"; then
-		[ "$sid0" = "$(q "SELECT pgcolumnar.get_storage_id('$tag');")" ] && did=NOOP || did=REWROTE
+		[ "$sid0" = "$(q "SELECT pgcolumnar.get_storage_id('$tag');")" ] && ARM_DID=NOOP || ARM_DID=REWROTE
 	else
-		did="FAILED"
+		ARM_DID="FAILED: $(sed -nE 's/.*(ERROR:.*)$/\1/p' <<<"$err" | head -1)"
 	fi
-
-	# The gate. An operation that did not do what the arm is about proves
-	# nothing either way, so the properties are not reported for it.
-	if [ "$did" != "$wantdid" ]; then
-		pgc_fail "$tag: operation must $wantdid" \
-			"got $did${err:+ — $(sed -nE 's/.*(ERROR:.*)$/\1/p' <<<"$err" | head -1)}"
-		check_unrunnable "$tag P1 projection agrees with base" \
-			UNMET_PRECONDITION "operation did not $wantdid"
-		check_unrunnable "$tag P2 no retired projection rows" \
-			UNMET_PRECONDITION "operation did not $wantdid"
-		check_unrunnable "$tag P3 declaration survives" \
-			UNMET_PRECONDITION "operation did not $wantdid"
-		return
-	fi
-	pgc_pass "$tag: operation $wantdid"
-
-	# P1 -- the projection holds exactly what the base holds. Compared as a set
-	# hash, so a projection re-recorded EMPTY fails here rather than passing on
-	# "read_projection did not raise". read_projection raising is also a failure:
-	# pgc_set_hash of a failed query returns empty, which cannot equal the
-	# oracle unless the base is empty too -- and where the base IS empty the
-	# oracle is the EMPTY sentinel, which a raised error still does not produce.
-	check "$tag P1 projection agrees with base" \
-		"$(pgc_set_hash "SELECT pgcolumnar.read_projection('$tag','pp')")" \
-		"$(pgc_set_hash "$oracle")"
-	check "$tag P2 no retired projection rows" "$(retired_rows)" "0"
-	check "$tag P3 declaration survives" \
-		"$(q "SELECT count(*) FROM pgcolumnar.projection_declaration
-		       WHERE rel = '$tag'::regclass AND name = 'pp';")" "1"
+}
+proj_hash() { pgc_set_hash "SELECT pgcolumnar.read_projection('$1','pp')"; }
+decl_count() {
+	q "SELECT count(*) FROM pgcolumnar.projection_declaration WHERE rel = '$1'::regclass AND name = 'pp';"
 }
 
 echo "-- the rewrites that lose the projection today (#876)"
 
 # TRUNCATE then re-INSERT: the projection must answer with the NEW rows.
-arm t_trunc_reinsert \
-	"TRUNCATE t_trunc_reinsert;
-	 INSERT INTO t_trunc_reinsert SELECT g, g%7, 'z'||g FROM generate_series(1,100) g;" \
-	REWROTE \
-	"SELECT a::text||'|'||b FROM t_trunc_reinsert"
+arm t_trunc_reinsert "TRUNCATE t_trunc_reinsert;
+	 INSERT INTO t_trunc_reinsert SELECT g, g%7, 'z'||g FROM generate_series(1,100) g;"
+check "t_trunc_reinsert: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_trunc_reinsert P1 projection agrees with base" "$(proj_hash t_trunc_reinsert)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_trunc_reinsert")"
+	check "t_trunc_reinsert P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_trunc_reinsert P3 declaration survives" "$(decl_count t_trunc_reinsert)" "1"
+else
+	check_unrunnable "t_trunc_reinsert P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_reinsert P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_reinsert P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # TRUNCATE alone. The correct end state is a projection that answers and is
 # EMPTY, which is why the oracle is the base table rather than a row count: an
 # arm demanding rows would be wrong here and right for every other arm.
-arm t_trunc_empty "TRUNCATE t_trunc_empty;" REWROTE \
-	"SELECT a::text||'|'||b FROM t_trunc_empty"
+arm t_trunc_empty "TRUNCATE t_trunc_empty;"
+check "t_trunc_empty: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_trunc_empty P1 projection agrees with base" "$(proj_hash t_trunc_empty)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_trunc_empty")"
+	check "t_trunc_empty P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_trunc_empty P3 declaration survives" "$(decl_count t_trunc_empty)" "1"
+else
+	check_unrunnable "t_trunc_empty P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_empty P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_empty P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # A type change on a COVERED column. The stored value must come back under the
 # new type, so the oracle is read after the ALTER, not before.
-arm t_altertype "ALTER TABLE t_altertype ALTER COLUMN a TYPE bigint;" REWROTE \
-	"SELECT a::text||'|'||b FROM t_altertype"
+arm t_altertype "ALTER TABLE t_altertype ALTER COLUMN a TYPE bigint;"
+check "t_altertype: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_altertype P1 projection agrees with base" "$(proj_hash t_altertype)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_altertype")"
+	check "t_altertype P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_altertype P3 declaration survives" "$(decl_count t_altertype)" "1"
+else
+	check_unrunnable "t_altertype P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_altertype P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_altertype P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # A type change on a column the projection does NOT cover still rewrites the
 # whole table, so it loses the projection just the same.
-arm t_altertype_unc "ALTER TABLE t_altertype_unc ALTER COLUMN id TYPE bigint;" REWROTE \
-	"SELECT a::text||'|'||b FROM t_altertype_unc"
+arm t_altertype_unc "ALTER TABLE t_altertype_unc ALTER COLUMN id TYPE bigint;"
+check "t_altertype_unc: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_altertype_unc P1 projection agrees with base" "$(proj_hash t_altertype_unc)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_altertype_unc")"
+	check "t_altertype_unc P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_altertype_unc P3 declaration survives" "$(decl_count t_altertype_unc)" "1"
+else
+	check_unrunnable "t_altertype_unc P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_altertype_unc P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_altertype_unc P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # ADD COLUMN with a volatile default rewrites AND changes the live column set.
 # The base projection (projection_id 0) records all live columns, so a fix that
 # copies the old row verbatim leaves it naming a stale column set -- which no
 # arm above would catch, because pp does not cover the new column.
-arm t_addcol_vol \
-	"ALTER TABLE t_addcol_vol ADD COLUMN zz double precision DEFAULT random();" \
-	REWROTE "SELECT a::text||'|'||b FROM t_addcol_vol"
+arm t_addcol_vol "ALTER TABLE t_addcol_vol ADD COLUMN zz double precision DEFAULT random();"
+check "t_addcol_vol: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_addcol_vol P1 projection agrees with base" "$(proj_hash t_addcol_vol)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_addcol_vol")"
+	check "t_addcol_vol P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_addcol_vol P3 declaration survives" "$(decl_count t_addcol_vol)" "1"
+else
+	check_unrunnable "t_addcol_vol P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_addcol_vol P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_addcol_vol P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # TRUNCATE naming SEVERAL tables rewrites every one of them, so a fix that
 # repairs only the first relation in the statement passes every arm above.
 psql_run "CREATE TABLE t_trunc_two (id int, a int, b text) USING pgcolumnar;" >/dev/null
 psql_run "INSERT INTO t_trunc_two SELECT g, g%50, 'b'||g FROM generate_series(1,$N) g;" >/dev/null
 psql_run "SELECT pgcolumnar.add_projection('t_trunc_two','pp',ARRAY['a','b'],ARRAY['a']);" >/dev/null
-arm t_trunc_multi "TRUNCATE t_trunc_multi, t_trunc_two;" REWROTE \
-	"SELECT a::text||'|'||b FROM t_trunc_multi"
-check "t_trunc_multi: the SECOND table in the statement also survives" \
+arm t_trunc_multi "TRUNCATE t_trunc_multi, t_trunc_two;"
+check "t_trunc_multi: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "t_trunc_multi P1 projection agrees with base" "$(proj_hash t_trunc_multi)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM t_trunc_multi")"
+	check "t_trunc_multi P2 no retired projection rows" "$(retired_rows)" "0"
+	check "t_trunc_multi P3 declaration survives" "$(decl_count t_trunc_multi)" "1"
+else
+	check_unrunnable "t_trunc_multi P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_multi P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "t_trunc_multi P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
+check_text "t_trunc_multi: the SECOND table in the statement also survives" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('t_trunc_two','pp')")" \
 	"$(pgc_set_hash "SELECT a::text||'|'||b FROM t_trunc_two")"
 
@@ -199,7 +227,7 @@ if [ "$CAS_SID0" = "$(q "SELECT pgcolumnar.get_storage_id('cas_child');")" ]; th
 		UNMET_PRECONDITION "the CASCADE did not rewrite the child"
 else
 	pgc_pass "cas_child: the CASCADE rewrote the child"
-	check "cas_child P1 the cascaded child keeps its projection" \
+	check_text "cas_child P1 the cascaded child keeps its projection" \
 		"$(pgc_set_hash "SELECT pgcolumnar.read_projection('cas_child','pv')")" \
 		"$(pgc_set_hash "SELECT id::text||'|'||v::text FROM cas_child")"
 	check "cas_child P2 no retired projection rows" "$(retired_rows)" "0"
@@ -252,7 +280,7 @@ if [ "$REENT_SID0" = "$(q "SELECT pgcolumnar.get_storage_id('reent_child');")" ]
 		UNMET_PRECONDITION "the CASCADE did not rewrite the child"
 else
 	pgc_pass "reent_child: the CASCADE rewrote the child"
-	check "reent_child P1 the projection survives a nested utility" \
+	check_text "reent_child P1 the projection survives a nested utility" \
 		"$(pgc_set_hash "SELECT pgcolumnar.read_projection('reent_child','pv')")" \
 		"$(pgc_set_hash "SELECT id::text||'|'||v::text FROM reent_child")"
 	check "reent_child P2 no retired projection rows" "$(retired_rows)" "0"
@@ -274,7 +302,7 @@ if [ "$PTR_SID0" = "$(q "SELECT pgcolumnar.get_storage_id('ptr1');")" ]; then
 		UNMET_PRECONDITION "the parent-level ALTER did not rewrite the child"
 else
 	pgc_pass "ptr1: parent-level ALTER rewrote the child"
-	check "ptr1 P1 child projection agrees with base" \
+	check_text "ptr1 P1 child projection agrees with base" \
 		"$(pgc_set_hash "SELECT pgcolumnar.read_projection('ptr1','pp')")" \
 		"$(pgc_set_hash "SELECT a::text||'|'||b FROM ptr1")"
 fi
@@ -299,7 +327,7 @@ check "noop: the metadata-only statements rewrote nothing" \
 check "noop: and the repair added no projection row" \
 	"$(q "SELECT count(*) FROM pgcolumnar.projection
 	       WHERE storage_id = pgcolumnar.get_storage_id('noop');")" "2"
-check "noop: and the projection still agrees with the base table" \
+check_text "noop: and the projection still agrees with the base table" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('noop','pp')")" \
 	"$(pgc_set_hash "SELECT a::text||'|'||b FROM noop")"
 
@@ -327,7 +355,7 @@ if [ "$MV_SID0" = "$(q "SELECT pgcolumnar.get_storage_id('mv1');")" ]; then
 		UNMET_PRECONDITION "REFRESH did not rewrite the matview"
 else
 	pgc_pass "mv1: REFRESH rewrote the matview"
-	check "mv1 P1 the refreshed matview keeps its projection" \
+	check_text "mv1 P1 the refreshed matview keeps its projection" \
 		"$(pgc_set_hash "SELECT pgcolumnar.read_projection('mv1','pp')")" \
 		"$(pgc_set_hash "SELECT a::text||'|'||b FROM mv1")"
 fi
@@ -350,12 +378,39 @@ echo "-- the rewrites that already handle projections: regression arms"
 # callback the arms above go through. So a fix placed IN that callback double-
 # records for these three and violates projection_pkey (storage_id,
 # projection_id). They are here to redden if that happens.
-arm r_vacuum      "SELECT pgcolumnar.vacuum('r_vacuum');"                 REWROTE \
-	"SELECT a::text||'|'||b FROM r_vacuum"
-arm r_vacsorted   "SELECT pgcolumnar.vacuum_sorted('r_vacsorted','a');"   REWROTE \
-	"SELECT a::text||'|'||b FROM r_vacsorted"
-arm r_cluster     "SELECT pgcolumnar.cluster('r_cluster','a');"           REWROTE \
-	"SELECT a::text||'|'||b FROM r_cluster"
+arm r_vacuum "SELECT pgcolumnar.vacuum('r_vacuum');"
+check "r_vacuum: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "r_vacuum P1 projection agrees with base" "$(proj_hash r_vacuum)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM r_vacuum")"
+	check "r_vacuum P2 no retired projection rows" "$(retired_rows)" "0"
+	check "r_vacuum P3 declaration survives" "$(decl_count r_vacuum)" "1"
+else
+	check_unrunnable "r_vacuum P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_vacuum P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_vacuum P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
+arm r_vacsorted "SELECT pgcolumnar.vacuum_sorted('r_vacsorted','a');"
+check "r_vacsorted: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "r_vacsorted P1 projection agrees with base" "$(proj_hash r_vacsorted)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM r_vacsorted")"
+	check "r_vacsorted P2 no retired projection rows" "$(retired_rows)" "0"
+	check "r_vacsorted P3 declaration survives" "$(decl_count r_vacsorted)" "1"
+else
+	check_unrunnable "r_vacsorted P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_vacsorted P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_vacsorted P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
+arm r_cluster "SELECT pgcolumnar.cluster('r_cluster','a');"
+check "r_cluster: operation REWROTE" "$ARM_DID" "REWROTE"
+if [ "$ARM_DID" = REWROTE ]; then
+	check_text "r_cluster P1 projection agrees with base" "$(proj_hash r_cluster)" "$(pgc_set_hash "SELECT a::text||'|'||b FROM r_cluster")"
+	check "r_cluster P2 no retired projection rows" "$(retired_rows)" "0"
+	check "r_cluster P3 declaration survives" "$(decl_count r_cluster)" "1"
+else
+	check_unrunnable "r_cluster P1 projection agrees with base" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_cluster P2 no retired projection rows" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+	check_unrunnable "r_cluster P3 declaration survives" UNMET_PRECONDITION "operation did not REWROTE: $ARM_DID"
+fi
 
 # ---------------------------------------------------------------------------
 # The re-record must never abort the statement that triggered it.
@@ -465,7 +520,7 @@ check "renamed: the declaration followed the rename" \
 	"$(q "SELECT columns::text FROM pgcolumnar.projection_declaration WHERE rel='renamed'::regclass;")" \
 	"{a2,b}"
 psql_run "ALTER TABLE renamed ALTER COLUMN id TYPE bigint;"
-check "renamed: and the projection survives a later rewrite" \
+check_text "renamed: and the projection survives a later rewrite" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('renamed','pp')")" \
 	"$(pgc_set_hash "SELECT a2::text||'|'||b FROM renamed")"
 
@@ -500,7 +555,7 @@ check "PREMISE and the declaration survived, so a rebuild is possible" \
 	       WHERE rel = 'rec'::regclass AND name = 'pp';")" "1"
 check "rebuild_projections reports rebuilding exactly one projection" \
 	"$(q "SELECT pgcolumnar.rebuild_projections('rec');")" "1"
-check "and the rebuilt projection matches the base table" \
+check_text "and the rebuilt projection matches the base table" \
 	"$(pgc_set_hash "SELECT pgcolumnar.read_projection('rec','pp')")" \
 	"$(pgc_set_hash "SELECT a::text||'|'||b FROM rec")"
 check "and it leaves no retired projection rows" "$(retired_rows)" "0"

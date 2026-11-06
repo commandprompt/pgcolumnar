@@ -55,7 +55,13 @@ psql_run "DROP TABLE aac_t;"
 check "DROP after SET ACCESS METHOD heap leaves no options or declarations" \
 	"$(snapshot)" "$base"
 
+# Each cleanup arm below compares with the snapshot taken just before ITS table
+# was made, not with the suite's starting one (#1341). Against $base, one leak
+# above reddened every arm after it: measured, with the cleanup gated on the
+# columnar AM, the never-columnar heap arm went red on aac_t's leftover rows.
+#
 # Round-trip: convert away and back, then DROP a still-columnar table.
+pre_rt="$(snapshot)"
 psql_run "CREATE TABLE aac_rt (id int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('aac_rt', stripe_row_limit => 8000);"
 psql_run "ALTER TABLE aac_rt SET ACCESS METHOD heap;"
@@ -64,15 +70,16 @@ check "options survive a heap round-trip" \
 	"$(q "SELECT stripe_row_limit FROM pgcolumnar.options
 	      WHERE regclass = 'aac_rt'::regclass")" "8000"
 psql_run "DROP TABLE aac_rt;"
-check "a round-tripped table still cleans up on DROP" "$(snapshot)" "$base"
+check "a round-tripped table still cleans up on DROP" "$(snapshot)" "$pre_rt"
 
 # Control: a never-columnar heap must not be charged for this either.
+pre_h="$(snapshot)"
 psql_run "CREATE TABLE aac_h (id int);"
 psql_run "DROP TABLE aac_h;"
 # kept alive for the VACUUM FULL control further down
 psql_run "CREATE TABLE aac_h_ctl (id int);"
 check "dropping a heap table that was never columnar leaves the catalogs alone" \
-	"$(snapshot)" "$base"
+	"$(snapshot)" "$pre_h"
 
 # ---- the hook is armed in EVERY database, not only where the extension is ----
 #
@@ -136,8 +143,12 @@ check "ALTER COLUMN TYPE succeeds without the extension" \
 	"$(aac_dbrun aac_nocx 'ALTER TABLE rw ALTER COLUMN t TYPE varchar(64);')" "rc=0"
 check "CREATE MATERIALIZED VIEW succeeds without the extension" \
 	"$(aac_dbrun aac_nocx 'CREATE MATERIALIZED VIEW rwm AS SELECT * FROM rw;')" "rc=0"
+# REFRESH gets a matview of its own, made WITH NO DATA, so it does not inherit the
+# CREATE arm's failure: measured, it went red as 'relation "rwm" does not exist'.
+check "premise: a matview to refresh exists, made WITH NO DATA" \
+	"$(aac_dbrun aac_nocx 'CREATE MATERIALIZED VIEW rwr AS SELECT * FROM rw WITH NO DATA;')" "rc=0"
 check "and REFRESH MATERIALIZED VIEW does too, without the extension" \
-	"$(aac_dbrun aac_nocx 'REFRESH MATERIALIZED VIEW rwm;')" "rc=0"
+	"$(aac_dbrun aac_nocx 'REFRESH MATERIALIZED VIEW rwr;')" "rc=0"
 check "TRUNCATE succeeds without the extension" \
 	"$(aac_dbrun aac_nocx 'TRUNCATE rw;')" "rc=0"
 
@@ -153,6 +164,7 @@ check "control: VACUUM FULL still succeeds where the extension IS installed" \
 # different set: DROP EXTENSION drops those as ordinary relations, and opening
 # options while options is itself being dropped would fail.
 
+pre_in="$(snapshot)"
 psql_run "CREATE TABLE pgcolumnar.aac_inschema (id int) USING pgcolumnar;"
 psql_run "SELECT pgcolumnar.set_options('pgcolumnar.aac_inschema', stripe_row_limit => 7000);"
 check "premise: a table in the extension's schema recorded its options" \
@@ -160,7 +172,7 @@ check "premise: a table in the extension's schema recorded its options" \
 	      WHERE regclass = 'pgcolumnar.aac_inschema'::regclass")" "1"
 psql_run "DROP TABLE pgcolumnar.aac_inschema;"
 check "dropping a table that lives in the extension's schema still cleans up" \
-	"$(snapshot)" "$base"
+	"$(snapshot)" "$pre_in"
 
 # ---- a relation that predates CREATE EXTENSION is not an extension member ----
 #
@@ -226,7 +238,9 @@ check "DROP EXTENSION succeeds with those catalogs populated" \
 
 check "premise: DROP EXTENSION left the schema behind" \
 	"$(aac_dbq aac_dropx "SELECT count(*) FROM pg_namespace WHERE nspname='pgcolumnar'")" "1"
-check "premise: and took pgcolumnar.options with it" \
+# An arm, not a premise (#1236): a hook that opened options while DROP EXTENSION
+# was dropping it aborted the DROP, and this read the options table still there.
+check "and took pgcolumnar.options with it" \
 	"$(aac_dbq aac_dropx "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 	                      WHERE n.nspname = 'pgcolumnar' AND c.relname = 'options'")" "0"
 
@@ -248,8 +262,10 @@ check "ALTER COLUMN TYPE succeeds after DROP EXTENSION" \
 	"$(aac_dbrun aac_dropx 'ALTER TABLE dxr ALTER COLUMN t TYPE varchar(64);')" "rc=0"
 check "CREATE MATERIALIZED VIEW succeeds after DROP EXTENSION" \
 	"$(aac_dbrun aac_dropx 'CREATE MATERIALIZED VIEW dxm AS SELECT * FROM dxr;')" "rc=0"
+check "premise: a matview to refresh exists after DROP EXTENSION, made WITH NO DATA" \
+	"$(aac_dbrun aac_dropx 'CREATE MATERIALIZED VIEW dxr_m AS SELECT * FROM dxr WITH NO DATA;')" "rc=0"
 check "and REFRESH MATERIALIZED VIEW does too, after DROP EXTENSION" \
-	"$(aac_dbrun aac_dropx 'REFRESH MATERIALIZED VIEW dxm;')" "rc=0"
+	"$(aac_dbrun aac_dropx 'REFRESH MATERIALIZED VIEW dxr_m;')" "rc=0"
 check "TRUNCATE succeeds after DROP EXTENSION" \
 	"$(aac_dbrun aac_dropx 'TRUNCATE dxr;')" "rc=0"
 

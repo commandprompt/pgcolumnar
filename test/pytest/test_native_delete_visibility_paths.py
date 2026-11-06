@@ -33,9 +33,10 @@ named path is reachable and still correct:
         index-only                                Index Only Scan     4286
 
 So this port forces the path each arm is named for and ASSERTS THE NODE before reading
-the count. The shell suite is unchanged -- reported rather than edited, since this pull
-request adds no bash check.
+the count. The shell suite now does the same, with the same premise names (#1339).
 """
+import psycopg
+
 ROWS = 5000
 GROUP = 1000
 LIVE = ROWS - ROWS // 7          # 5000 - 714
@@ -83,7 +84,7 @@ def test_native_delete_visibility_paths(pgc_conn, expect):
         cur.execute(f"INSERT INTO t SELECT g, g FROM generate_series(1,{ROWS}) g")
         cur.execute("CREATE UNIQUE INDEX t_id ON t (id)")
         cur.execute("SELECT count(*) FROM t")
-        expect.num(cur.fetchone()[0], ROWS, f"premise: the table holds all {ROWS} rows")
+        expect.num(cur.fetchone()[0], ROWS, "premise: the table holds all 5000 rows")
         cur.execute("DELETE FROM t WHERE id % 7 = 0")
         cur.execute(
             "SELECT count(*) FROM pgcolumnar.storage s "
@@ -153,4 +154,30 @@ def test_native_delete_visibility_paths(pgc_conn, expect):
     with pgc_conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM t WHERE id = 8")
         expect.num(cur.fetchone()[0], 1,
-                   "premise: the rolled-back delete left the row in place")
+                   "the rolled-back delete left the row in place")
+
+
+def test_a_delete_whose_qual_deletes_another_row_matches_heap(pgc_conn, expect):
+    """A DELETE whose qual deletes another row of the same table (#1394). The inner
+    DELETE's scan start writes the outer statement's buffered marks, and its statement
+    end writes its own mark to the same row group, both in one command. The second
+    write updated a delete_vector row the first had written in that command, and
+    failed with "attempted to update invisible tuple". Run on heap too; the columnar
+    answer must be heap's."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("""CREATE FUNCTION del_next(i int, t text) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN EXECUTE format('DELETE FROM %s WHERE id = %s', t, i + 1); RETURN 1; END $$""")
+    got = {}
+    for am in ("pgcolumnar", "heap"):
+        with pgc_conn.cursor() as cur:
+            cur.execute(f"CREATE TABLE dn_{am} (id int, v int) USING {am}")
+            cur.execute(f"INSERT INTO dn_{am} SELECT g, 0 FROM generate_series(1, 20) g")
+            try:
+                cur.execute(f"DELETE FROM dn_{am} WHERE id % 2 = 0 AND del_next(id, 'dn_{am}') IS NOT NULL")
+                state = "ok"
+            except psycopg.Error as e:
+                state = e.sqlstate or "?"
+            cur.execute(f"SELECT count(*) || '|' || coalesce(sum(id), 0) FROM dn_{am}")
+            got[am] = f"{state}|{cur.fetchone()[0]}"
+    expect.text(got["pgcolumnar"], got["heap"],
+                "a DELETE whose qual deletes another row of the table succeeds and leaves heap's rows (#1394)")

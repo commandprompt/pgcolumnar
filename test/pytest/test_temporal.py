@@ -1,10 +1,10 @@
 """A columnar table enforces temporal constraints exactly as a heap table does.
 
-PostgreSQL 18 adds `WITHOUT OVERLAPS` primary keys and unique constraints; 19 adds
-`UPDATE ... FOR PORTION OF`. Both run through the index and constraint machinery
+PostgreSQL 18 adds `WITHOUT OVERLAPS` primary keys and unique constraints; 19beta2 had
+`UPDATE ... FOR PORTION OF`, which 19beta4 removed (#1337), so that part is its own test. Both run through the index and constraint machinery
 pgColumnar integrates with, so the two storage types must agree: non-overlapping rows
-accepted, overlapping rows rejected, and on 19 a FOR PORTION OF update producing the
-same result set.
+accepted, overlapping rows rejected, and, where the grammar has it, a FOR PORTION OF
+update producing the same result set.
 
 Independent of test/temporal.sh: same public seam (the two tables' behaviour under the
 same statements), own fixture, own observations. Assertion names match the shell suite
@@ -131,13 +131,70 @@ def test_temporal(pgc_conn, expect):
                                  "empty sets")
     expect.rows(col, heap, "temporal PK contents match")
 
-    if major < 19:
-        return
 
-    _both(expect, pgc_conn, "for portion of update applied", "ok",
-          "UPDATE tt_heap FOR PORTION OF valid FROM '2020-03-01' TO '2020-05-01' "
-          "SET id = 100 WHERE id = 2",
-          "UPDATE tt_col  FOR PORTION OF valid FROM '2020-03-01' TO '2020-05-01' "
-          "SET id = 100 WHERE id = 2")
-    expect.rows(_rows(pgc_conn, "tt_col"), _rows(pgc_conn, "tt_heap"),
+
+def _grammar_has_for_portion_of(conn):
+    """-> None when the server parses UPDATE ... FOR PORTION OF, else its SQLSTATE.
+
+    The GRAMMAR, not the major (#1337): 19beta2 had the clause and 19beta4 removed
+    it, so a version gate ran these arms on a server that cannot parse them. The
+    probe is an EXPLAIN that writes nothing.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("CREATE TEMP TABLE fpo_probe (id int, valid daterange)")
+            cur.execute("EXPLAIN UPDATE fpo_probe FOR PORTION OF valid "
+                        "FROM '2020-03-01' TO '2020-05-01' SET id = id WHERE false")
+        return None
+    except psycopg.Error as e:
+        return e.sqlstate
+
+
+def test_for_portion_of(pgc_conn, expect):
+    """UPDATE ... FOR PORTION OF splits a period identically on heap and columnar.
+
+    Its own test because its precondition is its own: the clause has to be in the
+    server's grammar, which it is on 19beta2 and is not on 15 to 18 or from 19beta4
+    (#1337). Where it is absent this test is unrunnable, under the names the shell
+    suite records as SKIPs, and expected_unrunnable.txt lists it per major.
+
+    Its own fixture, not test_temporal's: one row a key, other dates.
+    """
+    missing = _grammar_has_for_portion_of(pgc_conn)
+    if missing is not None:
+        # UNNAMED: the arms below carry the names, and the shell suite records
+        # them as SKIPs under those names.
+        expect.cannot_run("UNSUPPORTED_MAJOR",
+                          f"this server's grammar has no UPDATE ... FOR PORTION OF ({missing})")
+        return
+    try:
+        with pgc_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
+    except psycopg.Error:
+        expect.cannot_run("MISSING_DEPENDENCY",
+                          "WITHOUT OVERLAPS needs btree_gist, which is contrib",
+                          name="btree_gist not available; temporal constraints need it")
+        return
+    with pgc_conn.cursor() as cur:
+        for t, am in (("fp_heap", "heap"), ("fp_col", "pgcolumnar")):
+            cur.execute(f"CREATE TABLE {t} (id int, valid daterange, "
+                        f"PRIMARY KEY (id, valid WITHOUT OVERLAPS)) USING {am}")
+            cur.execute(f"INSERT INTO {t} VALUES (7, '[2021-01-01,2022-01-01)'), "
+                        f"(8, '[2021-01-01,2022-01-01)')")
+    # Named literally, as the shell suite now names them (its skip loop is held to
+    # exactly these by #994's checker).
+    expect.text(_ran(pgc_conn, "UPDATE fp_heap FOR PORTION OF valid FROM '2021-04-01' "
+                               "TO '2021-07-01' SET id = 70 WHERE id = 7"), "ok",
+                "for portion of update applied (heap)")
+    expect.text(_ran(pgc_conn, "UPDATE fp_col  FOR PORTION OF valid FROM '2021-04-01' "
+                               "TO '2021-07-01' SET id = 70 WHERE id = 7"), "ok",
+                "for portion of update applied (columnar)")
+    # Agreeing is not enough: two failed updates agree too, which is how the shell
+    # arm passed on 19beta4 (#1337). The portion must be there under its new key.
+    col, heap = _rows(pgc_conn, "fp_col"), _rows(pgc_conn, "fp_heap")
+    with pgc_conn.cursor() as cur:   # the server's own text, not psycopg's Range repr
+        cur.execute("SELECT coalesce(string_agg(valid::text, ',' ORDER BY valid), 'none') "
+                    "FROM fp_col WHERE id = 70")
+        portion = cur.fetchone()[0]
+    expect.text(f"{col == heap}|{portion}", "True|[2021-04-01,2021-07-01)",
                 "for portion of result matches")

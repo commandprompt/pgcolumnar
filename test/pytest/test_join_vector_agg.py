@@ -127,7 +127,7 @@ def test_left_join_refuses_the_join_fold(pgc_conn, expect):
         c.execute(
             """
             CREATE TABLE heap_l (k int, m float8) USING heap;
-            INSERT INTO heap_l SELECT * FROM fact_l
+            INSERT INTO heap_l VALUES (1, 1.0), (2, 2.0)
             """
         )
         c.execute(

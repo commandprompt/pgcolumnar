@@ -30,6 +30,8 @@ test rather than per check -- and lets the duplicate-key arm run regardless.
 """
 import psycopg
 
+from pgc_vacuity import query_error
+
 # The two field4 values an application can produce, from lockfuncs.c.
 SQL_REACHABLE = (1, 2)
 PROBE_KEY = 900001
@@ -154,6 +156,44 @@ def test_the_lock_an_insert_takes_is_not_in_a_sql_reachable_class(
                "premise: the discovering session is gone and holds nothing")
 
 
+def _lock_classes(cluster, schema, setting):
+    """-> the advisory classes one insert into u takes, read from its own session."""
+    conn = psycopg.connect(cluster.dsn(), autocommit=False)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'SET search_path TO "{schema}", public')
+            cur.execute(f"SET pgcolumnar.enable_unique_insert_lock = {setting}")
+            cur.execute("INSERT INTO u VALUES (900003, 'classes')")
+            cur.execute("SELECT DISTINCT objsubid FROM pg_locks "
+                        "WHERE locktype = 'advisory' AND pid = pg_backend_pid()")
+            return {r[0] for r in cur.fetchall()}
+    except psycopg.Error as exc:
+        return query_error(str(exc).splitlines()[0])
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def test_an_insert_takes_the_unique_key_lock_only_while_it_is_enabled(
+        pgc_cluster, pgc_conn, expect):
+    """The lock under test is TAKEN at all. Every other arm reads whatever locks an
+    insert takes, and an insert also takes the storage-row lock (102), so with the
+    unique-key lock never taken the premise still saw a lock, the class arm still read
+    "unreachable", and the duplicate arm still passed (#1339). The setting is the
+    control rather than the class number, so a renumbered class still counts."""
+    schema = _fixture(pgc_conn)
+    on = _lock_classes(pgc_cluster, schema, "on")
+    off = _lock_classes(pgc_cluster, schema, "off")
+    # Both readings must hold a lock, since the storage-row lock is taken either
+    # way: an empty control would make every class "extra" (found by jdatcmd on #1565).
+    if not isinstance(on, set) or not isinstance(off, set) or not on or not off:
+        got = query_error(f"no reading: on {on}, off {off}")
+    else:
+        got = "taken" if on - off else f"not taken (on {sorted(on)}, off {sorted(off)})"
+    expect.text(got, "taken",
+                "an insert takes the unique-key lock, and only while enable_unique_insert_lock is on")
+
+
 def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
         pgc_cluster, pgc_conn, expect):
     schema = _fixture(pgc_conn)
@@ -202,8 +242,12 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
                     "AND objsubid = 2 AND (classid, objid) IN "
                     "(SELECT * FROM unnest(%s::bigint[], %s::bigint[]))",
                     ([c for c, _o in addressable], [o for _c, o in addressable]))
-        expect.at_least(held, 1,
-                        "premise: the other session really holds that exact tag in class 2")
+        # EVERY addressable tag, as the shell asks (#1339). At least one was satisfied by a
+        # holder that took only the first tag, and the insert below then contended for a
+        # lock nobody was holding.
+        expect.text("yes" if held == len(addressable)
+                    else f"no (holds {held} of {len(addressable)})", "yes",
+                    "premise: the other session really holds that exact tag in class 2")
 
         verdict = "ok"
         try:
@@ -213,7 +257,7 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
         except psycopg.errors.QueryCanceled:
             verdict = "BLOCKED by the user lock"
         except psycopg.Error as exc:
-            verdict = f"ERROR: {str(exc).splitlines()[0]}"
+            verdict = query_error(str(exc).splitlines()[0])
         finally:
             with pgc_conn.cursor() as cur:
                 cur.execute("RESET statement_timeout")
@@ -225,8 +269,11 @@ def test_a_user_advisory_lock_on_that_tag_does_not_block_an_insert(
 
 
 def test_a_duplicate_key_is_still_rejected(pgc_conn, expect):
-    """Removing the collision by removing the lock satisfies everything above and
-    silently gives back issue #5, so the lock's own job is asserted separately."""
+    """A duplicate is rejected. This is NOT the lock's own job asserted: with the lock
+    never taken a duplicate is still rejected, and measured on PG17 even a concurrent
+    one waits on the first insert and gets 23505, because the btree's uniqueness check
+    waits on the winner (#1339). The lock's presence is the arm above that compares
+    the setting on and off."""
     _fixture(pgc_conn)
     with pgc_conn.cursor() as cur:
         cur.execute(f"INSERT INTO u VALUES ({PROBE_KEY}, 'first')")
@@ -239,3 +286,196 @@ def test_a_duplicate_key_is_still_rejected(pgc_conn, expect):
         got = ("rejected" if "duplicate key" in msg or "unique constraint" in msg
                else f"NOT rejected: {str(exc).splitlines()[0]}")
     expect.text(got, "rejected", "a duplicate key is still rejected")
+
+
+def test_the_row_identity_lock_and_its_settings(pgc_cluster, pgc_conn, expect):
+    """An UPDATE serialises on its row through an advisory lock in class 104; the
+    session setting enable_row_update_lock turns that off, and row_lock_buckets is
+    part of the lock tag, so it is fixed at server start. A bulk UPDATE holds one lock
+    per bucket, not one per row (#1341 item 16)."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE rl (id int, v int) USING pgcolumnar")
+        cur.execute("INSERT INTO rl SELECT g, g FROM generate_series(1, 100) g")
+        cur.execute("SELECT current_schema()")
+        schema = cur.fetchone()[0]
+
+    def row_locks_while_updating(setting):
+        holder = psycopg.connect(pgc_cluster.dsn(), autocommit=False)
+        try:
+            with holder.cursor() as hc:
+                hc.execute(f'SET search_path TO "{schema}"')
+                hc.execute(f"SET LOCAL pgcolumnar.enable_row_update_lock = {setting}")
+                hc.execute("UPDATE rl SET v = v + 1 WHERE id = 7")
+            with pgc_conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'"
+                            " AND objsubid = 104 AND pid <> pg_backend_pid()")
+                return cur.fetchone()[0]
+        finally:
+            holder.rollback()
+            holder.close()
+
+    on = row_locks_while_updating("on")
+    expect.text("held" if on >= 1 else "none", "held",
+                "an UPDATE holds a row-identity lock (class 104) while enable_row_update_lock is on")
+    expect.num(row_locks_while_updating("off"), 0, "and holds none with enable_row_update_lock off")
+    with pgc_conn.cursor() as cur:
+        try:
+            cur.execute("SET pgcolumnar.row_lock_buckets = 7")
+            refused = "ok"
+        except psycopg.Error as e:
+            refused = e.sqlstate
+        cur.execute("SELECT context || '|' || setting FROM pg_settings WHERE name = 'pgcolumnar.row_lock_buckets'")
+        ctx = cur.fetchone()[0]
+    expect.text(f"{refused}|{ctx}", "55P02|postmaster|1024",
+                "row_lock_buckets is fixed at server start, so a session cannot change it (55P02)")
+
+    # The documented bound: row_lock_buckets bounds the row locks a transaction holds.
+    # One transaction updates 200000 rows, then counts its own class-104 locks.
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE rlb (id int, v int) USING pgcolumnar")
+        cur.execute("INSERT INTO rlb SELECT g, g FROM generate_series(1, 200000) g")
+    bulk = psycopg.connect(pgc_cluster.dsn(), autocommit=False)
+    try:
+        with bulk.cursor() as bc:
+            bc.execute(f'SET search_path TO "{schema}"')
+            try:
+                bc.execute("UPDATE rlb SET v = v + 1")
+                bc.execute("SELECT count(*) || '|' || current_setting('pgcolumnar.row_lock_buckets') FROM pg_locks"
+                           " WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND objsubid = 104")
+                held = bc.fetchone()[0]
+                bulk.commit()
+            except psycopg.Error as e:
+                held = f"ERROR: {e.sqlstate}"
+                bulk.rollback()
+    finally:
+        bulk.close()
+    expect.text(held, "1024|1024",
+                "a bulk UPDATE of 200000 rows holds one row-identity lock per bucket, row_lock_buckets of them")
+    with pgc_conn.cursor() as cur:
+        cur.execute("SELECT count(*) || '|' || sum(v - id) FROM rlb")
+        expect.text(cur.fetchone()[0], "200000|200000", "and the UPDATE committed every row")
+
+
+def _int4(x):
+    """An oid as the int4 with the same 32 bits, which is how lockfuncs.c puts a
+    two-int4 key into the tag."""
+    return x - 4294967296 if x > 2147483647 else x
+
+
+def test_the_row_identity_lock_cannot_be_reached_from_sql(pgc_cluster, pgc_conn, expect):
+    """#1341 item 56: the INSERT arms ask this of the unique-key and storage-row locks,
+    and nothing asked it of class 104. Every advisory lock an open UPDATE holds is read;
+    none may be in field 1 or 2. A second session then takes each of those exact tags
+    through pg_advisory_xact_lock(int4, int4), and an UPDATE of the same row must not
+    wait on it."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE rl (id int, v int) USING pgcolumnar")
+        cur.execute("INSERT INTO rl SELECT g, g FROM generate_series(1, 100) g")
+        cur.execute("SELECT current_schema()")
+        schema = cur.fetchone()[0]
+
+    updater = _holder(pgc_cluster, schema)
+    try:
+        with updater.cursor() as uc:
+            uc.execute("UPDATE rl SET v = v + 1 WHERE id = 7")
+            uc.execute("SELECT pg_backend_pid()")
+            upid = uc.fetchone()[0]
+        with pgc_conn.cursor() as cur:
+            cur.execute("SELECT classid, objid, objsubid FROM pg_locks "
+                        "WHERE locktype = 'advisory' AND granted AND pid = %s", (upid,))
+            tags = cur.fetchall()
+    finally:
+        updater.rollback()
+        updater.close()
+
+    reachable = [t for t in tags if t[2] in SQL_REACHABLE]
+    expect.text("unknown (no advisory lock seen)" if not tags
+                else (f"reachable: {reachable}" if reachable else "unreachable"),
+                "unreachable", "the locks an UPDATE takes are not in a SQL-reachable class")
+
+    user = _holder(pgc_cluster, schema)
+    try:
+        with user.cursor() as hc:
+            for classid, objid, _f in tags:
+                hc.execute("SELECT pg_advisory_xact_lock(%s::int, %s::int)",
+                           (_int4(classid), _int4(objid)))
+            hc.execute("SELECT pg_backend_pid()")
+            hpid = hc.fetchone()[0]
+        expect.num(_one(pgc_conn, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                                  "AND granted AND objsubid = 2 AND pid = %s", (hpid,)),
+                   len(tags),
+                   "premise: the other session holds every one of those tags through the SQL functions")
+        verdict = "ok"
+        try:
+            with pgc_conn.cursor() as cur:
+                cur.execute("SET statement_timeout = '10s'")
+                cur.execute("UPDATE rl SET v = v + 1 WHERE id = 7")
+        except psycopg.errors.QueryCanceled:
+            verdict = "BLOCKED by the user lock"
+        except psycopg.Error as exc:
+            verdict = query_error(str(exc).splitlines()[0])
+        finally:
+            with pgc_conn.cursor() as cur:
+                cur.execute("RESET statement_timeout")
+        expect.text(verdict, "ok", "a user advisory lock on those tags does not block a columnar UPDATE")
+    finally:
+        user.rollback()
+        user.close()
+
+
+def test_bulk_parallel_writer_set_by_hand_still_serialises_a_first_write(
+        pgc_cluster, pgc_conn, expect):
+    """#1341 item 55: the reference says setting bulk_parallel_writer by hand is safe,
+    because the loaders' skip of the storage-row creation lock fires only once the
+    storage row is committed. Two sessions with it on each make the first write to a
+    committed, empty table; the second must wait for the first and then land its row.
+    A skip that did not wait for the row to be committed lets both create it, and the
+    second fails on storage_pkey."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE bw (id int) USING pgcolumnar")
+        cur.execute("SELECT current_schema()")
+        schema = cur.fetchone()[0]
+
+    first = _holder(pgc_cluster, schema)
+    second = _holder(pgc_cluster, schema)
+    second.commit()
+    second.autocommit = True
+    try:
+        with first.cursor() as fc:
+            fc.execute("SET LOCAL pgcolumnar.bulk_parallel_writer = on")
+            fc.execute("INSERT INTO bw VALUES (1)")
+        result = {}
+
+        def write_second():
+            try:
+                with second.cursor() as sc:
+                    sc.execute("SET pgcolumnar.bulk_parallel_writer = on")
+                    sc.execute("SET statement_timeout = '30s'")
+                    sc.execute("INSERT INTO bw VALUES (2)")
+                result["verdict"] = "ok"
+            except psycopg.Error as exc:
+                result["verdict"] = query_error(str(exc).splitlines()[0])
+
+        import threading
+        import time
+        t = threading.Thread(target=write_second)
+        t.start()
+        # The second write must be waiting on the first, not finished, before the
+        # first commits: otherwise the arm measures two writes in sequence.
+        waited = "no"
+        for _ in range(100):
+            if _one(pgc_conn, "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' "
+                              "AND query LIKE 'INSERT INTO bw%%'"):
+                waited = "yes"
+                break
+            time.sleep(0.1)
+        first.commit()
+        t.join(60)
+        expect.text(waited, "yes", "premise: the second first write waited on the first")
+        expect.text(f"{result.get('verdict', 'still running')}|"
+                    f"{_one(pgc_conn, 'SELECT count(*) FROM bw')}", "ok|2",
+                    "with bulk_parallel_writer set by hand, a second first write waits for the first and both rows land")
+    finally:
+        first.rollback()
+        first.close()
+        second.close()

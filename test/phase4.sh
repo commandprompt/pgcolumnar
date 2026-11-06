@@ -91,6 +91,16 @@ run_pg "createdb -p $PORT p4"
 PSQL="psql -p $PORT -d p4 -qAt -v ON_ERROR_STOP=1"
 q() { run_pg "$PSQL -c \"$1\""; }
 qq() { run_pg "$PSQL -c \"$1\"" | tr '\n' ',' ; }
+# A READ THROUGH THE INDEX, NOT BESIDE IT (#1341). With only enable_seqscan off the
+# planner answers a point lookup with the columnar custom scan, which never calls the
+# table AM's index fetch, and a count with an index-only scan. Measured on 17: every
+# point read below planned as Custom Scan (PgColumnarScan), and an index fetch that
+# handed back the NEXT row's values passed all of them. The custom scan and the
+# index-only scan are turned off here, as assert_plan turns them off, so each of
+# these reads goes through pgcolumnar_index_fetch_tuple; index_only.sh covers the
+# index-only scan itself.
+IDX="SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off; SET pgcolumnar.enable_index_only_scan=off;"
+iq() { q "$IDX $1"; }
 
 fail=0
 # RECORDS RATHER THAN ONLY PRINTING (#965). This suite emitted human PASS lines
@@ -100,9 +110,10 @@ fail=0
 # return nothing on this log, it REFUSED it: "no RESULT records, so there is
 # nothing to reconcile".
 #
-# `pgc_record` takes the DISPLAY whole, so the human output below is byte-for-byte
-# what it was. NOT lib.sh's own `check`: that composes its own display and would
-# drop the `: $got` suffix, which is the measured value rather than a label.
+# THROUGH pgc_pass AND pgc_fail, NOT pgc_record (#1341). A suite that calls the
+# primitive directly can have no pytest twin (test_compare_to_bash.py's
+# extractor arm), and this one now has one. A failure still shows the measured
+# value; a pass shows the name, as lib.sh's own `check` does.
 #
 # `fail` is still set, so this suite's exit logic is untouched. Its verdict line
 # stays for the same reason: under `set -euo pipefail` a failing command aborts the
@@ -116,9 +127,9 @@ fail=0
 check() {
 	local name="$1" got="$2" want="$3"
 	if [ "$got" = "$want" ]; then
-		pgc_record PASS "$name" "PASS  $name: $got"
+		pgc_pass "$name"
 	else
-		pgc_record FAIL "$name" "FAIL  $name: got [$got] want [$want]"
+		pgc_fail "$name" "got [$got] want [$want]"
 		fail=1
 	fi
 }
@@ -132,28 +143,33 @@ assert_plan() {
 	# columnar custom scan replaces the sequential-scan path and would otherwise
 	# be costed below the index scan; turning it off makes the planner pick the
 	# index scan so the plan shape can be asserted.
-	plan="$(run_pg "$PSQL -c \"SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off; EXPLAIN (COSTS OFF) $sql\"")"
+	plan="$(run_pg "$PSQL -c \"$IDX EXPLAIN (COSTS OFF) $sql\"")"
 	if grep -q "$want" <<<"$plan" && ! grep -q "$notwant" <<<"$plan"; then
-		pgc_record PASS "$name" "PASS  $name: $(echo "$plan" | grep -E 'Scan' | head -1 | sed 's/^ *//')"
+		pgc_pass "$name"
+		echo "        $(echo "$plan" | grep -E 'Scan' | head -1 | sed 's/^ *//')"
 	else
 		# The plan dump is part of the display, so the record line lands after the
 		# whole thing rather than between the header and the dump. A red run's output
 		# stays byte-identical that way, which is the property the green runs already
 		# have.
-		pgc_record FAIL "$name" "FAIL  $name: plan was:
+		pgc_fail "$name" "plan was:
 $(echo "$plan" | sed 's/^/        /')"
 		fail=1
 	fi
 }
 
-# assert a statement is rejected (returns an error)
+# assert a statement is rejected WITH THIS SQLSTATE (#1341). Any failure used to
+# pass: a unique check that raised an internal error instead of 23505 passed both
+# duplicate arms, and a backend that died on the duplicate passed as "rejected".
 expect_fail() {
-	local name="$1" sql="$2"
-	if run_pg "$PSQL -c \"$sql\"" >/dev/null 2>&1; then
-		pgc_record FAIL "$name" "FAIL  $name: expected error, got success"
-		fail=1
+	local name="$1" want="$2" sql="$3" out got
+	out="$(run_pg "$PSQL -v VERBOSITY=verbose -c \"$sql\"" 2>&1)" && got="succeeded" ||
+		got="$({ grep -oE '^ERROR:  [0-9A-Z]{5}:' <<<"$out" || true; } | head -1 | cut -c9-13)"
+	if [ "$got" = "$want" ]; then
+		pgc_pass "$name"
 	else
-		pgc_record PASS "$name" "PASS  $name: rejected"
+		pgc_fail "$name" "got [${got:-no SQLSTATE: $(head -1 <<<"$out")}] want [$want]"
+		fail=1
 	fi
 }
 
@@ -168,10 +184,10 @@ q "INSERT INTO bt SELECT g, 'r'||g FROM generate_series(1,20000) g;" >/dev/null
 q "CREATE INDEX bt_a_idx ON bt (a);" >/dev/null
 assert_plan "btree plan is index scan" "SELECT b FROM bt WHERE a = 12345;" \
 	"Index Scan" "Index Only Scan"
-check "btree point"       "$(q 'SET enable_seqscan=off; SELECT b FROM bt WHERE a = 12345;')" "r12345"
-check "btree range count"  "$(q 'SET enable_seqscan=off; SELECT count(*) FROM bt WHERE a BETWEEN 100 AND 199;')" "100"
-check "btree range first"  "$(q 'SET enable_seqscan=off; SELECT b FROM bt WHERE a BETWEEN 100 AND 199 ORDER BY a LIMIT 1;')" "r100"
-check "btree miss"         "$(q 'SET enable_seqscan=off; SELECT count(*) FROM bt WHERE a = 999999;')" "0"
+check "btree point"       "$(iq 'SELECT b FROM bt WHERE a = 12345;')" "r12345"
+check "btree range count"  "$(iq 'SELECT count(*) FROM bt WHERE a BETWEEN 100 AND 199;')" "100"
+check "btree range first"  "$(iq 'SELECT b FROM bt WHERE a BETWEEN 100 AND 199 ORDER BY a LIMIT 1;')" "r100"
+check "btree miss"         "$(iq 'SELECT count(*) FROM bt WHERE a = 999999;')" "0"
 
 # ---------------------------------------------------------------------------
 # Hash index: equality lookups.
@@ -182,9 +198,9 @@ q "INSERT INTO ht SELECT g, 'h'||g FROM generate_series(1,20000) g;" >/dev/null
 q "CREATE INDEX ht_a_hash ON ht USING hash (a);" >/dev/null
 assert_plan "hash plan is index scan" "SELECT b FROM ht WHERE a = 5000;" \
 	"Index Scan" "Index Only Scan"
-check "hash point"    "$(q 'SET enable_seqscan=off; SELECT b FROM ht WHERE a = 5000;')" "h5000"
-check "hash point2"   "$(q 'SET enable_seqscan=off; SELECT b FROM ht WHERE a = 17777;')" "h17777"
-check "hash miss"     "$(q 'SET enable_seqscan=off; SELECT count(*) FROM ht WHERE a = 999999;')" "0"
+check "hash point"    "$(iq 'SELECT b FROM ht WHERE a = 5000;')" "h5000"
+check "hash point2"   "$(iq 'SELECT b FROM ht WHERE a = 17777;')" "h17777"
+check "hash miss"     "$(iq 'SELECT count(*) FROM ht WHERE a = 999999;')" "0"
 
 # ---------------------------------------------------------------------------
 # Unique / primary key: reject duplicates across statements and within one.
@@ -193,18 +209,18 @@ echo "-- unique / primary key enforcement"
 q "CREATE TABLE uq (id int PRIMARY KEY, v text) USING pgcolumnar;" >/dev/null
 q "INSERT INTO uq VALUES (1,'a'),(2,'b'),(3,'c');" >/dev/null
 check "uq initial"          "$(q 'SELECT count(*) FROM uq;')" "3"
-expect_fail "uq cross-stmt dup"   "INSERT INTO uq VALUES (2, 'dup');"
-expect_fail "uq within-stmt dup"  "INSERT INTO uq VALUES (10,'x'),(10,'y');"
+expect_fail "uq cross-stmt dup"   23505 "INSERT INTO uq VALUES (2, 'dup');"
+expect_fail "uq within-stmt dup"  23505 "INSERT INTO uq VALUES (10,'x'),(10,'y');"
 check "uq unchanged"        "$(q 'SELECT count(*) FROM uq;')" "3"
 # a non-conflicting insert still works, and is found by the index afterwards
 q "INSERT INTO uq VALUES (4,'d');" >/dev/null
-check "uq new row"          "$(q 'SET enable_seqscan=off; SELECT v FROM uq WHERE id = 4;')" "d"
+check "uq new row"          "$(iq 'SELECT v FROM uq WHERE id = 4;')" "d"
 check "uq final count"      "$(q 'SELECT count(*) FROM uq;')" "4"
 # a standalone UNIQUE index (not a PK) behaves the same
 q "CREATE TABLE uq2 (id int, v text) USING pgcolumnar;" >/dev/null
 q "CREATE UNIQUE INDEX uq2_id ON uq2 (id);" >/dev/null
 q "INSERT INTO uq2 SELECT g, 'u'||g FROM generate_series(1,5000) g;" >/dev/null
-expect_fail "uq2 dup"       "INSERT INTO uq2 VALUES (2500, 'dup');"
+expect_fail "uq2 dup"       23505 "INSERT INTO uq2 VALUES (2500, 'dup');"
 check "uq2 count"           "$(q 'SELECT count(*) FROM uq2;')" "5000"
 
 # ---------------------------------------------------------------------------
@@ -213,8 +229,8 @@ check "uq2 count"           "$(q 'SELECT count(*) FROM uq2;')" "5000"
 echo "-- not null and check constraints"
 q "CREATE TABLE ck (a int NOT NULL, b int CHECK (b > 0)) USING pgcolumnar;" >/dev/null
 q "INSERT INTO ck VALUES (1, 10), (2, 20);" >/dev/null
-expect_fail "not null reject"  "INSERT INTO ck VALUES (NULL, 5);"
-expect_fail "check reject"     "INSERT INTO ck VALUES (3, -1);"
+expect_fail "not null reject"  23502 "INSERT INTO ck VALUES (NULL, 5);"
+expect_fail "check reject"     23514 "INSERT INTO ck VALUES (3, -1);"
 check "ck unchanged"        "$(q 'SELECT count(*) FROM ck;')" "2"
 
 # ---------------------------------------------------------------------------
@@ -225,14 +241,16 @@ q "CREATE TABLE di (a int, b text) USING pgcolumnar;" >/dev/null
 q "INSERT INTO di SELECT g, 'd'||g FROM generate_series(1,20000) g;" >/dev/null
 q "CREATE INDEX di_a_idx ON di (a);" >/dev/null
 q "DELETE FROM di WHERE a BETWEEN 5000 AND 5100;" >/dev/null
-check "deleted point"      "$(q 'SET enable_seqscan=off; SELECT count(*) FROM di WHERE a = 5050;')" "0"
-check "deleted range"      "$(q 'SET enable_seqscan=off; SELECT count(*) FROM di WHERE a BETWEEN 5000 AND 5100;')" "0"
-check "survivors around"   "$(q 'SET enable_seqscan=off; SELECT count(*) FROM di WHERE a BETWEEN 4900 AND 5200;')" "200"
-check "neighbor present"   "$(q 'SET enable_seqscan=off; SELECT b FROM di WHERE a = 4999;')" "d4999"
+assert_plan "deleted range plan is index scan" "SELECT count(*) FROM di WHERE a BETWEEN 4900 AND 5200;" \
+	"Index Scan" "Index Only Scan"
+check "deleted point"      "$(iq 'SELECT count(*) FROM di WHERE a = 5050;')" "0"
+check "deleted range"      "$(iq 'SELECT count(*) FROM di WHERE a BETWEEN 5000 AND 5100;')" "0"
+check "survivors around"   "$(iq 'SELECT count(*) FROM di WHERE a BETWEEN 4900 AND 5200;')" "200"
+check "neighbor present"   "$(iq 'SELECT b FROM di WHERE a = 4999;')" "d4999"
 # update then index-fetch the new value; the old key must be gone via the index
 q "UPDATE di SET a = a + 1000000 WHERE a = 8000;" >/dev/null
-check "updated old gone"   "$(q 'SET enable_seqscan=off; SELECT count(*) FROM di WHERE a = 8000;')" "0"
-check "updated new found"  "$(q 'SET enable_seqscan=off; SELECT b FROM di WHERE a = 1008000;')" "d8000"
+check "updated old gone"   "$(iq 'SELECT count(*) FROM di WHERE a = 8000;')" "0"
+check "updated new found"  "$(iq 'SELECT b FROM di WHERE a = 1008000;')" "d8000"
 
 # ---------------------------------------------------------------------------
 # Heap <-> columnar conversion round-trips row counts and values.
@@ -266,9 +284,9 @@ q "CREATE INDEX ios_a_idx ON ios (a);" >/dev/null
 # The custom scan is turned off so the planner picks the index scan (see assert_plan).
 iosoff_plan="$(run_pg "$PSQL -c \"SET pgcolumnar.enable_index_only_scan=off; SET enable_seqscan=off; SET pgcolumnar.enable_custom_scan=off; EXPLAIN (COSTS OFF) SELECT a FROM ios WHERE a = 100;\"")"
 if grep -q "Index Scan" <<<"$iosoff_plan" && ! grep -q "Index Only Scan" <<<"$iosoff_plan"; then
-	pgc_record PASS "IOS off: plain index scan" "PASS  IOS off: plain index scan"
+	pgc_pass "IOS off: plain index scan"
 else
-	pgc_record FAIL "IOS off: plain index scan" "FAIL  IOS off: plain index scan: plan was:
+	pgc_fail "IOS off: plain index scan" "plan was:
 $(echo "$iosoff_plan" | sed 's/^/        /')"; fail=1
 fi
 check "covering value"    "$(q 'SET enable_seqscan=off; SELECT a FROM ios WHERE a = 100;')" "100"
@@ -279,9 +297,9 @@ assert_plan_seq() {
 	local plan
 	plan="$(run_pg "$PSQL -c \"SET enable_indexscan=off; SET enable_bitmapscan=off; EXPLAIN (COSTS OFF) SELECT * FROM ios WHERE a = 100;\"")"
 	if grep -qE "Seq Scan|Custom Scan \(PgColumnarScan\)" <<<"$plan"; then
-		pgc_record PASS "full-table scan available" "PASS  full-table scan available"
+		pgc_pass "full-table scan available"
 	else
-		pgc_record FAIL "full-table scan available" "FAIL  full-table scan available: $plan"; fail=1
+		pgc_fail "full-table scan available" "$plan"; fail=1
 	fi
 }
 assert_plan_seq

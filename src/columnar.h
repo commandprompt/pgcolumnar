@@ -13,6 +13,7 @@
 #define PGCOLUMNAR_H
 
 #include "postgres.h"
+#include "port/pg_bitutils.h"
 
 #include "columnar_compat.h"
 
@@ -208,6 +209,34 @@
 #define COLUMNAR_ENCODE_EFFORT_FULL 0
 #define COLUMNAR_ENCODE_EFFORT_FAST 1
 
+/*
+ * #1309: a row group's distinct-count sketch is HyperLogLog with 2^11 one-byte
+ * registers. Fixed, so every sketch merges with every other.
+ */
+#define PGC_SKETCH_LOG2M 11
+#define PGC_SKETCH_REGISTERS (1 << PGC_SKETCH_LOG2M)
+
+/*
+ * Add one value's 64-bit hash to a sketch: the low PGC_SKETCH_LOG2M bits pick
+ * the register, and its value is one more than the trailing zeros of the other
+ * 53 bits (54 when they are all zero), kept as a max. The ONE copy of the rule,
+ * used by the writer's per-row-group sketches and by approx_count_distinct, so
+ * the two can be merged (phase 3) and cannot drift.
+ */
+static inline void
+pgc_sketch_add(uint8 *regs, uint64 h)
+{
+	uint64		w = h >> PGC_SKETCH_LOG2M;
+	uint8		rank = (w == 0) ? (uint8) (64 - PGC_SKETCH_LOG2M + 1)
+		: (uint8) (pg_rightmost_one_pos64(w) + 1);
+	uint8	   *reg = &regs[h & (PGC_SKETCH_REGISTERS - 1)];
+
+	if (rank > *reg)
+		*reg = rank;
+}
+
+extern double pgc_sketch_estimate(const uint8 *regs);
+
 typedef struct PgColumnarOptions
 {
 	bool		chunkGroupRowLimitSet;
@@ -254,6 +283,7 @@ extern bool pgcolumnar_enable_column_projection;
 extern bool pgcolumnar_enable_custom_scan;
 extern bool pgcolumnar_enable_bloom_filter;	/* bloom equality skipping (I7) */
 extern bool pgcolumnar_objstore_buffered;	/* chunk-granular remote reads (#393) */
+extern bool pgcolumnar_objstore_pin_reads;	/* pin remote reads to one version (#1866) */
 extern char *pgcolumnar_objstore_allowed_endpoints; /* #393 allow-list, SUSET */
 extern int	pgcolumnar_objstore_part_size;	/* #394 remote multipart part size */
 extern char *pgcolumnar_objstore_s3_addressing; /* #621 path|virtual addressing */
@@ -772,6 +802,20 @@ extern int64 PgColumnarWriteParquetFile(Relation rel, Snapshot snapshot,
 									  const char *filepath,
 									  const uint64 *restrictGroups,
 									  int nRestrictGroups);
+struct PgColumnarObjStoreConfig;
+/* The same, writing a remote path with cfg (#1795); NULL is the environment. */
+extern int64 PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot,
+											const char *filepath,
+											const uint64 *restrictGroups,
+											int nRestrictGroups,
+											const struct PgColumnarObjStoreConfig *cfg);
+/*
+ * The object-store configuration a pgcolumnar_parquet server gives the current
+ * user (#393 M4, #1795): endpoint and region from the server, the credential
+ * triple from the user's mapping or the PUBLIC one. Reads and writes share it.
+ */
+extern void PgColumnarObjStoreConfigForServer(Oid serverid,
+											  struct PgColumnarObjStoreConfig *cfg);
 extern void PgColumnarParquetCheckExportable(Relation rel);
 
 /*
@@ -1065,6 +1109,11 @@ extern bool PgColumnarRowWriteConflict(Relation rel, ItemPointer otid,
 									   TM_FailureData *tmfd, TM_Result *result);
 extern void PgColumnarSerializeFlushRows(uint64 storageId, const uint64 *rows,
 										 int nrows);
+extern void PgColumnarSerializeRowNow(Relation rel, uint64 rowNumber);
+extern bool PgColumnarHasUniqueIndex(Relation rel);
+extern NativeRowGroupMetadata *PgColumnarLookupRowGroup(uint64 storageId,
+														 Snapshot metaSnapshot,
+														 uint64 rowNumber);
 
 /* -------------------------------------------------------------------------
  * planner integration (pgcolumnar_customscan.c, spec 8.3, 9)
@@ -1266,6 +1315,60 @@ PgColumnarVarSizeAnyUnalignedBounded(const char *p, const char *end)
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("pgcolumnar: varlena value length runs past the value stream end")));
 	return len;
+}
+
+/*
+ * Connect a background worker that does a caller's work, and act as that caller
+ * (#1585, #1612). The leader records the caller as userid, with its superuser flag
+ * and security context (GetUserIdAndSecContext), and GetAuthenticatedUserId() as
+ * authid.
+ *
+ * THE WORKER'S SESSION USER IS THE CALLER on every major, so a RESET ROLE inside the
+ * worker (a copy trigger can run one) lands on the caller and not on some other user.
+ * On 17 and later the worker connects as the caller, with the login check bypassed,
+ * as it always did. Before 17 there is no such bypass and a NOLOGIN caller cannot be
+ * connected as, so the worker connects as the authenticated user, which logged in, and
+ * then makes the caller its session user. Connecting as the authenticated user and
+ * stopping there made it the session user: a trigger's RESET ROLE then became that
+ * user, the copy PREPAREd as it, and the leader could not finish the transaction
+ * (#1612 review).
+ *
+ * THE SECURITY CONTEXT TRAVELS TOO, as core's ParallelWorkerMain carries it, so a call
+ * made inside a SECURITY DEFINER function or a security-restricted operation keeps its
+ * restrictions in the worker: without it, a trigger there could switch to the session
+ * user (#1612 review). It is taken inside the transaction; see
+ * columnar_worker_take_context below.
+ */
+#include "miscadmin.h"
+#include "postmaster/bgworker.h"
+
+static inline void
+columnar_worker_connect_as(Oid dbid, Oid authid, Oid userid, bool userIsSuperuser)
+{
+#if PG_VERSION_NUM >= 170000
+	(void) authid;
+	(void) userIsSuperuser;
+	BackgroundWorkerInitializeConnectionByOid(dbid, userid,
+											  BGWORKER_BYPASS_ALLOWCONN |
+											  BGWORKER_BYPASS_ROLELOGINCHECK);
+#else
+	BackgroundWorkerInitializeConnectionByOid(dbid, authid, BGWORKER_BYPASS_ALLOWCONN);
+	SetSessionAuthorization(userid, userIsSuperuser);	/* the current user too */
+#endif
+}
+
+/*
+ * Take the caller's security context, INSIDE the worker's transaction. A top-level
+ * transaction must start with none -- StartTransaction asserts it, which is why core's
+ * ParallelWorkerMain sets it after its transaction begins -- and commit or abort
+ * restores the transaction's starting state. Set before the first transaction, an
+ * assert-enabled build aborted the coordinator (#1612 review). Called by the workers
+ * that run user code: the copy loader (triggers) and the export worker.
+ */
+static inline void
+columnar_worker_take_context(Oid userid, int sec_context)
+{
+	SetUserIdAndSecContext(userid, sec_context);
 }
 
 #endif							/* PGCOLUMNAR_H */

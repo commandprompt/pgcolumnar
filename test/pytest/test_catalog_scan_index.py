@@ -29,7 +29,13 @@ database; this file must not run concurrently with another that reads
 statistics.
 """
 
+import time
+
+from pgc_horizon import horizon_holders, retry_past_horizon
+
 NOISE = 350
+# The arms whose effect waits for the oldest-xmin horizon (#1979).
+RETRY_ARMS = {"an end truncation"}
 
 
 def _q(conn, sql):
@@ -51,16 +57,26 @@ def _make_target(conn, expect, t, name, projection=True):
 
     The compaction is its own statement on an autocommit connection: compact()
     cannot retire rows deleted by a transaction that has not committed.
+
+    And it waits for the horizon (#1979). compact retires a dead group only when no
+    transaction in the database is older than the DELETE. With one call, a snapshot
+    held by another session left both ranges unretired, and every free_space arm
+    then measured an empty free list. The target has autovacuum off, because an
+    autovacuum would retire the groups itself.
     """
     with conn.cursor() as cur:
-        cur.execute(f"CREATE TABLE {t} (a bigint, b text) USING pgcolumnar")
+        cur.execute(f"CREATE TABLE {t} (a bigint, b text) USING pgcolumnar "
+                    "WITH (autovacuum_enabled = false)")
         cur.execute("SELECT pgcolumnar.set_options(%s, stripe_row_limit => 1000)", (t,))
         cur.execute(f"INSERT INTO {t} SELECT g, 'r' || g FROM generate_series(1,7000) g")
         cur.execute(f"DELETE FROM {t} WHERE a <= 1000 OR a > 6000")
         if projection:
             cur.execute("SELECT pgcolumnar.add_projection(%s, 'p', '{a,b}', '{a}')", (t,))
-        cur.execute("SELECT pgcolumnar.compact(%s)", (t,))
+    retired, calls = retry_past_horizon(conn, f"SELECT pgcolumnar.compact('{t}')", 2)
+    print(f"-- {name} target: compact retired {retired} of 2 groups in {calls} calls")
+    with conn.cursor() as cur:
         cur.execute(f"DELETE FROM {t} WHERE a BETWEEN 5001 AND 6000 AND a % 2 = 1")
+    expect.num(retired, 2, f"the {name} target: compact retired both dead groups")
     expect.num(
         _q(conn, "SELECT count(*) FROM pgcolumnar.free_space "
                  f"WHERE storage_id = pgcolumnar.get_storage_id('{t}')"),
@@ -94,7 +110,9 @@ def _work(conn, catalog, statements):
             (catalog,),
         )
         row = cur.fetchone()
-    return tuple(int(v) for v in row) if row else (0, 0, 0)
+    # None, not zeros, when the statistics row is missing: (0, 0, 0) passed "does not
+    # read it whole" with nothing measured (#1339).
+    return tuple(int(v) for v in row) if row else (None, None, None)
 
 
 def test_catalog_scans_do_not_read_their_catalog_whole(pgc_own_db, expect, server_dir):
@@ -111,6 +129,33 @@ def test_catalog_scans_do_not_read_their_catalog_whole(pgc_own_db, expect, serve
             cur.execute("SELECT pgcolumnar.compact(%s)", (t,))
         for c in ("storage", "row_group", "free_space", "projection_declaration"):
             cur.execute(f"VACUUM pgcolumnar.{c}")
+
+    # Every noise table holds its two free ranges (#1979). The free_space premise
+    # below counts on them: without them the catalog stays under index_min_blocks
+    # pages, and the free_space arms read it whole by design. The one compact per
+    # table above retires nothing while another session holds an older snapshot.
+    # So compact runs again on each noise table that still lacks its ranges, 50
+    # tables per call, until it has retired both groups of each.
+    short = ("SELECT c.oid::regclass FROM pg_class c "
+             "WHERE c.relname ~ '^other_[0-9]+$' "
+             "AND (SELECT count(*) FROM pgcolumnar.free_space f "
+             "WHERE f.storage_id = pgcolumnar.get_storage_id(c.oid)) < 2")
+    n_short = _q(conn, f"SELECT count(*) FROM ({short}) s")
+    retired, calls = retry_past_horizon(
+        conn,
+        f"SELECT coalesce(sum(pgcolumnar.compact(t)), 0) FROM ({short} LIMIT 50) s(t)",
+        2 * n_short,
+    )
+    print(f"-- noise tables short of their free ranges: {n_short}; "
+          f"compact retired {retired} in {calls} calls")
+    noise_ranges = _q(
+        conn,
+        "SELECT count(*) FROM pgcolumnar.free_space "
+        "WHERE storage_id IN (SELECT pgcolumnar.get_storage_id(c.oid) "
+        "FROM pg_class c WHERE c.relname ~ '^other_[0-9]+$')",
+    )
+    print(f"-- noise tables: {noise_ranges} free ranges")
+    expect.num(noise_ranges, 2 * NOISE, "premise: every noise table holds two free ranges")
 
     min_blocks = int(_q(conn, "SHOW pgcolumnar.index_min_blocks"))
     for c in ("storage", "row_group", "free_space", "projection_declaration"):
@@ -176,22 +221,48 @@ def test_catalog_scans_do_not_read_their_catalog_whole(pgc_own_db, expect, serve
     ]
 
     # The arms below are a loop over a list, and a loop that never ran asserts
-    # nothing while the premises above still pass.
-    expect.num(len(arms), 11, "premise: eleven operations are measured")
-
+    # nothing while the premises above still pass. Counted as MEASURED, after the
+    # loop, not as the list's length (#1339): an arm whose statistics never came back
+    # still made eleven.
+    expect.num(len(arms), 11, "premise: the arm list names eleven operations")
+    measured = 0
     for n, (name, cat, stmts, effect, want, projection) in enumerate(arms, 1):
         t = f"target_{n}"
         _make_target(conn, expect, t, name, projection)
-        bufs, seq, idx = _work(conn, cat, [s.format(t=t) for s in stmts])
+        # An arm in RETRY_ARMS waits for the horizon (#1979). truncate removes the
+        # trailing range only when no transaction is older than the compact that
+        # freed it, and returns 0 while one is open. So the arm runs again every
+        # 0.5 s, up to 60 times (30 s), until the effect shows. _work resets the
+        # statistics each time, so the reading is the run that took effect. When
+        # the wait runs out, what holds the horizon back is printed.
+        runs = 0
+        while True:
+            bufs, seq, idx = _work(conn, cat, [s.format(t=t) for s in stmts])
+            runs += 1
+            if name not in RETRY_ARMS or _q(conn, effect.format(t=t)) == want:
+                break
+            if runs >= 60:
+                print(f"-- [{name}] no effect after {runs} runs. "
+                      "What holds the horizon back:")
+                for line in horizon_holders(conn):
+                    print(f"--   {line}")
+                break
+            time.sleep(0.5)
+        if name in RETRY_ARMS:
+            print(f"-- {name}: ran {runs} times")
         print(f"-- {name}: pgcolumnar.{cat} buffers={bufs} seq_scan={seq} idx_scan={idx}")
+        if isinstance(seq, int) and isinstance(idx, int):
+            measured += 1
+        # Not premises (#1339): each operation and its catalog access are pgcolumnar's.
         expect.text(
             _q(conn, effect.format(t=t)),
             want,
-            f"premise: {name} took effect",
+            f"{name} took effect",
         )
         expect.at_least(
-            seq + idx,
+            seq + idx if isinstance(seq, int) and isinstance(idx, int) else None,
             1,
-            f"premise: {name} reached pgcolumnar.{cat}",
+            f"{name} reached pgcolumnar.{cat}",
         )
         expect.num(seq, 0, f"{name} does not read pgcolumnar.{cat} whole")
+    expect.num(measured, 11, "premise: eleven operations are measured")

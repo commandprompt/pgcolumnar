@@ -33,8 +33,13 @@ CAP=$((32 * 1024 * 1024))	# COLUMNAR_FETCH_CACHE_MAX_BYTES, src/columnar.h
 # by its own model, and then nothing measures the fetch path at all. So the index
 # path is forced, and every measured query asserts it got one. Whether the
 # planner should choose it is #434, and that is a separate suite.
+#
+# pgcolumnar.enable_custom_scan=off as well: enable_seqscan alone does not turn
+# the columnar custom scan off (#1339). Every measured query asserts its plan, so
+# a planner change cannot quietly take the arms off the fetch path.
 FORCE_INDEX="SET max_parallel_workers_per_gather=0; SET enable_seqscan=off;
-             SET enable_bitmapscan=off; SET pgcolumnar.enable_index_fetch_penalty=off;"
+             SET enable_bitmapscan=off; SET pgcolumnar.enable_index_fetch_penalty=off;
+             SET pgcolumnar.enable_custom_scan=off;"
 
 # ---------------------------------------------------------------------------
 # The fixture, whose premise is its ON-DISK SIZE.
@@ -144,6 +149,11 @@ nbufs() {	# $1 = number of rows, projecting one narrow column
 		} } END { print t + 0 }'
 }
 
+# The narrow and medium projections had no plan premise of their own; only the
+# payload query's plan was asserted (#1339). They plan as Index Scans today, and
+# these keep a planner change from turning their ratios into scan-against-scan.
+check_num "premise: the narrow projection is fetched through an index scan" \
+	"$(pgc_uses_row_fetch "$FORCE_INDEX" "SELECT sum(tag) FROM bigcap WHERE id BETWEEN 1 AND 10" | grep -c yes)" "1"
 N1=$(nbufs 1)
 N10=$(nbufs 10)
 echo "-- narrow projection buffers: 1 row = ${N1}, 10 rows = ${N10}"
@@ -172,6 +182,8 @@ mbufs() {	# $1 = number of rows, projecting three medium columns
 		} } END { print t + 0 }'
 }
 
+check_num "premise: the medium projection is fetched through an index scan" \
+	"$(pgc_uses_row_fetch "$FORCE_INDEX" "SELECT count(m1 || m2 || m3) FROM bigcap WHERE id BETWEEN 1 AND 10" | grep -c yes)" "1"
 M1=$(mbufs 1)
 M10=$(mbufs 10)
 echo "-- three medium columns from an oversized group: 1 row = ${M1}, 10 rows = ${M10}"

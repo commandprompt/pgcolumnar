@@ -45,6 +45,13 @@ typedef struct DeleteVectorBuffer
 	Oid			relid;
 	uint64		storageId;
 	SubTransactionId subid;
+
+	/*
+	 * Set while the marks are on disk under a subtransaction below the owner,
+	 * written by a read there (#1360); invalid otherwise. The marks are kept until
+	 * that subtransaction resolves, as PgColumnarWriteState.flushedUnder is.
+	 */
+	SubTransactionId flushedUnder;
 	List	   *chunks;			/* list of DeleteVectorChunkBuffer* */
 	List	   *rowGroupCache;	/* cached NativeRowGroupMetadata* for resolution */
 
@@ -69,7 +76,8 @@ static DeleteVectorChunkBuffer *delete_vector_get_chunk(DeleteVectorBuffer *buf,
 											 uint64 startRowNumber,
 											 uint64 endRowNumber,
 											 uint64 rowCount);
-static void delete_vector_flush_buffer(DeleteVectorBuffer *buf);
+static void delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep);
+static void delete_vector_reset_buffer(DeleteVectorBuffer *buf);
 
 /*
  * delete_vector_chunk_cmp
@@ -309,13 +317,27 @@ PgColumnarDeleteVectorBufferedDeleted(Relation rel, uint64 rowNumber)
 }
 
 /*
+ * delete_vector_reset_buffer
+ *		Empty a buffer whose marks are its owner's on disk.
+ */
+static void
+delete_vector_reset_buffer(DeleteVectorBuffer *buf)
+{
+	buf->chunks = NIL;
+	buf->rowGroupCache = NIL;
+	buf->lastChunk = NULL;
+	buf->lastGroup = NULL;
+}
+
+/*
  * delete_vector_flush_buffer
  *		Apply one buffer's accumulated marks to the catalog and empty it. Each
  *		chunk group is upserted exactly once, so no catalog tuple is updated
- *		more than once in this command.
+ *		more than once in this command. With `keep`, the marks stay buffered, to
+ *		be applied again if the subtransaction they went under aborts (#1360).
  */
 static void
-delete_vector_flush_buffer(DeleteVectorBuffer *buf)
+delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 {
 	ListCell   *lc;
 	bool		pushedSnapshot = false;
@@ -394,16 +416,25 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf)
 		rm.bitmap = chunk->mask;
 		rm.bitmapLen = chunk->maskLen;
 
+		/*
+		 * The upsert merges the stored bits into rm.bitmap in place. A kept mask
+		 * must stay the owner's marks alone: merged, it would carry marks the
+		 * aborting subtransaction made itself, and write them again after it.
+		 */
+		if (keep)
+		{
+			rm.bitmap = palloc(chunk->maskLen);
+			memcpy(rm.bitmap, chunk->mask, chunk->maskLen);
+		}
+
 		PgColumnarUpsertDeleteVector(buf->storageId, &rm);
 	}
 
 	if (pushedSnapshot)
 		PopActiveSnapshot();
 
-	buf->chunks = NIL;
-	buf->rowGroupCache = NIL;
-	buf->lastChunk = NULL;
-	buf->lastGroup = NULL;
+	if (!keep)
+		delete_vector_reset_buffer(buf);
 }
 
 /*
@@ -415,14 +446,27 @@ void
 PgColumnarFlushDeleteVectorForRelation(Relation rel)
 {
 	Oid			relid = RelationGetRelid(rel);
+	SubTransactionId current = GetCurrentSubTransactionId();
 	ListCell   *lc;
 
 	foreach(lc, PgColumnarDeleteVectorBuffers)
 	{
 		DeleteVectorBuffer *buf = (DeleteVectorBuffer *) lfirst(lc);
+		bool		keep = (buf->subid != current);
 
-		if (buf->relid == relid)
-			delete_vector_flush_buffer(buf);
+		if (buf->relid != relid)
+			continue;
+
+		/*
+		 * An enclosing statement's marks are written and kept (#1360), for the
+		 * reason PgColumnarFlushWriteStateForRelation gives, and once written
+		 * are visible to any deeper read.
+		 */
+		if (buf->flushedUnder != InvalidSubTransactionId)
+			continue;
+		delete_vector_flush_buffer(buf, keep);
+		if (keep && buf->chunks != NIL)
+			buf->flushedUnder = current;
 	}
 }
 
@@ -436,7 +480,32 @@ PgColumnarFlushAllDeleteVectors(void)
 	ListCell   *lc;
 
 	foreach(lc, PgColumnarDeleteVectorBuffers)
-		delete_vector_flush_buffer((DeleteVectorBuffer *) lfirst(lc));
+	{
+		DeleteVectorBuffer *buf = (DeleteVectorBuffer *) lfirst(lc);
+
+		/* every subtransaction has resolved by now, and with it every kept buffer */
+		Assert(buf->flushedUnder == InvalidSubTransactionId);
+		delete_vector_flush_buffer(buf, false);
+	}
+}
+
+/*
+ * PgColumnarFlushDeleteVectorsOfSubXact
+ *		Flush only the delete buffers the given subtransaction owns, for the reason
+ *		PgColumnarFlushPendingWritesOfSubXact gives (#1341).
+ */
+void
+PgColumnarFlushDeleteVectorsOfSubXact(SubTransactionId subid)
+{
+	ListCell   *lc;
+
+	foreach(lc, PgColumnarDeleteVectorBuffers)
+	{
+		DeleteVectorBuffer *buf = (DeleteVectorBuffer *) lfirst(lc);
+
+		if (buf->subid == subid)
+			delete_vector_flush_buffer(buf, false);
+	}
 }
 
 /*
@@ -471,8 +540,13 @@ PgColumnarDeleteVectorDiscardSubXact(SubTransactionId subid)
 	{
 		DeleteVectorBuffer *buf = (DeleteVectorBuffer *) lfirst(lc);
 
-		if (buf->subid != subid)
-			kept = lappend(kept, buf);
+		if (buf->subid == subid)
+			continue;
+
+		/* an enclosing statement's marks this one wrote out: applied again later (#1360) */
+		if (buf->flushedUnder == subid)
+			buf->flushedUnder = InvalidSubTransactionId;
+		kept = lappend(kept, buf);
 	}
 	MemoryContextSwitchTo(oldContext);
 
@@ -495,6 +569,18 @@ PgColumnarDeleteVectorPromoteSubXact(SubTransactionId subid, SubTransactionId pa
 
 		if (buf->subid == subid)
 			buf->subid = parent;
+
+		/* kept marks now the owner's are done with; below it, they wait (#1360) */
+		if (buf->flushedUnder == subid)
+		{
+			if (parent == buf->subid)
+			{
+				delete_vector_reset_buffer(buf);
+				buf->flushedUnder = InvalidSubTransactionId;
+			}
+			else
+				buf->flushedUnder = parent;
+		}
 	}
 }
 

@@ -42,7 +42,9 @@ PY
 DECODED="$(q "SELECT snapshot_id || '|' || sequence_number || '|' || operation || '|' ||
                      schema_id || '|' || (regexp_match(manifest_list, '[^/]+\$'))[1]
               FROM pgcolumnar.iceberg_current_snapshot('$MD')")"
-check "current snapshot == oracle (id|seq|op|schema|manifest-list)" \
+# check_text: with both the reader and the oracle failing, two empty readings
+# would agree.
+check_text "current snapshot == oracle (id|seq|op|schema|manifest-list)" \
 	"$DECODED" "$ORACLE"
 
 # exactly one current snapshot, and no parent (first append)
@@ -68,13 +70,15 @@ m["snapshots"] = [decoy, real]            # decoy FIRST; current-snapshot-id unc
 json.dump(m, open(sys.argv[2], "w"))
 PY
 chmod 644 "$TWO"
-check "resolves the named current snapshot, not snapshots[0]" \
+check_text "resolves the named current snapshot, not snapshots[0]" \
 	"$(q "SELECT (regexp_match(manifest_list, '[^/]+\$'))[1]
 	      FROM pgcolumnar.iceberg_current_snapshot('$TWO')")" \
 	"$(python3 -c "import json;print(json.load(open('$FX/expected_meta.json'))['manifest_list_basename'])")"
+# With the total beside it: a reader that returned no row at all also returns no
+# decoy.
 check "the decoy snapshot is not returned" \
-	"$(q "SELECT count(*) FROM pgcolumnar.iceberg_current_snapshot('$TWO')
-	      WHERE manifest_list LIKE '%DECOY%'")" "0"
+	"$(q "SELECT count(*) || '/' || count(*) FILTER (WHERE manifest_list LIKE '%DECOY%')
+	      FROM pgcolumnar.iceberg_current_snapshot('$TWO')")" "1/0"
 
 # ---- no current snapshot: zero rows, not an error --------------------------
 NOSNAP="$PGC_WORKDIR/no_current.metadata.json"
@@ -114,7 +118,11 @@ check "malformed JSON is rejected (22P02), backend survives" \
 check "backend still up after the bad file" "$(q 'SELECT 1')" "1"
 
 # ---- privilege: needs pg_read_server_files ---------------------------------
-psql_run "DROP ROLE IF EXISTS ice_unpriv; CREATE ROLE ice_unpriv LOGIN;"
+# USAGE on the schema, so the refusal is the FILE gate's and not "permission
+# denied for schema pgcolumnar", which is also 42501 (the shape iceberg_scan.sh had,
+# measured there).
+psql_run "DROP ROLE IF EXISTS ice_unpriv; CREATE ROLE ice_unpriv LOGIN;
+	GRANT USAGE ON SCHEMA pgcolumnar TO ice_unpriv;"
 check "an unprivileged role is refused (42501)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U ice_unpriv -d "$PGC_DB" \
 		-qtA 2>&1 <<SQL | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1
@@ -122,5 +130,13 @@ check "an unprivileged role is refused (42501)" \
 SELECT count(*) FROM pgcolumnar.iceberg_current_snapshot('$MD');
 SQL
 )" "42501"
+
+# The positive control a deny arm needs: a gate admitting only superusers would
+# lock out every pg_read_server_files member and still pass the arm above.
+psql_run "DROP ROLE IF EXISTS ice_reader; CREATE ROLE ice_reader LOGIN;
+	GRANT pg_read_server_files TO ice_reader; GRANT USAGE ON SCHEMA pgcolumnar TO ice_reader;"
+check "a pg_read_server_files member who is not superuser may read the catalog" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U ice_reader -d "$PGC_DB" \
+		-qtA -c "SELECT count(*) FROM pgcolumnar.iceberg_current_snapshot('$MD');" 2>&1 | tail -1)" "1"
 
 pgc_summary

@@ -31,9 +31,11 @@
 #include <dirent.h>
 #include <fnmatch.h>
 #include <glob.h>
+#include <limits.h>
 
 #include "fmgr.h"
 #include "funcapi.h"
+#include "access/nbtree.h"
 #include "access/htup_details.h"
 #include "common/int.h"
 #include "access/relation.h"
@@ -67,6 +69,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
+#include "parser/parse_coerce.h"
 #include "storage/fd.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -76,6 +79,8 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
+#include "utils/datetime.h"
+#include "pgtime.h"
 #include "utils/varlena.h"
 #include "utils/tuplestore.h"
 #include "utils/typcache.h"
@@ -96,6 +101,7 @@ PG_FUNCTION_INFO_V1(pgcolumnar_parquet_schema);
 PG_FUNCTION_INFO_V1(pgcolumnar_read_parquet);
 PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_handler);
 PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_validator);
+PG_FUNCTION_INFO_V1(pgcolumnar_path_glob_matches);
 
 #define PG_TO_UNIX_DAYS		((int64) (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE))
 #define PG_TO_UNIX_USECS	(PG_TO_UNIX_DAYS * USECS_PER_DAY)
@@ -133,14 +139,20 @@ PG_FUNCTION_INFO_V1(pgcolumnar_parquet_fdw_validator);
 typedef struct PqSchemaCol
 {
 	int			phys_type;		/* PQ_* physical type (-1 for a group) */
-	int			repetition;		/* 0 required, 1 optional, 2 repeated */
+	int64		repetition;		/* 0 required, 1 optional, 2 repeated; as stored, so
+								 * a wide value is not truncated into 0..2 */
 	int			converted_type;	/* -1 if none */
 	int			time_unit;		/* PQ_TU_* for a TIME/TIMESTAMP column */
 	bool		is_timestamp;	/* the unit belongs to TIMESTAMP, not TIME */
+	bool		adjusted_utc;	/* TIMESTAMP isAdjustedToUTC: an instant, not a wall time */
+	bool		is_unsigned;	/* UINT_* or INTEGER(isSigned=false): the INT32/INT64
+								 * bits are an unsigned value (#1814) */
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY length */
 	int			scale;			/* DECIMAL scale (0 if none) */
 	int			precision;		/* DECIMAL precision (0 if none) */
-	int			num_children;	/* >0 for a group */
+	int			num_children;	/* >0 for a group; -1 when the stored value is
+								 * negative or wider than int (#1921) */
+	int64		num_children_stored;	/* as stored, for the refusal's DETAIL */
 	int			field_id;		/* SchemaElement field 9, or -1 when absent:
 								 * 0 is a legal id, so absence needs its own
 								 * value. Iceberg projects by this (#388). */
@@ -172,11 +184,20 @@ typedef struct PqChunk
 	const uint8 *stat_max;
 	uint32		stat_min_len;
 	uint32		stat_max_len;
+	/*
+	 * SizeStatistics (ColumnMetaData field 16): the entry counts of the
+	 * repetition and definition level histograms, or -1 when the file has none.
+	 * A histogram has one entry per level, so its length must be max level + 1
+	 * (#1855).
+	 */
+	int64		rep_hist_len;
+	int64		def_hist_len;
 } PqChunk;
 
 typedef struct PqRowGroup
 {
 	int64		num_rows;
+	bool		has_num_rows;	/* num_rows (required) was present */
 	PqChunk    *chunks;			/* [nchunks]; consumers index by ncols, so a value
 								 * read path must call pq_check_row_groups() first */
 	int			nchunks;		/* column chunks this row group actually carries */
@@ -191,6 +212,11 @@ typedef struct PqFile
 	int			ntop;			/* top-level columns (root's children) */
 	int			nrowgroups;
 	PqRowGroup *rgs;
+	bool		has_row_groups; /* row_groups (required) was present */
+	bool		has_num_rows;	/* num_rows (required) was present */
+	int64		num_rows;		/* the footer's own total of rows */
+	int			bad_children;	/* schema element whose num_children is negative
+								 * or wider than int, or -1 (#1921) */
 } PqFile;
 
 /*
@@ -274,6 +300,46 @@ parse_statistics(TCReader *r, PqChunk *ch)
 	}
 }
 
+/*
+ * Parse a SizeStatistics struct, recording only how many entries each level
+ * histogram holds: 2 repetition_level_histogram, 3 definition_level_histogram,
+ * both list<i64>. An empty list counts as absent, as a writer may omit a
+ * histogram whose maximum level is 0.
+ */
+static void
+parse_size_statistics(TCReader *r, PqChunk *ch)
+{
+	int			lastId = 0;
+
+	for (;;)
+	{
+		int			ft,
+					fid;
+
+		PgColumnarThriftField(r, &ft, &fid, &lastId);
+		if (ft == TC_STOP || r->error)
+			break;
+		if ((fid == 2 || fid == 3) && ft == TC_LIST)
+		{
+			int			etype;
+			uint32		n = PgColumnarThriftListHeader(r, &etype);
+			uint32		i;
+
+			for (i = 0; i < n && !r->error; i++)
+				PgColumnarThriftSkip(r, etype);
+			if (n > 0)
+			{
+				if (fid == 2)
+					ch->rep_hist_len = (int64) n;
+				else
+					ch->def_hist_len = (int64) n;
+			}
+		}
+		else
+			PgColumnarThriftSkip(r, ft);
+	}
+}
+
 /* parse a ColumnMetaData struct into *ch */
 static void
 parse_column_meta(TCReader *r, PqChunk *ch)
@@ -291,6 +357,8 @@ parse_column_meta(TCReader *r, PqChunk *ch)
 	ch->stat_max = NULL;
 	ch->stat_min_len = 0;
 	ch->stat_max_len = 0;
+	ch->rep_hist_len = -1;
+	ch->def_hist_len = -1;
 
 	for (;;)
 	{
@@ -320,6 +388,12 @@ parse_column_meta(TCReader *r, PqChunk *ch)
 			case 12:			/* statistics */
 				if (ft == TC_STRUCT)
 					parse_statistics(r, ch);
+				else
+					PgColumnarThriftSkip(r, ft);
+				break;
+			case 16:			/* size_statistics (#1855) */
+				if (ft == TC_STRUCT)
+					parse_size_statistics(r, ch);
 				else
 					PgColumnarThriftSkip(r, ft);
 				break;
@@ -353,9 +427,9 @@ parse_column_chunk(TCReader *r, PqChunk *ch)
 
 /*
  * Parse a LogicalType union into *sc, recording the time unit for TIME and
- * TIMESTAMP. Every other member is skipped: the ConvertedType path already covers
- * what the reader uses of them. TimeUnit is itself a union of empty structs, so
- * the set field id is the whole answer.
+ * TIMESTAMP, and INTEGER's isSigned. Every other member is skipped: the
+ * ConvertedType path already covers what the reader uses of them. TimeUnit is
+ * itself a union of empty structs, so the set field id is the whole answer.
  *
  * This hand-walks nested Thrift unions and assumes the compact-protocol field
  * ordering the spec prescribes. A writer that reorders or partially populates the
@@ -416,8 +490,31 @@ parse_logical_type(TCReader *r, PqSchemaCol *sc)
 						PgColumnarThriftField(r, &uft, &ufid, &uLast);
 					}
 				}
+				else if (ifid == 1 && isTs &&
+						 (ift == TC_BOOL_TRUE || ift == TC_BOOL_FALSE))
+					/* isAdjustedToUTC: compact protocol carries a bool in its type */
+					sc->adjusted_utc = (ift == TC_BOOL_TRUE);
 				else
-					PgColumnarThriftSkip(r, ift);	/* isAdjustedToUTC and anything later */
+					PgColumnarThriftSkip(r, ift);	/* anything later */
+			}
+		}
+		else if (fid == PQ_LT_INTEGER && ft == TC_STRUCT)
+		{
+			/* IntType: 1 bitWidth (i8), 2 isSigned (bool, carried in its type) */
+			int			innerLast = 0;
+
+			for (;;)
+			{
+				int			ift,
+							ifid;
+
+				PgColumnarThriftField(r, &ift, &ifid, &innerLast);
+				if (ift == TC_STOP || r->error)
+					break;
+				if (ifid == 2 && (ift == TC_BOOL_TRUE || ift == TC_BOOL_FALSE))
+					sc->is_unsigned = (ift == TC_BOOL_FALSE);
+				else
+					PgColumnarThriftSkip(r, ift);
 			}
 		}
 		else
@@ -436,10 +533,14 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 	sc->converted_type = -1;
 	sc->time_unit = PQ_TU_NONE;
 	sc->is_timestamp = false;
+	/* the legacy TIMESTAMP_* converted types are defined as UTC-adjusted */
+	sc->adjusted_utc = true;
+	sc->is_unsigned = false;
 	sc->type_length = 0;
 	sc->scale = 0;
 	sc->precision = 0;
 	sc->num_children = 0;
+	sc->num_children_stored = 0;
 	sc->field_id = -1;
 	sc->name = NULL;
 
@@ -460,7 +561,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 				sc->type_length = (int) PgColumnarThriftZigzag(r);
 				break;
 			case 3:				/* repetition_type */
-				sc->repetition = (int) PgColumnarThriftZigzag(r);
+				sc->repetition = PgColumnarThriftZigzag(r);
 				break;
 			case 4:				/* name */
 				{
@@ -472,7 +573,10 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 					break;
 				}
 			case 5:				/* num_children */
-				num_children = (int) PgColumnarThriftZigzag(r);
+				sc->num_children_stored = PgColumnarThriftZigzag(r);
+				num_children = (sc->num_children_stored < 0 ||
+								sc->num_children_stored > PG_INT32_MAX)
+					? -1 : (int) sc->num_children_stored;
 				sc->num_children = num_children;
 				break;
 			case 6:				/* converted_type */
@@ -521,6 +625,9 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
 				break;
 		}
 	}
+	/* the deprecated spelling of INTEGER(isSigned=false) */
+	if (sc->converted_type >= PQ_CT_UINT_8 && sc->converted_type <= PQ_CT_UINT_64)
+		sc->is_unsigned = true;
 	return num_children;
 }
 
@@ -578,6 +685,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 {
 	TCReader	r = {buf, len, 0, false};
 	int			lastId = 0;
+	int			e;
 
 	pf->ncols = 0;
 	pf->nelems = 0;
@@ -586,6 +694,10 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 	pf->ntop = 0;
 	pf->nrowgroups = 0;
 	pf->rgs = NULL;
+	pf->has_row_groups = false;
+	pf->has_num_rows = false;
+	pf->num_rows = 0;
+	pf->bad_children = -1;
 
 	for (;;)
 	{
@@ -615,6 +727,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 			uint32		i;
 
 			pf->nrowgroups = n;
+			pf->has_row_groups = true;
 			pf->rgs = palloc0(sizeof(PqRowGroup) * Max(n, 1));
 			for (i = 0; i < n && !r.error; i++)
 			{
@@ -643,11 +756,19 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 							parse_column_chunk(&r, &rg->chunks[ci]);
 					}
 					else if (rfid == 3)		/* num_rows */
+					{
 						rg->num_rows = PgColumnarThriftZigzag(&r);
+						rg->has_num_rows = true;
+					}
 					else
 						PgColumnarThriftSkip(&r, rft);
 				}
 			}
+		}
+		else if (fid == 3 && (ft == TC_I64 || ft == TC_I32 || ft == TC_I16))	/* num_rows */
+		{
+			pf->num_rows = PgColumnarThriftZigzag(&r);
+			pf->has_num_rows = true;
 		}
 		else
 			PgColumnarThriftSkip(&r, ft);
@@ -655,6 +776,31 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 
 	if (r.error || pf->nelems < 1)
 		return false;
+
+	/*
+	 * name is a required field of SchemaElement. An element that lacks one did
+	 * not parse as the writer wrote it: a single changed byte can end the struct
+	 * early and leave the rest of the footer read as something else (#1852). A
+	 * missing schema leaves nelems at 0 and is refused above; a missing num_rows
+	 * or row_groups is refused by pq_check_row_groups() (#1822).
+	 */
+	for (e = 0; e < pf->nelems; e++)
+		if (pf->elems[e].name == NULL)
+			return false;
+
+	/*
+	 * A negative num_children is no valid count (#1921). The walk below read it
+	 * as a group with no children: the next element then took that group's
+	 * place in the tree, and parquet_schema stopped at the empty group and
+	 * dropped every column after it, with no error. The caller names the
+	 * element; a count wider than int is refused the same way.
+	 */
+	for (e = 0; e < pf->nelems; e++)
+		if (pf->elems[e].num_children < 0)
+		{
+			pf->bad_children = e;
+			return false;
+		}
 
 	/* derive leaf columns + their level bounds from the schema tree */
 	{
@@ -677,6 +823,29 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 }
 
 /*
+ * Reject a schema element whose repetition_type is not one of the three the
+ * format defines: 0 REQUIRED, 1 OPTIONAL, 2 REPEATED (#1855). walk_schema counts
+ * only 1 and 2 as levels, so any other value read as REQUIRED: a column whose
+ * pages carry definition levels then had those levels decoded as values, and
+ * read_parquet returned wrong numbers with no error. The root element is skipped
+ * because walk_schema never reads its repetition.
+ *
+ * This runs on every open, parquet_schema included: it cannot report whether a
+ * column is nullable without a valid repetition_type. It returns the first bad
+ * element, or NULL, so the caller can close the source before it raises.
+ */
+static const PqSchemaCol *
+pq_bad_repetition(const PqFile *pf)
+{
+	int			e;
+
+	for (e = 1; e < pf->nelems; e++)
+		if (pf->elems[e].repetition < 0 || pf->elems[e].repetition > 2)
+			return &pf->elems[e];
+	return NULL;
+}
+
+/*
  * Reject a file whose row groups do not carry one column chunk per schema leaf.
  *
  * Every value consumer indexes rgs[].chunks[] by the schema's leaf count, not by
@@ -694,11 +863,36 @@ static void
 pq_check_row_groups(const PqFile *pf, const char *path)
 {
 	int			rg;
+	int64		total = 0;
+
+	/*
+	 * row_groups, each row group's num_rows and the footer's num_rows are all
+	 * required. When one is missing, the reader counted that part as 0 rows and
+	 * returned a short answer with no error (#1822). The footer's total must
+	 * also match the row groups' sum, which catches a corrupt count that still
+	 * parses.
+	 */
+	if (!pf->has_row_groups)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no row_groups field.")));
+	if (!pf->has_num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer has no num_rows field.")));
 
 	for (rg = 0; rg < pf->nrowgroups; rg++)
 	{
 		PqRowGroup *g = &pf->rgs[rg];
 		int			ci;
+
+		if (!g->has_num_rows)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed row group", path),
+					 errdetail("Row group %d has no num_rows field.", rg)));
 
 		if (g->chunks == NULL || g->nchunks != pf->ncols)
 			ereport(ERROR,
@@ -753,8 +947,50 @@ pq_check_row_groups(const PqFile *pf, const char *path)
 						 errmsg("Parquet file \"%s\" has a malformed row group", path),
 						 errdetail("Row group %d declares num_rows %ld, but column %d holds only %ld values.",
 								   rg, (long) g->num_rows, ci, (long) nv)));
+
+			/*
+			 * A level histogram has one entry per level, 0 to the maximum the
+			 * schema gives the column (#1855). One of another length means the
+			 * schema and the pages disagree about the levels: a column marked
+			 * REQUIRED whose pages carry definition levels has a histogram of 2,
+			 * and its levels would otherwise be decoded as values. Only a file
+			 * that carries histograms can be checked this way.
+			 */
+			{
+				const PqChunk *ch = &g->chunks[ci];
+				const PqLeafInfo *lf = &pf->leaves[ci];
+				const char *nm = lf->sc->name;
+
+				if (ch->def_hist_len > 0 && ch->def_hist_len != lf->max_def + 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("Parquet file \"%s\" has a malformed row group", path),
+							 errdetail("Row group %d column %d (\"%s\") has a definition level histogram of %ld entries, but the schema gives it a maximum definition level of %d.",
+									   rg, ci, nm, (long) ch->def_hist_len, lf->max_def)));
+				if (ch->rep_hist_len > 0 && ch->rep_hist_len != lf->max_rep + 1)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATA_CORRUPTED),
+							 errmsg("Parquet file \"%s\" has a malformed row group", path),
+							 errdetail("Row group %d column %d (\"%s\") has a repetition level histogram of %ld entries, but the schema gives it a maximum repetition level of %d.",
+									   rg, ci, nm, (long) ch->rep_hist_len, lf->max_rep)));
+			}
 		}
+
+		/*
+		 * Each num_rows is now 0..MaxAllocSize/sizeof(Datum), so the sum cannot
+		 * overflow. The bound comes from the chunk loop above, which runs for
+		 * every row group: parse_file_metadata() refuses a schema with no leaf
+		 * column, and nchunks equals ncols here.
+		 */
+		total += g->num_rows;
 	}
+
+	if (total != pf->num_rows)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("Parquet file \"%s\" has a malformed footer", path),
+				 errdetail("The footer declares num_rows %ld, but its row groups hold %ld rows.",
+						   (long) pf->num_rows, (long) total)));
 }
 
 /* -------------------------------------------------------------------------
@@ -875,7 +1111,25 @@ typedef struct PqColPlan
 	int			type_length;	/* FIXED_LEN_BYTE_ARRAY width, for uuid/decimal */
 	int			dec_scale;		/* DECIMAL scale, when the target is numeric */
 	bool		is_decimal;		/* the bytes are a DECIMAL unscaled integer */
+	bool		is_unsigned;	/* the INT32/INT64 bits are an unsigned value */
+	int			ts_shift;		/* PQ_TS_*: a cast between wall time and instant */
+	int32		typmod;			/* declared typmod of the target, or -1 */
+	bool		coerce;			/* apply coerce_fn to each returned value */
+	FmgrInfo	coerce_fn;		/* the type's length coercion function (#1790) */
+	const char *colname;		/* the leaf's Parquet name, for error messages */
 } PqColPlan;
+
+/*
+ * A Parquet timestamp read into the OTHER PostgreSQL timestamp type is converted
+ * as PostgreSQL's own cast would, in the session zone (#1706): a naive (not
+ * UTC-adjusted) wall time into timestamptz, and an adjusted instant into
+ * timestamp. The same-kind reads are left as they are.
+ */
+#define PQ_TS_NONE			0
+#define PQ_TS_WALL_TO_INSTANT	1
+#define PQ_TS_INSTANT_TO_WALL	2
+
+static bool pq_ts_shift(int shift, Timestamp in, Timestamp *out);
 
 /*
  * Convert a stored TIME/TIMESTAMP value to the microseconds PostgreSQL stores,
@@ -1071,6 +1325,78 @@ pq_value_out_of_range(bool strict, bool *ok, int sqlerrcode, const char *typname
 	return (Datum) 0;
 }
 
+/* pq_value_out_of_range for an unsigned INT64 value, which an int64 cannot print */
+static Datum
+pq_unsigned_out_of_range(bool strict, bool *ok, const char *typname, uint64 value)
+{
+	if (strict)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("value out of range for type %s", typname),
+				 errdetail("The Parquet file stores " UINT64_FORMAT
+						   ", which cannot be represented as %s.",
+						   value, typname)));
+	*ok = false;
+	return (Datum) 0;
+}
+
+/*
+ * Is a BYTE_ARRAY cell bound to text valid in the server encoding (#1821)?
+ *
+ * A Parquet STRING is UTF-8 by the spec, but the bytes come from outside the
+ * server, and text built from them unchecked holds whatever the writer put there:
+ * invalid sequences that later queries choke on, or an embedded NUL that makes
+ * the value read as a shorter string. COPY validates external text with
+ * pg_verifymbstr for this reason, and so does pq_percent_decode for Hive partition
+ * values; this is the same boundary for the cells themselves.
+ *
+ * Per value, on the decode path, so the common case is kept cheap: bytes that are
+ * all 7-bit ASCII with no NUL are valid in every server encoding and need nothing
+ * more. Only a value with a high bit or a NUL byte reaches the encoding's verifier.
+ * Dictionary entries are decoded once per dictionary page, so a dictionary column
+ * is checked once per distinct value.
+ *
+ * On an invalid value: raise 22021, naming the column and the first bad bytes in
+ * core's format, when strict; otherwise set *ok false, so a caller decoding
+ * statistics refuses to use them rather than raising.
+ */
+static bool
+pq_text_cell_ok(const PqColPlan *plan, const char *s, int len, bool strict)
+{
+	int			i;
+	int			enc;
+	int			valid;
+	int			bad;
+	char		buf[8 * 5 + 1];
+	char	   *b = buf;
+
+	for (i = 0; i < len; i++)
+		if (s[i] == '\0' || IS_HIGHBIT_SET(s[i]))
+			break;
+	if (i == len)
+		return true;
+
+	enc = GetDatabaseEncoding();
+	valid = pg_encoding_verifymbstr(enc, s, len);
+	if (valid == len)
+		return true;
+	if (!strict)
+		return false;
+
+	/* the bytes of the first bad character, at most 8, as report_invalid_encoding */
+	bad = Min(pg_encoding_mblen(enc, s + valid), len - valid);
+	bad = Min(bad, 8);
+	for (i = 0; i < bad; i++)
+		b += sprintf(b, i == 0 ? "0x%02x" : " 0x%02x", (unsigned char) s[valid + i]);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+			 errmsg("invalid byte sequence for encoding \"%s\" in Parquet column \"%s\": %s",
+					GetDatabaseEncodingName(),
+					plan->colname != NULL ? plan->colname : "?", buf)));
+	return false;				/* not reached */
+}
+
 /*
  * Convert one PLAIN physical value at *p (advancing *p) to a target Datum.
  *
@@ -1079,6 +1405,11 @@ pq_value_out_of_range(bool strict, bool *ok, int sqlerrcode, const char *typname
  * INT64. Those conversions are range-checked rather than cast, so an out-of-range
  * value raises instead of wrapping. See pq_value_out_of_range for what strict
  * selects.
+ *
+ * An unsigned column (UINT_32, UINT_64) is decoded unsigned (#1814). Its upper half
+ * has the sign bit set, so a signed decode would return a negative number. bigint
+ * holds every UINT_32 value and numeric every UINT_64 value; a narrower integer
+ * target is range-checked like int2.
  */
 static Datum
 plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
@@ -1112,6 +1443,21 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					}
 					return num;
 				}
+				if (plan->is_unsigned &&
+					(plan->typid == INT8OID || plan->typid == INT4OID ||
+					 plan->typid == INT2OID))
+				{
+					uint32		u = (uint32) v;
+
+					if (plan->typid == INT8OID)
+						return Int64GetDatum((int64) u);
+					if (u > (uint32) PG_INT32_MAX)
+						return pq_value_out_of_range(strict, ok,
+													 ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE,
+													 plan->typid == INT2OID ? "smallint" : "integer",
+													 (int64) u);
+					/* non-negative now, so the int2 check below sees the real value */
+				}
 				if (plan->typid == INT2OID)
 				{
 					if (v < PG_INT16_MIN || v > PG_INT16_MAX)
@@ -1143,6 +1489,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 													 "date", (int64) v);
 					return DateADTGetDatum((DateADT) d);
 				}
+				/* an Iceberg int -> long promotion (pq_field_id_widens) */
+				if (plan->typid == INT8OID)
+					return Int64GetDatum((int64) v);
 				return Int32GetDatum(v);
 			}
 		case PQ_INT64:
@@ -1167,6 +1516,17 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					}
 					return num;
 				}
+				if (plan->is_unsigned && plan->typid == NUMERICOID)
+				{
+					char		buf[32];
+
+					snprintf(buf, sizeof(buf), UINT64_FORMAT, (uint64) v);
+					return DirectFunctionCall3(numeric_in, CStringGetDatum(buf),
+											   ObjectIdGetDatum(InvalidOid),
+											   Int32GetDatum(-1));
+				}
+				if (plan->is_unsigned && plan->typid == INT8OID && v < 0)
+					return pq_unsigned_out_of_range(strict, ok, "bigint", (uint64) v);
 				if (plan->typid == TIMESTAMPOID || plan->typid == TIMESTAMPTZOID)
 				{
 					int64		us;
@@ -1176,7 +1536,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 
 					if (!pq_scale_to_usecs(plan->time_unit, v, &us) ||
 						pg_sub_s64_overflow(us, PG_TO_UNIX_USECS, &t) ||
-						!IS_VALID_TIMESTAMP((Timestamp) t))
+						!IS_VALID_TIMESTAMP((Timestamp) t) ||
+						(plan->ts_shift != PQ_TS_NONE &&
+						 !pq_ts_shift(plan->ts_shift, (Timestamp) t, (Timestamp *) &t)))
 						return pq_value_out_of_range(strict, ok,
 													 ERRCODE_DATETIME_FIELD_OVERFLOW,
 													 tn, v);
@@ -1196,6 +1558,56 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 				}
 				return Int64GetDatum(v);
 			}
+		case PQ_INT96:
+			{
+				/*
+				 * The legacy INT96 timestamp (#1870): 8 bytes of nanoseconds into
+				 * the day, then 4 bytes of Julian day number, both little-endian.
+				 * Spark and Hive write it for an instant in UTC, and the reader
+				 * takes every INT96 value that way. Impala writes wall time with
+				 * no zone by default, so its values come out shifted; see
+				 * docs/limitations.md. The nanoseconds are rounded down to whole microseconds; both parts
+				 * are non-negative in a valid value, so that is the floor of the
+				 * instant, before 1970 as after it.
+				 */
+				int64		nanos;
+				int32		jday;
+				int64		us;
+				int64		t;
+				const char *tn = (plan->typid == TIMESTAMPOID)
+					? "timestamp" : "timestamp with time zone";
+
+				if (cur + 12 > end)
+				{
+					*ok = false;
+					return (Datum) 0;
+				}
+				memcpy(&nanos, cur, 8);
+				memcpy(&jday, cur + 8, 4);
+				*p = cur + 12;
+				if (nanos < 0 || nanos >= USECS_PER_DAY * INT64CONST(1000) ||
+					pg_mul_s64_overflow((int64) jday - POSTGRES_EPOCH_JDATE,
+										USECS_PER_DAY, &t) ||
+					pg_add_s64_overflow(t, nanos / 1000, &us) ||
+					!IS_VALID_TIMESTAMP((Timestamp) us) ||
+					(plan->ts_shift != PQ_TS_NONE &&
+					 !pq_ts_shift(plan->ts_shift, (Timestamp) us, (Timestamp *) &us)))
+				{
+					/*
+					 * Name both parts: either one can be the bad one, and the
+					 * reader should be sent to the right field.
+					 */
+					if (strict)
+						ereport(ERROR,
+								(errcode(ERRCODE_DATETIME_FIELD_OVERFLOW),
+								 errmsg("value out of range for type %s", tn),
+								 errdetail("The Parquet file stores an INT96 timestamp of Julian day %d and " INT64_FORMAT " nanoseconds, which cannot be represented as %s.",
+										   (int) jday, nanos, tn)));
+					*ok = false;
+					return (Datum) 0;
+				}
+				return TimestampGetDatum((Timestamp) us);
+			}
 		case PQ_FLOAT:
 			{
 				float4		v;
@@ -1207,6 +1619,9 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 				}
 				memcpy(&v, cur, 4);
 				*p = cur + 4;
+				/* an Iceberg float -> double promotion (pq_field_id_widens) */
+				if (plan->typid == FLOAT8OID)
+					return Float8GetDatum((float8) v);
 				return Float4GetDatum(v);
 			}
 		case PQ_DOUBLE:
@@ -1264,6 +1679,11 @@ plain_value_to_datum(const PqColPlan *plan, const uint8 **p, const uint8 *end,
 					memcpy(VARDATA(b), cur, blen);
 					*p = cur + blen;
 					return PointerGetDatum(b);
+				}
+				if (!pq_text_cell_ok(plan, (const char *) cur, (int) blen, strict))
+				{
+					*ok = false;
+					return (Datum) 0;
 				}
 				t = cstring_to_text_with_len((const char *) cur, blen);
 				*p = cur + blen;
@@ -1333,7 +1753,50 @@ typedef struct PqPageHeader
 	int			rep_levels_len;
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
+	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
 } PqPageHeader;
+
+/*
+ * Read a required i32 page header field of compact type ft, whether or not the
+ * reader stores its value. A field of another type is
+ * corrupt (#1935). Read anyway, a varint-shaped field such as an i64 kept the
+ * parse in step, and a BOOL or UUID field had its next bytes taken as the value:
+ * either way the page read without an error, where pyarrow refuses the header.
+ * The field is required by parquet.thrift, so skipping it, as Thrift does, ends
+ * in a refusal too. r->error stops the parse; bad_type tells the caller that a
+ * larger read window cannot help.
+ */
+static int
+pq_page_i32(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_I32)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return 0;
+	}
+	return (int) PgColumnarThriftZigzag(r);
+}
+
+/*
+ * A struct page header field (data_page_header and the like) of another type is
+ * corrupt too. These fields are optional in parquet.thrift, so Thrift, and so
+ * pyarrow, skips one of the wrong type and fails later, if at all. When the
+ * struct is the page's own header, pyarrow then fails too. A data page that also
+ * carried a wrong-typed dictionary_page_header would be refused here where
+ * pyarrow might read it. That is the safe direction.
+ */
+static bool
+pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
+{
+	if (ft != TC_STRUCT)
+	{
+		h->bad_type = true;
+		r->error = true;
+		return false;
+	}
+	return true;
+}
 
 static void
 parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
@@ -1355,10 +1818,14 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
 					break;
 				case 2:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
+					break;
+				case 3:			/* definition_level_encoding: not stored */
+				case 4:			/* repetition_level_encoding: not stored */
+					(void) pq_page_i32(r, h, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1370,19 +1837,31 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = (int) PgColumnarThriftZigzag(r);
+					h->num_values = pq_page_i32(r, h, ft);
+					break;
+				case 2:			/* num_nulls: not stored */
+				case 3:			/* num_rows: not stored */
+					(void) pq_page_i32(r, h, ft);
 					break;
 				case 4:
-					h->encoding = (int) PgColumnarThriftZigzag(r);
+					h->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 5:
-					h->def_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->def_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 6:
-					h->rep_levels_len = (int) PgColumnarThriftZigzag(r);
+					h->rep_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 7:
-					h->is_compressed = (ft == TC_BOOL_TRUE);
+
+					/*
+					 * is_compressed is optional. Thrift, and so pyarrow, skips a
+					 * field of another type and keeps the default, true.
+					 */
+					if (ft == TC_BOOL_TRUE || ft == TC_BOOL_FALSE)
+						h->is_compressed = (ft == TC_BOOL_TRUE);
+					else
+						PgColumnarThriftSkip(r, ft);
 					break;
 				default:
 					PgColumnarThriftSkip(r, ft);
@@ -1411,21 +1890,24 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 		switch (fid)
 		{
 			case 1:
-				h->type = (int) PgColumnarThriftZigzag(r);
+				h->type = pq_page_i32(r, h, ft);
 				break;
 			case 2:
-				h->uncompressed_size = (int) PgColumnarThriftZigzag(r);
+				h->uncompressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 3:
-				h->compressed_size = (int) PgColumnarThriftZigzag(r);
+				h->compressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 5:				/* DataPageHeader (v1) */
-				parse_data_page_header(r, h, false);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, false);
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
 					int			dl = 0;
 
+					if (!pq_page_struct(r, h, ft))
+						break;
 					for (;;)
 					{
 						int			dft,
@@ -1435,14 +1917,17 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 						if (dft == TC_STOP || r->error)
 							break;
 						if (dfid == 1)
-							h->num_values = (int) PgColumnarThriftZigzag(r);
+							h->num_values = pq_page_i32(r, h, dft);
+						else if (dfid == 2)	/* encoding: not stored */
+							(void) pq_page_i32(r, h, dft);
 						else
 							PgColumnarThriftSkip(r, dft);
 					}
 					break;
 				}
 			case 8:				/* DataPageHeaderV2 */
-				parse_data_page_header(r, h, true);
+				if (pq_page_struct(r, h, ft))
+					parse_data_page_header(r, h, true);
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
@@ -1717,7 +2202,9 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 		 */
 		src->winCtx = CurrentMemoryContext;
 		src->api = api;
-		src->priv = (void *) api->open(path, cfg, &src->len);
+		/* the vended credential for THIS object (#1820), or a refusal */
+		src->priv = (void *) api->open(path, PgColumnarObjStoreConfigFor(cfg, path),
+									   &src->len);
 		src->ops = &pq_remote_ops;
 	}
 	else
@@ -1765,8 +2252,28 @@ pq_source_open_cfg(const char *path, PqSource *src, PqFile *pf,
 	if (!parse_file_metadata(src->meta, src->metalen, pf))
 	{
 		pq_source_close(src);
+		if (pf->bad_children >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed schema", path),
+					 errdetail("Schema element \"%s\" has num_children " INT64_FORMAT "; a valid one is 0 or more.",
+							   pf->elems[pf->bad_children].name,
+							   pf->elems[pf->bad_children].num_children_stored)));
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("could not parse \"%s\" (unsupported or corrupt Parquet metadata)", path)));
+	}
+	{
+		const PqSchemaCol *bad = pq_bad_repetition(pf);
+
+		if (bad != NULL)
+		{
+			pq_source_close(src);
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("Parquet file \"%s\" has a malformed schema", path),
+					 errdetail("Schema element \"%s\" has repetition_type " INT64_FORMAT "; a valid one is 0 (REQUIRED), 1 (OPTIONAL) or 2 (REPEATED).",
+							   bad->name, bad->repetition)));
+		}
 	}
 }
 
@@ -1851,7 +2358,7 @@ pq_read_page_header(PqSource *src, int64 off, PqPageHeader *h, size_t *hdrlenOut
 			return true;
 		}
 		pfree(buf);
-		if ((int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
+		if (h->bad_type || (int64) n >= avail || win >= PQ_PAGE_HDR_WIN_MAX)
 			return false;
 		win *= 2;
 	}
@@ -2276,14 +2783,115 @@ pq_plan_bind_schema(PqColPlan *plan, const PqSchemaCol *sc)
 	plan->dec_scale = sc->scale;
 	plan->is_decimal = (plan->typid == NUMERICOID &&
 						sc->converted_type == PQ_CT_DECIMAL);
+	plan->is_unsigned = (sc->is_unsigned &&
+						 (sc->phys_type == PQ_INT32 || sc->phys_type == PQ_INT64));
+	plan->ts_shift = PQ_TS_NONE;
+	plan->colname = sc->name != NULL ? pstrdup(sc->name) : NULL;
+	if (sc->is_timestamp && !sc->adjusted_utc && plan->typid == TIMESTAMPTZOID)
+		plan->ts_shift = PQ_TS_WALL_TO_INSTANT;
+	else if (sc->is_timestamp && sc->adjusted_utc && plan->typid == TIMESTAMPOID)
+		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
+	/* an INT96 timestamp is read as an instant in UTC (#1870), whatever it is
+	 * annotated; Impala's wall-time INT96 is the documented exception */
+	else if (sc->phys_type == PQ_INT96 && plan->typid == TIMESTAMPOID)
+		plan->ts_shift = PQ_TS_INSTANT_TO_WALL;
 }
 
 /*
+ * Record the target's declared typmod on a leaf plan (#1790). Called at each bind
+ * site after pq_plan_bind_schema. The executor adds no length coercion above a scan
+ * whose tuple descriptor already carries the typmod, so the reader must apply it
+ * itself, as PostgreSQL's input functions do: numeric(p,s) rounds to scale s and
+ * refuses an overflow, and varchar(n) refuses a longer value unless the excess is
+ * spaces. The type's own length coercion function does exactly that when it is
+ * called as an implicit (not explicit) cast.
+ *
+ * No coercion is set up when it can change no value: a DECIMAL whose scale equals
+ * the declared scale and whose precision fits the declared precision, or a time or
+ * timestamp at full microsecond precision. That keeps the per-value call off the
+ * common path, and keeps row-group skipping, which must decline for a leaf whose
+ * returned values can differ from its stored statistics.
+ */
+static void
+pq_plan_set_typmod(PqColPlan *plan, int32 typmod, const PqSchemaCol *sc)
+{
+	Oid			funcid;
+
+	plan->typmod = typmod;
+	plan->coerce = false;
+	if (typmod < 0)
+		return;
+	if (plan->is_decimal && pq_decimal_bounds_ok(sc) && typmod >= VARHDRSZ)
+	{
+		int32		tm = typmod - VARHDRSZ;
+		int			precision = (tm >> 16) & 0xffff;
+		int			scale = ((tm & 0x7ff) ^ 1024) - 1024;
+
+		if (sc->scale == scale && sc->precision <= precision)
+			return;
+	}
+	if ((plan->typid == TIMESTAMPOID || plan->typid == TIMESTAMPTZOID ||
+		 plan->typid == TIMEOID) && typmod >= MAX_TIMESTAMP_PRECISION)
+		return;
+	if (find_typmod_coercion_function(plan->typid, &funcid) != COERCION_PATH_FUNC)
+		return;
+	fmgr_info(funcid, &plan->coerce_fn);
+	plan->coerce = true;
+}
+
+/*
+ * The two casts, from the primitives PostgreSQL's timestamp_timestamptz and
+ * timestamptz_timestamp use, so they behave the same on every major (PG19 renamed
+ * the exported helper, and PG15-18 export no timestamptz -> timestamp one).
+ * false when the result is out of range.
+ */
+static bool
+pq_ts_shift(int shift, Timestamp in, Timestamp *out)
+{
+	struct pg_tm tm;
+	fsec_t		fsec;
+	int			tz;
+
+	if (TIMESTAMP_NOT_FINITE(in))
+	{
+		*out = in;
+		return true;
+	}
+	if (shift == PQ_TS_WALL_TO_INSTANT)
+	{
+		if (timestamp2tm(in, NULL, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		tz = DetermineTimeZoneOffset(&tm, session_timezone);
+		if (tm2timestamp(&tm, fsec, &tz, out) != 0)
+			return false;
+	}
+	else
+	{
+		if (timestamp2tm(in, &tz, &tm, &fsec, NULL, NULL) != 0)
+			return false;
+		if (tm2timestamp(&tm, fsec, NULL, out) != 0)
+			return false;
+	}
+	return IS_VALID_TIMESTAMP(*out);
+}
+
+/*
+ * pq_want_phys_for's answer for a supported target type that this particular
+ * column cannot hold: not -1, which means the target type is unsupported, and
+ * equal to no physical type, so the bind's compatibility check refuses it.
+ */
+#define PQ_PHYS_NO_MATCH	INT_MAX
+
+/*
  * The Parquet physical type a target PostgreSQL type must be stored as, for one
- * specific source column. Only `time` is column-dependent: Parquet spells
+ * specific source column. `time` is column-dependent: Parquet spells
  * TIME_MILLIS as INT32 and TIME_MICROS/TIME_NANOS as INT64, so the same
  * PostgreSQL type binds to either width depending on the unit the file declares.
- * Everything else is a fixed mapping and falls through to pq_want_phys().
+ * So are uuid (an FLBA of width 16 only), bytea (a BYTE_ARRAY or any FLBA) and
+ * a DECIMAL's numeric. An unsigned integer column also binds wider than its
+ * physical type (#1814): bigint to a UINT_32 INT32, numeric to a UINT_64 INT64,
+ * the types that hold every value. Everything else is a fixed mapping and falls
+ * through to pq_want_phys().
  */
 static int
 pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
@@ -2293,8 +2901,25 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 		if (typid == TIMEOID &&
 			sc->time_unit == PQ_TU_MILLIS && !sc->is_timestamp)
 			return PQ_INT32;
-		/* uuid is a 16-byte fixed-length binary */
+		/* the legacy INT96 timestamp reads into either timestamp type (#1870) */
+		if ((typid == TIMESTAMPTZOID || typid == TIMESTAMPOID) &&
+			sc->phys_type == PQ_INT96)
+			return PQ_INT96;
+		if (sc->is_unsigned && typid == INT8OID && sc->phys_type == PQ_INT32)
+			return PQ_INT32;
+		if (sc->is_unsigned && typid == NUMERICOID && sc->phys_type == PQ_INT64)
+			return PQ_INT64;
+		/* uuid is a 16-byte fixed-length binary. An FLBA of any other width
+		 * cannot hold one, so the bind refuses it as incompatible rather than
+		 * leaving the decoder to fail on the first value (#1792). */
 		if (typid == UUIDOID)
+			return (sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY &&
+					sc->type_length != UUID_LEN)
+				? PQ_PHYS_NO_MATCH : PQ_FIXED_LEN_BYTE_ARRAY;
+		/* bytea holds raw bytes of any width, so a fixed-length binary --
+		 * Iceberg's fixed(L), for which parquet_schema advises bytea -- reads
+		 * as one, its flen bytes copied as they are (#1792) */
+		if (typid == BYTEAOID && sc->phys_type == PQ_FIXED_LEN_BYTE_ARRAY)
 			return PQ_FIXED_LEN_BYTE_ARRAY;
 		/* DECIMAL as fixed or variable big-endian two's-complement bytes, or as
 		 * an INT32/INT64 holding the unscaled integer (what writers use for small
@@ -2310,6 +2935,31 @@ pq_want_phys_for(Oid typid, const PqSchemaCol *sc)
 			return sc->phys_type;
 	}
 	return pq_want_phys(typid);
+}
+
+/*
+ * Does a field-id bind read this leaf into a WIDER type than pq_want_phys_for
+ * names? Iceberg's spec-legal type promotions, int -> long and float -> double,
+ * leave the data files written before the promotion with the old physical type,
+ * while the current schema (and so the output column) has the new one (#1789).
+ * Both widenings are exact, and plain_value_to_datum performs them. Only a plain
+ * integer qualifies: an INT32 that is a date, a time or a decimal is not an
+ * Iceberg int. decimal(P,S) -> decimal(P',S) needs nothing here, because
+ * pq_want_phys_for already binds a DECIMAL by the file's own physical type.
+ *
+ * The positional binders do not call this: they are not schema-evolution reads,
+ * and keep their exact type map.
+ */
+static bool
+pq_field_id_widens(const PqSchemaCol *sc, Oid typid)
+{
+	if (typid == INT8OID && sc->phys_type == PQ_INT32)
+		return sc->time_unit == PQ_TU_NONE &&
+			(sc->converted_type < 0 ||
+			 sc->converted_type == PQ_CT_INT_8 ||
+			 sc->converted_type == PQ_CT_INT_16 ||
+			 sc->converted_type == PQ_CT_INT_32);
+	return typid == FLOAT8OID && sc->phys_type == PQ_FLOAT;
 }
 
 /*
@@ -2347,8 +2997,11 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typid = TIMEOID;	/* TIME_MILLIS is physically INT32 */
 			else if (ct == PQ_CT_INT_8 || ct == PQ_CT_INT_16)
 				*typid = INT2OID;
+			else if (sc->is_unsigned &&
+					 ct != PQ_CT_UINT_8 && ct != PQ_CT_UINT_16)
+				*typid = INT8OID;	/* UINT_32 reaches 2^32-1 (#1814) */
 			else
-				*typid = INT4OID;	/* INT_32 or unannotated */
+				*typid = INT4OID;	/* INT_32, UINT_8, UINT_16 or unannotated */
 			return true;
 		case PQ_INT64:
 
@@ -2369,10 +3022,27 @@ pq_leaf_to_pgtype(const PqSchemaCol *sc, Oid *typid, int32 *typmod)
 				*typmod = pq_decimal_typmod(sc);
 				return true;
 			}
+			/*
+			 * A UTC-adjusted timestamp holds an instant, so advise timestamptz
+			 * (#1807). Advising timestamp made a read convert the instant to a
+			 * wall time in the session zone (PQ_TS_INSTANT_TO_WALL). The legacy
+			 * TIMESTAMP_MILLIS/MICROS types are UTC-adjusted by definition.
+			 */
 			if (sc->time_unit == PQ_TU_MILLIS || sc->time_unit == PQ_TU_MICROS)
-				*typid = sc->is_timestamp ? TIMESTAMPOID : TIMEOID;
+				*typid = !sc->is_timestamp ? TIMEOID
+					: sc->adjusted_utc ? TIMESTAMPTZOID : TIMESTAMPOID;
+			else if (sc->is_unsigned)
+			{
+				/* UINT_64 reaches 2^64-1, 20 digits (#1814) */
+				*typid = NUMERICOID;
+				*typmod = (int32) ((20 << 16) + VARHDRSZ);
+			}
 			else
 				*typid = INT8OID;	/* INT_64, nanos, or unannotated */
+			return true;
+		case PQ_INT96:
+			/* the legacy timestamp: an instant in UTC, as Spark writes it (#1870) */
+			*typid = TIMESTAMPTZOID;
 			return true;
 		case PQ_FLOAT:
 			*typid = FLOAT4OID;
@@ -2454,18 +3124,43 @@ typedef struct ImpTop
 }			ImpTop;
 
 /*
+ * Take a leaf's next present value, applying the declared typmod when the row will
+ * be returned (#1790). A row that a position or equality delete removes is still
+ * assembled, to consume its values, but is not coerced: a value that breaks the
+ * typmod in a deleted row must not fail the scan, since the row is not part of the
+ * table.
+ */
+static inline Datum
+pq_take_value(ImpLeaf *l, bool coerce)
+{
+	Datum		d = l->vals[l->vi++];
+
+	if (coerce && l->plan.coerce)
+		d = FunctionCall3(&l->plan.coerce_fn, d,
+						  Int32GetDatum(l->plan.typmod), BoolGetDatum(false));
+	return d;
+}
+
+/*
  * Build the target tree from the tuple descriptor and bind each leaf to a
  * Parquet leaf column (validating physical type and Dremel level bounds).
  * Returns the tops array; sets the leaves array and top count via out-params.
+ * Every binding error names `path` in its DETAIL, so a read over a prefix or a
+ * glob says which of its files does not match (#1902).
  *
  * Relation-free: on a binding error it just ereports, and any relation the caller
  * holds is released by transaction abort. This lets a caller with no relation (the
  * read_parquet function, the FDW) bind a descriptor against a file exactly as
  * import binds a target table's descriptor.
+ *
+ * caller names the entry point the user called, for the message that refuses a
+ * type: the bind is shared, and a message naming another function sends the
+ * reader to the wrong place (#1871).
  */
 static ImpTop *
-build_imp_targets(TupleDesc tupdesc, PqFile *pf,
-				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt)
+build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
+				  ImpLeaf **pleaves, int *ntops, const bool *skipAtt,
+				  const char *caller)
 {
 	int			natts = tupdesc->natts;
 	ImpTop	   *tops = palloc0(sizeof(ImpTop) * Max(natts, 1));
@@ -2475,7 +3170,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	for (i = 0; i < natts; i++)
 	{
@@ -2507,13 +3203,25 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			ImpLeaf    *l = &leaves[lf];
 
 			if (want < 0)
-				IMP_FAIL("array column \"%s\" has element type %s, which columnar.import_parquet does not support",
-						 NameStr(att->attname), format_type_be(elemtype));
+				IMP_FAIL("array column \"%s\" has element type %s, which %s does not support",
+						 NameStr(att->attname), format_type_be(elemtype), caller);
 			if (lf >= pf->ncols)
 				IMP_FAIL("Parquet file has fewer columns than the target table");
 			if (pf->leaves[lf].max_rep < 1)
 				IMP_FAIL("target column \"%s\" is an array but the Parquet column is not repeated",
 						 NameStr(att->attname));
+
+			/*
+			 * A leaf under two or more repeated levels (a list of lists, a list
+			 * of maps) has no one-dimensional reading: the decode below builds
+			 * one array per row from the outer level and would drop the inner
+			 * list boundaries, [[1], [2, 3]] reading as {1,2,3} (#1917).
+			 * PostgreSQL does not tell int[] from int[][] in a declared type, and
+			 * this reader builds only one-dimensional arrays, so refuse it.
+			 */
+			if (pf->leaves[lf].max_rep > 1)
+				IMP_FAIL("Parquet column for array \"%s\" is nested %d lists deep, but %s reads one list level into an array",
+						 NameStr(att->attname), pf->leaves[lf].max_rep, caller);
 			if (pf->leaves[lf].sc->phys_type != want)
 				IMP_FAIL("Parquet column for array \"%s\" has incompatible physical type",
 						 NameStr(att->attname));
@@ -2525,6 +3233,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			get_typlenbyval(elemtype, &l->plan.typlen, &l->plan.typbyval);
 			l->plan.expect_phys = want;
 			pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+			/* an array column's typmod is its element's */
+			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
 			lf++;
@@ -2553,9 +3263,9 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 				if (want < 0)
 				{
 					ReleaseTupleDesc(td);
-					IMP_FAIL("composite column \"%s\" field \"%s\" has type %s, which columnar.import_parquet does not support",
+					IMP_FAIL("composite column \"%s\" field \"%s\" has type %s, which %s does not support",
 							 NameStr(att->attname), NameStr(fa->attname),
-							 format_type_be(fa->atttypid));
+							 format_type_be(fa->atttypid), caller);
 				}
 				if (lf >= pf->ncols)
 				{
@@ -2579,6 +3289,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 				get_typlenbyval(fa->atttypid, &l->plan.typlen, &l->plan.typbyval);
 				l->plan.expect_phys = want;
 				pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+				pq_plan_set_typmod(&l->plan, fa->atttypmod, pf->leaves[lf].sc);
 				l->max_def = pf->leaves[lf].max_def;
 				l->max_rep = pf->leaves[lf].max_rep;
 				t->fieldLeaf[a] = lf;
@@ -2594,8 +3305,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			ImpLeaf    *l = &leaves[lf];
 
 			if (want < 0)
-				IMP_FAIL("column \"%s\" has type %s, which columnar.import_parquet does not support",
-						 NameStr(att->attname), format_type_be(typid));
+				IMP_FAIL("column \"%s\" has type %s, which %s does not support",
+						 NameStr(att->attname), format_type_be(typid), caller);
 			if (lf >= pf->ncols)
 				IMP_FAIL("Parquet file has fewer columns than the target table");
 			if (pf->leaves[lf].max_rep != 0)
@@ -2610,6 +3321,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
 			get_typlenbyval(typid, &l->plan.typlen, &l->plan.typbyval);
 			l->plan.expect_phys = want;
 			pq_plan_bind_schema(&l->plan, pf->leaves[lf].sc);
+			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
 			lf++;
@@ -2638,7 +3350,8 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * Scope: flat top-level scalars. A requested id must resolve to exactly one
  * non-repeated scalar leaf of a compatible physical type; a nested/array output,
  * an absent id, a duplicate id, or a file with no ids at all is refused rather
- * than silently mis-bound. Reuses the same ImpTop/ImpLeaf output as the
+ * than silently mis-bound, and so is an id carried by a group (a struct, list
+ * or map: #1788). Reuses the same ImpTop/ImpLeaf output as the
  * positional binder, so pq_read_rows is unchanged.
  *
  * Name mapping (Iceberg schema.name-mapping.default): when a leaf carries no
@@ -2647,14 +3360,14 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf,
  * spec's "map field id to columns without field id". This lets a data file
  * written without field ids (an imported dataset) bind by name. A leaf that
  * does carry an id ignores the table. nm_count 0 disables it, preserving the
- * no-ids refusal.
+ * no-ids refusal. Its binding errors name `path` as build_imp_targets' do.
  */
 static ImpTop *
-build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
+build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf, const char *path,
 							  const int *field_ids, int nfield,
 							  const char *const *nm_names, const int *nm_ids,
 							  int nm_count, bool missing_as_null,
-							  ImpLeaf **pleaves, int *ntops)
+							  ImpLeaf **pleaves, int *ntops, const char *caller)
 {
 	int			natts = tupdesc->natts;
 	ImpTop	   *tops = palloc0(sizeof(ImpTop) * Max(natts, 1));
@@ -2667,7 +3380,8 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 	int			i;
 
 #define IMP_FAIL(...) \
-	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__)))
+	ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg(__VA_ARGS__), \
+					errdetail("The mismatched file is \"%s\".", path)))
 
 	/* the effective id of each leaf: its own field id, or -- for an id-less
 	 * TOP-LEVEL leaf and a supplied name mapping -- the id the mapping gives its
@@ -2767,6 +3481,29 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		if (found < 0)
 		{
 			/*
+			 * A struct, list or map carries its field id on a group, not a leaf
+			 * (#1788). The file has the column, so it is neither absent nor null:
+			 * it is nested, and field-id projection reads only scalars. A group
+			 * with no id holds -1, so only a real id (>= 0) can match: without
+			 * that, ARRAY[-1] named a list's or map's inner group as nested.
+			 */
+			for (j = 1; j < pf->nelems; j++)
+			{
+				PqSchemaCol *g = &pf->elems[j];
+
+				if (g->num_children > 0 && g->field_id >= 0 &&
+					g->field_id == req)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("field id %d (requested for output column \"%s\") is a nested %s column; field-id projection supports only scalar columns",
+									req, NameStr(att->attname),
+									g->converted_type == PQ_CT_LIST ? "list" :
+									(g->converted_type == PQ_CT_MAP ||
+									 g->converted_type == PQ_CT_MAP_KEY_VALUE) ? "map" :
+									"struct")));
+			}
+
+			/*
 			 * The projected field id is not present in this file. Under
 			 * Column Projection (Iceberg data files) that is not an error: the
 			 * column resolves to null (a schema column added after the file was
@@ -2807,8 +3544,10 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 					 req);
 		want = pq_want_phys_for(typid, pq_leaf_sc(pf, found));
 		if (want < 0)
-			IMP_FAIL("output column \"%s\" has type %s, which columnar.read_parquet does not support",
-					 NameStr(att->attname), format_type_be(typid));
+			IMP_FAIL("output column \"%s\" has type %s, which %s does not support",
+					 NameStr(att->attname), format_type_be(typid), caller);
+		if (pq_field_id_widens(pf->leaves[found].sc, typid))
+			want = pf->leaves[found].sc->phys_type;
 		if (pf->leaves[found].sc->phys_type != want)
 			IMP_FAIL("Parquet column with field id %d has a physical type incompatible with output column \"%s\" (%s)",
 					 req, NameStr(att->attname), format_type_be(typid));
@@ -2823,6 +3562,7 @@ build_imp_targets_by_field_id(TupleDesc tupdesc, PqFile *pf,
 		get_typlenbyval(typid, &l->plan.typlen, &l->plan.typbyval);
 		l->plan.expect_phys = want;
 		pq_plan_bind_schema(&l->plan, pf->leaves[found].sc);
+		pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[found].sc);
 		l->max_def = pf->leaves[found].max_def;
 		l->max_rep = pf->leaves[found].max_rep;
 		nt++;
@@ -2859,15 +3599,32 @@ pq_has_parquet_ext(const char *name)
 
 /*
  * Mirror the local directory walk's skip of `_SUCCESS`, `_temporary`, and
- * dot-hidden names (#619): a listed key whose any path segment begins with '_'
- * or '.' is excluded, so a Spark staging directory does not fold into a read.
- * The `//` in a scheme prefix is not a segment start and never matches.
+ * dot-hidden names (#619) for a listed prefix: a key is excluded when a path
+ * segment BELOW the prefix the user named begins with '_' or '.', so a Spark
+ * staging directory does not fold into a read. The prefix itself is not judged
+ * (#1784): the local walk tests only the entries it finds below the directory
+ * you name, so s3://b/_landing/ reads like /data/_landing/ does.
+ *
+ * `listUrl` ends in '/'. Its scheme is compared without case, because the
+ * module accepts S3:// and returns keys as s3://. A key that does not start
+ * with `listUrl` (the endpoint answered outside the prefix) is judged whole.
  */
 static bool
-pq_remote_key_hidden(const char *key)
+pq_remote_key_hidden(const char *key, const char *listUrl)
 {
+	size_t		llen = strlen(listUrl);
+	const char *sep = strstr(listUrl, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - listUrl) + 3 : 0;
 	const char *p = key;
 
+	if (strlen(key) >= llen &&
+		pg_strncasecmp(key, listUrl, slen) == 0 &&
+		strncmp(key + slen, listUrl + slen, llen - slen) == 0)
+	{
+		p = key + llen;
+		if (p[0] == '_' || p[0] == '.')
+			return true;
+	}
 	while ((p = strchr(p, '/')) != NULL)
 	{
 		if (p[1] == '_' || p[1] == '.')
@@ -2875,6 +3632,1062 @@ pq_remote_key_hidden(const char *key)
 		p++;
 	}
 	return false;
+}
+
+/*
+ * Does a listed key match the remote pattern the user wrote? The scheme is
+ * compared without case, as pq_remote_key_hidden does, because the module
+ * accepts S3:// and returns keys as s3://. The rest is matched by fnmatch()
+ * segment by segment, as the local glob() matches (#1784). The reader and
+ * pgcolumnar.path_glob_matches both call this, so tier_partition's check
+ * matches an s3:// key exactly as the reader does (#1957).
+ */
+static bool
+pq_remote_glob_match(const char *pattern, const char *key)
+{
+	const char *sep = strstr(pattern, "://");
+	size_t		slen = (sep != NULL) ? (size_t) (sep - pattern) + 3 : 0;
+
+	if (strlen(key) < slen || pg_strncasecmp(key, pattern, slen) != 0)
+		return false;
+	return fnmatch(pattern + slen, key + slen, FNM_PATHNAME | FNM_PERIOD) == 0;
+}
+
+/*
+ * Where a remote pattern starts (#1785). Only s3:// can be listed, so only an
+ * s3:// URL can be a pattern, and only in its key: the text after the bucket.
+ * The scheme, the bucket and anything an http(s) URL carries (a bracketed host,
+ * a query string) are never pattern syntax. -> the first `*`, `?` or `[` in the
+ * key, or NULL when the URL is not a pattern.
+ */
+static const char *
+pq_remote_glob_start(const char *url)
+{
+	const char *key;
+
+	if (pg_strncasecmp(url, "s3://", 5) != 0)
+		return NULL;
+	key = strchr(url + 5, '/');
+	return (key != NULL) ? strpbrk(key + 1, "*?[") : NULL;
+}
+
+/*
+ * Does a listed key name exactly the object the user wrote (#1785)? `*`, `?`
+ * and `[` are legal in an S3 key, so a URL holding one may be an exact key, and
+ * an object of that literal name is read rather than the pattern. The scheme is
+ * compared without case, as pq_remote_glob_match does; the rest is compared
+ * byte for byte, as S3 compares keys.
+ */
+static bool
+pq_remote_key_is_literal(const char *url, const char *key)
+{
+	return pg_strncasecmp(url, key, 5) == 0 && strcmp(url + 5, key + 5) == 0;
+}
+
+/*
+ * A local pattern is expanded by glob(3), which reads directories. To ask
+ * whether glob(3) would return one path, without touching the filesystem,
+ * path_glob_matches runs glob(3) itself over a tree in memory that holds only
+ * that path (#1962). glob(3) then splits the pattern, unescapes it and calls
+ * fnmatch with the reader's flags, so the answer is the reader's by
+ * construction. Every name before the last is a directory; the last is a file,
+ * or a directory when the path ends in '/'. A directory lists "." and "..", as
+ * a real one does. The callbacks get no argument of their own, so the tree is
+ * a static, set only while glob(3) runs. They neither allocate in a memory
+ * context nor raise an error, so nothing jumps out of glob(3) and leaks its
+ * memory. When any interrupt is pending they report every directory empty and
+ * set pq_vcut, so a long walk stops soon. An answer from a walk cut short is
+ * no answer: the caller then processes the interrupt and walks again. Most
+ * interrupts raise no error, such as a request to log memory contexts, and a
+ * false answer would let tier_partition overwrite a file a table reads (#1964
+ * review).
+ */
+typedef struct PqVNode
+{
+	const char *name;			/* a component of the path; "" for the root */
+	int			parent;			/* index of the parent; the root is its own */
+	bool		isdir;
+} PqVNode;
+
+typedef struct PqVTree
+{
+	PqVNode    *nodes;
+	int			n;
+} PqVTree;
+
+typedef struct PqVDir
+{
+	int			node;			/* the directory being listed */
+	int			up;				/* stand-ins below node; 0 for node itself */
+	int			next;			/* -2 for ".", -1 for "..", then a node index */
+	int			depth;			/* the index of the name it is listed for */
+	const char *stand;			/* a stand-in still to list, or NULL */
+	struct dirent ent;
+} PqVDir;
+
+static const PqVTree *pq_vtree = NULL;
+static bool pq_vcut = false;	/* a callback stopped for an interrupt */
+
+/*
+ * .* matches both . and .., so repeat('/.*', n) makes glob(3) walk 2^n paths,
+ * and glibc keeps every path it returns in memory it mallocs, outside any
+ * memory context (#1973). So the callbacks count the directory entries and
+ * stats glob(3) asks for. Past PQ_GLOB_MAX_STEPS they set pq_vover and report
+ * every directory empty, and the caller raises an error: no answer is given.
+ * A pattern that does not fan out over . and .. takes a few steps per level,
+ * so at most 128 levels stay far below the bound. Measured on PG18, a walk
+ * stops at the bound after about 60 ms; repeat('/.*', 17) still answers, and
+ * repeat('/.*', 18) is refused.
+ */
+#define PQ_GLOB_MAX_STEPS 1000000
+static int	pq_vsteps = 0;
+static bool pq_vover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
+
+/*
+ * A wildcard name, then a later name that matches "..", climbs out of
+ * whatever directory the wildcard matched: /w/x/?/.?/a reads /w/x/a whenever
+ * /w/x holds a directory of one letter (#1991). The tree holds no directory
+ * a wildcard could match. So when the first walk finds no match, a second
+ * walk runs in which each name of the pattern before the last one that can
+ * match ".." is open. Any name glob(3) looks up there exists as a directory,
+ * a stand-in, and a directory listed for a wildcard name there also lists one
+ * stand-in that the wildcard matches. A stand-in has no node: a path below
+ * one is its real ancestor plus a count of stand-ins, which ".." takes off one
+ * by one. Names are counted as glob(3) builds its paths, one for each name of
+ * the pattern, without empty names. The second walk only adds matches.
+ *
+ * Each . and .. and stand-in multiplies that walk, so it lists an entry the
+ * name matches only once for each place it leads to: glob(3) expands every
+ * path of one name before it lists any directory for the next, so a second
+ * path to the same place would only repeat the first. The first walk lists
+ * every entry, as before, so its bounds are unchanged.
+ */
+#define PQ_VSTAND 3				/* candidate names for each stand-in */
+#define PQ_VSEEN 65536			/* places a second walk remembers */
+
+typedef struct PqVOpen
+{
+	int			open;			/* names before this index are open */
+	int			nnames;
+	char	  **names;			/* the names of the pattern */
+	char	  **stand;			/* PQ_VSTAND candidates for each open name */
+	bool		reldot;			/* "." lists the first name of the pattern */
+	uint64	   *seen;			/* places reached, PQ_VSEEN slots, 0 if free */
+	int			nseen;
+} PqVOpen;
+
+static PqVOpen *pq_vo = NULL;	/* set during a second walk only */
+
+/* count one step of the walk -> false once the walk must stop */
+static bool
+pq_vstep(void)
+{
+	if (++pq_vsteps > PQ_GLOB_MAX_STEPS)
+		pq_vover = true;
+	if (pq_vover)
+		return false;
+	if (pq_vtree == NULL || InterruptPending)
+	{
+		pq_vcut = true;
+		return false;
+	}
+	return true;
+}
+
+/* the child of `dir` called name[0..len), or -1 */
+static int
+pq_vchild(const PqVTree *t, int dir, const char *name, size_t len)
+{
+	int			i;
+
+	for (i = 1; i < t->n; i++)
+		if (t->nodes[i].parent == dir && strlen(t->nodes[i].name) == len &&
+			memcmp(t->nodes[i].name, name, len) == 0)
+			return i;
+	return -1;
+}
+
+/*
+ * The node a path names, resolving "." and ".." as the kernel does; a path
+ * with or without a leading '/' starts at the root. *up is set to the number
+ * of stand-ins below that node the path ends in (PqVOpen). -> -1 with errno
+ * set.
+ */
+static int
+pq_vresolve(const char *p, int *up)
+{
+	const PqVTree *t = pq_vtree;
+	int			cur = 0;
+	int			depth = 0;		/* the names before this one */
+	int			next;
+
+	*up = 0;
+	if (!pq_vstep())
+	{
+		errno = EINTR;
+		return -1;
+	}
+	while (*p != '\0')
+	{
+		const char *e = strchrnul(p, '/');
+		size_t		len = e - p;
+
+		if (len == 0 || (len == 1 && p[0] == '.'))
+			;
+		else if (*up == 0 && !t->nodes[cur].isdir)
+		{
+			errno = ENOTDIR;
+			return -1;
+		}
+		else if (len == 2 && p[0] == '.' && p[1] == '.')
+		{
+			if (*up > 0)
+				(*up)--;
+			else
+				cur = t->nodes[cur].parent;
+		}
+		else if (*up == 0 && (next = pq_vchild(t, cur, p, len)) >= 0)
+			cur = next;
+		else if (pq_vo != NULL && depth < pq_vo->open)
+			(*up)++;
+		else
+		{
+			errno = ENOENT;
+			return -1;
+		}
+		depth += (len > 0) ? 1 : 0;
+		p = (*e == '/') ? e + 1 : e;
+	}
+	return cur;
+}
+
+static void *
+pq_vopendir(const char *path)
+{
+	int			up;
+	int			node = pq_vresolve(path, &up);
+	PqVDir	   *d;
+	int			depth = 0;
+	const char *p;
+
+	if (node < 0)
+		return NULL;
+	if (up == 0 && !pq_vtree->nodes[node].isdir)
+	{
+		errno = ENOTDIR;
+		return NULL;
+	}
+	d = malloc(sizeof(PqVDir));
+	if (d == NULL)
+		return NULL;
+	d->node = node;
+	d->up = up;
+	d->next = -2;
+	d->stand = NULL;
+	/* the index of the name this listing is for */
+	for (p = path; *p != '\0'; p++)
+		depth += (*p != '/' && (p == path || p[-1] == '/')) ? 1 : 0;
+	if (pq_vo != NULL && pq_vo->reldot && strcmp(path, ".") == 0)
+		depth = 0;
+	d->depth = depth;
+	if (pq_vo != NULL && depth < pq_vo->open)
+	{
+		int			k;
+
+		/* a candidate no real entry of the directory already has */
+		for (k = 0; k < PQ_VSTAND && d->stand == NULL; k++)
+		{
+			const char *c = pq_vo->stand[depth * PQ_VSTAND + k];
+
+			if (c != NULL && (up > 0 || pq_vchild(pq_vtree, node, c, strlen(c)) < 0))
+				d->stand = c;
+		}
+	}
+	return d;
+}
+
+/*
+ * Has a second walk already listed an entry, for the name at `depth`, that
+ * leads to node `node` with `up` stand-ins below it? Records it if not. Once
+ * the table is full, nothing more is recorded and every entry is listed.
+ */
+static bool
+pq_vrepeat(int depth, int node, int up)
+{
+	uint64		key = (UINT64CONST(1) << 63) | ((uint64) depth << 42) |
+		((uint64) up << 21) | (uint64) node;
+	uint32		i = (uint32) ((key * UINT64CONST(0x9E3779B97F4A7C15)) >> 48);
+
+	while (pq_vo->seen[i] != 0)
+	{
+		if (pq_vo->seen[i] == key)
+			return true;
+		i = (i + 1) % PQ_VSEEN;
+	}
+	if (pq_vo->nseen < PQ_VSEEN / 4 * 3)
+	{
+		pq_vo->seen[i] = key;
+		pq_vo->nseen++;
+	}
+	return false;
+}
+
+static struct dirent *
+pq_vreaddir(void *dirp)
+{
+	PqVDir	   *d = (PqVDir *) dirp;
+	const PqVTree *t = pq_vtree;
+	const char *name;
+	int			node;
+	int			to;				/* the node the entry leads to */
+	int			toup;			/* and the stand-ins below it */
+
+	for (;;)
+	{
+		if (!pq_vstep())
+			return NULL;
+		if (d->next == -2 || d->next == -1)
+		{
+			name = (d->next == -2) ? "." : "..";
+			to = (d->next == -2 || d->up > 0) ? d->node : t->nodes[d->node].parent;
+			toup = (d->next == -2) ? d->up : Max(d->up - 1, 0);
+			node = (d->up > 0) ? -1 : to;	/* -1: a stand-in, or above one */
+			d->next++;
+			if (d->next == 0)
+				d->next = 1;
+		}
+		else
+		{
+			while (d->up == 0 && d->next < t->n && t->nodes[d->next].parent != d->node)
+				d->next++;
+			if (d->up == 0 && d->next < t->n)
+			{
+				node = to = d->next++;
+				toup = 0;
+				name = t->nodes[node].name;
+			}
+			else if (d->stand != NULL)
+			{
+				node = -1;
+				to = d->node;
+				toup = d->up + 1;
+				name = d->stand;
+				d->stand = NULL;
+			}
+			else
+				return NULL;
+		}
+		if (pq_vo == NULL || d->depth >= pq_vo->nnames ||
+			fnmatch(pq_vo->names[d->depth], name, FNM_PERIOD) != 0 ||
+			!pq_vrepeat(d->depth + 1, to, toup))
+			break;
+	}
+	memset(&d->ent, 0, sizeof(d->ent));
+	d->ent.d_ino = (node >= 0) ? node + 1 : t->n + 1;
+	d->ent.d_type = (node < 0 || t->nodes[node].isdir) ? DT_DIR : DT_REG;
+	strlcpy(d->ent.d_name, name, sizeof(d->ent.d_name));
+	return &d->ent;
+}
+
+static void
+pq_vclosedir(void *dirp)
+{
+	free(dirp);
+}
+
+static int
+pq_vstat(const char *path, struct stat *st)
+{
+	int			up;
+	int			node = pq_vresolve(path, &up);
+
+	if (node < 0)
+		return -1;
+	memset(st, 0, sizeof(*st));
+	st->st_ino = (up > 0) ? pq_vtree->n + up : node + 1;
+	st->st_nlink = 1;
+	st->st_mode = (up > 0 || pq_vtree->nodes[node].isdir) ? (S_IFDIR | 0755) : (S_IFREG | 0644);
+	return 0;
+}
+
+/*
+ * glibc glob(3) splits a pattern at its last '/' and, when the part before it
+ * holds *, ? or [, calls itself on that part. So it calls itself once for
+ * every '/' after the first *, ? or [, a '/' between literal names too, and
+ * each call keeps a copy of the pattern on the stack. glibc fnmatch calls
+ * itself for each * of an s3:// key. Measured with glibc 2.43, 128 levels in
+ * a pattern of 4095 bytes use 0.7 MB of stack, and 2046 levels overflow an
+ * 8 MB stack (#1964 review). PQ_GLOB_MAX_LEVELS bounds both.
+ */
+#define PQ_GLOB_MAX_LEVELS 128
+
+/*
+ * Refuse, with an error, a pattern of PATH_MAX bytes or more, or one whose
+ * `levels` (counted by the caller) pass PQ_GLOB_MAX_LEVELS, before glibc
+ * matches it. `what` names the level in the detail.
+ */
+static void
+pq_glob_bound(const char *pattern, int levels, const char *what)
+{
+	if (strlen(pattern) >= PATH_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern is too long to match: %zu bytes",
+						strlen(pattern)),
+				 errdetail("A glob pattern must be shorter than %d bytes.",
+						   PATH_MAX)));
+	if (levels > PQ_GLOB_MAX_LEVELS)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("glob pattern has too many levels to match: %d", levels),
+				 errdetail("A glob pattern may have at most %d %s.",
+						   PQ_GLOB_MAX_LEVELS, what)));
+}
+
+/*
+ * Bound a local pattern before glob(3) runs: every '/' after the first *, ?
+ * or [ is a call of glob(3) to itself. The reader and path_glob_matches both
+ * call this (#1968): the reader on the folded form it globs
+ * (pq_local_glob_fold), path_glob_matches on the pattern it is given.
+ */
+static void
+pq_local_glob_bound(const char *pattern)
+{
+	int			levels = 0;
+	const char *c;
+
+	for (c = strpbrk(pattern, "*?["); c != NULL && *c != '\0'; c++)
+		levels += (*c == '/') ? 1 : 0;
+	pq_glob_bound(pattern, levels, "levels after the first *, ? or [");
+}
+
+/*
+ * Is `s` empty or made only of '/' and "\/"? (pq_local_glob_fold)
+ */
+static bool
+pq_only_seps(const char *s)
+{
+	while (*s != '\0')
+	{
+		if (s[0] == '/')
+			s++;
+		else if (s[0] == '\\' && s[1] == '/')
+			s += 2;
+		else
+			return false;
+	}
+	return true;
+}
+
+/*
+ * The folded form of a local pattern, which the reader bounds and globs: each
+ * run of '/' becomes one '/', and a '.' name with a '/' after it is dropped.
+ * open(2) and glob(3) read both spellings as the same file, so the files read
+ * do not change, but the folded form can have far fewer levels: #1978's
+ * tier_partition check reads a table on '<dir>/s[p]' || repeat('/.', 200) ||
+ * '/a.parquet'. A '.' at the end is kept, as it makes the pattern match only
+ * directories. So is a '.' that only '/' or "\/" follow: glob(3) matches a
+ * pattern that ends in '/' against a file, so 'f/./' would read the file 'f'
+ * once folded to 'f/' (#1977 review). A name followed by '..' is kept, as a
+ * symbolic link before the '..' leads the kernel somewhere else. A '/' after
+ * a backslash is not folded.
+ * Unlike pq_local_path_fold, keeps x/..: a symlink x changes what is opened.
+ */
+static char *
+pq_local_glob_fold(const char *pattern)
+{
+	char	   *out = palloc(strlen(pattern) + 1);
+	char	   *o = out;
+	const char *c = pattern;
+
+	while (*c != '\0')
+	{
+		bool		escaped = (o > out && o[-1] == '\\');
+
+		*o++ = *c;
+		if (*c++ != '/' || escaped)
+			continue;
+		for (;;)
+		{
+			if (c[0] == '/')
+				c++;
+			else if (c[0] == '.' && c[1] == '/' && !pq_only_seps(c + 1))
+				c += 2;
+			else
+				break;
+		}
+	}
+	*o = '\0';
+	return out;
+}
+
+/*
+ * Bound an s3:// pattern before fnmatch runs: fnmatch calls itself for each *,
+ * so they are bounded as glob(3)'s levels. The reader and path_glob_matches
+ * both call this (#1972).
+ */
+static void
+pq_remote_glob_bound(const char *pattern)
+{
+	int			stars = 0;
+	const char *c;
+
+	for (c = pattern; *c != '\0'; c++)
+		stars += (*c == '*') ? 1 : 0;
+	pq_glob_bound(pattern, stars, "* in an s3:// key");
+}
+
+/*
+ * Write to `out`, which holds strlen(path) + 3 bytes, the lexical form of a
+ * local path, as tier_partition's SQL folds it (#1965, #1978): a run of '/'
+ * is one, a "." name is dropped, and a name is dropped with the ".." after
+ * it. A ".." at the root stays at the root; one that starts a relative path
+ * is kept. A trailing '/' is kept, an empty result is ".", and "" stays "".
+ * A symbolic link is not resolved, so a ".." can fold to a path the kernel
+ * would not reach; path_glob_matches only adds matches with this form
+ * (#1982). It neither allocates nor raises an error.
+ * Unlike pq_local_glob_fold, drops x/..: here over-refusing is the safe side.
+ */
+static void
+pq_local_path_fold(const char *path, char *out)
+{
+	size_t		base = (path[0] == '/') ? 1 : 0;
+	size_t		o = base;
+	int			names = 0;		/* names in out */
+	int			ups = 0;		/* of them, the leading ".." of a relative path */
+	const char *p = path;
+
+	if (path[0] == '\0')
+	{
+		out[0] = '\0';
+		return;
+	}
+	if (base)
+		out[0] = '/';
+	while (*p != '\0')
+	{
+		const char *e = strchrnul(p, '/');
+		size_t		n = e - p;
+		bool		dotdot = (n == 2 && p[0] == '.' && p[1] == '.');
+
+		if (n == 0 || (n == 1 && p[0] == '.'))
+			;
+		else if (dotdot && names > ups)
+		{
+			/* drop the last name, and the '/' before it */
+			while (o > base && out[o - 1] != '/')
+				o--;
+			if (o > base)
+				o--;
+			names--;
+		}
+		else if (dotdot && base)
+			;
+		else
+		{
+			if (dotdot)
+				ups++;
+			if (o > base)
+				out[o++] = '/';
+			memcpy(out + o, p, n);
+			o += n;
+			names++;
+		}
+		p = (*e == '/') ? e + 1 : e;
+	}
+	if (o == 0)
+		out[o++] = '.';
+	if (p[-1] == '/' && out[o - 1] != '/')
+		out[o++] = '/';
+	out[o] = '\0';
+}
+
+/*
+ * Add to the tree, as directories, the names a local pattern spells before
+ * the name that holds its first *, ?, [ or backslash. glob(3) opens them as
+ * written, and the tree holds only the path, so without them a glob that goes
+ * down one and back up through a name that matches "..", such as
+ * /w/sub/.?/a for /w/a, could not reach the path. Each is taken to exist,
+ * which only adds matches (#1982). The array holds a node for every byte of
+ * the pattern.
+ */
+static void
+pq_vtree_seed(PqVTree *t, const char *pattern)
+{
+	const char *meta = strpbrk(pattern, "*?[\\");
+	char	   *copy;
+	char	   *end;
+	char	   *p;
+	int			cur = 0;
+
+	if (meta == NULL)
+		return;
+	copy = pnstrdup(pattern, meta - pattern);
+	end = strrchr(copy, '/');
+	if (end == NULL)
+		return;
+	*end = '\0';
+	for (p = copy; *p != '\0';)
+	{
+		char	   *e = strchrnul(p, '/');
+		size_t		len = e - p;
+		bool		last = (*e == '\0');
+
+		*e = '\0';
+		if (len >= sizeof(((struct dirent *) NULL)->d_name))
+			return;
+		if (len == 2 && p[0] == '.' && p[1] == '.')
+			cur = t->nodes[cur].parent;
+		else if (len > 0 && !(len == 1 && p[0] == '.'))
+		{
+			int			next = pq_vchild(t, cur, p, len);
+
+			if (next < 0)
+			{
+				next = t->n++;
+				t->nodes[next].name = p;
+				t->nodes[next].parent = cur;
+			}
+			t->nodes[next].isdir = true;
+			cur = next;
+		}
+		if (last)
+			break;
+		p = e + 1;
+	}
+}
+
+/*
+ * The end of the bracket expression that starts at `p`, just past its ']', or
+ * NULL when it has none and glob(3) reads the '[' as itself.
+ */
+static const char *
+pq_bracket_end(const char *p)
+{
+	const char *c = p + 1;
+
+	if (*c == '!' || *c == '^')
+		c++;
+	if (*c == ']')
+		c++;
+	while (*c != '\0' && *c != ']')
+	{
+		if (c[0] == '[' && (c[1] == ':' || c[1] == '=' || c[1] == '.'))
+		{
+			const char *e = c + 2;
+
+			while (*e != '\0' && !(e[0] == c[1] && e[1] == ']'))
+				e++;
+			if (*e == '\0')
+				return NULL;
+			c = e + 2;
+		}
+		else if (c[0] == '\\' && c[1] != '\0')
+			c += 2;
+		else
+			c++;
+	}
+	return (*c == ']') ? c + 1 : NULL;
+}
+
+/*
+ * Write to `out`, which holds strlen(name) + 1 bytes, the k-th name that the
+ * glob name `name` matches as glob(3) matches it, with FNM_PERIOD: a * or a ?
+ * stands for the k-th letter, and a bracket for the k-th byte it matches, or
+ * its last. -> false when no such name is found, or it is "." or "..".
+ */
+static bool
+pq_vstand_name(const char *name, int k, char *out)
+{
+	size_t		o = 0;
+	const char *c = name;
+
+	while (*c != '\0')
+	{
+		const char *end = (*c == '[') ? pq_bracket_end(c) : NULL;
+
+		if (c[0] == '\\' && c[1] != '\0')
+		{
+			out[o++] = c[1];
+			c += 2;
+		}
+		else if (*c == '*' || *c == '?')
+		{
+			out[o++] = "abc"[k];
+			c++;
+		}
+		else if (end != NULL)
+		{
+			char	   *br = pnstrdup(c, end - c);
+			char		one[2] = {0, 0};
+			int			b;
+			int			seen = 0;
+
+			for (b = 1; b < 256; b++)
+			{
+				one[0] = (char) b;
+				if (b == '/' || (o == 0 && b == '.') || fnmatch(br, one, 0) != 0)
+					continue;
+				if (seen == 0 || seen <= k)
+					out[o] = (char) b;
+				if (++seen > k)
+					break;
+			}
+			pfree(br);
+			if (seen == 0)
+				return false;
+			o++;
+			c = end;
+		}
+		else
+			out[o++] = *c++;
+	}
+	out[o] = '\0';
+	return o > 0 && strcmp(out, ".") != 0 && strcmp(out, "..") != 0 &&
+		o < sizeof(((struct dirent *) NULL)->d_name) &&
+		fnmatch(name, out, FNM_PERIOD) == 0;
+}
+
+/*
+ * The second walk of a pattern (PqVOpen), or NULL when it needs none: its
+ * names before the last one that can match "..", as fnmatch with FNM_PERIOD
+ * reads it, and that comes after a name holding *, ? or [, are open. Sets
+ * *closed when a wildcard name it opens has no stand-in: the caller then
+ * answers true.
+ */
+static PqVOpen *
+pq_vopen_names(const char *pattern, bool *closed)
+{
+	char	   *copy = pstrdup(pattern);
+	PqVOpen    *vo = palloc0(sizeof(PqVOpen));
+	bool		wild = false;
+	char	   *p;
+	int			i;
+	int			k;
+
+	*closed = false;
+	vo->names = palloc(sizeof(char *) * (strlen(pattern) + 1));
+	for (p = strtok(copy, "/"); p != NULL; p = strtok(NULL, "/"))
+		vo->names[vo->nnames++] = p;
+	for (i = 0; i < vo->nnames; i++)
+	{
+		if (wild && fnmatch(vo->names[i], "..", FNM_PERIOD) == 0)
+			vo->open = i;
+		if (strpbrk(vo->names[i], "*?[") != NULL)
+			wild = true;
+	}
+	if (vo->open == 0)
+		return NULL;
+	/* glob(3) lists "." for the first name of a relative pattern */
+	vo->reldot = (pattern[0] != '/' && strpbrk(vo->names[0], "*?[") != NULL);
+	vo->stand = palloc0(sizeof(char *) * vo->open * PQ_VSTAND);
+	for (i = 0; i < vo->open; i++)
+	{
+		bool		any = false;
+
+		if (strpbrk(vo->names[i], "*?[") == NULL)
+			continue;
+		for (k = 0; k < PQ_VSTAND; k++)
+		{
+			char	   *c = palloc(strlen(vo->names[i]) + 1);
+
+			if (pq_vstand_name(vo->names[i], k, c))
+			{
+				vo->stand[i * PQ_VSTAND + k] = c;
+				any = true;
+			}
+		}
+		if (!any)
+			*closed = true;
+	}
+	vo->seen = palloc(sizeof(uint64) * PQ_VSEEN);
+	return vo;
+}
+
+/*
+ * One walk of glob(3) over the tree; a second walk when `vo` is not NULL
+ * (PqVOpen) -> does a path it returns match `path` (want is its lexical
+ * form)? Past PQ_GLOB_MAX_STEPS the first walk raises an error, and a second
+ * walk sets *over and answers false.
+ */
+static bool
+pq_vwalk(const char *pattern, const char *path, const char *want,
+		 PqVTree *tree, PqVOpen *vo, bool *over)
+{
+	glob_t		g;
+	int			rc;
+	int			attempt;
+	bool		found = false;
+	size_t		i;
+
+	*over = false;
+	for (attempt = 1;; attempt++)
+	{
+		memset(&g, 0, sizeof(g));
+		g.gl_opendir = pq_vopendir;
+		g.gl_readdir = pq_vreaddir;
+		g.gl_closedir = pq_vclosedir;
+		g.gl_stat = pq_vstat;
+		g.gl_lstat = pq_vstat;
+		pq_vcut = false;
+		pq_vover = false;
+		pq_vsteps = 0;
+		if (vo != NULL)
+		{
+			memset(vo->seen, 0, sizeof(uint64) * PQ_VSEEN);
+			vo->nseen = 0;
+		}
+		pq_vtree = tree;
+		pq_vo = vo;
+		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, &g);
+		pq_vtree = NULL;
+		pq_vo = NULL;
+		if (!pq_vover && !pq_vcut && (rc == 0 || rc == GLOB_NOMATCH))
+			break;
+		globfree(&g);
+		if (pq_vover && vo != NULL)
+		{
+			*over = true;
+			return false;
+		}
+		if (pq_vover)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("glob pattern walks too many paths to match: more than %d steps",
+							PQ_GLOB_MAX_STEPS),
+					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
+		if (!pq_vcut)
+			ereport(ERROR,
+					(errcode(rc == GLOB_NOSPACE ? ERRCODE_OUT_OF_MEMORY : ERRCODE_INTERNAL_ERROR),
+					 errmsg("could not match glob \"%s\" against path \"%s\": glob(3) returned %d",
+							pattern, path, rc)));
+		/* a cancel raises its error here; any other interrupt is processed */
+		CHECK_FOR_INTERRUPTS();
+		/* an interrupt that cannot be processed now cuts every walk short */
+		if (attempt >= 100)
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("could not match glob \"%s\" against path \"%s\": interrupted %d times",
+							pattern, path, attempt)));
+	}
+	if (rc == 0)
+	{
+		/*
+		 * glob(3) returns a name a glob reached through "." or ".." as it
+		 * built it, such as /w/x/../a for /w/x/.?/a. Each is compared as
+		 * returned, then in its lexical form with the target's (#1982). The
+		 * buffer is malloc'd, so an error cannot leave glob(3)'s memory
+		 * behind.
+		 */
+		size_t		longest = 0;
+		char	   *got;
+
+		for (i = 0; i < g.gl_pathc; i++)
+			longest = Max(longest, strlen(g.gl_pathv[i]));
+		got = malloc(longest + 3);
+		if (got == NULL)
+		{
+			globfree(&g);
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+		}
+		for (i = 0; i < g.gl_pathc && !found; i++)
+		{
+			found = (strcmp(g.gl_pathv[i], path) == 0);
+			if (!found)
+			{
+				pq_local_path_fold(g.gl_pathv[i], got);
+				found = (strcmp(got, want) == 0);
+			}
+		}
+		free(got);
+	}
+	globfree(&g);
+	return found;
+}
+
+/*
+ * Would glob(pattern, GLOB_NOSORT) return exactly `path` if `path` existed,
+ * for a pattern and a path that are absolute, or a path that is ""
+ * (pq_local_glob_match)? A path with a name longer than a directory entry
+ * holds cannot be opened, so it matches nothing. pq_local_glob_match refuses
+ * a path of PATH_MAX bytes or more in the same way, and raises an error for
+ * a pattern of PATH_MAX bytes or more, or with more than PQ_GLOB_MAX_LEVELS
+ * slashes after its first *, ? or [, before glob(3) runs, as no answer can
+ * be given safely. So does a walk of more than PQ_GLOB_MAX_STEPS
+ * steps (#1973). It never answers false for a walk an interrupt cut short,
+ * nor for a glob(3) error: it processes the interrupt and walks again, or
+ * raises an error. A path glob(3) returns matches when it is `path` as
+ * spelled, or when the two have the same lexical form (#1982). When the
+ * first walk finds none, and a wildcard name comes before a name that can
+ * match "..", a second walk with stand-ins for the directories the wildcard
+ * could match decides (PqVOpen, #1991). It answers true when that walk
+ * passes PQ_GLOB_MAX_STEPS, or a stand-in cannot be named.
+ */
+static bool
+pq_local_glob_walk(const char *pattern, const char *path)
+{
+	char	   *copy;
+	PqVTree		tree;
+	int			cur = 0;
+	char	   *p;
+	bool		found;
+	bool		over;
+	bool		closed;
+	PqVOpen    *vo;
+	char	   *want;
+
+	copy = pstrdup(path);
+	p = copy;
+	tree.nodes = palloc(sizeof(PqVNode) * (strlen(path) + strlen(pattern) + 2));
+	tree.nodes[0].name = "";
+	tree.nodes[0].parent = 0;
+	tree.nodes[0].isdir = true;
+	tree.n = 1;
+	while (*p != '\0')
+	{
+		char	   *e = strchrnul(p, '/');
+		size_t		len = e - p;
+		bool		last = (*e == '\0');
+		int			next;
+
+		CHECK_FOR_INTERRUPTS();
+		*e = '\0';
+		if (len >= sizeof(((struct dirent *) NULL)->d_name))
+			return false;
+		if (len > 0)
+		{
+			/* anything below a name makes it a directory */
+			tree.nodes[cur].isdir = true;
+			if (len == 1 && p[0] == '.')
+				next = cur;
+			else if (len == 2 && p[0] == '.' && p[1] == '.')
+				next = tree.nodes[cur].parent;
+			else
+			{
+				next = pq_vchild(&tree, cur, p, len);
+				if (next < 0)
+				{
+					next = tree.n++;
+					tree.nodes[next].name = p;
+					tree.nodes[next].parent = cur;
+					tree.nodes[next].isdir = false;
+				}
+			}
+			cur = next;
+		}
+		if (last)
+			break;
+		p = e + 1;
+	}
+	if (path[0] != '\0' && path[strlen(path) - 1] == '/')
+		tree.nodes[cur].isdir = true;
+	pq_vtree_seed(&tree, pattern);
+	want = palloc(strlen(path) + 3);
+	pq_local_path_fold(path, want);
+
+	found = pq_vwalk(pattern, path, want, &tree, NULL, &over);
+	if (!found && (vo = pq_vopen_names(pattern, &closed)) != NULL)
+	{
+		found = closed || pq_vwalk(pattern, path, want, &tree, vo, &over);
+		/* a walk too long to finish is taken to match: refuse more, not less */
+		found = found || over;
+	}
+	return found;
+}
+
+/*
+ * A relative pattern or path names a path under the backend's working
+ * directory, the data directory: the reader's glob(3), export_parquet's open
+ * and the reader's open all start there. The tree roots every path at '/', so
+ * a relative one is first resolved against DataDir, the name of that
+ * directory (#2001). Otherwise a ".." above the pattern's first name would
+ * have nowhere to go: ../d?ta/a.parquet would never reach a.parquet in a data
+ * directory called data.
+ * "" is left as it is: it names no file. -> a palloc'd copy, or `p` itself
+ * when it is absolute or "".
+ */
+static const char *
+pq_local_resolve(const char *p)
+{
+	if (p[0] == '/' || p[0] == '\0')
+		return p;
+	return psprintf("%s/%s", DataDir, p);
+}
+
+/*
+ * Would glob(pattern, GLOB_NOSORT), the reader's call, return exactly `path`
+ * if `path` existed? The bounds apply to the pattern and the path as given,
+ * then each is resolved (pq_local_resolve) and pq_local_glob_walk answers.
+ * A relative path resolved so is DataDir's spelling of the file, as an
+ * absolute path under it would be. A relative pattern is read as glob(3)
+ * reads it from the working directory only when DataDir names that directory
+ * plainly, so the answer is true, matching every path, when it does not:
+ * when DataDir holds *, ?, [ or a backslash, which a pattern reads as glob
+ * syntax, or when it is not the working directory as getcwd(3) spells it (a
+ * symbolic link in it, say), as ".." from the working directory then leads
+ * somewhere DataDir/.. does not.
+ */
+static bool
+pq_local_glob_match(const char *pattern, const char *path)
+{
+	char		cwd[MAXPGPATH];
+
+	pq_local_glob_bound(pattern);
+	if (strlen(path) >= PATH_MAX)
+		return false;
+	if (pattern[0] != '/' &&
+		(strpbrk(DataDir, "*?[\\") != NULL ||
+		 getcwd(cwd, sizeof(cwd)) == NULL || strcmp(cwd, DataDir) != 0))
+		return true;
+	return pq_local_glob_walk(pq_local_resolve(pattern), pq_local_resolve(path));
+}
+
+/*
+ * pgcolumnar.path_glob_matches(pattern text, path text) -> would a foreign
+ * table whose path is `pattern` expand it, as a glob, to `path`? An s3:// key
+ * is matched by pq_remote_glob_match, the reader's own matcher; a local
+ * pattern by glob(3), over the path alone (pq_local_glob_match). A pattern the
+ * reader does not read as a glob matches nothing: a local path without *, ?
+ * or [, an s3:// URL with none in its key, and any other remote URL. So does a
+ * local pattern against a remote path. s3a:// and s3n:// read as s3://
+ * (#1930). It reads no file and no object, so it needs no privilege (#1957).
+ */
+Datum
+pgcolumnar_path_glob_matches(PG_FUNCTION_ARGS)
+{
+	const char *pattern = PgColumnarS3Alias(text_to_cstring(PG_GETARG_TEXT_PP(0)));
+	const char *path = PgColumnarS3Alias(text_to_cstring(PG_GETARG_TEXT_PP(1)));
+
+	if (PgColumnarPathIsRemote(pattern))
+	{
+		if (pq_remote_glob_start(pattern) == NULL || !PgColumnarPathIsRemote(path))
+			PG_RETURN_BOOL(false);
+		pq_remote_glob_bound(pattern);
+		PG_RETURN_BOOL(pq_remote_glob_match(pattern, path));
+	}
+	PG_RETURN_BOOL(!PgColumnarPathIsRemote(path) && pq_has_glob_meta(pattern) &&
+				   pq_local_glob_match(pattern, path));
+}
+
+/*
+ * Refuse a bracketed (IPv6 literal) authority by name (#1785). The object-store
+ * module parses hosts without IPv6 literal support, and before this check a
+ * bracket in the host read as a glob character class and failed as a listing.
+ */
+static void
+pq_remote_refuse_ipv6(const char *url)
+{
+	const char *sep = strstr(url, "://");
+	const char *auth = (sep != NULL) ? sep + 3 : url;
+	size_t		alen = strcspn(auth, "/");
+
+	if (memchr(auth, '[', alen) != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("columnar: IPv6 literal hosts are not supported: \"%s\"", url),
+				 errhint("Name the endpoint by a host name or an IPv4 address.")));
 }
 
 /*
@@ -3001,6 +4814,161 @@ pq_walk_dir(const char *path, int depth, List **files, int *skipped)
 }
 
 /*
+ * The reader expands a local pattern with glob(3) on the real filesystem
+ * (#1984). Each real directory lists . and .., and .* matches both, so each
+ * level of .* multiplies the walk, and glob(3) keeps what it finds in
+ * memory it mallocs outside any memory context. glob(3) does not check for
+ * interrupts either. So the reader passes it callbacks that wrap opendir,
+ * readdir, stat and lstat and count each call as a step of the walk, under the
+ * bound of path_glob_matches (PQ_GLOB_MAX_STEPS, #1973). Like that walk's
+ * callbacks, they neither allocate in a memory context nor raise an error, so
+ * nothing jumps out of glob(3) and leaks its memory. Past the bound they set
+ * pq_rover; when an interrupt that raises an error is pending they set
+ * pq_rcut. From then on they report every directory empty and every path
+ * missing, so glob(3) returns soon. The caller then frees what glob(3) found and raises the error or
+ * processes the interrupt: it never reads a list from a walk that stopped.
+ * closedir is not a step, so every directory opened is closed.
+ */
+static int	pq_rsteps = 0;
+static bool pq_rover = false;	/* a callback stopped at PQ_GLOB_MAX_STEPS */
+static bool pq_rcut = false;	/* a callback stopped for an interrupt */
+
+/*
+ * -> true when an interrupt is pending that raises an error once processed: a
+ * cancel, a statement_timeout or lock_timeout (both arrive as a cancel), a
+ * termination, or a transaction_timeout. Other interrupts, such as
+ * client_connection_check_interval, raise no error and recur. A walk cut for
+ * one of them would be cut again on every attempt, so the walk leaves them
+ * pending, and the first CHECK_FOR_INTERRUPTS after glob(3) processes them.
+ */
+static bool
+pq_rerror_pending(void)
+{
+	if (!InterruptPending)
+		return false;
+	if (QueryCancelPending || ProcDiePending)
+		return true;
+#if PG_VERSION_NUM >= 170000
+	if (TransactionTimeoutPending)
+		return true;
+#endif
+	return false;
+}
+
+/* count one step of the reader's walk -> false once the walk must stop */
+static bool
+pq_rstep(void)
+{
+	if (pq_rover || pq_rcut)
+		return false;
+	if (++pq_rsteps > PQ_GLOB_MAX_STEPS)
+	{
+		pq_rover = true;
+		return false;
+	}
+	if (pq_rerror_pending())
+	{
+		pq_rcut = true;
+		return false;
+	}
+	return true;
+}
+
+static void *
+pq_ropendir(const char *path)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return NULL;
+	}
+	return opendir(path);
+}
+
+static struct dirent *
+pq_rreaddir(void *dirp)
+{
+	if (!pq_rstep())
+		return NULL;
+	return readdir((DIR *) dirp);
+}
+
+static void
+pq_rclosedir(void *dirp)
+{
+	closedir((DIR *) dirp);
+}
+
+static int
+pq_rstat(const char *path, struct stat *st)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return -1;
+	}
+	return stat(path, st);
+}
+
+static int
+pq_rlstat(const char *path, struct stat *st)
+{
+	if (!pq_rstep())
+	{
+		errno = EINTR;
+		return -1;
+	}
+	return lstat(path, st);
+}
+
+/*
+ * glob(pattern, GLOB_NOSORT) on the real filesystem, bounded at
+ * PQ_GLOB_MAX_STEPS steps with error 54000 (#1984). A walk an interrupt cut
+ * short is never returned: the interrupt is processed, which raises the
+ * error of a cancel or a statement_timeout. If it raises none, as when
+ * interrupts are held off, the reader walks again, and after 100 cut walks
+ * it fails with 57014. -> glob(3)'s return code, with `g` to be freed by the
+ * caller.
+ */
+static int
+pq_local_glob(const char *pattern, glob_t *g)
+{
+	int			rc;
+	int			attempt;
+
+	for (attempt = 1;; attempt++)
+	{
+		memset(g, 0, sizeof(*g));
+		g->gl_opendir = pq_ropendir;
+		g->gl_readdir = pq_rreaddir;
+		g->gl_closedir = pq_rclosedir;
+		g->gl_stat = pq_rstat;
+		g->gl_lstat = pq_rlstat;
+		pq_rsteps = 0;
+		pq_rover = false;
+		pq_rcut = false;
+		rc = glob(pattern, GLOB_NOSORT | GLOB_ALTDIRFUNC, NULL, g);
+		if (!pq_rover && !pq_rcut)
+			return rc;
+		globfree(g);
+		if (pq_rover)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("glob pattern walks too many paths to match: more than %d steps",
+							PQ_GLOB_MAX_STEPS),
+					 errdetail("A name such as .* matches both . and .., so each level of it doubles the walk.")));
+		/* a cancel raises its error here; any other interrupt is processed */
+		CHECK_FOR_INTERRUPTS();
+		/* an interrupt that cannot be processed now cuts every walk short */
+		if (attempt >= 100)
+			ereport(ERROR,
+					(errcode(ERRCODE_QUERY_CANCELED),
+					 errmsg("could not expand pattern \"%s\": interrupted %d times",
+							pattern, attempt)));
+	}
+}
+
+/*
  * Resolve a path option into the concrete file(s) to read, in a stable sorted
  * order:
  *   - a regular file            -> just that file
@@ -3018,6 +4986,12 @@ pq_walk_dir(const char *path, int depth, List **files, int *skipped)
  * report for a remote path that the byte source exists to eliminate, arriving one
  * layer above the byte source. `*`, `?` and `[` are all legal in an S3 key, so
  * this is an ordinary key, not a crafted one.
+ *
+ * Only the key of an s3:// URL can be a pattern (#1785). Before, the whole URL
+ * was tested, so a query string on an http URL and a bracketed IPv6 host both
+ * failed as a listing, and an exact key holding a metacharacter read other
+ * objects or none. A pattern now reads an object of exactly its name when one
+ * exists, and expands only when none does.
  */
 static List *
 pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
@@ -3025,9 +4999,17 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 	struct stat st;
 	List	   *files = NIL;
 
+	/*
+	 * s3a:// and s3n:// read as s3://, as in the Iceberg reader (#1930). Every
+	 * Parquet read resolves its path here first, so the listing, the glob, the
+	 * open and the module all see s3://, and so do the paths returned.
+	 */
+	path = PgColumnarS3Alias(path);
+
 	if (PgColumnarPathIsRemote(path))
 	{
-		bool		hasGlob = pq_has_glob_meta(path);
+		const char *meta;
+		bool		hasGlob;
 		size_t		plen = strlen(path);
 		bool		isDir = (plen > 0 && path[plen - 1] == '/');
 		const PgColumnarObjStoreApi *api;
@@ -3035,6 +5017,10 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		char	  **keys;
 		int			nkeys;
 		int			i;
+
+		pq_remote_refuse_ipv6(path);
+		meta = pq_remote_glob_start(path);
+		hasGlob = (meta != NULL);
 
 		/*
 		 * An exact key (no pattern, no trailing slash) is read as one object,
@@ -3057,8 +5043,10 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 
 		if (hasGlob)
 		{
-			const char *meta = strpbrk(path, "*?[");
 			const char *seg = meta;
+
+			/* before the listing, as fnmatch below could overflow the stack */
+			pq_remote_glob_bound(path);
 
 			/* the prefix to list is the literal head up to the last '/' before
 			 * the first metacharacter */
@@ -3070,13 +5058,37 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		else
 			listUrl = pstrdup(path);
 
-		keys = api->list_objects(listUrl, cfg, &nkeys);
+		keys = api->list_objects(listUrl, PgColumnarObjStoreConfigFor(cfg, listUrl),
+								 &nkeys);
+
+		/*
+		 * A pattern that names an existing object exactly reads that object
+		 * alone (#1785), whatever its suffix, as an exact key without a
+		 * metacharacter does. Only when no object has that literal name is it
+		 * matched as a pattern, where a backslash escapes a metacharacter.
+		 */
+		if (hasGlob)
+			for (i = 0; i < nkeys; i++)
+				if (pq_remote_key_is_literal(path, keys[i]))
+					return list_make1(keys[i]);
+
 		for (i = 0; i < nkeys; i++)
 		{
-			if (!pq_has_parquet_ext(keys[i]) || pq_remote_key_hidden(keys[i]))
+			if (!pq_has_parquet_ext(keys[i]))
 				continue;
-			/* a glob applies segment by segment, as the local glob() does */
-			if (hasGlob && fnmatch(path, keys[i], FNM_PATHNAME) != 0)
+
+			/*
+			 * A glob matches segment by segment, as the local glob() does: a '_'
+			 * name matches, and a '.' name matches only when the pattern spells
+			 * the dot (FNM_PERIOD), with no hidden-name skip of its own (#1784).
+			 * A prefix skips hidden names below it, as the local walk does.
+			 */
+			if (hasGlob)
+			{
+				if (!pq_remote_glob_match(path, keys[i]))
+					continue;
+			}
+			else if (pq_remote_key_hidden(keys[i], listUrl))
 				continue;
 			files = lappend(files, keys[i]);
 		}
@@ -3111,9 +5123,15 @@ pq_resolve_paths(const char *path, const PgColumnarObjStoreConfig *cfg)
 		glob_t		g;
 		int			rc;
 		size_t		i;
+		char	   *folded = pq_local_glob_fold(path);
 
-		memset(&g, 0, sizeof(g));
-		rc = glob(path, GLOB_NOSORT, NULL, &g);
+		/*
+		 * glob(3) calls itself for each level; bound them first (#1968), in
+		 * the folded form that glob(3) then expands (#1977 review)
+		 */
+		pq_local_glob_bound(folded);
+		/* and bound the walk of the real filesystem (#1984) */
+		rc = pq_local_glob(folded, &g);
 		if (rc == GLOB_NOMATCH || g.gl_pathc == 0)
 		{
 			globfree(&g);
@@ -3327,6 +5345,26 @@ pq_read_rows(PqFile *pf, PqSource *src,
 		for (r = 0; r < n; r++)
 		{
 			MemoryContext rowOld;
+			uint64		ord = (uint64) (grpBase + r);
+			bool		deleted = false;
+
+			/*
+			 * Position deletes (#388 phase 4): the row is dropped if its file
+			 * ordinal is in the sorted skipPos set. Ordinals ascend monotonically,
+			 * so a single moving cursor over the sorted set suffices. Decided
+			 * before the row is assembled, so a deleted row's values are not
+			 * coerced to the declared typmod (#1790).
+			 */
+			if (skipPos != NULL)
+			{
+				while (skipIdx < nSkipPos && skipPos[skipIdx] < ord)
+					skipIdx++;
+				if (skipIdx < nSkipPos && skipPos[skipIdx] == ord)
+				{
+					deleted = true;
+					skipIdx++;
+				}
+			}
 
 			ExecClearTuple(slot);
 			for (i = 0; i < natts; i++)
@@ -3370,7 +5408,7 @@ pq_read_rows(PqFile *pf, PqSource *src,
 					pq_require_entry(l);
 					present = (l->defs[l->ei] == (uint32) l->max_def);
 
-					slot->tts_values[tp->attno] = present ? l->vals[l->vi++] : (Datum) 0;
+					slot->tts_values[tp->attno] = present ? pq_take_value(l, !deleted) : (Datum) 0;
 					slot->tts_isnull[tp->attno] = !present;
 					l->ei++;
 				}
@@ -3413,7 +5451,11 @@ pq_read_rows(PqFile *pf, PqSource *src,
 
 							if (d == (uint32) l->max_def)
 							{
-								elems[k] = l->vals[l->vi++];
+								/*
+								 * deleted is always false here: only the field-id readers pass
+								 * skipPos, and they bind scalars only (#1874).
+								 */
+								elems[k] = pq_take_value(l, !deleted);
 								enulls[k] = false;
 							}
 							else
@@ -3460,7 +5502,11 @@ pq_read_rows(PqFile *pf, PqSource *src,
 							structNull = true;	/* every field agrees */
 						if (d == (uint32) l->max_def)
 						{
-							fv[a] = l->vals[l->vi++];
+							/*
+							 * deleted is always false here: only the field-id readers pass
+							 * skipPos, and they bind scalars only (#1874).
+							 */
+							fv[a] = pq_take_value(l, !deleted);
 							fn[a] = false;
 						}
 						else
@@ -3486,31 +5532,13 @@ pq_read_rows(PqFile *pf, PqSource *src,
 			ExecStoreVirtualTuple(slot);
 
 			/*
-			 * Position deletes (#388 phase 4): drop the row if its file ordinal
-			 * is in the sorted skipPos set. The row was still fully assembled
-			 * above (which consumes its values from the leaf streams); only the
-			 * sink is withheld. Ordinals ascend monotonically, so a single moving
-			 * cursor over the sorted set suffices.
+			 * A deleted row was still fully assembled above, which consumes its
+			 * values from the leaf streams; only the sink is withheld.
 			 */
+			if (!deleted)
 			{
-				uint64		ord = (uint64) (grpBase + r);
-				bool		deleted = false;
-
-				if (skipPos != NULL)
-				{
-					while (skipIdx < nSkipPos && skipPos[skipIdx] < ord)
-						skipIdx++;
-					if (skipIdx < nSkipPos && skipPos[skipIdx] == ord)
-					{
-						deleted = true;
-						skipIdx++;
-					}
-				}
-				if (!deleted)
-				{
-					sink(slot, sinkarg);
-					total++;
-				}
+				sink(slot, sinkarg);
+				total++;
 			}
 			MemoryContextSwitchTo(rowOld);
 			MemoryContextReset(rowCtx);
@@ -3539,7 +5567,8 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 				  bool missing_as_null,
 				  const uint64 *skipPos, int nSkipPos,
 				  const bool *needTop,
-				  const PgColumnarObjStoreConfig *cfg)
+				  const PgColumnarObjStoreConfig *cfg,
+				  const char *caller)
 {
 	PqSource	src;
 	PqFile		pf;
@@ -3551,11 +5580,12 @@ pq_read_file_into(const char *path, TupleDesc tupdesc, TupleTableSlot *slot,
 	pq_source_open_cfg(path, &src, &pf, cfg);
 	pq_check_row_groups(&pf, path);
 	if (field_ids != NULL)
-		tops = build_imp_targets_by_field_id(tupdesc, &pf, field_ids, nfield,
+		tops = build_imp_targets_by_field_id(tupdesc, &pf, path, field_ids, nfield,
 											 nm_names, nm_ids, nm_count,
-											 missing_as_null, &leaves, &ntops);
+											 missing_as_null, &leaves, &ntops, caller);
 	else
-		tops = build_imp_targets(tupdesc, &pf, &leaves, &ntops, NULL);
+		tops = build_imp_targets(tupdesc, &pf, path, &leaves, &ntops, NULL,
+								 caller);
 	n = pq_read_rows(&pf, &src, tops, ntops, leaves,
 					 slot, sink, sinkarg, NULL, needTop, NULL, NULL, NULL,
 					 0, pf.nrowgroups, skipPos, nSkipPos);
@@ -3575,11 +5605,12 @@ PgColumnarReadParquetByFieldId(const char *path, TupleDesc tupdesc,
 							   const int *field_ids, int nfield,
 							   Tuplestorestate *tupstore, TupleTableSlot *slot,
 							   const uint64 *skipPos, int nSkipPos,
-							   const PgColumnarObjStoreConfig *cfg)
+							   const PgColumnarObjStoreConfig *cfg,
+							   const char *caller)
 {
 	return pq_read_file_into(path, tupdesc, slot, pq_tuplestore_sink, tupstore,
 							 field_ids, nfield, NULL, NULL, 0, false,
-							 skipPos, nSkipPos, NULL, cfg);
+							 skipPos, nSkipPos, NULL, cfg, caller);
 }
 
 /*
@@ -3600,11 +5631,12 @@ PgColumnarReadParquetByFieldIdNM(const char *path, TupleDesc tupdesc,
 								 Tuplestorestate *tupstore, TupleTableSlot *slot,
 								 const uint64 *skipPos, int nSkipPos,
 								 const bool *needTop,
-								 const PgColumnarObjStoreConfig *cfg)
+								 const PgColumnarObjStoreConfig *cfg,
+								 const char *caller)
 {
 	return pq_read_file_into(path, tupdesc, slot, pq_tuplestore_sink, tupstore,
 							 field_ids, nfield, nm_names, nm_ids, nm_count,
-							 true, skipPos, nSkipPos, needTop, cfg);
+							 true, skipPos, nSkipPos, needTop, cfg, caller);
 }
 
 /*
@@ -3702,7 +5734,8 @@ pgcolumnar_import_parquet(PG_FUNCTION_ARGS)
 
 		total += pq_read_file_into((char *) lfirst(lc), tupdesc, slot,
 								   pq_insert_sink, &sinkarg, NULL, 0,
-								   NULL, NULL, 0, false, NULL, 0, NULL, NULL);
+								   NULL, NULL, 0, false, NULL, 0, NULL, NULL,
+								   "pgcolumnar.import_parquet");
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(fileCtx);
 	}
@@ -3822,7 +5855,8 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
 
 		(void) pq_read_file_into((char *) lfirst(lc), retdesc, slot,
 								 pq_tuplestore_sink, tupstore, field_ids, nfield,
-								 NULL, NULL, 0, false, NULL, 0, NULL, NULL);
+								 NULL, NULL, 0, false, NULL, 0, NULL, NULL,
+								 "pgcolumnar.read_parquet");
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(fileCtx);
 	}
@@ -3833,16 +5867,202 @@ pgcolumnar_read_parquet(PG_FUNCTION_ARGS)
 }
 
 /*
- * pgcolumnar.parquet_schema(path text)
- *     -> table(column_name text, data_type text, nullable bool)
+ * Advance *cursor past the schema subtree that starts there (pre-order) and
+ * return how many leaves it holds. walk_schema has already walked this tree at
+ * open, so it is well formed; the stack check guards the recursion all the same.
+ */
+static int
+pq_skip_subtree(const PqFile *pf, int *cursor)
+{
+	int			nchild;
+	int			nleaf = 0;
+	int			c;
+
+	check_stack_depth();
+	if (*cursor >= pf->nelems)
+		return 0;
+	nchild = pf->elems[(*cursor)++].num_children;
+	if (nchild == 0)
+		return 1;
+	for (c = 0; c < nchild; c++)
+		nleaf += pq_skip_subtree(pf, cursor);
+	return nleaf;
+}
+
+/*
+ * The type a leaf reads as when read_parquet takes it as one declared column:
+ * its scalar type, or that type's array type when the leaf repeats once. NULL
+ * when the leaf has no mapping, and for a leaf under two or more repeated levels
+ * (a list of lists), which no declared type reads faithfully.
+ */
+static char *
+pq_leaf_read_type(const PqLeafInfo *leaf)
+{
+	Oid			typid;
+	int32		typmod;
+
+	if (!pq_leaf_to_pgtype(leaf->sc, &typid, &typmod))
+		return NULL;
+	if (leaf->max_rep == 0)
+		return format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN);
+	if (leaf->max_rep == 1 && OidIsValid(get_array_type(typid)))
+		return format_type_extended(get_array_type(typid), typmod,
+									FORMAT_TYPE_TYPEMOD_GIVEN);
+	return NULL;
+}
+
+/*
+ * Does read_parquet read the top-level column `top` as ONE declared column
+ * (#1893)? Its leaves are pf->leaves[first .. first + nleaf - 1]. If so, set
+ * *type to the type to declare and return true:
  *
- * Read a server-side Parquet file's footer and report its leaf columns with the
+ *   - a scalar leaf: its PostgreSQL type (NULL when it has no mapping), or its
+ *     array type for a top-level repeated primitive, the legacy two-level list;
+ *   - a list of one scalar leaf: that type's array type, e.g. bigint[];
+ *   - a struct of scalar fields: "composite (a bigint, b text)", the field list
+ *     of the composite type to create.
+ *
+ * Return false for any other nesting: a map, a list of structs, a struct of a
+ * struct, a struct holding a list. read_parquet binds leaves by position, so it
+ * reads such a column as one declared column per leaf, and parquet_schema lists
+ * it that way (pq_schema_leaf_rows).
+ */
+static bool
+pq_describe_top(const PqFile *pf, const PqSchemaCol *top, int first, int nleaf,
+				char **type)
+{
+	Oid			typid;
+	int32		typmod;
+	int			i;
+	StringInfoData buf;
+
+	*type = NULL;
+	if (top->num_children == 0)
+	{
+		*type = pq_leaf_read_type(&pf->leaves[first]);
+		return true;
+	}
+
+	if (top->repetition == 2 ||
+		top->converted_type == PQ_CT_MAP || top->converted_type == PQ_CT_MAP_KEY_VALUE)
+		return false;
+
+	/*
+	 * A list of one scalar leaf: the leaf sits in the repeated group right
+	 * under the column (depth 3), or is that group itself (depth 2). A deeper
+	 * single leaf is a list of a one-field struct or a struct holding a list;
+	 * those read the same way, but as a leaf, so they list by the leaf's path.
+	 */
+	if (nleaf == 1 && pf->leaves[first].max_rep == 1 && pf->leaves[first].depth <= 3)
+	{
+		*type = pq_leaf_read_type(&pf->leaves[first]);
+		return *type != NULL;
+	}
+
+	/* a struct whose children are all non-repeated scalar leaves with a type */
+	if (nleaf != top->num_children)
+		return false;
+	for (i = first; i < first + nleaf; i++)
+		if (pf->leaves[i].max_rep != 0 || pf->leaves[i].depth != 2 ||
+			!pq_leaf_to_pgtype(pf->leaves[i].sc, &typid, &typmod))
+			return false;
+
+	initStringInfo(&buf);
+	appendStringInfoString(&buf, "composite (");
+	for (i = first; i < first + nleaf; i++)
+	{
+		const PqSchemaCol *f = pf->leaves[i].sc;
+
+		(void) pq_leaf_to_pgtype(f, &typid, &typmod);
+		appendStringInfo(&buf, "%s%s %s", i > first ? ", " : "",
+						 quote_identifier(f->name != NULL ? f->name : ""),
+						 format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
+	}
+	appendStringInfoChar(&buf, ')');
+	*type = buf.data;
+	return true;
+}
+
+/* one parquet_schema row */
+static void
+pq_schema_row(Tuplestorestate *tupstore, TupleDesc retdesc, const char *name,
+			  const char *type, bool nullable, int field_id)
+{
+	Datum		values[4];
+	bool		nulls[4] = {false, false, false, false};
+
+	values[0] = CStringGetTextDatum(name);
+	if (type != NULL)
+		values[1] = CStringGetTextDatum(type);
+	else
+		nulls[1] = true;
+	values[2] = BoolGetDatum(nullable);
+	/* field_id (#388): NULL when the writer emitted none; 0 is a real id */
+	if (field_id >= 0)
+		values[3] = Int32GetDatum(field_id);
+	else
+		nulls[3] = true;
+	tuplestore_putvalues(tupstore, retdesc, values, nulls);
+}
+
+/*
+ * List the schema subtree at *cursor one row per leaf (#1893 review), for a
+ * column read_parquet reads as one declared column per leaf. Each row is named
+ * by the leaf's path from the top-level column, joined with dots, as Parquet's
+ * path_in_schema names the column chunk ("m.key_value.key"). Its type is the
+ * leaf's read type, its field_id the leaf's own. It is nullable when an OPTIONAL
+ * element sits on the path above the first repeated one: below that, a null
+ * makes an array element null, not the declared column.
+ */
+static void
+pq_schema_leaf_rows(const PqFile *pf, int *cursor, int *lf, const char *prefix,
+					bool nullable, bool repeated,
+					Tuplestorestate *tupstore, TupleDesc retdesc)
+{
+	const PqSchemaCol *e;
+	const char *ename;
+	char	   *name;
+	int			c;
+
+	check_stack_depth();
+	if (*cursor >= pf->nelems || *lf >= pf->ncols)
+		return;					/* walk_schema accepted the tree, so unreachable */
+	e = &pf->elems[(*cursor)++];
+	ename = e->name != NULL ? e->name : "";
+	name = prefix != NULL ? psprintf("%s.%s", prefix, ename) : pstrdup(ename);
+	if (!repeated && e->repetition == 1)
+		nullable = true;
+	if (e->repetition == 2)
+		repeated = true;
+
+	if (e->num_children == 0)
+	{
+		pq_schema_row(tupstore, retdesc, name, pq_leaf_read_type(&pf->leaves[*lf]),
+					  nullable, e->field_id);
+		(*lf)++;
+		return;
+	}
+	for (c = 0; c < e->num_children; c++)
+		pq_schema_leaf_rows(pf, cursor, lf, name, nullable, repeated,
+							tupstore, retdesc);
+}
+
+/*
+ * pgcolumnar.parquet_schema(path text)
+ *     -> table(column_name text, data_type text, nullable bool, field_id int)
+ *
+ * Read a server-side Parquet file's footer and report its columns with the
  * PostgreSQL type each maps to (see pq_leaf_to_pgtype). This is the schema half
  * of the external-Parquet scan core: it shares the file open/parse and type
  * inference the data path will use, and lets a caller inspect a file (and the
  * round-trip test confirm exported types) without importing it. A leaf whose
- * physical type has no supported mapping is reported with data_type NULL. Nested
- * files are reported as their flattened leaf columns.
+ * physical type has no supported mapping is reported with data_type NULL.
+ *
+ * The rows are the column definition list read_parquet needs, one declared
+ * column per row (#1893). A top-level column read_parquet reads as one column
+ * (a scalar, a list of a scalar, a struct of scalars) is one row under its own
+ * name; see pq_describe_top. Other nesting reads leaf by leaf, so it is one row
+ * per leaf, named by the leaf's path; see pq_schema_leaf_rows.
  */
 Datum
 pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
@@ -3855,6 +6075,8 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	Tuplestorestate *tupstore;
 	MemoryContext oldContext;
 	int			i;
+	int			cursor;
+	int			lf;
 
 	if (!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		ereport(ERROR,
@@ -3887,29 +6109,45 @@ pgcolumnar_parquet_schema(PG_FUNCTION_ARGS)
 	rsinfo->setDesc = retdesc;
 	MemoryContextSwitchTo(oldContext);
 
-	for (i = 0; i < pf.ncols; i++)
+	/*
+	 * One row per top-level column, the root's children in pre-order (#1893);
+	 * a column read_parquet reads leaf by leaf gets one row per leaf.
+	 */
+	cursor = 1;
+	lf = 0;
+	for (i = 0; i < pf.ntop && cursor < pf.nelems; i++)
 	{
-		PqSchemaCol *sc = pf.leaves[i].sc;
-		Oid			typid;
-		int32		typmod;
-		Datum		values[4];
-		bool		nulls[4] = {false, false, false, false};
+		PqSchemaCol *sc = &pf.elems[cursor];
+		int			start = cursor;
+		int			first = lf;
+		int			nleaf = pq_skip_subtree(&pf, &cursor);
+		char	   *type;
 
-		values[0] = CStringGetTextDatum(sc->name != NULL ? sc->name : "");
-		if (pq_leaf_to_pgtype(sc, &typid, &typmod))
-			values[1] = CStringGetTextDatum(
-				format_type_extended(typid, typmod, FORMAT_TYPE_TYPEMOD_GIVEN));
-		else
-			nulls[1] = true;
-		/* a column is nullable iff it is OPTIONAL somewhere above the leaf */
-		values[2] = BoolGetDatum(pf.leaves[i].max_def > 0);
-		/* field_id (#388): NULL when the writer emitted none; 0 is a real id */
-		if (sc->field_id >= 0)
-			values[3] = Int32GetDatum(sc->field_id);
-		else
-			nulls[3] = true;
+		lf += nleaf;
+		if (nleaf == 0 || lf > pf.ncols)
+			break;				/* walk_schema accepted the tree, so unreachable */
 
-		tuplestore_putvalues(tupstore, retdesc, values, nulls);
+		if (!pq_describe_top(&pf, sc, first, nleaf, &type))
+		{
+			int			leaf = first;
+
+			cursor = start;
+			pq_schema_leaf_rows(&pf, &cursor, &leaf, NULL, false, false,
+								tupstore, retdesc);
+			cursor = start;
+			(void) pq_skip_subtree(&pf, &cursor);
+			continue;
+		}
+
+		/*
+		 * A scalar is nullable iff it is OPTIONAL somewhere above the leaf. A
+		 * nested column is nullable iff the column itself is OPTIONAL: a null
+		 * list element or struct field does not make the column value null.
+		 */
+		pq_schema_row(tupstore, retdesc, sc->name != NULL ? sc->name : "", type,
+					  sc->num_children == 0 ? pf.leaves[first].max_def > 0
+					  : sc->repetition == 1,
+					  sc->field_id);
 	}
 
 	PG_RETURN_NULL();
@@ -4002,10 +6240,17 @@ pqfdw_get_option(Oid foreigntableid, const char *name)
 	return NULL;
 }
 
+/*
+ * The table's path option, with s3a:// and s3n:// rewritten to s3:// (#1930).
+ * pq_resolve_paths rewrites them too, but the scan also keeps this path as the
+ * Hive partition root, which must be spelled as the resolved files are: a root
+ * of s3a://b/t/ would match no s3://b/t/... file, and the components above the
+ * root would then count as partition values.
+ */
 static char *
 pqfdw_get_path(Oid foreigntableid)
 {
-	return pqfdw_get_option(foreigntableid, "path");
+	return (char *) PgColumnarS3Alias(pqfdw_get_option(foreigntableid, "path"));
 }
 
 /*
@@ -4469,9 +6714,11 @@ pqfdw_top_for_attno(ImpTop *tops, int ntops, int attno0)
  */
 static bool
 pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
-							bool varLeft, Const *con)
+							bool varLeft, Const *con, Oid opfamily)
 {
 	TypeCacheEntry *tce;
+	FmgrInfo	cross;
+	FmgrInfo   *vsConst;
 	const uint8 *p;
 	bool		ok;
 	Datum		minD;
@@ -4484,12 +6731,56 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	if (phys != PQ_INT32 && phys != PQ_INT64 &&
 		phys != PQ_FLOAT && phys != PQ_DOUBLE)
 		return false;
-	if (con->consttype != leaf->plan.typid || con->constisnull)
+	if (con->constisnull)
+		return false;
+	/*
+	 * A wall time is not monotonic in its instant across a spring-forward gap, so
+	 * converted statistics need not bound the converted rows (#1706): never skip.
+	 */
+	if (leaf->plan.ts_shift != PQ_TS_NONE)
+		return false;
+	/*
+	 * A declared typmod that can change a value (#1790): numeric(18,1) returns a
+	 * stored 99.99 as 100.0, beyond the stored max, so the statistics need not
+	 * bound the returned rows: never skip.
+	 */
+	if (leaf->plan.coerce)
 		return false;
 
 	tce = lookup_type_cache(leaf->plan.typid, TYPECACHE_CMP_PROC_FINFO);
 	if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
 		return false;
+
+	/*
+	 * The statistics are compared with the constant through the operator family's
+	 * comparison function for (column type, constant type), as the native zone-map
+	 * path does (#1712). A bare integer literal is int4, so requiring the column's
+	 * own type left `WHERE id > 150000` on a bigint column skipping nothing. A
+	 * family with no such function, or no family, means no skip.
+	 *
+	 * Except a timestamp column against a timestamptz constant: the comparison
+	 * converts each statistic, a wall time, to an instant in the session zone,
+	 * which is not monotonic across a spring-forward gap. In New York a group
+	 * holding 02:00, 02:30 and 03:00 has max 07:00Z but a row at 07:30Z, so
+	 * `ts > '07:15+00'` would skip it (OffgridwithJD's review of #1737). Never
+	 * skip that pair. A timestamptz column and a timestamp constant is safe: the
+	 * statistics are instants, and only the one constant is converted.
+	 */
+	if (leaf->plan.typid == TIMESTAMPOID && con->consttype == TIMESTAMPTZOID)
+		return false;
+	if (con->consttype == leaf->plan.typid)
+		vsConst = &tce->cmp_proc_finfo;
+	else
+	{
+		Oid			proc = OidIsValid(opfamily)
+			? get_opfamily_proc(opfamily, leaf->plan.typid, con->consttype, BTORDER_PROC)
+			: InvalidOid;
+
+		if (!OidIsValid(proc))
+			return false;
+		fmgr_info(proc, &cross);
+		vsConst = &cross;
+	}
 
 	p = ch->stat_min;
 	minD = plain_value_to_datum(&leaf->plan, &p, p + ch->stat_min_len, false, &ok);
@@ -4507,9 +6798,10 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 	 * Every test below assumes min <= max, and the decoded statistics may not
 	 * satisfy that. plain_value_to_datum() narrows a Parquet INT32 to int16 when
 	 * the column is bound to a PG int2, so a group holding 30000 and 40000
-	 * decodes to min=30000, max=-25536. Parquet's UINT_32/UINT_64 logical types
-	 * sort unsigned while we decode signed, so any group straddling the sign
-	 * boundary inverts the same way, as can a corrupt file. Refuse to skip on an
+	 * decodes to min=30000, max=-25536. An unsigned column is decoded unsigned
+	 * (#1814), so its own statistics do not invert; but an old writer may have
+	 * ordered its deprecated min/max signed, and a group straddling the sign
+	 * boundary then decodes inverted, as can a corrupt file. Refuse to skip on an
 	 * interval we cannot trust: the data path applies the identical narrowing, so
 	 * those rows are real matches and dropping them would be an unsound skip that
 	 * the executor's recheck can never recover.
@@ -4557,9 +6849,12 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			? (float8) DatumGetFloat4(minD) : DatumGetFloat8(minD);
 		float8		hi = (phys == PQ_FLOAT)
 			? (float8) DatumGetFloat4(maxD) : DatumGetFloat8(maxD);
-		float8		c = (phys == PQ_FLOAT)
+		/* the constant is read by ITS type, which may not be the column's */
+		float8		c = (con->consttype == FLOAT4OID)
 			? (float8) DatumGetFloat4(con->constvalue)
-			: DatumGetFloat8(con->constvalue);
+			: (con->consttype == FLOAT8OID)
+			? DatumGetFloat8(con->constvalue)
+			: 0.0;
 
 		if (isnan(lo) || isnan(hi))
 			return false;
@@ -4570,22 +6865,29 @@ pqfdw_clause_excludes_group(ImpLeaf *leaf, PqChunk *ch, int strategy,
 			return false;
 	}
 
+	/*
+	 * The column's value is always the FIRST argument: a cross-type comparison
+	 * function is defined for (column type, constant type) only.
+	 */
+#define PQ_VS(a) \
+	DatumGetInt32(FunctionCall2Coll(vsConst, InvalidOid, (a), con->constvalue))
+
 	switch (strategy)
 	{
 		case BTLessStrategyNumber:	/* col < const: skip if min >= const */
-			return PQ_CMP(minD, con->constvalue) >= 0;
+			return PQ_VS(minD) >= 0;
 		case BTLessEqualStrategyNumber: /* col <= const: skip if min > const */
-			return PQ_CMP(minD, con->constvalue) > 0;
+			return PQ_VS(minD) > 0;
 		case BTEqualStrategyNumber: /* col = const: skip if const outside [min,max] */
-			return PQ_CMP(con->constvalue, minD) < 0 ||
-				PQ_CMP(con->constvalue, maxD) > 0;
+			return PQ_VS(minD) > 0 || PQ_VS(maxD) < 0;
 		case BTGreaterEqualStrategyNumber:	/* col >= const: skip if max < const */
-			return PQ_CMP(maxD, con->constvalue) < 0;
+			return PQ_VS(maxD) < 0;
 		case BTGreaterStrategyNumber:	/* col > const: skip if max <= const */
-			return PQ_CMP(maxD, con->constvalue) <= 0;
+			return PQ_VS(maxD) <= 0;
 		default:
 			return false;
 	}
+#undef PQ_VS
 #undef PQ_CMP
 }
 
@@ -4630,6 +6932,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 			List	   *interp;
 			ListCell   *ic;
 			int			strategy = 0;
+			Oid			opfamily = InvalidOid;
 
 			if (!IsA(op, OpExpr) || list_length(op->args) != 2)
 				continue;
@@ -4670,6 +6973,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 				if (s >= BTLessStrategyNumber && s <= BTGreaterStrategyNumber)
 				{
 					strategy = s;
+					opfamily = o->opfamily_id;
 					break;
 				}
 			}
@@ -4678,7 +6982,7 @@ pqfdw_compute_skip(ForeignScanState *node, PqFile *pf,
 
 			if (pqfdw_clause_excludes_group(&leaves[top->firstLeaf],
 											&pf->rgs[rg].chunks[top->firstLeaf],
-											strategy, varLeft, con))
+											strategy, varLeft, con, opfamily))
 			{
 				skipGroup[rg] = true;
 				break;
@@ -4730,8 +7034,17 @@ pqfdw_compute_needed(ForeignScanState *node, ImpTop *tops, int ntops,
 static void
 pqfdw_objstore_config(Oid foreigntableid, PgColumnarObjStoreConfig *cfg)
 {
-	ForeignTable *ft = GetForeignTable(foreigntableid);
-	ForeignServer *server = GetForeignServer(ft->serverid);
+	PgColumnarObjStoreConfigForServer(GetForeignTable(foreigntableid)->serverid, cfg);
+}
+
+/*
+ * The resolution itself, keyed by server, so the writer that tier_partition
+ * uses resolves exactly what a read of the foreign partition will (#1795).
+ */
+void
+PgColumnarObjStoreConfigForServer(Oid serverid, PgColumnarObjStoreConfig *cfg)
+{
+	ForeignServer *server = GetForeignServer(serverid);
 	HeapTuple	tp;
 	List	   *umoptions = NIL;
 	bool		credRequired = true;
@@ -4854,8 +7167,9 @@ pqfdw_open_next_file(PqFdwScanState *st)
 		st->filesRead++;
 		pq_source_open_cfg(file, &st->src, &st->pf, &st->oscfg);
 		pq_check_row_groups(&st->pf, file);
-		st->tops = build_imp_targets(st->tupdesc, &st->pf, &st->leaves,
-									 &st->ntops, st->partMask);
+		st->tops = build_imp_targets(st->tupdesc, &st->pf, file, &st->leaves,
+									 &st->ntops, st->partMask,
+									 "the pgcolumnar_parquet foreign-data wrapper");
 
 		/* projection: decode only referenced columns (same set each file) */
 		st->needTop = pqfdw_compute_needed(st->node, st->tops, st->ntops, &nNeeded);

@@ -127,7 +127,10 @@ def test_the_margin_is_never_consulted_when_there_is_no_codec(pgc_conn, expect):
 
 
 def test_the_corpus_is_marginal_rather_than_one_fsst_always_wins(pgc_conn, expect):
-    """The premise every arm above rests on, asserted rather than assumed.
+    """The condition every arm above rests on, asserted rather than assumed.
+
+    NOT LABELLED A PREMISE (#1339): the keep-or-drop decision is pgcolumnar's own, so
+    a change to it reddens these -- with the margin ignored, FSST was kept at 90.
 
     If FSST won outright on this corpus the margin would never get a say and the
     differentials would be measuring nothing. At margin 0 it is kept and at margin
@@ -141,9 +144,9 @@ def test_the_corpus_is_marginal_rather_than_one_fsst_always_wins(pgc_conn, expec
         expect.text(
             "kept" if kept > 0 else "dropped",
             "kept",
-            "premise: at margin 0 with a codec this corpus keeps FSST",
+            "at margin 0 with a codec this corpus keeps FSST",
         )
-        expect.num(dropped, 0, "premise: at margin 90 with a codec it drops FSST")
+        expect.num(dropped, 0, "at margin 90 with a codec it drops FSST")
 
 
 def test_the_rows_survive_every_combination(pgc_conn, expect):

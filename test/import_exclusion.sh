@@ -97,11 +97,18 @@ check "an ordinary INSERT of the same violation also raises" \
 # being replaced is still visible, so a conflict check there would find the row
 # against itself. This is the case that fails if the check is not conditioned on
 # the caller enforcing constraints.
+#
+# THE REWRITE MUST HAPPEN. With nothing deleted, compact_rewrite has nothing to
+# compact and rewrites 0 groups, so this arm passed without moving a row: a
+# rewrite that enforced the constraint, finding each moved row against itself,
+# passed it (measured). One key in ten is deleted first, so a group really is
+# rewritten, and the reading is the number of groups it rewrote.
+psql_run "DELETE FROM ex_t WHERE k % 10 = 0;" >/dev/null
+rewrote="$(q "SELECT pgcolumnar.compact_rewrite('ex_t', 0.0);" 2>&1 | tail -1)"
 check "a rewrite of the same table still succeeds" \
-	"$(psql_run "SELECT pgcolumnar.compact_rewrite('ex_t', 0.0);" >/dev/null 2>&1 \
-		&& echo yes || echo no)" "yes"
+	"$(pgc_is_number "$rewrote" && [ "$rewrote" -ge 1 ] && echo yes || echo "no ($rewrote)")" "yes"
 
-check "and the rows survived it" "$(q "SELECT count(*) FROM ex_t;")" "$ROWS"
+check "and the rows survived it" "$(q "SELECT count(*) FROM ex_t;")" "$((ROWS - ROWS / 10))"
 
 rm -f "$ARROW"
 pgc_summary

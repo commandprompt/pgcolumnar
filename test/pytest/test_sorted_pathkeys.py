@@ -65,6 +65,21 @@ def _inversions(cur, table, col):
                      f"FROM {table}) s WHERE p > {col}")
 
 
+def _order_breaks(cur, table):
+    """-> how many rows break (k ASC NULLS LAST, j ASC) in the order the scan returns
+    them, the order vacuum_sorted('c', 'k', 'j') promises (#1339).
+
+    `_inversions` on k cannot see it: `p > k` is NULL when either side is, so NULLs
+    sorted first count nothing, and it never reads j, so ties on k in any j order
+    count nothing either. Measured: with NULLS FIRST, and with the sort on k alone,
+    the fixture check that used it stayed green.
+    """
+    return _one(cur, f"SELECT count(*) FROM (SELECT k, j, lag(k) OVER () AS pk, "
+                     f"lag(j) OVER () AS pj, row_number() OVER () AS rn FROM {table}) s "
+                     "WHERE rn > 1 AND ((pk IS NULL AND k IS NOT NULL) OR pk > k "
+                     "OR (pk IS NOT DISTINCT FROM k AND pj > j))")
+
+
 def _sort_status(cur, table, field):
     return _one(cur, f"SELECT {field} FROM pgcolumnar.sort_status('{table}')")
 
@@ -113,14 +128,14 @@ def test_the_fixture_really_is_ordered(fx, expect):
     as the rows being in order, and a claim arm on an unordered fixture would pass for
     the wrong reason."""
     with fx.cursor() as cur:
-        expect.num(_inversions(cur, "c", "k"), 0,
-                   "premise: the fixture is physically ordered on k")
+        expect.num(_order_breaks(cur, "c"), 0,
+                   "the fixture is physically ordered on (k, j), NULLs last")
         expect.num(_sort_status(cur, "c", "appended_groups"), 0,
-                   "premise: with no unsorted tail")
+                   "with no unsorted tail")
         expect.text(_storage(cur, "c", "sorted_kind"), "lexicographic",
-                    "premise: recorded as a lexicographic run")
+                    "recorded as a lexicographic run")
         expect.text(str(_storage(cur, "c", "sorted_by::text")), "{k,j}",
-                    "premise: on the key it was given")
+                    "on the key it was given")
         expect.at_least(_one(cur, "SELECT count(*) FROM c WHERE k IS NULL"), 1,
                         "premise: the fixture has NULLs in the sort column")
         expect.at_least(_one(cur, "SELECT count(*) FROM (SELECT k FROM c "
@@ -129,8 +144,12 @@ def test_the_fixture_really_is_ordered(fx, expect):
                         "premise: and ties on it")
         cur.execute("EXPLAIN (COSTS OFF) SELECT k FROM c ORDER BY k")
         plan = "\n".join(r[0] for r in cur.fetchall())
-    expect.num(1 if "PgColumnarScan" in plan else 0, 1,
-               "premise: the columnar table is read by the columnar scan")
+    # The base scan's own property, as the shell's pgc_is_columnar_scan reads it.
+    # "PgColumnarScan" is also the name the vector nodes print, so it said yes for
+    # a plan with no columnar scan in it. And an arm, not a premise (#1339, #1236):
+    # an explain that drops the property reddens it in both twins.
+    expect.num(1 if "Columnar Projected Columns" in plan else 0, 1,
+               "the columnar table is read by the columnar scan")
 
 
 # ============================================================ CLAIM arms
@@ -341,9 +360,9 @@ def zorder(fx):
 def test_a_zorder_run_is_not_a_sort_on_its_lead_column(zorder, expect):
     with zorder.cursor() as cur:
         expect.num(_sort_status(cur, "zc", "appended_groups"), 0,
-                   "premise: the Z-ordered table records a full run with no tail")
+                   "the Z-ordered table records a full run with no tail")
         expect.text(_storage(cur, "zc", "sorted_kind"), "zorder",
-                    "premise: recorded as a zorder run, not lexicographic")
+                    "recorded as a zorder run, not lexicographic")
         expect.at_least(_inversions(cur, "zc", "k"), 1,
                         "premise: and it is NOT in k order")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM zc ORDER BY k") else 0, 1,
@@ -385,8 +404,10 @@ def test_an_unsorted_vacuum_retracts_the_ordered_path(fx, expect):
                     "chunk_group_row_limit => 500)")
         cur.execute("INSERT INTO rc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rc', 'k', 'j')")
+        # "The claim is live" is an arm, not a premise (#1339, #1236): a vacuum_sorted
+        # that records no claim reddens it, here and in the four checks like it below.
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the unsorted rewrite")
+                   "the claim is live before the unsorted rewrite")
         cur.execute("SELECT pgcolumnar.vacuum('rc')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rc ORDER BY k") else 0, 1,
                    "REFUSE: an unsorted vacuum retracts the ordered path")
@@ -403,15 +424,20 @@ def test_a_type_change_rewrite_drops_the_mark(fx, expect):
                     "FROM generate_series(1,20000) g")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('atc', 'k')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM atc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the type change")
+                   "the claim is live before the type change")
         before = _one(cur, "SELECT pgcolumnar.get_storage_id('atc')")
         cur.execute("ALTER TABLE atc ALTER COLUMN k TYPE text")
         after = _one(cur, "SELECT pgcolumnar.get_storage_id('atc')")
         expect.text("same" if before == after else "rewritten", "rewritten",
                     "premise: a type change DID rewrite the storage")
-        expect.num(1 if _plans_sort(cur, "SELECT k FROM atc ORDER BY k") else 0, 1,
-                   "REFUSE: integer order is not text order, and the rewrite dropped "
-                   "the mark")
+        # Both halves of the name: the plan sorts, and the rewritten storage has no
+        # mark. The plan alone could not see a mark carried across, because text is
+        # collatable and condition 3 refuses it with or without one (#1339).
+        expect.text(f"{'yes' if _plans_sort(cur, 'SELECT k FROM atc ORDER BY k') else 'no'}"
+                    f"|{_storage(cur, 'atc', 'coalesce(sorted_kind, ' + chr(39) + '<NULL>' + chr(39) + ')')}",
+                    "yes|<NULL>",
+                    "REFUSE: integer order is not text order, and the rewrite dropped "
+                    "the mark")
 
 
 # ============================ an UPDATE lands outside the run, so the claim lapses
@@ -424,7 +450,7 @@ def test_one_updated_row_is_a_row_outside_the_run(fx, expect):
         cur.execute("INSERT INTO upc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('upc', 'k', 'j')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM upc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the update")
+                   "the claim is live before the update")
         cur.execute("UPDATE upc SET k = -1 WHERE id = 1")
         expect.at_least(_sort_status(cur, "upc", "appended_groups"), 1,
                         "premise: the new row version appended past the run")
@@ -449,7 +475,7 @@ def test_the_mark_follows_a_rename(fx, expect):
         cur.execute("INSERT INTO rnc SELECT * FROM h")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rnc', 'k', 'j')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM rnc ORDER BY k") else 0, 0,
-                   "premise: the claim is live before the rename")
+                   "the claim is live before the rename")
         cur.execute("ALTER TABLE rnc RENAME COLUMN k TO kk")
         expect.text(str(_storage(cur, "rnc", "sorted_by::text")), "{kk,j}",
                    "the recorded key FOLLOWS the rename (#778)")
@@ -477,7 +503,7 @@ def test_a_recorded_name_that_no_longer_resolves_is_not_a_claim(fx, expect):
         cur.execute("SELECT pgcolumnar.vacuum_sorted('rnd', 'k', 'j')")
         cur.execute("ALTER TABLE rnd DROP COLUMN k")
         expect.text(str(_storage(cur, "rnd", "sorted_by::text")), "{k,j}",
-                    "premise: the recorded key still names the dropped column")
+                    "the recorded key still names the dropped column")
         expect.at_least(_one(cur, "SELECT count(*) FROM (SELECT j < lag(j) OVER () AS d "
                                   "FROM rnd) z WHERE d"), 1,
                         "premise: and j alone really is NOT ordered, so a claim on it "
@@ -495,7 +521,7 @@ def test_the_guc_turns_the_claim_off(fx, expect):
     with fx.cursor() as cur:
         cur.execute("SET pgcolumnar.enable_sorted_pathkeys = on")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM c ORDER BY k") else 0, 0,
-                   "premise: the claim is live with the GUC on")
+                   "the claim is live with the GUC on")
         cur.execute("SET pgcolumnar.enable_sorted_pathkeys = off")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM c ORDER BY k") else 0, 1,
                    "control: pgcolumnar.enable_sorted_pathkeys = off restores the Sort")
@@ -550,10 +576,10 @@ def test_a_collatable_sort_column_is_not_claimed(collated, expect):
     conn, _alt = collated
     with conn.cursor() as cur:
         expect.text(_storage(cur, "colc", "sorted_kind"), "lexicographic",
-                    "premise: the rewrite recorded a lexicographic run on the text "
+                    "the rewrite recorded a lexicographic run on the text "
                     "column")
         expect.num(_sort_status(cur, "colc", "appended_groups"), 0,
-                   "premise: with no tail, so only the collation stands between it and "
+                   "with no tail, so only the collation stands between it and "
                    "a claim")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM colc ORDER BY k") else 0, 1,
                    "REFUSE: a collatable sort column is not claimed, whatever its "
@@ -598,7 +624,7 @@ def test_a_collation_alter_changes_the_order_without_rewriting(collated, expect)
         expect.text("same" if before == after else "rewritten", "same",
                     "premise: the collation ALTER rewrote nothing (same storage id)")
         expect.text(_storage(cur, "colc", "sorted_kind"), "lexicographic",
-                    "premise: so the run is still recorded as lexicographic")
+                    "so the run is still recorded as lexicographic")
         expect.text(str(_one(cur, "SELECT collname FROM pg_collation WHERE oid = "
                                   "(SELECT attcollation FROM pg_attribute WHERE "
                                   "attrelid = 'colc'::regclass AND attname = 'k')")),
@@ -668,7 +694,7 @@ def test_a_composite_is_claimed_and_postgres_closes_the_hole(fx, expect):
                     "premise: a composite column's attcollation is InvalidOid, so it "
                     "IS claimed")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_comp ORDER BY k") else 0, 0,
-                   "premise: and it is claimed")
+                   "and it is claimed")
     message = ""
     try:
         with fx.cursor() as cur:
@@ -696,13 +722,12 @@ def test_an_enum_add_value_before_does_not_renumber(fx, expect):
         cur.execute("INSERT INTO t_enum_h SELECT * FROM t_enum")
         cur.execute("SELECT pgcolumnar.vacuum_sorted('t_enum', 'k')")
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_enum ORDER BY k") else 0, 0,
-                   "premise: an enum sort key is claimed")
+                   "an enum sort key is claimed")
     with fx.cursor() as cur:
         cur.execute("ALTER TYPE enum_t ADD VALUE 'a' BEFORE 'b'")
     with fx.cursor() as cur:
         expect.num(1 if _plans_sort(cur, "SELECT k FROM t_enum ORDER BY k") else 0, 0,
-                   "an enum ADD VALUE ... BEFORE does not renumber the values already "
-                   "stored")
+                   "an enum ADD VALUE ... BEFORE keeps the claim")
         columnar = _rows(cur, "SELECT k, id FROM t_enum ORDER BY k, id")
         heap = _rows(cur, "SELECT k, id FROM t_enum_h ORDER BY k, id")
         expect.at_least(len(heap), 1, "premise: the enum oracle returns rows")
@@ -903,13 +928,13 @@ def test_truncate_restarts_numbering_in_a_new_storage(fx, expect):
         _mk_sorted(cur, "trunc")
         before = _one(cur, "SELECT pgcolumnar.get_storage_id('trunc')")
         expect.text(str(_one(cur,
-                    "SELECT (sorted_from = min(group_number))::text "
+                    "SELECT (sorted_from = min(group_number) AND min(group_number) = 1)::text "
                     "FROM pgcolumnar.row_group, pgcolumnar.storage "
                     "WHERE pgcolumnar.storage.storage_id = "
                     "pgcolumnar.get_storage_id('trunc') AND "
                     "pgcolumnar.row_group.storage_id = pgcolumnar.storage.storage_id "
                     "GROUP BY sorted_from")), "true",
-                    "premise: the mark is set and numbering starts at 1 before the "
+                    "the mark is set and numbering starts at 1 before the "
                     "truncate")
         cur.execute("TRUNCATE trunc")
         cur.execute("INSERT INTO trunc SELECT * FROM h")
@@ -1021,7 +1046,7 @@ def test_a_query_that_cannot_use_the_order_does_not_pay_to_decide(planbuf_fx, ex
                         "premise: the fixture has many groups, so a per-group read "
                         "would show")
         expect.text(_storage(cur, "pb", "sorted_kind"), "lexicographic",
-                    "premise: and it is marked, so the claim is not refused at "
+                    "and it is marked, so the claim is not refused at "
                     "condition 1")
     on = _group_list_rows(conn, "on", "SELECT count(*) FROM pb WHERE j = 3")
     off = _group_list_rows(conn, "off", "SELECT count(*) FROM pb WHERE j = 3")
@@ -1072,7 +1097,7 @@ def test_a_projection_does_not_lend_its_order_to_the_base_relation(fx, expect):
                                   "pgcolumnar.get_storage_id('prc')")), "{3}",
                     "premise: the projection exists and is sorted on a DIFFERENT key")
         expect.text(str(_storage(cur, "prc", "sorted_by::text")), "{k,j}",
-                    "premise: the base relation still records its own lexicographic "
+                    "the base relation still records its own lexicographic "
                     "run on {k,j}")
         for template, name in (
                 ("SELECT k, j FROM %T WHERE j = 3 ORDER BY k, j",
@@ -1093,8 +1118,10 @@ def test_a_plain_gather_never_sits_above_a_scan_claiming_an_order(fx, expect):
     order the rows arrive in. Either the plan is not parallel, or something above the
     Gather restores the order -- a Gather Merge or a Sort.
 
-    Parallelism is forced on in this session because the harness pins gather workers to
-    zero, which would make the arm pass by never planning a parallel node at all.
+    Parallelism is forced on in this session, so that the arm cannot pass by never
+    planning a parallel node at all. The shell's harness pins gather workers to zero;
+    this one leaves PostgreSQL's default of 2, so the SET is a guarantee here, not the
+    only thing that allows a Gather.
     """
     with fx.cursor() as cur:
         expect.num(_inversions(cur, "c", "k"), 0,
@@ -1102,10 +1129,16 @@ def test_a_plain_gather_never_sits_above_a_scan_claiming_an_order(fx, expect):
         for guc in ("max_parallel_workers_per_gather = 4", "parallel_setup_cost = 0",
                     "parallel_tuple_cost = 0", "min_parallel_table_scan_size = 0"):
             cur.execute("SET " + guc)
+        # AN UNORDERED SCAN OF THE SAME TABLE MUST PLAN A GATHER (#1339). The check used
+        # to be len(plan) >= 1, which any EXPLAIN satisfies; with no parallel path for
+        # the table at all the arm below then passed because no Gather existed. A
+        # repository change can redden this, so it is an arm, not a premise (#1236).
+        cur.execute("EXPLAIN (COSTS OFF) SELECT k, j FROM c WHERE j >= 0")
+        unordered = [r[0] for r in cur.fetchall()]
+        expect.num(sum(1 for l in unordered if l.strip(" ->").startswith("Gather")), 1,
+                   "parallelism is actually available for this table in that session")
         cur.execute("EXPLAIN (COSTS OFF) SELECT k, j FROM c ORDER BY k, j LIMIT 20")
         plan = [r[0] for r in cur.fetchall()]
-        expect.at_least(len(plan), 1,
-                        "premise: parallelism was actually available in that session")
         bare_gather = sum(1 for l in plan if l.strip(" ->") == "Gather")
         keeps_order = sum(1 for l in plan
                           if "Gather Merge" in l or "Sort" in l.strip(" ->"))

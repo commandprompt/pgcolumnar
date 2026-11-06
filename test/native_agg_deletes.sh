@@ -56,31 +56,57 @@ echo "-- $ROWS rows in ${groups} row groups"
 
 AGGS="count(*) count(v) count(s) sum(v) avg(v) min(v) max(v) min(w) max(w) min(s) max(s)"
 
-differential() {  # label
+# differential -> "same", or each aggregate that differs or could not be read. The
+# caller names the check: a name built from an argument is one the parity grader
+# cannot read, so every call site spells its own.
+differential() {
 	local bad="" agg cv hv
 
 	for agg in $AGGS; do
 		cv="$(q "SELECT $agg FROM ad_c;")"
 		hv="$(q "SELECT $agg FROM ad_h;")"
-		[ "$cv" = "$hv" ] || bad="$bad $agg(columnar=$cv heap=$hv)"
+		# An empty reading is a failed query, not a value: two of them used to agree,
+		# so with the server gone after setup all four differentials passed.
+		if [ -z "$cv" ] || [ -z "$hv" ]; then
+			bad="$bad $agg(no reading: columnar=[$cv] heap=[$hv])"
+		elif [ "$cv" != "$hv" ]; then
+			bad="$bad $agg(columnar=$cv heap=$hv)"
+		fi
 	done
-	check "aggregates match heap $1" "${bad:-same}" "same"
+	echo "${bad:-same}"
 }
 
-differential "with nothing deleted"
+# survivors CONDITION -> how many generated rows satisfy it: the oracle's oracle.
+# Each delete below goes to /dev/null with its table, so without this a delete
+# that never ran left every "after ..." arm comparing two untouched tables.
+survivors() {
+	q "SELECT count(*) FROM generate_series(1, $ROWS) g WHERE $1;"
+}
+
+check_num "premise: the heap mirror holds every generated row" \
+	"$(q 'SELECT count(*) FROM ad_h;')" "$(survivors true)"
+check "aggregates match heap with nothing deleted" "$(differential)" "same"
 
 psql_run "DELETE FROM ad_c WHERE id = $((ROWS / 2));
 	DELETE FROM ad_h WHERE id = $((ROWS / 2));" >/dev/null 2>&1
-differential "after one row is deleted"
+check_num "premise: the heap mirror lost exactly the one deleted row" \
+	"$(q 'SELECT count(*) FROM ad_h;')" "$(survivors "g <> $((ROWS / 2))")"
+check "aggregates match heap after one row is deleted" "$(differential)" "same"
 
 psql_run "DELETE FROM ad_c WHERE id BETWEEN 1 AND $((ROWS / 10));
 	DELETE FROM ad_h WHERE id BETWEEN 1 AND $((ROWS / 10));" >/dev/null 2>&1
-differential "after a contiguous tenth is deleted"
+check_num "premise: the heap mirror lost exactly the contiguous tenth" \
+	"$(q 'SELECT count(*) FROM ad_h;')" \
+	"$(survivors "g <> $((ROWS / 2)) AND g > $((ROWS / 10))")"
+check "aggregates match heap after a contiguous tenth is deleted" "$(differential)" "same"
 
 # every group now has deletes, so every group takes the scan path
 psql_run "DELETE FROM ad_c WHERE id % 7 = 0;
 	DELETE FROM ad_h WHERE id % 7 = 0;" >/dev/null 2>&1
-differential "after every group is dirtied"
+check_num "premise: the heap mirror lost exactly every seventh row as well" \
+	"$(q 'SELECT count(*) FROM ad_h;')" \
+	"$(survivors "g <> $((ROWS / 2)) AND g > $((ROWS / 10)) AND g % 7 <> 0")"
+check "aggregates match heap after every group is dirtied" "$(differential)" "same"
 
 # --- 2. count(*) no longer cares about a delete --------------------------------
 
@@ -135,6 +161,8 @@ ms() {  # sql [session settings] -> milliseconds, best of 3
 clean_ms="$(ms "SELECT count(*) FROM ad_t")"
 psql_run "DELETE FROM ad_t WHERE id = $((ROWS / 2));" >/dev/null 2>&1
 dirty_ms="$(ms "SELECT count(*) FROM ad_t")"
+check_num "the timing table counts the row its one delete removed" \
+	"$(q 'SELECT count(*) FROM ad_t;')" "$(survivors "g <> $((ROWS / 2))")"
 
 # The reference is a full scan of the same table, not the undeleted timing.
 #
@@ -155,7 +183,7 @@ echo "-- count(*): ${clean_ms} ms clean, ${dirty_ms} ms with one deleted, ${scan
 
 check "one deleted row does not send count(*) back to a full scan" \
 	"$(awk -v d="$dirty_ms" -v s="$scan_ms" \
-		'BEGIN { print (s > 0 && d < s / 4) ? "yes" : "no (" d " against a " s " scan)" }')" \
+		'BEGIN { if (d !~ /^[0-9]+(\.[0-9]+)?$/ || s !~ /^[0-9]+(\.[0-9]+)?$/) print "no reading (" d " against a " s " scan)"; else print (s > 0 && d < s / 4) ? "yes" : "no (" d " against a " s " scan)" }')" \
 	"yes"
 
 # --- 3. only the groups with deletes are read ----------------------------------
@@ -171,7 +199,7 @@ echo "-- min/max: ${mm_ms} ms with one group dirty, ${full_ms} ms reading everyt
 
 check "a dirty group is scanned without scanning the clean ones" \
 	"$(awk -v m="$mm_ms" -v f="$full_ms" \
-		'BEGIN { print (f > 0 && m < f / 2) ? "yes" : "no (" m " vs " f ")" }')" \
+		'BEGIN { if (m !~ /^[0-9]+(\.[0-9]+)?$/ || f !~ /^[0-9]+(\.[0-9]+)?$/) print "no reading (" m " vs " f ")"; else print (f > 0 && m < f / 2) ? "yes" : "no (" m " vs " f ")" }')" \
 	"yes"
 
 # and the path is still the one being measured

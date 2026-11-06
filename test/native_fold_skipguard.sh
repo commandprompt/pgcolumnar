@@ -55,7 +55,7 @@ run() {  # run <setup> <sql>
 		-d "$PGC_DB" -At -c "$1" -c "$2" 2>&1
 }
 
-# ---- premise one: the FOLD ARM does the skipping, and says so ---------------
+# ---- the FOLD ARM does the skipping, and says so ------------------------------
 #
 # Read off the fold arm itself, which is the plan under test. It used to be read
 # off the scalar arm with the note "same table, same predicate, same reader, so
@@ -77,19 +77,19 @@ GROUP_VECS=59
 fplan=$(run "$SET_ON" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $Q")
 vskip=$(grep "Columnar Vectors Skipped" <<<"$fplan" | grep -oE '[0-9]+' | head -1)
 vdec=$(grep "Columnar Vectors Decoded" <<<"$fplan" | grep -oE '[0-9]+' | head -1)
-check "premise: the fold arm decodes only the vector it needs" "${vdec:-none}" "1"
+check "the fold arm decodes only the vector it needs" "${vdec:-none}" "1"
 check "and reports the 58 it skipped, on its own plan (#542)" "${vskip:-none}" "58"
 check "so decoded plus skipped is the group's vectors, on the FOLD arm" \
 	"$(( ${vdec:-0} + ${vskip:-0} ))" "$GROUP_VECS"
 
-# ---- premise two: the query actually reaches the fold -----------------------
+# ---- the query actually reaches the fold -------------------------------------
 #
 # Without this the guard below is unreachable and the suite would pass forever
 # while protecting nothing. This is the premise a first version of this test
 # lacked, and it is why that version could not be trusted.
 fold=$(run "$SET_ON" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $Q" \
 	| grep -oE "Columnar Batch Fold: [a-z]+" | head -1)
-check "premise: the query reaches the batch fold" "$fold" "Columnar Batch Fold: yes"
+check "the query reaches the batch fold" "$fold" "Columnar Batch Fold: yes"
 
 # ---- and it answers correctly while decode DOES skip -----------------------
 #
@@ -104,9 +104,12 @@ got=$(run "$SET_ON" "$Q" | tail -1)
 check "the fold answers correctly while decode skips 58 of 59 vectors" \
 	"$got" "$want_n|$want_s"
 
-# And the same answer without the fold, so the fold is not quietly wrong in a way
-# that matches a wrong expectation.
+# And the same answer without the fold, against the same arithmetic oracle. It
+# used to be compared with the fold's own reading, so two failed readings agreed:
+# with the server stopped before these reads, both returned the same connection
+# error and this check passed (#1341). A wrong fold also reddened it, which named
+# the scalar arm for the fold's fault.
 got_off=$(run "$SET_OFF" "$Q" | tail -1)
-check "and the scalar arm agrees" "$got_off" "$got"
+check "and the scalar arm agrees" "$got_off" "$want_n|$want_s"
 
 pgc_summary

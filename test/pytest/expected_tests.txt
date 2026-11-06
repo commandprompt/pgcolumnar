@@ -271,7 +271,82 @@
 # guard_tests 414 -> 415 for test_docs_how_to_sections.py (the lost pg_partman heading), by collection.
 # guard_tests 415 -> 419 for #1321's test_suite_exit_trap.py, four tests, the twin of
 # selftest part 620, collected over the NO_CLUSTER files on this tree.
-guard_tests 419
+# guard_tests 419 -> 420 for #1339's test_a_ran_count_the_names_do_not_support_fails_the_major
+# in test_residual_is_counted.py, by collection over the NO_CLUSTER files on this tree.
+# guard_tests 420 -> 424 for #1339's four test_runshape.py arms (a skip, an xfail or an
+# importorskip in a test body, and an xfail marker), by collection over the NO_CLUSTER files.
+# guard_tests 424 -> 425 for #1339's test_an_install_that_leaves_no_library_is_refused in
+# test_build_refusal.py, by collection over the NO_CLUSTER files.
+# guard_tests 425 -> 427 for #1344's test_build_needs_pg_config.py, two tests, the twin
+# of selftest part 630, collected over the NO_CLUSTER files on this tree.
+# guard_tests 427 -> 429 for #1236's two gate arms in test_mutation_ledger.py (a dated
+# premise is refused, and its control), by collection over the NO_CLUSTER files on this tree.
+# guard_tests 429 -> 433 for #1382's test_every_suite_job_installs_the_extensions.py, four
+# tests, the twin of selftest part 640, by collection over the NO_CLUSTER files.
+# guard_tests 433 -> 435 for #1420's two arms in test_writes_wrote_rows.py (a setting
+# on a watched connection or cursor is refused), by collection over NO_CLUSTER.
+# guard_tests 435 -> 438 for three arms in test_mutation_ledger.py: a mutation text holding
+# ';' is refused at merge, a ledger piece with whitespace at an end is refused, and the
+# committed ledger holds none, by collection over NO_CLUSTER.
+# guard_tests 438 -> 439 for #1341's test_every_registered_suite_is_ported_or_declared_unported
+# in test_compare_to_bash.py: one test, by collection over NO_CLUSTER.
+# guard_tests 439 -> 440 for #1339's test_a_premise_in_name_only_is_still_caught in
+# test_loop_coverage_premise.py: one test, by collection over NO_CLUSTER.
+# guard_tests 440 -> 442 for #1339's test_the_minted_failure_scan_sees_the_shape and
+# test_no_test_mints_its_own_failure_text in test_failed_query_sentinel.py: two tests,
+# by collection over NO_CLUSTER.
+# guard_tests 442 -> 462 for #1341's test_wal_envelope.py, the twin of wal_envelope.sh:
+# 20 tests, one per check, cluster-free, by collection over NO_CLUSTER.
+# guard_tests 462 -> 463 for #1339's test_build_refusal.py :163: the new
+# test_build_once_serialises_concurrent_callers, by collection over NO_CLUSTER.
+# guard_tests 463 -> 464 for #1339's test_collation_pinned.py :36: the new
+# test_a_sort_into_a_file_that_comm_reads_is_caught, by collection over NO_CLUSTER.
+# guard_tests 464 -> 465 for #1339's test_writes_wrote_rows.py :93: the new
+# test_a_write_that_wrote_rows_passes_unacknowledged, by collection over NO_CLUSTER.
+# guard_tests 465 -> 467 for #1339's test_residual_is_counted.py :143: the new
+# test_the_tally_function_records_every_suite_that_ran_or_skipped and
+# test_every_comm_in_the_runner_pins_its_collation, by collection over NO_CLUSTER.
+# guard_tests 476 -> 660 for #1341's test_hilbert_curve.py, the twin of hilbert_curve.sh:
+# 184 tests, one per check, cluster-free, by collection over NO_CLUSTER.
+# guard_tests 660 -> 751 for #1341's test_bench_guards.py, the twin of bench_guards.sh, in NO_CLUSTER:
+# 91 checks in 91 tests (six per bench runner, parametrized), by collection over NO_CLUSTER.
+# guard_tests 751 -> 804 for #1341's test_docs_style.py, the twin of docs_style.sh: 53
+# checks in 53 tests, by collection over NO_CLUSTER (it needs no server).
+# guard_tests 467 -> 474 for #1341's test_parquet_level_width.py, the twin of parquet_level_width.sh,
+# which needs no cluster: 7 tests, by collection over NO_CLUSTER.
+# guard_tests 838 -> 839 for #1341's test_a_shell_harness_suite_is_declared_both_ways in
+# test_compare_to_bash.py (harness_selftest declared a shell-harness suite), by collection over NO_CLUSTER.
+# guard_tests 474 -> 476 for #1339's test_mutation_ledger.py :525 and :1002: the new
+# test_the_prior_ceiling_is_resolved_rather_than_assumed and
+# test_a_ledger_row_must_name_a_real_major, by collection over NO_CLUSTER.
+# guard_tests 809 -> 838 for #1341's test_decode_interrupts.py, the twin of decode_interrupts.sh,
+# which needs no cluster: 29 tests (13 functions, two of them over the nine decoders), by
+# collection over NO_CLUSTER.
+# guard_tests 806 -> 809 for #1341's test_native_fetch_interrupt.py, the twin of native_fetch_interrupt.sh,
+# which needs no cluster: 3 tests, by collection over NO_CLUSTER.
+# guard_tests 804 -> 806 for #1613's test_a_refused_comparison_is_counted_and_named in
+# test_check_records.py, serial and xdist, by collection over NO_CLUSTER.
+# guard_tests 839 -> 840 for #1742's test_two_workers_taking_a_fixture_port_do_not_collide in
+# test_runshape.py, by collection over NO_CLUSTER.
+# guard_tests 840 -> 842 for #1749's review: every literal fixture slot fits a worker's block,
+# and the corpus's highest slot gets a port, in test_runshape.py, by collection over NO_CLUSTER.
+# guard_tests 842 -> 846 for #1341's test_capability_decline.py: duckdb joins the declinable
+# capabilities, held by four new tests, by collection over NO_CLUSTER.
+# guard_tests 847 -> 849 for #1431's test_the_budget_holds_no_history and
+# test_each_ledger_commit_carries_its_census in test_mutation_ledger.py, by collection over NO_CLUSTER.
+# guard_tests 849 -> 854 for #1767's five conditional-row tests in test_layer.py, merged from main.
+# guard_tests 854 -> 857 for #1892's three xdist arms in test_layer.py: the expected-unrunnable
+# list judged on the controller only, by collection over NO_CLUSTER.
+# guard_tests 857 -> 858 for #1892's test_the_unrunnable_collector_registers_without_xdist in
+# test_layer.py (review of PR #1905), by collection over NO_CLUSTER.
+# guard_tests 858 -> 860 for #1914's two tests in test_layer.py: a listed test that fails, and one lost to
+# a crashed xdist worker, is not a stale row, by collection over NO_CLUSTER.
+# guard_tests 860 -> 862 for #1933's test_the_default_pg_config_is_one_this_box_has and
+# test_the_default_pg_config_takes_the_first_candidate_that_exists in
+# test_harness_deps_classifier.py, by collection over NO_CLUSTER.
+# guard_tests 862 -> 863 for #1933's test_the_run_reports_which_pg_config_it_used_and_why in
+# test_harness_deps_classifier.py (review of PR #1938), by collection over NO_CLUSTER.
+guard_tests 863
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -610,4 +685,1190 @@ guard_tests 419
 # cluster_tests 528 -> 529 for the #1330 review's NULL-group arm in
 # test_native_groupagg.py, one test, by collection on this branch rebased onto
 # 614eb02 (#1331).
-cluster_tests 529
+#
+# cluster_tests 529 -> 530 for #1337's test_temporal.py::test_for_portion_of, the
+# FOR PORTION OF arms moved into their own test, by collection on this branch
+# (main at a30faeb).
+#
+# cluster_tests 530 -> 532 for #1339's two test_harness_deps.py arms (the needs-the-driver
+# kind and the --partition mode), by collection over the cluster files on this branch.
+# cluster_tests 532 -> 533 for #1339's test_a_timestamp_retention_column_uses_the_sessions_local_time
+# in test_ttl_expire.py, by collection over the cluster files on this branch.
+# cluster_tests 533 -> 534 for #1341's test_expire_refuses_what_it_cannot_honour in
+# test_ttl_expire.py, by collection over the cluster files on this tree.
+# cluster_tests 534 -> 538 for #1341's test_import_export_privilege.py, the twin of
+# import_export_privilege.sh: four tests, by collection over the cluster files on this tree.
+#
+# cluster_tests 538 -> 539 for #1341's test_the_row_identity_lock_and_its_settings in
+# test_advisory_lock_class.py, by collection over the cluster files on this tree.
+#
+# cluster_tests 539 -> 541 for #1298's test_a_catalog_reading_takes_in_none_of_another_sessions_reads
+# in test_catalog_delete_index.py and test_a_storage_reading_takes_in_none_of_another_sessions_reads
+# in test_catalog_plan_index.py, by collection over the cluster files on this tree.
+# cluster_tests 541 -> 542 for #1394's test_a_delete_whose_qual_deletes_another_row_matches_heap
+# in test_native_delete_visibility_paths.py, by collection over the cluster files on this tree.
+#
+# cluster_tests 542 -> 543 for test_fdw_plan_privilege.py, one test, the twin of
+# test/fdw_plan_privilege.sh, by collection over the cluster files on this branch.
+# cluster_tests 543 -> 549 for #1341's test_arrow_import.py, the twin of arrow_import.sh:
+# six tests, by collection over the cluster files on this tree.
+# cluster_tests 549 -> 550 for #1341's test_a_half_declaration_is_no_retention in
+# test_ttl_expire.py, by collection over the cluster files on this tree.
+# cluster_tests 550 -> 551 for #1341's test_entry_point_privilege.py, the twin of
+# entry_point_privilege.sh: one test, by collection over the cluster files on this tree.
+#
+# cluster_tests 551 -> 558 for #1341's test_am_contracts.py, the twin of
+# test/am_contracts.sh: seven tests, by collection over the cluster files on this tree.
+# cluster_tests 558 -> 559 for #1341's test_objstore_credentials.py, the twin of
+# objstore_credentials.sh: one test, by collection over the cluster files on this tree.
+# cluster_tests 559 -> 562 for #1341's three privilege twins: test_debug_hook_privilege.py,
+# test_vacuum_lock_privilege.py and test_vm_privilege.py, one test each, by collection over
+# the cluster files on this tree.
+# cluster_tests 562 -> 563 for #1376's test_a_rollup_and_its_source_are_dropped_together in
+# test_rollup.py, by collection over the cluster files on this tree.
+# cluster_tests 563 -> 564 for #1377's test_rollup_dump_and_restore in test_rollup.py,
+# by collection over the cluster files on this tree.
+# cluster_tests 564 -> 565 for #1341 item 19's test_a_type_change_without_a_rewrite in
+# test_collation_change.py, by collection over the cluster files on this tree.
+# cluster_tests 565 -> 566 for #1360's test_a_read_inside_an_aborted_inner_block_keeps_the_outer_statements_rows
+# in test_am_contracts.py, by collection over the cluster files on this tree.
+# cluster_tests 566 -> 567 for #1420's wiring arm in test_connection.py, by collection
+# over the cluster files on this tree.
+# cluster_tests 567 -> 568 for #1341's test_a_float_sum_that_overflows_raises_as_core_does in
+# test_native_groupagg.py, by collection over the cluster files on this tree.
+# cluster_tests 568 -> 569 for #1407's test_reindex_reclaims_the_entries_of_rows_no_snapshot_sees in
+# test_am_contracts.py, by collection over the cluster files on this tree.
+# cluster_tests 569 -> 570 for #1341's test_alter_table_scans.py, one test, by collection
+# over the cluster files on this tree.
+# cluster_tests 570 -> 574 for #1341's test_settings_reference.py, four tests, by collection
+# over the cluster files on this tree.
+# cluster_tests 574 -> 575 for #1341's test_large_values.py, one test, by collection
+# over the cluster files on this tree.
+# cluster_tests 575 -> 576 for #1341's test_recovery_minimal_wal.py, one test, by collection
+# over the cluster files on this tree.
+# cluster_tests 576 -> 577 for #1341's test_row_tid_refuses_a_row_number_below_one in
+# test_rollup.py, by collection over the cluster files on this tree.
+# cluster_tests 577 -> 578 for #1341's test_statement_self_visibility.py, one test, by collection
+# over the cluster files on this tree.
+# cluster_tests 578 -> 579 for #1341's test_the_documented_refusals_change_nothing in
+# cluster_tests 579 -> 581 for #1341 items 56 and 55: test_the_row_identity_lock_cannot_be_reached_from_sql
+# and test_bulk_parallel_writer_set_by_hand_still_serialises_a_first_write in
+# cluster_tests 581 -> 582 for #1341's test_maintenance_rollback.py, one test, by collection
+# cluster_tests 582 -> 585 for #1421's test_partition_rows.py, one test, by collection
+# cluster_tests 568 -> 569 for #1422 review's test_a_keyed_update_keeps_its_memory_bounded
+# in test_partition_rows.py, by collection over the cluster files on this tree.
+# cluster_tests 569 -> 570 for #1341's test_prepared_across_sessions.py, one test, by
+# collection over the cluster files on this tree (stacked on #1422).
+# cluster_tests 585 -> 586 for #1341's test_maintenance_crash.py, one test, by collection
+# cluster_tests 586 -> 587 for #1341's test_serializable.py, one test, by collection
+# cluster_tests 587 -> 588 for #1341's daemon TimeZone test in test_autovacuum_expire.py,
+# by collection over the cluster files on this tree.
+# cluster_tests 588 -> 590 for #1341's caller-privilege tests in test_tier_partition.py and
+# test_partition_lifecycle.py, one each, by collection over the cluster files on this tree.
+# cluster_tests 590 -> 591 for #1341's test_rls_direct_storage.py, the twin of
+# rls_direct_storage.sh: one test, by collection over the cluster files on this tree.
+# cluster_tests 591 -> 592 for #1341's test_objstore_crlf.py, the twin of objstore_crlf.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 592 -> 593 for #1341's test_objstore_allowlist.py, the twin of
+# objstore_allowlist.sh: one test, by collection over the cluster files on this tree.
+# cluster_tests 593 -> 596 for #1341's test_objstore_userinfo.py, the twin of
+# objstore_userinfo.sh: three tests, by collection over the cluster files on this tree.
+# cluster_tests 596 -> 597 for #1341's test_a_sort_key_with_no_ordering_is_refused in
+# test_projections.py, by collection over the cluster files on this tree.
+# cluster_tests 597 -> 598 for #1341's test_a_named_column_that_does_not_exist_is_refused in
+# test_analyze_function.py, by collection over the cluster files on this tree.
+# cluster_tests 598 -> 599 for #1341's test_min_and_max_keep_each_columns_collation in
+# test_rollup.py, by collection over the cluster files on this tree.
+# cluster_tests 599 -> 600 for #1341's test_savepoint_flush.py, one test, by collection
+# cluster_tests 600 -> 601 for #1341's test_rls_query_paths.py, one test, by collection
+# over the cluster files on this tree.
+# cluster_tests 601 -> 602 for #1341's test_type_matrix.py, one test, by collection
+# cluster_tests 602 -> 603 for #1435's test_a_where_with_no_column_in_it_is_applied in
+# test_native_agg.py, by collection over the cluster files on this tree.
+# cluster_tests 603 -> 604 for #1437's test_a_gating_qual_over_the_join_matches_heap in
+# test_join_runtime_filter.py, by collection over the cluster files on this tree.
+# cluster_tests 604 -> 609 for #1341's test_iceberg_data_files.py, five tests (two
+# listed controls and three parametrized refusals), by collection over the cluster files.
+# cluster_tests 609 -> 617 for #1433's test_native_skip.py, eight tests (six ranges and
+# two equalities, parametrized), by collection over the cluster files on this tree.
+# cluster_tests 617 -> 627 for #1341's test_unique_conc.py, the twin of unique_conc.sh:
+# ten tests, by collection over the cluster files on this tree.
+# cluster_tests 627 -> 638 for #1341's test_update_conc.py, the twin of update_conc.sh:
+# eleven tests, by collection over the cluster files on this tree.
+# cluster_tests 638 -> 641 for #1341's test_recovery.py, the twin of recovery.sh: three
+# tests, by collection over the cluster files on this tree.
+# cluster_tests 641 -> 643 for #1447's two tests in test_join_runtime_filter.py, by
+# collection over the cluster files on this tree.
+# cluster_tests 643 -> 646 for #1341's test_native_backend_crash.py, the twin of
+# native_backend_crash.sh: three tests, by collection over the cluster files on this tree.
+# cluster_tests 646 -> 653 for #1341's test_corruption.py, the twin of corruption.sh:
+# seven tests, by collection over the cluster files on this tree.
+# cluster_tests 653 -> 660 for #1341 item 29's partial twins: test_inheritance.py (2),
+# test_parquet_import.py (1), test_phase5.py (1) and test_drop_cleanup.py (3), by collection.
+# cluster_tests 660 -> 661 for #1341 item 66's test_native_upgrade_converge.py, one test,
+# by collection over the cluster files on this tree.
+# cluster_tests 661 -> 666 for #1341's test_fk_referencing.py, the twin of fk_referencing.sh:
+# five tests, by collection over the cluster files on this tree.
+# cluster_tests 666 -> 672 for #1341's test_truncate_cleanup.py, the twin of truncate_cleanup.sh:
+# six tests, by collection over the cluster files on this tree.
+# cluster_tests 672 -> 673 for #1341's test_native_dml.py, the twin of native_dml.sh: one test,
+# by collection over the cluster files on this tree.
+# cluster_tests 673 -> 674 for #1341's test_native_dict_underfill.py, the twin of
+# native_dict_underfill.sh: one test, by collection over the cluster files on this tree.
+# cluster_tests 674 -> 676 for #1341's test_native_decode_gating.py, the twin of
+# native_decode_gating.sh: two tests, by collection over the cluster files on this tree.
+# cluster_tests 676 -> 677 for #1341's test_native_decode_gate_width.py, the twin of
+# native_decode_gate_width.sh: one test, by collection over the cluster files on this tree.
+# cluster_tests 677 -> 680 for #1341's test_pg_dump_roundtrip.py, the twin of pg_dump_roundtrip.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 680 -> 681 for #1341's test_pg_upgrade.py, the twin of pg_upgrade.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 681 -> 682 for #1341's test_replication.py, the twin of replication.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 682 -> 683 for #1341's test_native_recluster.py, the twin of native_recluster.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 683 -> 687 for #1341's test_alter_am_cleanup.py, the twin of alter_am_cleanup.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 687 -> 690 for #1341's test_native_reclaim.py, the twin of native_reclaim.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 690 -> 691 for #1341's test_native_repack.py, the twin of native_repack.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 691 -> 692 for #1341's test_native_join_vector_agg.py, the twin of native_join_vector_agg.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 692 -> 693 for #1341's test_native_writer.py, the twin of native_writer.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 693 -> 694 for #1341's test_native_batch_fold_projection.py, the twin of native_batch_fold_projection.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 694 -> 695 for #1341's test_native_encdesc_golden.py, the twin of native_encdesc_golden.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 695 -> 697 for #1341's test_native_parquet_schema.py, the twin of native_parquet_schema.sh:
+# two tests, by collection over the cluster files on this tree.
+# cluster_tests 697 -> 698 for #1341's test_native_vecskip.py, the twin of native_vecskip.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 698 -> 702 for #1341's test_native_index_projection.py, the twin of native_index_projection.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 702 -> 710 for #1341's test_native_saop_pushdown.py, the twin of native_saop_pushdown.sh:
+# eight tests, by collection over the cluster files on this tree.
+# cluster_tests 710 -> 718 for #1341's test_native_groupagg_batch.py, the twin of native_groupagg_batch.sh:
+# eight tests, by collection over the cluster files on this tree.
+# cluster_tests 718 -> 722 for #1341's test_native_fetch_projection.py, the twin of native_fetch_projection.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 722 -> 726 for #1341's test_native_fetch_position.py, the twin of native_fetch_position.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 726 -> 730 for #1341's test_native_fetch_cache.py, the twin of native_fetch_cache.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 730 -> 734 for #1341's test_native_parquet_pushdown.py, the twin of native_parquet_pushdown.sh:
+# four tests, by collection over the cluster files on this tree.
+# cluster_tests 734 -> 737 for #1341's test_native_parquet_flba.py, the twin of native_parquet_flba.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 737 -> 740 for #1341's test_native_parquet_multifile.py, the twin of native_parquet_multifile.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 740 -> 742 for #1341's test_native_index.py, the twin of native_index.sh:
+# two tests, by collection over the cluster files on this tree.
+# cluster_tests 742 -> 744 for #1341's test_native_fetch_bigcap.py, the twin of native_fetch_bigcap.sh:
+# two tests, by collection over the cluster files on this tree.
+# cluster_tests 744 -> 747 for #1341's test_sorted_projection.py, the twin of sorted_projection.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 747 -> 749 for #1341's test_native_ios.py, the twin of native_ios.sh:
+# two tests, by collection over the cluster files on this tree.
+# cluster_tests 749 -> 750 for #1341's test_a_fact_qual_conjunction_with_late_materialization_matches_heap,
+# when test_join_runtime_filter.py became test_native_join_runtime_filter.py: one test, by collection.
+# cluster_tests 750 -> 751 for #1341's completion of test_native_agg.py, the twin of native_agg.sh:
+# one test, by collection over the cluster files on this tree.
+# cluster_tests 751 -> 754 for #1341's test_native_truncate.py, the twin of native_truncate.sh:
+# three tests, by collection over the cluster files on this tree.
+# cluster_tests 754 -> 763 for #1341's test_native_gap.py, the twin of native_gap.sh:
+# nine tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 763 -> 772 for #1341's test_native_roundtrip.py, the twin of native_roundtrip.sh:
+# nine tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 772 -> 779 for #1341's test_native_bloom.py, the twin of native_bloom.sh:
+# seven tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 779 -> 787 for #1341's test_native_toasted_write.py, the twin of native_toasted_write.sh:
+# eight tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 787 -> 792 for #1341's completion of test_native_skip.py, the twin of native_skip.sh:
+# five tests, by collection over the cluster files on this tree.
+# cluster_tests 792 -> 837 for #1339, one check per test in test_native_agg.py (3 -> 40
+# tests) and test_latest_reading.py (1 -> 9 tests), by collection over the cluster files.
+# cluster_tests 837 -> 900 for #1339, one check per test in test_native_skip.py (13 -> 76
+# tests), by collection over the cluster files.
+# cluster_tests 900 -> 932 for #1341, test_range_pruning.py ported by name, one check per
+# test (2 -> 34 tests), by collection over the cluster files.
+# cluster_tests 932 -> 943 for #1341's test_native_varlena_bound.py, the twin of native_varlena_bound.sh:
+# eleven tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 943 -> 947 for #1339, one check per test in test_differential.py's covering
+# count (1 -> 5 tests), by collection over the cluster files.
+# cluster_tests 947 -> 966 for #1341's test_native_agg_addcolumn.py, the twin of native_agg_addcolumn.sh:
+# nineteen tests, one per check, by collection over the cluster files on this tree.
+# cluster_tests 966 -> 990 for #1341, test_native_format.py ported by name, one check per
+# test (1 -> 25 tests), by collection over the cluster files.
+# cluster_tests 990 -> 1006 for #1341, test_iceberg_data_files.py ported by name, one check
+# per test (5 -> 21 tests), by collection over the cluster files.
+# cluster_tests 1006 -> 1011 for #1341's test_native_groupagg_wide_cost.py, the twin of
+# native_groupagg_wide_cost.sh: five tests, one per check, by collection over the cluster files.
+# cluster_tests 1011 -> 1018 for #1341's test_hardening.py, the twin of hardening.sh: seven
+# tests, one per check, by collection over the cluster files.
+# cluster_tests 1018 -> 1025 for #1341, test_native_upgrade_converge.py ported by name except its
+# release-tag arms (1 -> 8 tests), by collection over the cluster files.
+# cluster_tests 1025 -> 1029 for #1341, test_native_upgrade_converge.py's release-tag arms (the
+# fixture sweep premise and one test per tagged fixture: 1 + 3), by collection over the cluster files.
+# cluster_tests 1029 -> 1035 for #1341's test_dependency_estimate.py, the twin of
+# dependency_estimate.sh: six tests, one per check, by collection over the cluster files.
+# cluster_tests 1035 -> 1043 for #1341's test_batch_fold_explain.py, the twin of
+# batch_fold_explain.sh: eight tests, one per check, by collection over the cluster files.
+# cluster_tests 1043 -> 1062 for #1341's test_zonemap_cost.py, the twin of zonemap_cost.sh:
+# 19 tests, one per check, by collection over the cluster files.
+# cluster_tests 1062 -> 1070 for #1341's test_concurrent_diff.py, the twin of
+# concurrent_diff.sh: eight tests, one per check, by collection over the cluster files.
+# cluster_tests 1070 -> 1081 for #1341's test_write_minmax_fastpath.py, the twin of write_minmax_fastpath.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 1081 -> 1099 for #1341's test_catalog_natts.py, the twin of catalog_natts.sh:
+# 18 tests, one per check (13 constants parametrized), by collection over the cluster files.
+# cluster_tests 1099 -> 1108 for #1341's test_write_fsst_compressed.py, the twin of write_fsst_compressed.sh:
+# 9 checks in 9 tests, by collection over the cluster files.
+# cluster_tests 2921 -> 2931 for #1341's test_iceberg_rest_vended.py, the twin of iceberg_rest_vended.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 2931 -> 2960 for #1341's test_iceberg_rest_server.py, the twin of iceberg_rest_server.sh:
+# 29 checks in 29 tests, by collection over the cluster files.
+# cluster_tests 2960 -> 2994 for #1341's test_audit.py, the twin of audit.sh:
+# 34 checks in 34 tests, by collection over the cluster files.
+# cluster_tests 2994 -> 3006 for #1341's test_fuzz.py, the twin of fuzz.sh:
+# 12 checks in 12 tests, by collection over the cluster files.
+# cluster_tests 3006 -> 3016 for #1341's test_fuzz_avro.py, the twin of fuzz_avro.sh:
+# 8 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 3016 -> 3024 for #1341's test_fuzz_listing.py, the twin of fuzz_listing.sh:
+# 8 checks in 8 tests, by collection over the cluster files.
+# cluster_tests 3024 -> 3031 for #1341's test_fuzz_arrow.py, the twin of fuzz_arrow.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 3038 -> 3040 for #1341's test_iceberg_rest_scan.py: two namespace checks, by collection.
+# cluster_tests 3031 -> 3038 for #1341's test_fuzz_parquet.py, the twin of fuzz_parquet.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 1108 -> 1140 for #1341's test_zonemap_estimate_sample.py, the twin of zonemap_estimate_sample.sh:
+# 32 tests, one per check, by collection over the cluster files.
+# cluster_tests 1140 -> 1146 for #1341's test_arrow_nested_import.py, the twin of arrow_nested_import.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+# cluster_tests 1146 -> 1152 for #1341's test_arrow_nested.py, the twin of arrow_nested.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+# cluster_tests 1152 -> 1169 for #1341's test_vm_clear_on_renumber.py, the twin of vm_clear_on_renumber.sh:
+# 17 tests, one per check, by collection over the cluster files.
+# cluster_tests 1169 -> 1179 for #1341's test_arrow_export.py, the twin of arrow_export.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 1179 -> 1242 for #1341's test_vector_agg_tlist_shape.py, the twin of vector_agg_tlist_shape.sh:
+# 63 tests: one per check, except that the oracle's three run in one test and the empty and all-NULL four in another, by collection over the cluster files.
+# cluster_tests 1242 -> 1264 for #1341's test_alter_column_type.py, the twin of alter_column_type.sh:
+# 22 checks in 22 tests, by collection over the cluster files.
+# cluster_tests 2732 -> 2748 for #1341's test_iceberg_objstore.py, the twin of iceberg_objstore.sh:
+# 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 2753 -> 2779 for #1341's test_iceberg_dv.py, the twin of iceberg_dv.sh:
+# 26 checks in 26 tests, by collection over the cluster files.
+# cluster_tests 2779 -> 2792 for #1341's test_logical_decoding_source.py, the twin of logical_decoding_source.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 2792 -> 2841 for #1341's test_iceberg_deletes.py, the twin of iceberg_deletes.sh:
+# 49 checks in 49 tests, by collection over the cluster files.
+# cluster_tests 2841 -> 2861 for #1341's test_logical_subscriber.py, the twin of logical_subscriber.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
+# cluster_tests 2861 -> 2898 for #1341's test_logical_decoding_cdc_recipe.py, the twin of logical_decoding_cdc_recipe.sh:
+# 37 checks in 37 tests, by collection over the cluster files.
+# cluster_tests 2898 -> 2912 for #1341's test_iceberg_rest.py, the twin of iceberg_rest.sh:
+# 14 checks in 14 tests, by collection over the cluster files.
+# cluster_tests 2912 -> 2921 for #1341's test_iceberg_rest_scan.py, the twin of iceberg_rest_scan.sh:
+# 9 checks in 9 tests, by collection over the cluster files.
+# cluster_tests 1264 -> 1287 for #1341's test_vector_agg_rescan_memory.py, the twin of vector_agg_rescan_memory.sh:
+# 23 tests, one per check, by collection over the cluster files.
+# cluster_tests 1287 -> 1329 for #1341's test_analyze_stats.py, the twin of analyze_stats.sh:
+# 42 checks in 42 tests, by collection over the cluster files.
+# cluster_tests 1329 -> 1352 for #1341's test_vacuum_stripe_count.py, the twin of vacuum_stripe_count.sh:
+# 23 tests, one per check, by collection over the cluster files.
+# cluster_tests 1352 -> 1371 for #1341's test_bloom_sizing.py, the twin of bloom_sizing.sh:
+# 19 checks in 19 tests, by collection over the cluster files.
+# cluster_tests 1371 -> 1405 for #1341's test_vacuum_sorted_gate.py, the twin of vacuum_sorted_gate.sh:
+# 34 tests, one per check, by collection over the cluster files.
+# cluster_tests 1405 -> 1465 for #1341's test_ungrouped_vector_agg.py, the twin of ungrouped_vector_agg.sh:
+# 60 tests, one per check, by collection over the cluster files.
+# cluster_tests 1465 -> 1473 for #1341's test_tablesample.py, the twin of tablesample.sh:
+# 8 tests, one per check, by collection over the cluster files.
+# cluster_tests 1473 -> 1474 for #1339's test_advisory_lock_class.py :139: the new arm
+# test_an_insert_takes_the_unique_key_lock_only_while_it_is_enabled, by collection over the cluster files.
+# cluster_tests 1474 -> 1485 for #1341's test_bloom_setting.py, the twin of bloom_setting.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 1485 -> 1531 for #1341's test_sorted_mark_rename.py, the twin of sorted_mark_rename.sh:
+# 46 tests, one per check, by collection over the cluster files.
+# cluster_tests 1531 -> 1544 for #1341's test_sort_status_privilege.py, the twin of sort_status_privilege.sh:
+# 13 tests, one per check, by collection over the cluster files.
+# cluster_tests 1544 -> 1564 for #1341's test_bloom_lazy.py, the twin of bloom_lazy.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
+# cluster_tests 1564 -> 1613 for #1341's test_sort_status.py, the twin of sort_status.sh:
+# 49 tests, one per check, by collection over the cluster files.
+# cluster_tests 1613 -> 1622 for #1341's test_smoke.py, the twin of smoke.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 1622 -> 1681 for #1341's test_server_file_privilege.py, the twin of server_file_privilege.sh:
+# 59 tests, one per check, by collection over the cluster files.
+# cluster_tests 1681 -> 1698 for #1341's test_autovacuum.py and test_autovacuum_yield.py, the twins of
+# autovacuum.sh and autovacuum_yield.sh: 11 and 6 checks, one test each, by collection over the cluster files.
+# cluster_tests 1698 -> 1782 for #1341's test_projection_rewrite.py, the twin of projection_rewrite.sh:
+# 84 tests, one per check, by collection over the cluster files.
+# cluster_tests 1782 -> 1800 for #1341's test_avro_manifest.py, the twin of avro_manifest.sh:
+# 16 checks in 16 tests, and one per skip name the shell carries, by collection over the cluster files.
+# cluster_tests 1800 -> 1838 for #1341's test_column_projection.py, the twin of column_projection.sh:
+# 38 checks in 38 tests, by collection over the cluster files.
+# cluster_tests 1838 -> 1849 for #1341's test_local_open_race_free.py, the twin of local_open_race_free.sh:
+# 11 tests, one per check, by collection over the cluster files.
+# cluster_tests 1849 -> 1861 for #1341's test_encode_effort.py, the twin of encode_effort.sh:
+# 12 tests, one per check, by collection over the cluster files.
+# cluster_tests 1861 -> 1872 for #1341's test_doc_parallel_premise.py, the twin of doc_parallel_premise.sh:
+# 11 tests, one per check, by collection over the cluster files.
+# cluster_tests 1872 -> 1899 for #1341's test_maintenance_due.py, the twin of maintenance_due.sh:
+# 27 tests, one per check, by collection over the cluster files.
+# cluster_tests 1899 -> 1930 for #1341's test_eager_ordering_record.py, the twin of eager_ordering_record.sh:
+# 31 tests, one per check, by collection over the cluster files.
+# cluster_tests 1930 -> 1964 for #1341's test_int8_agg_int128.py, the twin of int8_agg_int128.sh:
+# 34 tests, one per check, by collection over the cluster files.
+# cluster_tests 1964 -> 1980 for #1341's test_fsst_verdict_cache.py, the twin of fsst_verdict_cache.sh:
+# 16 tests, one per check, by collection over the cluster files.
+# cluster_tests 1980 -> 1989 for #1341's test_import_exclusion.py, the twin of import_exclusion.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 1989 -> 2003 for #1341's test_import_deferred.py, the twin of import_deferred.sh:
+# 14 tests, one per check, by collection over the cluster files.
+# cluster_tests 2003 -> 2030 for #1341's test_index_only.py, the twin of index_only.sh:
+# 27 tests, one per check, by collection over the cluster files.
+# cluster_tests 2030 -> 2037 for #1341's test_isolation.py, the twin of isolation.sh:
+# 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 4170 -> 4174 for #1341's test_native_cancel.py, the twin of native_cancel.sh:
+# 4 checks in 4 tests, by collection over the cluster files.
+# cluster_tests 4165 -> 4170 for #1341's test_decode_skip_interrupts.py, the twin of decode_skip_interrupts.sh:
+# 5 checks in 5 tests, by collection over the cluster files.
+# cluster_tests 4154 -> 4165 for #1341's test_cancel_decode.py, the twin of cancel_decode.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 4111 -> 4154 for #1341's test_phase6.py, the twin of phase6.sh:
+# 43 checks in 43 tests, by collection over the cluster files.
+# cluster_tests 4072 -> 4111 for #1341's test_phase4.py, the twin of phase4.sh:
+# 39 checks in 39 tests, by collection over the cluster files.
+# cluster_tests 4035 -> 4072 for #1341's test_phase3.py, the twin of phase3.sh:
+# 37 checks in 37 tests, by collection over the cluster files.
+# cluster_tests 3988 -> 4035 for #1341's test_phase2.py, the twin of phase2.sh:
+# 47 checks in 47 tests, by collection over the cluster files.
+# cluster_tests 3957 -> 3988 for #1341's test_objstore_module.py, the twin of objstore_module.sh:
+# 30 checks in 31 tests, by collection over the cluster files.
+# cluster_tests 3919 -> 3954 for #1341's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 35 checks in 35 tests, by collection over the cluster files.
+# cluster_tests 3954 -> 3955 for #1722: test_objstore_sink_write.py gains the cancel arm's
+# open-upload check, by collection over the cluster files.
+# cluster_tests 3955 -> 3957 for #1727's review: test_objstore_sink_write.py gains the
+# all-uploads-open premise before the cancel and the silent-store terminate check.
+# cluster_tests 3895 -> 3919 for #1341's test_objstore_http_read.py, the twin of objstore_http_read.sh:
+# 24 checks in 24 tests, by collection over the cluster files.
+# cluster_tests 3866 -> 3895 for #1341's test_objstore_tls_read.py, the twin of objstore_tls_read.sh:
+# 29 checks in 29 tests, by collection over the cluster files.
+# cluster_tests 3848 -> 3866 for #1341's test_objstore_s3_read.py, the twin of objstore_s3_read.sh:
+# 17 checks in 18 tests, by collection over the cluster files.
+# cluster_tests 3829 -> 3848 for #1341's test_objstore_stash_recovery.py, the twin of objstore_stash_recovery.sh:
+# 18 checks in 19 tests, by collection over the cluster files.
+# cluster_tests 3813 -> 3829 for #1341's test_objstore_addressing.py, the twin of objstore_addressing.sh:
+# 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 3802 -> 3813 for #1341's test_native_rewrite_conc.py, the twin of native_rewrite_conc.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 3787 -> 3802 for #1341's test_objstore_listing.py, the twin of objstore_listing.sh:
+# 15 checks in 15 tests, by collection over the cluster files.
+# cluster_tests 3772 -> 3787 for #1341's test_native_read_parquet.py, the twin of native_read_parquet.sh:
+# 15 checks in 15 tests, by collection over the cluster files.
+# cluster_tests 3752 -> 3772 for #1341's test_native_parquet_fdw.py, the twin of native_parquet_fdw.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
+# cluster_tests 3717 -> 3752 for #1341's test_native_parquet_partition.py, the twin of native_parquet_partition.sh:
+# 35 checks in 35 tests, by collection over the cluster files.
+# cluster_tests 3696 -> 3717 for #1341's test_native_parquet_streaming.py, the twin of native_parquet_streaming.sh:
+# 20 checks in 21 tests, by collection over the cluster files.
+# cluster_tests 3688 -> 3696 for #1341's test_native_parquet_stack.py, the twin of native_parquet_stack.sh:
+# 8 checks in 8 tests, by collection over the cluster files.
+# cluster_tests 3670 -> 3688 for #1341's test_native_parquet_hardening.py, the twin of native_parquet_hardening.sh:
+# 18 checks in 18 tests, by collection over the cluster files.
+# cluster_tests 3653 -> 3670 for #1341's test_native_parquet_projection.py, the twin of native_parquet_projection.sh:
+# 17 checks in 17 tests, by collection over the cluster files.
+# cluster_tests 3633 -> 3653 for #1341's test_native_parquet_units.py, the twin of native_parquet_units.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
+# cluster_tests 3619 -> 3633 for #1341's test_native_parquet_codecs.py, the twin of native_parquet_codecs.sh:
+# 14 checks in 14 tests, by collection over the cluster files.
+# cluster_tests 3608 -> 3619 for #1341's test_native_parquet_fieldid.py, the twin of native_parquet_fieldid.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 3580 -> 3608 for #1341's test_native_vecdecode.py, the twin of native_vecdecode.sh:
+# 28 checks in 28 tests, by collection over the cluster files.
+# cluster_tests 3574 -> 3580 for #1341's test_native_zonemap_narrow.py, the twin of native_zonemap_narrow.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+# cluster_tests 3561 -> 3574 for #1341's test_native_zonemap_session.py, the twin of native_zonemap_session.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 3538 -> 3561 for #1341's test_native_zonemap.py, the twin of native_zonemap.sh:
+# 23 checks in 23 tests, by collection over the cluster files.
+# cluster_tests 3518 -> 3538 for #1341's test_native_rewrite.py, the twin of native_rewrite.sh:
+# 20 checks in 20 tests, by collection over the cluster files.
+# cluster_tests 3496 -> 3518 for #1341's test_native_sort_by.py, the twin of native_sort_by.sh:
+# 21 checks in 22 tests, by collection over the cluster files.
+# cluster_tests 3486 -> 3496 for #1341's test_native_param_pushdown.py, the twin of native_param_pushdown.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 3474 -> 3486 for #1341's test_native_page_offset_bound.py, the twin of native_page_offset_bound.sh:
+# 12 checks in 12 tests, by collection over the cluster files.
+# cluster_tests 3461 -> 3474 for #1341's test_native_reclaim_reconcile.py, the twin of native_reclaim_reconcile.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 3447 -> 3461 for #1341's test_native_late_materialization.py, the twin of native_late_materialization.sh:
+# 14 checks in 14 tests, by collection over the cluster files.
+# cluster_tests 3439 -> 3447 for #1341's test_native_metadata_flush.py, the twin of native_metadata_flush.sh:
+# 8 checks in 8 tests, by collection over the cluster files.
+# cluster_tests 3429 -> 3439 for #1341's test_native_lazy_slot.py, the twin of native_lazy_slot.sh:
+# 10 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 3416 -> 3429 for #1341's test_native_fold_deferral.py, the twin of native_fold_deferral.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 3207 -> 3222 for #1341's test_native_fetch_group_memo.py, the twin of native_fetch_group_memo.sh:
+# 15 checks in 15 tests, by collection over the cluster files.
+# cluster_tests 4282 -> 4293 for #1341's test_planner_choice_quality.py, the twin of planner_choice_quality.sh:
+# 11 checks in 11 tests, by collection over the cluster files.
+# cluster_tests 3201 -> 3207 for #1341's test_native_fold_skipguard.py, the twin of native_fold_skipguard.sh:
+# 6 checks in 6 tests, by collection over the cluster files.
+# cluster_tests 3194 -> 3201 for #1341's test_native_fetch_sort_context.py, the twin of native_fetch_sort_context.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 3168 -> 3194 for #1341's test_native_fastdecode.py, the twin of native_fastdecode.sh:
+# 26 checks in 26 tests, by collection over the cluster files.
+# cluster_tests 3117 -> 3168 for #1341's test_native_encoding.py, the twin of native_encoding.sh:
+# 51 checks in 51 tests, by collection over the cluster files.
+# cluster_tests 3102 -> 3117 for #1341's test_native_ctas.py, the twin of native_ctas.sh:
+# 15 checks in 15 tests, by collection over the cluster files.
+# cluster_tests 3085 -> 3102 for #1341's test_native_exact_selection.py, the twin of native_exact_selection.sh:
+# 17 checks in 17 tests, by collection over the cluster files.
+# cluster_tests 2037 -> 2045 for #1341's test_concurrency.py, the twin of concurrency.sh:
+# 8 tests, one per check, by collection over the cluster files.
+# cluster_tests 2045 -> 2053 for #1341's test_iceberg_scan.py, the twin of iceberg_scan.sh:
+# 8 tests, one per check, by collection over the cluster files.
+# cluster_tests 2053 -> 2065 for #1341's test_iceberg_catalog.py, the twin of iceberg_catalog.sh:
+# 12 tests, one per check, by collection over the cluster files.
+# cluster_tests 2065 -> 2072 for #1341's test_iceberg_name_mapping_memory.py, the twin of iceberg_name_mapping_memory.sh:
+# 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 2072 -> 2083 for #1341's test_iceberg_fdw_estimate.py and test_iceberg_fdw_projection.py,
+# the twins of iceberg_fdw_estimate.sh and iceberg_fdw_projection.sh, by collection over the cluster files.
+# cluster_tests 2083 -> 2094 for #1341's test_estimate_deleted.py, the twin of estimate_deleted.sh:
+# 11 tests, one per check, by collection over the cluster files.
+# cluster_tests 2094 -> 2105 for #1341's test_generated_columns.py, the twin of generated_columns.sh:
+# 11 tests, one per check, by collection over the cluster files.
+# cluster_tests 2105 -> 2121 for #1341's test_export_sink.py, the twin of export_sink.sh:
+# 16 tests, one per check, by collection over the cluster files.
+# cluster_tests 2121 -> 2136 for #1341's test_groupagg_table_sizing.py, the twin of groupagg_table_sizing.sh:
+# 15 tests, one per check, by collection over the cluster files.
+# cluster_tests 2136 -> 2153 for #1341's test_fsst_margin.py, the twin of fsst_margin.sh:
+# 17 tests, one per check, by collection over the cluster files.
+# cluster_tests 2153 -> 2162 for #1341's test_index_delete_liveness.py, the twin of index_delete_liveness.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 2162 -> 2169 for #1341's test_rewrite_group_scan.py, the twin of rewrite_group_scan.sh:
+# 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 2169 -> 2182 for #1341's test_recluster_gate.py, the twin of recluster_gate.sh:
+# 13 tests, one per check, by collection over the cluster files.
+# cluster_tests 2182 -> 2200 for #1341's test_recluster_extent.py, the twin of recluster_extent.sh:
+# 18 tests, one per check, by collection over the cluster files.
+# cluster_tests 2200 -> 2226 for #1341's test_reader_buffer_reuse.py, the twin of reader_buffer_reuse.sh:
+# 26 tests, one per check, by collection over the cluster files.
+# cluster_tests 2226 -> 2241 for #1341's test_nologin_workers.py, the twin of nologin_workers.sh:
+# 15 tests, one per check, by collection over the cluster files.
+# cluster_tests 2241 -> 2249 for #1341's test_scan_direction.py, the twin of scan_direction.sh:
+# 8 tests, one per check, by collection over the cluster files.
+# cluster_tests 2249 -> 2260 for #1341's test_qual_order_selectivity.py, the twin of qual_order_selectivity.sh:
+# 11 tests, one per check, by collection over the cluster files.
+# cluster_tests 2260 -> 2311 for #1341's test_pushdown_report.py, the twin of pushdown_report.sh:
+# 51 tests, one per check, by collection over the cluster files.
+# cluster_tests 2311 -> 2325 for #1341's test_row_triggers.py, the twin of row_triggers.sh:
+# 14 tests, one per check, by collection over the cluster files.
+# cluster_tests 2325 -> 2333 for #1341's test_projection_rename_restore.py, the twin of projection_rename_restore.sh:
+# 8 tests, one per check, by collection over the cluster files.
+# cluster_tests 2333 -> 2419 for #1341's test_preimage_rewrite.py, the twin of preimage_rewrite.sh:
+# 86 tests, one per check, by collection over the cluster files.
+# cluster_tests 2419 -> 2431 for #1341's test_pg19_vacuum_options.py, the twin of pg19_vacuum_options.sh:
+# 12 tests, one per check, by collection over the cluster files.
+# cluster_tests 2431 -> 2441 for #1341's test_cost_written_geometry.py, the twin of cost_written_geometry.sh:
+# 10 tests, one per check, by collection over the cluster files.
+# cluster_tests 2441 -> 2454 for #1341's test_encode_invariants.py, the twin of encode_invariants.sh:
+# 13 tests, one per check, by collection over the cluster files.
+# cluster_tests 2454 -> 2467 for #1341's test_read_stream.py, the twin of read_stream.sh:
+# 13 tests, one per check, by collection over the cluster files.
+# cluster_tests 2467 -> 2473 for #1341's test_parquet_nested.py, the twin of parquet_nested.sh:
+# 6 tests, one per check, by collection over the cluster files.
+# cluster_tests 2473 -> 2480 for #1341's test_parquet_nested_import.py, the twin of parquet_nested_import.sh:
+# 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 2480 -> 2497 for #1341's test_parquet_count_bounds.py, the twin of parquet_count_bounds.sh:
+# 17 tests, one per check, by collection over the cluster files.
+# cluster_tests 2497 -> 2503 for #1341's test_parallel_degree.py, the twin of parallel_degree.sh:
+# 6 tests, one per check, by collection over the cluster files.
+# cluster_tests 2503 -> 2508 for #1341's test_parallel_flush_optin.py, the twin of parallel_flush_optin.sh:
+# 5 tests, one per check, by collection over the cluster files.
+# cluster_tests 2508 -> 2670 for #1341's test_parquet_export_stats.py, the twin of parquet_export_stats.sh:
+# 162 tests, one per check, by collection over the cluster files.
+# cluster_tests 4174 -> 4176 for #1633's two new checks in test_recluster_extent.py:
+# no row rewritten and also kept, and a row deleted during the rewrite stays deleted.
+# cluster_tests 3072 -> 3085 for #1341's test_native_cluster.py, the twin of native_cluster.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 3059 -> 3072 for #1341's test_native_agg_deletes.py, the twin of native_agg_deletes.sh:
+# 13 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 3040 -> 3059 for #1341's test_native_compact.py, the twin of native_compact.sh:
+# 19 checks in 19 tests, by collection over the cluster files.
+# cluster_tests 2677 -> 2710 for #1341's test_iceberg_malformed.py, the twin of iceberg_malformed.sh:
+# 31 checks in 33 tests, by collection over the cluster files.
+# cluster_tests 2710 -> 2732 for #1341's test_iceberg_name_mapping.py, the twin of iceberg_name_mapping.sh:
+# 22 checks in 22 tests, by collection over the cluster files.
+# cluster_tests 2670 -> 2677 for #1637's test_catalog_filter_reads.py, the twin of catalog_filter_reads.sh:
+# 7 tests, one per check, by collection over the cluster files.
+# cluster_tests 4227 -> 4231 for the #1657 follow-up: a heap-table refusal and its control in
+# test_stats_privilege.py and test_sort_status_privilege.py, by collection over the cluster files.
+# cluster_tests 4176 -> 4200 for #1339's hilbert batch: test_hilbert_cluster.py's S1 and (a2) tests split
+# into one check per test (S1 8 -> 24, (a2) 1 -> 7) and two daemon tests on a decayed zorder table, by collection.
+# cluster_tests 2748 -> 2753 for #1706's five timestamp-flag tests in test_native_parquet_schema.py, by collection.
+# cluster_tests 4221 -> 4225 for #1745's arm 4 in test_parallel_flush_optin.py: four tests,
+# one per check, by collection over the cluster files.
+# cluster_tests 4226 -> 4227 for #1747's arm 6 in test_parallel_flush_optin.py: one test, by
+# collection over the cluster files.
+# cluster_tests 4214 -> 4221 for #1341's test_objstore_export_double_cancel.py, the twin of objstore_export_double_cancel.sh:
+# 7 checks in 7 tests, by collection over the cluster files.
+# cluster_tests 4200 -> 4214 for #1738's fourteen timestamp/timestamptz tests in test_native_skip.py, by collection.
+# cluster_tests 3222 -> 3239 for #1341's test_parallel_copy_dedup.py, the twin of parallel_copy_dedup.sh:
+# 17 tests, one per check, by collection over the cluster files.
+# cluster_tests 3239 -> 3320 for #1341's test_parallel_copy.py, the twin of parallel_copy.sh:
+# 81 tests, one per check, by collection over the cluster files.
+# cluster_tests 3320 -> 3333 for #1341's test_parallel.py, the twin of parallel.sh:
+# 13 tests, one per check, by collection over the cluster files.
+# cluster_tests 3333 -> 3362 for #1341's test_parallel_vector_agg.py, the twin of parallel_vector_agg.sh:
+# 29 tests, one per check, by collection over the cluster files.
+# cluster_tests 3362 -> 3416 for #1341's test_parallel_export_parquet.py, the twin of parallel_export_parquet.sh:
+# 54 tests, one per check, by collection over the cluster files.
+# cluster_tests 4225 -> 4226 for #1753's arm 5 in test_parallel_flush_optin.py (folded into #1746):
+# one structural test, by collection over the cluster files.
+# cluster_tests 4231 -> 4249 for #1706: test_parquet_timestamp_zone.py, the twin of parquet_timestamp_zone.sh
+# (16 tests, one per check), and two mixed-kind hour() arms in test_iceberg_fdw.py, by collection.
+# cluster_tests 4249 -> 4258 for #1712's test_parquet_skip_cross_type.py, the twin of parquet_skip_cross_type.sh:
+# 9 tests, one per check, by collection over the cluster files.
+# cluster_tests 4258 -> 4261 for #1712's three soundness arms in test_parquet_export_stats.py
+# (parametrized), by collection over the cluster files.
+# cluster_tests 4261 -> 4268 for #1712's seven spring-forward arms in test_parquet_skip_cross_type.py,
+# one per check, by collection over the cluster files.
+# cluster_tests 4268 -> 4282 for #1341's test_parquet_export.py, the twin of parquet_export.sh:
+# 14 tests, one per check, by collection over the cluster files.
+# cluster_tests 4293 -> 4323 for #1743's test_objstore_export_open_uploads.py, the twin of objstore_export_open_uploads.sh:
+# 30 checks in 30 tests, by collection over the cluster files.
+# cluster_tests 4323 -> 4332 for #1339's nine rewrite-form tests in test_rewrite_storage_oid.py, by collection.
+# cluster_tests 4332 -> 4344 for #432's completed test_inheritance.py, the twin of inheritance.sh:
+# 12 inheritance-tree checks in 12 new tests, by collection over the cluster files.
+# cluster_tests 4344 -> 4362 for #432's completed test_parquet_import.py, the twin of parquet_import.sh:
+# 18 checks in 18 new tests, by collection over the cluster files.
+# cluster_tests 4362 -> 4399 for #432's completed test_phase5.py, the twin of phase5.sh:
+# 37 checks in 37 new tests, by collection over the cluster files.
+# cluster_tests 4399 -> 4400 for #432's test_a_chunk_over_1gb_is_refused in test_large_values.py, the
+# shell's opt-in arm, by collection over the cluster files.
+# cluster_tests 4400 -> 4402 for #432's two real-S3 integration arms in test_objstore_sink_write.py,
+# opt-in as the shell's are, by collection over the cluster files.
+# cluster_tests 4402 -> 4410 for #432's completed test_drop_cleanup.py, the twin of drop_cleanup.sh:
+# 8 storage and catalog cleanup checks in 8 new tests, by collection over the cluster files.
+# cluster_tests 4410 -> 4415 for #1771's test_native_agg_collation.py, the twin of native_agg_collation.sh:
+# 5 checks in 5 tests, by collection over the cluster files.
+# cluster_tests 4415 -> 4419 for #1300's hand-off tests in test_native_groupagg.py (the hand-off, min/max over
+# float8 NaN and over ICU text, and the memory bound), by collection.
+# cluster_tests 4419 -> 4427 for #1300 D''s eight merge tests in test_native_groupagg.py, by collection.
+# cluster_tests 4427 -> 4462 for #1309's test_native_sketch.py, the twin of native_sketch.sh (34), and
+# test_catalog_natts.py's new [sketch] case, which Natts_sketch adds (1), by collection over the cluster files.
+# cluster_tests 4462 -> 4481 for #1309's test_native_sketch_agg.py, the twin of native_sketch_agg.sh, by collection.
+# cluster_tests 4481 -> 4494 for #1309 phase 4's test_native_sketch_rewrite.py, the twin of
+# native_sketch_rewrite.sh: 27 checks in 13 tests, by collection over the cluster files.
+# cluster_tests 4494 -> 4510 for #1309's test_native_sketch_fold.py, the twin of native_sketch_fold.sh:
+# 16 checks in 16 tests, by collection over the cluster files.
+# cluster_tests 4510 -> 4518 for #1781's 8 new tests in test_objstore_sink_write.py, the twin of
+# objstore_sink_write.sh's refused-listing and refused-marker arms, by collection over the cluster files.
+# cluster_tests 4510 -> 4516 for #1786: six tests in test_native_parquet_codecs.py for a column
+# that is NULL in every row, under GZIP, ZSTD and LZ4_RAW, by collection: `4516 tests collected`.
+# cluster_tests 4524 at the merge of origin/main (a247bea0) into fix/1781-reconcile-cleanup,
+# by collection: `4524 tests collected`.
+# cluster_tests 4510 -> 4520 for #1792: ten tests in test_native_parquet_flba.py for an Iceberg
+# fixed(L) column read as bytea, by collection: `4520 tests collected`.
+# cluster_tests 4526 at the merge of origin/main (a247bea0) into fix/1792-flba-bytea,
+# by collection: `4526 tests collected`.
+# cluster_tests 4510 -> 4521 for #1788: six tests in test_native_parquet_fieldid.py and five in
+# test_iceberg_scan.py for a struct, list or map column declared scalar, by collection: `4521 tests collected`.
+# cluster_tests 4521 -> 4522 for #1788's review: test_field_id_minus_one_over_the_nested_file_is_refused_as_absent
+# in test_native_parquet_fieldid.py, by collection: `4522 tests collected`.
+# cluster_tests 4528 at the merge of origin/main (a247bea0) into fix/1788-iceberg-nested-scalar,
+# by collection: `4528 tests collected`.
+# cluster_tests 4510 -> 4521 for #1823: eleven tests in test_iceberg_malformed.py for a manifest enum value
+# outside the spec (data_file.content, manifest_entry.status, manifest_file.content), by collection:
+# `4521 tests collected`.
+# cluster_tests 4521 -> 4524 for #1823's review: three tests in test_iceberg_malformed.py for a
+# content or status value outside int32 (2^32, 2^32+1), by collection: `4524 tests collected`.
+# cluster_tests 4530 at the merge of origin/main (a247bea0) into fix/1823-iceberg-content-enum,
+# by collection: `4530 tests collected`.
+# cluster_tests 4510 -> 4517 for #1819: seven tests in test_iceberg_rest_server.py for USAGE on a
+# catalog server, by collection: `4517 tests collected`.
+# cluster_tests 4523 at the merge of origin/main (a247bea0) into fix/1819-rest-server-usage,
+# by collection: `4523 tests collected`.
+# cluster_tests 4510 -> 4525 for #1821: fifteen tests in test_native_parquet_hardening.py for Parquet
+# string cells that are not valid in the server encoding, by collection: `4525 tests collected`.
+# cluster_tests 4531 at the merge of origin/main (a247bea0) into fix/1821-parquet-string-encoding,
+# by collection: `4531 tests collected`.
+# cluster_tests 4510 -> 4525 for #1814: fifteen tests in test_native_parquet_hardening.py for
+# unsigned Parquet integers (UINT_32 into bigint, UINT_64 into numeric, 22003 into a narrower
+# type, parquet_schema's advice, and each spelling of the mark alone), by collection:
+# `4525 tests collected`.
+# cluster_tests 4531 at the merge of origin/main (a247bea0) into fix/1814-parquet-unsigned,
+# by collection: `4531 tests collected`.
+# cluster_tests 4510 -> 4514 for #1818: four tests in test_iceberg_fdw.py for bucket[16] on a string
+# column under a deterministic and a nondeterministic collation, by collection: `4514 tests collected`.
+# cluster_tests 4520 at the merge of origin/main (a247bea0) into fix/1818-iceberg-bucket-collation,
+# by collection: `4520 tests collected`.
+# cluster_tests 4510 -> 4526 for #1789: fourteen tests in test_iceberg_scan.py and two in
+# test_iceberg_rest_scan.py for a column read after an Iceberg type promotion, by collection:
+# `4526 tests collected`.
+# cluster_tests 4532 at the merge of origin/main (a247bea0) into fix/1789-iceberg-type-promotion,
+# by collection: `4532 tests collected`.
+# cluster_tests 4536 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4536 tests collected`.
+# cluster_tests 4551 at the merge of fix/1818-iceberg-bucket-collation into fix/1814-parquet-unsigned,
+# by collection: `4551 tests collected`.
+# cluster_tests 4566 at the merge of fix/1814-parquet-unsigned into fix/1821-parquet-string-encoding,
+# by collection: `4566 tests collected`.
+# cluster_tests 4573 at the merge of fix/1821-parquet-string-encoding into fix/1819-rest-server-usage,
+# by collection: `4573 tests collected`.
+# cluster_tests 4587 at the merge of fix/1819-rest-server-usage into fix/1823-iceberg-content-enum,
+# by collection: `4587 tests collected`.
+# cluster_tests 4599 at the merge of fix/1823-iceberg-content-enum into fix/1788-iceberg-nested-scalar,
+# by collection: `4599 tests collected`.
+# cluster_tests 4609 at the merge of fix/1788-iceberg-nested-scalar into fix/1792-flba-bytea,
+# by collection: `4609 tests collected`.
+# cluster_tests 4617 at the merge of fix/1792-flba-bytea into fix/1781-reconcile-cleanup,
+# by collection: `4617 tests collected`.
+# cluster_tests 4516 -> 4524 for #1783's eight prefix, pattern and upload-cleanup tests in
+# test_objstore_addressing.py, by collection over the cluster files.
+# cluster_tests 4524 -> 4526 for #1783's two tests in test_objstore_addressing.py that an upload a
+# terminated worker left open is aborted under virtual-host addressing, by collection over the cluster files.
+# cluster_tests 4526 -> 4532 for #1780's test_objstore_sink_write.py, the twin of objstore_sink_write.sh:
+# 6 checks in 6 new tests (4, then 2 after review), by collection over the cluster files.
+# cluster_tests 4532 -> 4534 for #1787's two close-delimited reply tests in test_iceberg_rest.py (read to
+# the end, and refused past the cap), by collection over the cluster files.
+# cluster_tests 4534 -> 4536 for #1794's two half-pair tests in test_iceberg_rest_server.py (a half OAuth2
+# credential, id or secret, is refused even with a static token), by collection.
+# cluster_tests 4536 -> 4537 for #1794's token-wins test in test_iceberg_rest_server.py (a static token and a
+# complete OAuth2 pair read by the token, with no token request), by collection.
+# cluster_tests 4537 -> 4540 for #1791 in test_iceberg_data_files.py: the DELETED-entry case leaves the
+# refusal table for a test of its own (skipped, not refused), and three copy-on-write tests join it,
+# by collection over the cluster files.
+# cluster_tests 4641 at the merge of origin/main (9fc12386) into fix/1781-reconcile-cleanup,
+# by collection: `4641 tests collected`.
+# cluster_tests 4633 at the merge of origin/main (9fc12386) into fix/1792-flba-bytea,
+# by collection: `4633 tests collected`.
+# cluster_tests 4623 at the merge of origin/main (9fc12386) into fix/1788-iceberg-nested-scalar,
+# by collection: `4623 tests collected`.
+# cluster_tests 4611 at the merge of origin/main (9fc12386) into fix/1823-iceberg-content-enum,
+# by collection: `4611 tests collected`.
+# cluster_tests 4597 at the merge of origin/main (9fc12386) into fix/1819-rest-server-usage,
+# by collection: `4597 tests collected`.
+# cluster_tests 4590 at the merge of origin/main (9fc12386) into fix/1821-parquet-string-encoding,
+# by collection: `4590 tests collected`.
+# cluster_tests 4575 at the merge of origin/main (9fc12386) into fix/1814-parquet-unsigned,
+# by collection: `4575 tests collected`.
+# cluster_tests 4560 at the merge of origin/main (9fc12386) into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4556 at the merge of origin/main (9fc12386) into fix/1789-iceberg-type-promotion,
+# by collection: `4556 tests collected`.
+# cluster_tests 4560 at the merge of fix/1789-iceberg-type-promotion into fix/1818-iceberg-bucket-collation,
+# by collection: `4560 tests collected`.
+# cluster_tests 4575 at the merge of fix/1818-iceberg-bucket-collation into fix/1814-parquet-unsigned,
+# by collection: `4575 tests collected`.
+# cluster_tests 4590 at the merge of fix/1814-parquet-unsigned into fix/1821-parquet-string-encoding,
+# by collection: `4590 tests collected`.
+# cluster_tests 4597 at the merge of fix/1821-parquet-string-encoding into fix/1819-rest-server-usage,
+# by collection: `4597 tests collected`.
+# cluster_tests 4611 at the merge of fix/1819-rest-server-usage into fix/1823-iceberg-content-enum,
+# by collection: `4611 tests collected`.
+# cluster_tests 4623 at the merge of fix/1823-iceberg-content-enum into fix/1788-iceberg-nested-scalar,
+# by collection: `4623 tests collected`.
+# cluster_tests 4633 at the merge of fix/1788-iceberg-nested-scalar into fix/1792-flba-bytea,
+# by collection: `4633 tests collected`.
+# cluster_tests 4641 at the merge of fix/1792-flba-bytea into fix/1781-reconcile-cleanup,
+# by collection: `4641 tests collected`.
+# cluster_tests 4641 -> 4645 for #1781's review: test_objstore_sink_write.py gains the twins of
+# objstore_sink_write.sh's refused-listing-after-a-larger-run arm (4 tests), by collection: `4645 tests collected`.
+# cluster_tests 4645 -> 4653 for #1784's test_objstore_listing.py, the twin of objstore_listing.sh:
+# 8 checks in one test of 8 parameters, by collection over the cluster files.
+# cluster_tests 4653 -> 4655 for #1784's two upper-case scheme checks in test_objstore_listing.py
+# (an S3:// prefix and an S3:// pattern), 2 parameters of the same test, by collection over the cluster files.
+# cluster_tests 4655 -> 4656 for #1784's S3://.../glb/[A_]*.parquet check in test_objstore_listing.py (only the
+# scheme ignores case), 1 parameter of the same test, by collection over the cluster files (`4527 tests collected` after the merge of main).
+# cluster_tests 4573 -> 4584 for #1793's test_iceberg_rest_scan.py: eleven checks for nested namespaces,
+# a multi-segment prefix, a prefix in defaults and a warehouse server, by collection: `5405 tests collected`
+# after the merge of main, minus guard_tests 854.
+# cluster_tests 4584 -> 4595 for #1793's PR #1859 review in test_iceberg_rest_scan.py: eleven checks for a
+# top level that lists nested namespaces, ?parent= ignored or refused, config precedence, invalid separator
+# and prefix, the 64-level bound and page-token cycles, by collection: `5416 tests collected`, minus 854.
+# cluster_tests 4656 -> 4678 at the merge of origin/main (b9c0884c) into fix/1793-rest-namespaces: main's 4623
+# plus this branch's 22 checks in test_iceberg_rest_scan.py, by collection: `5499 tests collected`, minus 854.
+# cluster_tests 4678 -> 4681 for #1807's three parquet_schema advice tests in test_parquet_timestamp_zone.py, by collection.
+# cluster_tests 4596 -> 4623 for #1810's and #1813's serial and commit arms in
+# test_objstore_export_open_uploads.py: 27 checks in 27 tests, by collection over the cluster files.
+# cluster_tests 4623 -> 4629 for #1846's complete-drop arm in test_objstore_export_open_uploads.py:
+# 6 checks in 6 tests, by collection over the cluster files (`4549 tests collected` before main was merged).
+# cluster_tests 4629 -> 4642 for the #1846 review's serial double-cancel, put-refused and
+# earlier-export-warning checks in test_objstore_export_open_uploads.py: 13 checks in 13 tests,
+# by collection over the cluster files (`4562 tests collected` before main was merged).
+# cluster_tests 4606 at the merge of origin/main (6f88f973) into fix/1810-serial-export-cancel,
+# by collection: `4606 tests collected`.
+# cluster_tests 4645 + 46 = 4691 at the merge of origin/main (3fae8317) into fix/1810-serial-export-cancel:
+# this branch's 46 tests in test_objstore_export_open_uploads.py on main's 4645, by collection: `4691 tests collected`.
+# cluster_tests 4565 -> 4570 for #1782's test_objstore_sink_write.py: 5 trailing-slash checks
+# in 5 tests, by collection over the cluster files.
+# cluster_tests 4570 -> 4584 for #1782's test_objstore_sink_write.py review round: 14 checks in
+# 14 tests (sibling prefixes, no slash, several slashes, bare bucket, cancel), by collection.
+# cluster_tests 4584 -> 4585 for #1782's test_objstore_sink_write.py re-review: 1 nested-prefix check
+# in 1 test, by collection over the cluster files.
+# cluster_tests 4585 -> 4588 for #1782's test_objstore_sink_write.py second re-review: 3 uppercase-scheme
+# checks in 3 tests, by collection over the cluster files.
+# cluster_tests 4727 -> 4750 at the merge of origin/fix/1793-rest-namespaces into fix/1782-pexport-trailing-slash:
+# that branch's 4678 plus this branch's 23 tests in test_objstore_sink_write.py (4516 -> 4539),
+# by collection over the cluster files: `4701 tests collected`.
+# cluster_tests 4565 -> 4575 for #1779's ten http:// export tests in test_objstore_sink_write.py, the twin of
+# objstore_sink_write.sh: 10 checks in 10 tests, by collection over the cluster files.
+# cluster_tests 4575 -> 4576 for #1779's 403 hint test in test_objstore_sink_write.py: 1 check in 1 test,
+# by collection over the cluster files.
+# cluster_tests 4576 -> 4578 for #1779's s3:// 403 hint test and http:// arrow export test in
+# test_objstore_sink_write.py: 2 checks in 2 tests, by collection over the cluster files.
+# cluster_tests 4750 -> 4763 at the merge of origin/fix/1782-pexport-trailing-slash (2f9022ed) into
+# fix/1779-http-write-unsigned: that branch's 4701 plus this branch's 13 tests in test_objstore_sink_write.py
+# (4516 -> 4529), by collection over the cluster files: `4714 tests collected`.
+# cluster_tests 4763 -> 4783 for #1822's footer tests in test_native_parquet_hardening.py (12) and #1824's
+# malformed-number tests in test_iceberg_malformed.py (8), by collection over the cluster files.
+# cluster_tests 4783 -> 4789 for #1834's review: six tests in test_native_parquet_hardening.py (a UUID field
+# and list skipped whole, a type-13 sweep, a list of element type 14, and byte and double lists that run off
+# the footer), by collection over the cluster files: `4542 tests collected` before main's 44 were merged in.
+# cluster_tests 4789 -> 4796 for #1834's second review: four tests in test_native_parquet_hardening.py (a row
+# group num_rows below the footer total, a footer num_rows above it, a type-0 nibble with a delta, a huge list
+# of element type 15) and three in test_iceberg_malformed.py (format-version 4 and 0, a null
+# current-snapshot-id), by collection over the cluster files after merging main (6f88f973): `4593 tests collected`.
+# cluster_tests 4711 at the merge of origin/fix/1793-rest-namespaces (main 3fae8317 + #1802) into
+# fix/1822-strict-metadata-parsing: that branch's 4678 plus this branch's 33, by collection: `4711 tests collected`.
+# cluster_tests 4752 -> 4762 for #1811's and #1812's tests in test_parquet_export.py (4), test_arrow_export.py (3)
+# and test_objstore_sink_write.py (3). Re-derived by collection on the merged tree, not by adding
+# the deltas: `4526 tests collected`.
+# cluster_tests 4762 -> 4771 for #1811's review fixes on #1843: test_parquet_export.py (4),
+# test_arrow_export.py (4) and test_parallel_export_parquet.py (1), by collection: the whole
+# corpus collects `5389 tests collected`, guard 854 + cluster 4535.
+# cluster_tests 4776 -> 4795 merging main into #1843 (main's #1783, #1780, #1787, #1794, #1791 with
+# #1811's and #1812's 19), by collection on the merged tree, not by adding the deltas:
+# `5413 tests collected`, guard 854 + cluster 4559.
+# cluster_tests 4795 -> 4797 for #1811's kept-text tests on #1843, one each in test_parquet_export.py
+# and test_arrow_export.py, by collection: `5415 tests collected`, guard 854 + cluster 4561.
+# cluster_tests 4796 -> 4817 merging main (6f88f973) into #1843 again, by collection on the merged tree:
+# `5435 tests collected`, guard 854 + cluster 4581.
+# cluster_tests 4817 -> 4826 for #1843's third review: four tests in test_arrow_export.py and five in
+# test_parquet_export.py (composite, text[], int[], a row over the cap, and Parquet int2), by collection:
+# `5444 tests collected`, guard 854 + cluster 4590.
+# cluster_tests 4826 -> 4827 for #1808's test_metadata_addresses_behind_ipv6_forms in
+# test_objstore_allowlist.py, by collection over the cluster files: `4561 tests collected`.
+# cluster_tests 4787 -> 4797 for #1815's and #1825's tests in test_iceberg_scan.py (8: gzip metadata,
+# lowercase parquet, mixed s3/s3a paths) and test_iceberg_objstore.py (2: s3a:// and s3n:// metadata
+# paths), by collection over the cluster files.
+# cluster_tests 4797 -> 4805 for #1815's and #1825's review tests (PR #1835) in test_iceberg_scan.py (3: a
+# two-member gzip file, zero padding after gzip, an az:// refusal) and test_iceberg_deletes.py (5:
+# lowercase parquet position and equality deletes, a million s3:// and s3a:// delete rows, and their
+# memory), by collection over the cluster files.
+# cluster_tests 4805 -> 4807 for the second review of PR #1835 (#1815, #1825): two tests in
+# test_iceberg_scan.py (a gzip file that outgrows the first inflate buffer, and a data file_format
+# that is not Parquet), by collection over the cluster files: `4536 tests collected`.
+# cluster_tests 4576 at the merge of origin/main (1a1c4018) into fix/1815-iceberg-metadata-formats,
+# by collection: `5430 tests collected` in all, less the 854 guard tests.
+# cluster_tests 4580 at the merge of origin/main (6f88f973) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4580 tests collected`.
+# cluster_tests 4617 at the merge of origin/main (312452ce) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4617 tests collected`.
+# cluster_tests 4631 at the merge of origin/main (6968a6f4) into fix/1815-iceberg-metadata-formats,
+# by collection over the cluster files: `4631 tests collected`.
+# cluster_tests 4847 -> 4849 for the third review of PR #1835 (#1815, #1825): one test in
+# test_iceberg_scan.py (a two-member gzip file that grows the buffer in its second member) and
+# one in test_iceberg_deletes.py (an s3a:// position delete on an s3:// data file), by collection
+# over the cluster files: `4633 tests collected`.
+# cluster_tests 4849 at the merge of origin/fix/1808-linklocal-ipv6-imds (16149a48) into
+# fix/1815-iceberg-metadata-formats, by collection over the cluster files: `4849 tests collected`.
+# cluster_tests 4849 -> 4851 for #1817's two tests in test_iceberg_deletes.py: many equality-delete
+# rows drop the matching rows, and the probe's comparison count stays bounded, by collection.
+# cluster_tests 4851 -> 4852 for #1817's zero-row equality-delete test in test_iceberg_deletes.py
+# (review of #1860), by collection.
+# cluster_tests 4852 -> 4873 for #1790's declared-typmod checks: 11 in test_native_read_parquet.py,
+# 3 in test_native_parquet_fdw.py, 4 in test_iceberg_scan.py and 3 in test_iceberg_fdw.py (the 3 in
+# test_native_parquet_pushdown.py join an existing test), by collection.
+# cluster_tests 4873 -> 4881 for #1790's review checks: 5 in test_iceberg_deletes.py, 2 in
+# test_iceberg_fdw.py and 1 in test_native_parquet_pushdown.py. Restated at the 6987adea merge; the
+# collection before that merge, against an older main, read `4674 tests collected`.
+# cluster_tests 4881 -> 4882 for #1790's second review: test_native_read_parquet.py gains the twin of
+# numeric(5,3), the file's scale with a lower precision, refusing 12345.678. Restated at the 6987adea merge;
+# the collection before that merge, against an older main, read `4675 tests collected`.
+# cluster_tests 4708 at the merge of origin/main (6987adea) into fix/1790-apply-typmod,
+# by collection: `4708 tests collected`.
+# cluster_tests 4882 at the merge of origin/fix/1817-equality-delete-hash (4615aa23) into fix/1790-apply-typmod:
+# that branch's 4852 plus this branch's 30, by collection over the cluster files: `4882 tests collected`.
+# cluster_tests 4882 -> 4883 for #1795's test_tier_partition_writes_through_the_named_server in
+# test_tier_partition.py, by collection on the merged tree: `4646 tests collected`.
+# cluster_tests 4883 -> 4886 for #1805's three tests in test_objstore_http_read.py (the overwrite
+# pair premise, the mid-read overwrite refusal, the weak ETag), by collection. (This line first gave `4543 tests collected`, a figure from an older base.)
+# cluster_tests 4886 -> 4889 for #1805's review: three tests in test_objstore_http_read.py (the 79-character
+# ETag pin, the 80-character ETag not sent cut short, the per-request ETag refusal), by collection.
+# cluster_tests 4889 -> 4890 for #1805's second review: test_objstore_http_read.py gains the
+# 79-character ETag read of an unchanged object (http == local), by collection: `4652 tests collected`.
+# cluster_tests 4890 at the merge of origin/fix/1795-tier-partition-credentials (648f15f3) into
+# fix/1805-pin-object-version: that branch's 4883 plus this branch's 7, by collection: `4890 tests collected`.
+# cluster_tests 4890 -> 4895 for #1820's four tests in test_iceberg_rest_vended.py (a vended credential
+# per file) and one in test_iceberg_rest_scan.py (the catalog's 404 message), by collection.
+# cluster_tests 4616 at the merge of origin/main (6968a6f4) into fix/1820-vended-credential-prefix,
+# by collection: `4616 tests collected`.
+# cluster_tests 4895 -> 4899 for #1820's review: four tests in test_iceberg_rest_scan.py (the catalog's
+# message in the detail of the namespace 404, a 403 and a 500, and a too-deep error body), by collection.
+# cluster_tests 4654 at the merge of origin/main (3fae8317) into fix/1820-vended-credential-prefix,
+# by collection: `4654 tests collected`.
+# cluster_tests 4899 -> 4903 for #1820's third review: three tests in test_iceberg_rest_vended.py (the
+# longest prefix listed first, an entry with a key id and no secret, and the backend surviving it) and one
+# in test_iceberg_rest_scan.py (a malformed error body), by collection: `4658 tests collected`.
+# cluster_tests 4903 -> 4904 for #1820's fourth review: one test in test_iceberg_rest_vended.py (an entry
+# with a secret and no key id is ignored), by collection: `4659 tests collected`.
+# cluster_tests 4645 -> 4650 for #1869: test_objstore_export_open_uploads.py gains the twins of
+# objstore_export_open_uploads.sh's refused-upload-listing and no-region arms (5 tests), by collection: `4650 tests collected`.
+# cluster_tests 4904 -> 4909 at the merge of origin/main (56a95f5f) into fix/1869-list-uploads-url: main's 4904 plus this branch's 5 tests in test_objstore_export_open_uploads.py, by collection: `4909 tests collected`.
+# cluster_tests 4650 -> 4666 for #1796: test_objstore_error_advice.py, the twin of the new
+# objstore_error_advice.sh (16 tests), by collection: `4666 tests collected`.
+# cluster_tests 4904 -> 4926 at the merge of origin/main (56a95f5f) into fix/1796-objstore-error-advice: main's 4904
+# plus #1869's 5 tests in test_objstore_export_open_uploads.py and 17 in test_objstore_error_advice.py (this branch's 16
+# and the merge's vended storage-credentials entry check, for #1861's builder), by collection: `4926 tests collected`.
+# cluster_tests 4763 -> 4766 for #1875's three retry-budget premises in test_vm_clear_on_renumber.py, the twin of
+# vm_clear_on_renumber.sh: 3 checks in 3 tests, by collection over the cluster files: `4766 tests collected`.
+# cluster_tests 4904 -> 4907 at the merge of origin/main (56a95f5f) into fix/1875-vm-clear-vacuum-flake: main's 4904 plus this branch's 3 premise tests in test_vm_clear_on_renumber.py, by collection: `4907 tests collected`.
+# cluster_tests 4926 -> 4929 at the merge of fix/1796-objstore-error-advice (9f2956b0) into fix/1875-vm-clear-vacuum-flake: that branch's 4926 plus this branch's 3 in test_vm_clear_on_renumber.py, by collection: `4929 tests collected`.
+# cluster_tests 4904 -> 4914 at the merge of origin/main (56a95f5f) into test/1798-real-s3-listing: main's 4904 plus this branch's 10 real-S3 tests (9 in test_objstore_listing.py and 1 in test_objstore_sink_write.py), by collection: `4914 tests collected`.
+# cluster_tests 4929 -> 4939 at the merge of fix/1875-vm-clear-vacuum-flake (6880ec29) into test/1798-real-s3-listing: that branch's 4929 plus this branch's 10 (9 in test_objstore_listing.py and 1 in test_objstore_sink_write.py), by collection: `4939 tests collected`.
+# cluster_tests 4763 -> 4774 for #1785: 8 tests in test_objstore_listing.py (seven literal-key parameters and
+# the s3:// IPv6 refusal) and 3 in test_objstore_http_read.py (arm E), 11 checks in 11 tests, by collection
+# over the cluster files: `4774 tests collected`.
+# cluster_tests 4904 -> 4915 at the merge of origin/main (56a95f5f) into fix/1785-remote-glob-scope: main's 4904 plus this branch's 11 in test_objstore_listing.py and test_objstore_http_read.py, by collection: `4915 tests collected`.
+# cluster_tests 4939 -> 4950 at the merge of test/1798-real-s3-listing (cd5e0e6c) into fix/1785-remote-glob-scope: that branch's 4939 plus this branch's 11, by collection: `4950 tests collected`.
+# cluster_tests 4904 -> 4911 for #1868 in test_iceberg_deletes.py: the six many-file
+# position-delete tests, and one for a delete row naming its s3:// data file as
+# file://s3://, by collection over the cluster files after the merge of origin/main
+# into fix/1868-posdelete-index: `4911 tests collected`.
+# cluster_tests 4950 -> 4957 at the merge of fix/1785-remote-glob-scope (808b4820) into fix/1868-posdelete-index: that branch's 4950 plus this branch's 7 in test_iceberg_deletes.py, by collection: `4957 tests collected`.
+# cluster_tests 4904 -> 4907 for #1873's non-Parquet delete-file refusals in test_iceberg_deletes.py:
+# 3 checks in 3 tests, restated at the merge of origin/main (56a95f5f), by collection over the cluster files.
+# cluster_tests 4957 -> 4960 at the merge of fix/1868-posdelete-index (e4fe36af) into test/1873-1874-delete-coverage: that branch's 4957 plus this branch's 3 in test_iceberg_deletes.py, by collection: `4960 tests collected`.
+# cluster_tests 4904 -> 4906 for #1878: two tests in test_iceberg_malformed.py (a manifest list's
+# partition_spec_id at 2^32, refused by iceberg_scan and by read_manifest_list), by collection:
+# `4906 tests collected`.
+# cluster_tests 4960 -> 4962 at the merge of test/1873-1874-delete-coverage (8a129379) into fix/1878-partition-spec-id-range: that branch's 4960 plus this branch's 2 in test_iceberg_malformed.py, by collection: `4962 tests collected`.
+# cluster_tests 4962 -> 4969 for #1853's seven int32 id tests in test_iceberg_malformed.py, the twin of
+# iceberg_malformed.sh: 7 checks in 7 tests, by collection over the cluster files: `4770 tests collected`.
+# cluster_tests 4969 -> 4972 for #1853's review: three edge controls in test_iceberg_malformed.py (schema-id
+# -2147483648, default-spec-id 2147483647, no default-spec-id), 3 checks in 3 tests, by collection over the
+# cluster files: `4773 tests collected`.
+# cluster_tests 4972 -> 4985 for #1816's and #1829's test_iceberg_data_files.py: 13 checks in 13 tests
+# (24 -> 37 collected in the file), by collection over the cluster files: `4776 tests collected`.
+# cluster_tests 4985 -> 4992 for the #1879 review of test_iceberg_data_files.py: 7 checks in 7 tests (an
+# EXISTING position-delete entry, an EXISTING delete entry without counts, decimal(9,0), and four crafted
+# partition-format checks; 37 -> 44 collected in the file), by collection over the cluster files: `4783 tests collected`.
+# cluster_tests 4992 -> 5012 for #1830's, #1857's and #1854's tests: 15 in test_objstore_sink_write.py and
+# 5 from the gs cancel arm of test_objstore_export_open_uploads.py's serial parametrization, by collection
+# cluster_tests 5012 -> 5018 for the #1830 review: 4 unframed-204 abort tests and 2 part-minimum host tests
+# (amazonaws.com.cn, notamazonaws.com) in test_objstore_sink_write.py, by collection over the cluster files:
+# `4789 tests collected`.
+# cluster_tests 5018 -> 5020 for the #1830 review's close-delimited reuse test and Cloudflare R2 part-minimum
+# test in test_objstore_sink_write.py, by collection over the cluster files: `4791 tests collected`.
+# cluster_tests 5020 -> 5027 for #1832's gs:// and http:// refusals, #1831's hint, #1849's long-prefix
+# guard and #1864's commit-hold arm (two premises and one check) in test_objstore_sink_write.py:
+# 7 checks in 7 tests, by collection over the cluster files: `4770 tests collected`.
+# cluster_tests 5027 -> 5032 for #1864's review: the long-hold arm (one premise and one check) in
+# test_objstore_sink_write.py and the local-stop arm (two premises and one check) in
+# test_parallel_export_parquet.py, 5 checks in 5 tests, by collection: `5629 tests collected`, 854 guard.
+# cluster_tests 4775 -> 4793 for #1852's, #1855's, #1870's and #1871's 18 checks, by collection over the
+# cluster files: test_fuzz_parquet.py 4 (the result oracle and the schema sweep),
+# test_native_parquet_hardening.py 5 (repetition_type and footer num_rows), test_native_parquet_units.py 5
+# (INT96), test_native_read_parquet.py 3 and test_iceberg_scan.py 1 (the caller named in a type refusal):
+# `4781 tests collected`.
+# cluster_tests 4793 -> 4803 for the review of #1882: test_native_parquet_hardening.py 8 (a list group marked
+# OPTIONAL over repeated pages, and INT96 values that are not timestamps) and test_native_parquet_units.py 2
+# (INT96 into timestamptz in a non-UTC zone, INT96 into a non-timestamp type), by collection over the cluster
+# files: `4791 tests collected`.
+# cluster_tests 4916 -> 4947 for #1852's, #1855's, #1870's and #1871's tests, merging main (56a95f5f) into
+# fix/1855-parquet-footer-checks for the second review of #1882: the branch's 28 less the footer num_rows
+# test that duplicated #1834's, plus test_native_parquet_hardening.py 3 (a schema element with no name, a
+# file without level histograms, a repetition_type of 2^32) and test_fuzz_parquet.py 1 (every differing read
+# judged), by collection on the merged tree: `5789 tests collected`, guard 854 + cluster 4935.
+# cluster_tests 5032 -> 5063 at the merge of origin/fix/1849-pexport-remote-cleanup (b2a01adb) into
+# fix/1855-parquet-footer-checks: that branch's 5032 plus this branch's 31 (test_native_parquet_hardening.py 15,
+# test_native_parquet_units.py 7, test_fuzz_parquet.py 5, test_native_read_parquet.py 3, test_iceberg_scan.py 1).
+# Both sides already held main 56a95f5f, so the two counts share it once; by collection on the merged tree:
+# `5063 tests collected`, the exact union of the two sides' collected test ids.
+# cluster_tests 5063 -> 5084 for #1865's thirteen tests in test_iceberg_rest_scan.py (a namespace level
+# that holds a dot, named by a text[]; the level listing; the refusals) and eight in
+# test_server_file_privilege.py (the gate on the text[] forms and the level listing), by collection:
+# `5779 tests collected`, minus 854.
+# cluster_tests 5084 -> 5088 for #1865's review of PR #1884: four tests in test_iceberg_rest_scan.py (the
+# documented LATERAL example with and without its filter, the escaped control byte, a separator byte
+# above 0x7F inside a UTF-8 character), by collection: `5783 tests collected`, minus 854.
+# cluster_tests 5088 -> 5092 for #1865's second review of PR #1884: four tests in test_iceberg_rest_scan.py
+# (the dot after the byte E9 in a LATIN1 database, an escaped newline, a NULL namespace array, the
+# documented filter on a default-separator catalog), by collection: `5787 tests collected`, minus 854.
+# cluster_tests 5092 -> 5104 for #1866's and #1867's twelve tests: eight in test_objstore_http_read.py (the
+# pin turned off, the versioned read, the Content-Range length check) and four in test_objstore_s3_read.py
+# (the signed versioned read). Counted on the #1866 branch at e95dfa9f, before merge 2f16839d renumbered
+# this line: the cluster files collected 4916 there (4904 -> 4916, the same twelve). #1919 corrects this.
+# cluster_tests 5104 -> 5110 for #1888's review: six tests in test_objstore_http_read.py (the 416 shrink, its
+# premise, no version with the pin off, the null and over-long version ids, the 403 fallback). Counted on
+# the #1866 branch at 37b4dcbe, before merge 2f16839d renumbered this line: 5776 tests collected, less
+# guard_tests 854, is 4922 (4916 -> 4922, the same six). #1919 corrects this.
+# cluster_tests 4962 -> 4976 for #1902: nine tests in test_objstore_error_advice.py (the https
+# fixture premise and eight Expect: 100-continue arms) and five in test_objstore_listing.py (a
+# premise and four refusals that name the mismatched object), by collection: `4976 tests collected`.
+# cluster_tests 4976 -> 4979 for #1903's review: three tests in test_objstore_error_advice.py
+# (a multipart premise, Expect on one part only against a store that ignores it, and a 200
+# before the body still sends the body), by collection: `4979 tests collected`.
+# cluster_tests 5110 -> 5127 at the merge of origin/main (75a57668) into fix/1902-tls-early-403-file-name:
+# main's 5110 plus #1902's and #1903 review's 17 (twelve in test_objstore_error_advice.py: the https fixture
+# premise, eight Expect: 100-continue arms, a multipart premise, Expect on one part only against a store that
+# ignores it, a 200 before the body still sends the body; five in test_objstore_listing.py: a premise and four
+# refusals that name the mismatched object), by collection: `5127 tests collected`.
+# cluster_tests 5127 -> 5128 for the #1903 merge's check in test_objstore_error_advice.py (a single PUT
+# answered 200 with no framing before its body is not taken as written), by collection: `5128 tests collected`.
+# cluster_tests 5110 -> 5120 for #1886: one test in test_arrow_import.py (a remote URL refused up front) and
+# nine in test_parallel_copy.py (file_split_offsets and parallel_copy refuse s3://, http:// and the other
+# remote schemes, the heap target, and the two local controls), by collection: 5120 tests collected.
+# cluster_tests 5128 -> 5138 at the merge of origin/main (48d4f63f) into fix/1886-local-only-remote-refusal:
+# main's 5128 plus #1886's 10 (one test in test_arrow_import.py, a remote URL refused up front, and nine in
+# test_parallel_copy.py: file_split_offsets and parallel_copy refuse s3://, http:// and the other remote
+# schemes, the heap target, and the two local controls), by collection: `5138 tests collected`.
+# cluster_tests 5138 -> 5139 for #1886's check order: one test in test_import_export_privilege.py
+# (import_arrow and parallel_copy check INSERT before they refuse a remote URL), by collection:
+# `5139 tests collected`.
+# cluster_tests 5139 -> 5153 for #1891's fourteen tests in test_iceberg_rest_scan.py (an empty namespace level:
+# a catalog 404 hints at it in the text form 'db..x', 'db.', '' and '.db' and the text[] form, a 404 with no
+# empty level has no hint, and the namespace db, '' is reached in every form, by the server form and by a
+# listed row passed back), by collection: 5978 tests collected, less guard_tests 854.
+# cluster_tests 5153 -> 5154 for #1906's review: one test in test_iceberg_rest_scan.py (a missing table in the
+# namespace db, '' gets the empty-level hint on its 42P01 404), by collection: 5979 tests collected, less
+# guard_tests 854.
+# cluster_tests 5154 -> 5157 for #1893's three tests: two in test_native_parquet_schema.py (nested columns
+# by their top-level names, a map column reported as not supported) and one in test_native_parquet_fieldid.py
+# (a nested column's own field id), by collection: `5967 tests collected`, less guard_tests 854.
+# cluster_tests 5157 -> 5167 for #1893's review: test_native_parquet_schema.py drops the map-as-not-supported
+# test and adds eleven (nine nested shapes listed one row per leaf, the reported rows read as a column list,
+# a REQUIRED list or struct not nullable), by collection: `5977 tests collected`, less guard_tests 854.
+# cluster_tests 5167 -> 5169 for #1893's second review: test_native_parquet_schema.py adds two (a leaf
+# row's nullable rule, a struct field name that needs quotes), by collection: `5979 tests collected`, less
+# guard_tests 854.
+# cluster_tests 5169 -> 5179 for #1887's ten tests: one in test_iceberg_objstore.py (iceberg_current_snapshot
+# over s3) and nine in test_parquet_skip_cross_type.py (four cross-type pairs, skips and rows, and the file's
+# premise), by collection: `5974 tests collected`, less guard_tests 854.
+# cluster_tests 5179 -> 5181 for #1904's two tests: one in test_objstore_http_read.py (the version pin on an
+# http URL with a query string) and one in test_objstore_sink_write.py (a multipart export to such a URL),
+# by collection: `5966 tests collected`, minus 854.
+# cluster_tests 5181 -> 5183 for #1904's review: two tests in test_objstore_sink_write.py (an s3:// key with a
+# literal '?', exported and read pinned; the abort of a failed export to an http URL with a query string),
+# by collection: `5968 tests collected`, minus 854.
+# cluster_tests 5183 -> 5186 for #1894's three tests in test_objstore_http_read.py (two reads of one
+# object in one statement refused, the next statement reads the new object, the versioned pair reads
+# the first read's version), by collection: 5967 tests collected, less guard_tests 854.
+# cluster_tests 5186 -> 5193 for #1907's review: seven tests in test_objstore_http_read.py (server B's
+# premise, one s3 key on two endpoints plain and versioned, the next statement in one transaction, two
+# statements in one query string, a write then a read in one statement, the weak-ETag same-length
+# overwrite), by collection: 5974 tests collected, less guard_tests 854.
+# cluster_tests 5193 -> 5200 for #1907's second review: test_objstore_http_read.py drops one test (two
+# statements in one query string share the pin) and gains eight (each statement of one query string reads
+# the current object, plain and versioned; two reads in one function call and in one DO block refused; the
+# statement after a DO block in one string; the refusal's DETAIL; a versioned overwrite by a longer
+# object; a weak-ETag overwrite that changes the length), by collection: 5981 tests collected, less
+# guard_tests 854.
+# cluster_tests 5200 -> 5210 for #1913: ten tests in test_avro_manifest.py (read_avro_manifest and
+# read_manifest_list each refuse s3://, http:// and the other remote schemes, check pg_read_server_files
+# first, and still read a local path holding s3:// past its start), by collection: `6068 tests collected`,
+# less guard_tests 858.
+# cluster_tests 5225 -> 5243 for #1930: eighteen tests in test_objstore_listing.py (s3a:// and s3n://
+# read as s3://, in any case, through read_parquet, parquet_schema, import_parquet and the FDW, a Hive
+# prefix and root included; a missing object named by its s3:// URL; the s3ax:// and xs3a:// controls;
+# and the three exports' refusals), by collection: `5243 tests collected`.
+# cluster_tests 5243 -> 5246 for #1917's three tests in test_native_parquet_schema.py (read_parquet refuses a
+# list of lists and a list of maps declared as one-dimensional arrays; import_parquet refuses a list of lists),
+# by collection: 5203 tests collected in the cluster half, guard half 858.
+# cluster_tests 5246 -> 5247 for #1917's foreign-table test in test_native_parquet_schema.py (the
+# pgcolumnar_parquet foreign table refuses a list of lists, even in a query that leaves it out), by
+# collection: 6062 tests collected, less guard_tests 858.
+# cluster_tests 5247 -> 5261 for #1910's, #1920's and #1921's fourteen tests: in
+# test_native_parquet_hardening.py eight for #1910 (two unpatched SNAPPY files read, three SNAPPY pages
+# whose size is not their header's are refused, an uncompressed v1 page whose header size differs still
+# reads, an UNCOMPRESSED v2 page marked compressed reads, and so does one whose header size is below its
+# level bytes) and four for #1921 (the unpatched struct file's schema, a num_children of -1, of 2^32 + 1
+# and of -(2^32) + 1 each refused by parquet_schema); in test_fuzz_parquet.py two for #1920 (every
+# composite type built from a seed's field list is created, the pristine struct seed reads under its own
+# column list), by collection: 6072 tests collected, less guard_tests 858.
+# cluster_tests 5261 -> 5267 for #1922's six tests in test_iceberg_rest_scan.py (a namespace whose only
+# level is empty: listed and not walked, refused by iceberg_rest_tables, iceberg_rest_table_location and
+# iceberg_rest_scan, the documented LATERAL filter, no request with an empty path segment), by collection:
+# test_iceberg_rest_scan.py collects 83 tests, 77 on main.
+# cluster_tests 5267 -> 5272 for #1922's five review tests in test_iceberg_rest_scan.py (the walk
+# asks for the children of ARRAY[''] with an empty parent and lists ARRAY['','x'] in both forms, the
+# LATERAL filter reaches that child, '' and ARRAY[''] are refused with the catalog down; one test is
+# renamed, from "asks for no children"), by collection: test_iceberg_rest_scan.py collects 88 tests.
+# cluster_tests 5272 -> 5274 for #1922's two second-review tests in test_iceberg_rest_scan.py (the
+# OAuth server form of iceberg_rest_table_location and iceberg_rest_scan refuses '' before the token
+# request, with the catalog down), by collection: test_iceberg_rest_scan.py collects 90 tests.
+# cluster_tests 5274 -> 5280 for #1915's six tests in test_harness_isolation.py, the twin of the new
+# harness_isolation.sh (a cluster started under a held lock does not hold it, with its control and
+# premise; a lock the harness took itself stays held; the session records its library digest; a
+# replaced library is reported; a run whose library changed fails), by collection: 5206 tests collected
+# for the cluster half, guard_tests 858 unchanged.
+# cluster_tests 5280 -> 5281 for #1915's review fix in test_harness_isolation.py (a set -e suite
+# under flock still loads lib.sh), by collection: 5207 tests collected for the cluster half, guard_tests
+# 858 unchanged.
+# cluster_tests 5281 unchanged for #1915's second review fix in test_harness_isolation.py: the set -e
+# test that sourced lib.sh is gone (shell-only, declared in test_compare_to_bash.py) and a flock -F
+# own-lock test takes its place; by collection: 6065 tests collected, less guard_tests 858.
+# cluster_tests 5281 -> 5287 for #1932's six tests in test_arrow_import.py (import_arrow refuses a list of
+# lists, a list of structs or of maps, a large list and a plain int64 by type, 42804 naming the column; a
+# list<int64> and a map still import; an offset past the value buffer is still XX001), by collection: 6147
+# tests collected, less guard_tests 860.
+# cluster_tests 5287 -> 5292 for #1935's five tests: in test_native_parquet_hardening.py a data page
+# encoding field of Thrift type BOOL_TRUE and of type UUID each refused, every i32 or struct page header
+# field of another Thrift type refused, no v2 is_compressed field of another type reads a wrong answer,
+# and one of type LIST is skipped and reads, by collection: 6077 tests collected, less guard_tests 858.
+# cluster_tests 5292 -> 5296 for #1935's four review tests: in test_native_parquet_hardening.py a v1
+# definition_level_encoding field of type BOOL_TRUE with a changed value byte refused, every required i32
+# page header field the reader skips of another Thrift type refused, the unpatched dictionary page file
+# reads, and every dictionary page header field of another Thrift type refused, by collection: 6081 tests
+# collected, less guard_tests 858.
+# cluster_tests 5296 -> 5297 for #1939's test in test_iceberg_rest_scan.py (iceberg_rest_namespace_levels
+# lists the child db, '', x of db, ''), by collection: 5282 tests collected for the cluster half,
+# guard_tests 860 unchanged.
+# cluster_tests 5297 -> 5299 for #1939's review fixes in test_iceberg_rest_scan.py (the child
+# db, '', x, y of db, '', x, and the text form iceberg_rest_namespaces), by collection: 6144 tests
+# collected, less guard_tests 860.
+# cluster_tests 5299 -> 5308 for #1931's nine tests in test_iceberg_rest_scan.py: an empty table name is
+# refused (22023) by iceberg_rest_table_location and iceberg_rest_scan in the text and text[] forms, with
+# the catalog down, and in the OAuth server form before the token request; the same catalog still resolves
+# db.events, and no request ends in an empty table segment, by collection: test_iceberg_rest_scan.py
+# collects 99 tests, 6168 tests collected, less guard_tests 863.
+# cluster_tests 5308 -> 5334 for #1948's 26 tests in test_iceberg_rest_scan.py: a table name or a
+# namespace whose path segment is '.' or '..' is refused (22023, with its hint) by iceberg_rest_table_location,
+# iceberg_rest_scan and iceberg_rest_tables, in the text and text[] forms, with the catalog down, in the OAuth
+# server form before the token request, and when the separator %2E joins levels into a dot segment; the walk
+# lists ARRAY['..'] through a ?parent= query, names that only hold dots still reach the catalog, and no request
+# path holds a dot segment, by collection: test_iceberg_rest_scan.py collects 128 tests, 6197 tests collected,
+# less guard_tests 863.
+# cluster_tests 5296 unchanged for #1941's eleven checks in test_tier_partition.py (a directory, a glob
+# or a host in another case that a foreign table reads blocks a move to a path it covers, and four paths it
+# does not cover are not blocked), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's review: five checks in test_tier_partition.py (the refusal's detail,
+# three bracket spellings read as fnmatch reads them, and a [class] that does not match a slash), added to
+# an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's second review: eighteen checks in test_tier_partition.py (ten
+# glob spellings fnmatch reads that the check now refuses, among them [[:digit:]], [^]x] and a local class
+# across a slash; a session with standard_conforming_strings off; and seven paths the table does not read
+# that it does not refuse), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1946's third review: four checks in test_tier_partition.py (an unclosed
+# [^], an s3:// class across a slash and a collating symbol holding ] are refused; a local [=/=] split at
+# the slash is not), added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1951's nine checks in test_tier_partition.py (seven glob brackets
+# fnmatch closes at another ] than the check did, among them a range that ends in [ before a POSIX
+# class; the refusal's detail printing a backslash path as written; and a slash in such a bracket's
+# place that is not refused), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's two checks in test_tier_partition.py (a ! or ^ after [
+# always negates, in an s3:// and a local glob), added to an existing test, by collection: 6159 tests
+# collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's quote check in test_tier_partition.py (the refusal's
+# detail doubles a ' in the path), added to an existing test, by collection: 6159 tests collected, less
+# guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1953 review's third round: three checks in test_tier_partition.py (a
+# widened bracket followed by a slash, and a - after a POSIX class in a negated s3:// and local glob),
+# added to an existing test, by collection: 6159 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's eight checks in test_tier_partition.py (a path under an Iceberg
+# foreign table's location is refused, local and s3://, with its detail; two paths beside it are not; another
+# wrapper's path option refuses nothing; a wrapper with the Parquet handler under another name still does),
+# added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's review (PR #1955): three checks in test_tier_partition.py (an Iceberg
+# table whose metadata file sits at the root refuses a local path, with its detail; a relative metadata_path
+# refuses a path under '.'), added to an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's second review (PR #1955): three checks in test_tier_partition.py (a path
+# under the location of a table on a wrapper with the Iceberg handler under another name is refused; a path option
+# under a wrapper with the Iceberg handler, or with a handler pgcolumnar does not know, refuses nothing), added to
+# an existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5334 for #1949's third review (PR #1955): one check in test_tier_partition.py (the refusal
+# under a wrapper with the Iceberg handler under another name names that table and its location), added to an
+# existing test, by collection: 6197 tests collected, less guard_tests 863.
+# cluster_tests 5334 -> 5335 for #1957's path_glob_matches: ten checks in test_tier_partition.py (a
+# negated class glibc cannot close, in an s3:// and a local glob; a local [\/] and a local glob ending in
+# //; a dot name under * not refused, in an s3:// and a local glob; a newline in the detail printed as an
+# escape, and no HINT line under the refusal; the helper's volatility and its slash rule), added to an
+# existing test, and test_path_glob_matches_needs_no_server_file_role in test_server_file_privilege.py,
+# by collection: 6160 tests collected, less guard_tests 863.
+# cluster_tests 5335 -> 5335 for #1964 review's seven checks in test_tier_partition.py (an interrupt
+# that raises no error leaves the answer alone; . and .. are listed; the helper is VOLATILE; the
+# detail escapes a newline in the table's name, a backslash before an x and the LATIN1 NEL, and prints
+# the WIN1252 euro sign as written), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
+# cluster_tests 5335 -> 5335 for #1964 review round two's six checks in test_tier_partition.py (a
+# glob result other than the path does not count; 128 levels match and 129 error; a 4096-byte pattern
+# errors; a 4096-byte path is false; 400000 parts answer inside a 1 s timeout; a 4000-level pattern
+# errors and the server stays up), added to an existing test, by collection: 6160 tests collected,
+# less guard_tests 863.
+# cluster_tests 5335 -> 5336 for #1964 review round three: test_tier_partition_path_glob_matches_errors_
+# where_glibc_would_crash in test_tier_partition.py (the 4000-level check moved there, last in the file;
+# one * and 2045 levels near max_stack_depth; 1000 s3:// */ levels in a UTF-8 database), and five checks
+# added to an existing test (one * and 129 levels; 129 ? or [ levels; 128/129 s3:// *; a 4095/4096-byte
+# s3:// pattern; a walk cut by an interrupt is never false, replacing the vacuous interrupt check), by
+# collection: 6161 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1963, #1965, #1974 and #1959's checks in test_tier_partition.py (a
+# server on a wrapper with the Parquet handler under another name is the target; a local glob or target
+# spelled with //, /./ or a name and .. is refused; an Iceberg location with .. is refused, one through a
+# symbolic link is not; a glob too large to match names its table), added to existing tests, by
+# collection: 6199 tests collected, less guard_tests 863.
+# cluster_tests 5336 -> 5336 for #1978 review's checks in test_tier_partition.py (a target with .. at the
+# root; export_parquet through a renamed Parquet wrapper; a glob reader after a glob too large to match;
+# a glob too large only as written; an s3:// glob over 128 *; no matcher call for a plain reader; a glob
+# spelled with an escaped . or ..), added to existing tests, by collection: 6199 tests collected, less
+# guard_tests 863.
+# cluster_tests 5336 -> 5342 for #1968's, #1972's and #1973's checks: test_a_glob_too_deep_or_too_long_for_glob3_
+# is_an_error in test_native_parquet_multifile.py (128/129 local levels; a 4096-byte local glob; repeat('/.*', 40)
+# refused inside a 1 s timeout; repeat('/.*', 10) still matches; a 4000-level glob through read_parquet and a
+# foreign table, last in the file), and five tests in test_objstore_listing.py (128/129 s3:// * with no LIST for
+# 129; a 4095/4096-byte s3:// glob; a foreign table over 129 *; the listing returns a 1000-level key that one * matches; 1000 s3://
+# */ levels in a UTF-8 database), by collection: 6205 tests collected, less guard_tests 863.
+# cluster_tests 5342 -> 5343 for #1977 review's test_a_local_glob_is_bounded_and_read_in_its_folded_form in
+# test_native_parquet_multifile.py (a local glob over 128 levels as written but not once its '.' names or runs
+# of '/' are folded; a '.' at the end kept; a name followed by '..' kept past a symbolic link; 1990 '.' levels
+# read in the folded form), by collection: 6206 tests collected, less guard_tests 863.
+# cluster_tests stays 5343 for #1982's checks (a glob name that matches . or .., such as .* or .?, folded in
+# path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6206 tests collected,
+# less guard_tests 863.
+# cluster_tests stays 5343 for #1991's checks (a wildcard directory, then a name that matches .., walked with
+# stand-ins in path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6206 tests
+# collected, less guard_tests 863.
+# cluster_tests 5343 -> 5344 for #1992 review's test_the_horizon_helper_counts_what_holds_truncate in
+# test_native_truncate.py (a writer, a prepared transaction in another database, and a snapshot from
+# just before the compact each hold truncate and the horizon helper counts each), by collection: 6200
+# tests collected, less guard_tests 863.
+# cluster_tests 5344 -> 5345 for #1984's test_the_readers_local_glob_walk_is_bounded in
+# test_native_parquet_multifile.py (18 .*/ levels refused with 54000 inside a 10 s timeout; a 20 ms timeout and
+# pg_cancel_backend stop the walk with 57014; a refused walk does not fail the next read in the session; a glob
+# reads all 2000 matches among 12000 names), by collection: 6207 tests collected, less guard_tests 863.
+# cluster_tests stays 5345 for #2001's checks (a relative glob or path resolved against the data directory in
+# path_glob_matches), added to existing tests in test_tier_partition.py, by collection: 6208 tests collected,
+# less guard_tests 863.
+# cluster_tests stays 5345 for #2004's checks (a relative path resolved against the data directory in
+# tier_partition's comparisons without a glob, and a caller without pg_read_all_settings), added to existing
+# tests in test_tier_partition.py, by collection: 6208 tests collected, less guard_tests 863.
+# cluster_tests 5345 -> 5346 for #1993's test_fgm_no_transaction_older_than_the_delete_before_compact in
+# test_native_fetch_group_memo.py (nothing older than the DELETE from fd holds the horizon before the
+# same-statement compact); #1994's and #1999's checks are added to existing tests in test_native_truncate.py
+# and test_replication.py, by collection: 6209 tests collected, less guard_tests 863.
+# cluster_tests stays 5346 for #2013's checks (a caller without pg_read_all_settings beside a table on a
+# relative glob), added to an existing test in test_tier_partition.py, by collection: 6209 tests collected,
+# less guard_tests 863.
+# cluster_tests 5346 -> 5347 for #2018's test_scale_parity_and_reclaim_steady_state in
+# test_native_scale.py (the new twin of native_scale.sh: heap-mirror parity through delete, compact_rewrite,
+# recluster and four reclaim rounds at SCALE_N rows, and the file at round 4 no larger than at round 2), by
+# collection: 6210 tests collected, less guard_tests 863.
+# cluster_tests stays 5347 for #2024's checks (each reclaim round deletes its whole id % 8 slice from h and
+# n; round 4 now deletes id % 8 = 5), which replace two checks in the existing
+# test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by collection: 6210 tests collected,
+# less guard_tests 863.
+# cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
+# group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
+# collection: 6210 tests collected, less guard_tests 863.
+cluster_tests 5347

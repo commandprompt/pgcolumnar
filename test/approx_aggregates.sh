@@ -16,8 +16,10 @@
 #     its default precision (log2m 11) has a standard error of 1.04/sqrt(2048), so
 #     three of them, 6.9%; tdigest at compression 100 within 0.1% at p99, about
 #     four times what phase 0 measured (0.025%).
-#   - each type stored in a columnar table comes back usable: an hll byte for byte,
-#     a tdigest as a digest whose union still answers within the bound.
+#   - each type stored in a columnar table comes back byte for byte, and its union
+#     still answers. For tdigest that union's bound is a premise only because the
+#     byte-for-byte arm comes first: a storage change that altered a digest reddens
+#     the arm before it can move the percentile.
 #   - the aggregate reads through the columnar scan, so the arms exercise our reader.
 #     That is an arm, not a premise: turning the custom scan off by default reddens it
 #     (#1236: a check a repository change can redden is not a premise).
@@ -69,8 +71,16 @@ TD_H="$(qv "$P0 SELECT tdigest_percentile(v, 100, 0.99) FROM ax_heap;")"
 EXACT99="$(q "SELECT percentile_cont(0.99) WITHIN GROUP (ORDER BY v) FROM ax_heap;")"
 check "tdigest over a columnar table gives exactly what it gives over heap" "$TD_C" "$TD_H"
 check "premise: and its p99 is within 0.1% of the exact percentile" "$(within "$TD_C" "$EXACT99" 0.001)" "ok"
-psql_run "CREATE TABLE ax_td (day int, t tdigest) USING pgcolumnar;
-	INSERT INTO ax_td SELECT day, tdigest(v, 100) FROM ax GROUP BY day;"
+# The digests are built ONCE, into a heap table, and that table's values are stored.
+# A tdigest depends on the order its inputs arrive in, so digests rebuilt from heap
+# could differ from these for reasons that are not storage. Copied from one source,
+# any difference is the columnar round trip's (#1339).
+psql_run "CREATE TABLE ax_td_src USING heap AS SELECT day, tdigest(v, 100) AS t FROM ax GROUP BY day;
+	CREATE TABLE ax_td (day int, t tdigest) USING pgcolumnar;
+	INSERT INTO ax_td SELECT day, t FROM ax_td_src;"
+check "a tdigest stored in a columnar table comes back byte for byte" \
+	"$(q "SELECT (SELECT string_agg(t::text, ',' ORDER BY day) FROM ax_td)
+	        = (SELECT string_agg(t::text, ',' ORDER BY day) FROM ax_td_src);")" "t"
 check "premise: a tdigest stored in a columnar table still answers: the union of daily digests is within 0.1% at p99" \
 	"$(within "$(q "SELECT tdigest_percentile(t, 0.99) FROM ax_td;")" "$EXACT99" 0.001)" "ok"
 

@@ -95,17 +95,23 @@ check_num "premise: fetching every projected column touched a measurable number 
 	"$([ "${WIDE:-0}" -gt 0 ] && echo 1 || echo 0)" "1"
 
 # Planning buffers are ignored: they grow with the target list and are not
-# fetch I/O. The Index Scan line is. Extra columns today add two pins each
-# (validity, then values). Coalescing walks the same pages once, so the wide
-# count may not exceed the one-column count by more than one pin per extra
-# column.
-EXTRA_COLS=$((NCOLS - 1))
+# fetch I/O. The Index Scan line is.
+#
+# THE BOUND IS A FEW PINS, NOT ONE PER EXTRA COLUMN (#1339). It used to be one pin
+# per extra column, which is exactly the once-per-column cost the name forbids, so
+# a fetch that read every column on its own passed: measured on PG17 with
+# coalescing disabled, one column = 71 and 16 columns = 86, the bound to the pin.
+# Coalesced, the wide fetch walks the same pages as the narrow one: measured 70
+# and 70. Three pins of slack absorbs a page boundary; fifteen extra does not fit.
+# (The old comment's "two pins each, validity then values" stopped being true with
+# #1130: a column with no nulls stores no bitmap.)
+SLACK=3
 # `check`, not `check_num`, because the value now carries the measurement rather
 # than a 1 or a 0. Collapsed to a number this failed as `got [0] want [1]` and said
 # nothing about how far over the bound the wide fetch went (#1164).
 check "a wide index fetch does not pin once per column" \
-	"$([ "${WIDE:-0}" -le $((NARROW + EXTRA_COLS)) ] && echo coalesced \
-		|| echo "wide ${WIDE:-0} over the bound $((NARROW + EXTRA_COLS)) (narrow $NARROW + $EXTRA_COLS)")" \
+	"$([ "${WIDE:-0}" -le $((NARROW + SLACK)) ] && echo coalesced \
+		|| echo "wide ${WIDE:-0} over the bound $((NARROW + SLACK)) (narrow $NARROW + $SLACK)")" \
 	"coalesced"
 
 expect_wide=""
@@ -119,7 +125,7 @@ while [ "$i" -lt "$NCOLS" ]; do
 	fi
 	i=$((i + 1))
 done
-check "premise: the wide fetch returns the projected values" \
+check "the wide fetch returns the projected values" \
 	"$(fetch_val "${FORCE} SELECT ${sel_wide} FROM nfc WHERE id = 1;")" "$expect_wide"
 
 # ---- the validity copy must be bounded by the chunk, not by the row count -----

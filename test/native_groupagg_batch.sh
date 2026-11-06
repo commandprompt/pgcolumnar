@@ -170,13 +170,16 @@ for pair in "text key:$Q_TEXTKEY" "expression key:$Q_EXPRKEY" \
             "min/max:$Q_MINMAX" "<> filter:$Q_NEQ"; do
 	label="${pair%%:*}"; tmpl="${pair#*:}"
 	qcol="${tmpl//%T/gbb}"
+	# The decline must be the FOLD's, read off the grouped node. This branch was
+	# a check_skip, and it never fired on 15-19: with the node gone the gate
+	# under test is unreachable, so a skip there was a silent pass. A shape the
+	# node stops taking is now a red under the arm's own name.
 	if [ "$(is_groupvec "$qcol")" = yes ]; then
 		check_text "$label: the fold declined" \
 			"$(fold_of "$ANALYZE_PFX" "$qcol")" no
 	else
-		# The node itself declined the shape; there is no fold line to read and
-		# nothing for this suite to gate. Say so rather than assert a missing line.
-		check_skip "$label" "SKIP  $label: the grouped node is not planned for this shape" "the grouped node is not planned for this shape"
+		check_text "$label: the fold declined" \
+			"the grouped node is not planned" no
 	fi
 	agree "$label: answers match the heap mirror" "$tmpl"
 done
@@ -315,7 +318,7 @@ agree_in gbs "skipped vectors: answers match the heap mirror" "$Q_SKIP"
 Q_SKIP4="SELECT k, count(*), sum(p1), sum(p2), sum(p3), sum(p4) FROM %T WHERE sel = 1 GROUP BY k"
 check_text "skipped vectors: premise: the wide arm is still the grouped node" \
 	"$(is_groupvec "${Q_SKIP4//%T/gbs}")" yes
-check_text "skipped vectors: four payload columns all stay in step" \
+check_text "skipped vectors: the fold ran on the four-payload arm" \
 	"$(fold_of "$ANALYZE_PFX" "${Q_SKIP4//%T/gbs}")" yes
 agree_in gbs "skipped vectors: and their sums match the heap mirror" "$Q_SKIP4"
 
