@@ -25,7 +25,7 @@ pgColumnar builds from one source tree on PostgreSQL 15 through 18, with 19
 validated against 19beta2, and is
 licensed under the [MIT License](LICENSE). It is [pre-release](docs/limitations.md#release-status); the version marker
 is `1.0-alpha5`, recorded in `VERSION`.
-The latest published pre-release is `v1.0-alpha4`. A table `USING pgcolumnar` is stored in the
+The latest published pre-release is `v1.0-alpha5`. A table `USING pgcolumnar` is stored in the
 native on-disk format, PGCN v1.
 
 ## Documentation
