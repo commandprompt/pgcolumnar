@@ -346,7 +346,7 @@
 # test_harness_deps_classifier.py, by collection over NO_CLUSTER.
 # guard_tests 862 -> 863 for #1933's test_the_run_reports_which_pg_config_it_used_and_why in
 # test_harness_deps_classifier.py (review of PR #1938), by collection over NO_CLUSTER.
-guard_tests 864
+guard_tests 866
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1871,4 +1871,4 @@ guard_tests 864
 # cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
 # group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
 # collection: 6210 tests collected, less guard_tests 863.
-cluster_tests 5347
+cluster_tests 5349

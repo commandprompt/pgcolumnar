@@ -226,6 +226,7 @@ COMPLETE = ["advisory_lock_class",
             "encode_post_codec",
             "decode_skip_interrupts",
             "entry_point_privilege",
+            "extension_upgrade",
             "fk_referencing",
             "format_downgrade",
             "hardening",
@@ -1782,6 +1783,93 @@ SHELL_HARNESS = {
                         "identity guard, start retries, the suite list's rules), not "
                         "pgcolumnar; pytest's own harness has its own guards",
 }
+
+
+# SHELL FILES OUTSIDE `SUITES` THAT ARE NOT A PRODUCT TEST, and so have no twin by
+# design (#2032). The registry arms read `SUITES`, so a standalone gate -- run by
+# nightly.yml, not by the runner -- was in no list: `pg_upgrade` and `format_downgrade`
+# have twins, and `extension_upgrade` had none and nothing said so. Every other
+# `test/*.sh` is a registered suite or has its twin; these say why they need neither.
+NON_SUITE = {
+    "build_all_versions": "builds PostgreSQL for the local matrix; runs no check",
+    "build_san": "builds the sanitizer PostgreSQL that run_san.sh uses; runs no check",
+    "devloop": "the container dev loop: stages, builds and installs the tree",
+    "lib": "the shell harness's library, which every shell suite sources",
+    "portlib": "the shell harness's port band and probe, sourced by lib.sh and the gates",
+    "rebuild": "rebuilds and reinstalls the extension for one major; runs no check",
+    "run_all_versions": "the shell suite runner itself",
+    "run_coverage": "runs shell suites under gcov; a runner, not a suite",
+    "run_san": "runs shell suites under ASAN and UBSAN; a runner, not a suite",
+    "capability_sweep": "sweeps the SHELL suites' own accounting with pyarrow masked "
+                        "(selftest 600 and 610); test_capability_decline.py holds "
+                        "the pytest harness to the same rule by its own machinery",
+}
+
+
+def _non_suite_violations(declared, on_disk, reg, twin_exists):
+    """-> (undeclared, registered, has a twin, not on disk, no reason): the ways the
+    population of shell files outside `SUITES` can go unaccounted."""
+    loose = {s for s in on_disk if s not in reg and not twin_exists(s)}
+    return (sorted(loose - set(declared)),
+            sorted(s for s in declared if s in reg),
+            sorted(s for s in declared if twin_exists(s)),
+            sorted(s for s in declared if s not in on_disk),
+            sorted(s for s, why in declared.items() if len(str(why).strip()) < 20))
+
+
+def test_every_shell_file_is_a_suite_a_paired_gate_or_declared(expect):
+    """NO SHELL TEST IS TWIN-LESS OUTSIDE `SUITES` EITHER (#2032).
+
+    The arm below holds the registered suites. A shell test that is not registered
+    -- the gates nightly.yml runs by hand because each builds an old release -- was
+    in no list, so `extension_upgrade.sh` had no twin and every registry stayed
+    green. The population here is every `test/*.sh`, derived from the tree:
+
+        a shell file that is neither registered nor paired nor declared   reddens
+        a declared stem that is a registered suite                        reddens
+        a declared stem that has a twin                                   reddens
+        a declared stem with no file                                      reddens
+        a declared stem whose reason is a passing word                    reddens
+    """
+    reg = set(_registered_suites())
+    expect.at_least(len(reg), 200, "premise: the runner's SUITES array was read for the shell-file sweep")
+    on_disk = {p.stem for p in (HERE.parent).glob("*.sh")}
+    expect.at_least(len(on_disk - reg), 3,
+                    "premise: the tree has shell files outside SUITES to account for")
+    loose, registered, paired, phantom, thin = _non_suite_violations(
+        NON_SUITE, on_disk, reg, lambda s: (HERE / f"test_{s}.py").exists())
+    expect.text(", ".join(loose) or "none", "none",
+                "every shell file outside SUITES has a pytest twin or says why it needs none")
+    expect.text(", ".join(registered) or "none", "none",
+                "and no non-suite stem is a registered suite")
+    expect.text(", ".join(paired) or "none", "none",
+                "and no non-suite stem has a twin")
+    expect.text(", ".join(phantom) or "none", "none",
+                "and every non-suite stem is a file in test/")
+    expect.text(", ".join(thin) or "none", "none",
+                "and every non-suite stem says why")
+
+
+def test_the_non_suite_check_reddens_each_way(expect):
+    """THE FIVE DIRECTIONS, driven on fixtures, so the sweep above cannot pass by
+    reading nothing. Each mutation moves exactly its own list."""
+    reg = {"smoke"}
+    twin = lambda s: s in {"smoke", "gate"}
+    ok = {"lib": "the shell harness's library, sourced"}
+    disk = {"smoke", "gate", "lib"}
+    expect.text(repr(_non_suite_violations(ok, disk, reg, twin)),
+                repr(([], [], [], [], [])), "control: a suite, a paired gate and a "
+                "declared library account for the tree")
+    expect.text(repr(_non_suite_violations(ok, disk | {"newgate"}, reg, twin)[0]),
+                repr(["newgate"]), "an unpaired, undeclared gate is named")
+    expect.text(repr(_non_suite_violations(dict(ok, smoke="x" * 30), disk, reg, twin)[1]),
+                repr(["smoke"]), "a declared registered suite is named")
+    expect.text(repr(_non_suite_violations(dict(ok, gate="x" * 30), disk, reg, twin)[2]),
+                repr(["gate"]), "a declared stem with a twin is named")
+    expect.text(repr(_non_suite_violations(dict(ok, gone="x" * 30), disk, reg, twin)[3]),
+                repr(["gone"]), "a declared stem with no file is named")
+    expect.text(repr(_non_suite_violations({"lib": "lib"}, disk, reg, twin)[4]),
+                repr(["lib"]), "a declared stem with a one-word reason is named")
 
 
 def _unported():
