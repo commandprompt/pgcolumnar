@@ -1871,4 +1871,7 @@ guard_tests 863
 # cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
 # group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
 # collection: 6210 tests collected, less guard_tests 863.
-cluster_tests 5347
+# cluster_tests 5347 -> 5351 for the four tests in the new test_objstore_chunked_framing.py (a chunk size
+# that wraps the response bound is refused on a ranged read and on a REST catalog reply, and the backend
+# survives; a valid chunked reply still reads), by collection: 6214 tests collected, less guard_tests 863.
+cluster_tests 5351

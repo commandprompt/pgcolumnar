@@ -401,6 +401,7 @@ behaviour, the source of that number is named.
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
+- [356. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#356-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 
 ## 1. How to read a test in here
 
@@ -14187,3 +14188,28 @@ Each round's `compact_rewrite` must also rewrite at least one group. A group cou
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
+
+## 356. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+
+A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
+
+The file runs its own HTTP server on 127.0.0.1, on a port chosen at run time, and allows it by host and port. A ranged GET through `parquet_schema` reaches `os_read_body`; GET `/v1/config` through `iceberg_rest_table_location` reaches `os_slurp_body`. Each hostile reply must raise its guard's SQLSTATE, and the same connection must then answer `SELECT 1`. The control reads a pyarrow-written file through `read_parquet` and a REST reply, both sent in chunks of 1, 7 and 1000 bytes, and checks every row and the location.
+
+The second test passed on main too: `strtoll` clamps a size past 64 bits to `7fffffffffffffff`, and with no earlier chunk the sum does not wrap. It pins the new parser's refusal of that size.
+
+Removing the ranged-read bound fails the first test with the crash. The new unsigned parse with the old signed sums fails the first and third tests. Removing the REST cap fails the third test.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: the same connection answers SELECT 1 after it |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns every row |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns the right values |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | the rows came through ranged GETs, each answered chunked |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked REST catalog reply is read whole |

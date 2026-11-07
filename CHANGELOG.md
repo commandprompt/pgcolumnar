@@ -534,6 +534,20 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read no longer writes past its buffer when a server sends a
+  hostile chunk size. Before this fix, an allow-listed endpoint, or anyone who
+  could change a plain `http://` reply, could send a 1-byte chunk and then the
+  chunk size `7fffffffffffffff`. The reader's bound added the two sizes as
+  signed numbers, the sum wrapped negative, and the reader wrote the rest of
+  the reply past the end of its buffer. The backend died with a segmentation
+  fault, and PostgreSQL restarted every session. The Iceberg REST client and S3
+  listing had the same sum and raised an internal error instead. The reader now
+  refuses a chunk size that is not hex or does not fit 64 bits signed, and
+  compares each size with the room left rather than adding. A ranged read
+  raises a protocol-violation error (08P01), and a REST reply or listing
+  raises `exceeded N bytes` (54000). `https://` replies cannot be changed in
+  transit. `test_objstore_chunked_framing.py`.
+
 - `test/docs_style.sh` no longer prints `command not found` on every run
   (#2033). Two lines after the block that records the changelog checks
   repeated the tail of a heredoc, so the shell ran the list of changelog
