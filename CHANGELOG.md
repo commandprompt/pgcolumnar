@@ -534,6 +534,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
+  database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
+  `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
+  file holding the bytes `ff fe` imported, and `upper()` and `ORDER BY` on the
+  column then failed with `invalid byte sequence for encoding`. Such a value now
+  fails the import with SQLSTATE 22021, naming the column and the bad bytes,
+  and no row is stored. A value holding a NUL byte is refused the same way. A
+  `bytea` column still takes the bytes unchanged.
+
 - `test/docs_style.sh` no longer prints `command not found` on every run
   (#2033). Two lines after the block that records the changelog checks
   repeated the tail of a heredoc, so the shell ran the list of changelog
