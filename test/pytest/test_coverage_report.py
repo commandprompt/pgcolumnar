@@ -198,6 +198,8 @@ def test_the_corpus_is_the_cluster_files_less_the_prefix_swappers(expect):
                 " ".join(sorted(f for f in run_coverage.SWAPS_THE_PREFIX if (HERE / f).is_file())),
                 "every cluster file is in the corpus but the ones that swap another build "
                 "into the prefix, as run_coverage.sh left out their shell twins")
+    expect.num(len(run_coverage.SWAPS_THE_PREFIX), 3,
+               "premise: the three prefix-swapping files are each named, so the loop below runs")
     for f, why in run_coverage.SWAPS_THE_PREFIX.items():
         expect.at_least(len(why), 20, f"{f}: the reason it is left out is stated")
 
