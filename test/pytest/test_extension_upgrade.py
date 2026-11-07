@@ -20,9 +20,11 @@ an old build wrote and the link names an old build's CREATE EXTENSION recorded a
 this file's alone.
 
 ON A CLUSTER OF ITS OWN, and the prefix is put back exactly, as
-`test_format_downgrade.py` does: every `pgcolumnar*` file in the library and extension
-directories is saved first, bytes and mtime, and restored in a `finally` by atomic
-rename, with anything the old install added removed.
+`test_format_downgrade.py` does, through `pgc_cluster.snapshot_prefix`: every
+`pgcolumnar*` file in the library, bitcode and extension directories (a `pgcolumnar*`
+directory whole, as an LLVM build installs its bitcode) is saved first, bytes and
+mtime, and restored in a `finally` by atomic rename, with anything the old install
+added removed.
 
 The pytest twin of `test/extension_upgrade.sh`, by the shell's names. Independent of
 it: its own database names and rows, and it restores the prefix by snapshot where the
@@ -90,30 +92,6 @@ def _run(argv, **kw):
     return subprocess.run(argv, check=True, capture_output=True, text=True, **kw)
 
 
-def _snapshot(dirs):
-    """{path: (bytes, (atime, mtime))} for every pgcolumnar* file in `dirs`."""
-    snap = {}
-    for d in dirs:
-        for p in pathlib.Path(d).glob("pgcolumnar*"):
-            if p.is_file():
-                st = p.stat()
-                snap[p] = (p.read_bytes(), (st.st_atime, st.st_mtime))
-    return snap
-
-
-def _restore(snap, dirs):
-    """Put the prefix back exactly: same files, same bytes, same mtimes."""
-    for d in dirs:
-        for p in pathlib.Path(d).glob("pgcolumnar*"):
-            if p.is_file() and p not in snap:
-                p.unlink()
-    for p, (data, times) in snap.items():
-        tmp = p.with_name(p.name + ".pgc-restore")
-        tmp.write_bytes(data)
-        os.utime(tmp, times)
-        os.replace(tmp, p)
-
-
 def _default_version():
     for line in (SRCDIR / "pgcolumnar.control").read_text().splitlines():
         key, _, val = line.partition("=")
@@ -137,7 +115,7 @@ def _answer(c, sql):
 
 
 def test_an_old_install_works_under_this_library(pgc_cluster, expect):
-    from pgc_cluster import Cluster, pick_port
+    from pgc_cluster import Cluster, pick_port, restore_prefix, snapshot_prefix
 
     if _beside_other_workers(os.environ):
         expect.cannot_run("UNMET_PRECONDITION",
@@ -163,8 +141,8 @@ def test_an_old_install_works_under_this_library(pgc_cluster, expect):
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-extupgrade-"))
     os.chmod(work, 0o777)
-    snap = _snapshot([libdir, extdir])
-    expect.at_least(len(snap), 2, "premise: the prefix holds the tree's own install to put back")
+    snap = snapshot_prefix(libdir, extdir)
+    expect.at_least(len(snap["files"]), 2, "premise: the prefix holds the tree's own install to put back")
     cluster = None
     try:
         old = work / "old"
@@ -191,12 +169,17 @@ def test_an_old_install_works_under_this_library(pgc_cluster, expect):
             c.execute(f"INSERT INTO kept SELECT g, 'n' || g FROM generate_series(1, {ROWS}) g")
             stored = _answer(c, "SELECT count(*) FROM kept")
             old_ver = _answer(c, "SELECT extversion FROM pg_extension WHERE extname = 'pgcolumnar'")
-        expect.num(int(stored), ROWS, "premise: the old install stored its rows")
+        # A failed count is the error's first line: fail the premise by that text,
+        # rather than let int() raise a ValueError that names nothing.
+        if stored.isdigit():
+            expect.num(int(stored), ROWS, "premise: the old install stored its rows")
+        else:
+            expect.text(stored, str(ROWS), "premise: the old install stored its rows")
 
         # This tree's install in the old one's place: the library a package upgrade
         # replaces, and the scripts ALTER EXTENSION UPDATE needs.
         cluster.stop()
-        _restore(snap, [libdir, extdir])
+        restore_prefix(snap)
         cluster.start()
 
         new_default = _default_version()
@@ -255,7 +238,7 @@ def test_an_old_install_works_under_this_library(pgc_cluster, expect):
     finally:
         if cluster is not None:
             cluster.stop()
-        _restore(snap, [libdir, extdir])
+        restore_prefix(snap)
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -276,3 +259,61 @@ def test_the_install_swap_declines_beside_other_workers(expect):
                 "beside three other workers the swap declines")
     expect.text(str(_beside_other_workers({"PYTEST_XDIST_WORKER": "gw0"})), "True",
                 "a worker whose count is not stated is assumed not to be alone")
+
+
+def test_the_prefix_is_put_back_exactly_with_its_bitcode(tmp_path, expect):
+    """`make install` on an LLVM build also writes $pkglibdir/bitcode/pgcolumnar.index.bc
+    and bitcode/pgcolumnar/**/*.bc. The old build's install overwrites them, and every
+    file pytest runs after this one would JIT-inline against v1.0-alpha's bodies unless
+    they come back too (#2036 review).
+
+    Driven on a layout of the prefix: the tree's install, then what an old install
+    does to it (overwrite, add files and a directory, and lose one), then the restore.
+    """
+    from pgc_cluster import restore_prefix, snapshot_prefix
+
+    lib, ext = tmp_path / "lib", tmp_path / "share" / "extension"
+    tree = ["lib/pgcolumnar.so", "lib/bitcode/pgcolumnar.index.bc",
+            "lib/bitcode/pgcolumnar/src/columnar_tableam.bc",
+            "lib/bitcode/pgcolumnar/src/columnar_reader.bc",
+            "share/extension/pgcolumnar.control",
+            "share/extension/pgcolumnar--1.0-alpha5.sql"]
+    other = ["lib/plpgsql.so", "lib/bitcode/plpgsql.index.bc",
+             "lib/bitcode/plpgsql/pl_exec.bc", "share/extension/plpgsql.control"]
+    for i, rel in enumerate(tree + other):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(f"tree {rel}")
+        os.utime(f, (1_000_000 + i, 1_000_000 + i))
+
+    def state():
+        return sorted(f"{p.relative_to(tmp_path)}={p.read_text()}@{int(p.stat().st_mtime)}"
+                      for p in tmp_path.rglob("*") if p.is_file())
+
+    def dirs():
+        return sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*") if p.is_dir())
+
+    before, before_dirs = state(), dirs()
+    snap = snapshot_prefix(lib, ext)
+
+    for rel in tree:
+        (tmp_path / rel).write_text("old")
+    for rel in ["lib/bitcode/pgcolumnar/src/columnar_old_only.bc",
+                "lib/bitcode/pgcolumnar/old_dir/x.bc",
+                "share/extension/pgcolumnar--1.0-alpha.sql"]:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("old")
+    (tmp_path / "lib/bitcode/pgcolumnar/src/columnar_reader.bc").unlink()
+
+    restore_prefix(snap)
+
+    after = state()
+    expect.text(" ".join(sorted(set(after) - set(before))) or "none", "none",
+                "nothing the old install wrote is left in the prefix")
+    expect.text(" ".join(sorted(set(before) - set(after))) or "none", "none",
+                "every file of the tree's install, bitcode included, is back with its bytes "
+                "and mtime")
+    expect.text(" ".join(sorted(set(dirs()) - set(before_dirs))) or "none", "none",
+                "no directory the old install added is left in the prefix")
+
