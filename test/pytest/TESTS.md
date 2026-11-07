@@ -401,6 +401,7 @@ behaviour, the source of that number is named.
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
+- [356. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#356-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 
 ## 1. How to read a test in here
 
@@ -14187,3 +14188,23 @@ Each round's `compact_rewrite` must also rewrite at least one group. A group cou
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
+
+## 356. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding
+
+`import_arrow` passed each Arrow UTF8 value straight to the column type's input function. textin, varcharin, json_in and jsonb_in do not check the encoding, because core checks client text before they run, and a file the backend reads skips that step. On main before the fix, a stream holding `ok`, the bytes `ff fe` and a lone `c3` imported 3 rows into a `text` column, and `upper()` and `ORDER BY` on it then failed with "invalid byte sequence for encoding". `read_parquet` already refused the same bytes. `import_arrow` now checks each value before the input function runs, refuses a bad one with 22021, naming the column and the first bad bytes, and stores no row.
+
+### Every test
+
+Each refusal reads `<what import_arrow returned, or SQLSTATE message>|<rows stored>`, so a refusal that left rows behind fails. Each test needs pyarrow and declines by name without it. The checks on UTF-8 bytes first confirm that the database is UTF8.
+
+| test | what it holds |
+| --- | --- |
+| `test_invalid_utf8_into_text_is_refused_and_nothing_is_stored` | the audit's stream into a `text` column is refused with 22021, naming column `t` and byte `0xff`, and the table is empty |
+| `test_invalid_utf8_into_varchar_is_refused_and_nothing_is_stored` | the same stream into a `varchar(10)` column is refused the same way |
+| `test_a_truncated_sequence_alone_is_refused` | a value ending in a lone lead byte `c3`, after a valid value, is refused with 22021 naming `0xc3` |
+| `test_invalid_utf8_inside_a_text_array_is_refused` | a list of the same strings into a `text[]` column is refused, naming the column |
+| `test_valid_multibyte_utf8_imports_unchanged` | control: `é`, `日本`, an emoji and an empty string import into `text` and `varchar(10)`, read back unchanged, and work with `upper()` and `ORDER BY` |
+| `test_bytea_still_takes_the_raw_bytes` | control: the audit's stream into a `bytea` column still imports all 3 rows with every byte kept |
+| `test_json_targets_refuse_invalid_utf8_too` | parametrized by `json` and `jsonb`: invalid bytes inside a JSON string are refused with 22021. On main before the fix both imported 3 rows |
+| `test_valid_json_still_imports` | control, parametrized by `json` and `jsonb`: valid JSON holding multibyte UTF-8 imports and reads back |
+| `test_a_nul_byte_is_refused_not_cut` | a value holding a NUL byte is refused with 22021 naming `0x00`. On main before the fix both rows imported |

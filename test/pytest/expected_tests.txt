@@ -1871,4 +1871,9 @@ guard_tests 863
 # cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
 # group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
 # collection: 6210 tests collected, less guard_tests 863.
-cluster_tests 5347
+# cluster_tests 5347 -> 5358 for the Arrow import encoding fix's test_arrow_import_encoding.py (import_arrow
+# refuses a UTF8 value that is not valid in the database encoding, or holds a NUL byte, with 22021 for text,
+# varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
+# import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
+# /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
+cluster_tests 5358
