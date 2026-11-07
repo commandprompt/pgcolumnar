@@ -383,6 +383,61 @@ class Cluster:
         return live == self.datadir.resolve()
 
 
+
+
+def _prefix_entries(roots):
+    """(files, dirs) of the extension under each root: every `pgcolumnar*` entry, and
+    for a directory, everything beneath it."""
+    files, dirs = set(), set()
+    for d in roots:
+        for p in d.glob("pgcolumnar*"):
+            if p.is_dir():
+                dirs.add(p)
+                for q in p.rglob("*"):
+                    (dirs if q.is_dir() else files).add(q)
+            elif p.is_file():
+                files.add(p)
+    return files, dirs
+
+
+def snapshot_prefix(libdir, extdir):
+    """The extension's files in an install prefix, to put back with restore_prefix.
+
+    THE BITCODE IS PART OF THE INSTALL. On a server built with LLVM -- the PGDG
+    packages CI uses -- `make install` also writes $pkglibdir/bitcode/pgcolumnar.index.bc
+    and bitcode/pgcolumnar/**/*.bc, which the JIT inlines from. A snapshot of the
+    library and extension directories alone leaves another build's bitcode behind
+    after the restore (#2036 review). So the roots are the library directory, its
+    bitcode directory and the extension directory, and a `pgcolumnar*` directory is
+    taken whole.
+    """
+    libdir = pathlib.Path(libdir)
+    roots = [libdir, libdir / "bitcode", pathlib.Path(extdir)]
+    found, dirs = _prefix_entries(roots)
+    files = {}
+    for p in found:
+        st = p.stat()
+        files[p] = (p.read_bytes(), (st.st_atime, st.st_mtime))
+    return {"roots": roots, "files": files, "dirs": dirs}
+
+
+def restore_prefix(snap):
+    """Put the prefix back exactly: the same files and directories, the same bytes,
+    the same mtimes. Anything another install added under those names is removed,
+    and each file comes back by atomic rename, never by writing into a mapped one."""
+    found, dirs = _prefix_entries(snap["roots"])
+    for p in found - set(snap["files"]):
+        p.unlink()
+    for p in sorted(dirs - snap["dirs"], key=lambda q: len(q.parts), reverse=True):
+        if not any(p.iterdir()):
+            p.rmdir()
+    for p, (data, times) in snap["files"].items():
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".pgc-restore")
+        tmp.write_bytes(data)
+        os.utime(tmp, times)
+        os.replace(tmp, p)
+
 _DEFAULT_VERSION_RE = re.compile(
     r"""^\s*default_version\s*=\s*['"]([^'"]+)['"]""", re.MULTILINE)
 
