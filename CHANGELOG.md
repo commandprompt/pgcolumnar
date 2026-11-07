@@ -654,6 +654,12 @@ true until the next version shipped.
   of them a sentence fragment, and every later merge re-sorted the pieces. The
   12 such rows in `test/check_ledger.tsv` are reworded without `;`.
   `test_mutation_ledger.py`.
+- `test/docs_style.sh` no longer prints `command not found` on every run
+  (#2033). Two lines after the block that records the changelog checks
+  repeated the tail of a heredoc, so the shell ran the list of changelog
+  versions as a command, then ran `CLEOF`. No check failed because of it,
+  but every log carried the two errors. The two lines are removed.
+
 - Self-test part 540 now reads a `[[ ]]` test whose unquoted regex after `=~`
   holds a bracket class, as in `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]`
   (#2027). The test ended at the `]` of the class, so the part never examined
