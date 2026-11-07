@@ -346,7 +346,11 @@
 # test_harness_deps_classifier.py, by collection over NO_CLUSTER.
 # guard_tests 862 -> 863 for #1933's test_the_run_reports_which_pg_config_it_used_and_why in
 # test_harness_deps_classifier.py (review of PR #1938), by collection over NO_CLUSTER.
-guard_tests 863
+# guard_tests 863 -> 866 for #2032's three tests in test_compare_to_bash.py:
+# test_a_suite_with_no_readable_name_is_refused_not_covered,
+# test_every_shell_file_is_a_suite_a_paired_gate_or_declared and test_the_non_suite_check_reddens_each_way,
+# by collection over NO_CLUSTER.
+guard_tests 866
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1871,4 +1875,8 @@ guard_tests 863
 # cluster_tests stays 5347 for #2024's review checks (each reclaim round's compact_rewrite rewrote at least one
 # group), added to the existing test_scale_parity_and_reclaim_steady_state in test_native_scale.py, by
 # collection: 6210 tests collected, less guard_tests 863.
-cluster_tests 5347
+# cluster_tests 5347 -> 5350 for #2032's test_extension_upgrade.py (the new twin of extension_upgrade.sh):
+# test_an_old_install_works_under_this_library, test_the_install_swap_declines_beside_other_workers and
+# test_the_prefix_is_put_back_exactly_with_its_bitcode (review of PR #2036), by collection: 6216 tests
+# collected, less guard_tests 866.
+cluster_tests 5350
