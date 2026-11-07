@@ -304,6 +304,12 @@ true until the next version shipped.
   and nothing else. The CI beta job builds against 19beta4. `extension_upgrade`
   and `format_downgrade` now run from `/`, and `test_build_refusal.py` no longer
   fails when the checkout is under a home directory other users cannot read.
+- The nightly pytest cluster job runs on aarch64 too, for PG 18 (#2038). The
+  suites job runs that leg because a missing barrier in concurrent code shows on
+  aarch64 and not under x86_64's stronger store ordering. Until now only the
+  shell suites ran there. `test_pytest_runs_where_the_suites_run.py` requires
+  that `pytest-cluster` runs every (major, architecture) the suites job runs, in
+  both workflows.
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
   file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
   snapshot records its position-delete file as ORC and another records its

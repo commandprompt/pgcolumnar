@@ -402,7 +402,8 @@ behaviour, the source of that number is named.
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
 - [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
-- [357. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#357-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
+- [358. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#358-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 
 ## 1. How to read a test in here
 
@@ -14212,7 +14213,22 @@ Removal proof, PG18. Renaming `pgcolumnar_vacuum` in C and in the install script
 | `test_an_old_install_works_under_this_library` | the prefix holds this tree's install to put back; the old build compiles and stores its rows; an update path leads from the old version to the new default; `ALTER EXTENSION UPDATE` succeeds; the old table's rows read back and it takes an insert; a new columnar table can be created; the access method is still bound; `pgcolumnar.vacuum` runs; every C function's link name is in the `pgcolumnar` namespace; a fresh install of the new default stands up, and the upgraded catalog equals it object by object |
 | `test_the_install_swap_declines_beside_other_workers` | the decision that makes the swap decline beside other xdist workers, driven with the environments pytest-xdist sets: a serial run and a one-worker run proceed, a run beside three other workers declines, and a worker with no stated count is treated as not alone |
 | `test_the_prefix_is_put_back_exactly_with_its_bitcode` | the restore on a layout of an LLVM prefix: after an old install overwrites the tree's library, bitcode index and per-file bitcode, adds files and a directory, and loses one file, nothing it wrote is left, every file of the tree's install comes back with its bytes and mtime, no added directory is left, and another extension's files are untouched. Without the bitcode root, the old bitcode index and files are left |
-## 357. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+
+## 357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs
+
+The shell suites cannot be retired while some leg of the matrix runs only them (#2038). The nightly `suites` job runs PG 18 on aarch64 as well as x86_64. A missing barrier in concurrent code does not show under x86_64's stronger store ordering, but it is a defect on aarch64. The nightly `pytest-cluster` job ran on x86_64 only, so on aarch64 only the shell suites executed.
+
+The property is derived, not listed. In `ci.yml` and in `nightly.yml`, every (major, architecture) that the `suites` job runs must also be run by `pytest-cluster`. A matrix is read from its `include:` entries, or else from its `pg:` and `runner:` lists. When the matrix names no runner, its literal `runs-on:` is the runner. A runner label containing `arm` is aarch64, and any other label is x86_64. A workflow the reader cannot compare is named: unreadable, no suites legs, or no `pytest-cluster` job. So an empty answer can only mean every leg is covered.
+
+Removal proof: before `nightly.yml`'s `pytest-cluster` gained the `{ pg: '18', runner: ubuntu-24.04-arm }` leg, the property arm failed with `got 'nightly.yml:18/aarch64' want 'none'`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reader_names_a_leg_pytest_lacks_and_what_it_cannot_read` | on fixtures: an `include:` matrix, a `pg:` list under a literal `runs-on:`, and `pg:` and `runner:` lists are each read as their (major, architecture) legs. A suites leg missing from pytest-cluster is named, and adding it names nothing. A workflow with no pytest-cluster job, one with no suites legs, and one that cannot be read are each named, not read as covered |
+| `test_pytest_cluster_runs_every_leg_the_suites_job_runs` | the property on `ci.yml` and `nightly.yml` |
+## 358. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
 
 A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
 
