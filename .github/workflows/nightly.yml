@@ -762,8 +762,8 @@ jobs:
             bash test/capability_sweep.sh /usr/lib/postgresql/18/bin/pg_config
 
   pytest-cluster:
-    name: pytest (cluster tests, PG ${{ matrix.pg }})
-    runs-on: ubuntu-latest
+    name: pytest (cluster tests, PG ${{ matrix.pg }}, ${{ matrix.runner == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }})
+    runs-on: ${{ matrix.runner }}
     # 40, not 20, as in ci.yml's job of the same name (#1740). The run is serial and
     # grows with every ported twin: on 2026-10-26 PG 16 finished its tests in 18m52s,
     # and PG 15, 17 and 18 were cancelled at the 20-minute limit, PG 15 after its
@@ -771,8 +771,19 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      # THE SAME LEGS AS THE SUITES JOB, aarch64 included (#2038). The suites job runs
+      # PG 18 on aarch64 for the reason it gives: a missing barrier in concurrent code
+      # is invisible under x86_64's stronger store ordering. With this job on x86_64
+      # only, that leg ran the shell suites and nothing else, so they could not be
+      # retired. test_pytest_runs_where_the_suites_run.py holds every (major,
+      # architecture) the suites job runs to this job too.
       matrix:
-        pg: ['15', '16', '17', '18']
+        include:
+          - { pg: '15', runner: ubuntu-latest }
+          - { pg: '16', runner: ubuntu-latest }
+          - { pg: '17', runner: ubuntu-latest }
+          - { pg: '18', runner: ubuntu-latest }
+          - { pg: '18', runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
 
