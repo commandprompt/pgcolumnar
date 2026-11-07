@@ -350,7 +350,10 @@
 # test_a_suite_with_no_readable_name_is_refused_not_covered,
 # test_every_shell_file_is_a_suite_a_paired_gate_or_declared and test_the_non_suite_check_reddens_each_way,
 # by collection over NO_CLUSTER.
-guard_tests 866
+# guard_tests 866 -> 868 for #2038's two tests in test_pytest_runs_where_the_suites_run.py: the reader on
+# fixtures, and pytest-cluster running every (major, architecture) the suites job runs, by collection over
+# NO_CLUSTER.
+guard_tests 868
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
