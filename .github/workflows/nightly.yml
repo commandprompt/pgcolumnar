@@ -497,11 +497,35 @@ jobs:
       - name: Stop the packaged cluster
         run: sudo systemctl stop postgresql || true
 
-      - name: Build instrumented and run the suites
+      # THE PYTEST CORPUS, NOT THE SHELL SUITES (#2038). run_coverage.py drives the
+      # pytest cluster files with run_coverage.sh's refusals. The pytest harness is
+      # non-root throughout (initdb refuses root), so this job makes the install
+      # targets writable, as pytest-cluster does, instead of running under sudo. The
+      # server then runs as this user and can write its counters.
+      - name: make the extension's install targets writable by this user
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" \
-            bash test/run_coverage.sh /usr/lib/postgresql/18/bin/pg_config
+          PGC=/usr/lib/postgresql/18/bin/pg_config
+          LIB="$("$PGC" --pkglibdir)"
+          SHARE="$("$PGC" --sharedir)"
+          sudo chown -R "$(id -un)" "$LIB" "$SHARE"
+          test -w "$LIB"
+          test -w "$SHARE/extension"
+          test "$(id -u)" -ne 0
+
+      - name: install pytest and the driver, pinned from requirements-test.txt
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/pgcvenv
+          /tmp/pgcvenv/bin/pip install --quiet -r test/pytest/requirements-test.txt
+          /tmp/pgcvenv/bin/pip show psycopg >/dev/null
+
+      - name: Build instrumented and run the pytest corpus
+        run: |
+          set -euo pipefail
+          # native_scale's twin at 200000 rows, as pytest-cluster runs it (#2018).
+          SCALE_N=200000 /tmp/pgcvenv/bin/python test/pytest/run_coverage.py \
+            /usr/lib/postgresql/18/bin/pg_config
 
       # The per-suite logs, which were never uploaded. Only coverage/html and
       # coverage.info were, so when a suite failed inside this job the detail

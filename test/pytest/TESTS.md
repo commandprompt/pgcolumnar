@@ -403,6 +403,7 @@ behaviour, the source of that number is named.
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
 - [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
 - [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
+- [358. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#358-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
 
 ## 1. How to read a test in here
 
@@ -14227,3 +14228,33 @@ Removal proof: before `nightly.yml`'s `pytest-cluster` gained the `{ pg: '18', r
 | --- | --- |
 | `test_the_reader_names_a_leg_pytest_lacks_and_what_it_cannot_read` | on fixtures: an `include:` matrix, a `pg:` list under a literal `runs-on:`, and `pg:` and `runner:` lists are each read as their (major, architecture) legs. A suites leg missing from pytest-cluster is named, and adding it names nothing. A workflow with no pytest-cluster job, one with no suites legs, and one that cannot be read are each named, not read as covered |
 | `test_pytest_cluster_runs_every_leg_the_suites_job_runs` | the property on `ci.yml` and `nightly.yml` |
+
+## 358. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
+
+The nightly's coverage job drove every shell suite against a `--coverage` build, so it was one of the three gates that kept the shell suites from being retired (#2038). `test/pytest/run_coverage.py` drives the pytest cluster files instead: the complement of `NO_CLUSTER`, less the three files that swap another build into the prefix (`SWAPS_THE_PREFIX`), as `run_coverage.sh` left out their shell twins. It is still a report, not a gate.
+
+It must not report coverage it did not measure. Selftest part 250 holds `run_coverage.sh` to that by the order of its lines (#740). This file holds `run_coverage.py` to it by behaviour, on a stand-in tree with stand-in make, pytest, lcov and genhtml, which record every command and the environment it got.
+
+Removal proof: each of these mutants of `run_coverage.py` fails at least one test here:
+
+- `GCOV_PREFIX` left unset;
+- the copy-back without its containment, or creating missing directories;
+- the zero-counter refusal removed, or counting the whole tree instead of `src/`;
+- the `GCOV_PREFIX` probe skipped;
+- a declined corpus treated as failed, or a corpus that collected nothing treated as clean;
+- no `make clean`, or no `COPT` in the corpus's environment.
+
+On PG18, against a private prefix, the whole corpus (312 cluster files, 30 minutes serial) returned counters for 37 of 37 instrumented objects in `src/`. Line coverage was 94.5% (26433 of 27961), function coverage 98.2% and branch coverage 73.6%.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install carries `COPT=--coverage`; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
+| `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
+| `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch |
+| `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
+| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report and exits nonzero; a corpus that declined a test exits 0 |
+| `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
+| `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
+| `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, and so is a missing pg_config |
