@@ -19,7 +19,11 @@ lcov and genhtml, so they need no cluster, no driver and no lcov:
   captures, and the refusal looks in GCOV_PREFIX before walking the filesystem;
 - a corpus that ran nothing measures nothing, and a failing corpus still writes
   its report but does not exit 0;
-- the table comes from pgc_coverage_table.py, never `lcov --list` (#974).
+- the table comes from pgc_coverage_table.py, never `lcov --list` (#974);
+- the corpus files resolve from wherever the runner is called, and pytest runs in
+  this directory so its conftest (and `--pg-config`) is loaded;
+- the tree and the install are left uninstrumented however the run ends, so the
+  next ordinary run on a shared prefix does not test the --coverage library.
 """
 
 import os
@@ -38,12 +42,14 @@ class Stand:
 
     def __init__(self, srcdir, pytest_rc=0, write=()):
         self.srcdir, self.pytest_rc, self.write = srcdir, pytest_rc, write
-        self.calls = []
+        self.calls, self.cwds, self.prefix_mode = [], [], None
 
-    def __call__(self, argv, env=None):
+    def __call__(self, argv, env=None, cwd=None):
         self.calls.append((list(argv), dict(env or {})))
+        self.cwds.append(cwd)
         if "pytest" in argv:
             prefix = pathlib.Path(env["GCOV_PREFIX"])
+            self.prefix_mode = prefix.stat().st_mode & 0o7777
             for rel in self.write:
                 f = pathlib.Path(str(prefix) + str(rel))
                 f.parent.mkdir(parents=True, exist_ok=True)
@@ -82,10 +88,12 @@ def test_the_build_and_the_corpus_are_instrumented_and_redirected(tmp_path, expe
     stand = Stand(srcdir, write=[srcdir / "src" / "columnar_reader.gcda"])
     rc, lines = _main(tmp_path, stand, srcdir)
     expect.num(rc, 0, "control: a passing corpus that wrote counters reports and exits 0")
-    makes = [(a, e) for a, e in stand.calls if a[:1] == ["make"] and "clean" not in a]
+    corpus_at = next(i for i, (a, _) in enumerate(stand.calls) if "pytest" in a)
+    makes = [(a, e) for a, e in stand.calls[:corpus_at] if a[:1] == ["make"] and "clean" not in a]
     expect.at_least(len(makes), 2, "premise: the build and the install were both run")
     expect.text(" ".join(sorted({"yes" if "COPT=--coverage" in a else "no" for a, _ in makes})),
-                "yes", "every build and install is instrumented with COPT=--coverage")
+                "yes", "every build and install before the corpus is instrumented with "
+                "COPT=--coverage")
     py = [(a, e) for a, e in stand.calls if "pytest" in a]
     expect.num(len(py), 1, "the corpus runs once")
     env = py[0][1]
@@ -94,13 +102,82 @@ def test_the_build_and_the_corpus_are_instrumented_and_redirected(tmp_path, expe
     expect.text(env.get("GCOV_PREFIX_STRIP", ""), "0", "and keeps each counter's full path")
     expect.text(env.get("COPT", ""), "--coverage",
                 "the corpus's own build keeps the instrumentation if it rebuilds")
-    expect.text(" ".join(py[0][0][-2:]), "test_a.py test_b.py", "the corpus is the files given")
+    expect.text(" ".join(pathlib.Path(a).name for a in py[0][0][-2:]), "test_a.py test_b.py",
+                "the corpus is the files given")
+    expect.text(oct(stand.prefix_mode or 0), oct(0o1777),
+                "GCOV_PREFIX is writable by the server's user, and sticky, before the corpus runs")
     expect.text(next((ln for ln in lines if ln.startswith("-- corpus:")), ""),
                 "-- corpus: rc=0, 3 failed, 5349 passed in 1830.16s",
                 "the corpus line carries pytest's summary, not the note printed after it")
     first_make = next(i for i, (a, _) in enumerate(stand.calls) if a[:1] == ["make"])
     expect.text("clean" if "clean" in stand.calls[first_make][0] else "not clean", "clean",
                 "the tree is cleaned first, so no uninstrumented object is reused")
+
+
+def test_the_corpus_resolves_from_the_callers_directory(tmp_path, monkeypatch, expect):
+    """The nightly calls the runner from the repository root. From there bare file
+    names resolve to nothing, and pytest, loading no conftest, refuses --pg-config."""
+    srcdir = _tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    names = run_coverage.corpus()[:2]
+    expect.num(len(names), 2, "premise: two real corpus files to hand the runner")
+    stand = Stand(srcdir, write=[srcdir / "src" / "columnar_reader.gcda"])
+    lines = []
+    run_coverage.main(["/x/pg_config"], run=stand, srcdir=srcdir, files=names,
+                      out_dir=tmp_path / "out", gcov_prefix=tmp_path / "gcov",
+                      have=lambda tool: True, out=lines.append)
+    i = next(i for i, (a, _) in enumerate(stand.calls) if "pytest" in a)
+    argv, cwd = stand.calls[i][0], pathlib.Path(stand.cwds[i] or os.getcwd())
+    expect.text(" ".join(f for f in argv[-2:] if not (cwd / f).is_file()) or "none", "none",
+                "each corpus file resolves from the directory pytest runs in")
+    expect.text("yes" if (cwd / "conftest.py").is_file() else "no", "yes",
+                "pytest runs where the corpus's conftest is, so --pg-config is known")
+
+
+def _ends_uninstrumented(stand):
+    """The make calls after the corpus last touched the tree: what they leave."""
+    makes = [(a, e) for a, e in stand.calls if a[:1] == ["make"]]
+    tail = makes[-2:]
+    if len(tail) < 2 or "clean" not in tail[0][0] or "install" not in tail[1][0]:
+        return "not restored: " + " | ".join(" ".join(a[1:]) for a, _ in makes[-2:])
+    a, e = tail[1]
+    if any("COPT" in x for x in a) or "COPT" in e or "GCOV_PREFIX" in e:
+        return "restored with --coverage still set"
+    return "uninstrumented"
+
+
+def test_the_tree_and_the_install_are_left_uninstrumented(tmp_path, expect):
+    """A later ordinary run on the shared prefix must not find the --coverage
+    library installed and its objects current. The restore runs however the run
+    ends: reported, refused for zero counters, or failed at the build."""
+    srcdir = _tree(tmp_path)
+    stand = Stand(srcdir, write=[srcdir / "src" / "columnar_reader.gcda"])
+    rc, _ = _main(tmp_path, stand, srcdir)
+    expect.num(rc, 0, "premise: a reported run")
+    expect.text(_ends_uninstrumented(stand), "uninstrumented",
+                "a reported run ends by cleaning and installing an uninstrumented build")
+    caps = [i for i, (a, _) in enumerate(stand.calls) if "--capture" in a]
+    cleans = [i for i, (a, _) in enumerate(stand.calls) if a[:1] == ["make"] and "clean" in a]
+    expect.text("after" if caps and cleans[-1] > caps[0] else "before", "after",
+                "and cleans only after lcov has read the counters")
+    srcdir = _tree(tmp_path / "refused")
+    stand = Stand(srcdir)
+    rc, _ = _main(tmp_path / "refused", stand, srcdir)
+    expect.num(rc, 1, "premise: a run refused for zero counters")
+    expect.text(_ends_uninstrumented(stand), "uninstrumented", "a refused run is restored too")
+
+    class FailsInstall(Stand):
+        def __call__(self, argv, env=None, cwd=None):
+            rc, log = super().__call__(argv, env, cwd)
+            if "install" in argv and "COPT=--coverage" in argv:
+                return 2, "install failed"
+            return rc, log
+    srcdir = _tree(tmp_path / "failed")
+    stand = FailsInstall(srcdir)
+    rc, _ = _main(tmp_path / "failed", stand, srcdir)
+    expect.num(rc, 1, "premise: a run whose instrumented install failed")
+    expect.text(_ends_uninstrumented(stand), "uninstrumented",
+                "a run that failed after the instrumented build is restored too")
 
 
 def test_counters_come_back_beside_their_objects_and_never_outside_the_tree(tmp_path, expect):
@@ -215,6 +292,12 @@ def test_the_command_line_refuses_a_missing_tool_or_pg_config(tmp_path, expect):
 
     rc, out = run(empty, "/x/pg_config")
     expect.text(f"{rc} {out[0] if out else ''}", "1 FAIL  lcov not found", "no lcov is refused")
+    t = empty / "lcov"
+    t.write_text("#!/bin/sh\n")
+    t.chmod(0o755)
+    rc, out = run(empty, "/x/pg_config")
+    expect.text(f"{rc} {out[0] if out else ''}", "1 FAIL  genhtml not found",
+                "no genhtml is refused, with lcov present")
     for tool in ("lcov", "genhtml"):
         t = empty / tool
         t.write_text("#!/bin/sh\n")

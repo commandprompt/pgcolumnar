@@ -31,6 +31,14 @@ process that ran the code, and the server could not write next to the build. So:
   test (exit 67) is not a failure here: this is a report, as run_coverage.sh did
   not fail a skipped suite.
 
+IT LEAVES THE TREE AND THE INSTALL UNINSTRUMENTED, however it ends: `make clean`
+and an ordinary `make install` after lcov has read the counters. The prefix is
+shared, and the corpus's build marker is keyed on the installed library, so an
+instrumented library left installed would be what the next ordinary run tests.
+
+The corpus runs in this directory, with each file given by its full path, so it
+runs the same from the repository root (as the nightly calls it) as from here.
+
 The per-file table comes from pgc_coverage_table.py, never `lcov --list`, whose
 format differs between lcov versions (#974).
 
@@ -85,8 +93,8 @@ def return_counters(prefix, srcdir):
     return moved
 
 
-def _run(argv, env=None):
-    p = subprocess.run(argv, env=env, capture_output=True, text=True)
+def _run(argv, env=None, cwd=None):
+    p = subprocess.run(argv, env=env, cwd=cwd, capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -105,17 +113,32 @@ def main(argv, run=_run, srcdir=SRCDIR, files=None, out_dir=None, gcov_prefix=No
         out(f"FAIL  no pg_config at {pgc}")
         return 1
     given = run
-    run = lambda argv, env=None: given([str(a) for a in argv], env)  # noqa: E731
+    run = lambda argv, env=None, cwd=None: given([str(a) for a in argv], env, cwd)  # noqa: E731
     srcdir = pathlib.Path(srcdir)
     src = srcdir / "src"
     out_dir = pathlib.Path(out_dir or os.environ.get("PGC_COV_OUT") or srcdir / "coverage")
     gcov_prefix = pathlib.Path(gcov_prefix or os.environ.get("PGC_COV_GCOV_PREFIX")
                                or "/tmp/pgc-gcov")
     files = files or os.environ.get("PGC_COV_FILES", "").split() or corpus()
-    env = dict(os.environ, COPT="--coverage")
+    plain = {k: v for k, v in os.environ.items()
+             if k not in ("COPT", "GCOV_PREFIX", "GCOV_PREFIX_STRIP")}
+    env = dict(plain, COPT="--coverage")
 
     out(f"-- build with --coverage against {pgc}")
     run(["make", "-C", srcdir, "clean"], env)
+    try:
+        return _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out)
+    finally:
+        out("-- leaving the tree and the install uninstrumented")
+        run(["make", "-C", srcdir, "clean"], plain)
+        rc, log = run(["make", "-C", srcdir, f"PG_CONFIG={pgc}", "install"], plain)
+        if rc != 0:
+            out("FAIL  the uninstrumented reinstall failed: the --coverage library may "
+                "still be installed")
+            out(log[-2000:])
+
+
+def _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out):
     rc, log = run(["make", "-C", srcdir, f"PG_CONFIG={pgc}", "COPT=--coverage"], env)
     if rc != 0:
         out("FAIL  instrumented build failed")
@@ -138,13 +161,17 @@ def main(argv, run=_run, srcdir=SRCDIR, files=None, out_dir=None, gcov_prefix=No
 
     out(f"-- running {len(files)} cluster file(s)")
     rc, log = run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                   "--pg-config", pgc, *files], env)
+                   "--pg-config", pgc, *(HERE / f for f in files)], env, HERE)
     (out_dir / "pytest.log").write_text(log)
     # pytest's summary line, not the last line: pgc_vacuity prints notes after it.
     summary = [ln.strip() for ln in log.splitlines()
                if re.search(r"\b\d+ (passed|failed|error|errors|skipped|deselected)\b"
                             r"|no tests ran", ln)][-1:] or ["(no summary line)"]
     out(f"-- corpus: rc={rc}, {summary[0]}")
+    if rc not in (0, 1, EXIT_NO_TESTS, EXIT_INCOMPLETE):
+        out("   pytest did not run the corpus to an end; its last lines:")
+        for ln in log.strip().splitlines()[-10:]:
+            out(f"   | {ln}")
     failed = rc not in (0, EXIT_INCOMPLETE)
     if rc == EXIT_NO_TESTS:
         out("-- NO TEST RAN, so this measures no coverage")
@@ -162,12 +189,15 @@ def main(argv, run=_run, srcdir=SRCDIR, files=None, out_dir=None, gcov_prefix=No
         if stray:
             out("      counters DO exist under GCOV_PREFIX, so this is a path mismatch:")
         else:
+            # Only counters for THIS tree's sources: another tree's leftovers are not
+            # a mismatch of this run's paths, and naming them misdirects.
             rc_find, found = run(["find", "/", "-xdev", "-name", "*.gcda"], env)
-            stray = found.split()[:5]
+            stray = [s for s in found.split() if f"{src}/" in s][:5]
             if stray:
                 out("      counters DO exist elsewhere, so this is a path mismatch:")
             else:
-                out("      no .gcda anywhere on this filesystem, so nothing wrote them")
+                out("      no .gcda for this tree anywhere on this filesystem, so nothing "
+                    "wrote them")
         for s in stray:
             out(f"        {s}")
         return 1
