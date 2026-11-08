@@ -160,8 +160,9 @@ def test_the_tree_and_the_install_are_left_uninstrumented(tmp_path, expect):
                 "a reported run ends by cleaning and installing an uninstrumented build")
     caps = [i for i, (a, _) in enumerate(stand.calls) if "--capture" in a]
     cleans = [i for i, (a, _) in enumerate(stand.calls) if a[:1] == ["make"] and "clean" in a]
-    expect.text("after" if caps and cleans[-1] > caps[0] else "before", "after",
-                "and cleans only after lcov has read the counters")
+    expect.num(len(caps), 1, "premise: lcov captured once")
+    expect.at_least(cleans[-1], caps[0] + 1,
+                    "and cleans only after lcov has read the counters (call index)")
     srcdir = _tree(tmp_path / "refused")
     stand = Stand(srcdir)
     rc, _ = _main(tmp_path / "refused", stand, srcdir)
