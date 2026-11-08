@@ -143,6 +143,13 @@ def test_the_gate_passes_only_when_every_suite_passed(expect):
                 "a gate that ran no suite does not pass")
 
 
+def _twin(suite):
+    """A suite's twin file name, assembled rather than written out: a corpus file
+    name in this module's code would read, to test_harness_deps's membership
+    decision, as this file driving that twin, and so as needing its cluster."""
+    return "test_" + suite + ".py"
+
+
 def test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory(tmp_path, expect):
     """main() on a stand-in sanitizer prefix and a stand-in pytest: the environment
     each suite gets, and a report written during a passing suite failing it."""
@@ -154,7 +161,7 @@ def test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory(tmp_
         twin = pathlib.Path(argv[-1]).name
         seen[twin] = env
         seen.setdefault("timeouts", set()).add(timeout)
-        if twin == "test_native_writer.py":
+        if twin == _twin("native_writer"):
             log = pathlib.Path(env["ASAN_OPTIONS"].split("log_path=")[1].split(":")[0])
             pathlib.Path(f"{log}.777").write_text("runtime error: misaligned\n")
         return 0, ""
@@ -162,7 +169,7 @@ def test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory(tmp_
     rc = run_san.main([str(prefix)], runner=runner, suites=["smoke", "native_writer"],
                       build=lambda pgc: (True, ""), out=lambda line: None)
     expect.num(rc, 1, "a report during a suite whose tests all passed fails the gate")
-    env = seen.get("test_smoke.py", {})
+    env = seen.get(_twin("smoke"), {})
     for var in ("ASAN_OPTIONS", "UBSAN_OPTIONS"):
         expect.text("yes" if "abort_on_error=1" in env.get(var, "") else "no", "yes",
                     f"{var} makes a violation abort the process")
@@ -171,7 +178,7 @@ def test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory(tmp_
     expect.text("yes" if "detect_leaks=0" in env.get("ASAN_OPTIONS", "") else "no", "yes",
                 "ASAN_OPTIONS leaves out the by-design tool leaks, as run_san.sh does")
     smoke_log = env.get("ASAN_OPTIONS", "").split("log_path=")[-1].split(":")[0]
-    writer_log = seen.get("test_native_writer.py", {}).get(
+    writer_log = seen.get(_twin("native_writer"), {}).get(
         "ASAN_OPTIONS", "").split("log_path=")[-1].split(":")[0]
     expect.text("differ" if smoke_log and smoke_log != writer_log else "same", "differ",
                 "each suite logs to its own directory, so a report is charged to its suite")
