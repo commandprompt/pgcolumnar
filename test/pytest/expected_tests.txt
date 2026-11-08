@@ -353,10 +353,10 @@
 # guard_tests 866 -> 868 for #2038's two tests in test_pytest_runs_where_the_suites_run.py: the reader on
 # fixtures, and pytest-cluster running every (major, architecture) the suites job runs, by collection over
 # NO_CLUSTER.
-# guard_tests 868 -> 876 for #2038's eight tests in test_coverage_report.py: run_coverage.py's instrumentation,
-# redirect, copy-back, zero-counter refusal, corpus verdicts, table and command line, on stand-ins, by
-# collection over NO_CLUSTER.
-guard_tests 876
+# guard_tests 868 -> 878 for #2038's ten tests in test_coverage_report.py: run_coverage.py's instrumentation,
+# redirect, copy-back, zero-counter refusal, corpus verdicts, table, command line, the corpus resolving from the
+# caller's directory, and the tree left uninstrumented, on stand-ins, by collection over NO_CLUSTER.
+guard_tests 878
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

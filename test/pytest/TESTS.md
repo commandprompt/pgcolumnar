@@ -14242,19 +14242,25 @@ Removal proof: each of these mutants of `run_coverage.py` fails at least one tes
 - the zero-counter refusal removed, or counting the whole tree instead of `src/`;
 - the `GCOV_PREFIX` probe skipped;
 - a declined corpus treated as failed, or a corpus that collected nothing treated as clean;
-- no `make clean`, or no `COPT` in the corpus's environment.
+- no `make clean`, or no `COPT` in the corpus's environment;
+- the corpus given by bare names, or by full paths but not run in `test/pytest`;
+- no restore at the end, a restore that keeps `COPT`, or one without `make clean`;
+- the genhtml check removed, or `GCOV_PREFIX` not made world-writable;
+- the filesystem walk naming another tree's counters.
 
-On PG18, against a private prefix, the whole corpus (312 cluster files, 30 minutes serial) returned counters for 37 of 37 instrumented objects in `src/`. Line coverage was 94.5% (26433 of 27961), function coverage 98.2% and branch coverage 73.6%.
+On PG18, against a private prefix, the whole corpus (312 files at the time, one of them this file before it was declared in `NO_CLUSTER`; 311 cluster files without it, 30 minutes serial) returned counters for 37 of 37 instrumented objects in `src/`. Line coverage was 94.5% (26433 of 27961), function coverage 98.2% and branch coverage 73.6%.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install carries `COPT=--coverage`; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
+| `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install before the corpus carries `COPT=--coverage`; `GCOV_PREFIX` is mode 1777 before the corpus runs; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
+| `test_the_corpus_resolves_from_the_callers_directory` | called from another directory, as the nightly calls it from the repository root, each corpus file resolves from the directory pytest runs in, and that directory holds the corpus's `conftest.py`, so `--pg-config` is known |
+| `test_the_tree_and_the_install_are_left_uninstrumented` | a reported run, a run refused for zero counters and a run whose instrumented install failed each end with `make clean` and a `make install` with no `COPT` and no `GCOV_PREFIX`; in a reported run the clean comes after `lcov --capture` |
 | `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
-| `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch |
+| `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
 | `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
 | `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report and exits nonzero; a corpus that declined a test exits 0 |
 | `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
 | `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
-| `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, and so is a missing pg_config |
+| `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |

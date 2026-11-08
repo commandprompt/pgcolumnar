@@ -40,8 +40,8 @@ class Stand:
     """Stand-in tools: records every command with the environment it got, and lets a
     test decide what pytest exits with and which counters it writes."""
 
-    def __init__(self, srcdir, pytest_rc=0, write=()):
-        self.srcdir, self.pytest_rc, self.write = srcdir, pytest_rc, write
+    def __init__(self, srcdir, pytest_rc=0, write=(), found=""):
+        self.srcdir, self.pytest_rc, self.write, self.found = srcdir, pytest_rc, write, found
         self.calls, self.cwds, self.prefix_mode = [], [], None
 
     def __call__(self, argv, env=None, cwd=None):
@@ -58,6 +58,8 @@ class Stand:
             return self.pytest_rc, ("..F.\n3 failed, 5349 passed in 1830.16s\n"
                                     "UNRUN  test_x.py::test_y: UNMET_PRECONDITION: no endpoint\n"
                                     "  -- edit test/pytest/expected_unrunnable.txt, with the reason.\n")
+        if argv[:1] == ["find"]:
+            return 0, self.found
         if argv[:1] == ["lcov"] and "--summary" in argv:
             return 0, "  lines......: 50.0% (1 of 2 lines)\n"
         return 0, ""
@@ -215,6 +217,17 @@ def test_zero_counters_are_refused_before_lcov_runs(tmp_path, expect):
     expect.text("yes" if "path mismatch" in text and str(tmp_path / "gcov") in text else "no",
                 "yes", "it names counters it finds under GCOV_PREFIX as a path mismatch, "
                 "before any walk of the filesystem")
+
+    srcdir = _tree(tmp_path / "walk")
+    ours = f"/var/lib/elsewhere{srcdir / 'src'}/columnar_reader.gcda"
+    stand = Stand(srcdir, found=f"/root/pgc740/src/columnar_reader.gcda\n{ours}\n")
+    rc, lines = _main(tmp_path / "walk", stand, srcdir)
+    text = "\n".join(lines)
+    expect.num(len(stand.named("find")), 1, "premise: with nothing under GCOV_PREFIX, it walks")
+    expect.text("named" if ours in text else "missed", "named",
+                "a counter for this tree's src/ found by the walk is named as a path mismatch")
+    expect.text("named" if "/root/pgc740/" in text else "not named", "not named",
+                "another tree's leftover counter is not, since it is not this run's mismatch")
 
 
 def test_the_refusal_counts_the_directory_lcov_captures(tmp_path, expect):
