@@ -1058,7 +1058,7 @@ column that no minimum and maximum statistic can prune. That column is therefore
 read in full, whatever else the query returns. The 2026-08-12 run above measures
 the same effect in more detail.
 
-### The accelerations were off by default, and turning them on was not a clear win
+### The accelerations are off by default, and turning them on is not a clear win
 
 In the 2026-08-05 run, `pgcolumnar.enable_group_vectorization` and
 `pgcolumnar.enable_ungrouped_vector_agg` both defaulted to off. About 35 of the 43
