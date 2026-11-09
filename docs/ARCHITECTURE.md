@@ -6,7 +6,7 @@ from `design/NATIVE_FORMAT_AND_INTERFACE_SPEC.md`. Read the specification first
 for the on-disk layout and catalog schema; this document describes how the code
 is organized against it.
 
-Data is stored in one format, the native format PGCN, version 2. (An earlier 1.0-dev
+Data is stored in one format, the native format PGCN v1. (An earlier 1.0-dev
 format line has been removed; the `v1.0-dev` git tag preserves it.)
 
 ## On-disk model in one paragraph
