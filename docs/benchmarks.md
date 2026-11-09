@@ -117,7 +117,7 @@ One point stays true in each case. A single-row fetch must find and decode the
 row inside its row group. Columnar storage therefore suits scans and aggregates.
 Heap storage suits point lookups and write-heavy OLTP.
 
-## Aggregates fall back once anything is deleted
+## Aggregates fall back in each row group that has a delete
 
 The metadata answers above hold only while the storage has no delete vector. A zone map covers each row in its group, and this includes the deleted rows. After
 a delete, the metadata answer would therefore be incorrect, and the executor uses
@@ -1058,12 +1058,13 @@ column that no minimum and maximum statistic can prune. That column is therefore
 read in full, whatever else the query returns. The 2026-08-12 run above measures
 the same effect in more detail.
 
-### The accelerations are off by default, and turning them on is not a clear win
+### The accelerations were off by default, and turning them on was not a clear win
 
-`pgcolumnar.enable_group_vectorization` and
-`pgcolumnar.enable_ungrouped_vector_agg` both default to off. About 35 of the 43
-queries are `GROUP BY`. So a default run measures this engine with its main
-analytical accelerator disabled.
+In the 2026-08-05 run, `pgcolumnar.enable_group_vectorization` and
+`pgcolumnar.enable_ungrouped_vector_agg` both defaulted to off. About 35 of the 43
+queries are `GROUP BY`. So that default run measured this engine with its main
+analytical accelerator disabled. Today `pgcolumnar.enable_group_vectorization`
+defaults to on, and `pgcolumnar.enable_ungrouped_vector_agg` still defaults to off.
 
 The harness runs a third arm with the analytical accelerators on. That arm sets
 four settings, not only the two above. It also sets
@@ -1129,8 +1130,8 @@ the encoding layer before zstd. Vectorization adds a large further speedup on
 aggregates, and storing a table sorted on its range key improves skipping.
 
 Heap is better for single-row fetches and for deletes, and by a large margin in
-both. On a table with deletes, the aggregate advantage is not present until a
-vacuum runs.
+both. On a table with deletes, each row group with a delete loses the metadata
+answer until a vacuum runs. The clean groups keep it.
 Columnar is the wrong choice for write-heavy OLTP. It is the right choice for
 scan-heavy and aggregate-heavy analytics over wide, append-mostly tables, on the
 single-table shapes measured here. Whether that holds once a join is involved is

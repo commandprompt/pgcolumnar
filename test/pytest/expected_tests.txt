@@ -359,7 +359,10 @@
 # redirect, copy-back, zero-counter refusal, corpus verdicts, table, command line, the corpus resolving from the
 # caller's directory, the tree left uninstrumented, and a counters directory that cannot be emptied, on
 # stand-ins, by collection over NO_CLUSTER.
-guard_tests 889
+# guard_tests 889 -> 892 for the doc audit's three tests in test_docs_links_resolve.py: the site's anchor rule,
+# the reader naming each kind of broken link on fixtures, and every internal link in the docs resolving, by
+# collection over NO_CLUSTER.
+guard_tests 892
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

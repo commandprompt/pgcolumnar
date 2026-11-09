@@ -282,6 +282,25 @@ true until the next version shipped.
 
 ### Changed
 
+- The user documentation is brought up to date with the changes since 1.0-alpha4,
+  after an audit of every `[Unreleased]` entry against the docs and the code.
+  Stale statements corrected: the release and PGXN versions and the native format
+  version in limitations.md; going over `groupagg_max_groups` no longer errors;
+  a downgrade to 1.0-alpha4 after 1.0-alpha5 wrote is refused, not misread; the
+  post-codec choice covers every encoding, not only FSST; PostgreSQL 19 is
+  validated against 19beta4; `alter_table_set_access_method` no longer describes
+  PostgreSQL 13 and 14; the cluster and recluster examples name their columns.
+  Newly documented: the `pgcolumnar_objstore.so` module and its same-build rule;
+  restoring a rollup from `pg_dump` and `rebase_rollup`; TID range scans; parallel
+  projection scans; `import_parquet` refusing a partitioned table; how
+  `export_parquet` writes `timestamp` and `timestamptz`; a collation change
+  dropping a column's zone maps; `timestamp` against `timestamptz` not skipping;
+  `vacuum_full` skipping materialized views; the REST reply cap; the one-part
+  upload edge; the two internal test settings; which settings need a restart or
+  a reload. `test/pytest/test_docs_links_resolve.py` resolves every internal link
+  in the docs against the pages' headings: four had broken when function
+  signatures gained arguments, and no gate read links.
+
 - The nightly's ledger gate compares the ceiling against the commit's parent
   (#1104). On the `v1.0-alpha4` tag push every major went red with no suite
   failing: the gate found no prior ceiling, because a tag checkout has no

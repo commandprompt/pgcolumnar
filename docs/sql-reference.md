@@ -10,11 +10,8 @@ signature. For server settings, see [Configuration reference](configuration.md).
 Converts a table to another access method, for example from the default heap to
 `pgcolumnar` or back.
 
-On PostgreSQL 15 and later this runs `ALTER TABLE ... SET ACCESS METHOD`, which
-rewrites the table in place and preserves its identity and dependents. PostgreSQL 13 and 14 do not have that command. On those two versions, the
-function makes a second table with `LIKE ... INCLUDING ALL`. It then copies each
-row through the target method and exchanges the names. On those two majors the conversion does not preserve the original table's
-OID or objects that depend on it, such as views and foreign keys.
+It runs `ALTER TABLE ... SET ACCESS METHOD`, which rewrites the table in place
+and preserves its identity and dependents.
 
 ```sql
 SELECT pgcolumnar.alter_table_set_access_method('events', 'pgcolumnar');
@@ -94,7 +91,7 @@ documented as bounding how many row groups are combined in one call. It was neve
 read, and every call rewrote the whole relation regardless of the value.
 
 To bound the work, use
-[`pgcolumnar.compact_rewrite`](#pgcolumnarcompact_rewriterel-regclass-min_deleted_fraction-float8-max_groups-int),
+[`pgcolumnar.compact_rewrite`](#pgcolumnarcompact_rewritetablename-regclass-min_deleted_fraction-float8-default-02-max_groups-int-default-0-returns-bigint),
 whose `max_groups` does limit how many row groups are rewritten.
 
 ```sql
@@ -329,7 +326,8 @@ SELECT pgcolumnar.truncate('events');
 ### pgcolumnar.vacuum_full(schema name DEFAULT 'public', sleep_time real DEFAULT 0.0, stripe_count int DEFAULT 0)
 
 Runs `pgcolumnar.vacuum` on every columnar table in a schema. `sleep_time` is a
-pause in seconds between tables.
+pause in seconds between tables. It skips columnar materialized views. Run
+`pgcolumnar.vacuum` on each of them yourself.
 
 `stripe_count` is passed through to `pgcolumnar.vacuum` and is subject to the same
 restriction: a non-zero value raises an error.
@@ -614,7 +612,8 @@ SELECT pgcolumnar.rebuild_projections();
 ### pgcolumnar.read_projection(rel regclass, name text) and pgcolumnar.reconstruct_via_projection(rel regclass, name text)
 
 Return a projection's stored rows as text, for verification. They are for
-inspection and testing, not for query use.
+inspection and testing, not for query use. Only superusers can call them unless
+granted.
 
 ## Import and export
 
@@ -635,7 +634,8 @@ and types that they do not support. See
 Writes the live rows of `rel` to an Arrow IPC stream file at `path`. Returns the
 number of rows written. The file has no `ARROW1` header or footer, so pyarrow
 reads it with `pyarrow.ipc.open_stream`, not `open_file`. `path` can be a local
-file or an `s3://` URL. See [Object storage](#object-storage). A record batch
+file or an `s3://`, `gs://`, `http://` or `https://` URL. See
+[Object storage](#object-storage). A record batch
 holds at most 16384 rows and at most `pgcolumnar.export_group_bytes` of buffered
 data, 256 MiB by default, unless one row alone is larger. See
 [Export size limits](limitations.md#export-size-limits).
@@ -643,8 +643,12 @@ data, 256 MiB by default, unless one row alone is larger. See
 ### pgcolumnar.export_parquet(rel regclass, path text) returns bigint
 
 Writes the live rows of `rel` to a Parquet file at `path`. Returns the number of
-rows written. `path` can be a local file or an `s3://` URL. See
-[Object storage](#object-storage). A row group holds at most 65536 rows and at most
+rows written. `path` can be a local file or an `s3://`, `gs://`, `http://` or
+`https://` URL. See [Object storage](#object-storage). A `timestamp` column is
+written as INT64 with the TIMESTAMP logical type in microseconds and
+`isAdjustedToUTC=false`, a wall time with no converted type. A `timestamptz`
+column is written with `isAdjustedToUTC=true`, a UTC instant, and the
+`TIMESTAMP_MICROS` converted type. A row group holds at most 65536 rows and at most
 `pgcolumnar.export_group_bytes` of buffered data, 256 MiB by default, unless one row
 alone is larger. See [Export size limits](limitations.md#export-size-limits).
 
@@ -994,6 +998,9 @@ file, a directory (every `*.parquet` file below it is imported, at any depth),
   or a glob
 pattern. Returns the number of rows inserted.
 
+A partitioned table is refused with `42809`, because it has no storage of its
+own. Import into each partition instead.
+
 ```sql
 -- round-trip a table through Parquet
 SELECT pgcolumnar.export_parquet('events', '/tmp/events.parquet');   -- returns row count
@@ -1128,8 +1135,12 @@ apply that commit after a DELETE sent meanwhile. Waiting puts
 the DELETE after the commit. A local worker that was renaming its finished part
 has renamed it before it exits. A worker that is still running after 5 seconds,
 such as one waiting on a store that does not answer, can still leave its part.
-A worker terminated mid-upload
-can leave one incomplete multipart upload that the dispatcher cannot address.
+Over an `s3://` prefix, the dispatcher then lists the open multipart uploads
+under the prefix. It aborts each one whose key is one of this run's part names,
+within 10 seconds. A failed cleanup of these uploads never raises an error. It
+writes a line to the server log instead, `columnar: parallel_export_parquet could
+not clean up the open uploads under "..."`, with the cause. An upload that the
+cleanup misses stays open.
 Set a bucket lifecycle rule that expires incomplete multipart uploads to reclaim
 it, as [Exporting to object storage](#exporting-to-object-storage)
 recommends.
@@ -1613,7 +1624,10 @@ file and walks only that hash's bucket. There it compares the data row only
 with delete rows that have the same hash. The cost therefore grows with the number of data
 rows times the number of applicable delete files, plus the number of delete
 rows. It no longer grows with data rows times delete rows. All delete rows stay
-in memory until the scan ends.
+in memory until the scan ends. With `client_min_messages = debug1`, the scan
+reports the probe of each data file in a `DEBUG1` message. It gives the data
+rows, the delete files and rows, the bucket rows visited, the longest walk, the
+comparisons, and the rows matched.
 
 A malformed manifest is refused, not read as far as it parses. A manifest entry
 that records no data-file path is an error, as is a manifest whose embedded Avro
@@ -1798,6 +1812,9 @@ SQLSTATEs:
 
 When the reply carries the catalog's own error message, the error detail repeats
 it as `The catalog said: <message>`. The message is cut to 512 bytes.
+
+A catalog reply larger than 64 MiB is refused with `54000`, with the message
+`columnar: response from "<url>" exceeded 67108864 bytes`.
 
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
 
@@ -2266,8 +2283,9 @@ bytes each, 8 MiB by default. An export that needs more parts fails with SQLSTAT
 an object over about 78 GiB. AWS S3, Google Cloud Storage and Cloudflare R2
 refuse parts under 5 MiB, except the last. To those stores, an export with a
 smaller part size fails with SQLSTATE 22023 when it starts a multipart upload,
-before it sends a part. A small object that fits in one part still goes in one
-request. Other stores are not checked.
+before it sends a part. An object smaller than one part still goes in one
+request. An object of exactly one part starts a multipart upload, so it fails
+with 22023 too. Other stores are not checked.
 
 The export reads each reply from the store by the HTTP/1.1 framing rules. A reply
 with neither a `Content-Length` nor chunked framing ends when the store closes
@@ -2305,8 +2323,10 @@ index-only scans. They are for diagnostics.
 
 ### pgcolumnar.vm_is_visible(rel regclass, blk int)
 
-Tells you if the block (chunk group) has the all-visible mark.
+Tells you if the block (chunk group) has the all-visible mark. Only superusers
+can call it unless granted.
 
 ### pgcolumnar.vm_selftest(rel regclass, blk int)
 
-Runs a set and clear self-test against the visibility map for one block.
+Runs a set and clear self-test against the visibility map for one block. Only
+superusers can call it unless granted.

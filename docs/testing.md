@@ -95,8 +95,8 @@ resolved one of two ways, and writing it down is neither:
   slower.
 
 `docs/limitations.md` is for the items that are out of scope, or that an external
-constraint blocks. An extension cannot change WAL behaviour. PostgreSQL 13 and
-14 lack an API. It is not a parking space. Anything in it that is unfixed only
+constraint blocks. An extension cannot change WAL behaviour. A supported
+PostgreSQL major lacks an API. It is not a parking space. Anything in it that is unfixed only
 because nobody has fixed it does not belong there.
 
 When a fix lands, sweep the docs in the same change. `ANALYZE` collecting no
@@ -461,7 +461,7 @@ test/run_all_versions.sh /usr/local/pg15/bin/pg_config ... /usr/local/pg19/bin/p
 ```
 
 All suites pass on PostgreSQL 15 through 19. PostgreSQL 19 is validated against
-19beta2; revalidation against the final PostgreSQL 19 release is pending that
+19beta4; revalidation against the final PostgreSQL 19 release is pending that
 release.
 
 **A suite has three outcomes, and two of them are not failures.** Read which one

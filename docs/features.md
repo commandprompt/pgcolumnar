@@ -97,6 +97,12 @@ stronger codec writes less.
 - A fetch by row number decodes only the columns that the executor asks for. It
   keeps the decoded row group for the rest of the statement. An index-driven read
   of a wide table therefore does not decode the columns that it will not return.
+- TID range scans. A query such as
+  `WHERE ctid >= '(1340,62)' AND ctid < '(1400,0)'` reads only the row groups
+  that hold the range. The columnar custom scan does not use the range. It tests
+  `ctid` on each row, and the planner can still choose it when parallel workers
+  make it cheap. A cursor over a ctid range gets a Material node, so
+  `FETCH BACKWARD` and `FETCH LAST` work.
 - Serial join runtime filter for a star-schema Hash Join.
   A serial inner Hash Join can skip fact-table groups using the build-side key range.
   It can also reject non-matching rows with a Bloom filter of those keys.
@@ -116,17 +122,19 @@ coverage.
 
 ## Indexes and index-only scans
 
+<!--
+The first bullet below is the whole claim, and it keeps its own bullet on purpose.
+test/index_am_support.sh reads it out of this page and exercises every method
+it names. The suite accepts one form of words and refuses anything else in that
+bullet. Prose added there gets a loud refusal rather than a silent pass.
+
+The suite checks only the methods that bullet names. An exclusion written
+anywhere else on this page is checked against nothing. So do not write one here.
+A method that does not work belongs in limitations.md, with its own evidence.
+-->
+
 - `CREATE INDEX` builds `btree`, `hash`, `gist` and `spgist` indexes over a
   columnar table.
-- That sentence is the whole claim, and it keeps its own bullet on purpose.
-  `test/index_am_support.sh` reads it out of this page and exercises every method
-  it names. The suite accepts one form of words and refuses anything else in that
-  bullet. Prose added there gets a loud refusal rather than a silent pass.
-- **The suite checks only the methods that bullet names.** An exclusion written
-  anywhere else on this page is checked against nothing. So do not write one here.
-  A method that does not work belongs in
-  [limitations](limitations.md#gin-and-brin-build-and-no-plan-can-use-them),
-  with its own evidence.
 - Every row is assigned a stable row number and synthetic item pointer at insert
   time, so ordinary index scans fetch rows by item pointer.
 - A GiST or SP-GiST index is how a range column answers an overlap or a
@@ -139,6 +147,9 @@ coverage.
   all-visible chunk group from the index tuple. For any other group it uses the row
   fetch that checks the snapshot. An index-only answer therefore never returns a
   row the snapshot cannot see. On by default (`pgcolumnar.enable_index_only_scan`).
+
+Index methods that build but that no plan uses are described in
+[limitations](limitations.md#gin-and-brin-build-and-no-plan-can-use-them).
 
 ## Projections
 
@@ -272,7 +283,7 @@ and writes continue.
   columnar partitions. A single table needs no row order. A partitioned target
   needs the file sorted ascending by the partition key, whose type must be
   numeric or a date/time type.
-- See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-returns-bigint)
+- See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
   and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
 
 ## Interoperability
