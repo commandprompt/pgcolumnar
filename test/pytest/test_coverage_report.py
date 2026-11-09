@@ -182,6 +182,42 @@ def test_the_tree_and_the_install_are_left_uninstrumented(tmp_path, expect):
     expect.text(_ends_uninstrumented(stand), "uninstrumented",
                 "a run that failed after the instrumented build is restored too")
 
+    class FailsRestore(Stand):
+        def __call__(self, argv, env=None, cwd=None):
+            rc, log = super().__call__(argv, env, cwd)
+            if "install" in argv and "COPT=--coverage" not in argv:
+                return 2, "install failed"
+            return rc, log
+    srcdir = _tree(tmp_path / "unrestored")
+    stand = FailsRestore(srcdir, write=[srcdir / "src" / "columnar_reader.gcda"])
+    rc, lines = _main(tmp_path / "unrestored", stand, srcdir)
+    expect.num(len(stand.named("genhtml")), 1, "premise: the run reported before restoring")
+    expect.num(rc, 1, "a reported run whose uninstrumented reinstall failed exits 1, since "
+                      "the --coverage library may still be installed")
+    expect.text(next((ln for ln in lines if ln.startswith("FAIL")), ""),
+                "FAIL  the uninstrumented reinstall failed: the --coverage library may "
+                "still be installed", "and says why")
+
+
+def test_a_counters_directory_that_cannot_be_emptied_is_refused(tmp_path, monkeypatch, expect):
+    """A GCOV_PREFIX left by another user cannot be emptied. Reusing it would mix an
+    earlier run's counters into this report, so the run refuses, naming it, before
+    the corpus runs; and the tree is still restored."""
+    srcdir = _tree(tmp_path)
+    left = tmp_path / "gcov" / "tmp" / "old" / "src" / "columnar_reader.gcda"
+    left.parent.mkdir(parents=True)
+    left.write_text("an earlier run's counters")
+    # As rmtree(ignore_errors=True) behaves on a directory another user owns.
+    monkeypatch.setattr(run_coverage.shutil, "rmtree", lambda *a, **k: None)
+    stand = Stand(srcdir, write=[srcdir / "src" / "columnar_reader.gcda"])
+    rc, lines = _main(tmp_path, stand, srcdir)
+    expect.num(rc, 1, "a counters directory that could not be emptied fails the run")
+    expect.num(len(stand.named("pytest")), 0, "the corpus does not run into it")
+    expect.text(next((ln for ln in lines if ln.startswith("FAIL")), ""),
+                f"FAIL  cannot empty the counters directory {tmp_path / 'gcov'}: remove it, "
+                "or set PGC_COV_GCOV_PREFIX", "the refusal names the directory")
+    expect.text(_ends_uninstrumented(stand), "uninstrumented", "and the tree is restored")
+
 
 def test_counters_come_back_beside_their_objects_and_never_outside_the_tree(tmp_path, expect):
     srcdir = _tree(tmp_path)

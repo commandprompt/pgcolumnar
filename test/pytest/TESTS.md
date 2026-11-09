@@ -14284,6 +14284,8 @@ Removal proof: each of these mutants of `run_coverage.py` fails at least one tes
 - no `make clean`, or no `COPT` in the corpus's environment;
 - the corpus given by bare names, or by full paths but not run in `test/pytest`;
 - no restore at the end, a restore that keeps `COPT`, or one without `make clean`;
+- a failed restore that keeps the run's exit code;
+- a counters directory that cannot be emptied reused, either unchecked or with `mkdir(exist_ok=True)`;
 - the genhtml check removed, or `GCOV_PREFIX` not made world-writable;
 - the filesystem walk naming another tree's counters.
 
@@ -14295,7 +14297,8 @@ On PG18, against a private prefix, the whole corpus (312 files at the time, one 
 | --- | --- |
 | `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install before the corpus carries `COPT=--coverage`; `GCOV_PREFIX` is mode 1777 before the corpus runs; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
 | `test_the_corpus_resolves_from_the_callers_directory` | called from another directory, as the nightly calls it from the repository root, each corpus file resolves from the directory pytest runs in, and that directory holds the corpus's `conftest.py`, so `--pg-config` is known |
-| `test_the_tree_and_the_install_are_left_uninstrumented` | a reported run, a run refused for zero counters and a run whose instrumented install failed each end with `make clean` and a `make install` with no `COPT` and no `GCOV_PREFIX`; in a reported run the clean comes after `lcov --capture` |
+| `test_the_tree_and_the_install_are_left_uninstrumented` | a reported run, a run refused for zero counters and a run whose instrumented install failed each end with `make clean` and a `make install` with no `COPT` and no `GCOV_PREFIX`; in a reported run the clean comes after `lcov --capture`; a reported run whose uninstrumented reinstall fails exits 1 and says why |
+| `test_a_counters_directory_that_cannot_be_emptied_is_refused` | a `GCOV_PREFIX` that cannot be emptied, as one another user left, is refused with a `FAIL` line naming it, before the corpus runs, and the tree is still restored |
 | `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
 | `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
 | `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |

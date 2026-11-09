@@ -126,16 +126,21 @@ def main(argv, run=_run, srcdir=SRCDIR, files=None, out_dir=None, gcov_prefix=No
 
     out(f"-- build with --coverage against {pgc}")
     run(["make", "-C", srcdir, "clean"], env)
+    result = 1
     try:
-        return _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out)
+        result = _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out)
     finally:
         out("-- leaving the tree and the install uninstrumented")
         run(["make", "-C", srcdir, "clean"], plain)
         rc, log = run(["make", "-C", srcdir, f"PG_CONFIG={pgc}", "install"], plain)
         if rc != 0:
+            # The outcome blocker 2 of the review named, reached through a failure: the
+            # next ordinary run would test the --coverage library. So it fails the run.
             out("FAIL  the uninstrumented reinstall failed: the --coverage library may "
                 "still be installed")
             out(log[-2000:])
+            result = 1
+    return result
 
 
 def _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out):
@@ -151,7 +156,13 @@ def _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out):
         return 1
 
     # Redirected BEFORE anything runs (#740).
+    # Emptied, never reused: an earlier run's counters would be mixed into this report.
+    # One another user left cannot be emptied, and is refused by name.
     shutil.rmtree(gcov_prefix, ignore_errors=True)
+    if gcov_prefix.exists():
+        out(f"FAIL  cannot empty the counters directory {gcov_prefix}: remove it, "
+            "or set PGC_COV_GCOV_PREFIX")
+        return 1
     gcov_prefix.mkdir(parents=True)
     os.chmod(gcov_prefix, 0o1777)
     env = dict(env, GCOV_PREFIX=str(gcov_prefix), GCOV_PREFIX_STRIP="0")
