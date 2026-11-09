@@ -403,7 +403,8 @@ behaviour, the source of that number is named.
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
 - [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
 - [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
-- [358. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#358-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides](#358-test_sanitizer_gatepy-the-pytest-sanitizer-gate-decides-what-run_sansh-decides)
+- [359. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#359-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 
 ## 1. How to read a test in here
 
@@ -14228,7 +14229,46 @@ Removal proof: before `nightly.yml`'s `pytest-cluster` gained the `{ pg: '18', r
 | --- | --- |
 | `test_the_reader_names_a_leg_pytest_lacks_and_what_it_cannot_read` | on fixtures: an `include:` matrix, a `pg:` list under a literal `runs-on:`, and `pg:` and `runner:` lists are each read as their (major, architecture) legs. A suites leg missing from pytest-cluster is named, and adding it names nothing. A workflow with no pytest-cluster job, one with no suites legs, and one that cannot be read are each named, not read as covered |
 | `test_pytest_cluster_runs_every_leg_the_suites_job_runs` | the property on `ci.yml` and `nightly.yml` |
-## 358. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+
+## 358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides
+
+The nightly's sanitizer job ran 24 shell suites against the ASAN+UBSAN build, so it was one of the three gates that kept the shell suites from being retired (#2038). `test/pytest/run_san.py` runs the pytest twins of the same subset, and these tests hold its decisions on stand-ins.
+
+ASAN and UBSAN write every report to a file through `log_path`, one directory per suite, so a report from any instrumented process counts: a backend, initdb, pg_config, or a cluster a twin started itself. `run_san.sh` grepped each suite's output instead, so it saw a report only when the suite printed one.
+
+Removal proof on the module, each mutant failing at least one test here:
+
+- no `log_path` in the suite's environment;
+- exit 67 read as a pass;
+- an empty gate read as passed;
+- only the first sanitizer flag checked;
+- a report ignored when the run passed;
+- declined suites ignored.
+
+The encoding-selftest arm fails with `got 'encode_invariants'` when that suite is taken out of the subset.
+
+End to end on PG18.4, built by `build_san.sh` (the nightly's version):
+
+- **Clean tree:** `24 suites under sanitizers, 0 failed, 0 declined`, `SANITIZER GATE PASSED`. The installed `pgcolumnar.so` carries 21 `__asan_report`/`__ubsan_handle` symbols.
+- **#225 put back** (`VARSIZE_ANY` at the two encoder and three reader call sites): 22 of 24 fail, `SANITIZER GATE FAILED`, naming `columnar_encoding.c:1837:18: runtime error: member access within misaligned address`. `run_san.sh` on the same mutant fails the same 22 and passes the same two (`encode_effort`, `hardening`).
+- **The `fuzz_arrow` twin:** its tests passed (rc 0), while ASAN wrote three reports. The gate failed it on the reports.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_subset_is_the_shell_gates_subset` | `run_san.py` sanitizes the suites `run_san.sh --list-suites` names, in order |
+| `test_the_subset_runs_every_twin_that_drives_the_encoding_selftest` | selftest part 130's rule over the twins: a twin that drives `debug_encoding_selftest` is in the subset |
+| `test_every_sanitized_suite_has_a_complete_twin` | every suite in the subset has a twin graded complete, one file per suite |
+| `test_a_suite_without_a_complete_twin_is_refused` | on fixtures: a suite whose twin is absent, or not in `COMPLETE`, is refused by name |
+| `test_a_build_without_the_sanitizer_flags_is_refused` | `-fsanitize=address,undefined` and `-fno-sanitize=function` are both required, and each missing one is named |
+| `test_every_report_in_the_log_directory_is_found` | every file the sanitizers wrote is a report, an empty one too, named by its file and first sanitizer line; a directory never written holds none |
+| `test_a_suite_fails_on_a_failed_run_or_any_report` | PASS only on rc 0 with no report; any report fails; 67 is DECLINED; 1, 5 and 124 fail |
+| `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
+| `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
+| `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+
+## 359. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
 
 A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
 

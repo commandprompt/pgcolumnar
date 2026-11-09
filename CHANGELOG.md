@@ -310,6 +310,16 @@ true until the next version shipped.
   shell suites ran there. `test_pytest_runs_where_the_suites_run.py` requires
   that `pytest-cluster` runs every (major, architecture) the suites job runs, in
   both workflows.
+- The nightly sanitizer gate runs the pytest twins, not the shell suites
+  (#2038). `test/pytest/run_san.py` runs the twins of `run_san.sh`'s 24 suites
+  against the ASAN+UBSAN build and decides the same way. It refuses a build
+  without the sanitizer flags. A failed suite fails the gate, and a suite with
+  a declined test makes it incomplete. Each sanitizer report now goes to a file
+  through `log_path`, so a report from any process fails its suite, even when
+  every test passed. With #225's unaligned read put back, the twins of
+  `fuzz_arrow` passed while ASAN reported three misaligned loads, and the gate
+  failed them. `test_sanitizer_gate.py` holds the subset, the refusals and the
+  verdicts.
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
   file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
   snapshot records its position-delete file as ORC and another records its
