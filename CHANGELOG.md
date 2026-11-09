@@ -572,6 +572,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- An Iceberg table on object storage can no longer name a file outside its
+  location by spelling `..` in a form that only the server reads as `..`. The
+  remote containment guard already refused a literal `..` and a percent-encoded
+  one. It now also refuses a segment that starts with `..;`, which servers that
+  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`, and
+  it treats a backslash as a separator, as some servers do. Such a path is
+  refused with `escapes the table location` (22023) before any request is
+  sent.
+
 - A read of a columnar table inside a plpgsql EXCEPTION block that rolls back no
   longer loses the enclosing statement's rows (#1360). To see the rows the
   enclosing `INSERT` has buffered, as on heap, the read writes them out.

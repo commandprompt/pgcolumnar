@@ -542,6 +542,18 @@ emit_eq_variant("eqnulpct", [(2, EQ_SEQ,
 #   "%2e%2e" -> ".." before serving would escape the table location. The remote
 #   guard must decode-and-reject it (harmless on a local root: "%2e%2e" is just
 #   a directory name that does not exist, so realpath fails rather than escapes)
+emit_eq_variant("eqsemidot", [(2, EQ_SEQ,
+                               f"{LOC}/..;/..;/..;/..;/etc/hostname",
+                               [1], 1)])
+#   the same climb-out spelled "..;": an origin that reads ";" as the start of
+#   path parameters (Tomcat, Spring) serves "..;x" as "..", so the remote guard
+#   must read a segment that starts with "..;" as "..".
+emit_eq_variant("eqbslashdot", [(2, EQ_SEQ,
+                                 f"{LOC}/..\\..\\..\\..\\etc/hostname",
+                                 [1], 1)])
+#   the same climb-out with a backslash between the segments: an origin that
+#   reads a backslash as a path separator serves it as "/", so the remote guard
+#   must read a backslash as a separator.
 
 # ---- audit arms (multi-agent adversarial audit of 4b) ----------------------
 

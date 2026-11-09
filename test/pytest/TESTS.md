@@ -10903,6 +10903,8 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_delete_path_is_refused_over_s3` | a percent-encoded dotdot delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3` | a delete path climbing out with `..;` segments, which a server that reads `;` as path parameters serves as `..`, is refused by the containment guard (22023) before any fetch |
+| `test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3` | a delete path climbing out with backslash-separated `..` segments, which a server that reads a backslash as a separator serves as `../`, is refused by the containment guard (22023) before any fetch |
 | `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
 | `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
 | `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |

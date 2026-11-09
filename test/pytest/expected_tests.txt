@@ -1884,4 +1884,7 @@ guard_tests 878
 # test_an_old_install_works_under_this_library, test_the_install_swap_declines_beside_other_workers and
 # test_the_prefix_is_put_back_exactly_with_its_bitcode (review of PR #2036), by collection: 6216 tests
 # collected, less guard_tests 866.
-cluster_tests 5350
+# cluster_tests 5350 -> 5352 for test_iceberg_objstore.py's remote ".." spellings (security audit,
+# 2026-11-07): test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3 and
+# test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3, by collection.
+cluster_tests 5352

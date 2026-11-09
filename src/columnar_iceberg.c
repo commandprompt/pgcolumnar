@@ -609,20 +609,32 @@ ice_path_eq(const char *a, const char *b)
  * key is literal (no symlinks, no realpath), so a recorded ".." cannot be
  * collapsed the way canonicalize_path does for a local path; reject it, so a
  * recorded key cannot reference outside the table prefix on a server that
- * normalizes "..". */
+ * normalizes "..".
+ *
+ * The key is judged as the server behind the URL might read it, not only as
+ * this reader does. A backslash is a separator to some origins, so it splits
+ * segments here too. A ';' starts path parameters on others (Tomcat, Spring),
+ * which serve "..;x" as "..", so a segment that starts with "..;" is "..". */
+static bool
+ice_is_seg_sep(char c)
+{
+	return c == '/' || c == '\\';
+}
+
 static bool
 ice_has_dotdot(const char *s)
 {
 	const char *p = s;
 
-	while (p != NULL && *p != '\0')
+	while (*p != '\0')
 	{
 		if (p[0] == '.' && p[1] == '.' &&
-			(p[2] == '\0' || p[2] == '/') &&
-			(p == s || p[-1] == '/'))
+			(p[2] == '\0' || ice_is_seg_sep(p[2]) || p[2] == ';') &&
+			(p == s || ice_is_seg_sep(p[-1])))
 			return true;
-		p = strchr(p, '/');
-		if (p != NULL)
+		while (*p != '\0' && !ice_is_seg_sep(*p))
+			p++;
+		if (*p != '\0')
 			p++;
 	}
 	return false;
@@ -706,7 +718,7 @@ ice_has_encoded_dotdot(const char *s)
 
 		/*
 		 * An encoded NUL truncates every check below this point. The next pass
-		 * measures with strlen and ice_has_dotdot walks with strchr, so both
+		 * measures with strlen and ice_has_dotdot walks only to the first NUL, so both
 		 * stop at that byte and never reach the "../" behind it: a key of
 		 * "%00%2e%2e/%2e%2e/etc/hostname" decoded to a NUL followed by the
 		 * traversal, and this function returned false. The literal-".." guard

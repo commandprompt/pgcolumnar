@@ -195,6 +195,12 @@ def iob(pgc_cluster):
         for key, meta in (("escape", "eqescape"), ("dotdot", "eqdotdot"),
                           ("pctdot", "eqpctdot"), ("nulpct", "eqnulpct")):
             r[key] = _sqlstate(dsn, f"SELECT * FROM {scan.format(MDROOT, meta)}")
+        # Spellings of ".." that an origin, not this reader, turns into a climb:
+        # "..;" (path parameters) and a backslash separator. Refused by the
+        # containment guard, before any fetch, as the forms above are.
+        for key, meta in (("semidot", "eqsemidot"), ("bslashdot", "eqbslashdot")):
+            r[key] = _refusal(dsn, f"SELECT * FROM {scan.format(MDROOT, meta)}",
+                              "escapes the table location", " by the containment guard")
         r["after refusal"] = _survived(dsn, log, before)
 
         _restart(cluster, datadir, log, dict(aws, AWS_ENDPOINT_URL=f"http://127.0.0.2:{s3_port}"))
@@ -327,6 +333,21 @@ def test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3(iob, 
         return
     expect.text(iob["nulpct"], "22023",
                 "a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023)")
+
+
+def test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["semidot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..;\" segments is refused over s3 by the containment guard")
+
+
+def test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["bslashdot"], "22023 by the containment guard",
+                "a delete path climbing out with backslash-separated \"..\" segments is refused over s3 "
+                "by the containment guard")
 
 
 def test_the_backend_is_still_up_after_the_s3_refusal(iob, expect):
