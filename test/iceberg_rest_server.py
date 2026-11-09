@@ -48,6 +48,9 @@
 #   --bad-page-token same|cycle return every list item on the first page, then
 #                               page tokens that never end: "same" repeats one
 #                               token, "cycle" goes A, B, A, B, ...
+#   --padded-pages N:BYTES      return every list item on the first of N pages,
+#                               each page padded with an unread BYTES-long
+#                               string, and a fresh page token until the Nth
 #
 # Special table names drive the failure arms:
 #   forbidden  loadTable answers 403 with an ErrorModel message (#1820).
@@ -135,6 +138,13 @@ class Handler(BaseHTTPRequestHandler):
         # offset of the next page. Without --page-size, everything in one reply.
         start = 0
         tok = query.get("pageToken", [""])[0]
+        if ARGS.padded_pages:
+            n, size = (int(x) for x in ARGS.padded_pages.split(":"))
+            i = int(tok[1:]) if tok.startswith("p") else 0
+            nxt = f"p{i + 1}" if i + 1 < n else None
+            self._send_json(200, {key: [] if i else items, "next-page-token": nxt,
+                                  "x-padding": "a" * size})
+            return
         if ARGS.bad_page_token:
             if ARGS.bad_page_token == "same":
                 nxt = "T"
@@ -478,6 +488,7 @@ def main():
     ap.add_argument("--parent-status", type=int, default=0)
     ap.add_argument("--config-json", default="")
     ap.add_argument("--bad-page-token", choices=["same", "cycle"], default="")
+    ap.add_argument("--padded-pages", default="")
     ARGS = ap.parse_args()
     SERVED = (tuple(json.loads(ARGS.namespace_levels)) if ARGS.namespace_levels
               else tuple(ARGS.namespace.split(".")))
