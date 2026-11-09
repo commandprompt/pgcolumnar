@@ -614,11 +614,19 @@ ice_path_eq(const char *a, const char *b)
  * The key is judged as the server behind the URL might read it, not only as
  * this reader does. A backslash is a separator to some origins, so it splits
  * segments here too. A ';' starts path parameters on others (Tomcat, Spring),
- * which serve "..;x" as "..", so a segment that starts with "..;" is "..". */
+ * which serve "..;x" as "..". An http(s):// key is sent verbatim, so a '?'
+ * starts the query and a '#' the fragment: "..?x" reaches the server as the
+ * path "..". So ';', '?' and '#' each end a ".." segment. */
 static bool
 ice_is_seg_sep(char c)
 {
 	return c == '/' || c == '\\';
+}
+
+static bool
+ice_ends_dotdot(char c)
+{
+	return c == '\0' || ice_is_seg_sep(c) || c == ';' || c == '?' || c == '#';
 }
 
 static bool
@@ -629,7 +637,7 @@ ice_has_dotdot(const char *s)
 	while (*p != '\0')
 	{
 		if (p[0] == '.' && p[1] == '.' &&
-			(p[2] == '\0' || ice_is_seg_sep(p[2]) || p[2] == ';') &&
+			ice_ends_dotdot(p[2]) &&
 			(p == s || ice_is_seg_sep(p[-1])))
 			return true;
 		while (*p != '\0' && !ice_is_seg_sep(*p))

@@ -153,6 +153,18 @@ def iob(pgc_cluster):
         if out.is_file() and "READY" in out.read_text(errors="replace"):
             break
         time.sleep(0.1)
+    # The same files over plain http://, unsigned. An http(s) key is sent verbatim,
+    # not percent-encoded as an s3:// key is, so this leg reaches the server with
+    # the recorded bytes.
+    http_port = pick_port(28)
+    hout = work / "http_server.out"
+    hsrv = subprocess.Popen([sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+                             "--port", str(http_port), "--log", str(work / "http.log")],
+                            stdout=open(hout, "w"), stderr=subprocess.STDOUT)
+    for _ in range(50):
+        if hout.is_file() and "READY" in hout.read_text(errors="replace"):
+            break
+        time.sleep(0.1)
 
     datadir = work / "data"
     datadir.mkdir()
@@ -198,9 +210,16 @@ def iob(pgc_cluster):
         # Spellings of ".." that an origin, not this reader, turns into a climb:
         # "..;" (path parameters) and a backslash separator. Refused by the
         # containment guard, before any fetch, as the forms above are.
-        for key, meta in (("semidot", "eqsemidot"), ("bslashdot", "eqbslashdot")):
+        for key, meta in (("semidot", "eqsemidot"), ("bslashdot", "eqbslashdot"),
+                          ("qdot", "eqqdot"), ("pctqdot", "eqpctqdot")):
             r[key] = _refusal(dsn, f"SELECT * FROM {scan.format(MDROOT, meta)}",
                               "escapes the table location", " by the containment guard")
+        http_root = f"http://127.0.0.1:{http_port}/{BUCKET}/db/t/metadata"
+        r["http apply"] = _value(dsn, f"SELECT count(*) FROM {scan.format(http_root, 'apply')}")
+        for key, meta in (("semidot", "eqsemidot"), ("bslashdot", "eqbslashdot"),
+                          ("qdot", "eqqdot"), ("pctqdot", "eqpctqdot")):
+            r[f"http {key}"] = _refusal(dsn, f"SELECT * FROM {scan.format(http_root, meta)}",
+                                        "escapes the table location", " by the containment guard")
         r["after refusal"] = _survived(dsn, log, before)
 
         _restart(cluster, datadir, log, dict(aws, AWS_ENDPOINT_URL=f"http://127.0.0.2:{s3_port}"))
@@ -212,6 +231,8 @@ def iob(pgc_cluster):
         _pg_ctl(cluster, ["-D", str(datadir), "-m", "immediate", "-w", "stop"], {})
         srv.kill()
         srv.wait()
+        hsrv.kill()
+        hsrv.wait()
         shutil.rmtree(work, ignore_errors=True)
 
 
@@ -348,6 +369,59 @@ def test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3(iob, expect
     expect.text(iob["bslashdot"], "22023 by the containment guard",
                 "a delete path climbing out with backslash-separated \"..\" segments is refused over s3 "
                 "by the containment guard")
+
+
+def test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["qdot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..?\" segments is refused over s3 by the containment guard")
+
+
+def test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["pctqdot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..%3F\" segments is refused over s3 by the containment guard")
+
+
+def test_an_iceberg_table_reads_over_plain_http(iob, expect):
+    """The premise of the http(s) arms below: this leg reaches the reader at all."""
+    if _declined(iob, expect):
+        return
+    expect.text(iob["http apply"], "3", "an Iceberg table with position deletes reads over plain http (3 rows)")
+
+
+def test_a_dotdot_with_path_parameters_delete_path_is_refused_over_plain_http(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["http semidot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..;\" segments is refused over plain http, where the key "
+                "is sent verbatim, by the containment guard")
+
+
+def test_a_dotdot_backslash_separated_delete_path_is_refused_over_plain_http(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["http bslashdot"], "22023 by the containment guard",
+                "a delete path climbing out with backslash-separated \"..\" segments is refused over plain http, where the key "
+                "is sent verbatim, by the containment guard")
+
+
+def test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_plain_http(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["http qdot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..?\" segments is refused over plain http, where the key "
+                "is sent verbatim, by the containment guard")
+
+
+def test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_plain_http(iob, expect):
+    if _declined(iob, expect):
+        return
+    expect.text(iob["http pctqdot"], "22023 by the containment guard",
+                "a delete path climbing out with \"..%3F\" segments is refused over plain http, where the key "
+                "is sent verbatim, by the containment guard")
 
 
 def test_the_backend_is_still_up_after_the_s3_refusal(iob, expect):

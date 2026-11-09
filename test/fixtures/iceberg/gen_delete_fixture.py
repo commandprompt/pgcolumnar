@@ -554,6 +554,17 @@ emit_eq_variant("eqbslashdot", [(2, EQ_SEQ,
 #   the same climb-out with a backslash between the segments: an origin that
 #   reads a backslash as a path separator serves it as "/", so the remote guard
 #   must read a backslash as a separator.
+emit_eq_variant("eqqdot", [(2, EQ_SEQ,
+                            f"{LOC}/..?/..?/..?/..?/etc/hostname",
+                            [1], 1)])
+#   the same climb-out with "?" after each "..": an http(s):// key is sent
+#   verbatim, so the server reads the path as ending at "..", with the rest as
+#   a query. "?" (and "#") end a ".." segment in the remote guard.
+emit_eq_variant("eqpctqdot", [(2, EQ_SEQ,
+                               f"{LOC}/..%3F/..%3F/..%3F/..%3F/etc/hostname",
+                               [1], 1)])
+#   the same with the "?" percent-encoded: a server or proxy that decodes it
+#   first sees "..?"; the guard checks every decoded form.
 
 # ---- audit arms (multi-agent adversarial audit of 4b) ----------------------
 
