@@ -282,6 +282,13 @@ true until the next version shipped.
 
 ### Changed
 
+- The SQL reference is regrouped into twelve sections with a contents list at
+  the top. Inspection, Partitions, Rollups, Aggregates and Reading Apache Iceberg
+  are new sections; the functions in them were filed under Maintenance, Import
+  and export, Table management and Reading external Parquet. No function text
+  changed, and every heading and its link anchor is the same.
+  `test_docs_sql_reference_contents.py` holds the list to the sections.
+
 - The user pages no longer cite issue numbers. The 92 citations, all of closed
   issues, are removed or the sentence is reworded. The history stays in this
   file, in benchmarks.md and in testing.md. The security notes said the Arrow

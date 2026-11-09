@@ -409,6 +409,7 @@ behaviour, the source of that number is named.
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
 - [362. test_docs_storage_terms.py: the user pages name each storage unit one way](#362-test_docs_storage_termspy-the-user-pages-name-each-storage-unit-one-way)
 - [363. test_docs_cite_no_issues.py: the user pages cite no issue in prose](#363-test_docs_cite_no_issuespy-the-user-pages-cite-no-issue-in-prose)
+- [364. test_docs_sql_reference_contents.py: the SQL reference's contents list matches its sections](#364-test_docs_sql_reference_contentspy-the-sql-references-contents-list-matches-its-sections)
 
 ## 1. How to read a test in here
 
@@ -14416,3 +14417,25 @@ Before the fixes in the same change, the arm over the real documentation failed 
 | --- | --- |
 | `test_a_citation_is_found_in_prose_and_not_in_code` | on a fixture page: a heading, an anchor, a code span, a fence, an entity and a language name pass; a bare number, an issue link, a pull request link and a number in a heading are each named |
 | `test_the_user_pages_cite_no_issues` | the repository's own user pages: no citation in prose |
+
+## 364. test_docs_sql_reference_contents.py: the SQL reference's contents list matches its sections
+
+The SQL reference is the longest user page, over 2,300 lines of function headings. Rollups sat under "Import and export", `row_tid` between two rollup functions, and the Iceberg readers under "Reading external Parquet". The documentation audit after 1.0-alpha4 regrouped it into twelve sections and put a contents list at the top.
+
+A hand-written contents list rots: a section is added or renamed, and the list still reads well. So the list is checked against the page. Before the first `## ` heading, the page has one bullet list whose entries are exactly the `## ` headings, in page order. Each links to the anchor its heading produces, by the site's rule. A line inside a code fence is not a section.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- fenced lines read as sections;
+- the anchor not checked;
+- the order ignored, or a list that names only some of the sections accepted;
+- a page with no contents list accepted.
+
+Before the regrouping in the same change, the arm over the real page failed: seven sections and no list.
+
+### Every test
+
+| Test | Checks |
+| --- | --- |
+| `test_drift_is_named` | on fixture pages: a control passes; a missing section, a wrong anchor, the wrong order and a missing list are each named |
+| `test_the_sql_reference_contents_match_its_sections` | the repository's own SQL reference: at least ten sections, and the list matches them |

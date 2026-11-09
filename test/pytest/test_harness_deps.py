@@ -111,6 +111,9 @@ NO_CLUSTER = [
     # Reads the user pages for issue and pull request citations in prose, as text.
     # Needs no cluster and no driver.
     "test_docs_cite_no_issues.py",
+    # Checks docs/sql-reference.md's contents list against its sections, as text.
+    # Needs no cluster and no driver.
+    "test_docs_sql_reference_contents.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.

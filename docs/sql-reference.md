@@ -3,6 +3,19 @@
 Every function is in the `pgcolumnar` schema. Types are shown as in the function
 signature. For server settings, see [Configuration reference](configuration.md).
 
+- [Table management](#table-management)
+- [Maintenance](#maintenance)
+- [Inspection](#inspection)
+- [Projections](#projections)
+- [Import and export](#import-and-export)
+- [Partitions](#partitions)
+- [Rollups](#rollups)
+- [Aggregates](#aggregates)
+- [Reading external Parquet](#reading-external-parquet)
+- [Reading Apache Iceberg](#reading-apache-iceberg)
+- [Object storage](#object-storage)
+- [Visibility map inspection](#visibility-map-inspection)
+
 ## Table management
 
 ### pgcolumnar.alter_table_set_access_method(t text, method text)
@@ -50,32 +63,16 @@ SELECT pgcolumnar.set_options('events', ttl_column => 'ts',
                               ttl_interval => '90 days');
 ```
 
-### pgcolumnar.approx_count_distinct(value anyelement) returns bigint
-
-An aggregate: the approximate number of distinct non-NULL values, from a
-HyperLogLog of 2048 registers. The standard error is about 2.3%, so most answers
-fall within 5% of the exact `count(DISTINCT value)`. It runs on any table, heap
-or columnar, and in parallel plans, where it returns the serial answer exactly.
-
-```sql
-SELECT pgcolumnar.approx_count_distinct(device_id) FROM readings;
-```
-
-The value's type needs an extended hash function, and a text value a
-deterministic collation; anything else is refused with SQLSTATE 0A000. Its hash
-and registers are those of the sketches a column named in `set_options(t,
-sketch_columns => ...)` stores per row group. A query with no WHERE and no
-GROUP BY is answered from those sketches, unless another aggregate in it needs
-the rows. Each row group's sketch is merged, and only a group with deleted rows,
-or one written before the column was named, is read. The answer is the same as
-reading every row. EXPLAIN ANALYZE shows `Columnar Sketch Groups Folded` and
-`Columnar Sketch Groups Scanned`.
-
 ### pgcolumnar.get_storage_id(rel regclass) returns bigint
 
 Returns the internal storage identifier of a columnar table. Used to join the
 `pgcolumnar` catalog tables. Most users read [`pgcolumnar.stats`](#pgcolumnarstatsrel-regclass)
 instead.
+
+### pgcolumnar.row_tid(row_number bigint) returns tid
+
+Returns the item pointer that a columnar table gives the row with this row
+number. Row numbers start at 1 (`22003` otherwise).
 
 ## Maintenance
 
@@ -393,6 +390,11 @@ but the consequence differs. A stale vacuum wastes space. Stale statistics produ
 bad plans, and they do it silently. Re-run this function when the data changes, or
 keep core `ANALYZE` scheduled and use this only to sharpen particular columns.
 
+## Inspection
+
+These report on a table's storage, its sort order, its value bounds and its
+need for maintenance.
+
 ### pgcolumnar.stats(rel regclass)
 
 Requires `SELECT` on the table. The function runs with the privileges of the
@@ -681,273 +683,6 @@ function still makes every check above and still looks up your credentials on
 the server. So a mapping that holds only half a credential refuses a local
 `path` too (`28000`).
 
-### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
-
-Creates columnar partitions of `parent`, each `width` wide, until they reach now
-plus `ahead` widths. Returns the number of partitions created. A second call
-creates none. The first new partition starts at the highest existing upper
-bound. With no partitions, it starts at the width's boundary that holds now.
-`parent` must be partitioned by RANGE on one `timestamp` or `timestamptz`
-column. It must have no DEFAULT partition and no partition bounded by
-`MAXVALUE` (`55000`). A call that would create more than 1000 partitions is
-refused before it creates any (`22023`). The function takes
-`SHARE UPDATE EXCLUSIVE` on the parent, never `ACCESS EXCLUSIVE`. See
-[Create time partitions ahead](how-to.md#create-time-partitions-ahead).
-
-### pgcolumnar.partition_drop_plan(parent regclass, cutoff timestamptz | timestamp) returns setof text
-
-Returns the statements that retire every partition of `parent` whose upper bound
-is at or before `cutoff`, in range order. Each partition gets
-`ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`, then a `DO` block that runs
-`DROP TABLE`, or `DROP FOREIGN TABLE` for a partition `tier_partition` moved to
-Parquet (the file stays). The block refuses (`55000`) while the partition is
-still attached, so a failed detach is never followed by a drop that locks the
-parent. A partition that an interrupted concurrent detach
-left pending gets `DETACH PARTITION ... FINALIZE` instead. A partition that is
-itself partitioned is listed whole. The names are schema-qualified. The
-function runs nothing: run each statement at top level, for example with
-`\gexec`, because a concurrent detach cannot run inside a function. `cutoff`
-must have the key's type; the other type is refused (`42804`), and an untyped
-literal is a `timestamptz`. It refuses a parent with the same codes as
-`partition_create_ahead` (`55000`), and a NULL cutoff (`22023`).
-`pgcolumnar.partition_drop_candidates(parent, cutoff_type)` holds the checks
-the two overloads share. See [Drop old time partitions](how-to.md#drop-old-time-partitions).
-
-### pgcolumnar.create_rollup(rollup name, source regclass, ts_column name, width interval, origin timestamptz, group_by name[], agg_functions text[], agg_columns name[], access_method name DEFAULT 'pgcolumnar') returns regclass
-
-Creates a rollup of `source` in the source's schema. A rollup is a view of
-`date_bin(width, ts_column, origin)` buckets per `group_by` key, with one column
-per aggregate. Each aggregate is a function from `agg_functions` (`count`,
-`sum`, `min`, `max` or `avg`) applied to the column at the same position in
-`agg_columns`. `*` goes only with `count`. `ts_column` must be `timestamptz`.
-The data is kept in a table named `<rollup>__partials`, with access method
-`access_method`. The function refuses a width with months, an unknown function,
-arrays of different lengths, and a column the source does not have (`22023`).
-See [Keep a rollup up to date](how-to.md#keep-a-rollup-up-to-date).
-
-### pgcolumnar.refresh_rollup(rollup regclass) returns bigint
-
-Brings the rollup up to date in one statement, and returns the number of
-source rows it read. It folds the rows of the row groups added to the source
-since the last refresh. For each row group deleted from or rewritten since, it
-recomputes from the source the buckets that the group's rows fall in, and
-nothing else. Runs at READ COMMITTED only (`25000`).
-
-Row groups that `pgcolumnar.expire` retired are dropped from the refresh's
-record, and the rollup keeps their buckets as history. Refuses, changing
-nothing, when a bucket to recompute holds history (`0A000`), and after a rewrite
-of the source (`55000`).
-
-### pgcolumnar.row_tid(row_number bigint) returns tid
-
-Returns the item pointer that a columnar table gives the row with this row
-number. Row numbers start at 1 (`22003` otherwise).
-
-### pgcolumnar.rebase_rollup(rollup regclass) returns bigint
-
-Records the source's current row groups as folded, without changing the rollup,
-and returns the number of row groups recorded. It reads every row group to
-record the time range of its rows, and keeps the rollup's history. Use it after
-a rewrite of the source, or after a refusal to recompute history, when the
-rollup is right as it stands.
-
-### pgcolumnar.tier_partition(partition regclass, server name, path text, lock_wait interval DEFAULT '10 seconds') returns bigint
-
-Moves the columnar partition `partition` to a Parquet file at `path`. Then
-attaches the file as a foreign table of `server`. The server's wrapper must
-have pgcolumnar's Parquet handler, `pgcolumnar.parquet_fdw_handler`. That is
-the `pgcolumnar_parquet` wrapper, or a wrapper you made with that handler
-under another name. The foreign table takes the partition's name,
-columns (with their collations and generated expressions), owner, bounds,
-grants and comment. Returns the number of rows moved.
-
-The function writes the file with the settings of `server`, as
-`export_parquet(partition, path, server)` does: the server's endpoint and
-region, and your user mapping on the server. A mapping that the object store
-rejects stops the move before anything is detached, and the rows stay in the
-columnar partition.
-
-After the attach, the function counts the rows through the new foreign
-partition, as you, before it commits. If that read fails or counts a different
-number, the move rolls back and the rows stay in the columnar partition. This
-catches a key that can write but not read. The file that the export wrote stays
-in place; a retry with the same `path` overwrites it.
-
-You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
-the function writes the file and then reads it. Every role that queries the
-parent after the move needs `pg_read_server_files` and a mapping on `server` that
-can read the file.
-
-The function runs as one transaction, at READ COMMITTED only (`25000`
-otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
-commit. Every lock waits at most `lock_wait` (`55P03`).
-
-The function refuses these:
-
-- a `path` that a foreign table in this database reads (`58P02`). That is
-  the same path, a path under the table's directory, or a path that matches
-  the table's glob. A glob is matched by
-  [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
-  as the reader matches it. The scheme and the host of an http(s) URL match in any case,
-  and `s3a://` or `s3n://` match `s3://`. A local path is compared as
-  written, and again in a folded form. The folded form reads
-  `//` as `/`, drops a `.` name, and drops a name followed by `..`. In a
-  glob, a name such as `\.` counts as `.`, because `glob(3)` removes the
-  backslash. So `/w//*.parquet`, `/w/./*.parquet`, `/w/\./*.parquet` and
-  `/w/x/../*.parquet` refuse `/w/a.parquet`. The folded form is the file the
-  kernel opens only when no symbolic link comes before a `..`. When one does,
-  the kernel goes up from the directory the link leads to. The check can then
-  refuse a file the reader does not read, and allow the file it does read.
-  A symbolic link is not resolved. A relative local path names a file in the
-  data directory, where the server opens it. Every comparison also resolves
-  it there, by the rule of `path_glob_matches`. So a table on
-  `x/a.parquet` refuses the same file spelled in full under the data
-  directory, and a table on that full path refuses `x/a.parquet`. When
-  `path_glob_matches` cannot resolve a relative path soundly (see below), a
-  table on a local path refuses every local `path` if either one is relative.
-  So does a caller without `pg_read_all_settings`, who cannot read
-  `data_directory`. A table on a relative glob is the exception.
-  `path_glob_matches` resolves its pattern without that privilege. So the
-  table refuses what its glob matches, and a path under the glob as
-  written, as under a directory.
-  A remote key is compared as written, because `//` is part of a
-  key. A new file under a directory a foreign table reads is refused too;
-  docs/how-to.md shows ways around it.
-  Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
-  For a `pgcolumnar_iceberg` foreign table, a path under the table location is
-  refused: the parent of the directory that holds `metadata_path`.
-  The same two comparisons apply to that location. The Iceberg reader resolves
-  a symbolic link in it, but this check does not. So a path in the directory
-  the link leads to is not refused.
-  The error detail names the foreign table and its path. A control character
-  in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
-  stays on one line. A backslash before an `x` prints as `\x5C`, so a
-  path that holds the characters `\x0A` does not print like a newline. In a
-  `WIN1252` database the euro sign, byte `0x80`, prints as written;
-- a `path` when a foreign table's glob is too large to match (`54000`, see
-  `path_glob_matches` below). This is a local glob for a local `path`, and an
-  `s3://` glob with more than 128 `*` for an `s3://` `path`. The function
-  cannot tell whether that table reads `path`, so it refuses. The error
-  detail names the foreign table and its glob, escaped as above. A
-  table that does read `path` is reported as `58P02` instead. This holds
-  also when its glob is too large as written but not in the folded form.
-  The reader bounds a local glob in its own folded form too, so it reads
-  such a table (see
-  [Glob patterns too large to match](#glob-patterns-too-large-to-match));
-- a `DEFAULT` partition (`0A000`);
-- a parent with a `UNIQUE` index or primary key (`0A000`);
-- a partition that other objects depend on (`2BP01`);
-- a relation that is not a columnar partition (`42809`);
-- a `server` whose wrapper does not have pgcolumnar's Parquet handler
-  (`42809`);
-- a caller that is not a member of both `pg_write_server_files` and
-  `pg_read_server_files` (`42501`), before anything is written.
-
-See
-[Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
-
-### pgcolumnar.path_glob_matches(pattern text, path text) returns boolean
-
-Returns true when a foreign table whose `path` is `pattern` expands it, as a
-glob, to `path`. `tier_partition` uses it to find a file that a
-foreign table reads. It matches with the Parquet reader's own code:
-
-- For an `s3://` key, the reader's `fnmatch`, with `FNM_PATHNAME` and
-  `FNM_PERIOD`. The scheme matches in any case, and `s3a://` and `s3n://`
-  match `s3://`.
-- For a local path, `glob(3)`, as the reader calls it. The function runs it
-  over a tree in memory that holds only `path`, so it reads no directory and
-  `path` need not exist. A `path` that ends in `/` is a directory; otherwise
-  its last name is a file.
-
-It returns false for a pattern that the reader does not read as a glob:
-
-- a local path without `*`, `?` or `[`;
-- an `s3://` URL with none of them in its key;
-- any other remote URL.
-
-A local pattern does not match a remote `path`.
-A `path` of 4096 bytes (`PATH_MAX`) or more returns false, because no file
-can be opened by such a path.
-
-A relative local pattern or `path` names a path under the data directory.
-The server's working directory is the data directory, so the reader's
-`glob(3)` and `export_parquet` start there. The function first resolves a
-relative pattern and a relative `path` against the data directory.
-So `../*/x/a.parquet` matches `x/a.parquet`, and the same file spelled in
-full. Here `..` climbs to the data directory's parent, and `*` matches the
-data directory's own name. In two cases the function cannot read a relative
-pattern as `glob(3)` does, so it answers true for every `path`. One is a data
-directory whose name holds `*`, `?`, `[` or `\`. The other is a data
-directory that is not the working directory as `getcwd(3)` spells it, such as
-through a symbolic link.
-
-A pattern that is too large for glibc to match safely raises error 54000
-(`program_limit_exceeded`) instead of an answer:
-
-- a pattern of 4096 bytes or more;
-- a local pattern with more than 128 `/` after its first `*`, `?` or `[`;
-- an `s3://` pattern with more than 128 `*`.
-
-`glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
-`fnmatch` uses stack space for each `*`. A larger pattern could crash the
-server. The Parquet reader refuses the same patterns with the same error. It counts the levels of a local pattern in a folded form; see
-[Glob patterns too large to match](#glob-patterns-too-large-to-match).
-
-A local pattern that makes the walk too long also raises error 54000.
-Each directory in the tree in memory lists `.` and `..`, as a real one does,
-and a name such as `.*` matches both. So each level of `/.*` doubles the
-walk. The function stops after 1,000,000 steps of the walk. The number of
-steps depends on the glibc `glob(3)` code, not on the PostgreSQL version.
-With glibc 2.43, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)`
-is refused after about 60 ms. The function never answers false for a walk it
-stopped. The step count starts again at zero for each call, so a refused
-pattern does not affect later calls in the same session.
-
-For a local pattern, the function compares each path `glob(3)` returns with
-`path`, first as spelled and then in a folded form. The folded form
-reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
-`/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
-name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
-`\.*`. So `/w/x/.*/a.parquet` matches `/w/x/a.parquet`, through
-`/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
-`/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
-pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
-`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
-function cannot know which directory a wildcard matched. So when a wildcard
-name comes before a name that can match `..`, it also assumes that a
-directory the wildcard matches exists. It assumes as well that each
-name the pattern spells there exists as a directory. So
-`/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
-`/w/x` holds any directory. Without such a directory, `tier_partition` then
-refuses more than it must. A name such as `??` cannot match `..`, so
-`/w/x/*/??/a.parquet` does not match `/w/x/a.parquet`. If the walk with
-these assumptions passes 1,000,000 steps, the function answers true. The
-folded form does not resolve a symbolic link before a `..`. So it can match a
-file the reader does not open, and `tier_partition` then refuses more than it
-must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
-table's path and the target. So it refuses what the reader opens under either
-spelling, unless a symbolic link comes before a `..`.
-
-```sql
-SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
-SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
-```
-
-In an `s3://` key a class can match `/`. A local glob is split at every `/`
-first, so there `[a` and `b]` are two names. It reads no file, so any role may
-call it.
-
-A range such as `[a-c]` follows the database's `LC_COLLATE` setting
-(`datcollate`), as in the reader. In `en_US.UTF-8`, `[a-c]` matches `á`; in
-`C` it does not. A database with the ICU provider still uses its
-`LC_COLLATE`, not its ICU locale. Take a range that ends in a collating
-symbol, such as `[!-[.a.]]`. In a UTF-8 locale such as `en_US.UTF-8`, glibc
-can answer it differently from one call to the next. The reader has the same
-limit, because it calls the same `fnmatch`. So the function is `VOLATILE`,
-not `IMMUTABLE`: do not use it in an index or a generated column. It is
-`STRICT` and `PARALLEL SAFE`.
-
 ### pgcolumnar.import_arrow(rel regclass, path text) returns bigint
 
 Inserts the rows of an Arrow IPC file at `path` into the existing table
@@ -1175,6 +910,305 @@ SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 8);
 SELECT count(*) FROM pgcolumnar.read_parquet('/data/events_out')
   AS t(id bigint, ts timestamptz, val double precision);
 ```
+
+## Partitions
+
+These manage a table partitioned by time whose partitions are columnar. They
+create partitions ahead of time, list the ones to drop, and move an old partition
+to Parquet files. See [Create time partitions ahead](how-to.md#create-time-partitions-ahead)
+and [Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
+
+### pgcolumnar.partition_create_ahead(parent regclass, width interval, ahead int) returns int
+
+Creates columnar partitions of `parent`, each `width` wide, until they reach now
+plus `ahead` widths. Returns the number of partitions created. A second call
+creates none. The first new partition starts at the highest existing upper
+bound. With no partitions, it starts at the width's boundary that holds now.
+`parent` must be partitioned by RANGE on one `timestamp` or `timestamptz`
+column. It must have no DEFAULT partition and no partition bounded by
+`MAXVALUE` (`55000`). A call that would create more than 1000 partitions is
+refused before it creates any (`22023`). The function takes
+`SHARE UPDATE EXCLUSIVE` on the parent, never `ACCESS EXCLUSIVE`. See
+[Create time partitions ahead](how-to.md#create-time-partitions-ahead).
+
+### pgcolumnar.partition_drop_plan(parent regclass, cutoff timestamptz | timestamp) returns setof text
+
+Returns the statements that retire every partition of `parent` whose upper bound
+is at or before `cutoff`, in range order. Each partition gets
+`ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`, then a `DO` block that runs
+`DROP TABLE`, or `DROP FOREIGN TABLE` for a partition `tier_partition` moved to
+Parquet (the file stays). The block refuses (`55000`) while the partition is
+still attached, so a failed detach is never followed by a drop that locks the
+parent. A partition that an interrupted concurrent detach
+left pending gets `DETACH PARTITION ... FINALIZE` instead. A partition that is
+itself partitioned is listed whole. The names are schema-qualified. The
+function runs nothing: run each statement at top level, for example with
+`\gexec`, because a concurrent detach cannot run inside a function. `cutoff`
+must have the key's type; the other type is refused (`42804`), and an untyped
+literal is a `timestamptz`. It refuses a parent with the same codes as
+`partition_create_ahead` (`55000`), and a NULL cutoff (`22023`).
+`pgcolumnar.partition_drop_candidates(parent, cutoff_type)` holds the checks
+the two overloads share. See [Drop old time partitions](how-to.md#drop-old-time-partitions).
+
+### pgcolumnar.tier_partition(partition regclass, server name, path text, lock_wait interval DEFAULT '10 seconds') returns bigint
+
+Moves the columnar partition `partition` to a Parquet file at `path`. Then
+attaches the file as a foreign table of `server`. The server's wrapper must
+have pgcolumnar's Parquet handler, `pgcolumnar.parquet_fdw_handler`. That is
+the `pgcolumnar_parquet` wrapper, or a wrapper you made with that handler
+under another name. The foreign table takes the partition's name,
+columns (with their collations and generated expressions), owner, bounds,
+grants and comment. Returns the number of rows moved.
+
+The function writes the file with the settings of `server`, as
+`export_parquet(partition, path, server)` does: the server's endpoint and
+region, and your user mapping on the server. A mapping that the object store
+rejects stops the move before anything is detached, and the rows stay in the
+columnar partition.
+
+After the attach, the function counts the rows through the new foreign
+partition, as you, before it commits. If that read fails or counts a different
+number, the move rolls back and the rows stay in the columnar partition. This
+catches a key that can write but not read. The file that the export wrote stays
+in place; a retry with the same `path` overwrites it.
+
+You need both `pg_write_server_files` and `pg_read_server_files`, or superuser:
+the function writes the file and then reads it. Every role that queries the
+parent after the move needs `pg_read_server_files` and a mapping on `server` that
+can read the file.
+
+The function runs as one transaction, at READ COMMITTED only (`25000`
+otherwise). It holds `ACCESS EXCLUSIVE` on the parent from the detach until
+commit. Every lock waits at most `lock_wait` (`55P03`).
+
+The function refuses these:
+
+- a `path` that a foreign table in this database reads (`58P02`). That is
+  the same path, a path under the table's directory, or a path that matches
+  the table's glob. A glob is matched by
+  [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
+  as the reader matches it. The scheme and the host of an http(s) URL match in any case,
+  and `s3a://` or `s3n://` match `s3://`. A local path is compared as
+  written, and again in a folded form. The folded form reads
+  `//` as `/`, drops a `.` name, and drops a name followed by `..`. In a
+  glob, a name such as `\.` counts as `.`, because `glob(3)` removes the
+  backslash. So `/w//*.parquet`, `/w/./*.parquet`, `/w/\./*.parquet` and
+  `/w/x/../*.parquet` refuse `/w/a.parquet`. The folded form is the file the
+  kernel opens only when no symbolic link comes before a `..`. When one does,
+  the kernel goes up from the directory the link leads to. The check can then
+  refuse a file the reader does not read, and allow the file it does read.
+  A symbolic link is not resolved. A relative local path names a file in the
+  data directory, where the server opens it. Every comparison also resolves
+  it there, by the rule of `path_glob_matches`. So a table on
+  `x/a.parquet` refuses the same file spelled in full under the data
+  directory, and a table on that full path refuses `x/a.parquet`. When
+  `path_glob_matches` cannot resolve a relative path soundly (see below), a
+  table on a local path refuses every local `path` if either one is relative.
+  So does a caller without `pg_read_all_settings`, who cannot read
+  `data_directory`. A table on a relative glob is the exception.
+  `path_glob_matches` resolves its pattern without that privilege. So the
+  table refuses what its glob matches, and a path under the glob as
+  written, as under a directory.
+  A remote key is compared as written, because `//` is part of a
+  key. A new file under a directory a foreign table reads is refused too;
+  docs/how-to.md shows ways around it.
+  Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
+  For a `pgcolumnar_iceberg` foreign table, a path under the table location is
+  refused: the parent of the directory that holds `metadata_path`.
+  The same two comparisons apply to that location. The Iceberg reader resolves
+  a symbolic link in it, but this check does not. So a path in the directory
+  the link leads to is not refused.
+  The error detail names the foreign table and its path. A control character
+  in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
+  stays on one line. A backslash before an `x` prints as `\x5C`, so a
+  path that holds the characters `\x0A` does not print like a newline. In a
+  `WIN1252` database the euro sign, byte `0x80`, prints as written;
+- a `path` when a foreign table's glob is too large to match (`54000`, see
+  `path_glob_matches` below). This is a local glob for a local `path`, and an
+  `s3://` glob with more than 128 `*` for an `s3://` `path`. The function
+  cannot tell whether that table reads `path`, so it refuses. The error
+  detail names the foreign table and its glob, escaped as above. A
+  table that does read `path` is reported as `58P02` instead. This holds
+  also when its glob is too large as written but not in the folded form.
+  The reader bounds a local glob in its own folded form too, so it reads
+  such a table (see
+  [Glob patterns too large to match](#glob-patterns-too-large-to-match));
+- a `DEFAULT` partition (`0A000`);
+- a parent with a `UNIQUE` index or primary key (`0A000`);
+- a partition that other objects depend on (`2BP01`);
+- a relation that is not a columnar partition (`42809`);
+- a `server` whose wrapper does not have pgcolumnar's Parquet handler
+  (`42809`);
+- a caller that is not a member of both `pg_write_server_files` and
+  `pg_read_server_files` (`42501`), before anything is written.
+
+See
+[Move cold partitions to Parquet](how-to.md#move-cold-partitions-to-parquet).
+
+### pgcolumnar.path_glob_matches(pattern text, path text) returns boolean
+
+Returns true when a foreign table whose `path` is `pattern` expands it, as a
+glob, to `path`. `tier_partition` uses it to find a file that a
+foreign table reads. It matches with the Parquet reader's own code:
+
+- For an `s3://` key, the reader's `fnmatch`, with `FNM_PATHNAME` and
+  `FNM_PERIOD`. The scheme matches in any case, and `s3a://` and `s3n://`
+  match `s3://`.
+- For a local path, `glob(3)`, as the reader calls it. The function runs it
+  over a tree in memory that holds only `path`, so it reads no directory and
+  `path` need not exist. A `path` that ends in `/` is a directory; otherwise
+  its last name is a file.
+
+It returns false for a pattern that the reader does not read as a glob:
+
+- a local path without `*`, `?` or `[`;
+- an `s3://` URL with none of them in its key;
+- any other remote URL.
+
+A local pattern does not match a remote `path`.
+A `path` of 4096 bytes (`PATH_MAX`) or more returns false, because no file
+can be opened by such a path.
+
+A relative local pattern or `path` names a path under the data directory.
+The server's working directory is the data directory, so the reader's
+`glob(3)` and `export_parquet` start there. The function first resolves a
+relative pattern and a relative `path` against the data directory.
+So `../*/x/a.parquet` matches `x/a.parquet`, and the same file spelled in
+full. Here `..` climbs to the data directory's parent, and `*` matches the
+data directory's own name. In two cases the function cannot read a relative
+pattern as `glob(3)` does, so it answers true for every `path`. One is a data
+directory whose name holds `*`, `?`, `[` or `\`. The other is a data
+directory that is not the working directory as `getcwd(3)` spells it, such as
+through a symbolic link.
+
+A pattern that is too large for glibc to match safely raises error 54000
+(`program_limit_exceeded`) instead of an answer:
+
+- a pattern of 4096 bytes or more;
+- a local pattern with more than 128 `/` after its first `*`, `?` or `[`;
+- an `s3://` pattern with more than 128 `*`.
+
+`glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
+`fnmatch` uses stack space for each `*`. A larger pattern could crash the
+server. The Parquet reader refuses the same patterns with the same error. It counts the levels of a local pattern in a folded form; see
+[Glob patterns too large to match](#glob-patterns-too-large-to-match).
+
+A local pattern that makes the walk too long also raises error 54000.
+Each directory in the tree in memory lists `.` and `..`, as a real one does,
+and a name such as `.*` matches both. So each level of `/.*` doubles the
+walk. The function stops after 1,000,000 steps of the walk. The number of
+steps depends on the glibc `glob(3)` code, not on the PostgreSQL version.
+With glibc 2.43, `repeat('/.*', 17)` still answers, and `repeat('/.*', 18)`
+is refused after about 60 ms. The function never answers false for a walk it
+stopped. The step count starts again at zero for each call, so a refused
+pattern does not affect later calls in the same session.
+
+For a local pattern, the function compares each path `glob(3)` returns with
+`path`, first as spelled and then in a folded form. The folded form
+reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
+`/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
+name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
+`\.*`. So `/w/x/.*/a.parquet` matches `/w/x/a.parquet`, through
+`/w/x/./a.parquet`. A `*`, `?` or `[.]` alone does not match a leading `.`, so
+`/w/x/*/a.parquet` does not match `/w/x/a.parquet`. The directories that the
+pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
+`/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
+function cannot know which directory a wildcard matched. So when a wildcard
+name comes before a name that can match `..`, it also assumes that a
+directory the wildcard matches exists. It assumes as well that each
+name the pattern spells there exists as a directory. So
+`/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
+`/w/x` holds any directory. Without such a directory, `tier_partition` then
+refuses more than it must. A name such as `??` cannot match `..`, so
+`/w/x/*/??/a.parquet` does not match `/w/x/a.parquet`. If the walk with
+these assumptions passes 1,000,000 steps, the function answers true. The
+folded form does not resolve a symbolic link before a `..`. So it can match a
+file the reader does not open, and `tier_partition` then refuses more than it
+must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
+table's path and the target. So it refuses what the reader opens under either
+spelling, unless a symbolic link comes before a `..`.
+
+```sql
+SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
+SELECT pgcolumnar.path_glob_matches('/w/x[a/b]', '/w/xa');          -- false
+```
+
+In an `s3://` key a class can match `/`. A local glob is split at every `/`
+first, so there `[a` and `b]` are two names. It reads no file, so any role may
+call it.
+
+A range such as `[a-c]` follows the database's `LC_COLLATE` setting
+(`datcollate`), as in the reader. In `en_US.UTF-8`, `[a-c]` matches `á`; in
+`C` it does not. A database with the ICU provider still uses its
+`LC_COLLATE`, not its ICU locale. Take a range that ends in a collating
+symbol, such as `[!-[.a.]]`. In a UTF-8 locale such as `en_US.UTF-8`, glibc
+can answer it differently from one call to the next. The reader has the same
+limit, because it calls the same `fnmatch`. So the function is `VOLATILE`,
+not `IMMUTABLE`: do not use it in an index or a generated column. It is
+`STRICT` and `PARALLEL SAFE`.
+
+## Rollups
+
+A rollup keeps aggregates of a columnar table by time bucket, and a refresh
+updates only what changed. See [Keep a rollup up to date](how-to.md#keep-a-rollup-up-to-date).
+
+### pgcolumnar.create_rollup(rollup name, source regclass, ts_column name, width interval, origin timestamptz, group_by name[], agg_functions text[], agg_columns name[], access_method name DEFAULT 'pgcolumnar') returns regclass
+
+Creates a rollup of `source` in the source's schema. A rollup is a view of
+`date_bin(width, ts_column, origin)` buckets per `group_by` key, with one column
+per aggregate. Each aggregate is a function from `agg_functions` (`count`,
+`sum`, `min`, `max` or `avg`) applied to the column at the same position in
+`agg_columns`. `*` goes only with `count`. `ts_column` must be `timestamptz`.
+The data is kept in a table named `<rollup>__partials`, with access method
+`access_method`. The function refuses a width with months, an unknown function,
+arrays of different lengths, and a column the source does not have (`22023`).
+See [Keep a rollup up to date](how-to.md#keep-a-rollup-up-to-date).
+
+### pgcolumnar.refresh_rollup(rollup regclass) returns bigint
+
+Brings the rollup up to date in one statement, and returns the number of
+source rows it read. It folds the rows of the row groups added to the source
+since the last refresh. For each row group deleted from or rewritten since, it
+recomputes from the source the buckets that the group's rows fall in, and
+nothing else. Runs at READ COMMITTED only (`25000`).
+
+Row groups that `pgcolumnar.expire` retired are dropped from the refresh's
+record, and the rollup keeps their buckets as history. Refuses, changing
+nothing, when a bucket to recompute holds history (`0A000`), and after a rewrite
+of the source (`55000`).
+
+### pgcolumnar.rebase_rollup(rollup regclass) returns bigint
+
+Records the source's current row groups as folded, without changing the rollup,
+and returns the number of row groups recorded. It reads every row group to
+record the time range of its rows, and keeps the rollup's history. Use it after
+a rewrite of the source, or after a refusal to recompute history, when the
+rollup is right as it stands.
+
+## Aggregates
+
+These aggregates are specific to pgColumnar.
+
+### pgcolumnar.approx_count_distinct(value anyelement) returns bigint
+
+An aggregate: the approximate number of distinct non-NULL values, from a
+HyperLogLog of 2048 registers. The standard error is about 2.3%, so most answers
+fall within 5% of the exact `count(DISTINCT value)`. It runs on any table, heap
+or columnar, and in parallel plans, where it returns the serial answer exactly.
+
+```sql
+SELECT pgcolumnar.approx_count_distinct(device_id) FROM readings;
+```
+
+The value's type needs an extended hash function, and a text value a
+deterministic collation; anything else is refused with SQLSTATE 0A000. Its hash
+and registers are those of the sketches a column named in `set_options(t,
+sketch_columns => ...)` stores per row group. A query with no WHERE and no
+GROUP BY is answered from those sketches, unless another aggregate in it needs
+the rows. Each row group's sketch is merged, and only a group with deleted rows,
+or one written before the column was named, is read. The answer is the same as
+reading every row. EXPLAIN ANALYZE shows `Columnar Sketch Groups Folded` and
+`Columnar Sketch Groups Scanned`.
 
 ## Reading external Parquet
 
@@ -1408,6 +1442,61 @@ mean different things.
 ```sql
 SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 ```
+
+### The pgcolumnar_parquet foreign-data wrapper
+
+Exposes a Parquet file, directory, or glob as a foreign table. The scan streams
+one row group at a time. It holds a single row group rather than the whole file.
+A `LIMIT` the plan satisfies early leaves the rest of the file undecoded. It
+pushes work down: row groups whose min/max statistics exclude the
+query's predicate are skipped, and only referenced columns are decoded. Skipping
+requires a `column op constant` clause over an integer or floating-point column
+with a constant of the same type; [limitations.md](limitations.md) lists the
+conditions. A scan that skips nothing still returns correct rows.
+
+The wrapper skips no row group on a column whose type modifier can change a
+value, because the statistics hold the stored values. Examples are
+`numeric(18,1)` over a file whose DECIMAL scale is 2, which reads a stored 99.99
+as 100.0, and `timestamp(3)`, which rounds microseconds. A `timestamp(6)` column,
+or a `numeric(p,s)` column with the file's own scale and at least its precision,
+still skips.
+
+The `path` option can name a local file, directory, or glob, or an
+object-storage URL. A remote URL is an exact object, a prefix ending in a slash,
+or a pattern, expanded the same way as a local path. For a remote server the
+endpoint and credentials come from the server and user-mapping options described
+in [Object storage](#object-storage).
+
+Table options: `path`, and `partition_columns` for a Hive-style layout. The
+latter names the columns whose values come from `col=value` directory components
+rather than from the files. You declare these columns. pgColumnar does not infer
+them, because an incorrect value would change the rows that a query returns, with
+no message. A predicate on a partition column removes complete files before the
+reader opens them. The plan shows this as
+`Files Pruned`.
+
+```sql
+CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;
+CREATE FOREIGN TABLE events (id int, ts timestamp, amount numeric(12,2))
+  SERVER pq OPTIONS (path '/data/events/');
+
+-- events/dt=2026-01-01/region=eu/part-0.parquet
+CREATE FOREIGN TABLE events_p (id int, amount numeric(12,2), dt date, region text)
+  SERVER pq OPTIONS (path '/data/events', partition_columns 'dt,region');
+
+SELECT sum(amount) FROM events WHERE ts >= '2026-01-01';
+
+-- EXPLAIN ANALYZE reports Row Groups, Row Groups Skipped, Row Groups Decoded,
+-- Columns Read, Columns Total, and Files.
+EXPLAIN (ANALYZE, COSTS OFF) SELECT id FROM events WHERE ts >= '2026-01-01';
+```
+
+## Reading Apache Iceberg
+
+These read an Apache Iceberg table in place: its metadata, its manifests and
+its Parquet data files. The data files go through the Parquet reader, so the
+type rules in [Reading external Parquet](#reading-external-parquet) apply to
+them too.
 
 ### pgcolumnar.read_avro_manifest(path text) returns table(status int, content int, file_path text, file_format text, record_count bigint, file_size_in_bytes bigint, partition text, sequence_number bigint)
 
@@ -1938,54 +2027,6 @@ splits a list into pages is read to the end.
 ```sql
 SELECT * FROM pgcolumnar.iceberg_rest_namespaces('https://catalog.example.com');
 SELECT * FROM pgcolumnar.iceberg_rest_tables('https://catalog.example.com', 'analytics');
-```
-
-### The pgcolumnar_parquet foreign-data wrapper
-
-Exposes a Parquet file, directory, or glob as a foreign table. The scan streams
-one row group at a time. It holds a single row group rather than the whole file.
-A `LIMIT` the plan satisfies early leaves the rest of the file undecoded. It
-pushes work down: row groups whose min/max statistics exclude the
-query's predicate are skipped, and only referenced columns are decoded. Skipping
-requires a `column op constant` clause over an integer or floating-point column
-with a constant of the same type; [limitations.md](limitations.md) lists the
-conditions. A scan that skips nothing still returns correct rows.
-
-The wrapper skips no row group on a column whose type modifier can change a
-value, because the statistics hold the stored values. Examples are
-`numeric(18,1)` over a file whose DECIMAL scale is 2, which reads a stored 99.99
-as 100.0, and `timestamp(3)`, which rounds microseconds. A `timestamp(6)` column,
-or a `numeric(p,s)` column with the file's own scale and at least its precision,
-still skips.
-
-The `path` option can name a local file, directory, or glob, or an
-object-storage URL. A remote URL is an exact object, a prefix ending in a slash,
-or a pattern, expanded the same way as a local path. For a remote server the
-endpoint and credentials come from the server and user-mapping options described
-in [Object storage](#object-storage).
-
-Table options: `path`, and `partition_columns` for a Hive-style layout. The
-latter names the columns whose values come from `col=value` directory components
-rather than from the files. You declare these columns. pgColumnar does not infer
-them, because an incorrect value would change the rows that a query returns, with
-no message. A predicate on a partition column removes complete files before the
-reader opens them. The plan shows this as
-`Files Pruned`.
-
-```sql
-CREATE SERVER pq FOREIGN DATA WRAPPER pgcolumnar_parquet;
-CREATE FOREIGN TABLE events (id int, ts timestamp, amount numeric(12,2))
-  SERVER pq OPTIONS (path '/data/events/');
-
--- events/dt=2026-01-01/region=eu/part-0.parquet
-CREATE FOREIGN TABLE events_p (id int, amount numeric(12,2), dt date, region text)
-  SERVER pq OPTIONS (path '/data/events', partition_columns 'dt,region');
-
-SELECT sum(amount) FROM events WHERE ts >= '2026-01-01';
-
--- EXPLAIN ANALYZE reports Row Groups, Row Groups Skipped, Row Groups Decoded,
--- Columns Read, Columns Total, and Files.
-EXPLAIN (ANALYZE, COSTS OFF) SELECT id FROM events WHERE ts >= '2026-01-01';
 ```
 
 ### The pgcolumnar_iceberg foreign-data wrapper

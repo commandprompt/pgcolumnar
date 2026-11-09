@@ -368,7 +368,9 @@
 # by its heading, and the user pages saying row group and defining the units, by collection over NO_CLUSTER.
 # guard_tests 897 -> 899 for test_docs_cite_no_issues.py: the citation reader on a fixture page, and the user
 # pages citing no issue in prose, by collection over NO_CLUSTER.
-guard_tests 899
+# guard_tests 899 -> 901 for test_docs_sql_reference_contents.py: the contents reader on fixture pages, and the SQL
+# reference's contents list matching its sections, by collection over NO_CLUSTER.
+guard_tests 901
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
