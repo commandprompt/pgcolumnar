@@ -360,6 +360,14 @@ def irs(pgc_cluster):
             r[f"{mode} token"] = _refusal(
                 dsn, f"SET statement_timeout = '30s'; SELECT * FROM pgcolumnar.iceberg_rest_tables('{c}','db')",
                 "returned the same page token twice for the table list", " repeated token")
+        # Every page's document stays in memory until the list is built, so the pages
+        # together get the one-response cap: 15 pages of 4 MiB list, 17 are refused.
+        padded = {n: start_fx(f"pad{n}", "--namespace", "db", "--table", "events",
+                              "--padded-pages", f"{n}:{4 * 1024 * 1024}") for n in (15, 17)}
+        r["padded 15"] = _rows(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{padded[15]}','db')")
+        r["padded 17"] = _refusal(
+            dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{padded[17]}','db')",
+            "the REST catalog table list is larger than 64 MB across its pages", " over the cap")
 
         # #1865: a namespace level that holds a dot. This catalog (separator %1F)
         # keeps its table in the one level "db.x" and also has the two levels db, x.
@@ -938,6 +946,20 @@ def test_paging_a_page_token_cycle_is_refused(irs, expect):
     if _declined(irs, expect):
         return
     expect.text(irs["cycle token"], "08P01 repeated token", "paging: a page token cycle A, B, A is refused")
+
+
+def test_paging_pages_within_the_response_cap_together_still_list(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["padded 15"], "events",
+                "paging: 15 pages of 4 MiB (60 MiB in all) still list the namespace's table")
+
+
+def test_paging_pages_over_the_response_cap_together_are_refused(irs, expect):
+    if _declined(irs, expect):
+        return
+    expect.text(irs["padded 17"], "54000 over the cap",
+                "paging: 17 pages of 4 MiB (68 MiB in all) are refused with 54000, not held in memory")
 
 
 def test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart(irs, expect):
