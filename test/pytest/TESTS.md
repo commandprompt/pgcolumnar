@@ -11222,6 +11222,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
 | `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
 | `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
+| `test_paging_pages_within_the_response_cap_together_still_list` | paging: 15 pages of 4 MiB (60 MiB in all) still list the namespace's table |
+| `test_paging_pages_over_the_response_cap_together_are_refused` | paging: 17 pages of 4 MiB (68 MiB in all) are refused with 54000, so a catalog that keeps sending new page tokens cannot make the backend hold every page |
 | `test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart` | dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x |
 | `test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels` | dotted level: iceberg_rest_namespaces still dot-joins the levels |
 | `test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables` | dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables |

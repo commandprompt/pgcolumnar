@@ -1438,6 +1438,7 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 	List	   *items = NIL;
 	char	   *pagetoken = NULL;
 	int			pages = 0;
+	int64		held = 0;		/* bytes of every page's document kept so far */
 	HTAB	   *seen = NULL;	/* every token sent so far */
 
 	for (;;)
@@ -1462,6 +1463,19 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 			rest_pct_encode(&rp, pagetoken);
 		}
 		doc = rest_get_json(catalog_uri, rp.data, what, token, hint404);
+
+		/*
+		 * Each item points into its page's document, so every page stays in
+		 * memory until the list is built. The pages together get the cap one
+		 * response gets, or a catalog that keeps sending new tokens could make
+		 * this backend hold REST_MAX_PAGES times that cap.
+		 */
+		held += VARSIZE(doc);
+		if (held > REST_MAX_RESPONSE)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("iceberg: the REST catalog %s is larger than %d MB across its pages",
+							what, (int) (REST_MAX_RESPONSE / (1024 * 1024)))));
 		if (!JsonContainerIsObject(&doc->root))
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
