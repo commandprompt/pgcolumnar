@@ -96,6 +96,9 @@ NO_CLUSTER = [
     # #2038: drives run_coverage.py on a stand-in tree with stand-in make, pytest,
     # lcov and genhtml. Needs no cluster and no driver.
     "test_coverage_report.py",
+    # #2038: drives run_san.py on stand-ins (a fake prefix, a fake pytest), and reads
+    # run_san.sh's --list-suites. Needs no cluster, no driver and no sanitizer build.
+    "test_sanitizer_gate.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.

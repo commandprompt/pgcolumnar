@@ -353,21 +353,36 @@ jobs:
             ' || { echo "instrumented server failed to start as postgres:"; sudo cat /tmp/san-smoke.log; exit 1; }
           echo "instrumented server starts cleanly as postgres"
 
+      # THE PYTEST TWINS, NOT THE SHELL SUITES (#2038). run_san.py runs the twins of
+      # run_san.sh's subset and decides the same way, so the shell suites no longer
+      # hold this gate. Its pins are requirements-test.txt's, as pytest-cluster's.
+      - name: install pytest and the driver for the postgres user, pinned
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/pgcvenv
+          /tmp/pgcvenv/bin/pip install --quiet -r test/pytest/requirements-test.txt
+          sudo -u postgres /tmp/pgcvenv/bin/python -c 'import pytest, psycopg, pyarrow; print("venv ok for postgres")'
+
       - name: Run the sanitizer gate (as the postgres user)
         run: |
           set -euo pipefail
           # As postgres, not root. PostgreSQL refuses to run as root, and dropping
           # from root via runuser strips ASAN_OPTIONS so the instrumented server
-          # aborts on the leak/stack traps -- the failure the first CI run hit. As
-          # postgres, pgc_setup's non-root path runs initdb/postmaster directly and
-          # run_san.sh's exported ASAN_OPTIONS is inherited. -E keeps PATH.
-          sudo -u postgres -E env "PATH=$PATH" bash test/run_san.sh "$SAN_PREFIX"
+          # aborts on the leak/stack traps -- the failure the first CI run hit.
+          # run_san.py sets ASAN_OPTIONS and UBSAN_OPTIONS for every suite, with
+          # log_path into PGC_SAN_LOGS, which the step below prints on failure.
+          sudo -u postgres -E env "PATH=$PATH" PGC_SAN_LOGS=/tmp/pgc-san-logs \
+            /tmp/pgcvenv/bin/python test/pytest/run_san.py "$SAN_PREFIX"
 
       - name: Collect logs on failure
         if: failure()
         run: |
           echo "===== ASAN start smoke log ====="; sudo cat /tmp/san-smoke.log 2>/dev/null || true
-          for f in $(sudo find /tmp -maxdepth 4 -name server.log -path '*pgcolumnar*' 2>/dev/null); do
+          # Every sanitizer report, whole: run_san.py names only each one's first line.
+          for f in $(sudo find /tmp/pgc-san-logs -type f 2>/dev/null); do
+            echo "===== $f ====="; sudo cat "$f"
+          done
+          for f in $(sudo find /tmp -maxdepth 4 -name server.log \( -path '*pgcolumnar*' -o -path '*pgc-pytest-*' \) 2>/dev/null); do
             echo "===== $f ====="; sudo tail -60 "$f"
           done
 

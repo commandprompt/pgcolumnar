@@ -690,7 +690,10 @@ at most 120 MB of memory and its data directory 301 MB of disk.
 **Nightly at 06:00 UTC** (`.github/workflows/nightly.yml`): the full packaged
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an
-instrumented PostgreSQL, and the coverage report. It also runs the
+instrumented PostgreSQL, and the coverage report. The sanitizer gate,
+`test/pytest/run_san.py`, runs the pytest twins of 24 suites with every
+violation fatal. Each instrumented process writes its report to a file
+(`log_path`), and a report fails its suite even when every test passed (#2038). It also runs the
 extension-upgrade guard. That guard builds the previous release on PostgreSQL
 18, loads data into it, and upgrades it in place. A capability-sweep job runs every suite
 that uses pyarrow twice on PostgreSQL 18. One run has the package installed and
