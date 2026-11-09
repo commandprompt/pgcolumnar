@@ -310,6 +310,14 @@ true until the next version shipped.
   shell suites ran there. `test_pytest_runs_where_the_suites_run.py` requires
   that `pytest-cluster` runs every (major, architecture) the suites job runs, in
   both workflows.
+- The nightly coverage report runs the pytest corpus, not the shell suites
+  (#2038). `test/pytest/run_coverage.py` builds with `COPT=--coverage`, sends
+  the counters to `GCOV_PREFIX`, and runs every pytest cluster file except the
+  three that install another build into the prefix. It then copies each counter
+  back beside its object, only inside the tree. It keeps `run_coverage.sh`'s
+  refusals: zero counters are refused before lcov runs, and a run that collected
+  no test is not a clean report. `test_coverage_report.py` holds each refusal on
+  stand-in tools. The job now runs as an ordinary user, as pytest-cluster does.
 - The nightly sanitizer gate runs the pytest twins, not the shell suites
   (#2038). `test/pytest/run_san.py` runs the twins of `run_san.sh`'s 24 suites
   against the ASAN+UBSAN build and decides the same way. It refuses a build
@@ -576,10 +584,20 @@ true until the next version shipped.
   location by spelling `..` in a form that only the server reads as `..`. The
   remote containment guard already refused a literal `..` and a percent-encoded
   one. It now also refuses a segment that starts with `..;`, which servers that
-  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`, and
-  it treats a backslash as a separator, as some servers do. Such a path is
+  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`; a
+  segment that starts with `..?` or `..#`, which reaches an `http(s)://`
+  server as the path `..`, because such a key is sent without percent-encoding;
+  and it treats a backslash as a separator, as some servers do. Such a path is
   refused with `escapes the table location` (22023) before any request is
   sent.
+- An Iceberg REST catalog can no longer make a backend hold an unbounded
+  amount of memory by paging a list. `iceberg_rest_namespaces`,
+  `iceberg_rest_tables` and the namespace walk keep every page of a list in
+  memory until the list is built. Each response was capped at 64 MB, but a
+  catalog that kept sending new page tokens could send up to 100000 pages, and
+  the backend held them all. The pages of one list now share the one-response
+  cap: a list larger than 64 MB across its pages is refused with
+  `the REST catalog ... is larger than 64 MB across its pages` (54000).
 
 - A read of a columnar table inside a plpgsql EXCEPTION block that rolls back no
   longer loses the enclosing statement's rows (#1360). To see the rows the

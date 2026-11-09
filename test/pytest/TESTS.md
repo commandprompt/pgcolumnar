@@ -404,6 +404,7 @@ behaviour, the source of that number is named.
 - [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
 - [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
 - [358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides](#358-test_sanitizer_gatepy-the-pytest-sanitizer-gate-decides-what-run_sansh-decides)
+- [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
 
 ## 1. How to read a test in here
 
@@ -10905,6 +10906,13 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
 | `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3` | a delete path climbing out with `..;` segments, which a server that reads `;` as path parameters serves as `..`, is refused by the containment guard (22023) before any fetch |
 | `test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3` | a delete path climbing out with backslash-separated `..` segments, which a server that reads a backslash as a separator serves as `../`, is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3` | a delete path climbing out with `..?` segments is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3` | the same with the `?` encoded as `%3F`, which a decoding server or proxy reads as `?`, is refused by the containment guard (22023) |
+| `test_an_iceberg_table_reads_over_plain_http` | the premise of the http arms: the table with position deletes reads over an unsigned plain `http://` server on the same files (3 rows) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_plain_http` | over plain `http://`, where the key is sent verbatim, a `..;` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_backslash_separated_delete_path_is_refused_over_plain_http` | over plain `http://`, a backslash-separated `..` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..?` climb, which the server would read as the path `..` with a query, is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..%3F` climb is refused by the containment guard (22023) |
 | `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
 | `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
 | `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
@@ -11223,6 +11231,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
 | `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
 | `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
+| `test_paging_pages_within_the_response_cap_together_still_list` | paging: 15 pages of 4 MiB (60 MiB in all) still list the namespace's table |
+| `test_paging_pages_over_the_response_cap_together_are_refused` | paging: 17 pages of 4 MiB (68 MiB in all) are refused with 54000, so a catalog that keeps sending new page tokens cannot make the backend hold every page |
 | `test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart` | dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x |
 | `test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels` | dotted level: iceberg_rest_namespaces still dot-joins the levels |
 | `test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables` | dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables |
@@ -14268,3 +14278,42 @@ End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 | `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
 | `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
 | `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+
+## 359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
+
+The nightly's coverage job drove every shell suite against a `--coverage` build, so it was one of the three gates that kept the shell suites from being retired (#2038). `test/pytest/run_coverage.py` drives the pytest cluster files instead: the complement of `NO_CLUSTER`, less the three files that swap another build into the prefix (`SWAPS_THE_PREFIX`), as `run_coverage.sh` left out their shell twins. It is still a report, not a gate.
+
+It must not report coverage it did not measure. Selftest part 250 holds `run_coverage.sh` to that by the order of its lines (#740). This file holds `run_coverage.py` to it by behaviour, on a stand-in tree with stand-in make, pytest, lcov and genhtml, which record every command and the environment it got.
+
+Removal proof: each of these mutants of `run_coverage.py` fails at least one test here:
+
+- `GCOV_PREFIX` left unset;
+- the copy-back without its containment, or creating missing directories;
+- the zero-counter refusal removed, or counting the whole tree instead of `src/`;
+- the `GCOV_PREFIX` probe skipped;
+- a declined corpus treated as failed, or a corpus that collected nothing treated as clean;
+- no `make clean`, or no `COPT` in the corpus's environment;
+- the corpus given by bare names, or by full paths but not run in `test/pytest`;
+- no restore at the end, a restore that keeps `COPT`, or one without `make clean`;
+- a failed restore that keeps the run's exit code;
+- a counters directory that cannot be emptied reused, either unchecked or with `mkdir(exist_ok=True)`;
+- the genhtml check removed, or `GCOV_PREFIX` not made world-writable;
+- the filesystem walk naming another tree's counters.
+
+On PG18, against a private prefix, the whole corpus (312 files at the time, one of them this file before it was declared in `NO_CLUSTER`; 311 cluster files without it, 30 minutes serial) returned counters for 37 of 37 instrumented objects in `src/`. Line coverage was 94.5% (26433 of 27961), function coverage 98.2% and branch coverage 73.6%.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install before the corpus carries `COPT=--coverage`; `GCOV_PREFIX` is mode 1777 before the corpus runs; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
+| `test_the_corpus_resolves_from_the_callers_directory` | called from another directory, as the nightly calls it from the repository root, each corpus file resolves from the directory pytest runs in, and that directory holds the corpus's `conftest.py`, so `--pg-config` is known |
+| `test_the_tree_and_the_install_are_left_uninstrumented` | a reported run, a run refused for zero counters and a run whose instrumented install failed each end with `make clean` and a `make install` with no `COPT` and no `GCOV_PREFIX`; in a reported run the clean comes after `lcov --capture`; a reported run whose uninstrumented reinstall fails exits 1 and says why |
+| `test_a_counters_directory_that_cannot_be_emptied_is_refused` | a `GCOV_PREFIX` that cannot be emptied, as one another user left, is refused with a `FAIL` line naming it, before the corpus runs, and the tree is still restored |
+| `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
+| `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
+| `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
+| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report and exits nonzero; a corpus that declined a test exits 0 |
+| `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
+| `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
+| `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |

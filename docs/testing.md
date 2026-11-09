@@ -637,13 +637,18 @@ which converts a defect into a new baseline.
 ## Coverage
 
 ```sh
-test/run_coverage.sh /path/to/pg_config
+test/pytest/run_coverage.py /path/to/pg_config
 ```
 
-Builds instrumented, runs the suites against that build, and writes an HTML
-report to `coverage/html`. It runs nightly and uploads the report as an
-artifact. The per-suite logs are uploaded with it, so a suite that fails inside
-the coverage job can be read rather than only counted.
+Builds instrumented, runs the pytest cluster files against that build, and
+writes an HTML report to `coverage/html`. It runs nightly and uploads the report
+as an artifact. The pytest log (`coverage/pytest.log`) is uploaded with it, so a
+test that fails inside the coverage job can be read rather than only counted.
+It runs as an ordinary user, because the pytest harness does. The three files
+that install another build into the prefix are left out, and
+`SWAPS_THE_PREFIX` in the runner says why for each.
+
+`test/run_coverage.sh` does the same over the shell suites (#2038).
 
 There is no threshold and nothing fails on the number, deliberately. A coverage
 threshold creates pressure to write tests that execute lines rather than tests

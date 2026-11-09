@@ -10,6 +10,10 @@ regression.out
 .pgc_source_stamp.*
 __pycache__/
 *.pyc
+# gcov's notes and counters, from run_coverage.py's --coverage build (#2038). `make clean`
+# leaves them, and nothing tracked matches: `git ls-files '*.gcno' '*.gcda'` is empty.
+*.gcno
+*.gcda
 
 # Git bundles. A transfer artifact, not a build one: they are how a change gets from
 # a container to a clone, they are named after whatever branch was in flight, and
