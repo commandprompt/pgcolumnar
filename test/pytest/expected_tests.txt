@@ -1888,7 +1888,10 @@ guard_tests 889
 # test_an_old_install_works_under_this_library, test_the_install_swap_declines_beside_other_workers and
 # test_the_prefix_is_put_back_exactly_with_its_bitcode (review of PR #2036), by collection: 6216 tests
 # collected, less guard_tests 866.
-# cluster_tests 5350 -> 5354 for the four tests in the new test_objstore_chunked_framing.py (a chunk size
+# cluster_tests 5350 -> 5352 for test_iceberg_rest_scan.py's REST list paging cap (security audit,
+# 2026-11-07): test_paging_pages_within_the_response_cap_together_still_list and
+# test_paging_pages_over_the_response_cap_together_are_refused, by collection.
+# cluster_tests 5352 -> 5356 for the four tests in the new test_objstore_chunked_framing.py (a chunk size
 # that wraps the response bound is refused on a ranged read and on a REST catalog reply, and the backend
 # survives; a valid chunked reply still reads), by collection: 6214 tests collected, less guard_tests 863.
-cluster_tests 5354
+cluster_tests 5356
