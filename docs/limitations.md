@@ -18,22 +18,16 @@ for data that cannot be reloaded.
 
 The hardening that was tracked before a first alpha is complete. The
 Parquet and Arrow parsers, which this project wrote, are fuzzed, both by byte mutation and by structural
-mutation of the container format
-([issue #214](https://github.com/commandprompt/pgcolumnar/issues/214)). The boundary for
-untrusted input files is stated and tested
-([issue #216](https://github.com/commandprompt/pgcolumnar/issues/216)). The blast radius
-of a single backend crash is asserted and documented
-([issue #217](https://github.com/commandprompt/pgcolumnar/issues/217)). The build checks the on-disk format version
-on read. It does not only stamp the version on write
-([issue #240](https://github.com/commandprompt/pgcolumnar/issues/240)). A gate covers
-cross-major `pg_upgrade`. Before, only a suite that nobody ran covered it
-([issue #257](https://github.com/commandprompt/pgcolumnar/issues/257)).
+mutation of the container format. The boundary for
+untrusted input files is stated and tested. The blast radius
+of a single backend crash is asserted and documented. The build checks the on-disk format version
+on read. It does not only stamp the version on write. A gate covers
+cross-major `pg_upgrade`.
 
 What that testing does not cover is worth stating alongside it. The suites run
-and pass on aarch64. An independent validation on 2026-08-05 ran the full gate on
+and pass on aarch64. An independent validation ran the full gate on
 a Graviton3 host. Every suite passed, and the per-suite result was the same as the
-x86_64 run. The suites have still not been run on a big-endian platform
-([issue #242](https://github.com/commandprompt/pgcolumnar/issues/242)).
+x86_64 run. The suites have still not been run on a big-endian platform.
 
 Unaligned reads are one class that a reader could expect to differ by
 architecture. The tests cover that class on each architecture. The sanitizer gate
@@ -63,13 +57,11 @@ guards the data encoding. Thus the build also catches a future version that
 changes the encoding but keeps the metapage layout.
 
 The native format version is 2 from 1.0-alpha5. Version 2 does not store a
-validity bitmap for a column chunk that holds no null
-([issue #1130](https://github.com/commandprompt/pgcolumnar/issues/1130)). A build
+validity bitmap for a column chunk that holds no null. A build
 reads every version from 1 to the version that it writes. So 1.0-alpha5 reads the
 tables that 1.0-alpha4 wrote. When 1.0-alpha5 first writes to such a table, it
 raises the table's version to 2. The table then holds chunks that an older build
-cannot read
-([issue #1137](https://github.com/commandprompt/pgcolumnar/issues/1137)). A query
+cannot read. A query
 that only reads the table does not change its version.
 
 Do not go back to an older build after a newer build has written to a table. The
@@ -283,10 +275,8 @@ helps less.
 the same rows. There is no import-specific overhead; the cost is the columnar
 write path either way.
 
-Work on load throughput is tracked in
-[issue #155](https://github.com/commandprompt/pgcolumnar/issues/155). One realized lever
-is [`pgcolumnar.parallel_copy`](#parallel-bulk-ingest). It loads a text file
-across several cores at once.
+To load faster, use [`pgcolumnar.parallel_copy`](#parallel-bulk-ingest). It loads a
+text file across several cores at once.
 
 ## Parallel bulk ingest
 
@@ -368,7 +358,7 @@ returning no rows.
   it flushes with fewer than `stripe_row_limit` rows therefore leaves a gap in
   the row-number space. A row number must be unique and stable, and nothing more.
   The gap does no damage.
-- A declared `sort_by` key (#288) and `pgcolumnar.vacuum_sorted` are **one-shot**.
+- A declared `sort_by` key and `pgcolumnar.vacuum_sorted` are **one-shot**.
   Rows that an insert adds after a sort go in at the end, in insertion order. No
   operation sorts them again. Skip quality therefore decreases until the next
   `vacuum_sorted`. `pgcolumnar.sort_status` reports how far that has gone, so the
@@ -1018,11 +1008,10 @@ cannot read a file that holds a list of lists or a list of maps. They fail with
 SQLSTATE 42804, even for a query that does not use that column. Such a column
 has two repeated levels, and a one-dimensional array holds only one, so a read
 would lose the inner lists. The readers bind every Parquet column by position,
-so you cannot leave the column out, and declaring it as a scalar fails too
-(#1917). To read the other columns, rewrite the file without that column, for
+so you cannot leave the column out, and declaring it as a scalar fails too. To read the other columns, rewrite the file without that column, for
 example with pyarrow.
 `import_arrow` refuses a list of lists or a list of maps for an array column
-too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
+too. The error has SQLSTATE 42804 and names the column. It also refuses
 a large list, which it does not read.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
@@ -1118,7 +1107,7 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   little-endian hosts, as import and export do, since they read a server-side path. A file from a different source is input
   without trust, and the parser for it is code that this project wrote. Refer to
   Security in the administration guide for the trust boundary and the risk that
-  stays. Issue #214 tracks the fuzzing.
+  stays.
 - A `path` that is a directory reads the `*.parquet` files at any depth below
   it, descending into subdirectories. The reader skips each entry whose name starts
   with `_` or `.`, and it does this for directories and for files. Spark and Hive
@@ -1175,13 +1164,13 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   carry definition levels, still reads wrong values without an error. pyarrow 23
   and 26 write the histograms by default.
 - The reader refuses a schema element whose `num_children` is negative or wider
-  than a 32-bit integer, with SQLSTATE XX001 (#1921). `parquet_schema` refuses it
+  than a 32-bit integer, with SQLSTATE XX001. `parquet_schema` refuses it
   too. It used to return the columns before that element and drop the rest
   without an error.
 - The reader refuses a schema element that has no `name`, a field the format
   requires, with SQLSTATE 0A000.
 - The reader checks that each compressed page decompresses to the size its page
-  header declares (#1910). A page that does not is refused with SQLSTATE XX001.
+  header declares. A page that does not is refused with SQLSTATE XX001.
   Before, the reader did not check a Snappy page's size, so a corrupt Snappy page
   could read wrong values without an error. One case is not checked. When the
   header declares a size of 0, the reader does not decompress a GZIP, ZSTD or
@@ -1190,7 +1179,7 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   sizes differ, in a v1 or a v2 page. The reader reads the bytes the page holds,
   as pyarrow does.
 - The reader checks the Thrift type of each required i32 field of a page header,
-  and of the page's own header struct (#1935). A field of the wrong type is
+  and of the page's own header struct. A field of the wrong type is
   refused with SQLSTATE XX001, as pyarrow refuses it. Optional fields follow
   Thrift's rule instead: one of the wrong type is skipped. So a v2 page's
   `is_compressed` field of the wrong type is skipped, and the page is read as
@@ -1232,18 +1221,17 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   balancer can do this when each node builds the ETag from its own file time. A read
   from such a server fails with `changed while it was being read`, and running
   the statement again can fail the same way. Set `pgcolumnar.objstore_pin_reads`
-  to `off` for such a server (#1866). The read is then not pinned. If another
+  to `off` for such a server. The read is then not pinned. If another
   client overwrites the object during the read and keeps its length, the query
   can return rows from both versions without an error. The length check stays on.
-- The reader pins by version id only when the HEAD sends `x-amz-version-id`
-  (#1867). It ignores the id `null`, which S3 gives an object written while
+- The reader pins by version id only when the HEAD sends `x-amz-version-id`. It ignores the id `null`, which S3 gives an object written while
   versioning was off. A GET that names a version needs the
   `s3:GetObjectVersion` permission, and `s3:GetObject` alone is not enough. When
   the store answers such a GET with 403, the reader asks again without the
   version and keeps `If-Match`. That read is then pinned by ETag alone. We tested
   the version pin and the 403 fallback against the suite's fixture server only. Garage v2.1.0 sends no `x-amz-version-id`, so a read from Garage
   is pinned by ETag alone.
-- The pin also covers later reads of the same object in a statement (#1894).
+- The pin also covers later reads of the same object in a statement.
   Two reads of one object in a statement, such as a self-join, read the
   version the first read opened. When the store names no version, the second
   read fails with `changed while it was being read` if the ETag or the length
@@ -1337,7 +1325,7 @@ table at its current snapshot. It has these limits:
   position-delete position, and a `current-schema-id` that names no schema.
   It refuses a fractional number where the spec wants an integer, and a field
   id outside 0 to 2147483647. It refuses a `format-version` other than 1, 2 or
-  3, and a `current-snapshot-id` that is present but not an integer (#1824).
+  3, and a `current-snapshot-id` that is present but not an integer.
   It also rejects a manifest `content` or `status` value outside the Iceberg
   spec. A file of unknown kind is never skipped as a delete.
 - Two metadata ids must fit a 32-bit integer, and only the surface that reads
@@ -1369,7 +1357,7 @@ table at its current snapshot. It has these limits:
   The memory is not bounded by `work_mem`, so a table with very many
   equality-delete rows needs memory in proportion to them.
 - Only top-level primitive columns can be read. A column that names a struct,
-  list or map field is an error, whatever type it is declared with (#1788).
+  list or map field is an error, whatever type it is declared with.
 - A promoted column (`int` to `long`, `float` to `double`, or a wider `decimal`)
   reads as its current type. Files from before the promotion are widened.
   Declaring it with a narrower type than a live file stores is refused.

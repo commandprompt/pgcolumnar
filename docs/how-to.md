@@ -746,25 +746,25 @@ that it wrote. You can retry with the same `path`: the function overwrites a
 file that no foreign table in the database reads. It refuses a `path` that a
 foreign table in this database reads (`58P02`). A foreign table reads every
 file its `path` names, so the function refuses a `path` when a foreign table's
-`path` is one of these (#1941):
+`path` is one of these:
 
 - The same path. The scheme of a remote URL matches in any case, and `s3a://`
   and `s3n://` match `s3://`. So `s3a://b/k` and `S3://b/k` both block a move
-  to `s3://b/k` (#1936). The host of an `http://` or `https://` URL also
+  to `s3://b/k`. The host of an `http://` or `https://` URL also
   matches in any case.
 - A directory that holds the path at any depth. A remote directory ends in
   `/`, such as `s3://b/dir/`. A local directory may end in `/` or not.
 - A glob that matches the path, such as `s3://b/g/*.parquet`. The function
   asks `pgcolumnar.path_glob_matches`, which matches with the reader's own
   code: `fnmatch` for an `s3://` key, and `glob(3)` for a local path. So it
-  refuses the paths that the glob expands to, and no others (#1957, #1962).
+  refuses the paths that the glob expands to, and no others.
   In a glob, `*`, `?` and a `[...]` class do not match `/`, except that a
   class in an `s3://` key can. A name that starts with `.` matches only when
   the glob spells the dot. A range such as `[a-c]` follows the database's
   collation, as it does when the foreign table reads.
 
 The function reads the `path` option only of foreign tables whose wrapper uses
-pgcolumnar's Parquet handler, such as `pgcolumnar_parquet` (#1949). The `path`
+pgcolumnar's Parquet handler, such as `pgcolumnar_parquet`. The `path`
 option of another wrapper's foreign table means what that wrapper says, so it
 blocks no move. A path that such a table really reads is not refused either.
 
@@ -772,15 +772,15 @@ A `pgcolumnar_iceberg` foreign table has no `path` option. It reads data files
 under its table location. The function takes that location as the reader
 does: the parent of the directory that holds `metadata_path`. So with
 `metadata_path` `s3://wh/db/t/metadata/v3.metadata.json`, the function refuses
-any path under `s3://wh/db/t/` (#1949). The reader refuses a file outside the
+any path under `s3://wh/db/t/`. The reader refuses a file outside the
 table location and does not read it. So the location covers every file the
 table can read. A `metadata_path` with no directory above `metadata/` is cut
 as the reader cuts it: `/v1.metadata.json` gives `/`, so every local path is
 refused. A relative `metadata/v1.metadata.json` gives `./`, the data
-directory, because a relative path is resolved against it (#2004). So every
+directory, because a relative path is resolved against it. So every
 local path under the data directory is refused, spelled relative or in full.
 A location that holds `..`, such as
-`/w/x/../t/`, refuses paths under `/w/t/` (#1959). The reader reads `/w/t/`
+`/w/x/../t/`, refuses paths under `/w/t/`. The reader reads `/w/t/`
 too, unless `/w/x` is a symbolic link. Then the reader goes up from the
 directory the link leads to, and the check refuses the wrong directory. A
 location reached through a symbolic link does not refuse paths in the
@@ -813,16 +813,16 @@ another tool, do one of these:
 - Drop that table before the move and create it again after.
 
 The bucket and the key must match in case. A local path is compared as
-written, and again in a folded form (#1965, #1959). That form reads a run of
+written, and again in a folded form. That form reads a run of
 `/` as one `/`, drops a `.` name, and drops a name followed by `..`. In a
 glob, `\.` counts as `.`, because `glob(3)` removes the backslash. So a
 foreign table on `/w//*.parquet` or `/w/\./*.parquet` blocks a move to
 `/w/a.parquet`. A relative path is resolved against the data directory,
 where the server opens it. So `x/a.parquet` and the same file spelled in full
-block each other (#2004). A caller without `pg_read_all_settings` cannot
+block each other. A caller without `pg_read_all_settings` cannot
 read the data directory's name. For that caller, a local move is refused
 beside a table on a local path when either path is relative. A table on a
-relative glob is the exception (#2013). It blocks what its glob matches,
+relative glob is the exception. It blocks what its glob matches,
 and a path under the glob as written, as under a directory. The function
 does not resolve a symbolic link. So it does not see a local file reached
 through a link. A link followed by `..` is worse: for
@@ -841,8 +841,7 @@ Some globs are too large for glibc to match: see `path_glob_matches` in
 docs/sql-reference.md. A foreign table with such a glob blocks every move to a
 local path, with error `54000`. An `s3://` glob with more than 128 `*` blocks
 every move to an `s3://` path the same way. The function cannot tell whether that table reads
-the path, so it refuses. The error detail names the table and its glob
-(#1974). Change that table's path, or drop the table, to move again.
+the path, so it refuses. The error detail names the table and its glob. Change that table's path, or drop the table, to move again.
 
 The function refuses these partitions before it moves anything:
 

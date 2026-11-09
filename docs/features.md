@@ -36,7 +36,7 @@ settings see the [configuration reference](configuration.md); for constraints se
   level. The writer compresses each column chunk separately. It stores a chunk
   without compression if the compression makes it no smaller.
 
-**A codec can make a table larger on high-entropy text** (#1074).
+**A codec can make a table larger on high-entropy text**.
 
 The writer keeps FSST only when it beats the alternative by
 `fsst_min_gain_percent`. It measures both sides after the block codec has run.

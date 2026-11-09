@@ -103,7 +103,7 @@ Do not lower `pgcolumnar.stripe_row_limit` below **1024**. A vector is a fixed 1
 values, so a smaller row group never fills one and FSST is not applied to text
 columns. Measured at the
 accepted minimum of 1000, a text column stored at 106.4% of its raw bytes against
-54.7% at 1200 (#1017). Lower it to 1024 or above, not to the floor.
+54.7% at 1200. Lower it to 1024 or above, not to the floor.
 
 Measured on 500,000 rows of 1 KiB incompressible data, which is the shape where
 the effect is largest:
@@ -370,9 +370,6 @@ What a DBA needs to know about it:
   per-row fetches force, which is what `pgcolumnar.enable_index_fetch_penalty`
   governs.
 
-An earlier and unrelated cache of decompressed chunk groups was removed in #303.
-Its only entry point had lost its caller, so the code did nothing.
-
 ## Backup and restore
 
 A columnar table is an ordinary WAL-logged relation.
@@ -396,8 +393,7 @@ that the check compares, so it needs no rebase.
 A physical copy moves between hosts of the same byte order. The native format
 stores integers in host byte order, which the format specification states. This
 is the same rule that PostgreSQL's own heap format follows, so a columnar table is
-no more restricted than the rest of the cluster. An independent validation on
-2026-08-05 moved a data directory from x86_64 to aarch64 and read it correctly.
+no more restricted than the rest of the cluster. An independent validation moved a data directory from x86_64 to aarch64 and read it correctly.
 Both of those are little-endian. A move to a big-endian host is not supported and
 is not tested.
 
@@ -524,8 +520,7 @@ with that grant which reads a file a different person made. This is the usual
 data-lake condition and not an unusual one. The role has trust, but the file is
 external.
 
-The mitigation for that residual risk is fuzzing the parsers, tracked in #214,
-which covers the Parquet path at this time. The fuzzing does not cover the Arrow
-path yet. Until it does, give the same care to an Arrow file from a source
-without trust. Import only the files that you made, or that you got from a source
-that you trust.
+The mitigation for that residual risk is fuzzing. The Parquet, Arrow and Avro
+parsers are each fuzzed with malformed files. Fuzzing makes a parser bug less
+likely, but it does not prove there is none. Import only the files that you made,
+or that you got from a source that you trust.

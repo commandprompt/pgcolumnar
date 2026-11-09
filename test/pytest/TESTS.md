@@ -408,6 +408,7 @@ behaviour, the source of that number is named.
 - [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
 - [362. test_docs_storage_terms.py: the user pages name each storage unit one way](#362-test_docs_storage_termspy-the-user-pages-name-each-storage-unit-one-way)
+- [363. test_docs_cite_no_issues.py: the user pages cite no issue in prose](#363-test_docs_cite_no_issuespy-the-user-pages-cite-no-issue-in-prose)
 
 ## 1. How to read a test in here
 
@@ -14393,3 +14394,25 @@ Before the fixes in the same change, the arm over the real documentation failed 
 | `test_stripe_is_found_in_prose_and_not_in_code` | on a fixture page: settings, a bare word in a code span, link targets and a fenced block pass; after the storage section, a capitalized and a plural use are named at their file lines |
 | `test_the_storage_section_is_found_by_its_heading` | every term defined in the section passes; a term defined only after the section does not count |
 | `test_the_user_pages_say_row_group_and_define_the_units` | the repository's own pages: no stray stripe, and the user guide defines row group, chunk group and vector and names `stripe_row_limit` |
+
+## 363. test_docs_cite_no_issues.py: the user pages cite no issue in prose
+
+An issue number is history. On a page that tells a reader how to use the extension, it is noise, and it goes stale. The documentation audit after 1.0-alpha4 found 92 on the user pages, and every one it followed was closed. Two said an issue "tracks" work that had shipped. One page said the Arrow parser was not yet fuzzed, when `test/fuzz_arrow.sh` fuzzes it.
+
+So a user page cites no issue in prose: no `#123`, and no link to an issue or a pull request. The user pages are `docs/*.md` and `README.md`, less the pages whose subject is the project's history: `benchmarks.md`, `testing.md`, `roadmap.md` and the developer page `ARCHITECTURE.md`. Fenced blocks and code spans are code, not prose. `CHANGELOG.md` keeps the history.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the lookbehind dropped, so an anchor, an entity or `C#` reads as a citation;
+- links to issues not checked, or links to pull requests missed;
+- code spans or fenced blocks read as prose;
+- the history pages included.
+
+Before the fixes in the same change, the arm over the real documentation failed naming the lines on seven pages.
+
+### Every test
+
+| Test | Checks |
+| --- | --- |
+| `test_a_citation_is_found_in_prose_and_not_in_code` | on a fixture page: a heading, an anchor, a code span, a fence, an entity and a language name pass; a bare number, an issue link, a pull request link and a number in a heading are each named |
+| `test_the_user_pages_cite_no_issues` | the repository's own user pages: no citation in prose |

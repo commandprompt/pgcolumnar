@@ -242,7 +242,7 @@ on. The second is off by default. No other operation applies a retention, and
 
 Each group it drops is recorded in `pgcolumnar.retired_group`, in the same
 transaction. An incremental rollup reads that record to keep the summary of rows
-that retention dropped (#1294). No other operation writes there.
+that retention dropped. No other operation writes there.
 
 It reads no data. A row group records the maximum value of each of its columns.
 A group whose maximum is older than the cutoff holds no row still inside the
@@ -673,7 +673,7 @@ The function refuses these before it writes anything:
 - a `server` that does not exist (`42704`);
 - a `server` whose wrapper does not have pgcolumnar's Parquet handler,
   `pgcolumnar.parquet_fdw_handler` (`42809`). A wrapper made with that
-  handler under another name is accepted, as `tier_partition` accepts it (#1963);
+  handler under another name is accepted, as `tier_partition` accepts it;
 - a caller without `USAGE` on `server` (`42501`).
 
 A local `path` writes no object and uses no endpoint, region or key. The
@@ -757,7 +757,7 @@ Moves the columnar partition `partition` to a Parquet file at `path`. Then
 attaches the file as a foreign table of `server`. The server's wrapper must
 have pgcolumnar's Parquet handler, `pgcolumnar.parquet_fdw_handler`. That is
 the `pgcolumnar_parquet` wrapper, or a wrapper you made with that handler
-under another name (#1963). The foreign table takes the partition's name,
+under another name. The foreign table takes the partition's name,
 columns (with their collations and generated expressions), owner, bounds,
 grants and comment. Returns the number of rows moved.
 
@@ -786,11 +786,11 @@ The function refuses these:
 
 - a `path` that a foreign table in this database reads (`58P02`). That is
   the same path, a path under the table's directory, or a path that matches
-  the table's glob (#1941). A glob is matched by
+  the table's glob. A glob is matched by
   [`path_glob_matches`](#pgcolumnarpath_glob_matchespattern-text-path-text-returns-boolean),
-  as the reader matches it (#1957). The scheme and the host of an http(s) URL match in any case,
+  as the reader matches it. The scheme and the host of an http(s) URL match in any case,
   and `s3a://` or `s3n://` match `s3://`. A local path is compared as
-  written, and again in a folded form (#1965, #1959). The folded form reads
+  written, and again in a folded form. The folded form reads
   `//` as `/`, drops a `.` name, and drops a name followed by `..`. In a
   glob, a name such as `\.` counts as `.`, because `glob(3)` removes the
   backslash. So `/w//*.parquet`, `/w/./*.parquet`, `/w/\./*.parquet` and
@@ -800,13 +800,13 @@ The function refuses these:
   refuse a file the reader does not read, and allow the file it does read.
   A symbolic link is not resolved. A relative local path names a file in the
   data directory, where the server opens it. Every comparison also resolves
-  it there, by the rule of `path_glob_matches` (#2001, #2004). So a table on
+  it there, by the rule of `path_glob_matches`. So a table on
   `x/a.parquet` refuses the same file spelled in full under the data
   directory, and a table on that full path refuses `x/a.parquet`. When
   `path_glob_matches` cannot resolve a relative path soundly (see below), a
   table on a local path refuses every local `path` if either one is relative.
   So does a caller without `pg_read_all_settings`, who cannot read
-  `data_directory`. A table on a relative glob is the exception (#2013).
+  `data_directory`. A table on a relative glob is the exception.
   `path_glob_matches` resolves its pattern without that privilege. So the
   table refuses what its glob matches, and a path under the glob as
   written, as under a directory.
@@ -815,20 +815,20 @@ The function refuses these:
   docs/how-to.md shows ways around it.
   Only a wrapper with pgcolumnar's Parquet handler has its `path` option read.
   For a `pgcolumnar_iceberg` foreign table, a path under the table location is
-  refused: the parent of the directory that holds `metadata_path` (#1949).
+  refused: the parent of the directory that holds `metadata_path`.
   The same two comparisons apply to that location. The Iceberg reader resolves
   a symbolic link in it, but this check does not. So a path in the directory
   the link leads to is not refused.
   The error detail names the foreign table and its path. A control character
   in either prints as `\xHH`, such as `\x0A` for a newline, so the detail
-  stays on one line (#1960). A backslash before an `x` prints as `\x5C`, so a
+  stays on one line. A backslash before an `x` prints as `\x5C`, so a
   path that holds the characters `\x0A` does not print like a newline. In a
   `WIN1252` database the euro sign, byte `0x80`, prints as written;
 - a `path` when a foreign table's glob is too large to match (`54000`, see
   `path_glob_matches` below). This is a local glob for a local `path`, and an
   `s3://` glob with more than 128 `*` for an `s3://` `path`. The function
   cannot tell whether that table reads `path`, so it refuses. The error
-  detail names the foreign table and its glob, escaped as above (#1974). A
+  detail names the foreign table and its glob, escaped as above. A
   table that does read `path` is reported as `58P02` instead. This holds
   also when its glob is too large as written but not in the folded form.
   The reader bounds a local glob in its own folded form too, so it reads
@@ -849,7 +849,7 @@ See
 ### pgcolumnar.path_glob_matches(pattern text, path text) returns boolean
 
 Returns true when a foreign table whose `path` is `pattern` expands it, as a
-glob, to `path` (#1957). `tier_partition` uses it to find a file that a
+glob, to `path`. `tier_partition` uses it to find a file that a
 foreign table reads. It matches with the Parquet reader's own code:
 
 - For an `s3://` key, the reader's `fnmatch`, with `FNM_PATHNAME` and
@@ -873,7 +873,7 @@ can be opened by such a path.
 A relative local pattern or `path` names a path under the data directory.
 The server's working directory is the data directory, so the reader's
 `glob(3)` and `export_parquet` start there. The function first resolves a
-relative pattern and a relative `path` against the data directory (#2001).
+relative pattern and a relative `path` against the data directory.
 So `../*/x/a.parquet` matches `x/a.parquet`, and the same file spelled in
 full. Here `..` climbs to the data directory's parent, and `*` matches the
 data directory's own name. In two cases the function cannot read a relative
@@ -891,11 +891,10 @@ A pattern that is too large for glibc to match safely raises error 54000
 
 `glob(3)` uses stack space for each `/` after the first `*`, `?` or `[`.
 `fnmatch` uses stack space for each `*`. A larger pattern could crash the
-server. The Parquet reader refuses the same patterns with the same error
-(#1968, #1972). It counts the levels of a local pattern in a folded form; see
+server. The Parquet reader refuses the same patterns with the same error. It counts the levels of a local pattern in a folded form; see
 [Glob patterns too large to match](#glob-patterns-too-large-to-match).
 
-A local pattern that makes the walk too long also raises error 54000 (#1973).
+A local pattern that makes the walk too long also raises error 54000.
 Each directory in the tree in memory lists `.` and `..`, as a real one does,
 and a name such as `.*` matches both. So each level of `/.*` doubles the
 walk. The function stops after 1,000,000 steps of the walk. The number of
@@ -906,7 +905,7 @@ stopped. The step count starts again at zero for each call, so a refused
 pattern does not affect later calls in the same session.
 
 For a local pattern, the function compares each path `glob(3)` returns with
-`path`, first as spelled and then in a folded form (#1982). The folded form
+`path`, first as spelled and then in a folded form. The folded form
 reads a run of `/` as one, and drops `.` names and a name followed by `..`. So
 `/w//x` matches `/w/x*`. `glob(3)` lists `.` and `..` in each directory, and a
 name that spells the leading dot matches them, such as `.*`, `.?`, `.[.]` or
@@ -917,7 +916,7 @@ pattern names before its first `*`, `?`, `[` or `\` are taken to exist, so
 `/w/x/sub/.?/a.parquet` matches `/w/x/a.parquet`, through `sub/..`. The
 function cannot know which directory a wildcard matched. So when a wildcard
 name comes before a name that can match `..`, it also assumes that a
-directory the wildcard matches exists (#1991). It assumes as well that each
+directory the wildcard matches exists. It assumes as well that each
 name the pattern spells there exists as a directory. So
 `/w/x/*/.?/a.parquet` matches `/w/x/a.parquet`, which the reader reads when
 `/w/x` holds any directory. Without such a directory, `tier_partition` then
@@ -928,7 +927,7 @@ folded form does not resolve a symbolic link before a `..`. So it can match a
 file the reader does not open, and `tier_partition` then refuses more than it
 must. An `s3://` key is not folded: `//` and `.` are part of a key. `tier_partition` also compares the folded forms of the foreign
 table's path and the target. So it refuses what the reader opens under either
-spelling, unless a symbolic link comes before a `..` (#1965).
+spelling, unless a symbolic link comes before a `..`.
 
 ```sql
 SELECT pgcolumnar.path_glob_matches('s3://b/x[a/b]', 's3://b/xa');  -- true
@@ -981,7 +980,7 @@ rather than read. A `time64` file does not import into a `date` column. A file
 whose type is not temporal is unaffected.
 
 A nested Arrow type the target column cannot hold is refused with `42804`, and
-the message names the column (#1932). An array column reads one `List` level.
+the message names the column. An array column reads one `List` level.
 A `Map` reads into an array of a two-field composite. A list of lists, or a
 plain column, is refused for an array column. A list, map or struct is refused
 where the column, or an array's element type, is a scalar. A large list,
@@ -1206,7 +1205,7 @@ delete removes is not checked.
 
 The readers refuse a glob pattern that is too large for glibc to match
 safely, with error 54000 (`program_limit_exceeded`), before they read
-anything (#1968, #1972):
+anything:
 
 - a pattern of 4096 bytes (`PATH_MAX`) or more, measured for a local
   pattern in its folded form (see below);
@@ -1227,7 +1226,7 @@ the folded form, and the reader reads it too. Two names are kept as written:
 - a `.` at the end, or a `.` that only `/` follow, because it makes the
   pattern match only directories. Without it, `glob(3)` matches a pattern
   that ends in `/` against a file, so `'/w/s[p]/a.parquet/./'` would read
-  `/w/sp/a.parquet` (#1977 review);
+  `/w/sp/a.parquet`;
 - a name followed by `..`, because when that name is a symbolic link, the
   kernel goes up from the directory the link leads to.
 
@@ -1242,8 +1241,7 @@ pattern could crash the server. The limits are those of
 The reader checks the pattern before it looks for an object of that exact
 name. So an `s3://` key that holds more than 128 `*` cannot be read by name.
 
-The reader also bounds the walk of a local pattern on the filesystem
-(#1984). Each real directory lists `.` and `..`, and a name such as `.*`
+The reader also bounds the walk of a local pattern on the filesystem. Each real directory lists `.` and `..`, and a name such as `.*`
 matches both. So each level of `.*/` in a local pattern multiplies the walk.
 The reader counts each directory it opens, each name it reads and each
 `stat` as one step. It stops after 1,000,000 steps with error 54000, the
@@ -1290,7 +1288,7 @@ that you must declare. Use
 reports. A composite column covers all the leaves of its struct.
 
 A string cell read into a `text` or `varchar` column must be valid in the
-server encoding (#1821). A cell with an invalid byte sequence or an embedded
+server encoding. A cell with an invalid byte sequence or an embedded
 NUL byte stops the read with SQLSTATE `22021`, as COPY does. The message names
 the Parquet column and the first bad bytes. This applies to the foreign table,
 the import functions and `iceberg_scan` too, because they share the reader.
@@ -1311,7 +1309,7 @@ Parquet field id rather than by position. Output column `i` is bound to the file
 column whose field id equals `field_ids[i]`. The reader decodes only those
 columns, in the order given, whatever their order in the file. The array length
 must equal the column definition list length. This is the projection form Apache
-Iceberg uses (#388). A data file written before a column rename still carries the
+Iceberg uses. A data file written before a column rename still carries the
 old name, and columns are selected by id.
 
 The file must carry field ids. A file written without them is an error that
@@ -1321,7 +1319,7 @@ exact widenings: an integer `INT32` column reads as `bigint`, and a `FLOAT`
 column as `double precision`. The positional form above does not widen. An
 absent id is an error. So is an id that matches more than one column, or an
 array or composite output column. An id that belongs to a struct, list or map is
-refused as nested, whatever the output column's type (#1788). None is a silent
+refused as nested, whatever the output column's type. None is a silent
 wrong column. Read the ids a file carries with `parquet_schema`. It does not
 list the ids of a struct's fields; the `parquet_schema` section below says how
 to find them.
@@ -1386,7 +1384,7 @@ the leaf fails with SQLSTATE 42804, because a one-dimensional array would lose
 the inner lists. Declared as a scalar, it fails as unexpectedly repeated.
 `read_parquet` binds every column by position, so you cannot leave it out
 either. `import_parquet` and the `pgcolumnar_parquet` foreign table refuse the
-file the same way, even for a query that does not use that column (#1917).
+file the same way, even for a query that does not use that column.
 
 `nullable` for a nested column says whether the column itself can be NULL. A
 NULL list element or struct field does not make it true. On a leaf row it is true
@@ -1422,7 +1420,7 @@ the usual case for a freshly written manifest. It is the ordering key for
 reading tables with deletes. A position delete applies to data files with a
 lower or equal sequence number, the same commit or earlier. An equality delete
 applies to a strictly lower one. The caller needs the `pg_read_server_files`
-role, which superusers hold. This is the first step of Iceberg support (#388).
+role, which superusers hold. This is the first step of Iceberg support.
 It is a standalone Avro object-container reader, decoded against the schema
 embedded in the file, so a v3 manifest reads structurally. It reads a local
 file. An object-storage URL is refused with `0A000`; see
@@ -1442,7 +1440,7 @@ Decodes an Apache Iceberg snapshot manifest-list Avro file and reports its
 carries the manifest's length, content type (0 data, 1 deletes), and partition
 spec. It also carries the added, existing, and deleted file and row counts the
 writer recorded. The caller needs the `pg_read_server_files` role, which
-superusers hold. This is step two of Iceberg support (#388). It reads the same
+superusers hold. This is step two of Iceberg support. It reads the same
 Avro object-container format as `read_avro_manifest`, decoded against the schema
 embedded in the file. A v3 manifest list therefore reads structurally. It reads
 a local file. An object-storage URL is refused with `0A000`; see
@@ -1500,8 +1498,7 @@ file raises an error here. It does not return rows the table says are gone. To
 read a table that uses deletes, use `iceberg_scan`, which applies position,
 equality, and deletion-vector deletes. A delete file that the current snapshot
 removed is not live, so it is skipped too. A rewrite or compaction that removes
-every old delete file leaves a delete manifest that holds only such entries
-(#1829); that table lists normally. A delete manifest that holds a live
+every old delete file leaves a delete manifest that holds only such entries; that table lists normally. A delete manifest that holds a live
 data-file entry is corrupt, and is refused with SQLSTATE XX001.
 
 #### How a partition value is shown
@@ -1562,7 +1559,7 @@ the property. The mapping is read for top-level scalar columns.
 Only top-level primitive columns can be read. An output column that names a
 struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
 type the column definition list gives it. The error names the column and its
-kind (#1788). The same holds for `iceberg_rest_scan` and the
+kind. The same holds for `iceberg_rest_scan` and the
 `pgcolumnar_iceberg` foreign-data wrapper.
 
 A projected column that the file does not carry reads as null. This covers a
@@ -1703,7 +1700,7 @@ Every REST function that takes a namespace accepts it in two forms:
   itself contains a dot.
 - **`text[]`**, one element per level, such as `ARRAY['analytics', 'daily']`.
   Each element is one level, exactly as given, so a level may contain a dot:
-  `ARRAY['analytics.v2']` is the single level `analytics.v2` (#1865).
+  `ARRAY['analytics.v2']` is the single level `analytics.v2`.
 
 A bare string literal, such as `'analytics'`, selects the `text` form. The
 `text[]` array must have one dimension, at least one element, and no `NULL`
@@ -1716,11 +1713,11 @@ empty level. In the `text` form, a leading, trailing or doubled dot makes one,
 as in `'.db'`, `'db.'` or `'db..x'`, and so does `''`. A stray dot often makes
 one by mistake. So when the catalog answers 404 (not found), the error carries
 a hint that names the empty level, such as
-`Level 2 of 3 of the namespace is empty` (#1891). Both 404 errors carry it: "no
+`Level 2 of 3 of the namespace is empty`. Both 404 errors carry it: "no
 such namespace" (SQLSTATE 3F000) and "no such table" (SQLSTATE 42P01).
 
 A namespace whose only level is empty, `ARRAY['']` or `''`, is refused with
-SQLSTATE 22023 (#1922). The refusal comes before any request, including a
+SQLSTATE 22023. The refusal comes before any request, including a
 server's OAuth token request, so it does not depend on whether the catalog can
 be reached. Its request path would hold
 an empty segment, such as `/v1/namespaces//tables`. The Apache Iceberg REST
@@ -1729,13 +1726,13 @@ The REST spec has no other way to write it. The error's hint reads
 `Level 1 of 1 of the namespace is empty`.
 
 `iceberg_rest_table_location` and `iceberg_rest_scan` refuse an empty table
-name, `''`, with SQLSTATE 22023 (#1931). The error reads
+name, `''`, with SQLSTATE 22023. The error reads
 `iceberg: the table name is empty`. The refusal comes before any request,
 including a server's OAuth token request. The request path would end in an
 empty segment, as in `/v1/namespaces/db/tables/`. A proxy that strips the
 trailing slash would send it to the table list instead.
 
-A table named `.` or `..` is refused with SQLSTATE 22023 too (#1948). So is a
+A table named `.` or `..` is refused with SQLSTATE 22023 too. So is a
 namespace whose path segment would be `.` or `..`, such as `ARRAY['..']`. Such a
 segment is a dot segment. A server or proxy that normalises the path removes
 it, so `/v1/namespaces/db/tables/..` would reach `/v1/namespaces/db` instead.
@@ -1875,31 +1872,30 @@ returns each namespace once.
 The dot-joined form is ambiguous: the single level `a.b` and the two levels
 `a`, `b` both come out as `a.b`. To tell them apart, use
 `iceberg_rest_namespace_levels`. An empty level keeps its dot: the levels `""`,
-`x` come out as `.x` (#1922).
+`x` come out as `.x`.
 
 ### pgcolumnar.iceberg_rest_namespace_levels(catalog_uri text) returns setof text[]
 
 Lists the same namespaces as `iceberg_rest_namespaces`, each as a `text[]` of
-its levels (#1865). The single level `a.b` comes out as `{a.b}`, and the two
+its levels. The single level `a.b` comes out as `{a.b}`, and the two
 levels `a`, `b` as `{a,b}`. You can pass a row back unchanged as the namespace
 argument of the other REST functions, with two exceptions, described next. A
-row with an empty level, such as `{db,""}`, passes back too (#1891). The
+row with an empty level, such as `{db,""}`, passes back too. The
 function also lists the children of such a namespace, such as `{db,"",x}`,
-and their children, such as `{db,"",x,y}` (#1939).
+and their children, such as `{db,"",x,y}`.
 
 A level may contain the catalog's separator. No request can name such a
 namespace, so the function returns it but does not ask for its children.
 Passing that row back fails with SQLSTATE 22023.
 
 A catalog may also hold the namespace whose only level is empty. The function
-returns it as `{""}`. Passing that row back fails with SQLSTATE 22023 too
-(#1922). The function still asks for its children, with an empty `?parent=`.
+returns it as `{""}`. Passing that row back fails with SQLSTATE 22023 too. The function still asks for its children, with an empty `?parent=`.
 The Apache Iceberg REST catalog reads an empty `?parent=` as `{""}`, so a child
 such as `{"",x}` is listed, and passes back. A catalog that reads an empty
 `?parent=` as the top level gives no children of `{""}`.
 
 The rows `{"."}` and `{".."}` are listed too, and passing either back fails
-with SQLSTATE 22023 (#1948). The function asks for their children with
+with SQLSTATE 22023. The function asks for their children with
 `?parent=.` or `?parent=..`. A query value is not a path segment, so a
 normaliser leaves it alone.
 
@@ -1924,9 +1920,9 @@ SELECT ns, t
 On a catalog with the default separator, replace `level LIKE '%.%'` with
 `strpos(level, chr(31)) > 0`.
 
-The row `{""}` also makes the whole query fail with SQLSTATE 22023 (#1922). To
+The row `{""}` also makes the whole query fail with SQLSTATE 22023. To
 skip it, add `AND ns <> ARRAY['']` to the `WHERE` clause. The rows `{"."}` and
-`{".."}` do too (#1948). Add `AND ns NOT IN (ARRAY['.'], ARRAY['..'])` to skip
+`{".."}` do too. Add `AND ns NOT IN (ARRAY['.'], ARRAY['..'])` to skip
 them.
 
 ### pgcolumnar.iceberg_rest_tables(catalog_uri text, namespace text) returns setof text
@@ -2007,7 +2003,7 @@ normally, so a predicate the wrapper cannot decide never changes the rows
 returned. Field-id projection and every delete rule are those of `iceberg_scan`.
 A foreign table may declare a nested Iceberg column (a struct, list or map) as a
 scalar. Such a table refuses every query, even one that does not read that
-column (#1788).
+column.
 
 The one table option is `metadata_path`, the table's current `metadata.json`
 (a local path or an object-storage URL). The wrapper takes no server or
@@ -2122,7 +2118,7 @@ weak one, or a longer one pins the read only by version id (see
 `pgcolumnar.objstore_pin_reads` to `off` for a server whose ETag changes from
 one request to the next: the reader then sends no `If-Match` and no
 `versionId`. Two reads of one object in a statement, such as a self-join, read
-one version (#1894). The second read asks for the version the first one
+one version. The second read asks for the version the first one
 opened. When the store names no version, the second read fails with `changed
 while it was being read` if the ETag or the length changed in between. With
 no strong ETag, only a change of length is caught. The pin lasts one

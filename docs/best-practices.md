@@ -30,7 +30,7 @@ row-at-a-time inserts. Load in batches that fill a row group
 well. Keep `pgcolumnar.stripe_row_limit` at 1024 or above if you lower it. A vector
 is a fixed 1024 values. A row group below one vector gets no FSST on its text
 columns. Those columns cost 106.4% of their raw bytes at the accepted minimum of
-1000, against 54.7% at 1200 (#1017).
+1000, against 54.7% at 1200.
 
 **Use `parallel_copy` for a large file.** `pgcolumnar.parallel_copy` splits a
 server-side file across workers and scales the load into one table. It runs a

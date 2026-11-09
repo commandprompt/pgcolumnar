@@ -51,8 +51,7 @@ built for append-mostly data. See [Limitations and compatibility](limitations.md
 ### When not to use pgColumnar
 
 The clearest case against columnar storage is a table whose bytes are mostly one
-large value per row. An independent validation measured this on 2026-08-05, on a
-2,000,000 row ledger table. Each row held 1 KiB of incompressible data. The
+large value per row. An independent validation measured this on a 2,000,000 row ledger table. Each row held 1 KiB of incompressible data. The
 figures below are theirs.
 
 | operation | heap | pgColumnar | comparison |

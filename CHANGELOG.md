@@ -282,6 +282,13 @@ true until the next version shipped.
 
 ### Changed
 
+- The user pages no longer cite issue numbers. The 92 citations, all of closed
+  issues, are removed or the sentence is reworded. The history stays in this
+  file, in benchmarks.md and in testing.md. The security notes said the Arrow
+  parser was not yet fuzzed; it is, and so is the Avro reader. The aarch64
+  validation's figures stay, without their date. `test_docs_cite_no_issues.py`
+  holds the pages to it.
+
 - The user pages name each storage unit one way. The user guide gains "How a table
   is stored", which defines row group, chunk group and vector, and says that
   "stripe" is the older name for a row group kept in `stripe_row_limit`. Two
