@@ -1894,4 +1894,12 @@ guard_tests 892
 # cluster_tests 5350 -> 5352 for test_iceberg_rest_scan.py's REST list paging cap (security audit,
 # 2026-11-07): test_paging_pages_within_the_response_cap_together_still_list and
 # test_paging_pages_over_the_response_cap_together_are_refused, by collection.
-cluster_tests 5352
+# cluster_tests 5352 -> 5354 for test_iceberg_objstore.py's remote ".." spellings (security audit,
+# 2026-11-07): test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3 and
+# test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3, by collection.
+# cluster_tests 5354 -> 5361 for the review of #2049 in test_iceberg_objstore.py: "..?" and "..%3F" over
+# s3 (test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3,
+# test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3), the plain http:// leg's
+# control (test_an_iceberg_table_reads_over_plain_http) and the four spellings refused over plain http
+# (test_a_dotdot_*_delete_path_is_refused_over_plain_http), by collection.
+cluster_tests 5361

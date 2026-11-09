@@ -599,6 +599,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- An Iceberg table on object storage can no longer name a file outside its
+  location by spelling `..` in a form that only the server reads as `..`. The
+  remote containment guard already refused a literal `..` and a percent-encoded
+  one. It now also refuses a segment that starts with `..;`, which servers that
+  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`; a
+  segment that starts with `..?` or `..#`, which reaches an `http(s)://`
+  server as the path `..`, because such a key is sent without percent-encoding;
+  and it treats a backslash as a separator, as some servers do. Such a path is
+  refused with `escapes the table location` (22023) before any request is
+  sent.
 - An Iceberg REST catalog can no longer make a backend hold an unbounded
   amount of memory by paging a list. `iceberg_rest_namespaces`,
   `iceberg_rest_tables` and the namespace walk keep every page of a list in
