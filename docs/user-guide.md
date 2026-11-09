@@ -361,7 +361,7 @@ and decode that table. Row triggers fire on columnar tables and see the same
 rows a heap table would.
 
 ```sql
-CREATE TABLE events_live (id bigint primary key, kind text, amount int)
+CREATE TABLE events (id bigint primary key, kind text, amount int)
     USING pgcolumnar;
 
 CREATE TABLE events_cdc (
@@ -385,7 +385,7 @@ BEGIN
 END
 $$;
 
-CREATE TRIGGER events_cdc_t AFTER INSERT OR UPDATE OR DELETE ON events_live
+CREATE TRIGGER events_cdc_t AFTER INSERT OR UPDATE OR DELETE ON events
     FOR EACH ROW EXECUTE FUNCTION events_capture();
 ```
 

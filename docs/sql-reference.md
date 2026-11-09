@@ -1816,6 +1816,9 @@ it as `The catalog said: <message>`. The message is cut to 512 bytes.
 A catalog reply larger than 64 MiB is refused with `54000`, with the message
 `columnar: response from "<url>" exceeded 67108864 bytes`.
 
+A list that spans several pages, such as the tables in a namespace, gets the
+same 64 MiB cap for all of its pages together. It is also refused with `54000`.
+
 ### pgcolumnar.iceberg_rest_scan(catalog_uri text, namespace text, table_name text) returns setof record
 
 Also `iceberg_rest_scan(catalog_uri text, namespace text[], table_name text)`.
