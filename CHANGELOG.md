@@ -612,11 +612,11 @@ true until the next version shipped.
 - An Iceberg REST catalog can no longer make a backend hold an unbounded
   amount of memory by paging a list. `iceberg_rest_namespaces`,
   `iceberg_rest_tables` and the namespace walk keep every page of a list in
-  memory until the list is built. Each response was capped at 64 MB, but a
+  memory until the list is built. Each response was capped at 64 MiB, but a
   catalog that kept sending new page tokens could send up to 100000 pages, and
   the backend held them all. The pages of one list now share the one-response
-  cap: a list larger than 64 MB across its pages is refused with
-  `the REST catalog ... is larger than 64 MB across its pages` (54000).
+  cap: a list larger than 64 MiB across its pages is refused with
+  `the REST catalog ... is larger than 64 MiB across its pages` (54000).
 
 - A read of a columnar table inside a plpgsql EXCEPTION block that rolls back no
   longer loses the enclosing statement's rows (#1360). To see the rows the
