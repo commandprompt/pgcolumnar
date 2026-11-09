@@ -300,6 +300,12 @@ true until the next version shipped.
   a reload. `test/pytest/test_docs_links_resolve.py` resolves every internal link
   in the docs against the pages' headings: four had broken when function
   signatures gained arguments, and no gate read links.
+- `docs/ARCHITECTURE.md`'s module map names every source file and catalog
+  again. It gains sections for parallel copy and export, the row lock, the column
+  extent, the sketch aggregate, the curve keys, index maintenance for imports and
+  rewrites, the export sink, the Thrift, FlatBuffers and Parquet-codec readers, the
+  object-store module and rollups. `test_architecture_map.py` holds the map to the
+  tree.
 
 - The nightly's ledger gate compares the ceiling against the commit's parent
   (#1104). On the `v1.0-alpha4` tag push every major went red with no suite
