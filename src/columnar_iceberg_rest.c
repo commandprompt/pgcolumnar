@@ -1474,7 +1474,7 @@ rest_get_list(const char *catalog_uri, const char *path, const char *key,
 		if (held > REST_MAX_RESPONSE)
 			ereport(ERROR,
 					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-					 errmsg("iceberg: the REST catalog %s is larger than %d MB across its pages",
+					 errmsg("iceberg: the REST catalog %s is larger than %d MiB across its pages",
 							what, (int) (REST_MAX_RESPONSE / (1024 * 1024)))));
 		if (!JsonContainerIsObject(&doc->root))
 			ereport(ERROR,
