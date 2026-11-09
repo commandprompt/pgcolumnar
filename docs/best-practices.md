@@ -70,7 +70,7 @@ For FSST it is also not purely a size choice. A win smaller than
 per-vector FSST encode costs more than a marginal win repays.
 
 **Spend encode effort where it pays.** `encode_effort` is `full` or `fast`. Leave it
-at `full` for the best ratio. Switch a column to `fast` when a text-heavy load is
+at `full` for the best ratio. Set the table to `fast` when a text-heavy load is
 CPU-bound on encoding. You then accept a slightly larger file for a faster write.
 `pgcolumnar.fsst_verdict_reuse` (default 16) reuses the FSST decision for a column
 whose character is stable between row groups.
@@ -94,13 +94,14 @@ Cluster the fact table on the join key so matching keys sit in few groups.
 A fact table clustered only on a timestamp still holds every join key in every group.
 A runtime filter then cannot drop groups.
 
-- `pgcolumnar.recluster(table)` re-establishes the sort order incrementally and
+- `pgcolumnar.recluster(table, col [, ...])` re-establishes the sort order incrementally and
   online. It runs under `ShareUpdateExclusiveLock`, so reads and writes continue. It
   is the daemon-friendly verb, and a no-op on an already-sorted table.
-- `pgcolumnar.cluster(table)` does the eager, one-shot reorg under
+- `pgcolumnar.cluster(table, col [, ...])` does the eager, one-shot reorg under
   `AccessExclusiveLock`. Use it for a first sort or a full rewrite in a maintenance
   window, not on a live hot table.
-- `pgcolumnar.cluster_hilbert(table)` and `pgcolumnar.recluster_hilbert(table)` are
+- `pgcolumnar.cluster_hilbert(table, col [, ...])` and
+  `pgcolumnar.recluster_hilbert(table, col [, ...])` are
   the same two verbs on the Hilbert curve. **Choose the curve by the predicate.**
   Z-order is fine for point lookups. Hilbert has no jumps at a bit boundary, so it
   keeps neighbouring keys together and a range filter reads fewer chunk groups.
@@ -123,14 +124,15 @@ still reads and filters those rows. Match the verb to the damage:
 | --- | --- | --- |
 | `pgcolumnar.compact(table)` | retires row groups that are fully deleted | `ShareUpdateExclusiveLock` |
 | `pgcolumnar.compact_rewrite(table, min_deleted_fraction, max_groups)` | rewrites partially deleted groups to drop dead rows | `ShareUpdateExclusiveLock` |
-| `pgcolumnar.recluster(table)` | restores sort order online | `ShareUpdateExclusiveLock` |
+| `pgcolumnar.recluster(table, col [, ...])` | restores sort order online | `ShareUpdateExclusiveLock` |
 | `pgcolumnar.truncate(table)` | returns reclaimed end blocks to the OS | `ShareUpdateExclusiveLock` plus a brief conditional `AccessExclusiveLock` |
-| `pgcolumnar.recluster_hilbert(table)` | restores Hilbert order online | `ShareUpdateExclusiveLock` |
-| `pgcolumnar.cluster(table)` / `cluster_hilbert(table)` / `vacuum_sorted(table)` | eager full reorg | `AccessExclusiveLock` |
+| `pgcolumnar.recluster_hilbert(table, col [, ...])` | restores Hilbert order online | `ShareUpdateExclusiveLock` |
+| `pgcolumnar.cluster(table, col [, ...])` / `cluster_hilbert(table, col [, ...])` / `vacuum_sorted(table)` | eager full reorg | `AccessExclusiveLock` |
 
 **Let the daemon carry the routine load.** Set `pgcolumnar.autovacuum = on`; it is
-off by default. A background worker then calls only the two online verbs,
-`compact_rewrite` and `recluster`. It never calls the `AccessExclusiveLock` reorgs,
+off by default. A background worker then calls the two online verbs,
+`compact_rewrite` and `recluster`. With `pgcolumnar.autovacuum_expire` also on, it
+first calls `expire` on each table that declares a retention. It never calls the `AccessExclusiveLock` reorgs,
 so it does not block a session. It wakes every `pgcolumnar.autovacuum_naptime`
 (default 60s). It acts when a table crosses `pgcolumnar.autovacuum_compact_threshold`
 (default 0.2, the deleted fraction). It also acts on
@@ -146,7 +148,9 @@ scheduled job can then skip tables that do not need work.
 relation. Only `truncate` returns end blocks to the operating system. It holds its
 `AccessExclusiveLock` briefly and conditionally. It takes the strong lock only for
 the physical shrink, and yields rather than wait. It cannot run inside a transaction
-block.
+block. It does nothing unless
+[`pgcolumnar.enable_end_truncation`](configuration.md#maintenance-and-disk-reclaim)
+is on. That setting is off by default, and only a superuser can set it.
 
 ## Make queries fast
 

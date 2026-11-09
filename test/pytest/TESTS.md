@@ -405,7 +405,8 @@ behaviour, the source of that number is named.
 - [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
 - [358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides](#358-test_sanitizer_gatepy-the-pytest-sanitizer-gate-decides-what-run_sansh-decides)
 - [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
-- [360. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#360-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
+- [361. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#361-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 
 ## 1. How to read a test in here
 
@@ -10905,6 +10906,15 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_delete_path_is_refused_over_s3` | a percent-encoded dotdot delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3` | a delete path climbing out with `..;` segments, which a server that reads `;` as path parameters serves as `..`, is refused by the containment guard (22023) before any fetch |
+| `test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3` | a delete path climbing out with backslash-separated `..` segments, which a server that reads a backslash as a separator serves as `../`, is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3` | a delete path climbing out with `..?` segments is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3` | the same with the `?` encoded as `%3F`, which a decoding server or proxy reads as `?`, is refused by the containment guard (22023) |
+| `test_an_iceberg_table_reads_over_plain_http` | the premise of the http arms: the table with position deletes reads over an unsigned plain `http://` server on the same files (3 rows) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_plain_http` | over plain `http://`, where the key is sent verbatim, a `..;` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_backslash_separated_delete_path_is_refused_over_plain_http` | over plain `http://`, a backslash-separated `..` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..?` climb, which the server would read as the path `..` with a query, is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..%3F` climb is refused by the containment guard (22023) |
 | `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
 | `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
 | `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
@@ -14310,7 +14320,31 @@ On PG18, against a private prefix, the whole corpus (312 files at the time, one 
 | `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
 | `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |
 
-## 360. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+## 360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading
+
+A function's heading in `docs/sql-reference.md` is its full signature, so its anchor changes when an argument is added. Adding `dedup` to `parallel_copy`, and naming `compact_rewrite`'s defaults, left four links on three pages pointing at anchors no heading produced, and the documentation gates stayed green: the style gate reads sentences, not links. Found by the documentation audit after 1.0-alpha4.
+
+The links are resolved rather than listed. Each relative link in `docs/*.md` and `README.md` must name a file that exists and, for a docs page, an anchor one of its headings produces. The anchor rule is the site's (`mkdocs.yml`: `pymdownx.slugs.slugify`, lower case): drop every character that is not a letter, digit, underscore, hyphen or space, then each space becomes a hyphen. A heading inside a code fence is not a heading.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the anchor rule keeping punctuation, or dropping underscores;
+- a link inside a heading read as markdown rather than as its text;
+- headings inside code fences counted;
+- the anchor check or the file check removed;
+- external links (`https:`, `mailto:`) checked as files.
+
+Before the fixes in the same change, the arm over the real documentation failed naming exactly the four links.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_anchor_rule_is_the_sites` | a signature heading, a hyphenated heading, a heading with inline code and a heading holding a link each give the anchor the site gives |
+| `test_a_link_that_reaches_no_heading_or_no_file_is_named` | on fixture pages: links that resolve, external links and same-page links are not named; a stale signature anchor, a missing file, a heading inside a code fence and a missing same-page anchor are each named |
+| `test_every_internal_link_in_the_documentation_resolves` | over the repository's documentation pages, no relative link names a missing file or a heading the page lacks |
+
+## 361. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
 
 A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
 

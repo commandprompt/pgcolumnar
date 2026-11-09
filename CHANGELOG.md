@@ -282,6 +282,25 @@ true until the next version shipped.
 
 ### Changed
 
+- The user documentation is brought up to date with the changes since 1.0-alpha4,
+  after an audit of every `[Unreleased]` entry against the docs and the code.
+  Stale statements corrected: the release and PGXN versions and the native format
+  version in limitations.md; going over `groupagg_max_groups` no longer errors;
+  a downgrade to 1.0-alpha4 after 1.0-alpha5 wrote is refused, not misread; the
+  post-codec choice covers every encoding, not only FSST; PostgreSQL 19 is
+  validated against 19beta4; `alter_table_set_access_method` no longer describes
+  PostgreSQL 13 and 14; the cluster and recluster examples name their columns.
+  Newly documented: the `pgcolumnar_objstore.so` module and its same-build rule;
+  restoring a rollup from `pg_dump` and `rebase_rollup`; TID range scans; parallel
+  projection scans; `import_parquet` refusing a partitioned table; how
+  `export_parquet` writes `timestamp` and `timestamptz`; a collation change
+  dropping a column's zone maps; `timestamp` against `timestamptz` not skipping;
+  `vacuum_full` skipping materialized views; the REST reply cap; the one-part
+  upload edge; the two internal test settings; which settings need a restart or
+  a reload. `test/pytest/test_docs_links_resolve.py` resolves every internal link
+  in the docs against the pages' headings: four had broken when function
+  signatures gained arguments, and no gate read links.
+
 - The nightly's ledger gate compares the ceiling against the commit's parent
   (#1104). On the `v1.0-alpha4` tag push every major went red with no suite
   failing: the gate found no prior ceiling, because a tag checkout has no
@@ -593,14 +612,24 @@ true until the next version shipped.
   raises a protocol-violation error (08P01), and a REST reply or listing
   raises `exceeded N bytes` (54000). `https://` replies cannot be changed in
   transit. `test_objstore_chunked_framing.py`.
+- An Iceberg table on object storage can no longer name a file outside its
+  location by spelling `..` in a form that only the server reads as `..`. The
+  remote containment guard already refused a literal `..` and a percent-encoded
+  one. It now also refuses a segment that starts with `..;`, which servers that
+  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`; a
+  segment that starts with `..?` or `..#`, which reaches an `http(s)://`
+  server as the path `..`, because such a key is sent without percent-encoding;
+  and it treats a backslash as a separator, as some servers do. Such a path is
+  refused with `escapes the table location` (22023) before any request is
+  sent.
 - An Iceberg REST catalog can no longer make a backend hold an unbounded
   amount of memory by paging a list. `iceberg_rest_namespaces`,
   `iceberg_rest_tables` and the namespace walk keep every page of a list in
-  memory until the list is built. Each response was capped at 64 MB, but a
+  memory until the list is built. Each response was capped at 64 MiB, but a
   catalog that kept sending new page tokens could send up to 100000 pages, and
   the backend held them all. The pages of one list now share the one-response
-  cap: a list larger than 64 MB across its pages is refused with
-  `the REST catalog ... is larger than 64 MB across its pages` (54000).
+  cap: a list larger than 64 MiB across its pages is refused with
+  `the REST catalog ... is larger than 64 MiB across its pages` (54000).
 
 - A read of a columnar table inside a plpgsql EXCEPTION block that rolls back no
   longer loses the enclosing statement's rows (#1360). To see the rows the

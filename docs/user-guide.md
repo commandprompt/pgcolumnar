@@ -69,14 +69,14 @@ FROM generate_series(1, 1000000) g;
 
 A single `COPY` uses one core, and the columnar encode step is the largest part
 of a load. To use more cores, load a text file with
-[`pgcolumnar.parallel_copy`](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-returns-bigint).
+[`pgcolumnar.parallel_copy`](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint).
 It fans the file across several background workers and returns the row count. The
 load is atomic, so a failure in any part rolls the whole load back. It commits on
 its own, so a `ROLLBACK` in the caller does not undo it.
 
 ```sql
-CREATE TABLE events (id bigint, ts timestamptz, val double precision) USING pgcolumnar;
-SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 8);
+CREATE TABLE events_load (id bigint, ts timestamptz, val double precision) USING pgcolumnar;
+SELECT pgcolumnar.parallel_copy('events_load', '/data/events.txt', 8);
 ```
 
 The target is either a single columnar table or a RANGE-partitioned table with
@@ -96,7 +96,7 @@ file into a directory, and returns the row count. Read the directory back with
 `pgcolumnar.read_parquet`.
 
 ```sql
-SELECT pgcolumnar.parallel_export_parquet('events', '/data/events_out', 8);
+SELECT pgcolumnar.parallel_export_parquet('events_load', '/data/events_out', 8);
 SELECT count(*) FROM pgcolumnar.read_parquet('/data/events_out')
   AS t(id bigint, ts timestamptz, val double precision);
 ```
@@ -268,7 +268,8 @@ times.
 The `path` may also be an object-storage URL. Every Parquet read and export
 function accepts an `s3://`, `http://`, or `https://` URL where it accepts a
 local path. So do the `pgcolumnar_parquet` and `pgcolumnar_iceberg` foreign-data
-wrappers.
+wrappers. One exception: `pgcolumnar.parallel_export_parquet` writes only to a
+local directory or an `s3://` prefix.
 
 ```sql
 SELECT count(*) FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
