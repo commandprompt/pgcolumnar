@@ -2,10 +2,10 @@
 
 ## Release status
 
-pgColumnar is pre-release. The version marker is `1.0-alpha5`, recorded in `VERSION`,
-and it is tagged `v1.0-alpha3`.
+pgColumnar is pre-release. The version marker is `1.0-alpha5`, recorded in `VERSION`.
+The latest published pre-release is `v1.0-alpha4`.
 
-On PGXN the same release is `1.0.0-alpha.3`. The two differ because PGXN requires a
+On PGXN the same release is `1.0.0-alpha.5`. The two differ because PGXN requires a
 semantic version. A semantic version has three integer components, and `1.0-alpha3`
 has two. The pre-release identifier is dot-separated so that a tenth alpha sorts
 after a third. `CREATE EXTENSION` reports the control file's version.
@@ -47,7 +47,7 @@ Thus a missing barrier in concurrent code can be invisible on one architecture a
 a defect on the other. The aarch64 gate runs the concurrency and isolation suites
 on real hardware. That is evidence. It is not a proof.
 
-PostgreSQL 19 coverage is against 19beta2, not a final release.
+PostgreSQL 19 coverage is against 19beta4, not a final release.
 
 The sections below are the standing functional limitations, separate from that
 work.
@@ -55,7 +55,7 @@ work.
 ## On-disk format stability
 
 The on-disk format is versioned. Each columnar relation records two versions. The first is a native data format
-version, which is PGCN v1 at this time. The second is a physical metapage
+version, which is 2 from 1.0-alpha5. The second is a physical metapage
 version. The build checks both on read.
 
 The metapage version guards the physical block layout. The native format version
@@ -92,18 +92,15 @@ it does. A build reads descriptor versions 2 and 3. It refuses a higher one with
 
 That refusal is late rather than early. It fires when a chunk is decoded, not
 when the relation is opened. The index-scan fetch path consults a chunk for
-null-ness before it decodes it. A descriptor from a future build can therefore
-produce a NULL where a value exists. Measured on an alpha4 build reading alpha5
-chunks: 16 of 40 single-row fetches returned NULL. The other 24 raised the
-error.
+null-ness before it decodes it. A future descriptor version could therefore
+produce a NULL where a value exists, unless the native format version also
+changes with it.
 
-**Do not downgrade the extension below the version that wrote a table.** It is
-not merely inadvisable. One path can return a wrong answer rather than fail.
-Upgrading is safe and needs no conversion. A newer build reads every descriptor
-version it has ever written. [Issue
-#1137](https://github.com/commandprompt/pgcolumnar/issues/1137) tracks closing
-the gap, so that a future version is refused early on every path. Both guards are pinned by
-`test/native_format.sh`.
+**Do not downgrade the extension below the version that wrote a table.** After
+1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. It
+reports an error rather than a wrong answer. Upgrading is safe and needs no
+conversion. A newer build reads every descriptor version it has ever written.
+Both guards are pinned by `test/native_format.sh`.
 
 A projection stores its own copy of the data and carries its own format version.
 The build checks it against the storage of the projection and not against the
@@ -186,7 +183,7 @@ Use ordinary SQL against the table when policies must apply.
 ## PostgreSQL versions
 
 pgColumnar builds from one source tree on PostgreSQL 15, 16, 17, 18, and
-19. Every test suite runs on all five majors. The project validates 19 against 19beta2 and not against a final release. It will
+19. Every test suite runs on all five majors. The project validates 19 against 19beta4 and not against a final release. It will
 validate 19 again after the release. It validates 15 through 18 against released
 versions. PostgreSQL 13 and 14 still
 build but are out of the tested matrix.
@@ -319,7 +316,7 @@ these constraints.
   the ordinary two-phase-commit in-doubt case. A DBA resolves it from
   `pg_prepared_xacts`.
 
-See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-returns-bigint)
+See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
 
 ## Planner statistics
@@ -411,6 +408,10 @@ it. On a wide projection it chooses that path when
 `max_parallel_workers_per_gather` is 4. The decode cost is priced by column
 width, and a parallel plan divides it across workers. At the default of 2 the
 planner still chooses the serial plan for the wide query below.
+
+A scan of a covering projection can also run in parallel. `EXPLAIN` then shows
+a `Gather` over a `Custom Scan (PgColumnarScan)` that reports `Columnar
+Projection: <name>`. The workers share the decode work of the projection.
 
 The wide query was measured on one machine, on a build without assertions. The
 parallel plan runs in about 275 ms and the serial plan in about 639 ms. Both are
@@ -706,6 +707,13 @@ btree strategies: `<`, `<=`, `=`, `>=` and `>`.
 Everything else is filtered after the values are decoded. The rows returned are
 correct either way. What differs is how much the scan reads to find them.
 
+On a native table, a `timestamp` column compared with a `timestamptz` constant is
+filtered but does not skip. The comparison turns each wall time into an instant in
+the session's time zone. Across a spring-forward gap that does not keep their
+order, so the zone maps would not bound the rows. A `timestamptz` column compared
+with a `timestamp` constant still skips, and so does a comparison of two values of
+one type.
+
 Range overlap (`&&`) and containment (`@>`) are the exception. They prune through
 a second path. Those operators belong to GiST operator families rather than
 btree. The scan resolves them through the range type's default GiST opclass, and
@@ -879,8 +887,11 @@ be a supported aggregate or a bare key reference. This path also accepts `sum`
 and `avg` on `bigint`, `numeric`, and floating-point columns, which the ungrouped
 path rejects. `pgcolumnar.groupagg_max_groups` caps the group count, default
 1,000,000. The cap is checked again at execution against the real count. A
-plan made before the cap was lowered, or before the table grew past it, errors
-there; it cannot switch plans. Raise the cap, or turn the path off.
+plan made before the cap was lowered, or before the table grew past it, does not
+error there. A partial node hands its groups to a core `Finalize HashAggregate`
+and carries on. A serial node writes its groups to a sort, which spills within
+`work_mem`, and merges them at the end. Raising the cap only keeps the query on
+the fast path.
 
 
 ## Join runtime filter
@@ -904,6 +915,12 @@ The collation of the comparison must match the collation of the column. That is
 the collation that put the stored minimum and maximum in order. A comparison with
 a different collation still operates as a filter, but it does not drive skipping.
 The results therefore never depend on the pushdown.
+
+`ALTER COLUMN ... TYPE ... COLLATE` can change a column's collation without a
+rewrite of the table. The stored minimum and maximum of that column are then
+dropped, and so is its extent. This applies to the table and to its projections.
+The scan then does not skip on that column. A rewrite such as `pgcolumnar.vacuum`
+builds the bounds again.
 
 A range column follows a different rule, because a range column has no collation
 of its own. PostgreSQL records `attcollation` as 0 for it. The ordering comes from
@@ -1111,6 +1128,10 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   that it reaches through a symbolic link. A link to a parent would make the walk
   continue without end. It does follow a symbolic link to a file. Nesting deeper than 32 levels raises rather than reading part of the
   tree.
+- A glob over local files is refused with SQLSTATE 54000 when the directories it
+  walks hold more than about 1,000,000 names in all. The count includes names that
+  do not match. Read such a tree as a directory instead. Refer to
+  [Glob patterns too large to match](sql-reference.md#glob-patterns-too-large-to-match).
 - Hive-style partitioning is available on the foreign-data wrapper only, through
   the `partition_columns` table option. The columns are declared, not inferred
   from the tree, and `read_parquet` has no equivalent. The reader takes a value from the directory name,
@@ -1157,6 +1178,8 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   than a 32-bit integer, with SQLSTATE XX001 (#1921). `parquet_schema` refuses it
   too. It used to return the columns before that element and drop the rest
   without an error.
+- The reader refuses a schema element that has no `name`, a field the format
+  requires, with SQLSTATE 0A000.
 - The reader checks that each compressed page decompresses to the size its page
   header declares (#1910). A page that does not is refused with SQLSTATE XX001.
   Before, the reader did not check a Snappy page's size, so a corrupt Snappy page

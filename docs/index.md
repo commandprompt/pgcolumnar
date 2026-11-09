@@ -8,7 +8,7 @@ column projections over append-mostly data. It also reads external Parquet and
 Apache Iceberg tables, from a local path or from object storage.
 
 pgColumnar builds from one source tree on PostgreSQL 15 through 18, with 19
-validated against 19beta2. It is
+validated against 19beta4. It is
 licensed under the MIT License.
 
 ## Where to start
@@ -55,7 +55,7 @@ large value per row. An independent validation measured this on 2026-08-05, on a
 2,000,000 row ledger table. Each row held 1 KiB of incompressible data. The
 figures below are theirs.
 
-| operation | heap | pgColumnar | |
+| operation | heap | pgColumnar | comparison |
 | --- | ---: | ---: | --- |
 | point lookup by indexed uuid | 1.0 ms | 203 ms | 200x slower |
 | ordered 100,000 row full-row segment | 42 ms | 998 ms | 24x slower |
