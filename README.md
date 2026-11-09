@@ -22,7 +22,7 @@ analytic workloads: large scans, aggregates, and column projections over
 append-mostly data.
 
 pgColumnar builds from one source tree on PostgreSQL 15 through 18, with 19
-validated against 19beta2, and is
+validated against 19beta4, and is
 licensed under the [MIT License](LICENSE). It is [pre-release](docs/limitations.md#release-status); the version marker
 is `1.0-alpha5`, recorded in `VERSION`.
 The latest published pre-release is `v1.0-alpha4`. A table `USING pgcolumnar` is stored in the
@@ -34,11 +34,13 @@ The full documentation is published at
 **[commandprompt.github.io/pgcolumnar](https://commandprompt.github.io/pgcolumnar/)**. The
 same pages are in this repository under `docs/`:
 
-| | |
+| Page | Covers |
 | --- | --- |
 | [Features](docs/features.md) | What pgColumnar provides |
 | [Installation](docs/installation.md) | Build, load, and create the extension |
 | [User guide](docs/user-guide.md) | Create tables, load data, and query |
+| [How-to guides](docs/how-to.md) | Task recipes for each feature |
+| [Best practices](docs/best-practices.md) | Advice organized by decision |
 | [Administration](docs/administration.md) | Operate columnar tables in production |
 | [Configuration](docs/configuration.md) | Settings and per-table options |
 | [SQL reference](docs/sql-reference.md) | The `pgcolumnar.*` functions |

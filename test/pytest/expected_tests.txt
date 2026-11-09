@@ -359,7 +359,10 @@
 # redirect, copy-back, zero-counter refusal, corpus verdicts, table, command line, the corpus resolving from the
 # caller's directory, the tree left uninstrumented, and a counters directory that cannot be emptied, on
 # stand-ins, by collection over NO_CLUSTER.
-guard_tests 889
+# guard_tests 889 -> 892 for the doc audit's three tests in test_docs_links_resolve.py: the site's anchor rule,
+# the reader naming each kind of broken link on fixtures, and every internal link in the docs resolving, by
+# collection over NO_CLUSTER.
+guard_tests 892
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1891,9 +1894,17 @@ guard_tests 889
 # cluster_tests 5350 -> 5352 for test_iceberg_rest_scan.py's REST list paging cap (security audit,
 # 2026-11-07): test_paging_pages_within_the_response_cap_together_still_list and
 # test_paging_pages_over_the_response_cap_together_are_refused, by collection.
-# cluster_tests 5352 -> 5363 for the Arrow import encoding fix's test_arrow_import_encoding.py (import_arrow
+# cluster_tests 5352 -> 5354 for test_iceberg_objstore.py's remote ".." spellings (security audit,
+# 2026-11-07): test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3 and
+# test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3, by collection.
+# cluster_tests 5354 -> 5361 for the review of #2049 in test_iceberg_objstore.py: "..?" and "..%3F" over
+# s3 (test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3,
+# test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3), the plain http:// leg's
+# control (test_an_iceberg_table_reads_over_plain_http) and the four spellings refused over plain http
+# (test_a_dotdot_*_delete_path_is_refused_over_plain_http), by collection.
+# cluster_tests 5361 -> 5372 for the Arrow import encoding fix's test_arrow_import_encoding.py (import_arrow
 # refuses a UTF8 value that is not valid in the database encoding, or holds a NUL byte, with 22021 for text,
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5363
+cluster_tests 5372

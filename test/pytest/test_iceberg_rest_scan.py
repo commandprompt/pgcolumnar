@@ -367,7 +367,7 @@ def irs(pgc_cluster):
         r["padded 15"] = _rows(dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{padded[15]}','db')")
         r["padded 17"] = _refusal(
             dsn, f"SELECT * FROM pgcolumnar.iceberg_rest_tables('{padded[17]}','db')",
-            "the REST catalog table list is larger than 64 MB across its pages", " over the cap")
+            "the REST catalog table list is larger than 64 MiB across its pages", " over the cap")
 
         # #1865: a namespace level that holds a dot. This catalog (separator %1F)
         # keeps its table in the one level "db.x" and also has the two levels db, x.

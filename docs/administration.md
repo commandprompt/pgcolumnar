@@ -49,9 +49,13 @@ Before the block codec runs, each column chunk takes a lightweight encoding.
 The choices include dictionary, run-length, delta, frame-of-reference, and FSST
 for strings.
 
-Whether FSST is kept is decided after the configured codec has run. What reaches
-disk is the encoded stream compressed, so that is the size the decision has to
-compare. The decision therefore reads `pgcolumnar.compression`.
+Whether an encoding is kept is decided after the configured codec has run. What
+reaches disk is the encoded stream compressed, so that is the size the decision
+has to compare. A column chunk keeps its encoding only when the encoded values,
+compressed, are smaller than the raw values compressed. The decision therefore
+reads `pgcolumnar.compression`.
+[`pgcolumnar.enable_post_codec_encoding_choice`](configuration.md#compression),
+on by default, controls this test. Off keeps the encoding chosen before the codec.
 
 With `none` there is no codec to compare through. The chunk-level FSST test is
 skipped, and FSST is kept whenever it was built. **`none` is a different cascade,
@@ -257,8 +261,10 @@ To return trailing reclaimed blocks to the operating system, use
 SELECT pgcolumnar.truncate('events');
 ```
 
-`pgcolumnar.truncate` is opt-in. Set `pgcolumnar.enable_end_truncation` to `on`
-first. Refer to Configuration. The function does what it can. It takes a short
+`pgcolumnar.truncate` is opt-in. It returns space only when
+[`pgcolumnar.enable_end_truncation`](configuration.md#maintenance-and-disk-reclaim)
+is `on`. The setting is off by default, and only a superuser can set it. While
+it is off, the function does nothing. The function does what it can. It takes a short
 `AccessExclusiveLock`, but only if the lock is available immediately. If the lock
 is not available, the function returns 0 and does not wait. Thus it does not
 block a table that is busy. It cannot run inside a transaction block. Run it
@@ -379,6 +385,13 @@ A columnar table is an ordinary WAL-logged relation.
 
 Install and preload the extension on any server that restores or replicates a
 columnar table, because reading the table requires the access method.
+
+`pg_dump` carries the definition of a rollup, but not the row groups it folded.
+After a logical restore, `pgcolumnar.refresh_rollup` refuses with SQLSTATE 55000.
+If the rollup is current, run
+[`pgcolumnar.rebase_rollup`](sql-reference.md#pgcolumnarrebase_rolluprollup-regclass-returns-bigint)
+once. Refreshes then work again. A physical copy keeps the table identifiers
+that the check compares, so it needs no rebase.
 
 A physical copy moves between hosts of the same byte order. The native format
 stores integers in host byte order, which the format specification states. This
