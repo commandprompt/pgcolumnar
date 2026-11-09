@@ -192,7 +192,7 @@ by that key and nothing had changed. That is the cost a scheduled recluster, or
 the maintenance daemon, would pay every sweep. #614 records the clustering key and
 makes a redundant call a no-op.
 
-The table below is 10,000,000 rows in 67 chunk groups, a 186 MB relation. It is
+The table below is 10,000,000 rows in 67 row groups, a 186 MB relation. It is
 clustered once, then `recluster` is called again on the unchanged table:
 
 | build | groups rewritten | time |
@@ -292,7 +292,7 @@ Single columnar table, 20,000,000 rows:
 One worker matches a plain `COPY` at 130.4 s, so the coordinator and the two-phase
 commit add little. The result is the same data every time. All runs load
 20,000,000 rows with an identical `sum(usage_user)`. On-disk size varies by 0.03%
-across worker counts, because the byte split moves a few stripe boundaries.
+across worker counts, because the byte split moves a few row group boundaries.
 
 A 100,000,000-row load shows the same effect at scale. One `COPY` takes 644.1 s;
 `parallel_copy` with 16 workers takes 92.8 s, a 6.94x speedup. Both produce 2.67 GB

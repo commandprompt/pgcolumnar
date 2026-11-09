@@ -43,6 +43,24 @@ OID or dependent objects such as views and foreign keys. See the
 
 To convert back to the default heap, use `heap` as the method.
 
+## How a table is stored
+
+A columnar table is stored in three nested units:
+
+- A **row group** holds up to `pgcolumnar.stripe_row_limit` rows (default
+  150000). It is the unit the writer appends, and the unit `pgcolumnar.vacuum`
+  combines and rewrites.
+- A **chunk group** is a slice of a row group, of up to
+  `pgcolumnar.chunk_group_row_limit` rows (default 10000). It is the unit a scan
+  skips when a filter cannot match its minimum and maximum. `EXPLAIN (ANALYZE)`
+  counts chunk groups.
+- A **vector** is 1024 values of one column. It is the unit the reader decodes.
+
+"Stripe" is an older name for a row group. It remains in `stripe_row_limit`,
+`stripe_count` and the `stripeid` column, which keep their names so existing
+code still works. A Parquet file has row groups of its own, which are not
+pgColumnar row groups.
+
 ## Load data
 
 Columnar storage is for data that you mostly append. The writer holds rows in a

@@ -282,6 +282,13 @@ true until the next version shipped.
 
 ### Changed
 
+- The user pages name each storage unit one way. The user guide gains "How a table
+  is stored", which defines row group, chunk group and vector, and says that
+  "stripe" is the older name for a row group kept in `stripe_row_limit`. Two
+  prose uses of "stripe" now say row group. A benchmark that counted 67 row
+  groups as 67 chunk groups is corrected. `test_docs_storage_terms.py` holds the
+  pages to it.
+
 - The user documentation is brought up to date with the changes since 1.0-alpha4,
   after an audit of every `[Unreleased]` entry against the docs and the code.
   Stale statements corrected: the release and PGXN versions and the native format

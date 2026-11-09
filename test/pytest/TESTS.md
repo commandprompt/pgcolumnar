@@ -407,6 +407,7 @@ behaviour, the source of that number is named.
 - [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
 - [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
+- [362. test_docs_storage_terms.py: the user pages name each storage unit one way](#362-test_docs_storage_termspy-the-user-pages-name-each-storage-unit-one-way)
 
 ## 1. How to read a test in here
 
@@ -14367,3 +14368,28 @@ Before the new sections in the same change, the arm over the real document faile
 | --- | --- |
 | `test_each_kind_of_gap_is_named` | on a fixture tree: a control that passes (two files in one heading, a header not required, a catalog named with its schema, a heading after the map not read), then an unmapped file, a stale heading and unquoted catalogs, each reported |
 | `test_the_module_map_matches_the_tree` | the repository's own map, sources and install script: no gap |
+
+## 362. test_docs_storage_terms.py: the user pages name each storage unit one way
+
+A table is written in row groups, a row group is divided into chunk groups, and a column within a chunk group is encoded in 1024-value vectors. "Stripe" is the older name for a row group. It survives in `stripe_row_limit`, `stripe_count` and the `stripeid` column, which cannot change without breaking callers. In prose it is a fourth name for a thing that already has one. The documentation audit after 1.0-alpha4 found it twice, and a benchmark that counted 67 row groups as 67 chunk groups.
+
+So the user pages (`docs/*.md` less the developer page `ARCHITECTURE.md`, and `README.md`) never say "stripe" outside code: fenced blocks, code spans and link targets are code. The user guide's "How a table is stored" section defines the three units, names the old word, and is the one place the word may appear in prose.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the storage section not exempted;
+- fenced blocks, code spans or link targets read as prose;
+- the match made case-sensitive or singular only;
+- blanked lines not kept, so reported lines drift from the file's;
+- the storage section read to the end of the page;
+- `ARCHITECTURE.md` included.
+
+Before the fixes in the same change, the arm over the real documentation failed naming the two prose uses, in `benchmarks.md` and `configuration.md`.
+
+### Every test
+
+| Test | Checks |
+| --- | --- |
+| `test_stripe_is_found_in_prose_and_not_in_code` | on a fixture page: settings, a bare word in a code span, link targets and a fenced block pass; after the storage section, a capitalized and a plural use are named at their file lines |
+| `test_the_storage_section_is_found_by_its_heading` | every term defined in the section passes; a term defined only after the section does not count |
+| `test_the_user_pages_say_row_group_and_define_the_units` | the repository's own pages: no stray stripe, and the user guide defines row group, chunk group and vector and names `stripe_row_limit` |

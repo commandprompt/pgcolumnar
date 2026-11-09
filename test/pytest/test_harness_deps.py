@@ -105,6 +105,9 @@ NO_CLUSTER = [
     # Checks docs/ARCHITECTURE.md's module map against src/, objstore/ and the install
     # script, as text. Needs no cluster and no driver.
     "test_architecture_map.py",
+    # Reads the user pages for "stripe" in prose and the user guide for its storage
+    # terms, as text. Needs no cluster and no driver.
+    "test_docs_storage_terms.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.
