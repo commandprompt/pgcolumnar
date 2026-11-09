@@ -10,7 +10,7 @@ the nightly went red (#1382). So the list is derived, not trusted: every job tha
 runs the suites must install every extension package any such job installs.
 
 A job runs the suites when a line that is not a comment calls run_all_versions.sh
-or run_coverage.sh, or runs `pytest -q` in a job whose key names a cluster. The
+or run_coverage.sh or run_coverage.py (#2038), or runs `pytest -q` in a job whose key names a cluster. The
 suite jobs are also named as a set, so a renamed cluster job cannot drop out
 quietly. Needs no cluster and no driver.
 """
@@ -24,7 +24,7 @@ CI = WORKFLOWS / "ci.yml"
 NIGHTLY = WORKFLOWS / "nightly.yml"
 
 JOB_KEY = re.compile(r"^  ([A-Za-z_-]+):\s*$")
-RUNS = re.compile(r"run_all_versions\.sh|run_coverage\.sh")
+RUNS = re.compile(r"run_all_versions\.sh|run_coverage\.(?:sh|py)")
 PACKAGE = re.compile(r"postgresql-(?:\$\{\{ matrix\.pg \}\}|\d+)-([a-z0-9]+)")
 
 

@@ -355,7 +355,11 @@
 # NO_CLUSTER.
 # guard_tests 868 -> 878 for #2038's ten tests in test_sanitizer_gate.py: run_san.py's subset, twins, flag refusal,
 # report reading, verdicts, environment and command line, on stand-ins, by collection over NO_CLUSTER.
-guard_tests 878
+# guard_tests 878 -> 889 for #2038's eleven tests in test_coverage_report.py: run_coverage.py's instrumentation,
+# redirect, copy-back, zero-counter refusal, corpus verdicts, table, command line, the corpus resolving from the
+# caller's directory, the tree left uninstrumented, and a counters directory that cannot be emptied, on
+# stand-ins, by collection over NO_CLUSTER.
+guard_tests 889
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

@@ -310,6 +310,14 @@ true until the next version shipped.
   shell suites ran there. `test_pytest_runs_where_the_suites_run.py` requires
   that `pytest-cluster` runs every (major, architecture) the suites job runs, in
   both workflows.
+- The nightly coverage report runs the pytest corpus, not the shell suites
+  (#2038). `test/pytest/run_coverage.py` builds with `COPT=--coverage`, sends
+  the counters to `GCOV_PREFIX`, and runs every pytest cluster file except the
+  three that install another build into the prefix. It then copies each counter
+  back beside its object, only inside the tree. It keeps `run_coverage.sh`'s
+  refusals: zero counters are refused before lcov runs, and a run that collected
+  no test is not a clean report. `test_coverage_report.py` holds each refusal on
+  stand-in tools. The job now runs as an ordinary user, as pytest-cluster does.
 - The nightly sanitizer gate runs the pytest twins, not the shell suites
   (#2038). `test/pytest/run_san.py` runs the twins of `run_san.sh`'s 24 suites
   against the ASAN+UBSAN build and decides the same way. It refuses a build
