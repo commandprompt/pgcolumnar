@@ -362,7 +362,9 @@
 # guard_tests 889 -> 892 for the doc audit's three tests in test_docs_links_resolve.py: the site's anchor rule,
 # the reader naming each kind of broken link on fixtures, and every internal link in the docs resolving, by
 # collection over NO_CLUSTER.
-guard_tests 892
+# guard_tests 892 -> 894 for test_architecture_map.py: the reader naming each kind of gap on a fixture tree, and
+# the module map naming every source file and catalog, by collection over NO_CLUSTER.
+guard_tests 894
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
