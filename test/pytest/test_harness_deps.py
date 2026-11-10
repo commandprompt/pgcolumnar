@@ -102,6 +102,9 @@ NO_CLUSTER = [
     # Resolves the relative links in docs/*.md and README.md against the pages'
     # headings, as text. Needs no cluster and no driver.
     "test_docs_links_resolve.py",
+    # Checks docs/ARCHITECTURE.md's module map against src/, objstore/ and the install
+    # script, as text. Needs no cluster and no driver.
+    "test_architecture_map.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.

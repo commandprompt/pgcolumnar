@@ -406,6 +406,7 @@ behaviour, the source of that number is named.
 - [358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides](#358-test_sanitizer_gatepy-the-pytest-sanitizer-gate-decides-what-run_sansh-decides)
 - [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
 - [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
+- [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
 
 ## 1. How to read a test in here
 
@@ -14342,3 +14343,27 @@ Before the fixes in the same change, the arm over the real documentation failed 
 | `test_the_anchor_rule_is_the_sites` | a signature heading, a hyphenated heading, a heading with inline code and a heading holding a link each give the anchor the site gives |
 | `test_a_link_that_reaches_no_heading_or_no_file_is_named` | on fixture pages: links that resolve, external links and same-page links are not named; a stale signature anchor, a missing file, a heading inside a code fence and a missing same-page anchor are each named |
 | `test_every_internal_link_in_the_documentation_resolves` | over the repository's documentation pages, no relative link names a missing file or a heading the page lacks |
+
+## 361. test_architecture_map.py: the module map names every source file and every catalog
+
+`docs/ARCHITECTURE.md` is how a new developer finds the code, and nothing held it to the tree. By 1.0-alpha5 its module map named none of eleven source files in `src/`, nor the object-store module's own source, and seven catalogs in the install script were absent, rollups among them. Found by the documentation audit after 1.0-alpha4.
+
+The map is checked against the tree, not against a list. Every `.c` file in `src/` and `objstore/` must be named in a heading under `## Module map`. Every file a map heading names must exist. Every `CREATE TABLE pgcolumnar.<name>` in the default version's install script must be named in backticks somewhere in the document.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the stale-entry check removed;
+- the unmapped-file check removed;
+- the map read to the end of the document instead of to the next `## ` heading;
+- a file named only in prose counted as mapped;
+- the catalog check removed;
+- a catalog named without backticks counted.
+
+Before the new sections in the same change, the arm over the real document failed naming thirteen files and the seven catalogs. The files were the eleven, the object-store module's source, and `columnar_puffin.c`, which the map named only in prose.
+
+### Every test
+
+| Test | Checks |
+| --- | --- |
+| `test_each_kind_of_gap_is_named` | on a fixture tree: a control that passes (two files in one heading, a header not required, a catalog named with its schema, a heading after the map not read), then an unmapped file, a stale heading and unquoted catalogs, each reported |
+| `test_the_module_map_matches_the_tree` | the repository's own map, sources and install script: no gap |
