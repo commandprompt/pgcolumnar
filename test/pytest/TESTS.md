@@ -407,7 +407,8 @@ behaviour, the source of that number is named.
 - [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
 - [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
-- [362. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#362-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
+- [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 
 ## 1. How to read a test in here
 
@@ -14369,7 +14370,32 @@ Before the new sections in the same change, the arm over the real document faile
 | `test_each_kind_of_gap_is_named` | on a fixture tree: a control that passes (two files in one heading, a header not required, a catalog named with its schema, a heading after the map not read), then an unmapped file, a stale heading and unquoted catalogs, each reported |
 | `test_the_module_map_matches_the_tree` | the repository's own map, sources and install script: no gap |
 
-## 362. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding
+## 362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+
+A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
+
+The file runs its own HTTP server on 127.0.0.1, on a port chosen at run time, and allows it by host and port. A ranged GET through `parquet_schema` reaches `os_read_body`; GET `/v1/config` through `iceberg_rest_table_location` reaches `os_slurp_body`. Each hostile reply must raise its guard's SQLSTATE, and the same connection must then answer `SELECT 1`. The control reads a pyarrow-written file through `read_parquet` and a REST reply, both sent in chunks of 1, 7 and 1000 bytes, and checks every row and the location.
+
+The second test passed on main too: `strtoll` clamps a size past 64 bits to `7fffffffffffffff`, and with no earlier chunk the sum does not wrap. It pins the new parser's refusal of that size.
+
+Removing the ranged-read bound fails the first test with the crash. The new unsigned parse with the old signed sums fails the first and third tests. Removing the REST cap fails the third test.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: the same connection answers SELECT 1 after it |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns every row |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns the right values |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | the rows came through ranged GETs, each answered chunked |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked REST catalog reply is read whole |
+
+## 363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding
 
 `import_arrow` passed each Arrow UTF8 value straight to the column type's input function. textin, varcharin, json_in and jsonb_in do not check the encoding, because core checks client text before they run, and a file the backend reads skips that step. On main before the fix, a stream holding `ok`, the bytes `ff fe` and a lone `c3` imported 3 rows into a `text` column, and `upper()` and `ORDER BY` on it then failed with "invalid byte sequence for encoding". `read_parquet` already refused the same bytes. `import_arrow` now checks each value before the input function runs, refuses a bad one with 22021, naming the column and the first bad bytes, and stores no row.
 
