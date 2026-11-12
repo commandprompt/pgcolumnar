@@ -605,6 +605,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.compact_rewrite`, `recluster` and `recluster_hilbert` now run a
+  table's index expressions and partial-index predicates as the table's owner,
+  in a security-restricted operation (#2053). An online rewrite puts each moved
+  row back into every index itself, and it evaluated those functions as the
+  caller. The maintenance daemon calls these verbs as the bootstrap superuser,
+  and a superuser may call them on any table. So a table owner with no other
+  privilege could put a function in an index and have it run as a superuser.
+  Each verb now switches to the owner after its ownership check, as PostgreSQL's
+  `CLUSTER` and index builds do. From PostgreSQL 17 it also restricts
+  `search_path`. The caller's identity and settings come back when it returns.
+  `vacuum`, `vacuum_sorted` and `cluster` rebuild indexes through PostgreSQL,
+  which already switched. `test_maintenance_runs_as_owner.py`.
 - A remote read no longer writes past its buffer when a server sends a
   hostile chunk size. Before this fix, an allow-listed endpoint, or anyone who
   could change a plain `http://` reply, could send a 1-byte chunk and then the

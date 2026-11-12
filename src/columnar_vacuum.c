@@ -50,6 +50,7 @@
 #include "utils/inval.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/relcache.h"
 #include "utils/timestamp.h"
@@ -204,6 +205,56 @@ PgColumnarRequireTableOwnerByOid(Oid relid)
 {
 	if (!COLUMNAR_TABLE_OWNERCHECK(relid))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_TABLE, get_rel_name(relid));
+}
+
+/*
+ * The caller's identity, saved while a verb runs as the table's owner.
+ */
+typedef struct OwnerSwitch
+{
+	Oid			userid;
+	int			secContext;
+	int			gucNestLevel;
+} OwnerSwitch;
+
+/*
+ * switch_to_owner
+ *		Run the rest of a verb as the table's owner, security-restricted, with
+ *		GUC changes local to it (#2053).
+ *
+ *		An online rewrite puts every moved row back into each index itself
+ *		(PgColumnarIndexInsertRow), so it evaluates the owner's index expressions
+ *		and partial-index predicates. Those are code the OWNER chose, and they
+ *		ran as the CALLER: the maintenance daemon calls compact_rewrite and
+ *		recluster as the bootstrap superuser, and a superuser may call either on
+ *		any table, so an unprivileged owner's function ran as superuser.
+ *
+ *		This is what core's cluster_rel and index_build do, on every supported
+ *		major (CVE-2022-1552), and the verbs that rebuild through core were
+ *		already covered by index_build. RestrictSearchPath arrived in 17.
+ *
+ *		Called after the caller's own ownership check, which must judge the
+ *		caller. A failure needs no restore: transaction and subtransaction abort
+ *		put back the user id, the security context and the GUC nest level.
+ */
+static void
+switch_to_owner(Relation rel, OwnerSwitch *sw)
+{
+	GetUserIdAndSecContext(&sw->userid, &sw->secContext);
+	SetUserIdAndSecContext(rel->rd_rel->relowner,
+						   sw->secContext | SECURITY_RESTRICTED_OPERATION);
+	sw->gucNestLevel = NewGUCNestLevel();
+#if PG_VERSION_NUM >= 170000
+	RestrictSearchPath();
+#endif
+}
+
+/* restore_caller: undo switch_to_owner on the success path. */
+static void
+restore_caller(OwnerSwitch *sw)
+{
+	AtEOXact_GUC(false, sw->gucNestLevel);
+	SetUserIdAndSecContext(sw->userid, sw->secContext);
 }
 
 /* Clustering helpers (defined later, used by the online recluster below) */
@@ -1010,6 +1061,7 @@ recluster_verb(FunctionCallInfo fcinfo, const char *curve)
 	int			ncols;
 	AttrNumber *atts;
 	int64		reclustered;
+	OwnerSwitch sw;
 
 	/* the lazy lock: concurrent reads and writes during the recluster */
 	atts = cluster_verb_validate(fcinfo,
@@ -1019,7 +1071,9 @@ recluster_verb(FunctionCallInfo fcinfo, const char *curve)
 	if (curve == NULL)
 		curve = cluster_inherited_curve(rel, ncols, atts);
 
+	switch_to_owner(rel, &sw);
 	reclustered = pgcolumnar_recluster_online(rel, ncols, atts, curve);
+	restore_caller(&sw);
 
 	table_close(rel, NoLock);
 	return reclustered;
@@ -1119,6 +1173,7 @@ pgcolumnar_compact_rewrite(PG_FUNCTION_ARGS)
 	int			maxGroups = PG_ARGISNULL(2) ? 0 : PG_GETARG_INT32(2);
 	Relation	rel;
 	int64		rewritten;
+	OwnerSwitch sw;
 
 	if (PG_ARGISNULL(0))
 		ereport(ERROR,
@@ -1145,7 +1200,9 @@ pgcolumnar_compact_rewrite(PG_FUNCTION_ARGS)
 	/* dev/test: hold SUEL so the daemon's yield is observable (#415) */
 	pgcolumnar_maintenance_hold();
 
+	switch_to_owner(rel, &sw);
 	rewritten = pgcolumnar_rewrite_partial_groups(rel, minFrac, maxGroups);
+	restore_caller(&sw);
 
 	table_close(rel, NoLock);
 	PG_RETURN_INT64(rewritten);
