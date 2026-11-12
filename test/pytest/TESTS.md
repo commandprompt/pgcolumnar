@@ -14316,10 +14316,11 @@ On PG18, against a private prefix, the whole corpus (312 files at the time, one 
 | `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
 | `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
 | `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
-| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report and exits nonzero; a corpus that declined a test exits 0 |
+| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report, names each failed test in its own output (#2054) and exits nonzero; a corpus that declined a test exits 0 |
 | `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
 | `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
 | `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |
+| `test_the_coverage_job_fetches_the_release_tags_its_corpus_reads` | a corpus file reads the release tags, so every workflow job that runs `run_coverage.py` fetches the `v1.0-alpha` tags before it. The nightly's coverage job ran from a plain checkout, and the tag arms' UNMET_PRECONDITION failed the run every night (#2054) |
 
 ## 360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading
 
