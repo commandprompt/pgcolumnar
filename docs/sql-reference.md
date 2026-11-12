@@ -201,6 +201,12 @@ maintenance daemon call it on a schedule without churning storage.
 On a table laid on the Hilbert curve over the key you name, `recluster`
 maintains that curve. It does not convert the table to Z-order.
 
+The rewrite puts each moved row back into every index, so it evaluates the
+table's index expressions and partial-index predicates. It runs them as the
+table's owner, in a security-restricted operation, whichever role calls it. This
+is what `VACUUM` and `CLUSTER` do, and it covers the maintenance daemon, which
+calls this function as a superuser.
+
 ### pgcolumnar.recluster_hilbert(tablename regclass, VARIADIC columns name[]) returns bigint
 
 The online counterpart to `cluster_hilbert`, and the way to move a Z-ordered
@@ -309,6 +315,12 @@ the call would reclaim nothing and still report success.
 ```sql
 SELECT pgcolumnar.compact_rewrite('events', 0.3);
 ```
+
+The rewrite puts each moved row back into every index, so it evaluates the
+table's index expressions and partial-index predicates. It runs them as the
+table's owner, in a security-restricted operation, whichever role calls it. This
+is what `VACUUM` and `CLUSTER` do, and it covers the maintenance daemon, which
+calls this function as a superuser.
 
 ### pgcolumnar.truncate(tablename regclass) returns bigint
 

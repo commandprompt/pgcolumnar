@@ -1907,4 +1907,7 @@ guard_tests 894
 # cluster_tests 5361 -> 5365 for the four tests in the new test_objstore_chunked_framing.py (a chunk size
 # that wraps the response bound is refused on a ranged read and on a REST catalog reply, and the backend
 # survives; a valid chunked reply still reads), by collection: 6214 tests collected, less guard_tests 863.
-cluster_tests 5365
+# cluster_tests 5365 -> 5372 for the seven arms of the new test_maintenance_runs_as_owner.py (a superuser
+# running compact_rewrite, recluster, recluster_hilbert, vacuum, vacuum_sorted, cluster or cluster_hilbert
+# runs the owner's index expressions and predicates as the owner, security-restricted, #2053), by collection.
+cluster_tests 5372

@@ -408,6 +408,7 @@ behaviour, the source of that number is named.
 - [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [363. test_maintenance_runs_as_owner.py: a maintenance verb runs the owner's index code as the owner](#363-test_maintenance_runs_as_ownerpy-a-maintenance-verb-runs-the-owners-index-code-as-the-owner)
 
 ## 1. How to read a test in here
 
@@ -14393,3 +14394,28 @@ Removing the ranged-read bound fails the first test with the crash. The new unsi
 | `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns the right values |
 | `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | the rows came through ranged GETs, each answered chunked |
 | `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked REST catalog reply is read whole |
+
+## 363. test_maintenance_runs_as_owner.py: a maintenance verb runs the owner's index code as the owner
+
+A privilege fix, test-first (#2053). An online rewrite puts each moved row back into every index itself (`PgColumnarIndexInsertRow`), so it evaluates the owner's index expressions and partial-index predicates. They ran as the caller. The maintenance daemon calls `compact_rewrite` and `recluster` as the bootstrap superuser, so an unprivileged owner's function ran as a superuser. Core's `cluster_rel` and `index_build` switch to the owner with `SECURITY_RESTRICTED_OPERATION` on every supported major (CVE-2022-1552), and the verbs now do the same.
+
+`pgc_mallory` owns the table and is nothing else. Her function `seen()` is one index's expression and another's predicate. It raises a NOTICE naming `current_user` and whether setting `role` is refused, which is how a security-restricted operation shows from SQL. The setting is always rolled back. A superuser runs each verb in one transaction. Every notice must read `user=pgc_mallory restricted=yes`, and afterwards `current_user` and `search_path` must be the caller's again. A premise per verb: the function ran at least once.
+
+On main, `compact_rewrite`, `recluster` and `recluster_hilbert` failed with `user=postgres restricted=no`. `vacuum`, `vacuum_sorted`, `cluster` and `cluster_hilbert` passed, because they rebuild through `index_build`; they stay as controls. `compact` and `expire` evaluate no index code (zero notices), so they are not arms.
+
+Removal proof on PG 18: each mutant fails at least one test.
+
+| mutant | fails |
+| --- | --- |
+| no switch in `compact_rewrite` | `compact_rewrite` |
+| no switch in `recluster_verb` | `recluster`, `recluster_hilbert` |
+| switch without `SECURITY_RESTRICTED_OPERATION` | the three rewrite verbs |
+| switch to the caller instead of the owner | the three rewrite verbs |
+| caller's user id not restored | the three rewrite verbs |
+| GUC nest level not restored (`search_path` stays restricted) | the three rewrite verbs |
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_a_superuser_runs_the_owners_index_code_as_the_owner` | one arm per row-rewriting verb, run by a superuser on mallory's table: the caller is a superuser and mallory's code ran (premises); every evaluation reported `user=pgc_mallory restricted=yes`; `current_user` and `search_path` are the caller's once the verb returns |
