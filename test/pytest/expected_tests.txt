@@ -1907,4 +1907,9 @@ guard_tests 894
 # cluster_tests 5361 -> 5365 for the four tests in the new test_objstore_chunked_framing.py (a chunk size
 # that wraps the response bound is refused on a ranged read and on a REST catalog reply, and the backend
 # survives; a valid chunked reply still reads), by collection: 6214 tests collected, less guard_tests 863.
-cluster_tests 5365
+# cluster_tests 5365 -> 5376 for the Arrow import encoding fix's test_arrow_import_encoding.py (import_arrow
+# refuses a UTF8 value that is not valid in the database encoding, or holds a NUL byte, with 22021 for text,
+# varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
+# import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
+# /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
+cluster_tests 5376
