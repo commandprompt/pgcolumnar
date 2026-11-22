@@ -42,6 +42,7 @@
 #include "common/int.h"
 #include "executor/tuptable.h"
 #include "lib/stringinfo.h"
+#include "mb/pg_wchar.h"
 #include "catalog/pg_authid_d.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
@@ -1520,6 +1521,7 @@ typedef struct ImpNode
 	int			srcUnit;		/* Arrow DateUnit/TimeUnit, -1 if the file said nothing */
 	int32		atttypmod;
 	bool		needsInput;
+	const char *colname;		/* the target column, for errors; see imp_set_colname */
 	FmgrInfo	inFinfo;
 	Oid			inTypioparam;
 	/* list element */
@@ -1610,6 +1612,68 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 			fmgr_info(infunc, &n->inFinfo);
 		}
 	}
+}
+
+/*
+ * Name a node subtree after the target column it decodes, so an error raised
+ * while decoding a value, at any depth, can name the column.
+ */
+static void
+imp_set_colname(ImpNode *n, const char *colname)
+{
+	int			c;
+
+	n->colname = colname;
+	for (c = 0; c < n->nchildren; c++)
+		imp_set_colname(&n->children[c], colname);
+}
+
+/*
+ * Refuse a UTF8 value that is not valid in the database encoding, before any
+ * input function sees it.
+ *
+ * Core converts and verifies text from a client before an input function runs,
+ * and textin, varcharin, json_in and jsonb_in rely on that. A file read by the
+ * backend skips that step, so without this check import_arrow stored bytes such
+ * as ff fe into a text column, and upper() and ORDER BY on it then failed. This
+ * mirrors pq_text_cell_ok in columnar_parquet_reader.c, which refuses the same
+ * bytes from a Parquet file: an all-ASCII value is accepted without calling the
+ * verifier, and a bad one raises 22021, naming the column and the first bad
+ * bytes in core's format. A NUL byte is refused too, because an input function
+ * would silently cut the value there.
+ */
+static void
+imp_text_check(const ImpNode *n, const char *s, int len)
+{
+	int			i;
+	int			enc;
+	int			valid;
+	int			bad;
+	char		buf[8 * 5 + 1];
+	char	   *b = buf;
+
+	for (i = 0; i < len; i++)
+		if (s[i] == '\0' || IS_HIGHBIT_SET(s[i]))
+			break;
+	if (i == len)
+		return;
+
+	enc = GetDatabaseEncoding();
+	valid = pg_encoding_verifymbstr(enc, s, len);
+	if (valid == len)
+		return;
+
+	/* the bytes of the first bad character, at most 8, as report_invalid_encoding */
+	bad = Min(pg_encoding_mblen(enc, s + valid), len - valid);
+	bad = Min(bad, 8);
+	for (i = 0; i < bad; i++)
+		b += sprintf(b, i == 0 ? "0x%02x" : " 0x%02x", (unsigned char) s[valid + i]);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+			 errmsg("invalid byte sequence for encoding \"%s\" in Arrow column \"%s\": %s",
+					GetDatabaseEncodingName(),
+					n->colname != NULL ? n->colname : "?", buf)));
 }
 
 /* assign RecordBatch buffer indices to a node subtree, pre-order */
@@ -2105,6 +2169,8 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 		memcpy(&start, body + oOff + i * 4, 4);
 		memcpy(&end, body + oOff + (i + 1) * 4, 4);
 		vlen = end - start;
+		if (n->kind == A_UTF8)
+			imp_text_check(n, (const char *) body + dOff + start, vlen);
 		if (n->kind == A_BINARY)
 		{
 			bytea	   *out = (bytea *) palloc(vlen + VARHDRSZ);
@@ -2547,6 +2613,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 							NameStr(att->attname),
 							format_type_be(att->atttypid))));
 		}
+		imp_set_colname(&tops[i], NameStr(att->attname));
 		imp_assign_buffers(&tops[i], &totalBuffers);
 	}
 
