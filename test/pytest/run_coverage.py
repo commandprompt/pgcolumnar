@@ -179,6 +179,11 @@ def _measure(run, pgc, srcdir, src, out_dir, gcov_prefix, files, env, out):
                if re.search(r"\b\d+ (passed|failed|error|errors|skipped|deselected)\b"
                             r"|no tests ran", ln)][-1:] or ["(no summary line)"]
     out(f"-- corpus: rc={rc}, {summary[0]}")
+    # Each failed test by name, from pytest's short summary, so a red nightly says
+    # which test without its log artifact being fetched (#2054).
+    for ln in log.splitlines():
+        if ln.startswith(("FAILED ", "ERROR ")):
+            out(f"   {ln[:300]}")
     if rc not in (0, 1, EXIT_NO_TESTS, EXIT_INCOMPLETE):
         out("   pytest did not run the corpus to an end; its last lines:")
         for ln in log.strip().splitlines()[-10:]:
