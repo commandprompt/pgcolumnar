@@ -582,6 +582,12 @@ extra = {
     'tu_bin': pa.array([b'ab'], pa.binary()),
     'tu_bool': pa.array([True], pa.bool_()),
     'tu_lf64': pa.array([[1.5]], pa.list_(pa.float64())),
+    # Two rows each, so a reader that takes 64-bit offsets as 32-bit ones
+    # stores a wrong value rather than failing (#2082).
+    'tu_lstr': pa.array(['a', 'b'], pa.large_string()),
+    'tu_lbin': pa.array([b'a', b'b'], pa.large_binary()),
+    'tu_dur': pa.array([5, 6], pa.duration('s')),
+    'tu_null': pa.array([None, None], pa.null()),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -845,6 +851,27 @@ PY
 	check "control: a binary file still imports into text (#2082)" \
 		"$(tu_value tu_bin text)" "ab"
 
+	# Tags outside the scalar families above. On unpatched main a large string
+	# ['a','b'] into text stored '' and 'a', and a large binary into bytea
+	# stored '\x' and '\x61': the reader took the 64-bit offsets as 32-bit
+	# ones. A duration into a 4-byte int stored 5 and 0, read at half width. A
+	# null-type column failed with XX001, and a binary into numeric(5,2), whose
+	# node is a decimal, did too. Each is now refused by type.
+	check "a large string file is refused for text, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lstr text)" "42804"
+	check "a large binary file is refused for bytea, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lbin bytea)" "42804"
+	check "a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+		"$(tu_import_state tu_dur int)" "42804"
+	check "a null-type file is refused for text, not called malformed (#2082)" \
+		"$(tu_import_state tu_null text)" "42804"
+	check "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+		"$(tu_import_state tu_bin 'numeric(5,2)')" "42804"
+	# A duration is a signed 64-bit count, so it reads into bigint as that count,
+	# as it did on main. The unit is not stored.
+	check "control: a duration file still imports into bigint as its count (#2082)" \
+		"$(tu_value tu_dur bigint)" "5"
+
 	# ---- the unit on a nested field ---------------------------------------
 	check "a list element's nanosecond unit is honoured, not just the top level" \
 		"$(tu_value tu_list_ns 'timestamp[]')" "{\"2000-01-01 00:00:00\"}"
@@ -916,6 +943,12 @@ else
 			"control: an int64 file still imports into timestamp as microseconds (#2082)" \
 			"control: a string file still imports into bytea (#2082)" \
 			"control: a binary file still imports into text (#2082)" \
+			"a large string file is refused for text, not read with short offsets (#2082)" \
+			"a large binary file is refused for bytea, not read with short offsets (#2082)" \
+			"a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+			"a null-type file is refused for text, not called malformed (#2082)" \
+			"a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+			"control: a duration file still imports into bigint as its count (#2082)" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
 			"a struct field's nanosecond unit is honoured at child index 1"; do
 		check_skip "$_ai_types" \

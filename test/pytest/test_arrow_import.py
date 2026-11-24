@@ -344,6 +344,10 @@ def _temporal_fixtures(pa, out):
         "tu_utf8": pa.array(["10"]), "tu_bin": pa.array([b"ab"], pa.binary()),
         "tu_bool": pa.array([True], pa.bool_()),
         "tu_lf64": pa.array([[1.5]], pa.list_(pa.float64())),
+        # two rows each, so 64-bit offsets read as 32-bit store a wrong value
+        "tu_lstr": pa.array(["a", "b"], pa.large_string()),
+        "tu_lbin": pa.array([b"a", b"b"], pa.large_binary()),
+        "tu_dur": pa.array([5, 6], pa.duration("s")), "tu_null": pa.array([None, None], pa.null()),
     }
     for name, arr in extra.items():
         _write_stream(pa, out / f"{name}.arrows", pa.table({"v": arr}))
@@ -505,6 +509,22 @@ def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, 
     expect.text(value("tu_utf8", "bytea"), "\\x3130",
                 "control: a string file still imports into bytea (#2082)")
     expect.text(value("tu_bin", "text"), "ab", "control: a binary file still imports into text (#2082)")
+
+    # Tags outside those families: on main a large string ['a','b'] into text
+    # stored '' and 'a', a duration into int stored 5 and 0, and a null-type
+    # column and a binary into numeric(5,2) failed with XX001.
+    expect.text(state("tu_lstr", "text"), "42804",
+                "a large string file is refused for text, not read with short offsets (#2082)")
+    expect.text(state("tu_lbin", "bytea"), "42804",
+                "a large binary file is refused for bytea, not read with short offsets (#2082)")
+    expect.text(state("tu_dur", "int"), "42804",
+                "a duration file is refused for a 4-byte int, not read at half width (#2082)")
+    expect.text(state("tu_null", "text"), "42804",
+                "a null-type file is refused for text, not called malformed (#2082)")
+    expect.text(state("tu_bin", "numeric(5,2)"), "42804",
+                "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)")
+    expect.text(value("tu_dur", "bigint"), "5",
+                "control: a duration file still imports into bigint as its count (#2082)")
 
 
 def test_an_import_maintains_the_tables_indexes(pgc_conn, server_dir, expect):

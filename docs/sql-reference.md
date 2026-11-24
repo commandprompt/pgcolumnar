@@ -980,10 +980,13 @@ An Arrow type from another type family than the target column's is refused
 with `42804` rather than read, and the message names the column (#2082). A `time64` file does not
 import into a `date` column, and a `float64` file does not import into a
 `bigint` column. The reader does not convert values between type families.
-Three pairings across families are read. A signed `int64` reads into a
-`timestamp` or `timestamptz` column as microseconds since 1970-01-01. A `Utf8`
-column reads into `bytea`, and a `Binary` column reads into `text`, `varchar`,
-`json`, `jsonb` or `numeric`.
+Four pairings across families are read. A signed `int64` reads into a
+`timestamp` or `timestamptz` column as microseconds since 1970-01-01. A
+`Duration` reads into `bigint` as its count, without the unit. A `Utf8` column
+reads into `bytea`. A `Binary` column reads into `text`, `varchar`, `json`,
+`jsonb`, or a `numeric` declared without a precision or with one above 38, but
+not into `numeric(p,s)`. A `LargeUtf8`, `LargeBinary` or `Null` column is
+refused for every target.
 
 A nested Arrow type the target column cannot hold is refused with `42804`, and
 the message names the column (#1932). An array column reads one `List` level.

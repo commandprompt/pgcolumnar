@@ -612,11 +612,19 @@ true until the next version shipped.
   `5e-324`, and a decimal into `uuid` stored `7d000000-...`. When the layouts
   differed, it raised XX001 `malformed Arrow IPC file` for a valid file. Such a
   column now fails with SQLSTATE 42804, naming the column, the Arrow type and
-  the target type, and no row is stored. Three pairings still import: a signed
-  int64 into `timestamp` or `timestamptz`, read as microseconds; a string into
-  `bytea`; and a binary into `text`, `varchar`, `json`, `jsonb` or `numeric`.
-  An int64 into a timestamp column now needs a signed 64-bit carrier.
-  docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
+  the target type, and no row is stored. Four pairings still import: a signed
+  int64 into `timestamp` or `timestamptz`, read as microseconds; a duration
+  into `bigint`, read as its count without the unit; a string into `bytea`;
+  and a binary into `text`, `varchar`, `json`, `jsonb` or a `numeric` declared
+  without a precision (or with one above 38). A binary into a `numeric(p,s)`
+  is refused. An int64 into a timestamp column now needs a signed 64-bit
+  carrier. The same refusal closes a second silent corruption: a large string
+  `['a','b']` into `text` stored `''` and `'a'`, and a large binary into
+  `bytea` did the same, because the reader took 64-bit offsets as 32-bit ones.
+  These pairings also change: a duration into `smallint` or `int`, which
+  stored half-width values (`5,6` became `5,0`), is now refused; a Null-type
+  column, and a binary into `numeric(p,s)`, now fail with 42804 instead of
+  XX001. docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
