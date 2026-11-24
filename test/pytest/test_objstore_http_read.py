@@ -22,6 +22,10 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
 D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
 E  only an s3:// key is a pattern (#1785): a query string on an http URL reaches the
    server, and a bracketed IPv6 host is refused by name.
+F  a read error caught in a subtransaction frees its handle when the subtransaction
+   aborts (#2089): no "leaked to commit" WARNING, and a loop of 1200 caught 404s does
+   not run out of external FDs. A scan's own handle, and a cursor's, survive a
+   subtransaction abort inside them.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
 
@@ -243,6 +247,33 @@ def _detail(dsn, sql):
     return f"no error: {' '.join(' '.join(str(v) for v in row) for row in rows)[:200]}"
 
 
+def _leaks(dsn, sqls):
+    """The shell's leaks_of: run `sqls` in turn on one connection, letting a
+    statement fail, -> "rows=<last row> leaked=<n>". The last row any statement
+    returned, or the first error's SQLSTATE and message when none returned a row
+    (the shell shows its ERROR line there), and how many
+    "leaked to commit" WARNINGs the server sent (#2089)."""
+    _await_server(dsn)
+    notes, last, first_err = [], None, None
+    try:
+        with _connect(dsn) as conn:
+            conn.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+            for sql in sqls:
+                try:
+                    cur = conn.execute(sql)
+                except psycopg.Error as exc:
+                    if first_err is None:
+                        first_err = f"{exc.sqlstate}: {exc.diag.message_primary or _message(exc)}"
+                    continue
+                if cur.description is not None:
+                    for row in cur.fetchall():
+                        last = " ".join(str(v) for v in row)
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    shown = last if last is not None else (first_err or "")
+    return f"rows={shown} leaked={sum('leaked to commit' in n for n in notes)}"
+
+
 def _requests(log):
     """-> the request log's lines split into fields, or a query_error()."""
     try:
@@ -439,6 +470,24 @@ def ohr(pgc_cluster):
             c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_two() RETURNS text LANGUAGE plpgsql AS $f$ "
                       f"DECLARE a text; b text; BEGIN {sel2 % 'a'} {sel2 % 'b'} "
                       "RETURN a || ' | ' || b; END $f$")
+            # pgc_try404() and pgc_catch404(n), as the shell's (#2089): a 404
+            # read caught in an EXCEPTION block, and a loop of n of them
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_try404() RETURNS int LANGUAGE plpgsql AS $f$ "
+                      f"BEGIN PERFORM count(*) FROM {SCHEMA}.f404; RETURN 1; "
+                      "EXCEPTION WHEN undefined_file THEN RETURN 0; END $f$")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_catch404(n int) RETURNS int LANGUAGE plpgsql AS $f$ "
+                      "DECLARE caught int := 0; BEGIN FOR i IN 1..n LOOP "
+                      f"caught := caught + 1 - {SCHEMA}.pgc_try404(); END LOOP; "
+                      "RETURN caught; END $f$")
+            # pgc_cursor_sum(), as the shell's: a cursor opened before an
+            # EXCEPTION block, first fetched inside it, then read to the end
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_cursor_sum() RETURNS int8 LANGUAGE plpgsql AS $f$ "
+                      "DECLARE c refcursor; x int8; s int8 := 0; BEGIN "
+                      f"OPEN c FOR SELECT c0 FROM {SCHEMA}.fhttp; "
+                      "BEGIN FETCH c INTO x; s := s + x; PERFORM 1 / 0; "
+                      "EXCEPTION WHEN division_by_zero THEN NULL; END; "
+                      "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
+                      "CLOSE c; RETURN s; END $f$")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -604,6 +653,16 @@ def ohr(pgc_cluster):
         r["E ipv6"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
                                     f"'http://[::1]:{port}/fixture.parquet') AS t({COLDEFS})",
                                "IPv6 literal hosts are not supported")
+
+        r["F fn"] = _leaks(dsn, ["SELECT pgc_catch404(3)"])
+        r["F savepoint"] = _leaks(dsn, ["BEGIN"]
+                                  + ["SAVEPOINT s", "SELECT count(*) FROM f404", "ROLLBACK TO s"] * 3
+                                  + ["SELECT 'done'", "COMMIT"])
+        r["F loop"] = _leaks(dsn, ["SELECT pgc_catch404(1200)"])
+        r["F local"] = _value(dsn, "SELECT sum(c0) FROM flocal")
+        r["F scan"] = _leaks(dsn, [f"SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
+                                   "THEN pgc_try404() ELSE 0 END) FROM fhttp"])
+        r["F cursor"] = _leaks(dsn, ["SELECT pgc_cursor_sum()"])
 
         r["up"] = _await_server(dsn)
         r["crashes1"] = _crashes(plog)
@@ -1101,6 +1160,51 @@ def test_an_ipv6_literal_http_host_is_refused(ohr, expect):
         return
     expect.text(ohr["E ipv6"], "0A000: IPv6 literal hosts are not supported",
                 "E: an IPv6 literal http host is refused as IPv6, not as a listing")
+
+
+def test_404s_caught_in_exception_blocks_leak_no_handle_to_commit(ohr, expect):
+    """#2089: a read that raises in a subtransaction frees its handle when the
+    subtransaction aborts, so the commit reports no handle leaked."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F fn"], "rows=3 leaked=0",
+                "F: three 404s caught in a function's EXCEPTION blocks leak no handle to commit")
+
+
+def test_404s_rolled_back_to_a_savepoint_leak_no_handle_to_commit(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F savepoint"], "rows=done leaked=0",
+                "F: three 404s each rolled back to a SAVEPOINT leak no handle to commit")
+
+
+def test_a_loop_that_catches_1200_404s_finishes(ohr, expect):
+    """More caught errors than the backend has external FDs: each leaked handle
+    kept one, so the loop used to run out of them."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F loop"], "rows=1200 leaked=0", "F: a loop that catches 1200 404s finishes")
+
+
+def test_a_subtransaction_abort_inside_a_scan_leaves_the_scans_handle_open(ohr, expect):
+    """Control: a subtransaction abort frees only that subtransaction's handles.
+    The streaming scan of fhttp (#620) reads its next row group through its own
+    handle after the function aborts a subtransaction."""
+    if _declined(ohr, expect):
+        return
+    scan = ohr["F scan"]
+    got = scan.split(" leaked=")[0] if isinstance(scan, str) else scan
+    expect.text(got, f"rows={ohr['F local']} 0",
+                "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)")
+
+
+def test_a_cursor_first_fetched_in_an_aborted_subtransaction_reads_on(ohr, expect):
+    """Control: a cursor opened before a subtransaction holds its handle through
+    the cursor, so the subtransaction's abort leaves it open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F cursor"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)")
 
 
 def test_the_server_survives(ohr, expect):

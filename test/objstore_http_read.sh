@@ -35,6 +35,10 @@
 #      deleted, this check hangs or reds.
 #   E  only an s3:// key is a pattern (#1785): a query string on an http URL
 #      reaches the server, and a bracketed IPv6 host is refused by name.
+#   F  a read error caught in a subtransaction frees its handle when the
+#      subtransaction aborts (#2089): no "leaked to commit" WARNING, and a loop
+#      of 1200 caught 404s does not run out of external FDs. A scan's own
+#      handle, and a cursor's, survive a subtransaction abort inside them.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -725,6 +729,92 @@ check "E: a versioned read of an http URL with a query string adds the version w
 check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
 		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"
+
+# ---- arm F: a caught read error frees its handle (#2089) -------------------
+# A read that raises inside a subtransaction (a PL/pgSQL EXCEPTION block, or
+# SAVEPOINT and ROLLBACK TO) must close its socket and return its external FD
+# when the subtransaction aborts, not when the transaction ends. A handle that
+# lives on to COMMIT is reported there with the WARNING "leaked to commit".
+#
+# leaks_of SQL -> "rows=<last row> leaked=<WARNINGs>": the last row SQL returned,
+# or its first ERROR when it returned none, and how many handles it reported
+# leaked to commit.
+leaks_of() {
+	local out last
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY terse
+$1
+SQLEOF
+)"
+	last="$(printf '%s\n' "$out" | awk '/^ERROR:/ && !f { e = $0; f = 1 } !/^(WARNING|NOTICE|ERROR):/ && NF { l = $0 } END { print (l != "" ? l : e) }')"
+	echo "rows=$last leaked=$(printf '%s\n' "$out" | grep -c 'leaked to commit')"
+}
+psql_run "CREATE FUNCTION pgc_try404() RETURNS int LANGUAGE plpgsql AS \$f\$
+BEGIN
+	PERFORM count(*) FROM f404;
+	RETURN 1;
+EXCEPTION WHEN undefined_file THEN
+	RETURN 0;
+END \$f\$;"
+psql_run "CREATE FUNCTION pgc_catch404(n int) RETURNS int LANGUAGE plpgsql AS \$f\$
+DECLARE caught int := 0;
+BEGIN
+	FOR i IN 1..n LOOP
+		caught := caught + 1 - pgc_try404();
+	END LOOP;
+	RETURN caught;
+END \$f\$;"
+# pgc_cursor_sum() opens a cursor, fetches its first row inside an EXCEPTION
+# block that then aborts, and reads the rest after it (the last control below).
+psql_run "CREATE FUNCTION pgc_cursor_sum() RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE c refcursor; x int8; s int8 := 0;
+BEGIN
+	OPEN c FOR SELECT c0 FROM fhttp;
+	BEGIN
+		FETCH c INTO x;
+		s := s + x;
+		PERFORM 1 / 0;
+	EXCEPTION WHEN division_by_zero THEN
+		NULL;
+	END;
+	LOOP
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+	END LOOP;
+	CLOSE c;
+	RETURN s;
+END \$f\$;"
+check "F: three 404s caught in a function's EXCEPTION blocks leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch404(3);")" "rows=3 leaked=0"
+check "F: three 404s each rolled back to a SAVEPOINT leak no handle to commit" \
+	"$(leaks_of "BEGIN;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SELECT 'done';
+COMMIT;")" "rows=done leaked=0"
+# More caught errors than the backend has external FDs (max_files_per_process
+# is 1000 by default, and a backend may hold about a third of those for
+# sockets). Each leaked handle kept one, so the loop ran out of them.
+check "F: a loop that catches 1200 404s finishes" \
+	"$(leaks_of "SELECT pgc_catch404(1200);")" "rows=1200 leaked=0"
+# Control: freeing handles at a subtransaction abort frees only that
+# subtransaction's. The streaming scan of fhttp holds its handle across rows
+# (#620); the function aborts a subtransaction at the first row of each row
+# group, and the scan then reads the next group through its own handle.
+F_LOCAL="$(q "SELECT sum(c0) FROM flocal")"
+F_SCAN="$(leaks_of "SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN pgc_try404() ELSE 0 END) FROM fhttp;")"
+check "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)" \
+	"${F_SCAN%% leaked=*}" "rows=$F_LOCAL 0"
+# Control: a cursor opened before a subtransaction, and first fetched inside
+# it, stays usable after that subtransaction aborts. Its handle belongs to the
+# cursor, not to the subtransaction, so the abort must not close it.
+F_CURSOR="$(leaks_of "SELECT pgc_cursor_sum();")"
+check "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)" \
+	"$F_CURSOR" "rows=$F_LOCAL leaked=0"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:

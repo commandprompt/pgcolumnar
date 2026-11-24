@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read that fails inside a subtransaction now closes its connection
+  when the subtransaction aborts (#2089). Before, the handle stayed open until
+  the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
+  or undone by `ROLLBACK TO SAVEPOINT`, kept a socket and an external file
+  descriptor. A retry loop that caught about 325 missing objects ran the
+  backend out of file descriptors, and unrelated statements then failed with
+  `Too many open files`. A transaction that committed after caught errors
+  logged one `leaked to commit` WARNING per handle. Each handle now belongs to
+  the resource owner that opened it, so a subtransaction abort closes only its
+  own handles; a scan or cursor of the outer statement keeps reading.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
