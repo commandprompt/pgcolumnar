@@ -7434,7 +7434,7 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_plain_int64_is_refused_by_type_for_an_array_column` | (#1932) `import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)` |
 | `test_a_list_or_map_the_target_can_hold_still_imports` | (#1932) the controls: `control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)` and `control: a map file still imports into an array of a composite (#1932)` |
 | `test_a_list_whose_offset_runs_past_its_values_is_still_malformed` | (#1932) `a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)`, led by the count of places the offsets were patched |
-| `test_an_arrow_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
+| `test_an_arrow_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: a neighbour table gets an options row first, so the case without set_options can fail too; then four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -7912,7 +7912,7 @@ The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#4
 | `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
 | `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
-| `test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
+| `test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: a neighbour table gets an options row first, so the case without set_options can fail too; then four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
 
 ## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
 
@@ -12067,7 +12067,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A load into a table with a projection fills the projection (#2092). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
 
 ### Every test
 
@@ -12134,6 +12134,7 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 

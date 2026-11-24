@@ -662,4 +662,27 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
 
+# ---- #2092: a load into a table with a projection fills the projection ---------
+# #2092 asked whether parallel_copy shares the import functions' crash: they wrote
+# a projection at statement end with no active snapshot. It does not: on main's
+# code, too, both cases below load and no backend dies. The check keeps that true.
+# Each table gets an options row (set_options), because the crash needed one.
+# Not covered: 2 or more workers into a projection that holds no rows yet. That
+# load hangs until cancelled, on another cause (#2161). So the 2-worker case
+# fills its projection first, and every load runs under a statement_timeout.
+proj_load() {	# proj_load WORKERS PRELOAD -> "wWORKERS:returned/rows/projection rows"
+	local t="t_proj_w$1"
+	psql_run "CREATE TABLE $t (id int, txt text) USING pgcolumnar;
+		SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" -gt 0 ] && psql_run "INSERT INTO $t SELECT g, 'pre'||g FROM generate_series(1, $2) g;" >/dev/null
+	psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);" >/dev/null
+	printf 'w%s:%s/%s/%s' "$1" \
+		"$(PGOPTIONS='-c statement_timeout=60s' q "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $1)")" \
+		"$(q "SELECT count(*) FROM $t")" "$(q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p')")"
+}
+_proj_got="$(proj_load 1 0) $(proj_load 2 1000)"
+check "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)" \
+	"$_proj_got | leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
+	"w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1"
+
 pgc_summary

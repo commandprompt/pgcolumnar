@@ -328,13 +328,15 @@ else
 fi
 
 # ---- an import into a table with a projection keeps the server up (#2092) ----
-# The import writes the projection's rows when the statement ends. For a SELECT
-# that is during portal cleanup, when no snapshot is active, and the flush read
-# the options catalog with a snapshot nobody had registered. An assert build
-# aborted there once the table had an options row (set_options), and the
-# postmaster restarted every backend. The matrix crosses projection with
-# set_options; each case gets its own table, so an options row of one case cannot
-# reach another. The crash is read from the server log, not from timing.
+# The import writes the projection's rows when the statement ends. The import is
+# a SELECT, so its statement ends in portal cleanup, where no snapshot is active.
+# The flush then read the options catalog with a snapshot nobody had registered.
+# An assert build aborted on the first catalog row the read examined, and the
+# postmaster restarted every backend. Any table's options row is enough, so the
+# check gives one to a neighbour table first. Without it, the case without
+# set_options passed on main's code, because it ran before any case had called
+# set_options. The matrix crosses projection with set_options, one table per
+# case. The crash count comes from the server log, not from timing.
 pqp_crashes() {	# a number, or nothing when the log can't be read
 	local _n
 	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
@@ -360,6 +362,8 @@ pqp_case() {	# pqp_case OPT PROJ -> "oOPTpPROJ:imported/rows/projection rows"
 	printf 'o%sp%s:%s/%s/%s' "$1" "$2" "$got" "$(q "SELECT count(*) FROM $t;")" \
 		"$([ "$2" = 1 ] && q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p');" || echo -)"
 }
+psql_run "CREATE TABLE pqp_neighbour (id int) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('pqp_neighbour', compression => 'zstd');" >/dev/null
 _pqp_c0="$(pqp_crashes)"
 _pqp_got="$(pqp_case 0 0) $(pqp_case 0 1) $(pqp_case 1 0) $(pqp_case 1 1)"
 _pqp_now="$(pqp_crashes)"

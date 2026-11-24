@@ -1917,4 +1917,7 @@ guard_tests 894
 # the_server_up in test_parquet_import.py (an import into a table with a projection keeps the server up and
 # fills the projection), by collection over the files NO_CLUSTER does not name, as ci.yml selects them:
 # 5378 tests collected.
-cluster_tests 5378
+# cluster_tests 5378 -> 5379 for #2092's parallel_copy case,
+# test_parallel_copy_into_a_table_with_a_projection_fills_the_projection in test_parallel_copy.py, by the same
+# collection: 5379 tests collected.
+cluster_tests 5379

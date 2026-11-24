@@ -408,8 +408,7 @@ def _projection_import_case(pgc_cluster, server_dir, schema, opt, proj):
     """-> 'oOPTpPROJ:imported/rows/projection rows' for one case of #2092's matrix.
 
     Every statement runs on a fresh connection, because a crash ends every backend,
-    the fixture's own included. The table is the case's own, so an options row of one
-    case cannot reach another."""
+    the fixture's own included. Each case has its own table."""
     import time
     import psycopg
 
@@ -451,13 +450,23 @@ def _projection_import_case(pgc_cluster, server_dir, schema, opt, proj):
 
 def test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up(pgc_conn, pgc_cluster, server_dir,
                                                                       expect):
-    """#2092: the import writes the projection's rows when the statement ends. For a
-    SELECT that is during portal cleanup, when no snapshot is active, and the flush read
-    the options catalog with a snapshot nobody had registered. An assert build aborted
-    there once the table had an options row (set_options), and the postmaster restarted
-    every backend. The matrix crosses projection with set_options; the crash is read from
-    the server log, not from timing."""
+    """#2092: the import writes the projection's rows when the statement ends. The
+    import is a SELECT, so its statement ends in portal cleanup, where no snapshot is
+    active. The flush then read the options catalog with a snapshot nobody had
+    registered. An assert build aborted on the first catalog row the read examined, and
+    the postmaster restarted every backend.
+
+    Any table's options row is enough, so the test gives one to a neighbour table first.
+    Without it, the case without set_options passed or failed on main's code depending
+    on what earlier tests had left in the catalog. The matrix crosses projection with
+    set_options; the crash count comes from the server log, not from timing."""
+    import psycopg
+
     schema = _one(pgc_conn, "SELECT current_schema()")
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute(f'SET search_path TO "{schema}", public')
+        c.execute("CREATE TABLE pqp_neighbour (id int) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('pqp_neighbour', compression => 'zstd')")
     before = _crashes(pgc_cluster)
     got = " ".join(_projection_import_case(pgc_cluster, server_dir, schema, opt, proj)
                    for opt in (0, 1) for proj in (0, 1))
