@@ -172,6 +172,8 @@ def test_a_pyarrow_nested_file_matches_the_oracle(ni, expect):
 # wrong values with no error. The wanted values are the ones pyarrow reads back.
 LVL_STL_WANT = "0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL}"
 LVL_REQ_WANT = "0:{}:{}:(,x) 1:{NULL}:{5}:(5,y) 2:{1,NULL}:{1,2}:(,)"
+LVL_STL_ROWS = ("string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || "
+                "coalesce(sl::text, 'NULL'), ' ' ORDER BY id)")
 LVL_REQ_ROWS = ("string_agg(id || ':' || coalesce(rl::text, 'NULL') || ':' || "
                 "coalesce(rlr::text, 'NULL') || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)")
 
@@ -198,6 +200,38 @@ def _write_level_files(stl_path, req_path, pa, pq):
     req_path.chmod(0o644)
 
 
+def _write_shape_files(sub_path, flat_path, pa, pq):
+    # A struct holding a field and a nullable sub-struct. A composite (a, b) binds
+    # s.a and s.inner.b, two leaves at different depths. A NULL inner must leave a.
+    sub = pa.array([{"a": 1, "inner": {"b": 2}}, {"a": 3, "inner": None}, None,
+                    {"a": None, "inner": {"b": 4}}],
+                   pa.struct([("a", pa.int32()), ("inner", pa.struct([("b", pa.int32())]))]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], pa.int32()), "s": sub}),
+                   str(sub_path))
+    # Flat top-level columns only: the file holds no struct for a composite.
+    pq.write_table(pa.table({"id": pa.array([0, 1], pa.int32()),
+                             "a": pa.array([1, None], pa.int32()),
+                             "b": pa.array([None, 2], pa.int32())}), str(flat_path))
+    sub_path.chmod(0o644)
+    flat_path.chmod(0o644)
+
+
+NOT_ONE_STRUCT = "binds Parquet columns that are not inside one struct"
+
+
+def _refusal(dsn, sql):
+    """-> "refused: not inside one struct", "succeeded", or the other error."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        msg = str(exc)
+        if NOT_ONE_STRUCT in msg:
+            return "refused: not inside one struct"
+        return f"other error: {msg.splitlines()[0] if msg else type(exc).__name__}"
+    return "succeeded"
+
+
 def _level_arm(ni, pa, pq):
     """Write the two files and read them every way, once, on the first test here."""
     if "levels" not in ni:
@@ -219,6 +253,21 @@ def _level_arm(ni, pa, pq):
         _run(dsn, "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab) "
                   f"SERVER lvl_srv OPTIONS (path '{req}')")
         got["req fdw"] = _value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_f")
+        # The list inside a nullable struct, through the other two read paths.
+        _run(dsn, "CREATE TABLE lvl_stl_heap (id int, sa int, sl bigint[])")
+        _run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_stl_heap', '{stl}')")
+        got["stl import"] = _value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_heap")
+        _run(dsn, "CREATE FOREIGN TABLE lvl_stl_f (id int, sa int, sl bigint[]) "
+                  f"SERVER lvl_srv OPTIONS (path '{stl}')")
+        got["stl fdw"] = _value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_f")
+        sub, flat = ni["dir"] / "lvl_sub.parquet", ni["dir"] / "lvl_flat.parquet"
+        _write_shape_files(sub, flat, pa, pq)
+        _run(dsn, "CREATE TYPE lvl_ii AS (a int, b int)")
+        got["sub read"] = _value(
+            dsn, "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id) "
+                 f"FROM pgcolumnar.read_parquet('{sub}') AS t(id int, s lvl_ii)")
+        got["flat refusal"] = _refusal(
+            dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -263,3 +312,46 @@ def test_required_lists_and_struct_read_like_pyarrow_through_the_fdw(ni, expect)
     if got is not None:
         expect.text(got["req fdw"], LVL_REQ_WANT,
                     "required lists and struct read like pyarrow through the FDW")
+
+
+
+def test_a_list_in_a_nullable_struct_imports_like_pyarrow(ni, expect):
+    pa = expect.require_module("pyarrow", name="list in a nullable struct imports like pyarrow")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="list in a nullable struct imports like pyarrow") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["stl import"], LVL_STL_WANT, "list in a nullable struct imports like pyarrow")
+
+
+def test_a_list_in_a_nullable_struct_reads_like_pyarrow_through_the_fdw(ni, expect):
+    pa = expect.require_module("pyarrow",
+                               name="list in a nullable struct reads like pyarrow through the FDW")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="list in a nullable struct reads like pyarrow through the FDW") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["stl fdw"], LVL_STL_WANT,
+                    "list in a nullable struct reads like pyarrow through the FDW")
+
+
+def test_a_null_sub_struct_keeps_its_sibling_field(ni, expect):
+    # The struct is NULL only when s is; a NULL inner is a NULL field b, not a NULL row.
+    pa = expect.require_module("pyarrow", name="a NULL sub-struct keeps its sibling field")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a NULL sub-struct keeps its sibling field") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["sub read"], "0:(1,2) 1:(3,) 2:NULL 3:(,4)",
+                    "a NULL sub-struct keeps its sibling field")
+
+
+def test_a_composite_over_top_level_columns_is_refused(ni, expect):
+    # No struct in the file stands for the composite, so its NULL cannot be placed.
+    pa = expect.require_module("pyarrow", name="a composite over top-level columns is refused")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite over top-level columns is refused") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["flat refusal"], "refused: not inside one struct",
+                    "a composite over top-level columns is refused")

@@ -157,6 +157,16 @@ typedef struct PqSchemaCol
 								 * 0 is a legal id, so absence needs its own
 								 * value. Iceberg projects by this (#388). */
 	char	   *name;
+	/*
+	 * Where this node sits in the schema tree, set by walk_schema. A composite
+	 * target finds the struct it stands for from these (#2079).
+	 */
+	int			parent;			/* index in elems of the parent, -1 for the
+								 * root */
+	int			tree_depth;		/* 0 for the root, 1 for a top-level column */
+	int			present_def;	/* def at which this node is present: a def
+								 * below it means this node, or one above it,
+								 * is NULL */
 } PqSchemaCol;
 
 /* a leaf column (primitive) with its computed Dremel level bounds */
@@ -173,9 +183,6 @@ typedef struct PqLeafInfo
 	 * fixed values: a REQUIRED list or struct adds no level, and a list inside
 	 * a nullable struct adds one more.
 	 */
-	int			parent_def;		/* def of the leaf's parent group: a def
-								 * below it means that group, or one above
-								 * it, is NULL */
 	int			rep_def;		/* def of the innermost REPEATED node on the
 								 * path, 0 if none: def rep_def - 1 is a
 								 * present but empty list */
@@ -650,11 +657,12 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
  * +1 def, REPEATED +1 def and +1 rep (Dremel).
  */
 static bool
-walk_schema(PqFile *pf, int *cursor, int def, int rep, int repdef, int depth,
-			PqLeafInfo *leaves, int *nleaf)
+walk_schema(PqFile *pf, int *cursor, int parent, int def, int rep, int repdef,
+			int depth, PqLeafInfo *leaves, int *nleaf)
 {
 	PqSchemaCol *e;
-	int			d,
+	int			self,
+				d,
 				rp;
 
 	/*
@@ -668,11 +676,15 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int repdef, int depth,
 
 	if (*cursor >= pf->nelems)
 		return false;
-	e = &pf->elems[(*cursor)++];
+	self = (*cursor)++;
+	e = &pf->elems[self];
 	d = def + (e->repetition == 1 ? 1 : 0) + (e->repetition == 2 ? 1 : 0);
 	rp = rep + (e->repetition == 2 ? 1 : 0);
 	if (e->repetition == 2)
 		repdef = d;
+	e->parent = parent;
+	e->tree_depth = depth;
+	e->present_def = d;
 
 	if (e->num_children == 0)
 	{
@@ -680,7 +692,6 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int repdef, int depth,
 		leaves[*nleaf].max_def = d;
 		leaves[*nleaf].max_rep = rp;
 		leaves[*nleaf].depth = depth;
-		leaves[*nleaf].parent_def = def;
 		leaves[*nleaf].rep_def = repdef;
 		(*nleaf)++;
 	}
@@ -689,7 +700,8 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int repdef, int depth,
 		int			c;
 
 		for (c = 0; c < e->num_children; c++)
-			if (!walk_schema(pf, cursor, d, rp, repdef, depth + 1, leaves, nleaf))
+			if (!walk_schema(pf, cursor, self, d, rp, repdef, depth + 1,
+							 leaves, nleaf))
 				return false;
 	}
 	return true;
@@ -825,9 +837,12 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 		int			c;
 		PqLeafInfo *leaves = palloc0(sizeof(PqLeafInfo) * Max(pf->nelems, 1));
 
+		pf->elems[0].parent = -1;
+		pf->elems[0].tree_depth = 0;
+		pf->elems[0].present_def = 0;
 		pf->ntop = pf->elems[0].num_children;
 		for (c = 0; c < pf->ntop; c++)
-			if (!walk_schema(pf, &cursor, 0, 0, 0, 1, leaves, &nleaf))
+			if (!walk_schema(pf, &cursor, 0, 0, 0, 0, 1, leaves, &nleaf))
 				return false;
 		pf->ncols = nleaf;
 		pf->leaves = leaves;
@@ -3113,7 +3128,6 @@ typedef struct ImpLeaf
 	PqColPlan	plan;
 	int			max_def;
 	int			max_rep;
-	int			parent_def;		/* PqLeafInfo.parent_def */
 	int			rep_def;		/* PqLeafInfo.rep_def */
 	/* decoded per row group */
 	uint32	   *defs;
@@ -3139,7 +3153,34 @@ typedef struct ImpTop
 	/* IMP_STRUCT */
 	TupleDesc	structDesc;
 	int		   *fieldLeaf;		/* [structDesc->natts] leaf index or -1 */
+	int			nullDef;		/* present_def of the struct the composite
+								 * stands for: a field def below it means
+								 * that struct, or a parent, is NULL */
 }			ImpTop;
+
+/*
+ * The struct a composite target stands for: the deepest group that holds every
+ * leaf it binds (#2079). The bound leaves are consecutive in schema order, so
+ * the group that holds the first and the last holds all of them. Returns the
+ * group's index in elems; 0, the root, means no struct holds them all.
+ */
+static int
+pq_struct_of_leaves(PqFile *pf, int first, int last)
+{
+	int			x = pf->elems[(int) (pf->leaves[first].sc - pf->elems)].parent;
+	int			y = pf->elems[(int) (pf->leaves[last].sc - pf->elems)].parent;
+
+	while (pf->elems[x].tree_depth > pf->elems[y].tree_depth)
+		x = pf->elems[x].parent;
+	while (pf->elems[y].tree_depth > pf->elems[x].tree_depth)
+		y = pf->elems[y].parent;
+	while (x != y)
+	{
+		x = pf->elems[x].parent;
+		y = pf->elems[y].parent;
+	}
+	return x;
+}
 
 /*
  * Take a leaf's next present value, applying the declared typmod when the row will
@@ -3311,11 +3352,31 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 				pq_plan_set_typmod(&l->plan, fa->atttypmod, pf->leaves[lf].sc);
 				l->max_def = pf->leaves[lf].max_def;
 				l->max_rep = pf->leaves[lf].max_rep;
-				l->parent_def = pf->leaves[lf].parent_def;
 				t->fieldLeaf[a] = lf;
 				lf++;
 			}
 			t->nleaves = lf - t->firstLeaf;
+
+			/*
+			 * The composite is NULL when the struct it stands for is NULL. That
+			 * struct is the group holding all its leaves, not each leaf's own
+			 * parent: in s struct<a, inner struct<b>>, a NULL inner is a NULL
+			 * field b, not a NULL s. Leaves from more than one top-level column
+			 * sit under no struct, so nothing says when the composite is NULL,
+			 * and the reader refuses rather than guess.
+			 */
+			if (t->nleaves > 0)
+			{
+				int			g = pq_struct_of_leaves(pf, t->firstLeaf, lf - 1);
+
+				if (g == 0)
+				{
+					ReleaseTupleDesc(td);
+					IMP_FAIL("composite column \"%s\" binds Parquet columns that are not inside one struct",
+							 NameStr(att->attname));
+				}
+				t->nullDef = pf->elems[g].present_def;
+			}
 			ReleaseTupleDesc(td);
 		}
 		else
@@ -5526,12 +5587,12 @@ pq_read_rows(PqFile *pf, PqSource *src,
 						d = l->defs[l->ei];
 
 						/*
-						 * Below the parent group's def, the struct or a parent of
+						 * Below the struct's own def, the struct or a parent of
 						 * it is NULL, and every field agrees. A REQUIRED struct
-						 * with no nullable parent has parent_def 0 and is never
+						 * with no nullable parent has nullDef 0 and is never
 						 * NULL: there a def of 0 is a NULL field (#2079).
 						 */
-						if (d < (uint32) l->parent_def)
+						if (d < (uint32) tp->nullDef)
 							structNull = true;
 						if (d == (uint32) l->max_def)
 						{

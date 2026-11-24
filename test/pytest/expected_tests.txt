@@ -1916,4 +1916,8 @@ guard_tests 894
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-cluster_tests 5380
+# cluster_tests 5380 -> 5384 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
+# over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
+# PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
+cluster_tests 5384

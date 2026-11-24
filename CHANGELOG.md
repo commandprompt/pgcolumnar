@@ -613,7 +613,11 @@ true until the next version shipped.
   read its list as `{}`. The reader assumed that definition level 0 always
   meant a NULL list or struct and level 1 an empty list. That holds only for a
   nullable list or struct with no nullable parent. The reader now takes both
-  levels from the file's schema. `test/parquet_nested_import.sh` and
+  levels from the file's schema. A composite is NULL only when the struct that
+  holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
+  field. A composite over leaves that no one struct holds, such as two
+  top-level columns, is now an error: it read as NULL whenever any one field
+  was NULL. `test/parquet_nested_import.sh` and
   `test_parquet_nested_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
