@@ -1258,6 +1258,26 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 	return true;
 }
 
+/*
+ * Read the final response head, passing over interim (1xx) ones. RFC 9110
+ * section 15.2 says a client must accept one or more 1xx answers before the
+ * final one, even when it did not ask for them: a store that answered 100
+ * Continue after the Expect wait ran out, or a server or proxy that sends 103
+ * Early Hints. An interim answer has no body, so only its head is read. Every
+ * request reads its answer here, not with os_read_head (#2090). Returns false
+ * on the same stale-connection condition as os_read_head.
+ */
+static bool
+os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
+{
+	do
+	{
+		if (!os_read_head(h, resp))
+			return false;
+	} while (resp->status >= 100 && resp->status < 200);
+	return true;
+}
+
 /* Take min(n, buffered) bytes from staging into dst (or discard). */
 static int64
 os_take(PgColumnarObjHandle *h, uint8 *dst, int64 n)
@@ -1656,7 +1676,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 		if (h->fd < 0)
 			os_connect(h);
 
-		if (os_send_all(h, req.data, req.len) && os_read_head(h, resp))
+		if (os_send_all(h, req.data, req.len) && os_read_final_head(h, resp))
 			break;
 
 		/*
@@ -2646,22 +2666,6 @@ os_await_answer(PgColumnarObjHandle *h, int ms, bool *timedOut)
 			ResetLatch(MyLatch);
 		CHECK_FOR_INTERRUPTS();
 	}
-}
-
-/*
- * Read the final response head, passing over interim (1xx) ones: a store that
- * answered 100 Continue after the Expect wait ran out sends it ahead of the
- * final answer to the body.
- */
-static bool
-os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
-{
-	do
-	{
-		if (!os_read_head(h, resp))
-			return false;
-	} while (resp->status >= 100 && resp->status < 200);
-	return true;
 }
 
 /*
@@ -3666,7 +3670,7 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 		os_sign_write(h, "GET", h->abspath, rawQuery, emptyHash, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		if (os_send_all(h, req.data, req.len) && os_read_head(h, &resp))
+		if (os_send_all(h, req.data, req.len) && os_read_final_head(h, &resp))
 		{
 			pfree(req.data);
 			break;
@@ -4218,7 +4222,7 @@ objstore_http_request(const char *url, const char *method,
 		appendBinaryStringInfo(&req, body, (int) body_len);
 
 	os_connect(h);				/* allow-list + link-local + TLS handshake */
-	if (!os_send_all(h, req.data, req.len) || !os_read_head(h, &resp))
+	if (!os_send_all(h, req.data, req.len) || !os_read_final_head(h, &resp))
 	{
 		os_disconnect(h);
 		ereport(ERROR,

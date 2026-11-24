@@ -35,6 +35,11 @@
 #      deleted, this check hangs or reds.
 #   E  only an s3:// key is a pattern (#1785): a query string on an http URL
 #      reaches the server, and a bracketed IPv6 host is refused by name.
+#   F  interim 1xx answers (#2090): a server or proxy that sends 100 Continue
+#      or 103 Early Hints ahead of each final answer is read as if it sent none,
+#      on the HEAD and ranged GETs of a read, on the ListObjectsV2 of an s3 glob,
+#      and on the Iceberg REST catalog's requests. A small raw-socket server
+#      written here sends them, since the stdlib server cannot.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -59,10 +64,12 @@ HTTP_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 HTTP_LOG="$PGC_WORKDIR/http.log"
 SRV_PID=""
 SRV_PID_B=""
+SRV_PID_I=""
 
 objstore_http_teardown() {
 	[ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
 	[ -n "$SRV_PID_B" ] && kill "$SRV_PID_B" 2>/dev/null
+	[ -n "$SRV_PID_I" ] && kill "$SRV_PID_I" 2>/dev/null
 	pgc_teardown
 }
 trap objstore_http_teardown EXIT INT TERM
@@ -725,6 +732,127 @@ check "E: a versioned read of an http URL with a query string adds the version w
 check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
 		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"
+
+# ---- arm F: interim 1xx answers before the final one (#2090) ---------------
+# RFC 9110 section 15.2: a client must accept one or more 1xx answers before
+# the final answer, even unasked. The read path took the first 1xx as the final
+# answer and failed with "unexpected HTTP status 100". The first path segment
+# picks what the server sends ahead of every answer: inone sends nothing (the
+# control), i100 sends 100 Continue, i103 sends 103 Early Hints with a Link
+# header, iboth sends both. Under it the server serves a ranged object, an s3
+# ListObjectsV2 of its bucket (the segment is the bucket), and the three REST
+# catalog paths iceberg_rest_namespaces asks for.
+mkdir -p "$PGC_WORKDIR/interim"
+cp "$PGC_WORKDIR/fixture.parquet" "$PGC_WORKDIR/interim/fixture.parquet"
+cat > "$PGC_WORKDIR/interim_server.py" <<'PYEOF'
+import os, re, socket, sys, threading
+root, port = sys.argv[1], int(sys.argv[2])
+EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
+CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
+INTERIM = {"inone": b"", "i100": CONT, "i103": EARLY, "iboth": CONT + EARLY}
+
+def reply(c, mode, status, body, extra=b"", head=False):
+    c.sendall(INTERIM[mode] + b"HTTP/1.1 " + status + b"\r\nContent-Length: "
+              + str(len(body)).encode() + b"\r\n" + extra + b"\r\n"
+              + (b"" if head else body))
+
+def handle(c):
+    f = c.makefile("rb")
+    while True:
+        line = f.readline()
+        if not line:
+            break
+        hdr = {}
+        while True:
+            l = f.readline()
+            if l in (b"\r\n", b""):
+                break
+            k, _, v = l.decode().partition(":")
+            hdr[k.strip().lower()] = v.strip()
+        meth, target = line.decode().split()[:2]
+        path, _, query = target.partition("?")
+        mode, _, rest = path.lstrip("/").partition("/")
+        if mode not in INTERIM:
+            c.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            continue
+        if rest.startswith("v1/"):
+            if rest == "v1/config":
+                body = b'{"defaults":{},"overrides":{}}'
+            elif rest == "v1/namespaces" and "parent=" not in query:
+                body = b'{"namespaces":[["interim_ns"]]}'
+            else:
+                body = b'{"namespaces":[]}'
+            reply(c, mode, b"200 OK", body, b"Content-Type: application/json\r\n")
+            continue
+        if "list-type=2" in query:
+            keys = sorted(n for n in os.listdir(root) if n.endswith(".parquet"))
+            items = "".join("<Contents><Key>%s</Key><Size>%d</Size></Contents>"
+                            % (k, os.path.getsize(os.path.join(root, k))) for k in keys)
+            body = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>false'
+                    '</IsTruncated><KeyCount>%d</KeyCount>%s</ListBucketResult>'
+                    % (len(keys), items)).encode()
+            reply(c, mode, b"200 OK", body, b"Content-Type: application/xml\r\n")
+            continue
+        data = open(os.path.join(root, os.path.basename(rest)), "rb").read()
+        if meth == "HEAD":
+            reply(c, mode, b"200 OK", data, head=True)
+            continue
+        lo, hi = map(int, re.match(r"bytes=(\d+)-(\d+)", hdr["range"]).groups())
+        reply(c, mode, b"206 Partial Content", data[lo:hi + 1],
+              b"Content-Range: bytes %d-%d/%d\r\n" % (lo, hi, len(data)))
+    c.close()
+
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(16)
+print("READY", flush=True)
+while True:
+    conn, _ = s.accept()
+    threading.Thread(target=handle, args=(conn,), daemon=True).start()
+PYEOF
+INTERIM_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$PGC_WORKDIR/interim_server.py" "$PGC_WORKDIR/interim" "$INTERIM_PORT" \
+	> "$PGC_WORKDIR/interim_server.out" 2>&1 &
+SRV_PID_I=$!
+for _ in $(seq 1 50); do
+	grep -q READY "$PGC_WORKDIR/interim_server.out" 2>/dev/null && break
+	sleep 0.1
+done
+check "premise: the interim-answer server is up" \
+	"$(grep -c READY "$PGC_WORKDIR/interim_server.out" 2>/dev/null)" "1"
+IBASE="http://127.0.0.1:$INTERIM_PORT"
+psql_run "CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_parquet
+          OPTIONS (endpoint '$IBASE', region 'pgc-test-1');
+          CREATE USER MAPPING FOR postgres SERVER isrv
+          OPTIONS (access_key_id 'PGCTESTKEYID', secret_access_key 'pgctest-secret');"
+for m in inone i100 i103 iboth; do
+	psql_run "CREATE FOREIGN TABLE glob_$m ($COLDEFS) SERVER isrv OPTIONS (path 's3://$m/*.parquet');"
+done
+# A bounded statement: a 1xx read as a final answer with Connection: close
+# waited for a body that never ends.
+F_TO="SET statement_timeout = '20s'"
+F_ROWS="no error: $((G * ROWS_PER_GROUP))"
+check "F: control: a read from the interim-answer server that sends none reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/inone/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
+check "F: a read whose HEAD and GETs are each answered 100 Continue first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i100/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
+check "F: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i103/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
+check "F: a read answered 100 Continue and then 103 Early Hints first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/iboth/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
+check "F: control: an s3 glob listed and read from the server that sends no interim answer reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_inone" "@@")" "$F_ROWS"
+check "F: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_i103" "@@")" "$F_ROWS"
+check "F: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_iboth" "@@")" "$F_ROWS"
+check "F: control: the REST catalog that sends no interim answer lists its namespace" \
+	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/inone')" "@@")" "no error: interim_ns"
+check "F: a REST catalog whose answers each follow 103 Early Hints lists its namespace" \
+	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i103')" "@@")" "no error: interim_ns"
+check "F: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace" \
+	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/iboth')" "@@")" "no error: interim_ns"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:
