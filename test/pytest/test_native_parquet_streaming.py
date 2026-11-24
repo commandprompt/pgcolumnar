@@ -162,6 +162,12 @@ def pqs(pgc_cluster, server_dir):
         r["v2"] = _errtext(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/v2_levels.parquet') AS t(id int)")
         r["allnull"] = _rows(dsn, f"SELECT count(*), count(c) FROM pgcolumnar.read_parquet('{w}/allnull.parquet') "
                                   f"AS t(c int)", sep=" ")
+        r["empty page"] = _rows(dsn, f"SELECT string_agg(coalesce(ls::text, 'NULL'), ' ') FROM "
+                                     f"pgcolumnar.read_parquet('{w}/empty_data_page.parquet') AS t(ls text[])")
+        r["one empty"] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
+                                    f"pgcolumnar.read_parquet('{w}/one_empty_page.parquet') AS t(id int)", sep=" ")
+        r["empty run"] = _errtext(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/empty_page_run.parquet') "
+                                       f"AS t(id int)")
         r["survived crafted"] = _survived(dsn, pgc_cluster, mid)
         r["plain"] = _rows(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('{w}/plain.parquet') "
                                 f"AS t(id int)", sep=" ")
@@ -292,6 +298,29 @@ def test_parquet_streaming_all_null_column_still_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(r.get("allnull", r["crafted"]), "100 0", "all-null column (empty dictionary page) still reads")
+
+
+def test_parquet_streaming_data_page_with_no_values_reads(request, expect):
+    """#2077: pyarrow writes a data page with no values for a dictionary-encoded list
+    column when it flushes pages often. The page loop refused every such page."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("empty page", r["crafted"]), "{yy} NULL",
+                    "a data page with no values (pyarrow list column) reads")
+
+
+def test_parquet_streaming_one_empty_data_page_between_data_pages_reads(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("one empty", r["crafted"]), "200 19900",
+                    "one empty data page between two data pages reads")
+
+
+def test_parquet_streaming_run_of_empty_data_pages_is_rejected(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("empty run", r["crafted"]), "ERROR:  could not decode Parquet column 0 in row group 0",
+                    "a run of 1000 empty data pages is rejected")
 
 
 def test_parquet_streaming_backend_survived_the_crafted_page_areas(request, expect):

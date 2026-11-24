@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5379 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# reads (test_parquet_streaming_data_page_with_no_values_reads,
+# test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
+# (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5379 tests collected.
+cluster_tests 5379

@@ -152,6 +152,107 @@ build("v2_levels.parquet", synth_v2 + body[len(synth_v2):])
 pq.write_table(pa.table({"c": pa.array([None] * 100, pa.int32())}),
                os.path.join(W, "allnull.parquet"), use_dictionary=True, compression="none")
 
+# #2077: a valid data page with no values. pyarrow writes one for a dictionary-
+#    encoded list column when it flushes pages often: this file's chunk has data
+#    pages with 1, 0 and 1 values, and pyarrow reads it back as {yy} and NULL.
+pq.write_table(pa.table({"ls": pa.array([["yy"], None], pa.list_(pa.string()))}),
+               os.path.join(W, "empty_data_page.parquet"),
+               use_dictionary=True, data_page_size=1, write_batch_size=1,
+               compression="none")
+
+
+# #2077, built by hand so it does not depend on what a pyarrow version writes: empty
+#    v1 data pages (num_values 0) inserted between the first two data pages of a
+#    200-row PLAIN column written as four pages. Each empty page's body is a zero
+#    definition-level length (4 bytes) and no values. The footer's chunk sizes grow
+#    by the inserted bytes, so pyarrow reads the one-page file too, as 200 rows. One
+#    empty page must read; a run of 1000 is refused, so a crafted file cannot make
+#    the page loop walk a large region a few bytes at a time. (pyarrow itself reads
+#    the run file as only the 50 rows before the run.)
+def empty_data_page():
+    return (fh(1, I32) + zz(0) + fh(1, I32) + zz(4) + fh(1, I32) + zz(4)
+            + fh(2, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+            + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP + bytes(4))
+
+
+def varint(buf, i):
+    v = s = 0
+    while True:
+        b = buf[i]
+        i += 1
+        v |= (b & 0x7F) << s
+        s += 7
+        if not b & 0x80:
+            return v, i
+
+
+def skip_value(buf, i, t):
+    """-> the offset after one Thrift compact value of type t at buf[i]."""
+    if t in (1, 2):
+        return i
+    if t == 3:
+        return i + 1
+    if t in (4, 5, 6):
+        return varint(buf, i)[1]
+    if t == 7:
+        return i + 8
+    if t == 8:
+        n, i = varint(buf, i)
+        return i + n
+    if t in (9, 10):
+        n, et = buf[i] >> 4, buf[i] & 0x0F
+        i += 1
+        if n == 15:
+            n, i = varint(buf, i)
+        for _ in range(n):
+            i = skip_value(buf, i, et)
+        return i
+    if t == 12:
+        while buf[i] != 0:
+            b = buf[i]
+            i += 1
+            if not b >> 4:               # long form: the field id follows
+                i = varint(buf, i)[1]
+            i = skip_value(buf, i, b & 0x0F)
+        return i + 1
+    sys.exit(5)
+
+
+def page_end(buf, i):
+    """-> the offset after the page whose header starts at buf[i]: its header, then
+    compressed_size bytes. pyarrow writes fields 1, 2 and 3 (type, uncompressed_size,
+    compressed_size) first, each a one-byte field header and a zigzag varint."""
+    end = skip_value(buf, i, 12)
+    _, j = varint(buf, i + 1)            # type
+    _, j = varint(buf, j + 1)            # uncompressed_size
+    csz, _ = varint(buf, j + 1)          # compressed_size
+    return end + (csz >> 1)
+
+
+paged = os.path.join(W, "paged.parquet")
+pq.write_table(pa.table({"id": pa.array(list(range(200)), pa.int32())}), paged,
+               compression="none", use_dictionary=False, data_page_size=1,
+               write_batch_size=50)
+pmeta, pmetalen, pbody = parts(paged)
+pmd = pq.ParquetFile(paged).metadata.row_group(0).column(0)
+if (pmd.dictionary_page_offset or pmd.total_compressed_size != pmd.total_uncompressed_size
+        or pbody[pmd.data_page_offset - 4] != fh(1, I32)[0]):
+    sys.exit(5)
+psplit = page_end(pbody, pmd.data_page_offset - 4)
+
+
+def with_empty_pages(name, count):
+    extra = empty_data_page() * count
+    old = zz(pmd.total_compressed_size)
+    if pmeta.count(old) < 1:
+        sys.exit(5)
+    m = pmeta.replace(old, zz(pmd.total_compressed_size + len(extra)))
+    build(name, pbody[:psplit] + extra + pbody[psplit:], m, len(m))
+
+
+with_empty_pages("one_empty_page.parquet", 1)
+with_empty_pages("empty_page_run.parquet", 1000)
+
 # #620: four row groups of 1000 rows, for the FDW's Row Groups Decoded counter
 n = 4000
 pq.write_table(pa.table({"id": pa.array(range(n), pa.int32()),
@@ -161,6 +262,7 @@ if pq.ParquetFile(os.path.join(W, "stream_groups.parquet")).num_row_groups != 4:
     sys.exit(6)
 
 for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
-             "v2_levels", "allnull", "stream_groups"):
+             "v2_levels", "allnull", "empty_data_page", "one_empty_page",
+             "empty_page_run", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

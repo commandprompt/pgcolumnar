@@ -12870,6 +12870,9 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_second_dictionary_page_is_rejected` | a second dictionary page in a chunk is rejected |
 | `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
 | `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
+| `test_parquet_streaming_data_page_with_no_values_reads` | a data page with no values (pyarrow list column) reads |
+| `test_parquet_streaming_one_empty_data_page_between_data_pages_reads` | one empty data page between two data pages reads |
+| `test_parquet_streaming_run_of_empty_data_pages_is_rejected` | a run of 1000 empty data pages is rejected |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |

@@ -5424,11 +5424,14 @@ native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;
 native_parquet_stack	native_parquet_stack	nested-struct footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	read_parquet rejects the nested-struct footer the same way	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	schema-chain footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's check_stack_depth() removed, so a schema chain is not bounded
+native_parquet_streaming	native_parquet_streaming	a data page with no values (pyarrow list column) reads	15;16;17;18;19	2026-11-24	main before #2077: the page loop refuses every data page with no values
+native_parquet_streaming	native_parquet_streaming	a run of 1000 empty data pages is rejected	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: the limit on a run of data pages with no values removed
 native_parquet_streaming	native_parquet_streaming	a second dictionary page in a chunk is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the one-dictionary-page-per-chunk guard removed
 native_parquet_streaming	native_parquet_streaming	all-null column (empty dictionary page) still reads	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	backend survived the crafted page areas	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the second-dictionary-page refusal becomes abort()
 native_parquet_streaming	native_parquet_streaming	backend survived the failed read	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	negative page offset is rejected by the offset check	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_read_page_header no longer refuses a negative page offset
+native_parquet_streaming	native_parquet_streaming	one empty data page between two data pages reads	15;16;17;18;19	2026-11-24	main before #2077: the page loop refuses every data page with no values
 native_parquet_streaming	native_parquet_streaming	page size past end of file is rejected by the size bound	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: compressed_size no longer bounded by what is left of the file
 native_parquet_streaming	native_parquet_streaming	parquet_schema reads a file over the 1GB palloc ceiling	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	parquet_schema reports the columns of the oversized file	15;16;17;18;19	never	-

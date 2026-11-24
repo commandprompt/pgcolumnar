@@ -1199,6 +1199,12 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   carries a second, wrong-typed header struct as well as its own. Then pgColumnar
   refuses a page that pyarrow might read. The footer is not checked this way: the
   reader still reads a footer field by its id alone.
+- The reader steps over a data page that holds no values (#2077), as pyarrow
+  does. It refuses such a page when the page has no body. It also refuses more
+  than 16 of them in a row in one column chunk. Both refusals raise SQLSTATE
+  XX001. These limits stop a crafted file from making the reader walk a large
+  area a few bytes at a time. In the files tested, pyarrow wrote at most one
+  such page in a row. pyarrow itself stopped reading a chunk at a run of three.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

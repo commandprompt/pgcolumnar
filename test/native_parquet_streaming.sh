@@ -160,6 +160,21 @@ check "v2 level lengths past the page are rejected" \
 check "all-null column (empty dictionary page) still reads" \
 	"$(qw "SELECT count(*), count(c) FROM pgcolumnar.read_parquet('$W/allnull.parquet') AS t(c int);" | tr '|' ' ')" \
 	"100 0"
+
+# #2077: a data page with no values is valid, and pyarrow writes one for a
+# dictionary-encoded list column when it flushes pages often. The progress guard
+# refused every such page, so the whole file failed to read. A data page with no
+# values is accepted when it has a body, so the loop still moves forward; a long
+# run of them is refused, so the zero-filled area above stays a fast refusal.
+check "a data page with no values (pyarrow list column) reads" \
+	"$(qw "SELECT string_agg(coalesce(ls::text, 'NULL'), ' ') FROM pgcolumnar.read_parquet('$W/empty_data_page.parquet') AS t(ls text[]);")" \
+	"{yy} NULL"
+check "one empty data page between two data pages reads" \
+	"$(qw "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$W/one_empty_page.parquet') AS t(id int);" | tr '|' ' ')" \
+	"200 19900"
+check "a run of 1000 empty data pages is rejected" \
+	"$(errtext "SELECT * FROM pgcolumnar.read_parquet('$W/empty_page_run.parquet') AS t(id int)")" \
+	"ERROR:  could not decode Parquet column 0 in row group 0"
 check "backend survived the crafted page areas" "$(survived "$CRASHES_MID")" "1"
 
 # the legitimate file the crafted ones were built from must still read
@@ -203,5 +218,7 @@ check "streaming: rescan under a nested loop is correct" \
 
 rm -f "$W/huge_sparse.parquet" "$W/zero_pages.parquet" "$W/bad_size.parquet" \
 	"$W/noise_pages.parquet" "$W/bad_offset.parquet" "$W/two_dicts.parquet" \
-	"$W/v2_levels.parquet" "$W/allnull.parquet" "$W/stream_groups.parquet"
+	"$W/v2_levels.parquet" "$W/allnull.parquet" "$W/stream_groups.parquet" \
+	"$W/empty_data_page.parquet" "$W/one_empty_page.parquet" "$W/empty_page_run.parquet" \
+	"$W/paged.parquet"
 pgc_summary

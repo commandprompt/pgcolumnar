@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet` and the Parquet foreign table now read a file that holds a data
+  page with no values (#2077). Such a page is valid, and pyarrow writes one for a
+  dictionary-encoded list column when it flushes pages often. The reader refused
+  every data page with no values, so the whole read failed with `could not decode
+  Parquet column 0 in row group 0`. The reader now steps over such a page when it
+  has a body. It still refuses an empty page with no body, so a zero-filled area
+  stays a fast refusal, and it refuses more than 16 empty data pages in a row.
+  In every file tested, pyarrow wrote at most one in a row. `test/native_parquet_streaming.sh` and
+  `test_native_parquet_streaming.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

@@ -2313,6 +2313,13 @@ pq_source_open(const char *path, PqSource *src, PqFile *pf)
 #define PQ_PAGE_HDR_WIN_MAX (16 * 1024 * 1024)
 
 /*
+ * The most data pages with no values that may follow one another in a column
+ * chunk (#2077). In the files tested, pyarrow wrote at most one between pages
+ * with values, and pyarrow itself stopped reading a chunk at a run of three.
+ */
+#define PQ_MAX_EMPTY_DATA_PAGE_RUN 16
+
+/*
  * Parse the page header at `off`, returning its parsed form and encoded length.
  *
  * The thrift reader sets `error` both when the input is structurally wrong and
@@ -2384,6 +2391,7 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 	Datum	   *dict = NULL;
 	int			dictCount = 0;
 	int			nDictPages = 0;
+	int			nEmptyRun = 0;
 
 	/*
 	 * One underlying read for the whole chunk (#393 M1): the page walk below is
@@ -2424,13 +2432,24 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		 * is preserved instead by the format's own rule that a column chunk has
 		 * at most one dictionary page, so a crafted run of them cannot walk the
 		 * file either.
+		 *
+		 * A data page with no values is valid too (#2077): pyarrow writes one
+		 * for a dictionary-encoded list column when it flushes pages often. It
+		 * is accepted when it has a body, so the walk moves forward by more than
+		 * a header, and it is skipped below without decoding. A run of more than
+		 * PQ_MAX_EMPTY_DATA_PAGE_RUN of them is refused, so a crafted file cannot
+		 * walk a large region a few bytes at a time. A page with values resets
+		 * the run, and those pages are bounded by ch->num_values.
 		 */
 		if (h.type == PQ_PAGE_DICTIONARY)
 		{
 			if (++nDictPages > 1)
 				return false;
 		}
-		else if (h.num_values <= 0)
+		else if (h.num_values > 0)
+			nEmptyRun = 0;
+		else if (h.num_values < 0 || h.compressed_size <= 0 ||
+				 ++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
 			return false;
 
 		/*
@@ -2457,6 +2476,14 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		if (h.compressed_size < 0 ||
 			(int64) h.compressed_size > src->len - pos - (int64) hdrlen)
 			return false;
+
+		/* a data page with no values adds no entries: step over it */
+		if (h.type != PQ_PAGE_DICTIONARY && h.num_values == 0)
+		{
+			pos += hdrlen + h.compressed_size;
+			continue;
+		}
+
 		pagebuf = (uint8 *) palloc(Max(h.compressed_size, 1));
 		pq_source_read(src, pos + (int64) hdrlen, pagebuf,
 					   (size_t) h.compressed_size);
