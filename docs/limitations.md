@@ -1030,8 +1030,9 @@ For example, it refuses a float64 for a `bigint` column and a string for a
 It reads four pairings across families. A signed int64 reads into `timestamp`
 or `timestamptz` as microseconds since 1970-01-01. A duration reads into
 `bigint` as its count; the unit is not stored. A string reads into `bytea`.
-A binary reads into `text`, `varchar`, `json`, `jsonb`, or a `numeric` declared
-without a precision or with one above 38; it does not read into `numeric(p,s)`.
+A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
+`numeric` declared without a precision or with one above 38, but not into
+`numeric(p,s)`.
 `import_arrow` does not read a large string, a large binary or a Null-type
 column into any column.
 
