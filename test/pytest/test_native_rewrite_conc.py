@@ -13,7 +13,8 @@ compact_rewrite held mid-verb with its lock taken lets a reader and a writer, ea
 3 s lock_timeout, finish while it still holds the lock -- a rewrite that took a stronger
 lock would otherwise pass everything above, since the workers would simply wait for it.
 Last, on a second private database, recluster and compact_rewrite each meet a single-row
-UPDATE from an open writer without a deadlock (#2074).
+UPDATE from an open writer, and a writer that deleted, scanned and then inserts, without
+a deadlock (#2074).
 
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture.
 """
@@ -237,28 +238,41 @@ def test_the_held_rewrite_itself_completed(rc, expect):
     expect.text(rc["holder"], "rc=0", "the held rewrite itself completed")
 
 
-# ---- an online rewrite and a single-row UPDATE take the locks in one order -----
+# ---- an online rewrite and an open writer cannot deadlock ----------------------
 #
 # Issue #2074. The storage-row lock (class 102) is taken by every row-group flush and
-# held to commit; the chunk-group lock (class 101) guards a group's delete vector. An
-# UPDATE takes 102 at its row flush, then 101 at its delete-vector flush. The online
-# rewrites took 101 on their groups first and 102 at their own flush, so the two
-# deadlocked. To place the cycle deterministically, an open writer flushes one inserted
-# row (it holds 102 and no 101), the rewrite runs out of its hold until it waits on
-# that 102, and only then does the writer UPDATE a row of a covered group and commit.
+# held to commit; the chunk-group lock (class 101) guards a group's delete vector. A
+# writer takes the two in either order and holds both to commit. In the update shape,
+# an UPDATE flushes its new row (102), then its delete vector (101). In the delete
+# shape, a later scan flushes a DELETE's marks (101), then COMMIT flushes an INSERT
+# (102). So a rewrite that waits for one class while it holds the other closes a cycle
+# with one shape: main's rewrites (101, then wait on 102) deadlocked with the update
+# shape, and taking 102 first (then wait on 101) deadlocked with the delete shape.
+# To place each cycle deterministically, an open writer takes its first lock only, the
+# rewrite runs out of its hold until pg_locks shows it waiting on that lock, and only
+# then does the writer take its second lock on a covered group and commit.
 
 DL_DB = "pgc_native_rewrite_conc_dl"
 DL_VERBS = {
     "recluster": "pgcolumnar.recluster('dl', 'id')",
     "compact_rewrite": "pgcolumnar.compact_rewrite('dl', 0.0)",
 }
-_WAITING_102 = ("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
-                "AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid())")
+# shape -> (first statement, the lock class it leaves the writer holding, second statement)
+DL_SHAPES = {
+    "update": ("INSERT INTO dl VALUES (0, 0)", 102, "UPDATE dl SET bal = bal + 1 WHERE id = 5"),
+    "delete": ("DELETE FROM dl WHERE id = 5", 101, "INSERT INTO dl VALUES (0, 0)"),
+}
 
 
-def _dl_race(d, verb):
-    """-> {"waited": bool | error, "update": "ok" | error, "rewrite": "ok" | error,
-    "bal": the UPDATEd row's balance afterwards}."""
+def _waiting(cls):
+    return ("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+            f"AND objsubid = {cls} AND NOT granted AND pid <> pg_backend_pid())")
+
+
+def _dl_race(d, verb, shape):
+    """-> {"waited": bool | error, "writer": "ok" | error, "rewrite": "ok" | error,
+    "after": the shape's effect afterwards}."""
+    first, cls, second = DL_SHAPES[shape]
     for sql in ("DROP TABLE IF EXISTS dl",
                 "CREATE TABLE dl (id int, bal int) USING pgcolumnar",
                 "SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, "
@@ -267,7 +281,7 @@ def _dl_race(d, verb):
                 "DELETE FROM dl WHERE id <= 1000 AND id % 3 = 0"):
         e = d.run(sql)
         if e:
-            return {"waited": e, "update": e, "rewrite": e, "bal": e}
+            return {"waited": e, "writer": e, "rewrite": e, "after": e}
     out = {}
 
     def rewrite():
@@ -285,25 +299,29 @@ def _dl_race(d, verb):
             time.sleep(0.1)
         with psycopg.connect(d.dsn) as w:
             try:
-                w.execute("INSERT INTO dl VALUES (0, 0)")
-                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: takes 102
+                w.execute(first)
+                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: takes `cls`
                 waited = False
                 with psycopg.connect(d.dsn, autocommit=True) as probe:
                     for _ in range(300):
-                        waited = probe.execute(_WAITING_102).fetchone()[0]
+                        waited = probe.execute(_waiting(cls)).fetchone()[0]
                         if waited:
                             break
                         time.sleep(0.1)
                 out["waited"] = waited
-                w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 5")
+                w.execute(second)
                 w.commit()
-                out["update"] = "ok"
+                out["writer"] = "ok"
             except psycopg.Error as exc:
                 out.setdefault("waited", _err(exc))
-                out["update"] = _err(exc)
+                out["writer"] = _err(exc)
     finally:
         rt.join()
-    out["bal"] = d.n("SELECT bal FROM dl WHERE id = 5")
+    if shape == "update":
+        out["after"] = d.q("SELECT bal FROM dl WHERE id = 5")
+    else:
+        out["after"] = d.q("SELECT count(*) FILTER (WHERE id = 5) || ' ' || "
+                           "count(*) FILTER (WHERE id = 0) FROM dl")
     return out
 
 
@@ -315,7 +333,9 @@ def dl(pgc_cluster):
     try:
         d = _Db(pgc_cluster.dsn(dbname=DL_DB))
         d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
-        yield {name: _dl_race(d, verb) for name, verb in DL_VERBS.items()}
+        # the shell's order: for each verb, the update shape, then the delete shape
+        yield {(name, shape): _dl_race(d, verb, shape)
+               for name, verb in DL_VERBS.items() for shape in DL_SHAPES}
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DL_DB} WITH (FORCE)")
@@ -323,18 +343,40 @@ def dl(pgc_cluster):
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_waited_on_the_storage_row_lock_of_an_open_writer(dl, name, expect):
-    expect.text(str(dl[name]["waited"]), "True",
+    expect.text(str(dl[name, "update"]["waited"]), "True",
                 f"a {name} waited on the storage-row lock of an open writer")
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_a_single_row_update_and_the_rewrite_both_commit(dl, name, expect):
-    r = dl[name]
-    expect.text(f"update={r['update']} rewrite={r['rewrite']}", "update=ok rewrite=ok",
+    r = dl[name, "update"]
+    expect.text(f"update={r['writer']} rewrite={r['rewrite']}", "update=ok rewrite=ok",
                 f"a single-row UPDATE from that writer and the {name} both commit, "
                 "with no deadlock")
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
-def test_and_that_update_took_effect(dl, name, expect):
-    expect.num(dl[name]["bal"], 1001, "and that UPDATE took effect")
+def test_the_update_beside_the_rewrite_took_effect(dl, name, expect):
+    expect.text(dl[name, "update"]["after"], "1001",
+                f"and the UPDATE beside the {name} took effect")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_waited_on_the_chunk_group_lock_of_a_writer_that_deleted(dl, name, expect):
+    expect.text(str(dl[name, "delete"]["waited"]), "True",
+                f"a {name} waited on the chunk-group lock of an open writer that deleted "
+                "and scanned")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_delete_scan_insert_writer_and_the_rewrite_both_commit(dl, name, expect):
+    r = dl[name, "delete"]
+    expect.text(f"writer={r['writer']} rewrite={r['rewrite']}", "writer=ok rewrite=ok",
+                f"a DELETE, a scan and an INSERT from that writer and the {name} both "
+                "commit, with no deadlock")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_delete_and_insert_beside_the_rewrite_took_effect(dl, name, expect):
+    expect.text(dl[name, "delete"]["after"], "0 1",
+                f"and the DELETE and INSERT beside the {name} took effect")

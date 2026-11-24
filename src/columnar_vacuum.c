@@ -320,6 +320,60 @@ retired_group_cmp(const void *a, const void *b)
  * conflict check in PgColumnarUpsertDeleteVector.
  * ------------------------------------------------------------------------- */
 
+/*
+ * lock_rewrite_groups
+ *		Take the storage-row lock (class 102) and the chunk-group lock (class 101)
+ *		of each of `groups`, held to commit, without ever waiting for one class
+ *		while holding the other (#2074).
+ *
+ * A writer holds both classes to commit and can take them in either order. An
+ * UPDATE flushes its new row (102) and then its delete vector (101). A DELETE
+ * whose marks a later scan flushes takes 101, and an INSERT flushed at its
+ * COMMIT then takes 102. A rewrite that waits for either class while holding
+ * the other therefore closes a cycle with one of the two, and the deadlock
+ * detector aborts a side. Taking 101 first deadlocked with the UPDATE; taking
+ * 102 first deadlocked with the DELETE.
+ *
+ * So the rewrite waits for 102 holding no group lock, then tries the group
+ * locks without waiting. When one is busy it gives back everything it took in
+ * this round, waits for that group's lock alone, gives it back, and starts
+ * over. Each wait holds neither class, so no cycle can pass through the
+ * rewrite. Nothing has been written yet, so giving the locks back is safe.
+ *
+ * One exception remains: a lock this transaction held before the call (its
+ * own earlier write to the table, in the same transaction as the rewrite)
+ * stays held through the wait, since an unlock undoes only this call's
+ * acquisition. The maintenance daemon runs each verb in its own transaction.
+ *
+ * Groups are tried in the order given; callers pass them ascending.
+ */
+static void
+lock_rewrite_groups(uint64 storageId, const uint64 *groups, int nGroups)
+{
+	for (;;)
+	{
+		int			i;
+		uint64		busy;
+
+		CHECK_FOR_INTERRUPTS();
+		PgColumnarLockStorageRow(storageId);
+		for (i = 0; i < nGroups; i++)
+			if (!PgColumnarConditionalLockChunkGroup(storageId, groups[i]))
+				break;
+		if (i == nGroups)
+			return;
+
+		busy = groups[i];
+		while (--i >= 0)
+			PgColumnarUnlockChunkGroup(storageId, groups[i]);
+		PgColumnarUnlockStorageRow(storageId);
+
+		/* wait for the writer that holds it to finish, holding neither class */
+		PgColumnarLockChunkGroup(storageId, busy);
+		PgColumnarUnlockChunkGroup(storageId, busy);
+	}
+}
+
 /* the relation's ready indexes, opened once for a rewrite pass */
 /*
  * Rewrite one group's live rows into a fresh group and retire the old group.
@@ -341,15 +395,10 @@ rewrite_one_group(Relation rel, PgColumnarIndexInsertState *ris, uint64 storageI
 	int64		moved = 0;
 
 	/*
-	 * Take the storage-row lock (class 102) before the chunk-group lock (class
-	 * 101), the order an UPDATE uses (#2074). pgcolumnar_recluster_online says
-	 * why. A second group in the same call already holds 102, so this only
-	 * re-checks the storage row.
+	 * The caller already holds this group's chunk-group lock, which serializes
+	 * with concurrent deleters to it (see PgColumnarUpsertDeleteVector), and the
+	 * storage-row lock: lock_rewrite_groups took both (#2074).
 	 */
-	PgColumnarEnsureStorageRow(rel);
-
-	/* serialize with concurrent deleters to this group (see PgColumnarUpsertDeleteVector) */
-	PgColumnarLockChunkGroup(storageId, groupNumber);
 
 	/* Read the group's live set under a snapshot taken after the lock, so every
 	 * delete committed before the lock is reflected. Register it (not just push
@@ -488,13 +537,25 @@ pgcolumnar_rewrite_partial_groups(Relation rel, double minDeletedFraction,
 	if (cands == NIL)
 		return 0;
 
+	if (maxGroups > 0 && list_length(cands) > maxGroups)
+		cands = list_truncate(cands, maxGroups);
+
+	/* every group's lock before the first write (#2074; see lock_rewrite_groups) */
+	{
+		uint64	   *groups = palloc(sizeof(uint64) * list_length(cands));
+		int			n = 0;
+
+		foreach(lc, cands)
+			groups[n++] = ((RewriteCandidate *) lfirst(lc))->groupNumber;
+		lock_rewrite_groups(storageId, groups, n);
+		pfree(groups);
+	}
+
 	ris = PgColumnarIndexInsertBegin(rel, false);
 	foreach(lc, cands)
 	{
 		RewriteCandidate *c = (RewriteCandidate *) lfirst(lc);
 
-		if (maxGroups > 0 && rewritten >= maxGroups)
-			break;
 		rewrite_one_group(rel, ris, storageId, c->groupNumber,
 						  c->firstRow, c->rowCount);
 		rewritten++;
@@ -747,20 +808,15 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	 */
 	pgcolumnar_maintenance_hold();
 
-	/*
-	 * Take the storage-row lock (class 102) before the chunk-group locks (class
-	 * 101), the order an UPDATE uses (#2074). An UPDATE takes 102 when it
-	 * flushes its new row and 101 when it then flushes its delete vector, and
-	 * holds both to commit. This rewrite needs 102 anyway, at its own flush below;
-	 * taking it there, after 101, closed a cycle with such an UPDATE, and the
-	 * deadlock detector aborted one of the two. PgColumnarEnsureStorageRow takes
-	 * 102 and changes nothing when the storage row exists, which it does for a
-	 * table with groups.
-	 */
-	PgColumnarEnsureStorageRow(rel);
+	/* the storage-row lock and every group's lock, held to commit (#2074; see lock_rewrite_groups) */
+	{
+		uint64	   *groups = palloc(sizeof(uint64) * nGroups);
 
-	for (i = 0; i < nGroups; i++)
-		PgColumnarLockChunkGroup(storageId, oldGroups[i].groupNumber);
+		for (i = 0; i < nGroups; i++)
+			groups[i] = oldGroups[i].groupNumber;
+		lock_rewrite_groups(storageId, groups, nGroups);
+		pfree(groups);
+	}
 
 	/* read all live rows into a Morton-keyed tuplesort (as in eager cluster).
 	 * Register the snapshot (not just push active) so the catalog snapshot copies

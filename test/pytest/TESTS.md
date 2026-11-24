@@ -13079,9 +13079,12 @@ Every test makes one check under the shell's name, on a private database. The wo
 | `test_the_held_rewrite_itself_completed` | the held rewrite itself completed |
 | `test_the_rewrite_waited_on_the_storage_row_lock_of_an_open_writer` (recluster, compact_rewrite) | a recluster (a compact_rewrite) waited on the storage-row lock of an open writer |
 | `test_a_single_row_update_and_the_rewrite_both_commit` (recluster, compact_rewrite) | a single-row UPDATE from that writer and the recluster (the compact_rewrite) both commit, with no deadlock |
-| `test_and_that_update_took_effect` (recluster, compact_rewrite) | and that UPDATE took effect |
+| `test_the_update_beside_the_rewrite_took_effect` (recluster, compact_rewrite) | and the UPDATE beside the recluster (the compact_rewrite) took effect |
+| `test_the_rewrite_waited_on_the_chunk_group_lock_of_a_writer_that_deleted` (recluster, compact_rewrite) | a recluster (a compact_rewrite) waited on the chunk-group lock of an open writer that deleted and scanned |
+| `test_a_delete_scan_insert_writer_and_the_rewrite_both_commit` (recluster, compact_rewrite) | a DELETE, a scan and an INSERT from that writer and the recluster (the compact_rewrite) both commit, with no deadlock |
+| `test_the_delete_and_insert_beside_the_rewrite_took_effect` (recluster, compact_rewrite) | and the DELETE and INSERT beside the recluster (the compact_rewrite) took effect |
 
-The last three tests are #2074, on their own private database. An open writer flushes one inserted row, so it holds the storage-row lock (class 102) and no chunk-group lock (class 101). The rewrite, held for 3 s by `pgcolumnar.maintenance_hold_ms`, then runs until `pg_locks` shows it waiting on class 102. Only then does the writer UPDATE a row of a group the rewrite covers and commit. Before the fix the rewrite took 101 first, so one of the two failed with `deadlock detected`.
+The last six tests are #2074, on their own private database. A writer holds two advisory locks to commit and can take them in either order. In the update shape (first three tests), an open writer flushes one inserted row, so it holds the storage-row lock (class 102) and no chunk-group lock (class 101); the rewrite, held for 3 s by `pgcolumnar.maintenance_hold_ms`, then runs until `pg_locks` shows it waiting on class 102, and only then does the writer UPDATE a row of a group the rewrite covers and commit. In the delete shape (last three tests), the writer deletes a row and scans, so it holds class 101 and not class 102; the rewrite runs until it waits on class 101, and only then does the writer insert a row and commit, which takes class 102. Main's rewrites took 101 and then waited on 102, so the update shape failed with `deadlock detected`. Taking 102 first and then waiting on 101 made the delete shape fail the same way.
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 

@@ -1916,4 +1916,7 @@ guard_tests 894
 # take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
 # rewrite both commit (three tests, each parametrized over the two verbs), by collection:
 # `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-cluster_tests 5382
+# cluster_tests 5382 -> 5388, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
+# "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
+cluster_tests 5388

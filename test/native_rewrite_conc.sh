@@ -132,24 +132,38 @@ check "and the rewrite still held its lock when both had finished" "$(held)" "1"
 wait "$holder_pid"
 check "the held rewrite itself completed" "$(tail -1 "$PGC_WORKDIR/holder.out")" "rc=0"
 
-# ---- an online rewrite and a single-row UPDATE take the locks in one order -----
+# ---- an online rewrite and an open writer cannot deadlock ----------------------
 #
 # Issue #2074. Two advisory locks meet here. The chunk-group lock (class 101)
 # guards a group's delete vector. The storage-row lock (class 102) is taken by
 # every row-group flush and held to commit, so it serializes writers to a table.
-# An UPDATE flushes its new row first (102), then its delete vector (101). The
-# online rewrites took 101 on their groups first and 102 at their own flush: the
-# opposite order, so the two deadlocked and one was aborted with 40P01.
+# A writer can take the two in either order, and holds both to commit:
 #
-# To place the cycle deterministically, an open writer flushes one inserted row,
-# so it holds 102 and no 101. The rewrite, released from its hold, runs until it
-# waits on that 102. Only then does the writer UPDATE a row of a group the rewrite
-# covers and commit. With one lock order the writer commits and the rewrite then
-# finishes; with the old order one of them gets "deadlock detected".
+#   - update shape: an UPDATE flushes its new row (102), then its delete
+#     vector (101).
+#   - delete shape: a DELETE whose marks a later scan flushes (101), then an
+#     INSERT flushed at COMMIT (102).
 #
-# dl_race VERB-SQL -> "waited=<t|f> update=<ok|error> rewrite=<ok|error>"
+# So a rewrite that waits for one class while it holds the other closes a cycle
+# with one of the shapes. On main the rewrites took 101 and then waited on 102,
+# which deadlocked with the update shape. Taking 102 first and then waiting on
+# 101 deadlocked with the delete shape instead. The rewrite must never wait while
+# it holds either lock.
+#
+# To place each cycle deterministically, an open writer first takes its first
+# lock and nothing else. The rewrite, released from its 3 s hold, runs until
+# pg_locks shows it waiting on that lock. Only then does the writer take its
+# second lock on a group the rewrite covers, and commit. Both must commit.
+#
+# dl_race VERB-SQL SHAPE -> "waited=<t|f> writer=<ok|error> rewrite=<ok|error>"
 dl_race() {
-	local verb="$1"
+	local verb="$1" shape="$2" first second cls
+	case "$shape" in
+	update) first="INSERT INTO dl VALUES (0, 0);" cls=102
+		second="UPDATE dl SET bal = bal + 1 WHERE id = 5;" ;;
+	delete) first="DELETE FROM dl WHERE id = 5;" cls=101
+		second="INSERT INTO dl VALUES (0, 0);" ;;
+	esac
 	q "DROP TABLE IF EXISTS dl;
 	   CREATE TABLE dl (id int, bal int) USING pgcolumnar;
 	   SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, chunk_group_row_limit => 100);
@@ -169,39 +183,48 @@ dl_race() {
 		        AND mode = 'ShareUpdateExclusiveLock' AND pid <> pg_backend_pid();")" = "1" ] && break
 		sleep 0.1
 	done
+	local waiting="EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
+	               AND objsubid = $cls AND NOT granted AND pid <> pg_backend_pid())"
+	# The scan after the first statement flushes it, so the writer holds its first lock.
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
-		-qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.up" 2>&1 <<'SQL'
+		-qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.up" 2>&1 <<SQL
 BEGIN;
-INSERT INTO dl VALUES (0, 0);
+$first
 SELECT count(*) > 0 FROM dl;
-DO $$
+DO \$\$
 BEGIN
 	FOR i IN 1..300 LOOP
-		EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
-		                  AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid());
+		EXIT WHEN $waiting;
 		PERFORM pg_sleep(0.1);
 	END LOOP;
-END $$;
-SELECT 'waited=' || EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
-                            AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid());
-UPDATE dl SET bal = bal + 1 WHERE id = 5;
+END \$\$;
+SELECT 'waited=' || $waiting;
+$second
 COMMIT;
 SQL
 	local up_rc=$?
 	wait "$rw_pid"
 	echo "$(grep -o 'waited=[tf]' "$PGC_WORKDIR/dl.up" || echo waited=none)" \
-		"update=$([ "$up_rc" = 0 ] && echo ok || echo error)" \
+		"writer=$([ "$up_rc" = 0 ] && echo ok || echo error)" \
 		"rewrite=$([ "$(tail -1 "$PGC_WORKDIR/dl.rw")" = "rc=0" ] && echo ok || echo error)"
 	grep -h 'deadlock detected' "$PGC_WORKDIR/dl.up" "$PGC_WORKDIR/dl.rw" >&2
 }
 for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
 	name="${verb%%(*}"; name="${name#pgcolumnar.}"
-	got="$(dl_race "$verb")"
+	got="$(dl_race "$verb" update)"
 	check "a $name waited on the storage-row lock of an open writer" \
 		"$(grep -o 'waited=[a-z]*' <<<"$got")" "waited=t"
 	check "a single-row UPDATE from that writer and the $name both commit, with no deadlock" \
-		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "update=ok rewrite=ok"
+		"$(sed 's/^waited=[a-z]* //; s/writer=/update=/' <<<"$got")" "update=ok rewrite=ok"
+	check "and the UPDATE beside the $name took effect" \
+		"$(q "SELECT bal FROM dl WHERE id = 5;")" "1001"
+	got="$(dl_race "$verb" delete)"
+	check "a $name waited on the chunk-group lock of an open writer that deleted and scanned" \
+		"$(grep -o 'waited=[a-z]*' <<<"$got")" "waited=t"
+	check "a DELETE, a scan and an INSERT from that writer and the $name both commit, with no deadlock" \
+		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "writer=ok rewrite=ok"
+	check "and the DELETE and INSERT beside the $name took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id = 5) || ' ' || count(*) FILTER (WHERE id = 0) FROM dl;")" "0 1"
 done
-check "and that UPDATE took effect" "$(q "SELECT bal FROM dl WHERE id = 5;")" "1001"
 
 pgc_summary

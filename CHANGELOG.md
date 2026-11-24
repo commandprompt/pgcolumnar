@@ -606,15 +606,22 @@ true until the next version shipped.
 ### Fixed
 
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
-  with a concurrent single-row `UPDATE` (#2074). Both verbs took the
-  delete-vector lock on their row groups first and the storage-row lock at
-  their own flush. An `UPDATE` takes the two in the opposite order, so one of
-  the two failed with `deadlock detected` (40P01). The maintenance daemon runs
-  both verbs, so turning it on could make application `UPDATE`s fail this way.
-  Both verbs now take the storage-row lock first. An `UPDATE` that
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. An `UPDATE` that
   meets a rewrite of its group still gets the documented retryable `row group
   was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
   from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
   `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into

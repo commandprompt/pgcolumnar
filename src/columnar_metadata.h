@@ -25,6 +25,10 @@
 extern void PgColumnarRetireGroup(uint64 storageId, uint64 groupNumber);
 
 extern void PgColumnarLockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern bool PgColumnarConditionalLockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern void PgColumnarUnlockChunkGroup(uint64 storageId, uint64 groupNumber);
+extern void PgColumnarLockStorageRow(uint64 storageId);
+extern void PgColumnarUnlockStorageRow(uint64 storageId);
 
 extern bool PgColumnarAllocateFreeSpace(uint64 storageId, uint64 dataLength,
 									  TransactionId oldestXmin, uint64 *fileOffset);
