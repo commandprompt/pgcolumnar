@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- A TID scan of a ctid that no row can have now returns no row, as on heap
+  (#2058). The access method told the executor that every ctid was valid. On
+  `'(0,0)'` the fetch then failed an assertion, and on an assert build
+  PostgreSQL restarted every session. On an offset past the 291 a block holds,
+  the fetch read a row of a later block: `WHERE ctid = '(0,292)'` returned the
+  row at `(1,1)`, and an UPDATE or DELETE with that condition changed or
+  removed it. The access method now refuses offset 0 and any offset past 291,
+  as PostgreSQL's `heapam_tuple_tid_valid` refuses an invalid ctid. A ctid
+  range (`ctid >= ...`) was not affected. `test/tid_range_scan.sh` and
+  `test_tid_range_scan.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

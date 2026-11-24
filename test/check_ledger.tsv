@@ -8705,9 +8705,27 @@ tablesample	tablesample	count(*) TABLESAMPLE raises 0A000 rather than answering 
 tablesample	tablesample	grouped TABLESAMPLE raises 0A000 rather than grouping every row	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
 tablesample	tablesample	premise: the table holds 10000 rows	15;16;17;18;19	never	-
 tablesample	tablesample	sum() TABLESAMPLE raises 0A000 rather than folding the whole table	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(0,0)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(0,292)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(1,0)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(1,400)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(0,0)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(0,292)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(1,0)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(1,400)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
 tid_range_scan	tid_range_scan	a SCROLL cursor over a ctid range fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	no planner hook: a cursor over a TID range scan gets no Material
 tid_range_scan	tid_range_scan	a SCROLL cursor whose query has a subplan fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	the Material's node id from the main tree's largest, not above the subplans'
 tid_range_scan	tid_range_scan	a TID range scan rescanned with new bounds returns what the filter returns	15;16;17;18;19	2026-10-12	getnextslot_tidrange without the boundary-row filter;scan_set_tidrange keeping the reader of the previous range
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,0)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,0)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,292)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,292)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,0)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,0)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,400)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,400)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of the last offset a block holds, '(0,291)', still returns its row	15;16;17;18;19	never	-
+tid_range_scan	tid_range_scan	a TID scan of two ctids rows have and one past a block's last offset returns those two rows	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
 tid_range_scan	tid_range_scan	a ctid range over the last row groups reads under a fifth of the table	15;16;17;18;19	2026-10-12	scan_set_tidrange without the group restriction
 tid_range_scan	tid_range_scan	a ctid range returns what the per-row filter returns: ctid < '(515,0)'	15;16;17;18;19	2026-10-12	a lower bound at offset 0 read unclamped;an upper bound's offset past 291 read unclamped;getnextslot_tidrange without the boundary-row filter
 tid_range_scan	tid_range_scan	a ctid range returns what the per-row filter returns: ctid < '(515,1)'	15;16;17;18;19	2026-10-12	a lower bound at offset 0 read unclamped;getnextslot_tidrange without the boundary-row filter
@@ -8731,6 +8749,7 @@ tid_range_scan	tid_range_scan	after compaction a ctid range returns what the fil
 tid_range_scan	tid_range_scan	after compaction a ctid range returns what the filter returns: ctid >= 'LAST'	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	and rows deleted inside the range stay deleted	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: a ctid range plans a TID range scan, so the arms below exercise it	15;16;17;18;19	never	-
+tid_range_scan	tid_range_scan	premise: a single ctid plans a TID scan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: compaction gave the surviving rows new addresses	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: compaction rewrote the group the delete thinned	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: inside a transaction the range still plans a TID range scan	15;16;17;18;19	never	-
@@ -8739,6 +8758,7 @@ tid_range_scan	tid_range_scan	premise: the cursor's query plans a TID range scan
 tid_range_scan	tid_range_scan	premise: the delete removed rows from the range	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the per-range join rescans a TID range scan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the range runs as a parallel TID range scan with two workers	19	never	-
+tid_range_scan	tid_range_scan	premise: the row after offset 291 of block 0 sits at (1,1)	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the subquery cursor plans a TID range scan and a subplan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the table has many row groups, so skipping can show	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the table holds every row	15;16;17;18;19	never	-
