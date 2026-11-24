@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5378 for #2092's two tests, test_an_arrow_import_into_a_table_with_a_projection_
+# keeps_the_server_up in test_arrow_import.py and test_a_parquet_import_into_a_table_with_a_projection_keeps_
+# the_server_up in test_parquet_import.py (an import into a table with a projection keeps the server up and
+# fills the projection), by collection over the files NO_CLUSTER does not name, as ci.yml selects them:
+# 5378 tests collected.
+cluster_tests 5378

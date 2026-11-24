@@ -1115,4 +1115,49 @@ else
 	done
 fi
 
+# ---- an import into a table with a projection keeps the server up (#2092) ----
+# The import writes the projection's rows when the statement ends. For a SELECT
+# that is during portal cleanup, when no snapshot is active, and the flush read
+# the options catalog with a snapshot nobody had registered. An assert build
+# aborted there once the table had an options row (set_options), and the
+# postmaster restarted every backend. The matrix crosses projection with
+# set_options; each case gets its own table, so an options row of one case cannot
+# reach another. The crash is read from the server log, not from timing.
+aip_crashes() {	# a number, or nothing when the log can't be read
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+aip_case() {	# aip_case OPT PROJ -> "oOPTpPROJ:imported/rows/projection rows"
+	local t="aip_o$1p$2" f out got i
+	f="$PGC_WORKDIR/$t.arrows"
+	psql_run "CREATE TABLE $t (id bigint, c int) USING pgcolumnar;
+		INSERT INTO $t SELECT g, g % 10 FROM generate_series(1, 1000) g;"
+	[ "$1" = 1 ] && psql_run "SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" = 1 ] && psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['c','id'], sort_key => ARRAY['c']);" >/dev/null
+	q "SELECT pgcolumnar.export_arrow('$t', '$f');" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_arrow('$t', '$f');" 2>&1)"
+	case "$out" in
+		*ERROR:*) got="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)" ;;
+		*[!0-9]*|'') got="lost connection" ;;
+		*) got="$out" ;;
+	esac
+	# after a crash the server needs a moment of recovery before it answers
+	for i in $(seq 1 60); do [ "$(q 'SELECT 1;')" = 1 ] && break; sleep 1; done
+	printf 'o%sp%s:%s/%s/%s' "$1" "$2" "$got" "$(q "SELECT count(*) FROM $t;")" \
+		"$([ "$2" = 1 ] && q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p');" || echo -)"
+}
+_aip_c0="$(aip_crashes)"
+_aip_got="$(aip_case 0 0) $(aip_case 0 1) $(aip_case 1 0) $(aip_case 1 1)"
+_aip_now="$(aip_crashes)"
+if [[ "$_aip_c0" =~ ^[0-9]+$ && "$_aip_now" =~ ^[0-9]+$ ]]; then
+	_aip_got="$_aip_got | $(( _aip_now - _aip_c0 )) backend crashes"
+else
+	_aip_got="$_aip_got | crash count unreadable"
+fi
+check "import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)" \
+	"$_aip_got" \
+	"o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000 | 0 backend crashes"
+
 pgc_summary

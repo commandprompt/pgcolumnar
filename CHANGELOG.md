@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the
+  backend on a table that has a projection (#2092). The import writes the
+  projection's rows when the statement ends. For a `SELECT` that happens during
+  portal cleanup, when no snapshot is active, and the write read the options
+  catalog with a snapshot nobody had registered. On a PostgreSQL 18 or 19 build
+  with assertions, the backend aborted once that catalog held a row, and
+  PostgreSQL restarted every session. The import rolled back. The projection
+  write now sets an active snapshot first, as the base table's write already
+  did. `docs/how-to.md` runs into this: it adds a projection and later imports
+  an Arrow file. `test/arrow_import.sh`, `test/parquet_import.sh`,
+  `test_arrow_import.py` and `test_parquet_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
