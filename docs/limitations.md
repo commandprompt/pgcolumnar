@@ -366,8 +366,15 @@ returning no rows.
   indexes of the table again.
 - The writer reserves row numbers one whole row group at a time. A row group that
   it flushes with fewer than `stripe_row_limit` rows therefore leaves a gap in
-  the row-number space. A row number must be unique and stable, and nothing more.
-  The gap does no damage.
+  the row-number space. The space is finite. A row number maps to an item
+  pointer, so about 1.25 trillion row numbers exist at the default 8 kB block
+  size. Every transaction that writes to the table uses up at least
+  `stripe_row_limit` of them, however few rows it writes. At the default 150000
+  that is about 8.3 million writing transactions; at the largest
+  `stripe_row_limit`, 2147483647, it is 582. When the next reservation would
+  pass the end, the write fails with SQLSTATE 54000 ("has run out of row
+  numbers"). Run `pgcolumnar.vacuum` on the table to renumber its rows and free
+  the space again (#2073).
 - A declared `sort_by` key (#288) and `pgcolumnar.vacuum_sorted` are **one-shot**.
   Rows that an insert adds after a sort go in at the end, in insertion order. No
   operation sorts them again. Skip quality therefore decreases until the next

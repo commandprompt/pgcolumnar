@@ -8181,6 +8181,7 @@ The pytest twin of `test/native_writer.sh` (ported for #1341), every check by th
 | test | what it holds |
 | --- | --- |
 | `test_the_native_writer_by_its_catalog_rows` | the writer's storage, row-group and column-chunk rows match the fixture, and DROP deletes all three |
+| `test_row_numbers_past_the_item_pointer_range_are_refused` | at stripe_row_limit 2147483647 the 583rd single-row transaction is refused with 54000 instead of wrapping its item pointer (#2073); the 582 rows before it keep ordered item pointers and an index scan finds them all; `pgcolumnar.vacuum` renumbers the rows so inserts work again |
 
 ## 159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table
 

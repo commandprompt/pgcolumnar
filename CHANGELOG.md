@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- A columnar table no longer gives a row the item pointer of a different row
+  once its row numbers run out (#2073). Every transaction that writes reserves
+  `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
+  the space ends after about 8.3 million writing transactions at the default
+  setting, or 582 at the largest. Past the end the block number wrapped: index
+  scans missed the new rows, UPDATE and DELETE through an index changed
+  nothing, and a primary key accepted duplicates. The writer now refuses the
+  reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
+  nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

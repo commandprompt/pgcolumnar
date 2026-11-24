@@ -1912,4 +1912,7 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5377 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+cluster_tests 5377

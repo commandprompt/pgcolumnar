@@ -168,6 +168,17 @@
  */
 #define COLUMNAR_VALID_ITEMPOINTER_OFFSETS ((uint64) MaxHeapTuplesPerPage)
 
+/*
+ * One past the largest row number an item pointer can address (#2073). A block
+ * number holds 32 bits and MaxBlockNumber is the largest valid one, so the last
+ * usable row number is the last offset of block MaxBlockNumber. A row number at
+ * or above this limit would wrap the block number and give the row the item
+ * pointer of a different row. PgColumnarReserveRowNumbers refuses to reserve
+ * past it.
+ */
+#define COLUMNAR_ROW_NUMBER_LIMIT \
+	(((uint64) MaxBlockNumber + 1) * COLUMNAR_VALID_ITEMPOINTER_OFFSETS)
+
 /* compression codes (spec 5) */
 #define COLUMNAR_COMPRESSION_NONE 0
 #define COLUMNAR_COMPRESSION_PGLZ 1

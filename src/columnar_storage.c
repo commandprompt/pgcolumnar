@@ -168,6 +168,11 @@ PgColumnarStorageId(Relation rel)
  *
  *		Serialized by the exclusive lock on the metapage buffer; no relation
  *		extension lock is needed here because no data pages are extended.
+ *
+ *		Refuses a run that would reach COLUMNAR_ROW_NUMBER_LIMIT (#2073): a row
+ *		number past it would wrap its item pointer's block number, and an index
+ *		would then point at the wrong row. The refusal comes before the
+ *		metapage changes, so a refused writer uses up nothing.
  */
 void
 PgColumnarReserveRowNumbers(Relation rel, uint64 rowCount,
@@ -181,6 +186,26 @@ PgColumnarReserveRowNumbers(Relation rel, uint64 rowCount,
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
 	meta = PgColumnarMetapagePointer(page);
+
+	if (meta->reservedRowNumber > COLUMNAR_ROW_NUMBER_LIMIT ||
+		rowCount > COLUMNAR_ROW_NUMBER_LIMIT - meta->reservedRowNumber)
+	{
+		uint64		next = meta->reservedRowNumber;
+
+		UnlockReleaseBuffer(buffer);
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("columnar table \"%s\" has run out of row numbers",
+						RelationGetRelationName(rel)),
+				 errdetail("The writer needs row numbers " UINT64_FORMAT " to "
+						   UINT64_FORMAT ", but the largest row number an item "
+						   "pointer can address is " UINT64_FORMAT ".",
+						   next, next + rowCount - 1,
+						   COLUMNAR_ROW_NUMBER_LIMIT - 1),
+				 errhint("Each transaction that writes reserves stripe_row_limit "
+						 "row numbers. Run pgcolumnar.vacuum on the table to "
+						 "renumber its rows.")));
+	}
 
 	*stripeId = meta->reservedStripeId;
 	*firstRowNumber = meta->reservedRowNumber;
@@ -662,6 +687,7 @@ PgColumnarRowNumberToItemPointer(uint64 rowNumber, ItemPointer tid)
 	OffsetNumber offset;
 
 	Assert(rowNumber > 0);
+	Assert(rowNumber < COLUMNAR_ROW_NUMBER_LIMIT);
 	blockno = (BlockNumber) (rowNumber / COLUMNAR_VALID_ITEMPOINTER_OFFSETS);
 	offset = (OffsetNumber) ((rowNumber % COLUMNAR_VALID_ITEMPOINTER_OFFSETS) +
 							 FirstOffsetNumber);
