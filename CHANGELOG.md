@@ -605,6 +605,14 @@ true until the next version shipped.
 
 ### Fixed
 
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. `test/export_sink.sh` and `test_export_sink.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

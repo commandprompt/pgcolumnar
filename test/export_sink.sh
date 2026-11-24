@@ -22,6 +22,14 @@
 #             failure lands inside write_record_batch — the helper the
 #             13-site census missed, which the design doc requires the proof
 #             to reach.
+#   fatal     an export that ends with FATAL leaves no temp file (#2075). A
+#             FATAL exit (pg_terminate_backend, SIGTERM at shutdown) skips the
+#             writers' PG_CATCH, so only an exit callback can remove the file.
+#             exit_on_error promotes the injected ERROR to FATAL, which takes
+#             that same exit path at a known byte, with no timing race. The
+#             directory is read only after the backend has left
+#             pg_stat_activity, because the client sees the FATAL message
+#             before the backend runs its exit callbacks.
 #
 # Usage:  test/export_sink.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -115,5 +123,48 @@ check_num "inject: no arrow temp debris" "$(no_debris)" "0"
 # ---- the injection is session state, not lingering damage -------------------
 check_num "after RESET, exports work again" \
 	"$(q "SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es2.parquet')")" "$ROWS"
+
+# ---- FATAL exit: no temp file left behind (#2075) ---------------------------
+# fatal_export SQL -> "<pid> <fatal|no fatal> <gone|still listed>"
+fatal_export() {
+	local out pid n i
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+SET exit_on_error = on;
+SET pgcolumnar.sink_fail_after = 8192;
+SELECT 'pid=' || pg_backend_pid();
+$1;
+SQLEOF
+)"
+	pid="$(printf '%s\n' "$out" | sed -n 's/^pid=\([0-9]*\)$/\1/p' | head -1)"
+	[ -n "$pid" ] || { echo "no pid: $out"; return; }
+	n=1
+	for i in $(seq 1 100); do
+		n="$(q "SELECT count(*) FROM pg_stat_activity WHERE pid = $pid")"
+		[ "$n" = "0" ] && break
+		sleep 0.1
+	done
+	printf '%s %s %s\n' "$pid" \
+		"$(printf '%s' "$out" | grep -q 'FATAL:  columnar: export write failed (injected fault)' && echo fatal || echo 'no fatal')" \
+		"$([ "$n" = "0" ] && echo gone || echo "still listed ($n)")"
+}
+# debris_of NAME -> the count of NAME.tmp.* files, so each arm reads only its own
+debris_of() {
+	local found
+	found="$(find "$PGC_WORKDIR" -name "$1.tmp.*" 2>&1)" || { echo "find failed: $found"; return; }
+	printf '%s' "$found" | grep -c .
+}
+FATP="$PGC_WORKDIR/es_fatal.parquet"
+R="$(fatal_export "SELECT pgcolumnar.export_parquet('es_src', '$FATP')")"
+check "fatal: the parquet export ends its backend with FATAL" "${R#* }" "fatal gone"
+check "fatal: nothing exists at the parquet FINAL path" \
+	"$([ ! -e "$FATP" ] && echo clean)" "clean"
+check_num "fatal: no parquet temp file after a FATAL exit" "$(debris_of es_fatal.parquet)" "0"
+FATA="$PGC_WORKDIR/es_fatal.arrow"
+R="$(fatal_export "SELECT pgcolumnar.export_arrow('es_src', '$FATA')")"
+check "fatal: the arrow export ends its backend with FATAL" "${R#* }" "fatal gone"
+check "fatal: nothing exists at the arrow FINAL path" \
+	"$([ ! -e "$FATA" ] && echo clean)" "clean"
+check_num "fatal: no arrow temp file after a FATAL exit" "$(debris_of es_fatal.arrow)" "0"
 
 pgc_summary

@@ -10066,7 +10066,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
 
-The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`.
 
 ### Every test
 
@@ -10090,6 +10090,12 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
 | `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
 | `test_after_reset_exports_work_again` | after RESET, exports work again |
+| `test_fatal_the_export_ends_its_backend_with_fatal[parquet]` | fatal: the parquet export ends its backend with FATAL |
+| `test_fatal_the_export_ends_its_backend_with_fatal[arrow]` | fatal: the arrow export ends its backend with FATAL |
+| `test_fatal_nothing_exists_at_the_final_path[parquet]` | fatal: nothing exists at the parquet FINAL path |
+| `test_fatal_nothing_exists_at_the_final_path[arrow]` | fatal: nothing exists at the arrow FINAL path |
+| `test_fatal_no_temp_file_after_a_fatal_exit[parquet]` | fatal: no parquet temp file after a FATAL exit |
+| `test_fatal_no_temp_file_after_a_fatal_exit[arrow]` | fatal: no arrow temp file after a FATAL exit |
 
 ## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
 

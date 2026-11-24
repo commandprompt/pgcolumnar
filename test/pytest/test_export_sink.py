@@ -9,6 +9,13 @@ full disk raises, each export fails 53100, nothing exists at its final path, and
 temp file remains; the arrow arm fails inside write_record_batch by arithmetic on the
 measured full size. A fresh session exports again.
 
+An export that ends with FATAL leaves no temp file either (#2075). A FATAL exit
+(pg_terminate_backend, SIGTERM at shutdown) skips the writers' PG_CATCH, so only an
+exit callback can remove the file. exit_on_error promotes the injected ERROR to FATAL,
+which takes that same exit path at a known byte, with no timing race. The directory is
+read only after the backend has left pg_stat_activity, because the client sees the
+FATAL message before the backend runs its exit callbacks.
+
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The files live in `server_dir`, because the backend writes
 them. Each round-trip reading carries its row count, so two empty tables cannot
@@ -18,6 +25,7 @@ debris".
 import hashlib
 import os
 import pathlib
+import time
 
 import psycopg
 import pytest
@@ -85,6 +93,43 @@ def _debris(d):
     return query_error(f"listing {d} failed: {errors[0]}") if errors else found
 
 
+def _fatal_export(dsn, sql):
+    """-> "fatal gone" when the export's backend ended with the injected FATAL and has
+    left pg_stat_activity; otherwise what was seen instead."""
+    try:
+        conn = psycopg.connect(dsn, autocommit=True)
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    seen, pid = "no fatal (the export returned)", None
+    try:
+        conn.execute("SET exit_on_error = on")
+        conn.execute("SET pgcolumnar.sink_fail_after = 8192")
+        pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+        conn.execute(sql)
+    except psycopg.Error as exc:
+        seen = "fatal" if "export write failed (injected fault)" in str(exc) \
+            and conn.closed else f"no fatal ({_message(exc)})"
+    finally:
+        conn.close()
+    if pid is None:
+        return query_error(f"no backend pid: {seen}")
+    n = None
+    for _ in range(100):
+        n = _value(dsn, f"SELECT count(*) FROM pg_stat_activity WHERE pid = {pid}")
+        if n == 0:
+            break
+        time.sleep(0.1)
+    return f"{seen} {'gone' if n == 0 else f'still listed ({n})'}"
+
+
+def _tmp_of(d, name):
+    """-> the count of name.tmp.* files directly in d, or the listing failure."""
+    try:
+        return sum(1 for p in pathlib.Path(d).iterdir() if p.name.startswith(name + ".tmp."))
+    except OSError as exc:
+        return query_error(f"listing {d} failed: {exc}")
+
+
 def _md5(path):
     try:
         return hashlib.md5(pathlib.Path(path).read_bytes()).hexdigest()
@@ -148,6 +193,12 @@ def es(pgc_cluster, server_dir):
         r["ar debris"] = _debris(d)
 
         r["again"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es2.parquet'}')")
+
+        for kind, name in (("parquet", "es_fatal.parquet"), ("arrow", "es_fatal.arrow")):
+            r[f"{kind} fatal"] = _fatal_export(
+                dsn, f"SELECT pgcolumnar.export_{kind}('es_src', '{d / name}')")
+            r[f"{kind} fatal final"] = "dirty" if (d / name).exists() else "clean"
+            r[f"{kind} fatal tmp"] = _tmp_of(d, name)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -218,3 +269,19 @@ def test_inject_no_arrow_temp_debris(es, expect):
 
 def test_after_reset_exports_work_again(es, expect):
     expect.text(str(es["again"]), str(ROWS), "after RESET, exports work again")
+
+
+@pytest.mark.parametrize("kind", ["parquet", "arrow"])
+def test_fatal_the_export_ends_its_backend_with_fatal(es, expect, kind):
+    expect.text(es[f"{kind} fatal"], "fatal gone",
+                f"fatal: the {kind} export ends its backend with FATAL")
+
+
+@pytest.mark.parametrize("kind", ["parquet", "arrow"])
+def test_fatal_nothing_exists_at_the_final_path(es, expect, kind):
+    expect.text(es[f"{kind} fatal final"], "clean", f"fatal: nothing exists at the {kind} FINAL path")
+
+
+@pytest.mark.parametrize("kind", ["parquet", "arrow"])
+def test_fatal_no_temp_file_after_a_fatal_exit(es, expect, kind):
+    expect.text(str(es[f"{kind} fatal tmp"]), "0", f"fatal: no {kind} temp file after a FATAL exit")

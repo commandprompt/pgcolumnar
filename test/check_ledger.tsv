@@ -1481,6 +1481,12 @@ export_sink	export_sink	arrow export succeeds through the sink	15;16;17;18;19	ne
 export_sink	export_sink	arrow round-trip hash-matches the source	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
 export_sink	export_sink	census: zero fwrite remain in columnar_arrow.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_arrow.c
 export_sink	export_sink	census: zero fwrite remain in columnar_parquet.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_parquet.c
+export_sink	export_sink	fatal: no arrow temp file after a FATAL exit	15;16;17;18;19	2026-11-24	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no parquet temp file after a FATAL exit	15;16;17;18;19	2026-11-24	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: nothing exists at the arrow FINAL path	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: nothing exists at the parquet FINAL path	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: the arrow export ends its backend with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: the parquet export ends its backend with FATAL	15;16;17;18;19	never	-
 export_sink	export_sink	inject: a failed re-export leaves the previous parquet file intact	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
 export_sink	export_sink	inject: arrow export fails inside write_record_batch (53100)	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
 export_sink	export_sink	inject: no arrow temp debris	15;16;17;18;19	2026-10-21	the sink's abort leaves its temp file behind
