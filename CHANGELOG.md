@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
+  column can be read again (#2061). The encoder stores a run of equal values
+  of any fixed-width type as RLE, but the decoder accepted RLE only for types
+  1, 2, 4 or 8 bytes wide. So the INSERT succeeded, and every later read of
+  the column, `DELETE`, `ANALYZE`, `pgcolumnar.vacuum` and `pg_dump` failed
+  with `corrupt encoded chunk (fixed-width encoding on a non-fixed-width
+  column)`. Three equal uuids were enough. The decoder now accepts RLE at any
+  fixed width. The stored bytes were always correct, so tables written before
+  this fix become readable without a rewrite. `test_native_encoding.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

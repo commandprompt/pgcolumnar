@@ -337,4 +337,48 @@ check "a chunk smaller than the sample window reads back exactly" \
 	"$(q 'SELECT count(*), sum(v) FROM se_small;' | tr '|' ' ')" \
 	"500 375750"
 
+
+# Repeated values of a fixed-width type whose length is not 1, 2, 4 or 8 bytes
+# (#2061). uuid, interval, timetz, name, macaddr, tid and point are stored inline
+# at a fixed width, so the encoder may choose RLE for a run of equal values. The
+# decoder refused RLE at any width but 1, 2, 4 and 8, so the INSERT succeeded and
+# every later read of the column failed as a corrupt chunk. Two write paths choose
+# the encoding: the exhaustive one (sampling off, or a small chunk) and the sampled
+# one (a chunk larger than encoding_sample_rows). Both are read back here.
+WF_COLS="id int, u uuid, iv interval, tz timetz, nm name, mac macaddr, t tid, p point"
+WF_ROW="'00000000-0000-0000-0000-000000000001'::uuid, '1 day'::interval,
+        '12:00+05'::timetz, 'abc'::name, '08:00:2b:01:02:03'::macaddr,
+        '(1,2)'::tid, point(1, 2)"
+psql_run "CREATE TABLE wf_h ($WF_COLS);"
+psql_run "INSERT INTO wf_h SELECT g, $WF_ROW FROM generate_series(1, 100) g;"
+psql_run "CREATE TABLE wf_n ($WF_COLS) USING pgcolumnar;"
+psql_run "SET pgcolumnar.encoding_sample_rows = 0;
+          INSERT INTO wf_n SELECT * FROM wf_h;"
+psql_run "CREATE TABLE wf_sh ($WF_COLS);"
+psql_run "INSERT INTO wf_sh SELECT g, $WF_ROW FROM generate_series(1, 20000) g;"
+psql_run "CREATE TABLE wf_s ($WF_COLS) USING pgcolumnar;"
+psql_run "SET pgcolumnar.chunk_group_row_limit = 100000;
+          SET pgcolumnar.encoding_sample_rows = 2048;
+          INSERT INTO wf_s SELECT * FROM wf_sh;"
+# The premise: the seven wide columns really are stored as RLE (type 1) on both
+# paths, so the read-back checks below exercise the RLE decoder.
+check "premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE" \
+	"$(q "SELECT count(*) FILTER (WHERE get_byte(encoding_descriptor, 6) = 1) || '/' || count(*)
+	      FROM pgcolumnar.column_chunk
+	      WHERE storage_id IN (pgcolumnar.get_storage_id('wf_n'), pgcolumnar.get_storage_id('wf_s'))
+	        AND column_index BETWEEN 1 AND 7;")" \
+	"14/14"
+check "repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly" \
+	"$(pgc_set_hash 'SELECT * FROM wf_n')" \
+	"$(pgc_set_hash 'SELECT * FROM wf_h')"
+check "repeated wide fixed-width values read back exactly on the sampled path" \
+	"$(pgc_set_hash 'SELECT * FROM wf_s')" \
+	"$(pgc_set_hash 'SELECT * FROM wf_sh')"
+check "ANALYZE reads a table of repeated wide fixed-width values" \
+	"$(psql_run "ANALYZE wf_s;" >/dev/null 2>&1 && echo analyzed || echo failed)" \
+	"analyzed"
+check "DELETE removes every row of a table of repeated wide fixed-width values" \
+	"$(q "WITH d AS (DELETE FROM wf_n RETURNING 1) SELECT count(*) FROM d;")" \
+	"100"
+
 pgc_summary
