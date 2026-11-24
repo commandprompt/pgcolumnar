@@ -1472,22 +1472,31 @@ pgcolumnar_join_fold_drain(PgColumnarAggScanState *state)
 
 	if (state->joinBuildState == NULL || state->joinFoldKeysReady)
 		return;
-	old = MemoryContextSwitchTo(state->joinFoldContext);
 	pgcolumnar_join_fold_reset_table(state);
 	for (;;)
 	{
 		bool		isnull;
 		Datum	   value;
 
+		/*
+		 * RUN THE DIMENSION PLAN OUTSIDE THE KEY CONTEXT (#2062). A node
+		 * allocates state on its first call, such as a Seq Scan's scan
+		 * descriptor, in whatever context is current. Run in joinFoldContext,
+		 * that state was freed when a rescan reset the context, and the next
+		 * rescan of the dimension crashed. Only the key table belongs there.
+		 */
 		slot = ExecProcNode(state->joinBuildState);
 		if (TupIsNull(slot))
 			break;
 		value = slot_getattr(slot, state->joinBuildResno, &isnull);
 		if (!isnull)
+		{
+			old = MemoryContextSwitchTo(state->joinFoldContext);
 			pgcolumnar_join_fold_insert(state, value);
+			MemoryContextSwitchTo(old);
+		}
 		CHECK_FOR_INTERRUPTS();
 	}
-	MemoryContextSwitchTo(old);
 	state->joinFoldKeysReady = true;
 }
 
@@ -5499,6 +5508,14 @@ PgColumnarReScanAggScan(CustomScanState *node)
 
 	if (state->joinBuildState != NULL)
 	{
+		/*
+		 * PASS THE CHANGED PARAMETERS DOWN (#2062). The dimension plan is in
+		 * custom_ps, and ExecReScan forwards chgParam only to lefttree and
+		 * righttree. A node that caches its output, such as a HashAggregate,
+		 * would otherwise return the first execution's rows.
+		 */
+		if (node->ss.ps.chgParam != NULL)
+			UpdateChangedParamSet(state->joinBuildState, node->ss.ps.chgParam);
 		ExecReScan(state->joinBuildState);
 		if (state->joinFoldContext != NULL)
 			MemoryContextReset(state->joinFoldContext);
