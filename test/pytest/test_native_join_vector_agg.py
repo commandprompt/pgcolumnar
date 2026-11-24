@@ -10,6 +10,8 @@ and every answer must equal the heap mirror's. Plans are read with parallel work
 off and nested-loop and merge joins disabled, so the join is a hash join, as in the
 shell.
 """
+import psycopg
+
 GUC = "pgcolumnar.enable_ungrouped_vector_agg"
 MARKER = "Columnar Vectorized Aggregates"
 
@@ -111,3 +113,63 @@ def test_the_join_fold(pgc_conn, expect):
     expect.text(_with(conn, "on", sqlxn), _row(conn, "SELECT coalesce(sum(heap_xn.v)::text,'z') FROM heap_xn "
                                                      "JOIN dim_xn ON heap_xn.k = dim_xn.k AND heap_xn.v <> dim_xn.t"),
                 "inequality join filter answer equals heap")
+
+
+def test_a_join_clause_under_another_collation_refuses_the_fold(pgc_conn, expect):
+    """The fold compares keys with the fact column's own equality and collation (#2066).
+
+    A join clause under another collation must refuse the fold, or the answer follows
+    the wrong collation. Fact keys 'a','A','b','B','c' meet dimension keys 'a','b': a
+    case-insensitive comparison matches 4 of every 5 fact rows, a byte comparison 2.
+    Both directions are covered: a case-insensitive dimension against a plain fact
+    column, and a byte clause over a case-insensitive fact column. A plain text key,
+    one collation on both sides, is the control and must still fold.
+
+    ITS OWN TEST, because `cannot_run` declares a whole test unrunnable when the
+    server has no ICU, and the checks above need none.
+    """
+    conn = pgc_conn
+    try:
+        _exec(conn, "CREATE COLLATION ci "
+                    "(provider = icu, locale = 'und-u-ks-level2', deterministic = false)")
+    except psycopg.Error:
+        expect.cannot_run(
+            "MISSING_DEPENDENCY",
+            "a case-insensitive collation needs a non-deterministic ICU collation, "
+            "and a server built without ICU cannot create one",
+            name="a join clause under another collation refuses the fold")
+        return
+    _exec(conn, "CREATE TABLE dim_tx(k text PRIMARY KEY)", "INSERT INTO dim_tx VALUES ('a'), ('b')",
+          "CREATE TABLE dim_ci(k text COLLATE ci PRIMARY KEY)", "INSERT INTO dim_ci VALUES ('a'), ('b')",
+          'CREATE TABLE dim_cb(k text COLLATE "C" PRIMARY KEY)', "INSERT INTO dim_cb VALUES ('a'), ('b')",
+          "CREATE TABLE fact_tx(k text, m int) USING pgcolumnar",
+          "INSERT INTO fact_tx SELECT (ARRAY['a','A','b','B','c'])[1 + g % 5], g FROM generate_series(1,1000) g",
+          "CREATE TABLE heap_tx (k text, m int) USING heap", "INSERT INTO heap_tx SELECT * FROM fact_tx",
+          "CREATE TABLE fact_tci(k text COLLATE ci, m int) USING pgcolumnar",
+          "INSERT INTO fact_tci SELECT * FROM fact_tx",
+          "CREATE TABLE heap_tci (k text COLLATE ci, m int) USING heap",
+          "INSERT INTO heap_tci SELECT * FROM fact_tx",
+          "ANALYZE dim_tx", "ANALYZE dim_ci", "ANALYZE dim_cb", "ANALYZE fact_tx", "ANALYZE fact_tci")
+    fold = "Columnar Join Fold: yes"
+
+    sqltx = "SELECT count(*), coalesce(sum(fact_tx.m)::text,'z') FROM fact_tx JOIN dim_tx ON fact_tx.k = dim_tx.k"
+    expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqltx}").count(fold), 1,
+               "text key under one collation keeps the join fold")
+    expect.text(_with(conn, "on", sqltx), _row(conn, "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') "
+                                                     "FROM heap_tx JOIN dim_tx ON heap_tx.k = dim_tx.k"),
+                "text key under one collation answer equals heap")
+
+    sqlci = "SELECT count(*), coalesce(sum(fact_tx.m)::text,'z') FROM fact_tx JOIN dim_ci ON fact_tx.k = dim_ci.k"
+    expect.text(_with(conn, "on", sqlci), _row(conn, "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') "
+                                                     "FROM heap_tx JOIN dim_ci ON heap_tx.k = dim_ci.k"),
+                "case-insensitive join clause answer equals heap")
+    expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqlci}").count(fold), 0,
+               "case-insensitive join clause refuses the join fold")
+
+    sqlcb = ("SELECT count(*), coalesce(sum(fact_tci.m)::text,'z') FROM fact_tci "
+             'JOIN dim_cb ON fact_tci.k COLLATE "C" = dim_cb.k')
+    expect.text(_with(conn, "on", sqlcb), _row(conn, "SELECT count(*), coalesce(sum(heap_tci.m)::text,'z') "
+                                                     'FROM heap_tci JOIN dim_cb ON heap_tci.k COLLATE "C" = dim_cb.k'),
+                "byte join clause over a case-insensitive column answer equals heap")
+    expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqlcb}").count(fold), 0,
+               "byte join clause over a case-insensitive column refuses the join fold")

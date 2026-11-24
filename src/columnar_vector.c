@@ -1246,6 +1246,27 @@ pgcolumnar_join_fold_vars(PlannerInfo *root, HashPath *hashPath,
 							TYPECACHE_EQ_OPR | TYPECACHE_HASH_PROC);
 	if (!OidIsValid(tce->eq_opr) || !OidIsValid(tce->hash_proc))
 		return false;
+
+	/*
+	 * Begin-scan compares keys with the type's default equality and hash under
+	 * the fact column's own collation. The join clause must mean the same
+	 * thing, or the fold answers under the wrong collation: a case-insensitive
+	 * clause over a plain text column would drop the rows that differ only in
+	 * case (#2066). Refuse when the clause's operator or input collation is
+	 * not the one begin-scan will use.
+	 */
+	if (operatorExpr->opno != tce->eq_opr)
+		return false;
+	{
+		Oid			attType;
+		int32		attTypmod;
+		Oid			attCollation;
+
+		get_atttypetypmodcoll(rte->relid, factVar->varattno,
+							  &attType, &attTypmod, &attCollation);
+		if (operatorExpr->inputcollid != attCollation)
+			return false;
+	}
 	*factVarOut = factVar;
 	*buildVarOut = buildVar;
 	return true;

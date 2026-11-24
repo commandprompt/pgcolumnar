@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- An ungrouped aggregate over a join onto a unique dimension no longer returns
+  a wrong count when the join compares text under another collation than the
+  fact column's (#2066). With `pgcolumnar.enable_ungrouped_vector_agg` on, the
+  join fold compared keys under the fact column's own collation. A join onto a
+  case-insensitive key therefore dropped the fact rows that differed only in
+  case, and a byte-wise join over a case-insensitive column counted rows it
+  should not. The fold now runs only when the join's operator and collation are
+  the ones it compares with. Otherwise the plan is a plain hash join, which
+  answers correctly. `test/native_join_vector_agg.sh` and
+  `test_native_join_vector_agg.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

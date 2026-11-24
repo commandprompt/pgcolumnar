@@ -134,4 +134,68 @@ check "inequality join filter answer equals heap" \
 	"$(pc "SET $GUC=on; $SQLXN" | tail -1)" \
 	"$(q "SELECT coalesce(sum(heap_xn.v)::text,'z') FROM heap_xn JOIN dim_xn ON heap_xn.k = dim_xn.k AND heap_xn.v <> dim_xn.t")"
 
+# The fold compares keys with the fact column's own equality and collation.
+# A join clause under another collation must refuse the fold, or the answer
+# follows the wrong collation (#2066). Fact keys 'a','A','b','B','c' against
+# dimension keys 'a','b': a case-insensitive comparison matches 4 of every 5
+# fact rows, a byte comparison 2 of every 5. A plain text key, one collation on
+# both sides, is the control: it must still fold.
+psql_run "CREATE COLLATION IF NOT EXISTS ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);" \
+	2>/dev/null || true
+if [ "$(q "SELECT 1 FROM pg_collation WHERE collname = 'ci'")" = "1" ]; then
+	q "$(cat <<'SQL'
+CREATE TABLE dim_tx(k text PRIMARY KEY);
+INSERT INTO dim_tx VALUES ('a'), ('b');
+CREATE TABLE dim_ci(k text COLLATE ci PRIMARY KEY);
+INSERT INTO dim_ci VALUES ('a'), ('b');
+CREATE TABLE dim_cb(k text COLLATE "C" PRIMARY KEY);
+INSERT INTO dim_cb VALUES ('a'), ('b');
+CREATE TABLE fact_tx(k text, m int) USING pgcolumnar;
+INSERT INTO fact_tx SELECT (ARRAY['a','A','b','B','c'])[1 + g % 5], g
+  FROM generate_series(1,1000) g;
+CREATE TABLE heap_tx (k text, m int) USING heap;
+INSERT INTO heap_tx SELECT * FROM fact_tx;
+CREATE TABLE fact_tci(k text COLLATE ci, m int) USING pgcolumnar;
+INSERT INTO fact_tci SELECT * FROM fact_tx;
+CREATE TABLE heap_tci (k text COLLATE ci, m int) USING heap;
+INSERT INTO heap_tci SELECT * FROM fact_tx;
+ANALYZE dim_tx;
+ANALYZE dim_ci;
+ANALYZE dim_cb;
+ANALYZE fact_tx;
+ANALYZE fact_tci;
+SQL
+)" >/dev/null
+
+	SQLTX="SELECT count(*), coalesce(sum(fact_tx.m)::text,'z') FROM fact_tx JOIN dim_tx ON fact_tx.k = dim_tx.k"
+	check "text key under one collation keeps the join fold" \
+		"$(pc "SET $GUC=on; EXPLAIN (COSTS OFF) $SQLTX" | grep -c 'Columnar Join Fold: yes')" 1
+	check "text key under one collation answer equals heap" \
+		"$(pc "SET $GUC=on; $SQLTX" | tail -1)" \
+		"$(q "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') FROM heap_tx JOIN dim_tx ON heap_tx.k = dim_tx.k")"
+
+	SQLCI="SELECT count(*), coalesce(sum(fact_tx.m)::text,'z') FROM fact_tx JOIN dim_ci ON fact_tx.k = dim_ci.k"
+	check "case-insensitive join clause answer equals heap" \
+		"$(pc "SET $GUC=on; $SQLCI" | tail -1)" \
+		"$(q "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') FROM heap_tx JOIN dim_ci ON heap_tx.k = dim_ci.k")"
+	check "case-insensitive join clause refuses the join fold" \
+		"$(pc "SET $GUC=on; EXPLAIN (COSTS OFF) $SQLCI" | grep -c 'Columnar Join Fold: yes')" 0
+
+	SQLCB="SELECT count(*), coalesce(sum(fact_tci.m)::text,'z') FROM fact_tci JOIN dim_cb ON fact_tci.k COLLATE \"C\" = dim_cb.k"
+	check "byte join clause over a case-insensitive column answer equals heap" \
+		"$(pc "SET $GUC=on; $SQLCB" | tail -1)" \
+		"$(q "SELECT count(*), coalesce(sum(heap_tci.m)::text,'z') FROM heap_tci JOIN dim_cb ON heap_tci.k COLLATE \"C\" = dim_cb.k")"
+	check "byte join clause over a case-insensitive column refuses the join fold" \
+		"$(pc "SET $GUC=on; EXPLAIN (COSTS OFF) $SQLCB" | grep -c 'Columnar Join Fold: yes')" 0
+else
+	for n in "text key under one collation keeps the join fold" \
+		"text key under one collation answer equals heap" \
+		"case-insensitive join clause answer equals heap" \
+		"case-insensitive join clause refuses the join fold" \
+		"byte join clause over a case-insensitive column answer equals heap" \
+		"byte join clause over a case-insensitive column refuses the join fold"; do
+		check_skip "$n" "SKIP  $n (ICU unavailable)" "ICU unavailable"
+	done
+fi
+
 pgc_summary
