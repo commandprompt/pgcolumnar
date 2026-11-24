@@ -617,7 +617,10 @@ true until the next version shipped.
   the catalog, and VACUUM checks the row groups again after it sets bits and
   clears any that are no longer all-visible. A new test-only setting,
   `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
-  prove the second check. `test/index_only.sh` and `test_index_only.py`.
+  prove the second check. The tests delete inside one block, across two blocks,
+  and across three row groups, for both steps. Inside the writing statement
+  itself, an AFTER trigger can still see the bit set until the statement ends
+  (#2169). `test/index_only.sh` and `test_index_only.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

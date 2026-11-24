@@ -248,17 +248,19 @@ h_wait() {
 	return 1
 }
 
-# vm_race TABLE DML: run DML paused inside its statement, vacuum TABLE
-# meanwhile, then let DML finish and commit. Sets vr_before, vr_paused,
-# vr_after and vr_ios for the checks below, which are unrolled so each name is
-# a literal the grader can read.
+# vm_race TABLE ROWS DML BEFORE AFTER IOS: load ROWS rows into TABLE, run DML
+# paused inside its statement, vacuum TABLE meanwhile, then let DML finish and
+# commit. BEFORE and AFTER are the VM queries run before the writer starts and
+# after it commits; IOS is the count read through an index-only scan. Sets
+# vr_before, vr_paused, vr_written, vr_after and vr_ios for the checks below,
+# which are unrolled so each name is a literal the grader can read.
 vm_race() {
-	local tbl="$1" dml="$2" i wpid plan
+	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" i wpid plan
 	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
-	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, $rows) g;"
 	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
 	psql_run "VACUUM $tbl;"
-	vr_before="$(q "SELECT pgcolumnar.vm_is_visible('$tbl', 1);")"
+	vr_before="$(q "$before")"
 
 	h_send "SELECT 'H_LOCKED_$tbl' FROM pg_advisory_lock(2059);"
 	h_wait "H_LOCKED_$tbl" || true
@@ -277,30 +279,76 @@ vm_race() {
 	h_send "SELECT 'H_UNLOCKED_$tbl' FROM pg_advisory_unlock(2059);"
 	h_wait "H_UNLOCKED_$tbl" || true
 	wait "$wpid" 2>/dev/null || true
+	# the writer prints "count|" (the lock's void result is empty); an error
+	# prints its message, which then shows in the check instead of a VM bit
+	vr_written="$(cat "$PGC_WORKDIR/$tbl.writer.out")"
+	vr_written="${vr_written%|}"
 
-	vr_after="$(q "SELECT pgcolumnar.vm_is_visible('$tbl', 1);")"
-	plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl WHERE id BETWEEN 300 AND 400;")"
+	vr_after="$(q "$after")"
+	plan="$(q "EXPLAIN (COSTS OFF) $ios")"
 	# `case`, not a pipe into grep -q: under pipefail that pipe can report a
 	# plan that holds the node as one that does not (selftest part 080, #486).
 	case "$plan" in
 	*'Index Only Scan'*)
-		vr_ios="$(q "SELECT count(*) FROM $tbl WHERE id BETWEEN 300 AND 400;")" ;;
+		vr_ios="$(q "$ios")" ;;
 	*)
 		vr_ios="no index-only scan was planned: $plan" ;;
 	esac
 }
 
-vm_race vr_del "DELETE FROM vr_del WHERE id BETWEEN 300 AND 400"
+# Synthetic block b holds row numbers b*291 .. b*291+290, and a single INSERT
+# numbers its rows 1, 2, ... in order, so id g is in block g / 291. Rows
+# 300..400 lie in block 1. Rows 300..600 span blocks 1 and 2 (582..600 is
+# block 2), which exercises the flush-time clear's walk over a second block.
+# The 400,000-row tables span three row groups.
+vis1() { echo "SELECT pgcolumnar.vm_is_visible('$1', 1);"; }
+vis2() { echo "SELECT pgcolumnar.vm_is_visible('$1', 2);"; }
+# TGT: the 79 blocks that hold ids 5000, 10000, ..., 395000. Block 1374, the
+# last, holds id 400000; it is partial and VACUUM never sets it, so it is left out.
+TGT="SELECT DISTINCT g / 291 AS b FROM generate_series(5000, 395000, 5000) g"
+tgt_all() { echo "SELECT bool_and(pgcolumnar.vm_is_visible('$1', b)) FROM ($TGT) t;"; }
+tgt_stale() { echo "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('$1', b)) FROM ($TGT) t;"; }
+tgt_ios() { echo "SELECT count(*) FROM $1 WHERE id = ANY (ARRAY(SELECT generate_series(5000, 395000, 5000)));"; }
+
+vm_race vr_del 20000 "DELETE FROM vr_del WHERE id BETWEEN 300 AND 400" \
+	"$(vis1 vr_del)" "$(vis1 vr_del)" "SELECT count(*) FROM vr_del WHERE id BETWEEN 300 AND 400;"
 check "concurrent vacuum during delete: block 1 all-visible before the writer starts" "$vr_before" "t"
 check "concurrent vacuum during delete: vacuum ran while the writer was paused" "$vr_paused" "yes"
+check "concurrent vacuum during delete: the writer deleted 101 rows" "$vr_written" "101"
 check "concurrent vacuum during delete: block 1 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during delete: index-only scan returns no deleted row" "$vr_ios" "0"
 
-vm_race vr_upd "UPDATE vr_upd SET id = id + 1000000 WHERE id BETWEEN 300 AND 400"
+vm_race vr_upd 20000 "UPDATE vr_upd SET id = id + 1000000 WHERE id BETWEEN 300 AND 400" \
+	"$(vis1 vr_upd)" "$(vis1 vr_upd)" "SELECT count(*) FROM vr_upd WHERE id BETWEEN 300 AND 400;"
 check "concurrent vacuum during update: block 1 all-visible before the writer starts" "$vr_before" "t"
 check "concurrent vacuum during update: vacuum ran while the writer was paused" "$vr_paused" "yes"
+check "concurrent vacuum during update: the writer updated 101 rows" "$vr_written" "101"
 check "concurrent vacuum during update: block 1 not all-visible after commit" "$vr_after" "f"
 check "concurrent vacuum during update: index-only scan returns no deleted row" "$vr_ios" "0"
+
+vm_race vr_del2 20000 "DELETE FROM vr_del2 WHERE id BETWEEN 300 AND 600" \
+	"$(vis2 vr_del2)" "$(vis2 vr_del2)" "SELECT count(*) FROM vr_del2 WHERE id BETWEEN 582 AND 600;"
+check "concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts" "$vr_before" "t"
+check "concurrent vacuum during a two-block delete: vacuum ran while the writer was paused" "$vr_paused" "yes"
+check "concurrent vacuum during a two-block delete: the writer deleted 301 rows" "$vr_written" "301"
+check "concurrent vacuum during a two-block delete: block 2 not all-visible after commit" "$vr_after" "f"
+check "concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2" "$vr_ios" "0"
+
+vm_race vr_upd2 20000 "UPDATE vr_upd2 SET id = id + 1000000 WHERE id BETWEEN 300 AND 600" \
+	"$(vis2 vr_upd2)" "$(vis2 vr_upd2)" "SELECT count(*) FROM vr_upd2 WHERE id BETWEEN 582 AND 600;"
+check "concurrent vacuum during a two-block update: block 2 all-visible before the writer starts" "$vr_before" "t"
+check "concurrent vacuum during a two-block update: vacuum ran while the writer was paused" "$vr_paused" "yes"
+check "concurrent vacuum during a two-block update: the writer updated 301 rows" "$vr_written" "301"
+check "concurrent vacuum during a two-block update: block 2 not all-visible after commit" "$vr_after" "f"
+check "concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2" "$vr_ios" "0"
+
+vm_race vr_delm 400000 "DELETE FROM vr_delm WHERE id % 5000 = 0 AND id < 400000" \
+	"$(tgt_all vr_delm)" "$(tgt_stale vr_delm)" "$(tgt_ios vr_delm)"
+check "concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts" "$vr_before" "t"
+check "concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused" "$vr_paused" "yes"
+check "concurrent vacuum during a delete over three row groups: the writer deleted 79 rows" "$vr_written" "79"
+check "concurrent vacuum during a delete over three row groups: no target block all-visible after commit" "$vr_after" "0"
+check "concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row" "$vr_ios" "0"
 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true
@@ -313,38 +361,76 @@ wait "$H_PID" 2>/dev/null || true
 # commits during the pause.
 # ---------------------------------------------------------------------------
 echo "-- phase 7: a delete commits between vacuum's computation and its set (#2059)"
-psql_run "CREATE TABLE vr_mid (id int, pad int) USING pgcolumnar;"
-psql_run "INSERT INTO vr_mid SELECT g, g FROM generate_series(1, 20000) g;"
-psql_run "CREATE INDEX vr_mid_id ON vr_mid (id);"
-psql_run "VACUUM vr_mid;"
-vm_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_mid', 1);")"
-held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM vr_mid;' AND wait_event_type = 'Extension';"
+# vm_mid TABLE ROWS DML BEFORE AFTER IOS [CLEAN]: load ROWS rows into TABLE and
+# vacuum it; then start a VACUUM held by vm_set_hold_ms, run and commit DML
+# during the hold, and let the VACUUM finish. BEFORE, AFTER, IOS and the
+# optional CLEAN are queries run before the hold, and after the VACUUM. Sets
+# vm_before, vm_held, vm_still, vm_after, vm_ios and vm_clean.
+vm_mid() {
+	local tbl="$1" rows="$2" dml="$3" before="$4" after="$5" ios="$6" clean="${7:-}" i vpid plan held
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING pgcolumnar;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, $rows) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	vm_before="$(q "$before")"
+	held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM $tbl;' AND wait_event_type = 'Extension';"
 
-env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=5000' \
-	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "VACUUM vr_mid;" \
-	> "$PGC_WORKDIR/vr_mid.vacuum.out" 2>&1 &
-vpid=$!
-vm_held="no"
-for i in $(seq 1 100); do
-	if [ "$(q "$held")" = "1" ]; then vm_held="yes"; break; fi
-	sleep 0.1
-done
-psql_run "DELETE FROM vr_mid WHERE id BETWEEN 300 AND 400;"
-vm_still="$( [ "$(q "$held")" = "1" ] && echo yes || echo no )"
-wait "$vpid" 2>/dev/null || true
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=5000' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "VACUUM $tbl;" \
+		> "$PGC_WORKDIR/$tbl.vacuum.out" 2>&1 &
+	vpid=$!
+	vm_held="no"
+	for i in $(seq 1 100); do
+		if [ "$(q "$held")" = "1" ]; then vm_held="yes"; break; fi
+		sleep 0.1
+	done
+	psql_run "$dml"
+	vm_still="$( [ "$(q "$held")" = "1" ] && echo yes || echo no )"
+	wait "$vpid" 2>/dev/null || true
 
-vm_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_mid', 1);")"
-plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")"
-case "$plan" in
-*'Index Only Scan'*)
-	vm_ios="$(q "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")" ;;
-*)
-	vm_ios="no index-only scan was planned: $plan" ;;
-esac
+	vm_after="$(q "$after")"
+	vm_clean=""
+	[ -n "$clean" ] && vm_clean="$(q "$clean")"
+	plan="$(q "EXPLAIN (COSTS OFF) $ios")"
+	case "$plan" in
+	*'Index Only Scan'*)
+		vm_ios="$(q "$ios")" ;;
+	*)
+		vm_ios="no index-only scan was planned: $plan" ;;
+	esac
+}
+
+vm_mid vr_mid 20000 "DELETE FROM vr_mid WHERE id BETWEEN 300 AND 400;" \
+	"$(vis1 vr_mid)" "$(vis1 vr_mid)" "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;"
 check "delete between vacuum's two steps: block 1 all-visible before the writer starts" "$vm_before" "t"
 check "delete between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
 check "delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
 check "delete between vacuum's two steps: block 1 not all-visible after vacuum" "$vm_after" "f"
 check "delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+# 300,000 rows in one INSERT: row group 2 starts at row 150001, inside block
+# 515 (rows 149865..150155). The delete of 150001..150100 makes block 515 stale
+# while the second pass's walk must step past the first group's run, which
+# ends before 515. Block 514 lies wholly in the clean first group and keeps its
+# bit. Block 516 is in the group that holds the delete, so it is cleared too and
+# is not checked.
+vm_mid vr_mid2 300000 "DELETE FROM vr_mid2 WHERE id BETWEEN 150001 AND 150100;" \
+	"SELECT pgcolumnar.vm_is_visible('vr_mid2', 515);" "SELECT pgcolumnar.vm_is_visible('vr_mid2', 515);" \
+	"SELECT count(*) FROM vr_mid2 WHERE id BETWEEN 150001 AND 150100;" \
+	"SELECT pgcolumnar.vm_is_visible('vr_mid2', 514);"
+check "delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts" "$vm_before" "t"
+check "delete in the second row group between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum" "$vm_after" "f"
+check "delete in the second row group between vacuum's two steps: clean block 514 still all-visible" "$vm_clean" "t"
+check "delete in the second row group between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
+vm_mid vr_midm 400000 "DELETE FROM vr_midm WHERE id % 5000 = 0 AND id < 400000;" \
+	"$(tgt_all vr_midm)" "$(tgt_stale vr_midm)" "$(tgt_ios vr_midm)"
+check "delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts" "$vm_before" "t"
+check "delete over three row groups between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
+check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 
 pgc_summary

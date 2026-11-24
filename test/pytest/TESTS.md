@@ -9820,7 +9820,7 @@ The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks 
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit.
 
 | test | what it holds |
 | --- | --- |
@@ -9853,10 +9853,12 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
 | `test_concurrent_vacuum_during_delete_block_1_all_visible_before` | concurrent vacuum during delete: block 1 all-visible before the writer starts |
 | `test_concurrent_vacuum_during_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_writer_deleted_101_rows` | concurrent vacuum during delete: the writer deleted 101 rows |
 | `test_concurrent_vacuum_during_delete_block_1_not_all_visible_after_commit` | concurrent vacuum during delete: block 1 not all-visible after commit (#2059) |
 | `test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row` | concurrent vacuum during delete: index-only scan returns no deleted row (#2059) |
 | `test_concurrent_vacuum_during_update_block_1_all_visible_before` | concurrent vacuum during update: block 1 all-visible before the writer starts |
 | `test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused` | concurrent vacuum during update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_update_writer_updated_101_rows` | concurrent vacuum during update: the writer updated 101 rows |
 | `test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit` | concurrent vacuum during update: block 1 not all-visible after commit (#2059) |
 | `test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row` | concurrent vacuum during update: index-only scan returns no deleted row (#2059) |
 | `test_delete_between_vacuum_steps_block_1_all_visible_before` | delete between vacuum's two steps: block 1 all-visible before the writer starts |
@@ -9864,6 +9866,32 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_delete_between_vacuum_steps_delete_committed_while_paused` | delete between vacuum's two steps: the delete committed while vacuum was paused |
 | `test_delete_between_vacuum_steps_block_1_not_all_visible_after` | delete between vacuum's two steps: block 1 not all-visible after vacuum (#2059) |
 | `test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_all_visible_before` | concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_delete_writer_deleted_301_rows` | concurrent vacuum during a two-block delete: the writer deleted 301 rows |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block delete: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_block_2_all_visible_before` | concurrent vacuum during a two-block update: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_update_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_update_writer_updated_301_rows` | concurrent vacuum during a two-block update: the writer updated 301 rows |
+| `test_concurrent_vacuum_during_two_block_update_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block update: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_every_target_block_all_visible_before` | concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_vacuum_ran_while_writer_paused` | concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_writer_deleted_79_rows` | concurrent vacuum during a delete over three row groups: the writer deleted 79 rows |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_no_target_block_all_visible_after_commit` | concurrent vacuum during a delete over three row groups: no target block all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_index_only_scan_returns_no_deleted_row` | concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_all_visible_before` | delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts |
+| `test_delete_in_second_row_group_between_vacuum_steps_vacuum_paused_before_its_set` | delete in the second row group between vacuum's two steps: vacuum paused before its set |
+| `test_delete_in_second_row_group_between_vacuum_steps_delete_committed_while_paused` | delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_not_all_visible_after` | delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_clean_block_514_still_all_visible` | delete in the second row group between vacuum's two steps: clean block 514 still all-visible |
+| `test_delete_in_second_row_group_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete in the second row group between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_every_target_block_all_visible_before` | delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts |
+| `test_delete_over_three_row_groups_between_vacuum_steps_vacuum_paused_before_its_set` | delete over three row groups between vacuum's two steps: vacuum paused before its set |
+| `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
