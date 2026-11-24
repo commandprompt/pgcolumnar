@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
+# cluster_tests 5376 -> 5381 for the subtransaction handle fix's five arm-F tests in test_objstore_http_read.py
+# (404s caught in EXCEPTION blocks or rolled back to a SAVEPOINT leak no handle; a loop of 1200 caught 404s
+# finishes; a scan and a cursor keep reading after a subtransaction abort), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest
+# --collect-only -q`: 6275 tests collected, less guard_tests 894.
 cluster_tests 5381
