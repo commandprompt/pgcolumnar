@@ -614,6 +614,15 @@ true until the next version shipped.
   in order. `import_arrow` now loads into a table with a dropped column, as
   `import_parquet` already did; the dropped column is stored as null.
   `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
+- Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
+  column can be read again (#2061). The encoder stores a run of equal values
+  of any fixed-width type as RLE, but the decoder accepted RLE only for types
+  1, 2, 4 or 8 bytes wide. So the INSERT succeeded, and every later read of
+  the column, `DELETE`, `ANALYZE`, `pgcolumnar.vacuum` and `pg_dump` failed
+  with `corrupt encoded chunk (fixed-width encoding on a non-fixed-width
+  column)`. Three equal uuids were enough. The decoder now accepts RLE at any
+  fixed width. The stored bytes were always correct, so tables written before
+  this fix become readable without a rewrite. `test_native_encoding.py`.
 - CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
   `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
   the ledger gate could not find the PR's base and every PR failed
