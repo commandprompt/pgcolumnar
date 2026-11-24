@@ -3160,14 +3160,20 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 /*
  * rel_new_in_current_xact
  *		True if the relation was created in the current transaction, so its
- *		pg_class row is not yet committed. A parallel-flush worker once opened
- *		the relation on a fresh snapshot to read its tuple descriptor (it reads
- *		the backend's copy since #2072, and still reads catalogs); for a table
- *		created and loaded in one transaction (CREATE TABLE ...; INSERT ..., or
- *		CREATE TABLE AS) that open fails, and the flush would register workers,
- *		have them all fail, log a WARNING, and redo the whole thing serially.
- *		Detect it up front and keep the flush serial -- silently, and without the
- *		wasted registration and double work. (#445 slice 4)
+ *		pg_class row is not yet committed. Such a flush stays serial, silently.
+ *		(#445 slice 4)
+ *
+ *		Why it was added: a parallel-flush worker used to open the relation on a
+ *		fresh snapshot to read its tuple descriptor. For a table created and
+ *		loaded in one transaction (CREATE TABLE ...; INSERT ..., or CREATE TABLE
+ *		AS) that open failed, so every worker failed, logged a WARNING, and the
+ *		backend redid the whole flush serially.
+ *
+ *		Since #2072 no worker opens the relation: workers take the column
+ *		attributes from the backend's copy. The check stays so that such a
+ *		flush keeps its old serial behaviour. A worker still reads the type
+ *		cache on its own snapshot, so a column whose type was created in the
+ *		same transaction would still fail in a worker.
  */
 static bool
 rel_new_in_current_xact(Oid relid)

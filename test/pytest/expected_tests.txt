@@ -1926,4 +1926,8 @@ guard_tests 895
 # column; a parallel INSERT finishes while another session's ALTER TABLE waits, and the ALTER completes
 # after it; the premise that the ALTER waited), 7 tests, by collection: 6277 tests collected, less
 # guard_tests 894.
-cluster_tests 5391
+# cluster_tests 5391 -> 5394 for the #2140 review's three tests in test_parallel_flush_optin.py (a parallel
+# flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
+# the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
+# in workers), by collection over the cluster files: 5394 tests collected.
+cluster_tests 5394

@@ -615,8 +615,14 @@ true until the next version shipped.
   wait. Only `statement_timeout`, `lock_timeout` or a cancel ended it. The
   workers now take each column's attributes from the inserting backend, through
   the shared memory segment, and do not open the table. The flush still runs
-  in workers, and the setting is still off by default (#2072).
-  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`.
+  in workers, and the setting is still off by default (#2072). Two cases
+  remain, in #2182: a composite column still hangs when the transaction holds
+  ACCESS EXCLUSIVE on the composite's table, and a column whose type was
+  created in the same transaction is flushed serially after a WARNING.
+  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`. Arm 7
+  also retypes two columns in the same transaction and requires every column
+  encoded in workers, with the serial path's chunks and rows, so a worker that
+  reads the committed column attributes fails it (#2140 review).
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

@@ -326,13 +326,36 @@ def test_a_flush_worker_raises_nothing_after_its_pin(expect):
 LK_DB = "pgc_parallel_flush_locks"
 LK_ROWS = ("SELECT g, g % 7, ((g::bigint * 7919) % 65537)::int, g / 10, -g, g % 2, 0, (g * 31) % 1000 "
            "FROM generate_series(1,20000) g")
-LK_WANT = "workers, 20000 rows, sum(a) 200010000"
+LK_WANT = "every column in workers, 20000 rows, sum(a) 200010000"
+LR_ALTER = "ALTER COLUMN b TYPE bigint, ALTER COLUMN h TYPE text"
 LQ_WAIT = "alter active Lock/relation, insert active"
 
 
-def _lock_flush(db, setup):
-    """BEGIN; setup; INSERT into lk; COMMIT in one session, parallel_flush on, 15s
-    statement_timeout -> the error, or the split reading and the rows read back."""
+def _all_split(notes):
+    """How every parallel flush in notes was split, read strictly.
+
+    -> "every column in workers" when each split line reads "N of N columns" and no
+    worker failed. A worker that fails hands its columns back to the backend, which
+    encodes them serially with the right attributes, so the rows still match and a
+    reading that only asks for some worker columns still says "workers": only this
+    reading sees the failure (#2140 review). Else -> what was read."""
+    splits = [m for m in (re.search(r"parallel_flush: ([0-9]+) of ([0-9]+) columns by [0-9]+ worker", n)
+                          for n in notes) if m]
+    failed = [m.group(0) for m in (re.search(r"worker [0-9]+ failed, completing its columns serially: .*", n)
+                                   for n in notes) if m]
+    if not splits:
+        return "no split line"
+    if failed:
+        return f"a worker failed:[{failed[0]}]"
+    short = sorted({m.group(0) for m in splits if m.group(1) != m.group(2)})
+    if short:
+        return f"not every column in workers:[{';'.join(short)};]"
+    return "every column in workers"
+
+
+def _lock_flush(db, setup, table="lk"):
+    """BEGIN; setup; INSERT into table; COMMIT in one session, parallel_flush on, 15s
+    statement_timeout -> the error, or _all_split()'s reading and the rows read back."""
     notes = []
     try:
         with psycopg.connect(db.dsn, autocommit=True) as conn:
@@ -343,17 +366,10 @@ def _lock_flush(db, setup):
             with conn.transaction():
                 for stmt in setup:
                     conn.execute(stmt)
-                conn.execute(f"INSERT INTO lk (a, b, c, d, e, f, g, h) {LK_ROWS}")
+                conn.execute(f"INSERT INTO {table} (a, b, c, d, e, f, g, h) {LK_ROWS}")
     except psycopg.Error as exc:
         return f"{exc.sqlstate}: {exc.diag.message_primary}"
-    splits = [n for n in notes if re.search(r"parallel_flush: [0-9]+ of [0-9]+ columns by", n)]
-    if not splits:
-        how = "no split line"
-    elif any(re.search(r"parallel_flush: 0 of ", n) for n in splits):
-        how = "serial fall-back"
-    else:
-        how = "workers"
-    return f"{how}, " + db.q("SELECT count(*) || ' rows, sum(a) ' || sum(a) FROM lk")
+    return f"{_all_split(notes)}, " + db.q(f"SELECT count(*) || ' rows, sum(a) ' || sum(a) FROM {table}")
 
 
 @pytest.fixture(scope="module")
@@ -372,6 +388,17 @@ def lk(pgc_cluster):
         }
         r["added column"] = d.q("SELECT count(x) || ' values, sum ' || sum(x) FROM lk")
 
+        # The workers must encode with the attributes the inserting transaction sees.
+        # An added int column has the same bytes under any int4 attribute; a retype in
+        # the same transaction does not. lr is retyped and loaded in parallel, lr_s
+        # serially; their chunks and rows must match (#2140 review).
+        for t in ("lr", "lr_s"):
+            d.run(f"CREATE TABLE {t} (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar")
+        r["retype"] = _lock_flush(d, ["TRUNCATE lr", f"ALTER TABLE lr {LR_ALTER}"], table="lr")
+        d.run(f"SET pgcolumnar.parallel_flush = off; BEGIN; TRUNCATE lr_s; ALTER TABLE lr_s {LR_ALTER}; "
+              f"INSERT INTO lr_s (a, b, c, d, e, f, g, h) {LK_ROWS}; COMMIT")
+        r["retype fp"] = (d.q(FP.format(t="lr")), d.q(FP.format(t="lr_s")))
+
         # The second case: many small stripes, so each stripe starts its own workers
         # while the ALTER waits. The INSERT takes about 8s alone and gets 60s; the
         # ALTER is queued 1s in.
@@ -379,11 +406,15 @@ def lk(pgc_cluster):
         d.run("SELECT pgcolumnar.set_options('lq', stripe_row_limit => 1000)")
         out = {}
 
+        lq_notes = []
+
         def insert():
             try:
                 with psycopg.connect(d.dsn, autocommit=True) as c:
+                    c.add_notice_handler(lambda n: lq_notes.append(n.message_primary or ""))
                     c.execute("SET application_name = 'pf_lock_queue'")
                     c.execute("SET pgcolumnar.parallel_flush = on")
+                    c.execute("SET client_min_messages = debug1")
                     c.execute("SET statement_timeout = '60s'")
                     cur = c.execute("INSERT INTO lq SELECT g, g, g FROM generate_series(1, 600000) g")
                     out["insert"] = f"INSERT 0 {cur.rowcount}"
@@ -421,6 +452,7 @@ def lk(pgc_cluster):
         ta.join(180)
         r["queued insert"] = out.get("insert", "the insert never returned")
         r["queued alter"] = out.get("alter", "the alter never returned")
+        r["queued split"] = _all_split(lq_notes)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -449,6 +481,18 @@ def test_lock_a_flush_writes_the_added_column(lk, expect):
                 "a parallel flush writes the column ALTER TABLE added in the same transaction (#2072)")
 
 
+def test_lock_a_flush_after_a_retype_finishes_in_workers(lk, expect):
+    expect.text(lk["retype"], LK_WANT,
+                "a parallel flush after ALTER COLUMN TYPE in the same transaction finishes, every column "
+                "in workers (#2140)")
+
+
+def test_lock_a_flush_after_a_retype_stores_the_serial_paths_chunks(lk, expect):
+    expect.text(lk["retype fp"][0], lk["retype fp"][1],
+                "a parallel flush after ALTER COLUMN TYPE in the same transaction stores the serial path's "
+                "chunks and rows (#2140)")
+
+
 def test_lock_the_alter_waited_for_the_insert(lk, expect):
     expect.text(lk["alter wait"], LQ_WAIT,
                 "premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran")
@@ -459,6 +503,14 @@ def test_lock_a_queued_alter_does_not_stall_the_insert(lk, expect):
                 "a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072)")
 
 
+def test_lock_the_queued_insert_flushes_in_workers(lk, expect):
+    # Or a fix that went serial whenever a lock waits would pass the test above.
+    expect.text(lk["queued split"], "every column in workers",
+                "a parallel INSERT that another session's ALTER TABLE waits behind flushes every column "
+                "in workers (#2140)")
+
+
 def test_lock_the_queued_alter_completes(lk, expect):
+    # A liveness premise: main's code passes it too.
     expect.text(lk["queued alter"], "ALTER TABLE",
-                "the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)")
+                "premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)")
