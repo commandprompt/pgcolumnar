@@ -613,6 +613,12 @@ true until the next version shipped.
   whole export's size. Remote exports already aborted their upload on such an
   exit (#1722). Local exports now use the same exit callback, which removes the
   temp file. `test/export_sink.sh` and `test_export_sink.py`.
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
+
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
