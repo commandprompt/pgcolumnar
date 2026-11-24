@@ -973,3 +973,59 @@ def test_a_rescan_rebuilds_the_hash_table_from_the_new_build(pgc_conn, expect):
                         "2:2000 6:6000 12:12000",
                         f"premise: heap's {name} answer grows with each outer value")
             expect.rows(got, heap, f"each {name} rescan joins against its own build")
+
+
+def test_the_issue_shapes_equal_heap_with_and_without_hash_joins_forced(pgc_conn, expect):
+    """The LATERAL and scalar-subquery shapes of #2062 give heap's answer, both
+    under default planner settings and with nested-loop and merge joins off.
+
+    Under default settings the planner itself picks Nested Loop -> Aggregate ->
+    Coordinator for the LATERAL join; before the fix that plan returned the first
+    outer row's count for every row. The dimension has no unique key, so the
+    ungrouped join fold cannot take the plan instead. The uncorrelated control has
+    a constant build, so every row must give the same count. Independently of
+    native_join_runtime_filter.sh: different names, keys and outer values.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE ois(lim int);
+            INSERT INTO ois VALUES (3), (8), (12);
+            CREATE TABLE dis AS SELECT generate_series(0, 1199) k;
+            CREATE TABLE fis(k int) USING pgcolumnar;
+            INSERT INTO fis SELECT g % 1200 FROM generate_series(1, 24000) g;
+            CREATE TABLE his AS SELECT * FROM fis;
+            ANALYZE ois;
+            ANALYZE dis;
+            ANALYZE fis;
+            ANALYZE his
+            """
+        )
+        if _has_runtime_filter(pgc_conn):
+            cur.execute("SET pgcolumnar.enable_join_runtime_filter=on")
+        shapes = {
+            "LATERAL": ("SELECT o.lim, x.c FROM ois o, LATERAL (SELECT count(*) c FROM {t} f"
+                        " JOIN dis d ON f.k = d.k WHERE d.k < o.lim*100) x ORDER BY 1",
+                        "3:6000 8:16000 12:24000"),
+            "scalar": ("SELECT o.lim, (SELECT count(*) FROM {t} f JOIN dis d ON f.k = d.k"
+                       " WHERE d.k < o.lim*100) FROM ois o ORDER BY 1",
+                       "3:6000 8:16000 12:24000"),
+            "uncorrelated": ("SELECT o.lim, (SELECT count(*) FROM {t} f JOIN dis d ON f.k = d.k"
+                             " WHERE d.k < 500) FROM ois o ORDER BY 1",
+                             "3:10000 8:10000 12:10000"),
+        }
+        for setting, forced in (("default", "on"), ("hash-only", "off")):
+            cur.execute(f"SET enable_nestloop={forced}")
+            cur.execute(f"SET enable_mergejoin={forced}")
+            for name, (sql, want) in shapes.items():
+                cur.execute("EXPLAIN (COSTS OFF) " + sql.format(t="fis"))
+                plan = "\n".join(r[0] for r in cur.fetchall())
+                cur.execute(sql.format(t="fis"))
+                got = cur.fetchall()
+                cur.execute(sql.format(t="his"))
+                heap = cur.fetchall()
+                expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+                           f"premise: the {setting} {name} query runs under the coordinator")
+                expect.text(" ".join(f"{lim}:{c}" for lim, c in heap), want,
+                            f"premise: heap's {setting} {name} answer")
+                expect.rows(got, heap, f"the {setting} {name} query equals heap")

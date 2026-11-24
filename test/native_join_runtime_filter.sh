@@ -417,4 +417,40 @@ for arm in "subquery|SELECT k FROM dim_rs WHERE k < v.lim OFFSET 0" \
 		"$(pc "${rs_set}$(rs fact_rs)" | grep -v '^SET$' | tr '\n' ' ')" \
 		"$(pc "${rs_set}$(rs heap_rs)" | grep -v '^SET$' | tr '\n' ' ')"
 done
+# The issue's own shapes (#2062): a LATERAL join and a scalar subquery, each
+# under default planner settings and with nested-loop and merge joins off. With
+# default settings the planner picks Nested Loop -> Aggregate -> Coordinator by
+# itself; the dimension has no unique key, so the ungrouped join fold cannot
+# take the plan instead. The uncorrelated control has a constant build, so
+# every row must give the same count.
+q "$(cat <<'SQL'
+CREATE TABLE outer_ls(lim int);
+INSERT INTO outer_ls VALUES (2), (7), (15);
+CREATE TABLE dim_ls AS SELECT generate_series(0, 1499) k;
+CREATE TABLE fact_ls(k int) USING pgcolumnar;
+INSERT INTO fact_ls SELECT g % 1500 FROM generate_series(1, 30000) g;
+CREATE TABLE heap_ls AS SELECT * FROM fact_ls;
+ANALYZE outer_ls;
+ANALYZE dim_ls;
+ANALYZE fact_ls;
+ANALYZE heap_ls;
+SQL
+)" >/dev/null
+ls_hash="SET enable_nestloop=off;SET enable_mergejoin=off;"
+for setting in "default|" "hash-only|$ls_hash"; do
+	sn=${setting%%|*}; ss="${rf_on}${setting#*|}"
+	for shape in \
+		"LATERAL|SELECT o.lim||':'||x.c FROM outer_ls o, LATERAL (SELECT count(*) c FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < o.lim*100) x ORDER BY o.lim|2:4000 7:14000 15:30000 " \
+		"scalar|SELECT o.lim||':'||(SELECT count(*) FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < o.lim*100) FROM outer_ls o ORDER BY o.lim|2:4000 7:14000 15:30000 " \
+		"uncorrelated|SELECT o.lim||':'||(SELECT count(*) FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < 700) FROM outer_ls o ORDER BY o.lim|2:14000 7:14000 15:14000 "; do
+		n=${shape%%|*}; rest=${shape#*|}; s=${rest%|*}; want=${rest##*|}
+		check "premise: the $sn $n query runs under the coordinator" \
+			"$(pc "${ss}EXPLAIN (COSTS OFF) ${s//@T/fact_ls}" | grep -c 'Columnar Runtime Filter Coordinator')" 1
+		check "premise: heap's $sn $n answer" \
+			"$(pc "${ss}${s//@T/heap_ls}" | grep -v '^SET$' | tr '\n' ' ')" "$want"
+		check "the $sn $n query equals heap" \
+			"$(pc "${ss}${s//@T/fact_ls}" | grep -v '^SET$' | tr '\n' ' ')" \
+			"$(pc "${ss}${s//@T/heap_ls}" | grep -v '^SET$' | tr '\n' ' ')"
+	done
+done
 pgc_summary
