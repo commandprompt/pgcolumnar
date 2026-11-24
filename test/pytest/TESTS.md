@@ -8884,10 +8884,13 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_every_kept_text_reaches_its_own_value_in_the_stream` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them (#1843 review) |
 | `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
-| `test_a_timestamp_past_arrows_range_is_refused` | a timestamp one microsecond past 294247-01-10 04:00:54.775807 fails with `out of range for an Arrow timestamp`, rather than being written as a wrapped negative value (#2085) |
+| `test_a_timestamp_past_arrows_range_is_refused` | a timestamp one microsecond past 294247-01-10 04:00:54.775807 fails with `a value in column "ts" is out of range for an Arrow timestamp`, rather than being written as a wrapped negative value (#2085) |
 | `test_a_refused_timestamp_export_leaves_no_file` | and that refused export leaves no file at the target path |
 | `test_a_timestamptz_past_arrows_range_is_refused` | a timestamptz of 294276-12-31 23:59:59.999999+00 fails the same way (#2085) |
 | `test_the_last_timestamp_arrow_holds_still_exports` | 294247-01-10 04:00:54.775807 in a timestamp and a timestamptz column still exports, as int64 9223372036854775807 (#2085) |
+| `test_the_last_timestamp_arrow_holds_imports_back_unchanged` | and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085) |
+| `test_a_timestamp_array_element_past_arrows_range_names_the_column` | a timestamp[] element past Arrow's range is refused, and the error names the table column, not the Arrow element "item" (#2085) |
+| `test_a_timestamp_composite_field_past_arrows_range_names_the_column` | a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085) |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 

@@ -67,7 +67,7 @@ TXT_DIGEST = ("SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' |
               " || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM ar_txt")
 OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
              "in 5 record batches of at most 536 rows")
-TS_RANGE_MSG = "out of range for an Arrow timestamp"
+TS_RANGE_MSG = 'a value in column "%s" is out of range for an Arrow timestamp'
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
 EXT_SCHEMA = ("id:int32,dt:date32[day],tm:time64[us],ts:timestamp[us],tz:timestamp[us, tz=UTC],"
               "u:fixed_size_binary[16],num:decimal128(20, 4),numun:string,j:string,jb:string")
@@ -214,11 +214,25 @@ def ae(pgc_cluster, server_dir):
         _run(dsn, "CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar")
         _run(dsn, "INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00')")
         r["tsover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsover', '{f['tsover']}')",
-                               TS_RANGE_MSG)
+                               TS_RANGE_MSG % "ts")
         r["tsover file"] = "present" if f["tsover"].exists() else "absent"
         r["tzover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tzover', '{f['tzover']}')",
-                               TS_RANGE_MSG)
+                               TS_RANGE_MSG % "tz")
         r["tsedge rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsedge', '{f['tsedge']}')")
+        _run(dsn, "CREATE TABLE ar_tsback (ts timestamp, tz timestamptz) USING pgcolumnar")
+        r["tsback rows"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('ar_tsback', '{f['tsedge']}')")
+        r["tsback values"] = _value(dsn, "SELECT string_agg(ts::text || ',' || (tz AT TIME ZONE 'UTC')::text, ' ')"
+                                         " FROM ar_tsback")
+        # an array element and a composite field reach the same check; the error names the column
+        _run(dsn, "CREATE TABLE ar_tsarr (tsarr timestamp[]) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[])")
+        _run(dsn, "CREATE TYPE ar_tsfield AS (t timestamp)")
+        _run(dsn, "CREATE TABLE ar_tscomp (tscomp ar_tsfield) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'))")
+        r["tsarr"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsarr', '{server_dir / 'tsarr.arrows'}')",
+                              TS_RANGE_MSG % "tsarr")
+        r["tscomp"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tscomp', '{server_dir / 'tscomp.arrows'}')",
+                               TS_RANGE_MSG % "tscomp")
         r["dsn"] = dsn
         yield r
     finally:
@@ -580,3 +594,30 @@ def test_the_last_timestamp_arrow_holds_still_exports(ae, expect):
     expect.text(f"{ae['tsedge rows']}|{_reading(_edge, pa, ae['files']['tsedge'])}",
                 "1|9223372036854775807,9223372036854775807",
                 "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz")
+
+
+def test_the_last_timestamp_arrow_holds_imports_back_unchanged(ae, expect):
+    """#2085: the issue asks that the last value that fits still exports and imports
+    back unchanged."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['tsback rows']}|{ae['tsback values']}",
+                "1|294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807",
+                "and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085)")
+
+
+def test_a_timestamp_array_element_past_arrows_range_names_the_column(ae, expect):
+    """#2085: an array element reaches the same check. Arrow names the element "item";
+    the error must name the table column."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tsarr"], "refused",
+                "a timestamp[] element past Arrow's range is refused, and the error names the table column, not the Arrow element (#2085)")
+
+
+def test_a_timestamp_composite_field_past_arrows_range_names_the_column(ae, expect):
+    """#2085: a composite field reaches the same check; the error names the column, not the field."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tscomp"], "refused",
+                "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)")

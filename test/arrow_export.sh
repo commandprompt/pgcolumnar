@@ -361,11 +361,11 @@ psql_run "CREATE TABLE ar_tsover (ts timestamp) USING pgcolumnar;
           CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar;
           INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00');" >/dev/null
 refusal "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
-	"SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" "out of range for an Arrow timestamp"
+	"SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 'a value in column "ts" is out of range for an Arrow timestamp'
 check "and the refused timestamp export leaves no file at the target path" \
 	"$([ -e "$TSOVER" ] && echo present || echo absent)" "absent"
 refusal "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
-	"SELECT pgcolumnar.export_arrow('ar_tzover', '$TZOVER')" "out of range for an Arrow timestamp"
+	"SELECT pgcolumnar.export_arrow('ar_tzover', '$TZOVER')" 'a value in column "tz" is out of range for an Arrow timestamp'
 edge_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsedge', '$TSEDGE')")"
 edge_read="$(python3 - "$TSEDGE" <<'PY'
 import sys
@@ -379,6 +379,25 @@ PY
 )"
 check "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz" \
 	"$edge_rows|$edge_read" "1|9223372036854775807,9223372036854775807"
+psql_run "CREATE TABLE ar_tsback (ts timestamp, tz timestamptz) USING pgcolumnar;" >/dev/null
+back_rows="$(q "SELECT pgcolumnar.import_arrow('ar_tsback', '$TSEDGE')")"
+back_vals="$(q "SELECT string_agg(ts::text || ',' || (tz AT TIME ZONE 'UTC')::text, ' ') FROM ar_tsback")"
+check "and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085)" \
+	"$back_rows|$back_vals" "1|294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807"
+# The check runs on every timestamp the writer appends, including an array element and a
+# composite field. Arrow calls those "item" and the field name; the error must name the
+# table column the reader can find, not them.
+psql_run "CREATE TABLE ar_tsarr (tsarr timestamp[]) USING pgcolumnar;
+          INSERT INTO ar_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[]);
+          CREATE TYPE ar_tsfield AS (t timestamp);
+          CREATE TABLE ar_tscomp (tscomp ar_tsfield) USING pgcolumnar;
+          INSERT INTO ar_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'));" >/dev/null
+refusal "a timestamp[] element past Arrow's range is refused, and the error names the table column, not the Arrow element (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsarr', '$PGC_WORKDIR/tsarr.arrows')" \
+	'a value in column "tsarr" is out of range for an Arrow timestamp'
+refusal "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tscomp', '$PGC_WORKDIR/tscomp.arrows')" \
+	'a value in column "tscomp" is out of range for an Arrow timestamp'
 
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of

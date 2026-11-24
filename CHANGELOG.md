@@ -611,9 +611,10 @@ true until the next version shipped.
   writer shifted the value to that epoch without an overflow check, so a later
   value wrapped to a large negative number. The export reported success, other
   readers saw a date before year 0, and `import_arrow` refused the file. Such a
-  value now fails the export with SQLSTATE 22008, naming the column, and no
-  file is written. docs/limitations.md. `test/arrow_export.sh` and
-  `test_arrow_export.py`.
+  value now fails the export with SQLSTATE 22008, naming the table column, and
+  no file is written. For an element of an array column or a field of a
+  composite column, the error names that table column too.
+  docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
