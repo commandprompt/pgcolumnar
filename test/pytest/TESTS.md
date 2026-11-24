@@ -10667,10 +10667,19 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
 | `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
 | `test_a_flush_worker_raises_nothing_after_its_pin` | a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block |
+| `test_lock_a_flush_after_truncate_finishes` | a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_lock_table_finishes` | a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_alter_table_finishes` | a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_writes_the_added_column` | a parallel flush writes the column ALTER TABLE added in the same transaction (#2072) |
+| `test_lock_the_alter_waited_for_the_insert` | premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran |
+| `test_lock_a_queued_alter_does_not_stall_the_insert` | a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072) |
+| `test_lock_the_queued_alter_completes` | the waiting ALTER TABLE completes once the parallel INSERT commits (#2072) |
 
 Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
 
 Arm 6 (#1747) reads `pgcolumnar_parallel_flush_worker` with comments blanked: from `dsm_pin_segment` to the end of its PG_TRY block, only `dsm_detach` and the DONE write may run, because the collect loop unpins only a DONE slot and a worker that raised after its pin left the segment pinned to postmaster restart. The stretch runs past the DONE write because an ERROR there lands in PG_CATCH, which overwrites DONE with FAILED (#1748 review).
+
+Arm 7 (#2072) holds that a flush worker takes no lock that can wait on the table. On its own private database, three transactions run a 20000-row parallel INSERT after `TRUNCATE`, after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` and after `ALTER TABLE ... ADD COLUMN ... DEFAULT 5`, each under a 15s `statement_timeout`. Each must finish with worker columns and the right rows, and the added column must hold its default. Then a 600000-row parallel INSERT into a table with `stripe_row_limit = 1000` runs while another session's `ALTER TABLE` waits for its lock. The INSERT must finish inside its 60s timeout, and the ALTER must complete after it. On main's code every one of these INSERTs hit its timeout.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 

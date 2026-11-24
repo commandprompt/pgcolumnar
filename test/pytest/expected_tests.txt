@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5383 for #2072's arm 7 in test_parallel_flush_optin.py (a parallel flush after
+# TRUNCATE, LOCK TABLE or ALTER TABLE in the same transaction finishes in workers and writes the added
+# column; a parallel INSERT finishes while another session's ALTER TABLE waits, and the ALTER completes
+# after it; the premise that the ALTER waited), 7 tests, by collection: 6277 tests collected, less
+# guard_tests 894.
+cluster_tests 5383

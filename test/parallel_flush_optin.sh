@@ -244,4 +244,81 @@ after_pin="$(perl -0777 -ne '
 check_text "a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block" \
 	"$after_pin" "dsm_detach(outseg); pg_atomic_write_u32(&me->state, PFLUSH_DONE);"
 
+# ---- 7. a flush worker takes no lock that can wait on the table (#2072) ------
+#
+# Each flush worker opened the table with ACCESS SHARE. The workers are not in the
+# inserting backend's lock group, and the backend waits for them on a latch, so the
+# deadlock detector cannot see the wait. Two cases hung until statement_timeout:
+#  - the inserting transaction itself holds ACCESS EXCLUSIVE (TRUNCATE, LOCK TABLE,
+#    ALTER TABLE before the INSERT);
+#  - another session queues ALTER TABLE behind a plain INSERT, and each new
+#    stripe's workers queue behind the ALTER.
+# Each case must finish well inside its statement_timeout, with worker columns, so
+# a fix that silently fell back to serial does not pass the split read.
+#
+# lockflush <setupSql>: in one session at DEBUG1, with parallel_flush on and a 15s
+# statement_timeout, run BEGIN; <setupSql>; an INSERT into lk; COMMIT. -> the first
+# ERROR line, or split()'s reading of the flush, then the rows read back.
+q "CREATE TABLE lk (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar;" >/dev/null
+LKROWS="SELECT g, g % 7, ((g::bigint * 7919) % 65537)::int, g / 10, -g, g % 2, 0, (g * 31) % 1000 FROM generate_series(1,20000) g"
+lockflush() {
+	env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-c "SET client_min_messages = debug1;" -c "SET pgcolumnar.parallel_flush = on;" \
+		-c "SET statement_timeout = '15s';" \
+		-c "BEGIN; $1; INSERT INTO lk (a, b, c, d, e, f, g, h) $LKROWS; COMMIT;" >"$FLUSHLOG" 2>&1
+	local err
+	err="$(grep -m1 -oE 'ERROR: .*' "$FLUSHLOG")"
+	if [ -n "$err" ]; then
+		echo "$err"
+	else
+		echo "$(split), $(q "SELECT count(*) || ' rows, sum(a) ' || sum(a) FROM lk")"
+	fi
+}
+LKWANT="workers, 20000 rows, sum(a) 200010000"
+check_text "a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072)" \
+	"$(lockflush "TRUNCATE lk")" "$LKWANT"
+check_text "a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072)" \
+	"$(lockflush "TRUNCATE lk; LOCK TABLE lk IN ACCESS EXCLUSIVE MODE")" "$LKWANT"
+# The added column is written too: the flush encodes the columns the inserting
+# transaction sees, not the ones committed before it.
+check_text "a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072)" \
+	"$(lockflush "TRUNCATE lk; ALTER TABLE lk ADD COLUMN x int DEFAULT 5")" "$LKWANT"
+check_text "a parallel flush writes the column ALTER TABLE added in the same transaction (#2072)" \
+	"$(q "SELECT count(x) || ' values, sum ' || sum(x) FROM lk")" "20000 values, sum 100000"
+
+# The second case. Many small stripes, so every stripe starts its own workers while
+# the ALTER waits. The INSERT takes about 8s alone and gets 60s; ALTER, queued
+# 1s in, waits for it.
+q "CREATE TABLE lq (a int, b int8, c float8) USING pgcolumnar;" >/dev/null
+q "SELECT pgcolumnar.set_options('lq', stripe_row_limit => 1000);" >/dev/null
+LQOUT="$PGC_WORKDIR/lock_queue_insert.out"
+LAOUT="$PGC_WORKDIR/lock_queue_alter.out"
+env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-c "SET application_name = 'pf_lock_queue';" -c "SET pgcolumnar.parallel_flush = on;" \
+	-c "SET statement_timeout = '60s';" \
+	-c "INSERT INTO lq SELECT g, g, g FROM generate_series(1, 600000) g;" >"$LQOUT" 2>&1 &
+LQPID=$!
+sleep 1
+env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-c "SET application_name = 'pf_lock_alter';" -c "SET lock_timeout = '120s';" \
+	-c "ALTER TABLE lq ADD COLUMN d int;" >"$LAOUT" 2>&1 &
+LAPID=$!
+# Read both sessions until the ALTER waits on the table lock, for up to 5s, so a
+# slow start does not read as a failed premise.
+LA_SQL="SELECT 'alter ' || coalesce((SELECT state || ' ' || coalesce(wait_event_type || '/' || wait_event, 'not waiting') FROM pg_stat_activity WHERE application_name = 'pf_lock_alter' AND query LIKE 'ALTER%'), 'not started') || ', insert ' || coalesce((SELECT state FROM pg_stat_activity WHERE application_name = 'pf_lock_queue'), 'gone')"
+LA_WANT="alter active Lock/relation, insert active"
+for _ in $(seq 1 25); do
+	sleep 0.2
+	LA_WAIT="$(q "$LA_SQL")"
+	[ "$LA_WAIT" = "$LA_WANT" ] && break
+done
+wait "$LQPID"
+wait "$LAPID"
+check_text "premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran" \
+	"$LA_WAIT" "$LA_WANT"
+check_text "a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072)" \
+	"$(grep -m1 -oE '^INSERT 0 [0-9]+|ERROR: .*' "$LQOUT")" "INSERT 0 600000"
+check_text "the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)" \
+	"$(grep -m1 -oE '^ALTER TABLE|ERROR: .*' "$LAOUT")" "ALTER TABLE"
+
 pgc_summary

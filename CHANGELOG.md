@@ -605,6 +605,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
+  after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
+  also no longer waits when another session queues `ALTER TABLE` on the table
+  during the INSERT. Each flush worker opened the table with ACCESS SHARE. The
+  workers are not in the inserting backend's lock group, and the backend waits
+  for them on a latch, so PostgreSQL's deadlock detector could not see the
+  wait. Only `statement_timeout`, `lock_timeout` or a cancel ended it. The
+  workers now take each column's attributes from the inserting backend, through
+  the shared memory segment, and do not open the table. The flush still runs
+  in workers, and the setting is still off by default (#2072).
+  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

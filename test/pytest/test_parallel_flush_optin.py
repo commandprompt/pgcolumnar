@@ -312,3 +312,153 @@ def _after_pin():
 def test_a_flush_worker_raises_nothing_after_its_pin(expect):
     expect.text(_after_pin(), "dsm_detach(outseg); pg_atomic_write_u32(&me->state, PFLUSH_DONE);",
                 "a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block")
+
+
+# ---- 7. a flush worker takes no lock that can wait on the table (#2072) ------
+#
+# The shell's arm 7. Each flush worker opened the table with ACCESS SHARE. The
+# workers are not in the inserting backend's lock group, and the backend waits for
+# them on a latch, so the deadlock detector cannot see the wait. An INSERT hung until
+# statement_timeout when its own transaction held ACCESS EXCLUSIVE (TRUNCATE, LOCK
+# TABLE, ALTER TABLE before it), or when another session's ALTER TABLE queued behind
+# it. Each case must finish inside its timeout with worker columns, so a fix that
+# silently fell back to serial does not pass.
+LK_DB = "pgc_parallel_flush_locks"
+LK_ROWS = ("SELECT g, g % 7, ((g::bigint * 7919) % 65537)::int, g / 10, -g, g % 2, 0, (g * 31) % 1000 "
+           "FROM generate_series(1,20000) g")
+LK_WANT = "workers, 20000 rows, sum(a) 200010000"
+LQ_WAIT = "alter active Lock/relation, insert active"
+
+
+def _lock_flush(db, setup):
+    """BEGIN; setup; INSERT into lk; COMMIT in one session, parallel_flush on, 15s
+    statement_timeout -> the error, or the split reading and the rows read back."""
+    notes = []
+    try:
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            conn.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute("SET pgcolumnar.parallel_flush = on")
+            conn.execute("SET statement_timeout = '15s'")
+            with conn.transaction():
+                for stmt in setup:
+                    conn.execute(stmt)
+                conn.execute(f"INSERT INTO lk (a, b, c, d, e, f, g, h) {LK_ROWS}")
+    except psycopg.Error as exc:
+        return f"{exc.sqlstate}: {exc.diag.message_primary}"
+    splits = [n for n in notes if re.search(r"parallel_flush: [0-9]+ of [0-9]+ columns by", n)]
+    if not splits:
+        how = "no split line"
+    elif any(re.search(r"parallel_flush: 0 of ", n) for n in splits):
+        how = "serial fall-back"
+    else:
+        how = "workers"
+    return f"{how}, " + db.q("SELECT count(*) || ' rows, sum(a) ' || sum(a) FROM lk")
+
+
+@pytest.fixture(scope="module")
+def lk(pgc_cluster):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {LK_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {LK_DB}")
+    try:
+        d = _Db(pgc_cluster.dsn(dbname=LK_DB))
+        d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        d.run("CREATE TABLE lk (a int, b int, c int, d int, e int, f int, g int, h int) USING pgcolumnar")
+        r = {
+            "truncate": _lock_flush(d, ["TRUNCATE lk"]),
+            "lock": _lock_flush(d, ["TRUNCATE lk", "LOCK TABLE lk IN ACCESS EXCLUSIVE MODE"]),
+            "alter": _lock_flush(d, ["TRUNCATE lk", "ALTER TABLE lk ADD COLUMN x int DEFAULT 5"]),
+        }
+        r["added column"] = d.q("SELECT count(x) || ' values, sum ' || sum(x) FROM lk")
+
+        # The second case: many small stripes, so each stripe starts its own workers
+        # while the ALTER waits. The INSERT takes about 8s alone and gets 60s; the
+        # ALTER is queued 1s in.
+        d.run("CREATE TABLE lq (a int, b int8, c float8) USING pgcolumnar")
+        d.run("SELECT pgcolumnar.set_options('lq', stripe_row_limit => 1000)")
+        out = {}
+
+        def insert():
+            try:
+                with psycopg.connect(d.dsn, autocommit=True) as c:
+                    c.execute("SET application_name = 'pf_lock_queue'")
+                    c.execute("SET pgcolumnar.parallel_flush = on")
+                    c.execute("SET statement_timeout = '60s'")
+                    cur = c.execute("INSERT INTO lq SELECT g, g, g FROM generate_series(1, 600000) g")
+                    out["insert"] = f"INSERT 0 {cur.rowcount}"
+            except psycopg.Error as exc:
+                out["insert"] = f"{exc.sqlstate}: {exc.diag.message_primary}"
+
+        def alter():
+            try:
+                with psycopg.connect(d.dsn, autocommit=True) as c:
+                    c.execute("SET application_name = 'pf_lock_alter'")
+                    c.execute("SET lock_timeout = '120s'")
+                    c.execute("ALTER TABLE lq ADD COLUMN d int")
+                    out["alter"] = "ALTER TABLE"
+            except psycopg.Error as exc:
+                out["alter"] = f"{exc.sqlstate}: {exc.diag.message_primary}"
+
+        ti = threading.Thread(target=insert)
+        ti.start()
+        time.sleep(1)
+        ta = threading.Thread(target=alter)
+        ta.start()
+        # Read both sessions until the ALTER waits on the table lock, for up to 5s,
+        # so a slow start does not read as a failed premise.
+        for _ in range(25):
+            time.sleep(0.2)
+            r["alter wait"] = d.q(
+                "SELECT 'alter ' || coalesce((SELECT state || ' ' || coalesce(wait_event_type || '/' "
+                "|| wait_event, 'not waiting') FROM pg_stat_activity WHERE application_name = "
+                "'pf_lock_alter' AND query LIKE 'ALTER%'), 'not started') || ', insert ' || "
+                "coalesce((SELECT state FROM pg_stat_activity WHERE application_name = "
+                "'pf_lock_queue'), 'gone')")
+            if r["alter wait"] == LQ_WAIT:
+                break
+        ti.join(180)
+        ta.join(180)
+        r["queued insert"] = out.get("insert", "the insert never returned")
+        r["queued alter"] = out.get("alter", "the alter never returned")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {LK_DB} WITH (FORCE)")
+
+
+def test_lock_a_flush_after_truncate_finishes(lk, expect):
+    expect.text(lk["truncate"], LK_WANT,
+                "a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072)")
+
+
+def test_lock_a_flush_after_lock_table_finishes(lk, expect):
+    expect.text(lk["lock"], LK_WANT,
+                "a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction "
+                "finishes, in workers (#2072)")
+
+
+def test_lock_a_flush_after_alter_table_finishes(lk, expect):
+    expect.text(lk["alter"], LK_WANT,
+                "a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, "
+                "in workers (#2072)")
+
+
+def test_lock_a_flush_writes_the_added_column(lk, expect):
+    expect.text(lk["added column"], "20000 values, sum 100000",
+                "a parallel flush writes the column ALTER TABLE added in the same transaction (#2072)")
+
+
+def test_lock_the_alter_waited_for_the_insert(lk, expect):
+    expect.text(lk["alter wait"], LQ_WAIT,
+                "premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran")
+
+
+def test_lock_a_queued_alter_does_not_stall_the_insert(lk, expect):
+    expect.text(lk["queued insert"], "INSERT 0 600000",
+                "a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072)")
+
+
+def test_lock_the_queued_alter_completes(lk, expect):
+    expect.text(lk["queued alter"], "ALTER TABLE",
+                "the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)")
