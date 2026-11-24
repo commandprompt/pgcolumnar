@@ -9267,6 +9267,9 @@ unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: the same-key i
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: exactly one row with key 1	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	11 deferrable initially DEFERRED unique: the same-key inserter got a unique_violation	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	12 btree exclusion constraint: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	12 btree exclusion constraint: exactly one row with id 1	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	12 btree exclusion constraint: the same-key inserter got an exclusion_violation	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	1a pre-fix: lock disabled lets both same-key inserts commit (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
 unique_conc	unique_conc	1b post-fix: blocked inserter got a unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
 unique_conc	unique_conc	1b post-fix: exactly one row with key 1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken

@@ -615,7 +615,13 @@ true until the next version shipped.
   for the whole index because the operator need not be equality. The second
   insert now waits for the first and fails with 23P01 or 23505, as on heap.
   Concurrent inserts into a table with an exclusion constraint now go in
-  sequence even when their rows do not conflict. docs/limitations.md.
+  sequence even when their rows do not conflict. The lock is held to the end of
+  the transaction, so two transactions that insert into two such tables in
+  opposite order can now fail with `deadlock_detected` (40P01) even when no rows
+  conflict; on heap both commit. Retry on 40P01. An `UPDATE` on a table with a
+  deferrable unique index or an exclusion constraint now also serializes each row
+  as it reaches it (#1421), as it already did with an immediate unique index.
+  docs/limitations.md.
   `test/unique_conc.sh` and `test_unique_conc.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into

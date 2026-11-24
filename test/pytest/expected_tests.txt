@@ -1915,4 +1915,6 @@ guard_tests 894
 # cluster_tests 5376 -> 5379 for #2063 in test_unique_conc.py: test_an_exclusion_constraint and
 # test_a_deferrable_unique_constraint, parametrized initially immediate and initially deferred, by
 # collection: 6273 tests collected, less guard_tests 894.
-cluster_tests 5379
+# cluster_tests 5379 -> 5380 for #2063 in test_unique_conc.py: test_a_btree_exclusion_constraint, by
+# collection: 6274 tests collected, less guard_tests 894.
+cluster_tests 5380

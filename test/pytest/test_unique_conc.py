@@ -420,3 +420,17 @@ def test_a_deferrable_unique_constraint(race, expect, num, tag, mode):
                 f"{num} deferrable initially {mode} unique: the same-key inserter got a unique_violation")
     expect.num(race.one(f"SELECT count(*) FROM s_{tag} WHERE k = 1"), 1,
                f"{num} deferrable initially {mode} unique: exactly one row with key 1")
+
+
+def test_a_btree_exclusion_constraint(race, expect):
+    """#2063: the issue's second exclusion form, EXCLUDE USING btree (id WITH =).
+    An equal key must wait for T1 and fail as an exclusion constraint."""
+    race.run(race.s1, "CREATE TABLE s_eb (id int, "
+                      "CONSTRAINT s_eb_excl EXCLUDE USING btree (id WITH =)) USING pgcolumnar")
+    expect.num(race.conflict(1016, "s_eb", _paused("1", "cq_block(1016, -1)"), "VALUES (1)"), 1,
+               "12 btree exclusion constraint: a same-key inserter blocks")
+    err = _settle_by_commit(race, 1016)
+    expect.text(_refused(err, "23P01", "s_eb_excl"), "yes",
+                "12 btree exclusion constraint: the same-key inserter got an exclusion_violation")
+    expect.num(race.one("SELECT count(*) FROM s_eb WHERE id = 1"), 1,
+               "12 btree exclusion constraint: exactly one row with id 1")

@@ -41,7 +41,8 @@
 # concurrency), multi-column unique index, partial unique index (inside and
 # outside the predicate), NULLS DISTINCT (no false conflict) and NULLS NOT
 # DISTINCT (PG15+), a same-statement duplicate, an aborted first inserter, and
-# (#2063) an exclusion constraint and a DEFERRABLE unique constraint.
+# (#2063) exclusion constraints (gist && and btree =) and a DEFERRABLE unique
+# constraint.
 #
 # Written fresh for pgColumnar; it reuses no upstream test file or expected
 # output. Derived from the format/interface spec, the issue #5 design analysis,
@@ -625,7 +626,7 @@ check "8 after first aborts, second insert succeeds; one row" \
 	"$(ctl_q "SELECT count(*) FROM s_ab WHERE k=1;")" "1"
 
 # ===========================================================================
-# Scenarios 9-11 (#2063): an exclusion constraint and a DEFERRABLE unique
+# Scenarios 9-12 (#2063): exclusion constraints and a DEFERRABLE unique
 # constraint. Before #2063 the key lock covered only unique, immediate indexes,
 # so T2 found T1's index entry, could not resolve T1's buffered row, and both
 # rows committed. T2's COMMIT is queued behind its INSERT before T1 is released.
@@ -678,6 +679,29 @@ for dd in "10 di IMMEDIATE" "11 dd DEFERRED"; do
 	check "$num deferrable initially $mode unique: exactly one row with key 1" \
 		"$(ctl_q "SELECT count(*) FROM s_$tag WHERE k = 1;")" "1"
 done
+
+# 12: a btree exclusion constraint with equality, (id WITH =), the second form
+# the issue names. It behaves as a unique index but is checked as an exclusion
+# constraint, so it must wait for T1 and fail with 23P01.
+ctl_q "CREATE TABLE s_eb (id int, CONSTRAINT s_eb_excl EXCLUDE USING btree (id WITH =)) USING pgcolumnar;" >/dev/null
+HKEY=1016
+pause_s1 "INSERT INTO s_eb SELECT CASE WHEN g=2 THEN cq_block($HKEY, -1) ELSE 1 END FROM generate_series(1,2) g;"
+send_wait s2 "eb_beg" "BEGIN;"
+send s2 "INSERT INTO s_eb VALUES (1);"
+send s2 "\\echo <<eb_ins>>"
+wait_blocked cc_s2 asserted
+check "12 btree exclusion constraint: a same-key inserter blocks" \
+	"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
+send s2 "COMMIT;"
+send s2 "\\echo <<eb_com>>"
+release_s1
+send_wait s1 "s1_com_12" "COMMIT;"
+wait_sentinel s2 eb_ins
+wait_sentinel s2 eb_com
+check "12 btree exclusion constraint: the same-key inserter got an exclusion_violation" \
+	"$(out_has s2 'ERROR:  23P01: conflicting key value violates exclusion constraint "s_eb_excl"' && echo yes || echo no)" "yes"
+check "12 btree exclusion constraint: exactly one row with id 1" \
+	"$(ctl_q "SELECT count(*) FROM s_eb WHERE id = 1;")" "1"
 
 send s1 "\\q"
 send s2 "\\q"

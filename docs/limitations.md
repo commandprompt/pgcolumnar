@@ -623,8 +623,9 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   the transaction on this error, as you retry one at `REPEATABLE READ`. The
   behavior is stricter than a heap at `READ COMMITTED`. A heap re-applies both
   updates transparently there; pgColumnar makes the loser retry. The same holds
-  for a row an `UPDATE` moves to another partition. On a table with a unique index,
-  an `UPDATE` serializes each row as it reaches it, not at the end of the statement.
+  for a row an `UPDATE` moves to another partition. Some tables have a unique index,
+  immediate or deferrable, or an exclusion constraint. On those, an `UPDATE`
+  serializes each row as it reaches it, not at the end of the statement.
   Two multi-row `UPDATE`s that reach shared rows in opposite orders can therefore
   deadlock. One of them then gets `deadlock_detected` (40P01), which is also
   retryable. The GUC
@@ -661,7 +662,11 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   no hash support. The third is an exclusion constraint, because its operator,
   such as `&&`, need not be equality (#2063). Concurrent inserts into a table
   with an exclusion constraint therefore go in sequence even when their rows do
-  not overlap, unless a key is NULL. A
+  not overlap, unless a key is NULL. The lock is held until the transaction ends.
+  So two transactions that insert rows into two tables with exclusion constraints,
+  in opposite order, can deadlock even when no rows conflict. One of them then
+  gets `deadlock_detected` (40P01). On heap both would commit. Retry the
+  transaction on that error. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`.
