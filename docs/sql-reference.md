@@ -1289,7 +1289,7 @@ that you must declare. Use
 `parquet_schema` to generate the full list: declare one column for each row it
 reports. A composite column covers all the leaves of its struct. A composite
 column whose leaves sit in no one struct, such as two top-level columns, is an
-error, because nothing in the file says when that composite is NULL (#2079).
+error. Nothing in the file says when that composite is NULL (#2079).
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded
