@@ -605,6 +605,13 @@ true until the next version shipped.
 
 ### Fixed
 
+- A `pgcolumnar.parallel_copy` loader that fails now closes its file once
+  (#2083). It closed the file after aborting its transaction, but the abort
+  had already closed it. Each failed loader logged `fd passed to
+  CloseTransientFile was not obtained from OpenTransientFile` and called
+  `close()` on a descriptor number that could by then belong to another file.
+  The loader now closes the file before the abort. `test/parallel_copy.sh`
+  and `test_parallel_copy.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
