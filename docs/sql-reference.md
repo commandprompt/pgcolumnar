@@ -1026,6 +1026,11 @@ The target may be one of two kinds:
 
 - A single columnar table. The workers write the one table together. Any
   record-aligned split of the file is correct, so the file needs no ordering.
+  If the table has a unique or exclusion index, including a primary key, the
+  function refuses more than one worker with `0A000`. Load such a table with
+  `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
+  transaction until every worker has finished. So two workers would wait on each
+  other forever.
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric

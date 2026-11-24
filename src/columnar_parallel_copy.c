@@ -57,6 +57,7 @@
 #include "access/xact.h"
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "fmgr.h"
@@ -78,6 +79,7 @@
 #include "storage/latch.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
+#include "utils/syscache.h"
 #include "tcop/tcopprot.h"
 #if PG_VERSION_NUM >= 160000
 #include "utils/wait_event.h"	/* PG_WAIT_EXTENSION */
@@ -241,6 +243,43 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
  *		record-aligned split is correct (no partition key, so no ordering
  *		requirement). Returns a palloc'd int64[workers+1].
  */
+/*
+ * pcopy_has_unique_or_exclusion_index
+ *		Does rel have a unique or exclusion index?
+ *
+ *		parallel_copy cannot load such a single table with more than one worker
+ *		(#2080). Each loader keeps the locks its inserts took -- the unique-key
+ *		advisory locks, and the xid a sibling's btree or exclusion check waits
+ *		on -- in its prepared transaction. The coordinator commits only after
+ *		every loader has finished, so a loader waiting on a sibling's prepared
+ *		transaction waits forever, and the deadlock detector cannot see it.
+ *		Distinct keys do not help: the advisory locks are hash buckets.
+ */
+static bool
+pcopy_has_unique_or_exclusion_index(Relation rel)
+{
+	List	   *indexes = RelationGetIndexList(rel);
+	ListCell   *lc;
+	bool		found = false;
+
+	foreach(lc, indexes)
+	{
+		HeapTuple	tup = SearchSysCache1(INDEXRELID,
+										  ObjectIdGetDatum(lfirst_oid(lc)));
+		Form_pg_index idx;
+
+		if (!HeapTupleIsValid(tup))
+			continue;
+		idx = (Form_pg_index) GETSTRUCT(tup);
+		found = idx->indisunique || idx->indisexclusion;
+		ReleaseSysCache(tup);
+		if (found)
+			break;
+	}
+	list_free(indexes);
+	return found;
+}
+
 static int64 *
 pcopy_naive_offsets(const char *path, int workers)
 {
@@ -1602,7 +1641,24 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 * the storage row and the loaders skip its creation lock via
 			 * pgcolumnar_bulk_parallel_writer). Any record-aligned byte split is
 			 * correct -- no partition key, so no sorted-input requirement.
+			 *
+			 * Not with a unique or exclusion index and more than one worker: the
+			 * loaders would wait on each other's prepared transactions forever
+			 * (#2080). A partitioned target is not affected, because each worker
+			 * loads distinct partitions, and so distinct indexes.
 			 */
+			if (workers > 1 && pcopy_has_unique_or_exclusion_index(target))
+			{
+				char		nm[NAMEDATALEN];
+
+				strlcpy(nm, RelationGetRelationName(target), NAMEDATALEN);
+				table_close(target, AccessShareLock);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
+								nm),
+						 errhint("Load it with workers => 1, or with COPY.")));
+			}
 			offs = pcopy_naive_offsets(path, workers);
 			single_table = true;
 		}

@@ -12065,7 +12065,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index, with 0A000, where it used to hang (#2080). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
 
 ### Every test
 
@@ -12132,6 +12132,11 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_refuses_a_primary_key_table_with_two_workers` | `parallel_copy` with 2 workers into a single table with a primary key is refused with 0A000 and the hint, within a 10 s statement_timeout, rather than hanging (#2080) |
+| `test_parallel_copy_refuses_a_unique_index_table_with_four_workers` | the same with 4 workers and a `CREATE UNIQUE INDEX` |
+| `test_parallel_copy_unique_refusal_loads_nothing` | both refused tables stay empty |
+| `test_parallel_copy_still_loads_a_primary_key_table_with_one_worker` | control: 1 worker still loads the 5000 rows into a table with a primary key |
+| `test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers` | control: 2 workers still load the 5000 rows into a table with a non-unique index |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 

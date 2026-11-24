@@ -13,7 +13,8 @@ missing file, a heap target, and a FIFO, which it must refuse rather than hang o
 Both functions read local files only, so both refuse an object-storage URL with
 0A000, naming themselves and the URL (#1886). parallel_copy refuses after its INSERT
 check and before it checks the target's kind, so a heap target gets 0A000. The
-refusal covers s3a:// and s3n:// too, in any case (#1918).
+refusal covers s3a:// and s3n:// too, in any case (#1918). parallel_copy refuses more
+than one worker for a single table with a unique index, which used to hang (#2080).
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -112,6 +113,17 @@ def _want_refusal(fn, url):
     return f'0A000 columnar: {fn} does not read "{url}" | {fn} reads local files only. Use a local filesystem path.'
 
 
+def _timeout(timeout):
+    """-> connect() keywords that set statement_timeout to `timeout`, or none."""
+    return {"options": f"-c statement_timeout={timeout}"} if timeout else {}
+
+
+def _want_unique(table):
+    """The refusal #2080 promises for a single table with a unique index."""
+    return (f'0A000 pgcolumnar.parallel_copy cannot load "{table}" with more than one worker, '
+            'because it has a unique or exclusion index | Load it with workers => 1, or with COPY.')
+
+
 class _Db:
     def __init__(self, dsn):
         self.dsn = dsn
@@ -124,10 +136,11 @@ class _Db:
         except psycopg.Error as exc:
             print(f"-- step failed: {_message(exc)}")
 
-    def value(self, sql):
-        """-> the first column of the first row, or the failure as a query_error()."""
+    def value(self, sql, timeout=None):
+        """-> the first column of the first row, or the failure as a query_error().
+        `timeout` is a statement_timeout, so a hang ends as an error."""
         try:
-            with psycopg.connect(self.dsn, autocommit=True) as conn:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
                 row = conn.execute(sql).fetchone()
         except psycopg.Error as exc:
             return query_error(_message(exc))
@@ -155,10 +168,11 @@ class _Db:
             return f"refused: {phrase}" if hit else str(exc)
         return "noerror"
 
-    def remote_refusal(self, sql):
-        """-> "SQLSTATE message | hint" of the error `sql` raised, or "no error (...)"."""
+    def remote_refusal(self, sql, timeout=None):
+        """-> "SQLSTATE message | hint" of the error `sql` raised, or "no error (...)".
+        `timeout` is a statement_timeout, so a hang ends as an error."""
         try:
-            with psycopg.connect(self.dsn, autocommit=True) as conn:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
                 row = conn.execute(sql).fetchone()
         except psycopg.Error as exc:
             if not exc.sqlstate:
@@ -519,6 +533,24 @@ def pcopy(pgc_cluster, server_dir):
         except OSError as exc:
             r["split local s3a size"] = query_error(f"cannot stat the control file: {exc}")
         r["pcopy local s3a"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local_a}', 2)")
+
+        # ---- #2080: a single table with a unique index needs one worker ---------
+        # statement_timeout turns the old hang into 57014, a red the test can read.
+        db.run("CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_ui (id int, txt text) USING pgcolumnar; "
+               "CREATE UNIQUE INDEX t_ui_id ON t_ui (id); "
+               "CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_nu (id int, txt text) USING pgcolumnar; "
+               "CREATE INDEX t_nu_id ON t_nu (id)")
+        r["unique pk"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2)", timeout="10s")
+        r["unique index"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_ui'::regclass, '{f}', 4)", timeout="10s")
+        r["unique empty"] = db.value("SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")
+        r["unique one worker"] = db.value(
+            f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
+        r["non-unique index"] = db.value(
+            f"SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '{f}', 2)", timeout="30s")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -806,3 +838,29 @@ def test_parallel_copy_split_still_reads_a_local_path_holding_s3a(pcopy, expect)
 def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
     expect.num(pcopy["pcopy local s3a"], 5000,
                "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")
+
+
+# ---- #2080: a single table with a unique index needs one worker --------------------
+
+def test_parallel_copy_refuses_a_primary_key_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["unique pk"], _want_unique("t_uk"),
+                "parallel_copy refuses a single table with a primary key and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_refuses_a_unique_index_table_with_four_workers(pcopy, expect):
+    expect.text(pcopy["unique index"], _want_unique("t_ui"),
+                "parallel_copy refuses a single table with a unique index and 4 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_unique_refusal_loads_nothing(pcopy, expect):
+    expect.num(pcopy["unique empty"], 0, "the unique-index refusal loads nothing (#2080)")
+
+
+def test_parallel_copy_still_loads_a_primary_key_table_with_one_worker(pcopy, expect):
+    expect.num(pcopy["unique one worker"], 5000,
+               "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)")
+
+
+def test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers(pcopy, expect):
+    expect.num(pcopy["non-unique index"], 5000,
+               "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)")

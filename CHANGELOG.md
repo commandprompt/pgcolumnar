@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` no longer hangs on a single columnar table with a
+  unique index or primary key (#2080). With 2 or more workers it waited until
+  cancelled, even when every key in the file was distinct. Each worker keeps its
+  unique-key locks in a prepared transaction until every worker has finished, so
+  the workers waited on each other, and the deadlock detector could not see it.
+  The function now refuses that load up front with SQLSTATE 0A000 and the hint
+  `Load it with workers => 1, or with COPY.` One worker still loads such a table,
+  and a partitioned target is not affected. docs/limitations.md and
+  docs/sql-reference.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

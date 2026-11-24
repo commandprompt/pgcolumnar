@@ -662,4 +662,32 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
 
+# ---- #2080: a single table with a unique index needs one worker ------------
+# Each loader keeps its unique-key locks in a prepared transaction until every
+# loader has finished, so two loaders of one table with a unique index waited on
+# each other until cancelled, even with distinct keys. parallel_copy now refuses
+# that load up front. statement_timeout turns the old hang into 57014, a red the
+# check can read. The controls: 1 worker, and a non-unique index, still load.
+want_unique() {	# TABLE -> the refusal #2080 promises
+	printf '0A000 pgcolumnar.parallel_copy cannot load "%s" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY.\n' "$1"
+}
+psql_run "CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE TABLE t_ui (id int, txt text) USING pgcolumnar;
+          CREATE UNIQUE INDEX t_ui_id ON t_ui (id);
+          CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE TABLE t_nu (id int, txt text) USING pgcolumnar;
+          CREATE INDEX t_nu_id ON t_nu (id);" >/dev/null
+check "parallel_copy refuses a single table with a primary key and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$F', 2)")" \
+	"$(want_unique t_uk)"
+check "parallel_copy refuses a single table with a unique index and 4 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ui'::regclass, '$F', 4)")" \
+	"$(want_unique t_ui)"
+check "the unique-index refusal loads nothing (#2080)" \
+	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")" 0
+check "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '$F', 1)")" 5000
+check "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '$F', 2)")" 5000
+
 pgc_summary
