@@ -11876,7 +11876,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec
 
-The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; a chunk too small to sample is still encoded; and repeated values of a fixed-width type that is not 1, 2, 4 or 8 bytes wide (uuid, interval, timetz, name, macaddr, tid, point) are stored as RLE and read back, survive ANALYZE and DELETE, on both the exhaustive and the sampled path (#2061).
+The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; a chunk too small to sample is still encoded; and repeated values of a fixed-width type that is not 1, 2, 4 or 8 bytes wide (uuid, interval, timetz, name, macaddr, tid, point) are stored as RLE and read back, survive ANALYZE, DELETE and a pg_dump round trip, on both the exhaustive and the sampled path (#2061).
 
 ### Every test
 
@@ -11939,6 +11939,9 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_repeated_wide_fixed_width_values_read_back_exactly` | repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly (#2061) |
 | `test_repeated_wide_fixed_width_values_read_back_on_the_sampled_path` | repeated wide fixed-width values read back exactly on the sampled path |
 | `test_analyze_reads_repeated_wide_fixed_width_values` | ANALYZE reads a table of repeated wide fixed-width values |
+| `test_pg_dump_reads_repeated_wide_fixed_width_values` | pg_dump of a table of repeated wide fixed-width values succeeds |
+| `test_restore_of_repeated_wide_fixed_width_values_succeeds` | restore of a table of repeated wide fixed-width values succeeds |
+| `test_repeated_wide_fixed_width_values_survive_a_pg_dump_round_trip` | repeated wide fixed-width values read back exactly after a pg_dump round trip |
 | `test_delete_removes_repeated_wide_fixed_width_values` | DELETE removes every row of a table of repeated wide fixed-width values |
 
 ## 292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump

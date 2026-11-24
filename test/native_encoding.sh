@@ -377,6 +377,28 @@ check "repeated wide fixed-width values read back exactly on the sampled path" \
 check "ANALYZE reads a table of repeated wide fixed-width values" \
 	"$(psql_run "ANALYZE wf_s;" >/dev/null 2>&1 && echo analyzed || echo failed)" \
 	"analyzed"
+# pg_dump reads every row through the same decoder, so before the fix it failed on
+# these tables too. Dump both, restore them into a fresh database and compare. This
+# runs before the DELETE below, which empties wf_n.
+WF_DUMP="$PGC_WORKDIR/wide-fixed-width.sql"
+WF_DB="${PGC_DB}_wf"
+wf_tool() { env PATH="$PGC_BINDIR:$PATH" "$@"; }
+wf_on() { wf_tool psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$1" -Atq -c "$2"; }
+wf_tool pg_dump -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+	-t wf_n -t wf_s -f "$WF_DUMP" >/dev/null 2>&1; wf_dump_rc=$?
+check "pg_dump of a table of repeated wide fixed-width values succeeds" "$wf_dump_rc" "0"
+wf_on postgres "DROP DATABASE IF EXISTS $WF_DB;" >/dev/null 2>&1
+wf_on postgres "CREATE DATABASE $WF_DB;" >/dev/null
+wf_on "$WF_DB" "CREATE EXTENSION pgcolumnar;" >/dev/null
+wf_tool psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$WF_DB" \
+	-v ON_ERROR_STOP=1 -q -f "$WF_DUMP" >/dev/null 2>&1; wf_restore_rc=$?
+check "restore of a table of repeated wide fixed-width values succeeds" "$wf_restore_rc" "0"
+WF_HASH_SQL="SELECT coalesce(md5(string_agg(t, chr(10) ORDER BY t)), 'EMPTY')
+	FROM (SELECT r::text AS t FROM (SELECT * FROM wf_n UNION ALL SELECT * FROM wf_s) r) s;"
+check "repeated wide fixed-width values read back exactly after a pg_dump round trip" \
+	"$(wf_on "$WF_DB" "$WF_HASH_SQL" 2>&1)" \
+	"$(pgc_set_hash 'SELECT * FROM wf_h UNION ALL SELECT * FROM wf_sh')"
+wf_on postgres "DROP DATABASE IF EXISTS $WF_DB;" >/dev/null 2>&1
 check "DELETE removes every row of a table of repeated wide fixed-width values" \
 	"$(q "WITH d AS (DELETE FROM wf_n RETURNING 1) SELECT count(*) FROM d;")" \
 	"100"

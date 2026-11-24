@@ -4451,9 +4451,12 @@ native_encoding	native_encoding	fsst filtered scan round-trips	15;16;17;18;19	ne
 native_encoding	native_encoding	fsst shrinks the url column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	fsst stores one shared table per chunk (E3b)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	misleading-head column still reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	pg_dump of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	2026-11-24	-
 native_encoding	native_encoding	premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE	15;16;17;18;19	never	-
 native_encoding	native_encoding	repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly after a pg_dump round trip	15;16;17;18;19	2026-11-24	-
 native_encoding	native_encoding	repeated wide fixed-width values read back exactly on the sampled path	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	restore of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	never	-
 native_encoding	native_encoding	run-length column reads back exactly	15;16;17;18;19	2026-10-22	columnar_encoding.c: RLE decode flips one bit of each vector's last value
 native_encoding	native_encoding	sampling changes nothing a query can see	15;16;17;18;19	never	-
 native_encoding	native_encoding	sampling off == heap oracle	15;16;17;18;19	never	-
