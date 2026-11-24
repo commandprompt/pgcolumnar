@@ -418,10 +418,11 @@ check "positional read_parquet still refuses bigint over an INT32 column (42804)
 # not apply it yet, so it must refuse such a field (0A000), not read it as null.
 # v3default: the events table as format-version 3, whose current schema adds
 # field 4, qty, required, initial-default 7; no data file carries field 4.
+# v3optdefault: the same, but qty is optional with initial-default 42.
 # eq_v3default: warehouse_promo's equality-delete table as format-version 3,
 # with initial-default 0 on k, the column its equality deletes compare.
 python3 - "$MD" "$MDDIR/v3default.metadata.json" "$PMD/eq.metadata.json" \
-	"$PMD/eq_v3default.metadata.json" <<'PYEOF'
+	"$PMD/eq_v3default.metadata.json" "$MDDIR/v3optdefault.metadata.json" <<'PYEOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
 m["format-version"] = 3
@@ -434,6 +435,9 @@ m["schemas"].append(new)
 m["current-schema-id"] = new["schema-id"]
 m["last-column-id"] = 4
 json.dump(m, open(sys.argv[2], "w"))
+new["fields"][-1] = {"id": 4, "name": "qty", "required": False, "type": "int",
+                     "initial-default": 42, "write-default": 42}
+json.dump(m, open(sys.argv[5], "w"))
 e = json.load(open(sys.argv[3]))
 e["format-version"] = 3
 for s in e["schemas"]:
@@ -446,6 +450,11 @@ PYEOF
 check "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, qty int)
+	            ORDER BY id" 'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+check "iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3optdefault.metadata.json') AS t(id bigint, qty int)
 	            ORDER BY id" 'initial-default' "initial-default refusal")" \
 	"0A000 (initial-default refusal)"
 check "iceberg_scan still reads the v3 table's columns that have no initial-default" \

@@ -146,9 +146,10 @@ def _lines(v):
 
 
 def _v3_default_copies(md, eq_md):
-    """Write two format-version 3 copies of fixture metadata (#2087) and return
+    """Write three format-version 3 copies of fixture metadata (#2087) and return
     their paths. v3default.metadata.json: the events table, whose current schema
     gains field 4, qty, required, initial-default 7, which no data file carries.
+    v3optdefault.metadata.json: the same, but qty is optional, initial-default 42.
     eq_v3default.metadata.json: warehouse_promo's equality-delete table, with
     initial-default 0 on k, the column its equality deletes compare."""
     m = json.loads(md.read_text())
@@ -163,6 +164,10 @@ def _v3_default_copies(md, eq_md):
     m["last-column-id"] = 4
     v3md = md.parent / "v3default.metadata.json"
     v3md.write_text(json.dumps(m))
+    added["fields"][-1] = {"id": 4, "name": "qty", "required": False, "type": "int",
+                           "initial-default": 42, "write-default": 42}
+    v3opt = md.parent / "v3optdefault.metadata.json"
+    v3opt.write_text(json.dumps(m))
     e = json.loads(eq_md.read_text())
     e["format-version"] = 3
     for f in next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])["fields"]:
@@ -170,9 +175,9 @@ def _v3_default_copies(md, eq_md):
             f["initial-default"] = 0
     v3eq = eq_md.parent / "eq_v3default.metadata.json"
     v3eq.write_text(json.dumps(e))
-    for p in (v3md, v3eq):
+    for p in (v3md, v3opt, v3eq):
         p.chmod(0o666)
-    return v3md, v3eq
+    return v3md, v3opt, v3eq
 
 
 @pytest.fixture(scope="module")
@@ -339,13 +344,16 @@ def isc(pgc_cluster, server_dir):
                                             'physical type is not compatible with target column "k"'),
         })
         # #2087: format-version 3 initial-default, which the reader cannot apply yet
-        v3md, v3eq = _v3_default_copies(md, eq_md)
+        v3md, v3opt, v3eq = _v3_default_copies(md, eq_md)
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute("CREATE FOREIGN TABLE icescan_v3default (id bigint, qty int) "
                       f"SERVER ice_promo OPTIONS (metadata_path '{v3md}')")
         r.update({
             "v3 default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3md)} AS t(id bigint, qty int) "
                                         "ORDER BY id", r"initial-default", "initial-default refusal"),
+            "v3 optional default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3opt)} "
+                                                 "AS t(id bigint, qty int) ORDER BY id",
+                                            r"initial-default", "initial-default refusal"),
             "v3 other columns": _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM {scan.format(v3md)} "
                                            "AS t(id bigint, region text, amount int) ORDER BY id"),
             "v3 eq default": _refusal(dsn, "SELECT string_agg(id::text, ',' ORDER BY id) "
@@ -703,6 +711,13 @@ def test_iceberg_scan_refuses_a_v3_column_with_an_initial_default(isc, expect):
         return
     expect.text(str(isc["v3 default"]), "0A000 (initial-default refusal)",
                 "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)")
+
+
+def test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 optional default"]), "0A000 (initial-default refusal)",
+                "iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000)")
 
 
 def test_iceberg_scan_reads_the_v3_columns_without_an_initial_default(isc, expect):

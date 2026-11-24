@@ -1912,4 +1912,12 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5380
+# cluster_tests 5376 -> 5381 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests, by collection: `cd test/pytest &&
+# PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+cluster_tests 5381
