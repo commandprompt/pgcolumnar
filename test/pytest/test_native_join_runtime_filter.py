@@ -920,3 +920,56 @@ def test_an_empty_build_on_one_rescan_does_not_empty_the_next(pgc_conn, expect):
     expect.text(f"{heap[0][0]}|{heap[0][1]}", "0|150",
                 "premise: heap's empty-then-full rescan answer holds every dimension key")
     expect.rows(got, heap, "an empty build on one rescan does not empty the next")
+
+
+def test_a_rescan_rebuilds_the_hash_table_from_the_new_build(pgc_conn, expect):
+    """Each rescan of the coordinator joins against that rescan's build rows (#2062).
+
+    A correlated subquery reruns the join with a new outer value. The coordinator
+    did not tell its Hash Join that a parameter had changed, so the join kept the
+    first hash table and every later run answered as the first. The outer values
+    grow, so each later build holds keys the first lacks: the Bloom filter cannot
+    hide the stale table by rejecting extra fact rows. The DISTINCT arm puts a
+    HashAggregate under the Build Tap; it keeps its own hash table unless the tap
+    passes the changed parameter down to it. Independently of
+    native_join_runtime_filter.sh: different names, keys and outer values.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE frs(k int, pad text) USING pgcolumnar;
+            INSERT INTO frs SELECT g % 12, 'p' FROM generate_series(1, 12000) g;
+            CREATE TABLE hrs AS SELECT * FROM frs;
+            CREATE TABLE drs(k int);
+            INSERT INTO drs SELECT generate_series(0, 11);
+            ANALYZE frs;
+            ANALYZE hrs;
+            ANALYZE drs
+            """
+        )
+        if _has_runtime_filter(pgc_conn):
+            cur.execute("SET pgcolumnar.enable_join_runtime_filter=on")
+        cur.execute("SET max_parallel_workers_per_gather=0")
+        cur.execute("SET enable_nestloop=off")
+        cur.execute("SET enable_mergejoin=off")
+        shapes = {
+            "subquery": "SELECT k FROM drs WHERE k < v.lim OFFSET 0",
+            "distinct": "SELECT DISTINCT k FROM drs WHERE k < v.lim",
+        }
+        sql = """
+            SELECT v.lim, (SELECT count(*) FROM {t} JOIN ({d}) b ON {t}.k = b.k)
+            FROM (VALUES (2), (6), (12)) v(lim) ORDER BY 1
+        """
+        for name, build in shapes.items():
+            cur.execute("EXPLAIN (COSTS OFF) " + sql.format(t="frs", d=build))
+            plan = "\n".join(r[0] for r in cur.fetchall())
+            cur.execute(sql.format(t="frs", d=build))
+            got = cur.fetchall()
+            cur.execute(sql.format(t="hrs", d=build))
+            heap = cur.fetchall()
+            expect.num(plan.count("Columnar Runtime Filter Coordinator"), 1,
+                       f"premise: the {name} rescan runs under the coordinator")
+            expect.text(" ".join(f"{lim}:{c}" for lim, c in heap),
+                        "2:2000 6:6000 12:12000",
+                        f"premise: heap's {name} answer grows with each outer value")
+            expect.rows(got, heap, f"each {name} rescan joins against its own build")

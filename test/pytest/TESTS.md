@@ -3361,6 +3361,16 @@ that heap's answer holds the keys.
 
 The shell's fact-qual arms on the default path, late materialization on: a conjunction that also names a non-key column (`k > 100 AND n % 3 <> 0`) must still return heap's rows under the runtime filter coordinator. A premise first shows the qual removes matching rows on heap (100 of 150), so an answer that ignored it would not equal heap's. The late-mat-off test above covers the same shape with late materialization off. Added when this file was renamed to pair with `native_join_runtime_filter.sh` and aligned to the shell's names (#1341).
 
+### `test_a_rescan_rebuilds_the_hash_table_from_the_new_build`
+
+A correlated scalar subquery reruns the coordinator for three growing outer values
+(#2062). Each run must join against its own build rows. The coordinator did not pass
+the changed parameter to its Hash Join, so the join kept the first hash table and
+every later run gave the first run's count. Two arms: a plain subquery, and a
+DISTINCT whose HashAggregate under the Build Tap keeps its own table unless the tap
+passes the parameter down. Premises check the coordinator and that heap's counts
+grow, so a stale table cannot match heap.
+
 
 ## 26. test_check_records.py: every counted assertion is a record
 

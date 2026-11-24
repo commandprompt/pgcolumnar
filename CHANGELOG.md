@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- A join runtime filter under a correlated subquery or a LATERAL join now
+  gives each run its own answer (#2062). Every later run returned the first
+  run's rows, with no error, whenever the outer value changed the build side.
+  The coordinator did not tell its Hash Join, or the Build Tap's source, that a
+  parameter had changed, so the join kept the first hash table. The coordinator
+  and the tap now pass the changed parameters down, and a rescan from the Hash
+  replays the tap's rows instead of discarding them. Before this fix, turning
+  off `pgcolumnar.enable_join_runtime_filter` avoided the fault.
+  `test/native_join_runtime_filter.sh` and `test_native_join_runtime_filter.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
