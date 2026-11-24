@@ -149,9 +149,14 @@ check "a stable operand that raises once reaches the client, as on heap (#2065)"
 check_num "neither failed query leaves a resource or SPI-stack WARNING (#2065)" \
 	"$(grep -c 'WARNING' <<<"$TIMEOUT_OUT$FAIL_OUT")" "0"
 # A plain EXPLAIN executes nothing, so it must not call the operand either. Begin
-# runs under EXPLAIN too, and froze the operand there as well.
+# runs under EXPLAIN too, and froze the operand there as well. cntc() counts its calls
+# in t.n and never raises: a function that raised would roll back its own count, so
+# t.n would read 0 whether EXPLAIN called it or not.
+q "CREATE FUNCTION cntc(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
+	BEGIN PERFORM set_config('t.n', n::text, false); RETURN \$1; END \$\$;" >/dev/null
 check "a plain EXPLAIN does not call a stable operand (#2065)" \
-	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > fail_first(\$1)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > cntc(\$1)" \
 		"SET t.n = '0'" "EXPLAIN (COSTS off) EXECUTE e(0)" "SHOW t.n" | tail -1)" "0"
 # But a plain EXPLAIN EXECUTE still reports a bare bound parameter as pushed down:
 # reading a bound value calls nothing and cannot fail.
@@ -185,6 +190,57 @@ check "a stable function operand still prunes when the scan runs (19 of 20 remov
 		"PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
 		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)" \
 		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "19"
+
+# The scan freezes such an operand once, on its first run, and not again on each
+# later call for a row. cntc() counts its calls: one for the freeze, then one per row
+# the Filter tests, which is the rows it returned plus the rows it removed.
+ONCE="$(psql_m "SET plan_cache_mode = force_generic_plan" \
+	"PREPARE n(int) AS SELECT count(*) FROM t WHERE ts >= cntc(\$1)" \
+	"SET t.n = '0'" "EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) EXECUTE n(39001)" "SHOW t.n")"
+ONCE_ROWS="$(sed -n 's/.*Custom Scan (PgColumnarScan) on t (actual rows=\([0-9]*\).*/\1/p' <<<"$ONCE" | head -1)"
+ONCE_REMOVED="$(sed -n 's/.*Rows Removed by Filter: \([0-9]*\).*/\1/p' <<<"$ONCE" | head -1)"
+if [[ "$ONCE_ROWS" =~ ^[1-9][0-9]*$ && "$ONCE_REMOVED" =~ ^[0-9]+$ ]]; then
+	ONCE_WANT="$(( 1 + ONCE_ROWS + ONCE_REMOVED ))"
+else
+	ONCE_WANT="a plan with rows and Rows Removed by Filter (rows [$ONCE_ROWS], removed [$ONCE_REMOVED])"
+fi
+check "the scan calls a stable operand once to freeze it, then once per row the Filter tests (#2065)" \
+	"$(tail -1 <<<"$ONCE")" "$ONCE_WANT"
+
+# Begin must call nothing for a PL/pgSQL parameter either. PL/pgSQL hands the executor
+# a parameter list with a fetch hook, and that hook evaluates the variable: for a
+# record field that is not assigned it raises. Here the optional filter is off, so
+# the plan's one-time filter is false, the scan never runs, and heap answers 0.
+q "CREATE FUNCTION opt_eq(use_filter bool) RETURNS bigint LANGUAGE plpgsql AS \$\$
+	DECLARE r record; c bigint;
+	BEGIN
+	  IF use_filter THEN SELECT 39500 AS id INTO r; END IF;
+	  SELECT count(*) INTO c FROM t WHERE use_filter AND ts = r.id;
+	  RETURN c;
+	END \$\$;" >/dev/null
+check "a PL/pgSQL record field under a false one-time filter is not fetched at scan set-up (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "SELECT opt_eq(true)" "SELECT opt_eq(false)" \
+		| grep -vx 'SET' | tr '\n' ' ' | sed 's/ $//')" "1 0"
+
+# A projection scan gets the frozen keys mapped onto its own columns. The projection
+# reads [row number, its columns...], so handing it the base table's keys would test
+# the wrong column and skip groups that match. Small stripes, so the planner picks
+# the projection; one literal key and one key frozen at the first run.
+q "CREATE TABLE prsc (k int, payload text) USING pgcolumnar;
+   SELECT pgcolumnar.set_options('prsc', chunk_group_row_limit => 1000, stripe_row_limit => 1000);
+   INSERT INTO prsc SELECT k, 'p' || k FROM generate_series(1, 20000) k ORDER BY md5(k::text);
+   SELECT pgcolumnar.add_projection('prsc', 'byk', ARRAY['k'], ARRAY['k']);
+   ANALYZE prsc;" >/dev/null
+PROJ_SET=("SET pgcolumnar.enable_projection_scan = on" "SET max_parallel_workers_per_gather = 0"
+	"SET pgcolumnar.enable_ungrouped_vector_agg = off" "SET pgcolumnar.enable_group_vectorization = off")
+check "the projection arm's scan uses the projection (premise) (#2065)" \
+	"$(psql_m "${PROJ_SET[@]}" "EXPLAIN (COSTS off) SELECT count(*), sum(k) FROM prsc WHERE k >= 100 AND k <= same(900)" \
+		| grep -c 'Columnar Projection: byk')" "1"
+# Heap answers 801|400500 (k 100..900) and 11|219945 (k 19990..20000).
+check "a projection scan with a key frozen at the first run counts what heap counts (#2065)" \
+	"$(psql_m "${PROJ_SET[@]}" "SELECT count(*), sum(k) FROM prsc WHERE k >= 100 AND k <= same(900)" \
+		"SELECT count(*), sum(k) FROM prsc WHERE k >= 19990 AND k <= same(20000)" | grep -vx 'SET' | tr '\n' ' ' | sed 's/ $//')" \
+	"801|400500 11|219945"
 
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 

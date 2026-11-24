@@ -612,12 +612,18 @@ true until the next version shipped.
   that raised once returned a count where heap fails, and the failed call's
   plancache, snapshot and SPI state leaked as WARNINGs. The error now reaches the
   client. The scan now evaluates such an operand when it first runs, not while
-  the plan is set up, as a btree index scan evaluates its runtime keys. A scan
-  that never runs, such as an `Append` arm that `LIMIT` cuts off, calls nothing.
-  One consequence: a scan that runs on an empty table now raises the error,
-  where heap, which calls the operand once per row, does not. A plain `EXPLAIN`
-  no longer calls the operand; it still reports a bound parameter as pushed
-  down. `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
+  the plan is set up, as a btree index scan evaluates its runtime keys, and it
+  evaluates it once. A scan that never runs, such as an `Append` arm that
+  `LIMIT` cuts off or a branch under a false one-time filter, calls nothing. That
+  includes a PL/pgSQL variable: the scan no longer fetches it at set-up, where a
+  record field that was not assigned raised. One consequence: any scan that runs
+  now raises the operand's error, even when no row would pass the rest of the
+  `WHERE` clause or the table is empty. Heap, which calls the operand once per
+  row it tests, returns no rows there. This covers an operand made only of
+  parameters too, such as `x > 10 / $1` with `$1 = 0`. A plain `EXPLAIN` no
+  longer calls the operand; it still reports a bound parameter of a prepared
+  statement as pushed down. `test/native_param_pushdown.sh` and
+  `test_native_param_pushdown.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

@@ -27,6 +27,9 @@ the planner cannot fold "fn($1)", so that first call is the one the scan makes.
 A scan that is set up but never run must not call the operand at all: an Append arm
 that LIMIT cuts off, or a branch under a false one-time filter. A btree index scan
 evaluates its runtime keys when it first runs, and heap per row, so both answer.
+That includes a PL/pgSQL variable, whose parameter list has a fetch hook that
+evaluates it. The scan freezes the operand once, at its first run, and hands a
+projection scan the keys mapped onto the projection's own columns.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading. A failed query is a `query_error()`, so two failures never agree.
@@ -104,6 +107,25 @@ BOOM = """CREATE FUNCTION boom(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
     BEGIN RAISE EXCEPTION 'boom called'; END $$"""
 SAME = """CREATE FUNCTION same(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
     BEGIN RETURN $1; END $$"""
+# cntc() counts its calls in t.n and never raises. A function that raised would roll
+# back its own count, so t.n would read 0 whether it was called or not.
+CNTC = """CREATE FUNCTION cntc(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
+    DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
+    BEGIN PERFORM set_config('t.n', n::text, false); RETURN $1; END $$"""
+# A PL/pgSQL optional filter: with use_filter false the record r is never assigned,
+# the plan's one-time filter is false, and the scan never runs.
+OPT_EQ = """CREATE FUNCTION opt_eq(use_filter bool) RETURNS bigint LANGUAGE plpgsql AS $$
+    DECLARE r record; c bigint;
+    BEGIN
+      IF use_filter THEN SELECT 39500 AS id INTO r; END IF;
+      SELECT count(*) INTO c FROM t WHERE use_filter AND ts = r.id;
+      RETURN c;
+    END $$"""
+PROJ_SET = ["SET pgcolumnar.enable_projection_scan = on", "SET max_parallel_workers_per_gather = 0",
+            "SET pgcolumnar.enable_ungrouped_vector_agg = off",
+            "SET pgcolumnar.enable_group_vectorization = off"]
+PROJ_LOW = "SELECT count(*), sum(k) FROM prsc WHERE k >= 100 AND k <= same(900)"
+PROJ_HIGH = "SELECT count(*), sum(k) FROM prsc WHERE k >= 19990 AND k <= same(20000)"
 
 
 def _transcript(dsn, statements):
@@ -128,6 +150,19 @@ def _transcript(dsn, statements):
     except psycopg.Error as exc:
         return _failed(exc)
     return lines
+
+
+def _proj_answers(dsn):
+    """-> "count|sum count|sum" for the two projection queries, as psql -At prints them."""
+    _await_up(dsn)
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            for sql in PROJ_SET:
+                conn.execute(sql)
+            return " ".join("|".join("" if v is None else str(v) for v in conn.execute(q).fetchone())
+                            for q in (PROJ_LOW, PROJ_HIGH))
+    except psycopg.Error as exc:
+        return _failed(exc)
 
 
 def _count(lines, needle):
@@ -205,7 +240,8 @@ def pp(pgc_cluster):
         r["fail once"] = _count(fail, "raised: call 1 fails")
         r["warnings"] = (timeout if isinstance(timeout, str) else fail if isinstance(fail, str)
                          else _count(timeout + fail, "WARNING"))
-        expl = _transcript(dsn, [GENERIC, "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > fail_first($1)",
+        _session(dsn, [CNTC])
+        expl = _transcript(dsn, [GENERIC, "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > cntc($1)",
                                  "SET t.n = '0'", "EXPLAIN (COSTS off) EXECUTE e(0)", "SHOW t.n"])
         r["explain calls"] = expl if isinstance(expl, str) else (expl[-1] if expl else query_error("no SHOW"))
         bound = _transcript(dsn, [GENERIC, "PREPARE b(int) AS SELECT count(*) FROM t WHERE ts >= $1",
@@ -222,6 +258,36 @@ def pp(pgc_cluster):
         fn = _transcript(dsn, [GENERIC, "PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)"])
         r["fn removed"] = _field(fn, "Chunk Groups Removed by Filter")
+        # One call to freeze the operand, then one per row the Filter tests.
+        once = _transcript(dsn, [GENERIC, "PREPARE n(int) AS SELECT count(*) FROM t WHERE ts >= cntc($1)",
+                                 "SET t.n = '0'",
+                                 "EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) EXECUTE n(39001)",
+                                 "SHOW t.n"])
+        if isinstance(once, str):
+            r["once calls"] = r["once want"] = once
+        else:
+            rows = next((m.group(1) for l in once for m in [re.search(
+                r"Custom Scan \(PgColumnarScan\) on t \(actual rows=(\d+)", l)] if m), None)
+            removed = next((m.group(1) for l in once for m in [re.search(
+                r"Rows Removed by Filter: (\d+)", l)] if m), None)
+            r["once calls"] = once[-1] if once else query_error("no SHOW")
+            r["once want"] = (str(1 + int(rows) + int(removed)) if rows and int(rows) > 0 and removed
+                              else query_error(f"no rows or Rows Removed by Filter: [{rows}] [{removed}]"))
+        _session(dsn, [OPT_EQ])
+        opt = _transcript(dsn, [GENERIC, "SELECT opt_eq(true)", "SELECT opt_eq(false)"])
+        r["plpgsql one-time off"] = opt if isinstance(opt, str) else " ".join(opt)
+        _session(dsn, ["CREATE TABLE prsc (k int, payload text) USING pgcolumnar",
+                       "SELECT pgcolumnar.set_options('prsc', chunk_group_row_limit => 1000, "
+                       "stripe_row_limit => 1000)",
+                       "INSERT INTO prsc SELECT k, 'p' || k FROM generate_series(1, 20000) k "
+                       "ORDER BY md5(k::text)",
+                       "SELECT pgcolumnar.add_projection('prsc', 'byk', ARRAY['k'], ARRAY['k'])",
+                       "ANALYZE prsc"])
+        pplan = _session(dsn, PROJ_SET + [f"EXPLAIN (COSTS off) {PROJ_LOW}"])
+        r["proj premise"] = (pplan if isinstance(pplan, str)
+                             else str(sum(1 for l in pplan[-1] if "Columnar Projection: byk" in l)))
+        # Heap answers 801|400500 (k 100..900) and 11|219945 (k 19990..20000).
+        r["proj answers"] = _proj_answers(dsn)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -303,6 +369,25 @@ def test_param_pushdown_a_scan_under_a_false_one_time_filter_calls_no_stable_ope
 def test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_runs(pp, expect):
     expect.text(pp["fn removed"], "19",
                 "a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_is_called_once_to_freeze_then_once_per_row(pp, expect):
+    expect.text(pp["once calls"], pp["once want"],
+                "the scan calls a stable operand once to freeze it, then once per row the Filter tests (#2065)")
+
+
+def test_param_pushdown_a_plpgsql_record_field_under_a_false_one_time_filter_is_not_fetched(pp, expect):
+    expect.text(pp["plpgsql one-time off"], "1 0",
+                "a PL/pgSQL record field under a false one-time filter is not fetched at scan set-up (#2065)")
+
+
+def test_param_pushdown_the_projection_arm_uses_the_projection(pp, expect):
+    expect.text(pp["proj premise"], "1", "the projection arm's scan uses the projection (premise) (#2065)")
+
+
+def test_param_pushdown_a_projection_scan_with_a_first_run_key_counts_what_heap_counts(pp, expect):
+    expect.text(pp["proj answers"], "801|400500 11|219945",
+                "a projection scan with a key frozen at the first run counts what heap counts (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

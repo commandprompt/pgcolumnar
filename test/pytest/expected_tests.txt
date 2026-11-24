@@ -1928,4 +1928,9 @@ guard_tests 895
 # cluster_tests 5389 -> 5392 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-cluster_tests 5392
+# cluster_tests 5392 -> 5396 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
+# filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
+# what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
+# 5396 tests collected.
+cluster_tests 5396

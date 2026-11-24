@@ -1282,6 +1282,11 @@ pgcolumnar_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
  * run its side effects, or raise, where heap calls nothing. An unbound
  * parameter (EXPLAIN (GENERIC_PLAN)) is left as it is. Returns NULL when the
  * operand is not frozen.
+ *
+ * A parameter list with a paramFetch hook is not read here either: the hook is
+ * a call. PL/pgSQL's evaluates the variable, and for a record field that is not
+ * assigned, or whose record changed type under a cached plan, it raises. Such
+ * an operand waits for the first run, like a function call does.
  */
 static Node *
 pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
@@ -1290,7 +1295,6 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 	Param	   *param;
 	ParamListInfo params = ps->state->es_param_list_info;
 	ParamExternData *prm;
-	ParamExternData prmdata;
 
 	if (IsA(bare, RelabelType))
 		bare = (Node *) ((RelabelType *) bare)->arg;
@@ -1300,10 +1304,9 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 	if (params == NULL || param->paramid <= 0 || param->paramid > params->numParams)
 		return NULL;
 	if (params->paramFetch != NULL)
-		prm = params->paramFetch(params, param->paramid, false, &prmdata);
-	else
-		prm = &params->params[param->paramid - 1];
-	if (prm == NULL || prm->ptype != param->paramtype)
+		return NULL;
+	prm = &params->params[param->paramid - 1];
+	if (prm->ptype != param->paramtype)
 		return NULL;
 	return pgcolumnar_make_frozen_const(bare, prm->value, prm->isnull);
 }

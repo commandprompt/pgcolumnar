@@ -12394,7 +12394,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
 
-The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter. A scan that is set up but never run calls no stable operand: not one that LIMIT cuts off, and not one under a false one-time filter. A stable function operand, frozen when the scan first runs, still prunes 19 of 20 groups.
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter. A scan that is set up but never run calls no stable operand: not one that LIMIT cuts off, and not one under a false one-time filter. A stable function operand, frozen when the scan first runs, still prunes 19 of 20 groups, and the scan calls it once to freeze it and then once per row its Filter tests. A PL/pgSQL record field under a false one-time filter is not fetched at scan set-up. A projection scan with a key frozen at the first run uses the projection and counts what heap counts.
 
 ### Every test
 
@@ -12419,6 +12419,10 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_param_pushdown_a_scan_that_limit_cuts_off_calls_no_stable_operand` | a columnar scan that LIMIT cuts off never calls its stable operand (#2065) |
 | `test_param_pushdown_a_scan_under_a_false_one_time_filter_calls_no_stable_operand` | a columnar scan under a false one-time filter never calls its stable operand (#2065) |
 | `test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_runs` | a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065) |
+| `test_param_pushdown_a_stable_operand_is_called_once_to_freeze_then_once_per_row` | the scan calls a stable operand once to freeze it, then once per row the Filter tests (#2065) |
+| `test_param_pushdown_a_plpgsql_record_field_under_a_false_one_time_filter_is_not_fetched` | a PL/pgSQL record field under a false one-time filter is not fetched at scan set-up (#2065) |
+| `test_param_pushdown_the_projection_arm_uses_the_projection` | the projection arm's scan uses the projection (premise) (#2065) |
+| `test_param_pushdown_a_projection_scan_with_a_first_run_key_counts_what_heap_counts` | a projection scan with a key frozen at the first run counts what heap counts (#2065) |
 | `test_param_pushdown_the_backend_is_alive` | backend alive |
 
 ## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's
