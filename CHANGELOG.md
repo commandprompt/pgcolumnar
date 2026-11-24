@@ -615,6 +615,12 @@ true until the next version shipped.
   row would take its values past 256 MiB, summed over its columns, so wide rows
   make row groups with fewer than `stripe_row_limit` rows. docs/limitations.md
   ("Write size limits"). `test/large_values.sh` and `test_large_values.py`.
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
+
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
