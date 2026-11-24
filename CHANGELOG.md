@@ -616,6 +616,12 @@ true until the next version shipped.
   the resource owner that opened it, so a subtransaction abort closes only its
   own handles; a scan or cursor of the outer statement keeps reading.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
+
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
