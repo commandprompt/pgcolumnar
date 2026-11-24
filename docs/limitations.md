@@ -663,8 +663,9 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`.
 - Two writers can deadlock on one table with no maintenance running (#2184). A
-  writer holds two locks to commit: the delete lock of each row group it deletes
-  from, and the table's storage-row lock, which every flush of new rows takes. It
+  writer holds two locks to commit. One is the delete lock of each row group it
+  deletes from. The other is the table's storage-row lock, which every flush of
+  new rows takes. It
   can take them in either order. A transaction that deletes, scans and then
   inserts takes the delete lock first; one that inserts, scans and then deletes
   takes the storage-row lock first. When two such transactions meet, one gets
@@ -676,7 +677,7 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   can still get 40P01 when it waits inside a deadlock between two writers. A steady
   stream of short delete transactions can keep one lock busy at every try. After
   `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
-  `55P03` and changes nothing, and the maintenance daemon logs a skip and tries at
+  `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
   its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
   its row groups wait for it to commit.
 
