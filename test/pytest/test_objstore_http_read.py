@@ -26,7 +26,8 @@ F  interim 1xx answers (#2090): a server that sends 100 Continue or 103 Early Hi
    ahead of each final answer is read as if it sent none, on a read's HEAD and ranged
    GETs, on an s3 glob's ListObjectsV2, and on the Iceberg REST catalog's requests.
    The stdlib server cannot send them, so this file runs its own raw-socket server
-   in a thread, with its own fixture.
+   in a thread, with its own fixture. 101 Switching Protocols is refused, not passed
+   over: the client never asks to switch.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
 
@@ -1128,15 +1129,21 @@ def test_the_server_survives(ohr, expect):
 # final answer, even unasked. The read path took the first 1xx as the final answer.
 # The first path segment picks what goes ahead of every answer: inone nothing (the
 # control), i100 100 Continue, i103 103 Early Hints with a Link header, iboth both.
+# i101 sends 101 Switching Protocols and then the normal answer, so a client that
+# passed over the 101 would read every row: the client never sends Upgrade, so a 101
+# is refused, as issue #2090 asks.
 # Under it the server answers a ranged object, an s3 ListObjectsV2 of its bucket
 # (the segment is the bucket) and the REST catalog paths iceberg_rest_namespaces asks.
 INTERIM_SCHEMA = "pgc_objstore_http_interim"
 _CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
 _EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
-INTERIM_AHEAD = {"inone": b"", "i100": _CONT, "i103": _EARLY, "iboth": _CONT + _EARLY}
+_SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+INTERIM_AHEAD = {"inone": b"", "i100": _CONT, "i103": _EARLY, "iboth": _CONT + _EARLY,
+                 "i101": _SWITCH}
 # A 1xx read as a final answer with Connection: close waited for a body that never
 # ended, so every reading is bounded.
 INTERIM_TIMEOUT = "SET statement_timeout = '20s'"
+SWITCH_REFUSAL = "switched protocols with HTTP 101"
 
 
 def _interim_serve(conn, root):
@@ -1192,9 +1199,10 @@ def _interim_serve(conn, root):
         conn.close()
 
 
-def _interim_read(dsn, sql):
+def _interim_read(dsn, sql, needle=None):
     """`sql` after INTERIM_TIMEOUT on one connection -> "no error: <rows>", or the
-    SQLSTATE and primary message it failed with."""
+    SQLSTATE and primary message it failed with. A message that holds `needle` is
+    cut to it, as the shell's refusal_of does, so the URL's port does not matter."""
     try:
         with _connect(dsn) as conn:
             conn.execute(INTERIM_TIMEOUT)
@@ -1202,7 +1210,10 @@ def _interim_read(dsn, sql):
     except psycopg.Error as exc:
         if not exc.sqlstate:
             return query_error(_message(exc))
-        return f"{exc.sqlstate}: {exc.diag.message_primary or ''}"
+        msg = exc.diag.message_primary or ""
+        if needle is not None and needle in msg:
+            msg = needle
+        return f"{exc.sqlstate}: {msg}"
     return "no error: " + " ".join(" ".join(str(v) for v in row) for row in rows)[:200]
 
 
@@ -1257,6 +1268,9 @@ def interim(pgc_cluster):
         for m in ("inone", "i103", "iboth"):
             r[("glob", m)] = _interim_read(dsn, glob % m)
             r[("rest", m)] = _interim_read(dsn, rest % m)
+        r[("read", "i101")] = _interim_read(dsn, rows % "i101", SWITCH_REFUSAL)
+        r[("glob", "i101")] = _interim_read(dsn, glob % "i101", SWITCH_REFUSAL)
+        r[("rest", "i101")] = _interim_read(dsn, rest % "i101", SWITCH_REFUSAL)
         yield r
     finally:
         try:
@@ -1347,3 +1361,24 @@ def test_a_rest_catalog_answering_after_100_and_103_lists_its_namespace(interim,
         return
     expect.text(interim[("rest", "iboth")], "no error: interim_ns",
                 "F: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace")
+
+
+def test_a_read_answered_101_switching_protocols_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a read whose HEAD is answered 101 Switching Protocols first is refused")
+
+
+def test_an_s3_glob_answered_101_switching_protocols_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("glob", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: an s3 glob whose LIST is answered 101 Switching Protocols first is refused")
+
+
+def test_a_rest_catalog_answering_after_101_switching_protocols_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a REST catalog whose answer follows 101 Switching Protocols is refused")

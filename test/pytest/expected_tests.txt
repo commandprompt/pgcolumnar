@@ -1912,4 +1912,21 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5387
+# cluster_tests 5376 -> 5390 for #2090 in test_objstore_http_read.py: 11 tests for interim 1xx answers
+# (a premise, three controls, seven reads past 100 and 103) and 3 that refuse 101 Switching Protocols:
+#   test_the_interim_answer_server_is_up
+#   test_a_read_from_the_interim_answer_server_that_sends_none_reads_every_row
+#   test_a_read_answered_100_continue_first_reads_every_row
+#   test_a_read_answered_103_early_hints_first_reads_every_row
+#   test_a_read_answered_100_and_then_103_first_reads_every_row
+#   test_an_s3_glob_from_the_server_that_sends_no_interim_answer_reads_every_row
+#   test_an_s3_glob_answered_103_early_hints_first_reads_every_row
+#   test_an_s3_glob_answered_100_and_103_first_reads_every_row
+#   test_the_rest_catalog_that_sends_no_interim_answer_lists_its_namespace
+#   test_a_rest_catalog_answering_after_103_early_hints_lists_its_namespace
+#   test_a_rest_catalog_answering_after_100_and_103_lists_its_namespace
+#   test_a_read_answered_101_switching_protocols_first_is_refused
+#   test_an_s3_glob_answered_101_switching_protocols_first_is_refused
+#   test_a_rest_catalog_answering_after_101_switching_protocols_is_refused
+# by collection: 6284 tests collected, less guard_tests 894; the cluster files alone collect 5390.
+cluster_tests 5390

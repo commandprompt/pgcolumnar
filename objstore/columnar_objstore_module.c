@@ -1266,6 +1266,10 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
  * Early Hints. An interim answer has no body, so only its head is read. Every
  * request reads its answer here, not with os_read_head (#2090). Returns false
  * on the same stale-connection condition as os_read_head.
+ *
+ * 101 Switching Protocols is refused, not passed over. It answers only a
+ * request that sent Upgrade (RFC 9110 section 15.2.2), and this client never
+ * sends one, so what follows it on the connection is not this request's answer.
  */
 static bool
 os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
@@ -1274,6 +1278,12 @@ os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
 	{
 		if (!os_read_head(h, resp))
 			return false;
+		if (resp->status == 101)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("columnar: \"%s\" switched protocols with HTTP 101",
+							h->url),
+					 errdetail("This client never asks to switch protocols.")));
 	} while (resp->status >= 100 && resp->status < 200);
 	return true;
 }

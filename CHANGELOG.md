@@ -615,6 +615,8 @@ true until the next version shipped.
   section 15.2 says a client must accept such answers even when it did not ask
   for them, and CDNs send 103 unasked. The reader now passes over every 1xx
   answer and reads the final one, as the export path already did.
+  `101 Switching Protocols` is now refused with `switched protocols with HTTP
+  101`, on reads and exports alike, because the client never asks to switch.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into

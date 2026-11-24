@@ -39,7 +39,8 @@
 #      or 103 Early Hints ahead of each final answer is read as if it sent none,
 #      on the HEAD and ranged GETs of a read, on the ListObjectsV2 of an s3 glob,
 #      and on the Iceberg REST catalog's requests. A small raw-socket server
-#      written here sends them, since the stdlib server cannot.
+#      written here sends them, since the stdlib server cannot. 101 Switching
+#      Protocols is refused, not passed over: the client never asks to switch.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -739,7 +740,9 @@ check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 # answer and failed with "unexpected HTTP status 100". The first path segment
 # picks what the server sends ahead of every answer: inone sends nothing (the
 # control), i100 sends 100 Continue, i103 sends 103 Early Hints with a Link
-# header, iboth sends both. Under it the server serves a ranged object, an s3
+# header, iboth sends both. i101 sends 101 Switching Protocols and then the
+# normal answer, so a client that passed over the 101 would read every row: the
+# client never sends Upgrade, so a 101 is refused, as issue #2090 asks. Under it the server serves a ranged object, an s3
 # ListObjectsV2 of its bucket (the segment is the bucket), and the three REST
 # catalog paths iceberg_rest_namespaces asks for.
 mkdir -p "$PGC_WORKDIR/interim"
@@ -749,7 +752,9 @@ import os, re, socket, sys, threading
 root, port = sys.argv[1], int(sys.argv[2])
 EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
 CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
-INTERIM = {"inone": b"", "i100": CONT, "i103": EARLY, "iboth": CONT + EARLY}
+SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+INTERIM = {"inone": b"", "i100": CONT, "i103": EARLY, "iboth": CONT + EARLY,
+           "i101": SWITCH}
 
 def reply(c, mode, status, body, extra=b"", head=False):
     c.sendall(INTERIM[mode] + b"HTTP/1.1 " + status + b"\r\nContent-Length: "
@@ -826,7 +831,7 @@ psql_run "CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_parquet
           OPTIONS (endpoint '$IBASE', region 'pgc-test-1');
           CREATE USER MAPPING FOR postgres SERVER isrv
           OPTIONS (access_key_id 'PGCTESTKEYID', secret_access_key 'pgctest-secret');"
-for m in inone i100 i103 iboth; do
+for m in inone i100 i103 iboth i101; do
 	psql_run "CREATE FOREIGN TABLE glob_$m ($COLDEFS) SERVER isrv OPTIONS (path 's3://$m/*.parquet');"
 done
 # A bounded statement: a 1xx read as a final answer with Connection: close
@@ -853,6 +858,13 @@ check "F: a REST catalog whose answers each follow 103 Early Hints lists its nam
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i103')" "@@")" "no error: interim_ns"
 check "F: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/iboth')" "@@")" "no error: interim_ns"
+F_101="switched protocols with HTTP 101"
+check "F: a read whose HEAD is answered 101 Switching Protocols first is refused" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i101/fixture.parquet') AS t($COLDEFS)" "$F_101")" "08P01: $F_101"
+check "F: an s3 glob whose LIST is answered 101 Switching Protocols first is refused" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_i101" "$F_101")" "08P01: $F_101"
+check "F: a REST catalog whose answer follows 101 Switching Protocols is refused" \
+	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i101')" "$F_101")" "08P01: $F_101"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:
