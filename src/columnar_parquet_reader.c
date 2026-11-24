@@ -1754,6 +1754,7 @@ typedef struct PqPageHeader
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
 	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
+	bool		has_data_hdr;	/* a DataPageHeader (v1 or v2) was parsed (#2077) */
 } PqPageHeader;
 
 /*
@@ -1900,7 +1901,10 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				break;
 			case 5:				/* DataPageHeader (v1) */
 				if (pq_page_struct(r, h, ft))
+				{
+					h->has_data_hdr = true;
 					parse_data_page_header(r, h, false);
+				}
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
@@ -1927,7 +1931,10 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				}
 			case 8:				/* DataPageHeaderV2 */
 				if (pq_page_struct(r, h, ft))
+				{
+					h->has_data_hdr = true;
 					parse_data_page_header(r, h, true);
+				}
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
@@ -2313,9 +2320,9 @@ pq_source_open(const char *path, PqSource *src, PqFile *pf)
 #define PQ_PAGE_HDR_WIN_MAX (16 * 1024 * 1024)
 
 /*
- * The most data pages with no values that may follow one another in a column
- * chunk (#2077). In the files tested, pyarrow wrote at most one between pages
- * with values, and pyarrow itself stopped reading a chunk at a run of three.
+ * The most pages with no values that may follow one another in a column chunk
+ * (#2077). In the files tested, pyarrow wrote at most one between pages with
+ * values. pyarrow 23 itself stops reading a chunk at a run of two or more.
  */
 #define PQ_MAX_EMPTY_DATA_PAGE_RUN 16
 
@@ -2435,21 +2442,39 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		 *
 		 * A data page with no values is valid too (#2077): pyarrow writes one
 		 * for a dictionary-encoded list column when it flushes pages often. It
-		 * is accepted when it has a body, so the walk moves forward by more than
-		 * a header, and it is skipped below without decoding. A run of more than
-		 * PQ_MAX_EMPTY_DATA_PAGE_RUN of them is refused, so a crafted file cannot
-		 * walk a large region a few bytes at a time. A page with values resets
-		 * the run, and those pages are bounded by ch->num_values.
+		 * is decoded like any other data page and adds no entries, so the reader
+		 * reads it where pyarrow does and refuses it where pyarrow does (a v1
+		 * page of a nullable column with no body has no level length to read).
+		 * A run of more than PQ_MAX_EMPTY_DATA_PAGE_RUN pages with no values is
+		 * refused, so a crafted file cannot walk a large region a few bytes at a
+		 * time. A page with values resets the run, and those pages are bounded
+		 * by ch->num_values.
+		 *
+		 * A data page must carry its DataPageHeader, the only source of its
+		 * num_values. Without one it parses as an empty page, and decoding it
+		 * as one would drop its values silently. pyarrow refuses it too, and so
+		 * a run of zero bytes, each a header with no fields, is refused at its
+		 * first byte.
+		 *
+		 * Any other page type (INDEX_PAGE, or one this reader does not know)
+		 * holds no values for the chunk. It counts toward the run and is
+		 * stepped over below, as pyarrow steps over it.
 		 */
 		if (h.type == PQ_PAGE_DICTIONARY)
 		{
 			if (++nDictPages > 1)
 				return false;
 		}
-		else if (h.num_values > 0)
-			nEmptyRun = 0;
-		else if (h.num_values < 0 || h.compressed_size <= 0 ||
-				 ++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
+		else if (h.type == PQ_PAGE_DATA || h.type == PQ_PAGE_DATA_V2)
+		{
+			if (!h.has_data_hdr || h.num_values < 0)
+				return false;
+			if (h.num_values > 0)
+				nEmptyRun = 0;
+			else if (++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
+				return false;
+		}
+		else if (++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
 			return false;
 
 		/*
@@ -2477,8 +2502,9 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 			(int64) h.compressed_size > src->len - pos - (int64) hdrlen)
 			return false;
 
-		/* a data page with no values adds no entries: step over it */
-		if (h.type != PQ_PAGE_DICTIONARY && h.num_values == 0)
+		/* a page that is neither a dictionary nor a data page: step over it */
+		if (h.type != PQ_PAGE_DICTIONARY && h.type != PQ_PAGE_DATA &&
+			h.type != PQ_PAGE_DATA_V2)
 		{
 			pos += hdrlen + h.compressed_size;
 			continue;

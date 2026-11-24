@@ -5432,10 +5432,20 @@ native_parquet_stack	native_parquet_stack	backend survived the valid file	15;16;
 native_parquet_stack	native_parquet_stack	nested-struct footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	read_parquet rejects the nested-struct footer the same way	15;16;17;18;19	2026-10-22	columnar_thrift.c: PgColumnarThriftSkip's check_stack_depth() removed, so a nested-struct footer is not bounded
 native_parquet_stack	native_parquet_stack	schema-chain footer raises stack-depth, not SIGSEGV	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: walk_schema's check_stack_depth() removed, so a schema chain is not bounded
+native_parquet_streaming	native_parquet_streaming	a DATA_PAGE with no DataPageHeader is rejected, not skipped	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: a DATA_PAGE without a DataPageHeader no longer refused
 native_parquet_streaming	native_parquet_streaming	a data page with no values (pyarrow list column) reads	15;16;17;18;19	2026-11-24	main before #2077: the page loop refuses every data page with no values
+native_parquet_streaming	native_parquet_streaming	a data page with no values (snappy list<int64> column) reads	15;16;17;18;19	2026-11-24	main before #2077: the page loop refuses every data page with no values
 native_parquet_streaming	native_parquet_streaming	a run of 1000 empty data pages is rejected	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: the limit on a run of data pages with no values removed
+native_parquet_streaming	native_parquet_streaming	a run of 16 empty data pages reads	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: the empty-page run limit tested with >= in place of >;main before #2077: the page loop refuses every data page with no values
+native_parquet_streaming	native_parquet_streaming	a run of 17 INDEX_PAGEs is rejected	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: PQ_MAX_EMPTY_DATA_PAGE_RUN 16 raised to 17
+native_parquet_streaming	native_parquet_streaming	a run of 17 empty data pages is rejected	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: PQ_MAX_EMPTY_DATA_PAGE_RUN 16 raised to 17
 native_parquet_streaming	native_parquet_streaming	a second dictionary page in a chunk is rejected	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the one-dictionary-page-per-chunk guard removed
 native_parquet_streaming	native_parquet_streaming	all-null column (empty dictionary page) still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	an INDEX_PAGE between data pages is stepped over	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: an INDEX_PAGE decoded as a data page instead of stepped over;main before #2077: the page loop refuses every data page with no values
+native_parquet_streaming	native_parquet_streaming	an empty data page with a garbage body is rejected	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: an empty data page stepped over instead of decoded
+native_parquet_streaming	native_parquet_streaming	an empty v1 page with no body is rejected on a nullable column	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: an empty data page stepped over instead of decoded
+native_parquet_streaming	native_parquet_streaming	an empty v1 page with no body reads on a REQUIRED column	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: an empty data page with no body refused again;main before #2077: the page loop refuses every data page with no values
+native_parquet_streaming	native_parquet_streaming	an empty v2 page with no body reads	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: an empty data page with no body refused again;main before #2077: the page loop refuses every data page with no values
 native_parquet_streaming	native_parquet_streaming	backend survived the crafted page areas	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: the second-dictionary-page refusal becomes abort()
 native_parquet_streaming	native_parquet_streaming	backend survived the failed read	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	negative page offset is rejected by the offset check	15;16;17;18;19	2026-10-22	columnar_parquet_reader.c: pq_read_page_header no longer refuses a negative page offset
@@ -5451,6 +5461,7 @@ native_parquet_streaming	native_parquet_streaming	streaming: a full scan decodes
 native_parquet_streaming	native_parquet_streaming	streaming: full scan content is correct	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	streaming: rescan under a nested loop is correct	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	the uncompressed source file still reads	15;16;17;18;19	never	-
+native_parquet_streaming	native_parquet_streaming	two runs of 10 empty data pages read (the limit is per run)	15;16;17;18;19	2026-11-24	columnar_parquet_reader.c: a data page with values no longer resets the empty-page run;main before #2077: the page loop refuses every data page with no values
 native_parquet_streaming	native_parquet_streaming	unparseable page header is rejected	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	v2 level lengths past the page are rejected	15;16;17;18;19	never	-
 native_parquet_streaming	native_parquet_streaming	value read of the sparse file fails cleanly	15;16;17;18;19	never	-

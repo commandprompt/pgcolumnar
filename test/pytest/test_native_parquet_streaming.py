@@ -30,6 +30,7 @@ CRAFTER = pathlib.Path(__file__).resolve().parent.parent / "craft_parquet_stream
 NO_PYARROW = "pyarrow not available; streaming suite needs it"
 NO_SPARSE = "could not build the oversized sparse file"
 DECODE = "could not decode Parquet column "
+REFUSED = "ERROR:  XX001: could not decode Parquet column 0 in row group 0"
 
 
 def _message(exc):
@@ -88,6 +89,24 @@ def _errtext(dsn, sql, timeout=None):
     if not caught.sqlstate:
         return query_error("no refusal: the connection was lost")
     return "ERROR:  " + (caught.diag.message_primary or "")
+
+
+def _errcode(dsn, sql):
+    """-> "ERROR:  <SQLSTATE>: <message>" for the error SQL raised, as psql prints it
+    with VERBOSITY verbose, or NO ERROR. The page loop's refusals are documented as
+    XX001, so a check on one asserts the code as well as the text."""
+    _wait_up(dsn)
+    caught = None
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        caught = exc
+    if caught is None:
+        return "NO ERROR"
+    if not caught.sqlstate:
+        return query_error("no refusal: the connection was lost")
+    return "ERROR:  " + caught.sqlstate + ": " + (caught.diag.message_primary or "")
 
 
 def _decodes(dsn, sql):
@@ -164,10 +183,17 @@ def pqs(pgc_cluster, server_dir):
                                   f"AS t(c int)", sep=" ")
         r["empty page"] = _rows(dsn, f"SELECT string_agg(coalesce(ls::text, 'NULL'), ' ') FROM "
                                      f"pgcolumnar.read_parquet('{w}/empty_data_page.parquet') AS t(ls text[])")
-        r["one empty"] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
-                                    f"pgcolumnar.read_parquet('{w}/one_empty_page.parquet') AS t(id int)", sep=" ")
-        r["empty run"] = _errtext(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/empty_page_run.parquet') "
-                                       f"AS t(id int)")
+        r["empty snappy"] = _rows(dsn, f"SELECT string_agg(coalesce(li::text, 'NULL'), ' ') FROM "
+                                       f"pgcolumnar.read_parquet('{w}/empty_page_snappy.parquet') AS t(li bigint[])")
+        for key, name in (("one empty", "one_empty_page"), ("run16", "empty_run16"),
+                          ("runs 10 10", "empty_runs_10_10"), ("nobody v1 req", "nobody_v1_req"),
+                          ("nobody v2", "nobody_v2"), ("index page", "index_page")):
+            r[key] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
+                                f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)", sep=" ")
+        for key, name in (("empty run", "empty_page_run"), ("run17", "empty_run17"),
+                          ("nobody v1 opt", "nobody_v1_opt"), ("garbage body", "garbage_body"),
+                          ("index run17", "index_run17"), ("nohdr loss", "nohdr_loss")):
+            r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
         r["survived crafted"] = _survived(dsn, pgc_cluster, mid)
         r["plain"] = _rows(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('{w}/plain.parquet') "
                                 f"AS t(id int)", sep=" ")
@@ -309,6 +335,14 @@ def test_parquet_streaming_data_page_with_no_values_reads(request, expect):
                     "a data page with no values (pyarrow list column) reads")
 
 
+def test_parquet_streaming_data_page_with_no_values_snappy_reads(request, expect):
+    """#2077 acceptance: the compressed variant, a dictionary list<int64> column."""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("empty snappy", r["crafted"]), "{1,2} NULL {3} {}",
+                    "a data page with no values (snappy list<int64> column) reads")
+
+
 def test_parquet_streaming_one_empty_data_page_between_data_pages_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
@@ -319,8 +353,76 @@ def test_parquet_streaming_one_empty_data_page_between_data_pages_reads(request,
 def test_parquet_streaming_run_of_empty_data_pages_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("empty run", r["crafted"]), "ERROR:  could not decode Parquet column 0 in row group 0",
-                    "a run of 1000 empty data pages is rejected")
+        expect.text(r.get("empty run", r["crafted"]), REFUSED, "a run of 1000 empty data pages is rejected")
+
+
+def test_parquet_streaming_run_of_16_empty_data_pages_reads(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("run16", r["crafted"]), "200 19900", "a run of 16 empty data pages reads")
+
+
+def test_parquet_streaming_run_of_17_empty_data_pages_is_rejected(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("run17", r["crafted"]), REFUSED, "a run of 17 empty data pages is rejected")
+
+
+def test_parquet_streaming_two_runs_of_10_empty_data_pages_read(request, expect):
+    """a page with values resets the run: the limit is 16 in a row, not 16 per chunk"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("runs 10 10", r["crafted"]), "200 19900",
+                    "two runs of 10 empty data pages read (the limit is per run)")
+
+
+def test_parquet_streaming_empty_v1_page_without_body_reads_when_required(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("nobody v1 req", r["crafted"]), "200 19900",
+                    "an empty v1 page with no body reads on a REQUIRED column")
+
+
+def test_parquet_streaming_empty_v2_page_without_body_reads(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("nobody v2", r["crafted"]), "200 19900", "an empty v2 page with no body reads")
+
+
+def test_parquet_streaming_empty_v1_page_without_body_is_rejected_when_nullable(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("nobody v1 opt", r["crafted"]), REFUSED,
+                    "an empty v1 page with no body is rejected on a nullable column")
+
+
+def test_parquet_streaming_empty_data_page_with_garbage_body_is_rejected(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("garbage body", r["crafted"]), REFUSED,
+                    "an empty data page with a garbage body is rejected")
+
+
+def test_parquet_streaming_index_page_is_stepped_over(request, expect):
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("index page", r["crafted"]), "200 19900",
+                    "an INDEX_PAGE between data pages is stepped over")
+
+
+def test_parquet_streaming_run_of_17_index_pages_is_rejected(request, expect):
+    """an INDEX_PAGE holds no values, so it counts toward the run limit"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("index run17", r["crafted"]), REFUSED, "a run of 17 INDEX_PAGEs is rejected")
+
+
+def test_parquet_streaming_data_page_without_header_is_rejected(request, expect):
+    """skipping the page would read 150 rows with ids 50..99 silently gone"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("nohdr loss", r["crafted"]), REFUSED,
+                    "a DATA_PAGE with no DataPageHeader is rejected, not skipped")
 
 
 def test_parquet_streaming_backend_survived_the_crafted_page_areas(request, expect):

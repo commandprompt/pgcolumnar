@@ -609,11 +609,13 @@ true until the next version shipped.
   page with no values (#2077). Such a page is valid, and pyarrow writes one for a
   dictionary-encoded list column when it flushes pages often. The reader refused
   every data page with no values, so the whole read failed with `could not decode
-  Parquet column 0 in row group 0`. The reader now steps over such a page when it
-  has a body. It still refuses an empty page with no body, so a zero-filled area
-  stays a fast refusal, and it refuses more than 16 empty data pages in a row.
-  In every file tested, pyarrow wrote at most one in a row. `test/native_parquet_streaming.sh` and
-  `test_native_parquet_streaming.py`.
+  Parquet column 0 in row group 0`. The reader now decodes such a page like any
+  other, so it reads and refuses the same empty pages pyarrow 23 does. It refuses
+  a data page with no DataPageHeader, which would otherwise drop that page's
+  values, so a zero-filled area stays a fast refusal. It refuses more than 16
+  pages with no values in a row, and steps over an INDEX_PAGE. In every file
+  tested, pyarrow wrote at most one empty page in a row.
+  `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

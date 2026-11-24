@@ -12856,7 +12856,7 @@ Every test makes one check under the shell's name. Each parquet_schema or read_p
 
 ## 320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time
 
-The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
+The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, files with pages that hold no values (#2077), and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
 
 ### Every test
 
@@ -12879,8 +12879,19 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
 | `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
 | `test_parquet_streaming_data_page_with_no_values_reads` | a data page with no values (pyarrow list column) reads |
+| `test_parquet_streaming_data_page_with_no_values_snappy_reads` | a data page with no values (snappy list<int64> column) reads |
 | `test_parquet_streaming_one_empty_data_page_between_data_pages_reads` | one empty data page between two data pages reads |
 | `test_parquet_streaming_run_of_empty_data_pages_is_rejected` | a run of 1000 empty data pages is rejected |
+| `test_parquet_streaming_run_of_16_empty_data_pages_reads` | a run of 16 empty data pages reads |
+| `test_parquet_streaming_run_of_17_empty_data_pages_is_rejected` | a run of 17 empty data pages is rejected |
+| `test_parquet_streaming_two_runs_of_10_empty_data_pages_read` | two runs of 10 empty data pages read (the limit is per run) |
+| `test_parquet_streaming_empty_v1_page_without_body_reads_when_required` | an empty v1 page with no body reads on a REQUIRED column |
+| `test_parquet_streaming_empty_v2_page_without_body_reads` | an empty v2 page with no body reads |
+| `test_parquet_streaming_empty_v1_page_without_body_is_rejected_when_nullable` | an empty v1 page with no body is rejected on a nullable column |
+| `test_parquet_streaming_empty_data_page_with_garbage_body_is_rejected` | an empty data page with a garbage body is rejected |
+| `test_parquet_streaming_index_page_is_stepped_over` | an INDEX_PAGE between data pages is stepped over |
+| `test_parquet_streaming_run_of_17_index_pages_is_rejected` | a run of 17 INDEX_PAGEs is rejected |
+| `test_parquet_streaming_data_page_without_header_is_rejected` | a DATA_PAGE with no DataPageHeader is rejected, not skipped |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |

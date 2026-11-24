@@ -74,6 +74,18 @@ errtext() {
 	echo "$out"
 }
 
+# errcode QUERY -> the raised ERROR line with its SQLSTATE ("ERROR:  XX001: ..."), or
+# "NO ERROR". The page loop's refusals are documented as XX001, so a check on one
+# asserts the code as well as the text.
+errcode() {
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -X -At -v VERBOSITY=verbose -c "$1" 2>&1 | grep -m1 '^ERROR:')"
+	[ -z "$out" ] && out="NO ERROR"
+	echo "$out"
+}
+
 # decodes QUERY -> "OK" when QUERY raised the page loop's refusal ("could not decode
 # Parquet column"), else the ERROR line it did raise, or "NO ERROR". Any ERROR used to
 # count: a refusal from some other layer passed as the page loop's.
@@ -163,18 +175,32 @@ check "all-null column (empty dictionary page) still reads" \
 
 # #2077: a data page with no values is valid, and pyarrow writes one for a
 # dictionary-encoded list column when it flushes pages often. The progress guard
-# refused every such page, so the whole file failed to read. A data page with no
-# values is accepted when it has a body, so the loop still moves forward; a long
-# run of them is refused, so the zero-filled area above stays a fast refusal.
+# refused every such page, so the whole file failed to read. The page loop now
+# decodes an empty data page like any other, so it reads what pyarrow reads and
+# refuses what pyarrow refuses. More than 16 in a row are refused, so a crafted file
+# cannot make the loop walk a large area a few bytes at a time. The files are
+# described in test/craft_parquet_streaming.py.
+REFUSED="ERROR:  XX001: could not decode Parquet column 0 in row group 0"
+cs() { qw "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id int);" | tr '|' ' '; }
+ce() { errcode "SELECT * FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id int)"; }
 check "a data page with no values (pyarrow list column) reads" \
 	"$(qw "SELECT string_agg(coalesce(ls::text, 'NULL'), ' ') FROM pgcolumnar.read_parquet('$W/empty_data_page.parquet') AS t(ls text[]);")" \
 	"{yy} NULL"
-check "one empty data page between two data pages reads" \
-	"$(qw "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$W/one_empty_page.parquet') AS t(id int);" | tr '|' ' ')" \
-	"200 19900"
-check "a run of 1000 empty data pages is rejected" \
-	"$(errtext "SELECT * FROM pgcolumnar.read_parquet('$W/empty_page_run.parquet') AS t(id int)")" \
-	"ERROR:  could not decode Parquet column 0 in row group 0"
+check "a data page with no values (snappy list<int64> column) reads" \
+	"$(qw "SELECT string_agg(coalesce(li::text, 'NULL'), ' ') FROM pgcolumnar.read_parquet('$W/empty_page_snappy.parquet') AS t(li bigint[]);")" \
+	"{1,2} NULL {3} {}"
+check "one empty data page between two data pages reads" "$(cs one_empty_page)" "200 19900"
+check "a run of 1000 empty data pages is rejected" "$(ce empty_page_run)" "$REFUSED"
+check "a run of 16 empty data pages reads" "$(cs empty_run16)" "200 19900"
+check "a run of 17 empty data pages is rejected" "$(ce empty_run17)" "$REFUSED"
+check "two runs of 10 empty data pages read (the limit is per run)" "$(cs empty_runs_10_10)" "200 19900"
+check "an empty v1 page with no body reads on a REQUIRED column" "$(cs nobody_v1_req)" "200 19900"
+check "an empty v2 page with no body reads" "$(cs nobody_v2)" "200 19900"
+check "an empty v1 page with no body is rejected on a nullable column" "$(ce nobody_v1_opt)" "$REFUSED"
+check "an empty data page with a garbage body is rejected" "$(ce garbage_body)" "$REFUSED"
+check "an INDEX_PAGE between data pages is stepped over" "$(cs index_page)" "200 19900"
+check "a run of 17 INDEX_PAGEs is rejected" "$(ce index_run17)" "$REFUSED"
+check "a DATA_PAGE with no DataPageHeader is rejected, not skipped" "$(ce nohdr_loss)" "$REFUSED"
 check "backend survived the crafted page areas" "$(survived "$CRASHES_MID")" "1"
 
 # the legitimate file the crafted ones were built from must still read
@@ -220,5 +246,8 @@ rm -f "$W/huge_sparse.parquet" "$W/zero_pages.parquet" "$W/bad_size.parquet" \
 	"$W/noise_pages.parquet" "$W/bad_offset.parquet" "$W/two_dicts.parquet" \
 	"$W/v2_levels.parquet" "$W/allnull.parquet" "$W/stream_groups.parquet" \
 	"$W/empty_data_page.parquet" "$W/one_empty_page.parquet" "$W/empty_page_run.parquet" \
-	"$W/paged.parquet"
+	"$W/paged.parquet" "$W/paged_req.parquet" "$W/empty_run16.parquet" \
+	"$W/empty_run17.parquet" "$W/empty_runs_10_10.parquet" "$W/nobody_v1_req.parquet" \
+	"$W/nobody_v2.parquet" "$W/nobody_v1_opt.parquet" "$W/garbage_body.parquet" \
+	"$W/index_page.parquet" "$W/index_run17.parquet" "$W/nohdr_loss.parquet" "$W/empty_page_snappy.parquet"
 pgc_summary

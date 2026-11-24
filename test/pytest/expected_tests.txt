@@ -1926,4 +1926,9 @@ guard_tests 895
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5387 tests collected.
-cluster_tests 5387
+# cluster_tests 5387 -> 5398 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
+# REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
+# over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
+# by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5398 tests collected.
+cluster_tests 5398

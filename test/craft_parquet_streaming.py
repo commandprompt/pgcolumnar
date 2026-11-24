@@ -161,18 +161,39 @@ pq.write_table(pa.table({"ls": pa.array([["yy"], None], pa.list_(pa.string()))})
                compression="none")
 
 
-# #2077, built by hand so it does not depend on what a pyarrow version writes: empty
-#    v1 data pages (num_values 0) inserted between the first two data pages of a
-#    200-row PLAIN column written as four pages. Each empty page's body is a zero
-#    definition-level length (4 bytes) and no values. The footer's chunk sizes grow
-#    by the inserted bytes, so pyarrow reads the one-page file too, as 200 rows. One
-#    empty page must read; a run of 1000 is refused, so a crafted file cannot make
-#    the page loop walk a large region a few bytes at a time. (pyarrow itself reads
-#    the run file as only the 50 rows before the run.)
-def empty_data_page():
-    return (fh(1, I32) + zz(0) + fh(1, I32) + zz(4) + fh(1, I32) + zz(4)
+# #2077, built by hand so it does not depend on what a pyarrow version writes: pages
+#    with no values inserted between the data pages of a 200-row PLAIN column written
+#    as four pages of 50. The footer's chunk sizes follow the inserted bytes, so
+#    pyarrow reads the files with one inserted page too. (pyarrow 23 reads a file with
+#    two or more empty pages in a row as only the rows before the run.)
+#
+#    The reader decodes an empty data page like any other: it adds no entries. So it
+#    reads what pyarrow reads (a v1 page on a REQUIRED column needs no body; a v2 page
+#    keeps its zero level lengths in the header) and refuses what pyarrow refuses (a
+#    v1 page on a nullable column with no body has no definition-level length to
+#    read; a garbage body is decoded and fails). It refuses more than 16 empty pages
+#    in a row, and a DATA_PAGE whose DataPageHeader is missing.
+def empty_data_page(body=bytes(4)):
+    """a v1 data page with no values; the default body is a zero definition-level
+    length (4 bytes)"""
+    return (fh(1, I32) + zz(0) + fh(1, I32) + zz(len(body)) + fh(1, I32) + zz(len(body))
             + fh(2, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
-            + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP + bytes(4))
+            + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP + body)
+
+
+def empty_v2_page():
+    """a DATA_PAGE_V2 with no values, no levels and no body"""
+    return (fh(1, I32) + zz(3) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+            + fh(5, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+            + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+            + fh(1, I32) + zz(0) + STOP + STOP)
+
+
+def index_page():
+    """an INDEX_PAGE (type 1) with a 4-byte body and no type-specific header: a page
+    type the reader does not decode, which pyarrow steps over. The body would fail to
+    decode as a data page, so reading the file shows the page was stepped over."""
+    return fh(1, I32) + zz(1) + fh(1, I32) + zz(4) + fh(1, I32) + zz(4) + STOP + b"\xff" * 4
 
 
 def varint(buf, i):
@@ -218,40 +239,103 @@ def skip_value(buf, i, t):
     sys.exit(5)
 
 
-def page_end(buf, i):
-    """-> the offset after the page whose header starts at buf[i]: its header, then
-    compressed_size bytes. pyarrow writes fields 1, 2 and 3 (type, uncompressed_size,
-    compressed_size) first, each a one-byte field header and a zigzag varint."""
-    end = skip_value(buf, i, 12)
+def page_bounds(buf, i):
+    """-> (end of header, end of page) for the page whose header starts at buf[i].
+    pyarrow writes fields 1, 2 and 3 (type, uncompressed_size, compressed_size)
+    first, each a one-byte field header and a zigzag varint."""
+    hend = skip_value(buf, i, 12)
     _, j = varint(buf, i + 1)            # type
     _, j = varint(buf, j + 1)            # uncompressed_size
     csz, _ = varint(buf, j + 1)          # compressed_size
-    return end + (csz >> 1)
+    return hend, hend + (csz >> 1)
 
 
-paged = os.path.join(W, "paged.parquet")
-pq.write_table(pa.table({"id": pa.array(list(range(200)), pa.int32())}), paged,
-               compression="none", use_dictionary=False, data_page_size=1,
-               write_batch_size=50)
-pmeta, pmetalen, pbody = parts(paged)
-pmd = pq.ParquetFile(paged).metadata.row_group(0).column(0)
-if (pmd.dictionary_page_offset or pmd.total_compressed_size != pmd.total_uncompressed_size
-        or pbody[pmd.data_page_offset - 4] != fh(1, I32)[0]):
-    sys.exit(5)
-psplit = page_end(pbody, pmd.data_page_offset - 4)
-
-
-def with_empty_pages(name, count):
-    extra = empty_data_page() * count
-    old = zz(pmd.total_compressed_size)
-    if pmeta.count(old) < 1:
+def four_pages(name, nullable):
+    """-> (footer, page area, [offset of each page in the page area]) of a 200-row
+    PLAIN int column written as four pages of 50"""
+    path = os.path.join(W, name)
+    pq.write_table(pa.table({"id": pa.array(list(range(200)), pa.int32())},
+                            schema=pa.schema([pa.field("id", pa.int32(), nullable=nullable)])),
+                   path, compression="none", use_dictionary=False, data_page_size=1,
+                   write_batch_size=50)
+    m, _, b = parts(path)
+    md = pq.ParquetFile(path).metadata.row_group(0).column(0)
+    start = md.data_page_offset - 4
+    if (md.dictionary_page_offset or md.total_compressed_size != md.total_uncompressed_size
+            or b[start] != fh(1, I32)[0]):
         sys.exit(5)
-    m = pmeta.replace(old, zz(pmd.total_compressed_size + len(extra)))
-    build(name, pbody[:psplit] + extra + pbody[psplit:], m, len(m))
+    offs = [start]
+    while len(offs) < 4:
+        offs.append(page_bounds(b, offs[-1])[1])
+    if page_bounds(b, offs[3])[1] != start + md.total_compressed_size:
+        sys.exit(5)
+    return m, b, offs, md.total_compressed_size
 
 
-with_empty_pages("one_empty_page.parquet", 1)
-with_empty_pages("empty_page_run.parquet", 1000)
+popt = four_pages("paged.parquet", True)
+preq = four_pages("paged_req.parquet", False)
+
+
+def with_pages(name, src, inserts):
+    """write src with inserts[k] (bytes) placed after its page k (1-based)"""
+    m, b, offs, total = src
+    out, last = b[:offs[0]], offs[0]
+    for k in (1, 2, 3):
+        out += b[last:offs[k]] + inserts.get(k, b"")
+        last = offs[k]
+    out += b[last:]
+    extra = sum(len(x) for x in inserts.values())
+    if m.count(zz(total)) < 1:
+        sys.exit(5)
+    m = m.replace(zz(total), zz(total + extra))
+    build(name, out, m, len(m))
+
+
+with_pages("one_empty_page.parquet", popt, {1: empty_data_page()})
+with_pages("empty_page_run.parquet", popt, {1: empty_data_page() * 1000})
+with_pages("empty_run16.parquet", popt, {1: empty_data_page() * 16})
+with_pages("empty_run17.parquet", popt, {1: empty_data_page() * 17})
+# 16 in a row is the limit per run, not per chunk: two runs of 10 read
+with_pages("empty_runs_10_10.parquet", popt, {1: empty_data_page() * 10, 2: empty_data_page() * 10})
+# an empty page with no body: pyarrow reads it on a REQUIRED v1 column and as a v2
+# page, and refuses it on a nullable v1 column ("Received invalid levels")
+with_pages("nobody_v1_req.parquet", preq, {1: empty_data_page(b"")})
+with_pages("nobody_v2.parquet", popt, {1: empty_v2_page()})
+with_pages("nobody_v1_opt.parquet", popt, {1: empty_data_page(b"")})
+# an empty page whose body is garbage: pyarrow refuses it ("Received invalid number
+# of bytes (corrupt data page?)")
+with_pages("garbage_body.parquet", popt, {1: empty_data_page(b"\xff\xff\xff\xff")})
+# an INDEX_PAGE between data pages: pyarrow steps over it and reads 200 rows. Such a
+# page counts toward the run limit too, so 17 in a row are refused.
+with_pages("index_page.parquet", popt, {1: index_page()})
+with_pages("index_run17.parquet", popt, {1: index_page() * 17})
+
+
+# A DATA_PAGE whose DataPageHeader is missing: page 2's header is replaced by one with
+# only type 0 and its sizes, and its body is kept. The footer's sizes shrink to match,
+# and its value and row counts drop from 200 to 150, so the other three pages complete
+# the chunk. Stepping over the page would read 150 rows with ids 50..99 silently gone;
+# pyarrow refuses it ("Unknown encoding type for levels").
+def nohdr_loss():
+    m, b, offs, total = popt
+    hend, pend = page_bounds(b, offs[1])
+    hdr = fh(1, I32) + zz(0) + fh(1, I32) + zz(pend - hend) + fh(1, I32) + zz(pend - hend) + STOP
+    out = b[:offs[1]] + hdr + b[hend:]
+    shrink = (hend - offs[1]) - len(hdr)
+    if m.count(zz(total)) < 1 or m.count(zz(200)) != 4:
+        sys.exit(5)
+    m = m.replace(zz(total), zz(total - shrink)).replace(zz(200), zz(150))
+    build("nohdr_loss.parquet", out, m, len(m))
+
+
+nohdr_loss()
+
+# #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
+# compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
+pq.write_table(pa.table({"li": pa.array([[1, 2], None, [3], []], pa.list_(pa.int64()))}),
+               os.path.join(W, "empty_page_snappy.parquet"),
+               use_dictionary=True, data_page_size=1, write_batch_size=1,
+               compression="snappy")
 
 # #620: four row groups of 1000 rows, for the FDW's Row Groups Decoded counter
 n = 4000
@@ -263,6 +347,9 @@ if pq.ParquetFile(os.path.join(W, "stream_groups.parquet")).num_row_groups != 4:
 
 for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "v2_levels", "allnull", "empty_data_page", "one_empty_page",
-             "empty_page_run", "stream_groups"):
+             "empty_page_run", "empty_run16", "empty_run17", "empty_runs_10_10",
+             "nobody_v1_req", "nobody_v2", "nobody_v1_opt", "garbage_body", "index_page",
+             "index_run17",
+             "nohdr_loss", "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)
