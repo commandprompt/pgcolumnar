@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5380 for #2085 in test_arrow_export.py: a timestamp and a timestamptz past Arrow's
+# int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
+# test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
+# (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5380 cluster tests collected.
+cluster_tests 5380

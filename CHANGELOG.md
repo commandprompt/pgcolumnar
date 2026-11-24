@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, other
+  readers saw a date before year 0, and `import_arrow` refused the file. Such a
+  value now fails the export with SQLSTATE 22008, naming the column, and no
+  file is written. docs/limitations.md. `test/arrow_export.sh` and
+  `test_arrow_export.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

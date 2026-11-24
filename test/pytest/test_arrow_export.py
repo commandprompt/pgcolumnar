@@ -67,6 +67,7 @@ TXT_DIGEST = ("SELECT string_agg(id || '|' || coalesce(n::text, 'NULL') || '|' |
               " || '|' || j::text || '|' || (c).x::text || '|' || (c).y, ' ' ORDER BY id) FROM ar_txt")
 OVER_NAME = ("over 1 GiB of one column (2200 values of 500000 bytes) exports whole, "
              "in 5 record batches of at most 536 rows")
+TS_RANGE_MSG = "out of range for an Arrow timestamp"
 SCHEMA = "id:int32,a:int16,b:int32,c:int64,d:float,e:double,f:bool,g:string,h:binary"
 EXT_SCHEMA = ("id:int32,dt:date32[day],tm:time64[us],ts:timestamp[us],tz:timestamp[us, tz=UTC],"
               "u:fixed_size_binary[16],num:decimal128(20, 4),numun:string,j:string,jb:string")
@@ -203,6 +204,21 @@ def ae(pgc_cluster, server_dir):
         f["txt"] = server_dir / "txt.arrows"
         r["txt rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_txt', '{f['txt']}')")
         r["txt digest"] = _value(dsn, TXT_DIGEST)
+        # #2085: a timestamp past Arrow's int64 range is refused, not wrapped
+        for k in ("tsover", "tzover", "tsedge"):
+            f[k] = server_dir / f"{k}.arrows"
+        _run(dsn, "CREATE TABLE ar_tsover (ts timestamp) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tsover VALUES ('294247-01-10 04:00:54.775808')")
+        _run(dsn, "CREATE TABLE ar_tzover (tz timestamptz) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tzover VALUES ('294276-12-31 23:59:59.999999+00')")
+        _run(dsn, "CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00')")
+        r["tsover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsover', '{f['tsover']}')",
+                               TS_RANGE_MSG)
+        r["tsover file"] = "present" if f["tsover"].exists() else "absent"
+        r["tzover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tzover', '{f['tzover']}')",
+                               TS_RANGE_MSG)
+        r["tsedge rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsedge', '{f['tsedge']}')")
         r["dsn"] = dsn
         yield r
     finally:
@@ -525,3 +541,42 @@ def test_every_kept_text_reaches_its_own_value_in_the_stream(ae, expect):
         return
     expect.text(f"{ae['txt rows']}|{_reading(_texts, pa, ae['files']['txt'])}", f"300|{ae['txt digest']}",
                 "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them")
+
+
+def test_a_timestamp_past_arrows_range_is_refused(ae, expect):
+    """#2085: Arrow stores a timestamp as int64 microseconds since 1970-01-01, so its
+    last value is 294247-01-10 04:00:54.775807. One microsecond later used to wrap to
+    a large negative number while the export reported success."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tsover"], "refused",
+                "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)")
+
+
+def test_a_refused_timestamp_export_leaves_no_file(ae, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tsover file"], "absent", "and the refused timestamp export leaves no file at the target path")
+
+
+def test_a_timestamptz_past_arrows_range_is_refused(ae, expect):
+    """#2085: the latest timestamptz PostgreSQL holds wrapped the same way."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tzover"], "refused",
+                "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)")
+
+
+def _edge(pa, path):
+    t = _read(pa, path)
+    return ",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz"))
+
+
+def test_the_last_timestamp_arrow_holds_still_exports(ae, expect):
+    """#2085: the range check must not refuse the last value that fits."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['tsedge rows']}|{_reading(_edge, pa, ae['files']['tsedge'])}",
+                "1|9223372036854775807,9223372036854775807",
+                "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz")

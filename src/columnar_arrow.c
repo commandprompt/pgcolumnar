@@ -499,12 +499,17 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 	char		one = 1,
 				zero = 0;
 	__int128	dec = 0;
+	int64		unixUsecs = 0;
 
 	/*
 	 * A few types can carry values with no target representation (±infinity
 	 * dates/timestamps, NaN/Infinity numerics). Fold those to null, computing
 	 * the decimal here so a non-finite value is detected before validity is
 	 * written.
+	 *
+	 * A finite timestamp after 294247-01-10 04:00:54.775807 does not fit in
+	 * Arrow's int64 microseconds since 1970-01-01. Refuse it rather than
+	 * write a wrapped value or lose it as a null (#2085).
 	 */
 	if (!isnull)
 	{
@@ -518,6 +523,13 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 			case A_TIMESTAMPTZ:
 				if (TIMESTAMP_NOT_FINITE(DatumGetTimestamp(d)))
 					isnull = true;
+				else if (pg_add_s64_overflow((int64) DatumGetTimestamp(d),
+											 PG_TO_UNIX_USECS, &unixUsecs))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("columnar: a value in column \"%s\" is out of range for an Arrow timestamp",
+									c->name ? c->name : "?"),
+							 errdetail("Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807.")));
 				break;
 			case A_DECIMAL128:
 				if (!numeric_to_int128(d, c->scale, &dec))
@@ -587,8 +599,7 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 		case A_TIMESTAMP:
 		case A_TIMESTAMPTZ:
 			{
-				int64		v = isnull ? 0 :
-					(int64) DatumGetTimestamp(d) + PG_TO_UNIX_USECS;
+				int64		v = isnull ? 0 : unixUsecs;
 
 				appendBinaryStringInfo(&c->fixed, (char *) &v, 8);
 				break;

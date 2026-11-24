@@ -345,6 +345,41 @@ PY
 check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them" \
 	"$ar_txt_rows|$ar_txt_read" "300|$(q "$TXT_DIGEST")"
 
+# ---- a timestamp past Arrow's int64 range is refused, not wrapped (#2085) ------------
+# Arrow stores a timestamp as int64 microseconds since 1970-01-01, so its last value is
+# 294247-01-10 04:00:54.775807. PostgreSQL timestamps reach 294276-12-31. The writer
+# added the epoch shift without an overflow check, so a later value wrapped to a large
+# negative number, and the export reported success. Now the export fails with an
+# out-of-range error and leaves no file at the target path.
+TSOVER="$PGC_WORKDIR/tsover.arrows"
+TZOVER="$PGC_WORKDIR/tzover.arrows"
+TSEDGE="$PGC_WORKDIR/tsedge.arrows"
+psql_run "CREATE TABLE ar_tsover (ts timestamp) USING pgcolumnar;
+          INSERT INTO ar_tsover VALUES ('294247-01-10 04:00:54.775808');
+          CREATE TABLE ar_tzover (tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tzover VALUES ('294276-12-31 23:59:59.999999+00');
+          CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00');" >/dev/null
+refusal "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" "out of range for an Arrow timestamp"
+check "and the refused timestamp export leaves no file at the target path" \
+	"$([ -e "$TSOVER" ] && echo present || echo absent)" "absent"
+refusal "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tzover', '$TZOVER')" "out of range for an Arrow timestamp"
+edge_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsedge', '$TSEDGE')")"
+edge_read="$(python3 - "$TSEDGE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    print(",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz")))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz" \
+	"$edge_rows|$edge_read" "1|9223372036854775807,9223372036854775807"
+
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB batch holds 536 rows and
