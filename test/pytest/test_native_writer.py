@@ -10,7 +10,8 @@ reads no data back; native_roundtrip does that.
 
 The second test is #2073: the writer refuses row numbers past the item-pointer
 range rather than wrapping the block number, and pgcolumnar.row_tid refuses them too.
-It does read the table back, to show that no row number wrapped.
+It does read the table back, to show that no row number wrapped. The third test
+reserves a run that ends exactly at the largest row number, and one row number more.
 """
 
 import psycopg
@@ -106,3 +107,47 @@ def test_row_numbers_past_the_item_pointer_range_are_refused(pgc_conn, expect):
         expect.text(f"{row_tid(1249835482844)}|{row_tid(1249835482845)}|{row_tid(9223372036854775807)}",
                     "(4294967294,291)|22003|22003",
                     "row_tid maps the largest row number and refuses the ones past it (22003)")
+
+
+def test_a_reservation_that_ends_exactly_at_the_last_row_number_fits(pgc_conn, expect):
+    """#2073, the exact boundary of the reservation. The test above asks for 2^31 row
+    numbers when only 290 are left, so a check that is off by one, or off by a million,
+    refuses it just the same. Here the writer is left exactly 1000 row numbers: 581
+    single-row transactions at stripe_row_limit 2147483647, then one at 2147482937. A
+    reservation of 1001 must be refused with 54000. A reservation of 1000 must fit, end
+    at the largest row number, item pointer (4294967294,291), and stay findable by an
+    index scan. The refusal before it must use up nothing. After it nothing is left, so
+    the next insert is refused.
+    """
+    def value_or_sqlstate(cur, sql):
+        try:
+            cur.execute(sql)
+            return cur.statusmessage
+        except psycopg.Error as e:
+            return e.sqlstate
+
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE nw_rb (id int PRIMARY KEY, v text) USING pgcolumnar")
+        cur.execute("SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 2147483647)")
+        # autocommit: every INSERT is its own transaction and its own reservation
+        for i in range(1, 582):
+            cur.execute("INSERT INTO nw_rb VALUES (%s, %s)", (i, f"v{i}"))
+        cur.execute("SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 2147482937)")
+        cur.execute("INSERT INTO nw_rb VALUES (582, 'v582')")
+        cur.execute("SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 1001)")
+        over = value_or_sqlstate(cur, "INSERT INTO nw_rb SELECT g, 'x' FROM generate_series(3001, 4001) g")
+        cur.execute("SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 1000)")
+        fit = value_or_sqlstate(cur, "INSERT INTO nw_rb SELECT g, 'w' FROM generate_series(1001, 2000) g")
+        top = str(_one(cur, "SELECT max(ctid) FROM nw_rb"))
+        full = value_or_sqlstate(cur, "INSERT INTO nw_rb VALUES (9999, 'full')")
+        expect.text(f"{over}|{fit}|{top}|{full}", "54000|INSERT 0 1000|(4294967294,291)|54000",
+                    "one row number too many is refused (54000), an exact fit ends at the largest "
+                    "row number, and then none are left")
+        cur.execute("BEGIN")
+        for guc in ("pgcolumnar.enable_custom_scan", "enable_seqscan", "enable_bitmapscan",
+                    "pgcolumnar.enable_index_fetch_penalty"):
+            cur.execute(f"SET LOCAL {guc} = off")
+        expect.text(str(_one(cur, "SELECT ctid FROM nw_rb WHERE id = 2000")), "(4294967294,291)",
+                    "an index scan finds the row at the largest row number")
+        cur.execute("ROLLBACK")
+        cur.execute("DROP TABLE nw_rb")

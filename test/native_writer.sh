@@ -74,6 +74,38 @@ check "pgcolumnar.vacuum renumbers the rows, so inserts work again" \
 	"$(q "SELECT count(*) || '|' || count(*) FILTER (WHERE id = 601) FROM nw_rn;")" "583|1"
 psql_run "DROP TABLE nw_rn;"
 
+# The exact boundary of the reservation (#2073). The arm above asks for 2^31
+# row numbers when only 290 are left, so a check that is off by one, or off by
+# a million, refuses it just the same. Here the writer is left exactly 1000 row
+# numbers: 581 single-row transactions at stripe_row_limit 2147483647, then one
+# at 2147482937. A reservation of 1001 must be refused with 54000. A
+# reservation of 1000 must fit, end at the largest row number, item pointer
+# (4294967294,291), and stay findable by an index scan. The refusal before it
+# must use up nothing. After it nothing is left, so the next insert is refused.
+rn_sqlstate_or() {	# rn_sqlstate_or SQL -> the single value it returns, or the SQLSTATE it fails with
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1)
+	case "$out" in ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1;; *) echo "$out" | head -1;; esac
+}
+psql_run "CREATE TABLE nw_rb (id int PRIMARY KEY, v text) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 2147483647);"
+psql_run "DO \$\$ BEGIN FOR i IN 1..581 LOOP INSERT INTO nw_rb VALUES (i, 'v' || i); COMMIT; END LOOP; END \$\$;"
+psql_run "SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 2147482937);"
+psql_run "INSERT INTO nw_rb VALUES (582, 'v582');"
+psql_run "SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 1001);"
+RB_OVER="$(rn_sqlstate_or "INSERT INTO nw_rb SELECT g, 'x' FROM generate_series(3001, 4001) g")"
+psql_run "SELECT pgcolumnar.set_options('nw_rb', stripe_row_limit => 1000);"
+RB_FIT="$(rn_sqlstate_or "INSERT INTO nw_rb SELECT g, 'w' FROM generate_series(1001, 2000) g")"
+RB_MAX="$(q "SELECT max(ctid) FROM nw_rb;")"
+RB_FULL="$(rn_sqlstate_or "INSERT INTO nw_rb VALUES (9999, 'full')")"
+check "one row number too many is refused (54000), an exact fit ends at the largest row number, and then none are left" \
+	"$RB_OVER|$RB_FIT|$RB_MAX|$RB_FULL" "54000|INSERT 0 1000|(4294967294,291)|54000"
+check "an index scan finds the row at the largest row number" \
+	"$(q "SET pgcolumnar.enable_custom_scan = off; SET enable_seqscan = off; SET enable_bitmapscan = off;
+	      SET pgcolumnar.enable_index_fetch_penalty = off; SELECT ctid FROM nw_rb WHERE id = 2000;" | tail -1)" "(4294967294,291)"
+psql_run "DROP TABLE nw_rb;"
+
 # pgcolumnar.row_tid maps a row number to an item pointer by the same arithmetic
 # (#2073), and any role may call it. It must refuse a row number at or past the
 # limit with 22003, as it refuses one below 1, instead of returning a wrapped
@@ -81,12 +113,6 @@ psql_run "DROP TABLE nw_rn;"
 # of block MaxBlockNumber (4294967294). LAST IN THE SUITE ON PURPOSE: on a build
 # with assertions, a row_tid without the check fails an Assert and restarts the
 # server, and that would take the checks after it down too.
-rn_sqlstate_or() {	# rn_sqlstate_or SQL -> the single value it returns, or the SQLSTATE it fails with
-	local out
-	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
-		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1)
-	case "$out" in ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1;; *) echo "$out" | head -1;; esac
-}
 check "row_tid maps the largest row number and refuses the ones past it (22003)" \
 	"$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(1249835482844)")|$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(1249835482845)")|$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(9223372036854775807)")" \
 	"(4294967294,291)|22003|22003"

@@ -617,7 +617,9 @@ true until the next version shipped.
   `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
   22003, as it already refused one below 1; it returned a wrapped item pointer.
   A table that already holds wrapped rows stays readable by a sequential scan
-  until `pgcolumnar.vacuum` renumbers it. docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
+  until `pgcolumnar.vacuum` renumbers it. The tests also reserve a run that
+  ends exactly at the last row number, and one row number more.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types
@@ -632,7 +634,6 @@ true until the next version shipped.
   the ledger gate could not find the PR's base and every PR failed
   `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
   every suite passed. `.github/workflows/ci.yml`.
-
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
