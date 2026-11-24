@@ -1030,7 +1030,7 @@ The target may be one of two kinds:
   function refuses more than one worker with `0A000`. Load such a table with
   `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
   transaction until every worker has finished. So two workers would wait on each
-  other forever.
+  other, and the load would hang or fail with a deadlock error.
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric

@@ -237,13 +237,6 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 }
 
 /*
- * pcopy_naive_offsets
- *		Line-aligned byte offsets partitioning `path` into `workers` even ranges,
- *		for the single-table load where every worker writes the one storage and any
- *		record-aligned split is correct (no partition key, so no ordering
- *		requirement). Returns a palloc'd int64[workers+1].
- */
-/*
  * pcopy_has_unique_or_exclusion_index
  *		Does rel have a unique or exclusion index?
  *
@@ -251,9 +244,14 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
  *		(#2080). Each loader keeps the locks its inserts took -- the unique-key
  *		advisory locks, and the xid a sibling's btree or exclusion check waits
  *		on -- in its prepared transaction. The coordinator commits only after
- *		every loader has finished, so a loader waiting on a sibling's prepared
- *		transaction waits forever, and the deadlock detector cannot see it.
- *		Distinct keys do not help: the advisory locks are hash buckets.
+ *		every loader has finished, so a loader that waits on a sibling's
+ *		prepared transaction either waits until cancelled or fails with a
+ *		deadlock error. Distinct keys do not help: the advisory locks are hash
+ *		buckets.
+ *
+ *		The calling backend checks before it starts any worker, and each loader
+ *		checks again once it holds ROW EXCLUSIVE on the table: the first check
+ *		runs under ACCESS SHARE, which CREATE INDEX does not wait for.
  */
 static bool
 pcopy_has_unique_or_exclusion_index(Relation rel)
@@ -280,6 +278,13 @@ pcopy_has_unique_or_exclusion_index(Relation rel)
 	return found;
 }
 
+/*
+ * pcopy_naive_offsets
+ *		Line-aligned byte offsets partitioning `path` into `workers` even ranges,
+ *		for the single-table load where every worker writes the one storage and any
+ *		record-aligned split is correct (no partition key, so no ordering
+ *		requirement). Returns a palloc'd int64[workers+1].
+ */
 static int64 *
 pcopy_naive_offsets(const char *path, int workers)
 {
@@ -926,6 +931,20 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		pcopy_src.path = hdr->filename;
 
 		rel = table_open(hdr->relid, RowExclusiveLock);
+
+		/*
+		 * The calling backend refused a unique or exclusion index under ACCESS
+		 * SHARE, which CREATE INDEX does not wait for, so one may have appeared
+		 * since (#2080). ROW EXCLUSIVE makes CREATE INDEX wait until this load
+		 * ends, so the index list read now holds for the whole load.
+		 */
+		if (hdr->single_table && hdr->nworkers > 1 &&
+			pcopy_has_unique_or_exclusion_index(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
+							RelationGetRelationName(rel)),
+					 errhint("Load it with workers => 1, or with COPY.")));
 		pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = "(pgcolumnar parallel_copy)";
 
@@ -1643,9 +1662,11 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 * correct -- no partition key, so no sorted-input requirement.
 			 *
 			 * Not with a unique or exclusion index and more than one worker: the
-			 * loaders would wait on each other's prepared transactions forever
-			 * (#2080). A partitioned target is not affected, because each worker
-			 * loads distinct partitions, and so distinct indexes.
+			 * loaders would wait on each other's prepared transactions until
+			 * cancelled, or fail with a deadlock error (#2080). Each loader checks
+			 * again under its ROW EXCLUSIVE lock. A partitioned target is not
+			 * affected, because each worker loads distinct partitions, and so
+			 * distinct indexes.
 			 */
 			if (workers > 1 && pcopy_has_unique_or_exclusion_index(target))
 			{

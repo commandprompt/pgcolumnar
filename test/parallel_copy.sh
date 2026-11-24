@@ -665,9 +665,9 @@ check "control: parallel_copy still loads a local path that holds s3a:// past it
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on
-# each other until cancelled, even with distinct keys. parallel_copy now refuses
-# that load up front. statement_timeout turns the old hang into 57014, a red the
-# check can read. The controls: 1 worker, and a non-unique index, still load.
+# each other, even with distinct keys: the load hung or failed with 40P01.
+# parallel_copy now refuses that load up front. statement_timeout turns the old
+# hang into 57014, a red the check can read. The controls: 1 worker, and a non-unique index, still load.
 want_unique() {	# TABLE -> the refusal #2080 promises
 	printf '0A000 pgcolumnar.parallel_copy cannot load "%s" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY.\n' "$1"
 }
@@ -689,5 +689,34 @@ check "control: parallel_copy with 1 worker still loads a single table with a pr
 	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '$F', 1)")" 5000
 check "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '$F', 2)")" 5000
+
+# A unique index created after the calling backend's check, but before the loaders
+# open the table, must be refused too: the check runs under AccessShareLock, which
+# CREATE INDEX does not wait for. A second session holds SHARE on t_ur, which lets
+# the check pass but stops the coordinator and the loaders at their ROW EXCLUSIVE
+# lock. Once one of them waits, the session creates the unique index and commits.
+# Which worker reports first varies, so the check reads "worker N".
+psql_run "CREATE TABLE t_ur (id int, txt text) USING pgcolumnar;" >/dev/null
+pcopy_psql() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q "$@"; }
+pcopy_psql >/dev/null 2>&1 <<'SQL' &
+BEGIN;
+LOCK TABLE t_ur IN SHARE MODE;
+DO $$ BEGIN FOR i IN 1..200 LOOP
+	EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = 't_ur'::regclass AND NOT granted);
+	PERFORM pg_sleep(0.05); END LOOP; END $$;
+CREATE UNIQUE INDEX t_ur_id ON t_ur (id);
+COMMIT;
+SQL
+ur_pid=$!
+for _ in $(seq 100); do
+	[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 't_ur'::regclass AND mode = 'ShareLock' AND granted")" = 1 ] && break
+	sleep 0.1
+done
+ur_got="$(PGOPTIONS='-c statement_timeout=20s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ur'::regclass, '$F', 2)" \
+	| sed 's/worker [0-9]* failed/worker N failed/')"
+wait "$ur_pid"
+check "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)" \
+	"$ur_got" \
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" with more than one worker, because it has a unique or exclusion index | no hint'
 
 pgc_summary

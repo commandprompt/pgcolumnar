@@ -14,7 +14,8 @@ Both functions read local files only, so both refuse an object-storage URL with
 0A000, naming themselves and the URL (#1886). parallel_copy refuses after its INSERT
 check and before it checks the target's kind, so a heap target gets 0A000. The
 refusal covers s3a:// and s3n:// too, in any case (#1918). parallel_copy refuses more
-than one worker for a single table with a unique index, which used to hang (#2080).
+than one worker for a single table with a unique index, which used to hang or fail
+with a deadlock error (#2080). Each loader checks again under its own lock.
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -29,6 +30,7 @@ redden this one.
 """
 import os
 import random
+import re
 import threading
 
 import psycopg
@@ -179,6 +181,30 @@ class _Db:
                 return query_error(_message(exc))
             return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
         return f"no error ({row[0] if row else None})"
+
+    def unique_index_after_check(self, path):
+        """-> remote_refusal() of a 2-worker parallel_copy into t_ur that gains a
+        unique index after the calling backend's check, with "worker N" for the
+        worker number, which varies."""
+        out = {}
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as lk:
+                lk.execute("CREATE TABLE t_ur (id int, txt text) USING pgcolumnar")
+                lk.execute("BEGIN")
+                lk.execute("LOCK TABLE t_ur IN SHARE MODE")
+                load = threading.Thread(target=lambda: out.setdefault("got", self.remote_refusal(
+                    f"SELECT pgcolumnar.parallel_copy('t_ur'::regclass, '{path}', 2)", timeout="20s")))
+                load.start()
+                lk.execute("DO $$ BEGIN FOR i IN 1..200 LOOP "
+                           "EXIT WHEN EXISTS (SELECT 1 FROM pg_locks "
+                           "WHERE relation = 't_ur'::regclass AND NOT granted); "
+                           "PERFORM pg_sleep(0.05); END LOOP; END $$")
+                lk.execute("CREATE UNIQUE INDEX t_ur_id ON t_ur (id)")
+                lk.execute("COMMIT")
+                load.join()
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+        return re.sub(r"worker \d+ failed", "worker N failed", out.get("got", "no result"))
 
     def copy_in(self, table, data):
         try:
@@ -551,6 +577,12 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
         r["non-unique index"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '{f}', 2)", timeout="30s")
+
+        # A unique index created after the calling backend's check, before the
+        # loaders open the table. A second session holds SHARE on t_ur: the check
+        # passes, and the coordinator and the loaders stop at ROW EXCLUSIVE. Once
+        # one waits, the session creates the unique index and commits.
+        r["unique late"] = db.unique_index_after_check(f)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -864,3 +896,10 @@ def test_parallel_copy_still_loads_a_primary_key_table_with_one_worker(pcopy, ex
 def test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers(pcopy, expect):
     expect.num(pcopy["non-unique index"], 5000,
                "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)")
+
+
+def test_parallel_copy_refuses_a_unique_index_created_after_its_check(pcopy, expect):
+    expect.text(pcopy["unique late"],
+                '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" '
+                'with more than one worker, because it has a unique or exclusion index | no hint',
+                "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)")
