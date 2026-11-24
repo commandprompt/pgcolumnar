@@ -4413,6 +4413,8 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_encoding	native_encoding	ANALYZE reads a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	DELETE removes every row of a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
 native_encoding	native_encoding	[lz4] aggregate over encoded column	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] all columns round-trip	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] constant column encoded small	15;16;17;18;19	never	-
@@ -4460,6 +4462,12 @@ native_encoding	native_encoding	fsst filtered scan round-trips	15;16;17;18;19	ne
 native_encoding	native_encoding	fsst shrinks the url column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	fsst stores one shared table per chunk (E3b)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	misleading-head column still reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	pg_dump of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE	15;16;17;18;19	never	-
+native_encoding	native_encoding	repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly after a pg_dump round trip	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly on the sampled path	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	restore of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	never	-
 native_encoding	native_encoding	run-length column reads back exactly	15;16;17;18;19	2026-10-22	columnar_encoding.c: RLE decode flips one bit of each vector's last value
 native_encoding	native_encoding	sampling changes nothing a query can see	15;16;17;18;19	never	-
 native_encoding	native_encoding	sampling off == heap oracle	15;16;17;18;19	never	-
