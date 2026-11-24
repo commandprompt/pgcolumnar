@@ -3,7 +3,9 @@
 # pgColumnar native writer: a columnar table writes the native format (PGCN v1).
 # This validates the writer by its catalog output: the pgcolumnar.storage /
 # row_group / column_chunk rows it produces, and that dropping the table clears
-# them. It does not SELECT data from the table (see native_roundtrip.sh).
+# them. The round trip of the data is native_roundtrip.sh's job. The #2073
+# checks below do read the table back: they need its row count, item pointers
+# and an index scan to show that no row number wrapped.
 #
 # Usage:  test/native_writer.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -71,5 +73,22 @@ psql_run "INSERT INTO nw_rn VALUES (601, 'after');"
 check "pgcolumnar.vacuum renumbers the rows, so inserts work again" \
 	"$(q "SELECT count(*) || '|' || count(*) FILTER (WHERE id = 601) FROM nw_rn;")" "583|1"
 psql_run "DROP TABLE nw_rn;"
+
+# pgcolumnar.row_tid maps a row number to an item pointer by the same arithmetic
+# (#2073), and any role may call it. It must refuse a row number at or past the
+# limit with 22003, as it refuses one below 1, instead of returning a wrapped
+# item pointer. The largest row number, 1249835482844, is the last offset (291)
+# of block MaxBlockNumber (4294967294). LAST IN THE SUITE ON PURPOSE: on a build
+# with assertions, a row_tid without the check fails an Assert and restarts the
+# server, and that would take the checks after it down too.
+rn_sqlstate_or() {	# rn_sqlstate_or SQL -> the single value it returns, or the SQLSTATE it fails with
+	local out
+	out=$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-X -At -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate -c "$1" 2>&1)
+	case "$out" in ERROR:*) sed -n 's/^ERROR: *\([0-9A-Z]\{5\}\).*/\1/p' <<<"$out" | head -1;; *) echo "$out" | head -1;; esac
+}
+check "row_tid maps the largest row number and refuses the ones past it (22003)" \
+	"$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(1249835482844)")|$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(1249835482845)")|$(rn_sqlstate_or "SELECT pgcolumnar.row_tid(9223372036854775807)")" \
+	"(4294967294,291)|22003|22003"
 
 pgc_summary

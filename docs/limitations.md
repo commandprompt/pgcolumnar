@@ -374,7 +374,9 @@ returning no rows.
   `stripe_row_limit`, 2147483647, it is 582. When the next reservation would
   pass the end, the write fails with SQLSTATE 54000 ("has run out of row
   numbers"). Run `pgcolumnar.vacuum` on the table to renumber its rows and free
-  the space again (#2073).
+  the space again (#2073). A table written by an older version may already hold
+  rows past the end. A sequential scan still reads them, but index scans may
+  miss them; run `pgcolumnar.vacuum` on such a table.
 - A declared `sort_by` key (#288) and `pgcolumnar.vacuum_sorted` are **one-shot**.
   Rows that an insert adds after a sort go in at the end, in insertion order. No
   operation sorts them again. Skip quality therefore decreases until the next

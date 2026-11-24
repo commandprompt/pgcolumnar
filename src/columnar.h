@@ -174,7 +174,7 @@
  * usable row number is the last offset of block MaxBlockNumber. A row number at
  * or above this limit would wrap the block number and give the row the item
  * pointer of a different row. PgColumnarReserveRowNumbers refuses to reserve
- * past it.
+ * past it, and pgcolumnar.row_tid refuses such a row number from SQL.
  */
 #define COLUMNAR_ROW_NUMBER_LIMIT \
 	(((uint64) MaxBlockNumber + 1) * COLUMNAR_VALID_ITEMPOINTER_OFFSETS)

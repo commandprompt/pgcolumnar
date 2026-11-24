@@ -614,7 +614,10 @@ true until the next version shipped.
   nothing, and a primary key accepted duplicates. The writer now refuses the
   reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
   nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
-  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
+  `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
+  22003, as it already refused one below 1; it returned a wrapped item pointer.
+  A table that already holds wrapped rows stays readable by a sequential scan
+  until `pgcolumnar.vacuum` renumbers it. docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

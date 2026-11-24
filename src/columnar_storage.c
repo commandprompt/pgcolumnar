@@ -679,6 +679,14 @@ PgColumnarResetMetapage(Relation rel)
 
 /*
  * Row-number <-> item-pointer mapping (spec 6). Row number 0 is invalid.
+ *
+ * There is deliberately no check against COLUMNAR_ROW_NUMBER_LIMIT here
+ * (#2073). The writer refuses to reserve a row number at or past the limit,
+ * and pgcolumnar.row_tid refuses one from SQL. A table written before that fix
+ * may still hold such rows, and every scan maps them through here; an Assert
+ * would abort the backend on a build with assertions, and an error would make
+ * the table unreadable. The block number wraps instead, as it always did, so
+ * such a table stays readable until pgcolumnar.vacuum renumbers it.
  */
 void
 PgColumnarRowNumberToItemPointer(uint64 rowNumber, ItemPointer tid)
@@ -687,7 +695,6 @@ PgColumnarRowNumberToItemPointer(uint64 rowNumber, ItemPointer tid)
 	OffsetNumber offset;
 
 	Assert(rowNumber > 0);
-	Assert(rowNumber < COLUMNAR_ROW_NUMBER_LIMIT);
 	blockno = (BlockNumber) (rowNumber / COLUMNAR_VALID_ITEMPOINTER_OFFSETS);
 	offset = (OffsetNumber) ((rowNumber % COLUMNAR_VALID_ITEMPOINTER_OFFSETS) +
 							 FirstOffsetNumber);
@@ -713,6 +720,12 @@ pgcolumnar_row_tid(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("row number " INT64_FORMAT " is out of range", rowNumber),
 				 errdetail("Row numbers start at 1.")));
+	if ((uint64) rowNumber >= COLUMNAR_ROW_NUMBER_LIMIT)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("row number " INT64_FORMAT " is out of range", rowNumber),
+				 errdetail("The largest row number an item pointer can address is "
+						   UINT64_FORMAT ".", COLUMNAR_ROW_NUMBER_LIMIT - 1)));
 	tid = (ItemPointer) palloc(sizeof(ItemPointerData));
 	PgColumnarRowNumberToItemPointer((uint64) rowNumber, tid);
 	PG_RETURN_POINTER(tid);		/* PG_RETURN_ITEMPOINTER is 16+; tid is by reference */

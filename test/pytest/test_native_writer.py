@@ -5,11 +5,12 @@ by the shell's name.
 5000 rows, a quarter of them NULL in v, under a 1000-row stripe limit: one storage row
 at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten
 column chunks (five groups, two columns) counting 10000 values. Dropping the table
-deletes the storage, row-group and column-chunk rows for its storage id. Like the shell
-it reads no data back; native_roundtrip does that.
+deletes the storage, row-group and column-chunk rows for its storage id. The first test
+reads no data back; native_roundtrip does that.
 
 The second test is #2073: the writer refuses row numbers past the item-pointer
-range rather than wrapping the block number.
+range rather than wrapping the block number, and pgcolumnar.row_tid refuses them too.
+It does read the table back, to show that no row number wrapped.
 """
 
 import psycopg
@@ -61,6 +62,12 @@ def test_row_numbers_past_the_item_pointer_range_are_refused(pgc_conn, expect):
     54000 (program limit exceeded). Before the fix it was accepted: its block number
     wrapped, its item pointer fell below the rows before it, and an index scan
     missed it. pgcolumnar.vacuum renumbers the rows, so inserts work again after it.
+
+    pgcolumnar.row_tid maps a row number by the same arithmetic, and any role may call
+    it. It must refuse a row number at or past the limit with 22003, as it refuses one
+    below 1. The largest row number, 1249835482844, is the last offset (291) of block
+    MaxBlockNumber (4294967294). It is checked last: on a build with assertions, a
+    row_tid without the check fails an Assert and restarts the server.
     """
     with pgc_conn.cursor() as cur:
         cur.execute("CREATE TABLE nw_rn (id int, v text) USING pgcolumnar")
@@ -90,3 +97,12 @@ def test_row_numbers_past_the_item_pointer_range_are_refused(pgc_conn, expect):
         expect.text(_one(cur, "SELECT count(*) || '|' || count(*) FILTER (WHERE id = 601) FROM nw_rn"),
                     "583|1", "pgcolumnar.vacuum renumbers the rows, so inserts work again")
         cur.execute("DROP TABLE nw_rn")
+
+        def row_tid(n):
+            try:
+                return str(_one(cur, f"SELECT pgcolumnar.row_tid({n})"))
+            except psycopg.Error as e:
+                return e.sqlstate
+        expect.text(f"{row_tid(1249835482844)}|{row_tid(1249835482845)}|{row_tid(9223372036854775807)}",
+                    "(4294967294,291)|22003|22003",
+                    "row_tid maps the largest row number and refuses the ones past it (22003)")
