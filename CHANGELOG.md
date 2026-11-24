@@ -605,6 +605,24 @@ true until the next version shipped.
 
 ### Fixed
 
+- Eight SQL examples in docs/how-to.md, docs/user-guide.md and
+  docs/sql-reference.md now run as written (#2093). The how-to's `events`
+  table gains the `customer_id` and `order_id` columns its later examples use,
+  and its `amount` is `numeric(12,2)`. Its `cluster` and `recluster` examples
+  use `ts`, not the numeric `amount`, which `cluster` refuses. Its
+  `read_parquet` examples name every column of the file. Its `parallel_copy`
+  example reads a text file, not the CSV file with a header that `COPY` loads.
+  Its rollup example creates a columnar source, because `create_rollup`
+  refuses the partitioned `metrics`. Its two postgresql.conf snippets are
+  fenced as `conf`, not `sql`. The `parallel_copy` examples use 4 workers, not
+  8: 8 did not fit a server at the default `max_worker_processes` of 8. All
+  three pages now name `max_worker_processes` beside
+  `max_prepared_transactions`. The SQL reference's Parquet round trip names
+  the table it uses, the user guide's, whose `amount` is now `numeric(12,2)`.
+  `test/parallel_copy.sh` now runs at the default `max_worker_processes`.
+  `test/docs_style.sh`, `test/native_cluster.sh`, `test/parquet_import.sh`,
+  `test/rollup.sh`, `test/parallel_copy.sh` and their pytest twins run the
+  examples from the pages.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

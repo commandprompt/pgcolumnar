@@ -665,3 +665,84 @@ def test_the_scan_read_sql_statements(ds, expect):
 
 def test_no_documented_query_tests_pg_extension_across_databases(ds, expect):
     expect.text(ds["xdb"], "0", "no documented query tests pg_extension while listing databases")
+
+
+# ---- the examples a reader pastes (#2093) ---------------------------------------------
+# Written apart from the shell's awk: Python walks the fences itself and reads a section
+# with its own heading rule.
+def _sql_fence_lines(text):
+    """-> (line number, line) for every line inside a ```sql fence."""
+    out, fence = [], None
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.startswith("```"):
+            fence = None if fence is not None else line[3:].strip()
+            continue
+        if fence == "sql":
+            out.append((n, line))
+    return out
+
+
+def _doc_section(name, heading):
+    """-> the rendered text of `name` from the line starting `heading` to the next
+    heading outside a fence, or None when no line starts with it."""
+    text = _rendered(DOCS / name)
+    if text is None:
+        return None
+    lines, out, fenced, found = text.split("\n"), [], False, False
+    for line in lines:
+        if not found:
+            if line.startswith(heading):
+                found = True
+                out.append(line)
+            continue
+        if line.startswith("```"):
+            fenced = not fenced
+        elif line.startswith("#") and not fenced:
+            break
+        out.append(line)
+    return "\n".join(out) if found else None
+
+
+_CONF_LINE = re.compile(r"^(?:[a-z_]+(?:\.[a-z_]+)?\s*=|--\s*postgresql\.conf)")
+
+
+def test_no_sql_block_holds_a_postgresql_conf_line(expect):
+    hits = []
+    for p in sorted(DOCS.glob("*.md")) + [ROOT / "README.md"]:
+        hits += [f"{p.name}:{n}" for n, line in _sql_fence_lines(_read(p) or "")
+                 if _CONF_LINE.match(line)]
+    expect.text(" ".join(hits) or NONE, NONE,
+                "no sql block in the documents holds a postgresql.conf line")
+
+
+def _howto_load_paths():
+    sec = _doc_section("how-to.md", "## Load data efficiently") or ""
+    csv = {m for line in sec.split("\n") if re.search(r"format\s+csv", line, re.I)
+           for m in re.findall(r"'(/[^']*)'", line)}
+    pc = {m for line in sec.split("\n") if "parallel_copy(" in line
+          for m in re.findall(r"'(/[^']*)'", line)}
+    return csv, pc
+
+
+def test_the_how_to_load_section_names_both_files(expect):
+    csv, pc = _howto_load_paths()
+    expect.text("yes" if csv and pc else f"no (csv {sorted(csv)} parallel_copy {sorted(pc)})", "yes",
+                "premise: the how-to's load section names a CSV file and a parallel_copy file")
+
+
+def test_the_how_to_parallel_copy_does_not_read_the_csv(expect):
+    csv, pc = _howto_load_paths()
+    expect.text(" ".join(f"'{p}'" for p in sorted(csv & pc)) or NONE, NONE,
+                "the how-to's parallel_copy example does not read the CSV file its COPY example loads")
+
+
+def test_every_parallel_copy_section_names_both_settings(expect):
+    missing = []
+    for name, heading in (("how-to.md", "## Load data efficiently"),
+                          ("user-guide.md", "### Parallel bulk load"),
+                          ("sql-reference.md", "### pgcolumnar.parallel_copy(")):
+        sec = _doc_section(name, heading) or ""
+        missing += [f"{name}:{g}" for g in ("max_prepared_transactions", "max_worker_processes")
+                    if g not in sec]
+    expect.text(" ".join(missing) or NONE, NONE,
+                "every parallel_copy section names max_prepared_transactions and max_worker_processes")

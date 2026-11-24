@@ -27,7 +27,12 @@ set -uo pipefail
 # bgworker plus N loader bgworkers, so the cluster needs 2PC capacity and enough
 # worker slots. max_prepared_transactions is PGC_POSTMASTER, so it must be set
 # before the cluster starts (pgc_setup reads PGC_EXTRA_CONF into postgresql.conf).
-export PGC_EXTRA_CONF=$'max_prepared_transactions=8\nmax_worker_processes=16'
+#
+# max_worker_processes STAYS AT ITS DEFAULT OF 8 (#2093). It was 16 here, which
+# hid that the documented examples asked for 8 workers: with the coordinator and
+# the server's own background workers, 8 loaders do not fit a default server. No
+# check here uses more than 4 loaders, which fit.
+export PGC_EXTRA_CONF=$'max_prepared_transactions=8'
 
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
@@ -661,5 +666,44 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 	"$(q "SELECT (pgcolumnar.file_split_offsets('$LOCAL_S3A', 2))[3]")" "$(stat -c %s "$DATADIR/s3a:/ctl.txt")"
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
+
+
+# ---- #2093: the documented worker counts fit a default server ---------------
+# Each load takes one background worker slot per loader plus one for its
+# coordinator, and the server's own background workers hold slots too. The docs
+# asked for 8 workers, which failed at the default max_worker_processes = 8 with
+# "could not register pgcolumnar parallel_copy loader 6 of 8". Every explicit
+# worker count in a page's parallel_copy calls is read from the page and loaded
+# with, into a single columnar table, on this cluster at the default setting.
+check "premise: the cluster runs at the default max_worker_processes" \
+	"$(q "SELECT setting = boot_val FROM pg_settings WHERE name = 'max_worker_processes'")" "t"
+psql_run "CREATE TABLE t_doc (id int, txt text) USING pgcolumnar;"
+F_DOC="$(make_file 5000)"
+doc_counts() {	# doc_counts PAGE -> every explicit worker count in its parallel_copy calls
+	grep -oE "parallel_copy\('[^']*', *'[^']*', *[0-9]+" "$PGC_SRCDIR/docs/$1" | grep -oE '[0-9]+$'
+}
+doc_loads() {	# doc_loads PAGE -> "N=rows" per count, the error for a failed load
+	local n out acc=""
+	for n in $(doc_counts "$1"); do
+		psql_run "TRUNCATE t_doc;"
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+			-c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', $n)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+		acc="$acc${acc:+ }$n=$out"
+	done
+	echo "${acc:-no worker count found}"
+}
+doc_wants() {	# doc_wants PAGE -> "N=5000" per count
+	local n acc=""
+	for n in $(doc_counts "$1"); do acc="$acc${acc:+ }$n=5000"; done
+	echo "${acc:-at least one worker count}"
+}
+check "the how-to's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads how-to.md)" "$(doc_wants how-to.md)"
+check "the user guide's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads user-guide.md)" "$(doc_wants user-guide.md)"
+check "the SQL reference's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads sql-reference.md)" "$(doc_wants sql-reference.md)"
+check "no prepared transaction is left after the documented loads" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" "0"
 
 pgc_summary

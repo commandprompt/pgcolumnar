@@ -858,4 +858,50 @@ check "no documented query tests pg_extension while listing databases" \
 	"$(printf '%s\n' "$_xdb_stmts" | grep 'pg_database' | grep -c 'pg_extension')" "0"
 
 
+
+# A POSTGRESQL.CONF LINE IS NOT SQL (#2093). how-to.md fenced two postgresql.conf
+# snippets as ```sql, so a reader who pasted them into psql got `syntax error at or
+# near "pgcolumnar"`. A setting line starts in column one with a setting name and an
+# `=`; no SQL statement in these pages starts that way. Configuration goes in ```conf.
+_conf_in_sql="$(for f in $docs; do
+	awk -v f="$(basename "$f")" '/^```/ {if (b) {b=0} else if (/^```sql[[:space:]]*$/) {b=1}; next}
+		b && (/^[a-z_]+(\.[a-z_]+)?[[:space:]]*=/ || /^--[[:space:]]*postgresql\.conf/) {print f ":" FNR}' "$f"
+done | tr '\n' ' ' | sed 's/ $//')"
+check "no sql block in the documents holds a postgresql.conf line" "${_conf_in_sql:-none}" "none"
+
+# THE FILE parallel_copy READS IS COPY TEXT FORMAT (#2093). The how-to loaded
+# /data/events.csv with COPY (FORMAT csv, HEADER true) and then gave the same file to
+# parallel_copy, which reads text format only, so the header row failed as data.
+# _section_of FILE HEADING: the rendered text from that heading to the next one.
+_section_of() {
+	_md "$1" | awk -v h="$2" 'index($0, h) == 1 {f=1; print; next} f && /^#/ && !c {exit} /^```/ {c=!c} f {print}'
+}
+_howto_load="$(_section_of "$SRCDIR/docs/how-to.md" '## Load data efficiently')"
+_csv_paths="$(printf '%s\n' "$_howto_load" | grep -i 'FORMAT csv' | grep -o "'/[^']*'" | LC_ALL=C sort -u)"
+_pc_paths="$(printf '%s\n' "$_howto_load" | grep 'parallel_copy(' | grep -o "'/[^']*'" | LC_ALL=C sort -u)"
+check "premise: the how-to's load section names a CSV file and a parallel_copy file" \
+	"$([ -n "$_csv_paths" ] && [ -n "$_pc_paths" ] && echo yes || echo "no (csv [$_csv_paths] parallel_copy [$_pc_paths])")" "yes"
+_shared="$(LC_ALL=C comm -12 <(printf '%s\n' "$_csv_paths") <(printf '%s\n' "$_pc_paths") | tr '\n' ' ' | sed 's/ $//')"
+check "the how-to's parallel_copy example does not read the CSV file its COPY example loads" \
+	"${_shared:-none}" "none"
+
+# THE TWO SERVER SETTINGS parallel_copy NEEDS, NAMED TOGETHER (#2093). Each load
+# prepares one transaction per worker, and it takes one background worker slot per
+# worker plus one for its coordinator. The pages named max_prepared_transactions but
+# not max_worker_processes, so 8 workers failed on a default server with "could not
+# register pgcolumnar parallel_copy loader 6 of 8".
+_pc_missing=""
+for _ps in "how-to.md|## Load data efficiently" "user-guide.md|### Parallel bulk load" \
+	"sql-reference.md|### pgcolumnar.parallel_copy("; do
+	_pf="${_ps%%|*}"; _ph="${_ps#*|}"
+	_pt="$(_section_of "$SRCDIR/docs/$_pf" "$_ph")"
+	for _g in max_prepared_transactions max_worker_processes; do
+		printf '%s' "$_pt" | grep -q "$_g" || _pc_missing="$_pc_missing $_pf:$_g"
+	done
+done
+_pc_missing="${_pc_missing# }"
+check "every parallel_copy section names max_prepared_transactions and max_worker_processes" \
+	"${_pc_missing:-none}" "none"
+
+
 pgc_summary

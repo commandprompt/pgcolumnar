@@ -7223,6 +7223,7 @@ Phase 1 removal proofs, each red on its arm: no `OFFSET 0` (the cost arm), no is
 | `test_a_rollup_and_its_source_are_dropped_together` | the view depends on its source, as a view over it would (#1376): `DROP TABLE` of the source is refused (`2BP01`), `CASCADE` takes the view, its partials table and its catalog rows, and `DROP VIEW` takes the partials and the rows. A role that cannot read a table cannot tie a rollup row to it (`42501`), so it cannot block that table's drop. Nor can it name another role's table as its partials (`42501`, and that table survives its view's drop), or a non-view as its rollup (`42809`); and a written row's view, partials and source cannot be changed (`0A000`) |
 | `test_rollup_dump_and_restore` | a dump carries a rollup's definition; after a restore into another database, and into the same one after DROP EXTENSION, the restored source has the recorded storage id, and the owner's refresh is refused with `55000` naming `rebase_rollup`, the rollup untouched; after the rebase a refresh folds nothing, then exactly the rows appended since, and the rollup equals a full recompute (#1377) |
 | `test_min_and_max_keep_each_columns_collation` | #1341: min and max over a `"C"` column and an en_US column equal a recompute after a refresh that folds new rows into an existing bucket, where the two collations disagree; the partials columns carry the default collation, so the fold's own comparison is what is tested. No en_US collation: `cannot_run` |
+| `test_the_how_to_rollup_example_runs_as_written` | the how-to's partitions example runs, then its rollup example runs after it: the rollup's source is a columnar table, not the partitioned `metrics` (#2093) |
 | `test_row_tid_refuses_a_row_number_below_one` | `row_tid(0)` and `row_tid(-1)` are refused with `22003` and `row_tid(1)` is accepted. A test of its own, last in the file: without the floor `row_tid(0)` crashed the backend |
 
 ## 98. test_timeseries_recipes.py: the gap-fill, LOCF and interpolation recipes answer what they claim
@@ -7911,6 +7912,11 @@ The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#4
 | `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
 | `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
+| `test_the_how_to_creates_its_events_table_for_parquet` | the how-to's first example creates its `events` table, in a private database (#2093) |
+| `test_the_how_to_parquet_export_runs` | the how-to's Parquet export example runs as written on that table |
+| `test_the_how_to_parquet_read_runs` | the how-to's Parquet read example runs on the file that export wrote: its `read_parquet` names every column |
+| `test_the_user_guide_creates_its_events_table` | the user guide's first example creates its `events` table |
+| `test_the_sql_reference_round_trip_runs` | the SQL reference's Parquet round trip runs on the user guide's `events` table |
 
 ## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
 
@@ -11588,6 +11594,10 @@ Every test makes one check, by the shell's name. Readings are computed once, in 
 | `test_context_says_why_rebasing_works` | and says WHY rebasing works where merging does not |
 | `test_the_scan_read_sql_statements` | premise: the scan read SQL statements from the documents |
 | `test_no_documented_query_tests_pg_extension_across_databases` | no documented query tests pg_extension while listing databases |
+| `test_no_sql_block_holds_a_postgresql_conf_line` | no ```sql block in the documents holds a postgresql.conf line: a setting name and `=` in column one, or a `-- postgresql.conf` comment (#2093) |
+| `test_the_how_to_load_section_names_both_files` | premise: the how-to's load section names a CSV file and a parallel_copy file |
+| `test_the_how_to_parallel_copy_does_not_read_the_csv` | the how-to's parallel_copy example does not read the CSV file its COPY example loads, because parallel_copy reads text format only (#2093) |
+| `test_every_parallel_copy_section_names_both_settings` | the parallel_copy sections of the how-to, the user guide and the SQL reference each name `max_prepared_transactions` and `max_worker_processes` (#2093) |
 
 ## 280. test_audit.py: the bug-audit regressions hold, and each refusal is its own guard's
 
@@ -11819,6 +11829,11 @@ One check per test, each by the shell's name, every reading a value (a failed qu
 | `test_native_cluster_unsupported_type_is_refused` | unsupported type errors cleanly |
 | `test_native_cluster_missing_column_is_refused` | missing column errors cleanly |
 | `test_native_cluster_backend_survives_the_refusals` | backend still up after the refusals |
+| `test_the_how_to_creates_its_events_table` | the how-to's first example, read from docs/how-to.md, creates its `events` table (#2093) |
+| `test_the_how_to_sort_examples_run_on_its_events_table` | the how-to's sort examples (blocks 1 and 3 of its sort section) run as written on that table |
+| `test_the_how_to_bloom_example_runs_on_its_events_table` | the how-to's bloom example runs as written on that table |
+| `test_the_how_to_projection_example_runs_on_its_events_table` | the how-to's projection example runs as written on that table |
+| `test_the_how_to_index_example_runs_on_its_events_table` | the how-to's index example runs as written on that table, one statement at a time as psql sends it |
 
 ## 289. test_native_exact_selection.py: exact selection rules out vectors no zone map can, and loses no row on a bound
 
@@ -12132,6 +12147,11 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_the_cluster_runs_at_the_default_worker_slots` | premise: the session cluster runs at the default `max_worker_processes` (#2093) |
+| `test_the_how_to_worker_counts_fit_a_default_server` | every explicit worker count in the how-to's parallel_copy calls loads 5000 rows at that default |
+| `test_the_user_guide_worker_counts_fit_a_default_server` | the same for the user guide |
+| `test_the_sql_reference_worker_counts_fit_a_default_server` | the same for the SQL reference |
+| `test_the_documented_loads_leave_no_prepared_transaction` | no prepared transaction is left after those loads |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 

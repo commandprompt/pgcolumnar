@@ -15,6 +15,12 @@ Both functions read local files only, so both refuse an object-storage URL with
 check and before it checks the target's kind, so a heap target gets 0A000. The
 refusal covers s3a:// and s3n:// too, in any case (#1918).
 
+THE DOCUMENTED WORKER COUNTS FIT A DEFAULT SERVER (#2093). Each load takes one
+background worker slot per loader plus one for its coordinator, and the docs asked
+for 8 workers, which failed at the default max_worker_processes of 8. Every explicit
+worker count in a page's parallel_copy calls is read with this file's own regex and
+loaded with, on the session cluster, which keeps that setting at its default.
+
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
 of the COPY path. A failed load must carry the loader's own message, not any message
@@ -27,7 +33,9 @@ transactions are counted in that database only, so another file's leftover canno
 redden this one.
 """
 import os
+import pathlib
 import random
+import re
 import threading
 
 import psycopg
@@ -806,3 +814,70 @@ def test_parallel_copy_split_still_reads_a_local_path_holding_s3a(pcopy, expect)
 def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
     expect.num(pcopy["pcopy local s3a"], 5000,
                "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")
+
+
+# ---- #2093: the documented worker counts fit a default server ---------------------
+DOCS = pathlib.Path(__file__).resolve().parents[2] / "docs"
+_COUNT = re.compile(r"parallel_copy\('[^']*',\s*'[^']*',\s*(\d+)")
+
+
+@pytest.fixture(scope="module")
+def doc_loads(pgc_cluster, server_dir):
+    db = "pgc_parallel_copy_docs"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {db}")
+    r = {}
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as c:
+            c.execute("CREATE EXTENSION pgcolumnar")
+            r["default"] = c.execute("SELECT setting = boot_val FROM pg_settings "
+                                     "WHERE name = 'max_worker_processes'").fetchone()[0]
+            path = str(server_dir / "doc_counts.txt")
+            with open(path, "w") as fh:
+                fh.writelines(f"{g}\tdoc_{g}\n" for g in range(1, 5001))
+            os.chmod(path, 0o644)
+            c.execute("CREATE TABLE t_doc (id int, txt text) USING pgcolumnar")
+            for page in ("how-to.md", "user-guide.md", "sql-reference.md"):
+                got, want = [], []
+                for n in _COUNT.findall((DOCS / page).read_text()):
+                    c.execute("TRUNCATE t_doc")
+                    try:
+                        rows = c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, %s)",
+                                         (path, int(n))).fetchone()[0]
+                        got.append(f"{n}={rows}")
+                    except psycopg.Error as e:
+                        got.append(f"{n}=ERROR:  " + (str(e).splitlines() or ["?"])[0])
+                    want.append(f"{n}=5000")
+                r[page] = (" ".join(got) or "no worker count found",
+                           " ".join(want) or "at least one worker count")
+            r["leak"] = c.execute("SELECT count(*) FROM pg_prepared_xacts").fetchone()[0]
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+
+
+def test_the_cluster_runs_at_the_default_worker_slots(doc_loads, expect):
+    expect.text(str(doc_loads["default"]), "True",
+                "premise: the cluster runs at the default max_worker_processes")
+
+
+def test_the_how_to_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["how-to.md"]
+    expect.text(got, want, "the how-to's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_user_guide_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["user-guide.md"]
+    expect.text(got, want, "the user guide's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_sql_reference_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["sql-reference.md"]
+    expect.text(got, want,
+                "the SQL reference's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_documented_loads_leave_no_prepared_transaction(doc_loads, expect):
+    expect.num(doc_loads["leak"], 0, "no prepared transaction is left after the documented loads")

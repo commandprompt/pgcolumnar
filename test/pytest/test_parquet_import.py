@@ -24,9 +24,17 @@ build too. The file must exist before the call, or the import fails at the OPEN 
 never reaches the relation. A heap target must still import: the guard is about
 storage, not about being columnar. A refusal is 42809, and the crash is read from the
 server log, since a dropped connection is an error too and a later one succeeds.
+
+THE PARQUET EXAMPLES IN THE DOCS RUN AS WRITTEN (#2093). The how-to's read_parquet
+declared 3 of the file's columns, and read_parquet needs every one; the SQL
+reference's round trip, run on the user guide's `events` with a bare numeric amount,
+was refused at the import. The blocks are read from the pages by this file's own
+reader and run through psycopg, with their /data/ and /tmp/ paths moved into a
+directory the server can write. They need no pyarrow, so they have their own fixture.
 """
 import datetime
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -402,3 +410,109 @@ def test_a_partitioned_parent_is_refused(pgc_conn, pgc_cluster, server_dir, expe
     died = _since(pgc_cluster, crashes)
     expect.text(f"{'1' if alive else ''}|{died} backend crashes" if isinstance(died, int) else died, "1|0 backend crashes",
                 "and the cluster is still up, so the refusal was not an abort")
+
+
+# ---- the documents' Parquet examples (#2093) -------------------------------------------
+DOCS = pathlib.Path(__file__).resolve().parents[2] / "docs"
+DOCS_DB = "pgc_parquet_import_docs"
+DOC_ROWS = ("INSERT INTO events (id, ts, amount) "
+            "SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', g / 100.0 "
+            "FROM generate_series(1, 5000) g")
+
+
+def _doc_sql(page, heading, n):
+    """-> the nth ```sql block in the section of `page` whose heading starts with
+    `heading`, or None."""
+    lines = (DOCS / page).read_text().split("\n")
+    start = next((i for i, line in enumerate(lines) if line.startswith(heading)), None)
+    if start is None:
+        return None
+    k, fence, body = 0, None, []
+    for line in lines[start + 1:]:
+        if line.startswith("```"):
+            if fence is None:
+                fence = line[3:].strip()
+                k += fence == "sql"
+                continue
+            if fence == "sql" and k == n:
+                return "\n".join(body)
+            fence = None
+            continue
+        if fence is None and line.startswith("#"):
+            return None
+        if fence == "sql" and k == n:
+            body.append(line)
+    return None
+
+
+def _statements(sql):
+    """-> the statements of a doc block, one per string, as psql sends them. One
+    multi-statement string would run as one implicit transaction, where VACUUM fails."""
+    out = []
+    for part in re.split(r";[ \t]*(?:--[^\n]*)?(?:\n|$)", sql):
+        if re.sub(r"--[^\n]*", "", part).strip():
+            out.append(part)
+    return out
+
+
+@pytest.fixture(scope="module")
+def pq_docs(pgc_cluster, server_dir):
+    base = server_dir / "docs"
+    (base / "events").mkdir(parents=True, exist_ok=True)
+    for d in (base, base / "events"):
+        d.chmod(0o777)
+
+    def run(conn, page, heading, n):
+        sql = _doc_sql(page, heading, n)
+        if not sql:
+            return f"no block {n} under '{heading}' in {page}"
+        sql = re.sub(r"'/(?:data|tmp)/", "'" + str(base) + "/", sql)
+        try:
+            for stmt in _statements(sql):
+                conn.execute(stmt)
+        except psycopg.Error as exc:
+            return query_error(_first_line(exc))
+        return "ok"
+
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {DOCS_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DOCS_DB}")
+    r = {}
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=DOCS_DB), autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION pgcolumnar")
+            r["howto create"] = run(conn, "how-to.md", "## Create a columnar table", 1)
+            conn.execute(DOC_ROWS)
+            r["howto export"] = run(conn, "how-to.md", "## Read and write Parquet", 2)
+            r["howto read"] = run(conn, "how-to.md", "## Read and write Parquet", 1)
+            conn.execute("DROP TABLE events CASCADE")
+            r["ug create"] = run(conn, "user-guide.md", "## Create a columnar table", 1)
+            conn.execute(DOC_ROWS)
+            conn.execute("SELECT pgcolumnar.export_parquet('events', %s)",
+                         (str(base / "events" / "part-0.parquet"),))
+            r["sr round trip"] = run(conn, "sql-reference.md", "### pgcolumnar.import_parquet(", 1)
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DOCS_DB} WITH (FORCE)")
+
+
+def test_the_how_to_creates_its_events_table_for_parquet(pq_docs, expect):
+    expect.text(pq_docs["howto create"], "ok", "the how-to's first example creates its events table")
+
+
+def test_the_how_to_parquet_export_runs(pq_docs, expect):
+    expect.text(pq_docs["howto export"], "ok", "the how-to's Parquet export example runs on that events table")
+
+
+def test_the_how_to_parquet_read_runs(pq_docs, expect):
+    expect.text(pq_docs["howto read"], "ok", "the how-to's Parquet read example runs on the file that export wrote")
+
+
+def test_the_user_guide_creates_its_events_table(pq_docs, expect):
+    expect.text(pq_docs["ug create"], "ok", "the user guide's first example creates its events table")
+
+
+def test_the_sql_reference_round_trip_runs(pq_docs, expect):
+    expect.text(pq_docs["sr round trip"], "ok",
+                "the SQL reference's Parquet round trip runs on the user guide's events table")

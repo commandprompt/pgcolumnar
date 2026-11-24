@@ -12,7 +12,7 @@ Add `USING pgcolumnar` to `CREATE TABLE`:
 CREATE TABLE events (
     id          bigint,
     customer_id int,
-    amount      numeric,
+    amount      numeric(12,2),
     kind        text,
     ts          timestamptz
 ) USING pgcolumnar;
@@ -76,14 +76,21 @@ its own, so a `ROLLBACK` in the caller does not undo it.
 
 ```sql
 CREATE TABLE events_load (id bigint, ts timestamptz, val double precision) USING pgcolumnar;
-SELECT pgcolumnar.parallel_copy('events_load', '/data/events.txt', 8);
+SELECT pgcolumnar.parallel_copy('events_load', '/data/events.txt', 4);
 ```
 
 The target is either a single columnar table or a RANGE-partitioned table with
 columnar partitions. A single table needs no row order. A partitioned target
 needs the file sorted ascending by the partition key, and the key type must be
-numeric or a date/time type. Set `max_prepared_transactions` above the worker
-count first, because the load prepares one transaction per worker. On a machine
+numeric or a date/time type. Set two server settings first, then restart:
+
+- `max_prepared_transactions` at least the worker count, because the load
+  prepares one transaction per worker.
+- `max_worker_processes` above the worker count. The load takes one background
+  worker slot per worker, plus one for its coordinator, and the server's own
+  background workers hold slots too. At the default of 8, four workers fit.
+
+On a machine
 with many cores this loads several times faster than one `COPY`. See
 [Benchmarks](benchmarks.md#parallel-bulk-ingest) for measured numbers.
 

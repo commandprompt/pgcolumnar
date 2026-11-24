@@ -1327,6 +1327,7 @@ docs_style	docs_style	every document citing VERSION quotes the version VERSION h
 docs_style	docs_style	every document making the claim states it in a form this rule can read	15;16;17;18;19	2026-10-21	README.md: the latest-published claim reworded out of both readable forms
 docs_style	docs_style	every document names the same latest published pre-release	15;16;17;18;19	2026-10-21	docs/roadmap.md: the latest-published claim names v1.0-alpha1
 docs_style	docs_style	every document stating the upgrade chain states it in a form this rule can read	15;16;17;18;19	2026-10-21	docs/limitations.md: the upgrade-chain sentence names no destination
+docs_style	docs_style	every parallel_copy section names max_prepared_transactions and max_worker_processes	15;16;17;18;19	2026-11-24	-
 docs_style	docs_style	every pgcolumnar--*.sql in the tree is in the published distribution	15;16;17;18;19	2026-10-21	an untracked pgcolumnar--1.0-alpha2--1.0-alphaX.sql, a second script starting at 1.0-alpha2
 docs_style	docs_style	every recorded post-tag entry carries a reason	15;16;17;18;19	2026-10-21	test/changelog_post_tag.txt: a row with no reason
 docs_style	docs_style	every such document names default_version as the version one UPDATE reaches	15;16;17;18;19	2026-10-21	docs/limitations.md: the upgrade-chain sentence names no destination
@@ -1336,6 +1337,7 @@ docs_style	docs_style	how-to names clustering on the join key for the runtime fi
 docs_style	docs_style	no document carries a merge conflict marker	15;16;17;18;19	2026-10-21	docs/user-guide.md: a merge conflict marker line
 docs_style	docs_style	no documented query tests pg_extension while listing databases	15;16;17;18;19	2026-10-21	docs/how-to.md: a sql block testing pg_extension while listing pg_database
 docs_style	docs_style	no recorded post-tag entry is stale, so the allowance cannot widen silently	15;16;17;18;19	2026-10-21	test/changelog_post_tag.txt: a row for 1.0-alpha9, which has no section
+docs_style	docs_style	no sql block in the documents holds a postgresql.conf line	15;16;17;18;19	2026-11-24	-
 docs_style	docs_style	premise: META.json is present and parses	15;16;17;18;19	never	-
 docs_style	docs_style	premise: META.json names a base install script	15;16;17;18;19	never	-
 docs_style	docs_style	premise: and it names VERSION's version at all	15;16;17;18;19	never	-
@@ -1347,12 +1349,14 @@ docs_style	docs_style	premise: the PGXN form was derived from VERSION, not empty
 docs_style	docs_style	premise: the VERSION file has a version to compare against	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the changelog sweep found dated release sections	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the control file names a default_version to arrive at	15;16;17;18;19	never	-
+docs_style	docs_style	premise: the how-to's load section names a CSV file and a parallel_copy file	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the post-tag allowance file is present and readable	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the scan read SQL statements from the documents	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the tree has install scripts to check	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the tree ships upgrade scripts to derive the chain from	15;16;17;18;19	never	-
 docs_style	docs_style	premise: the version badge is present	15;16;17;18;19	never	-
 docs_style	docs_style	the how-to keeps its pg_partman section under its own heading	15;16;17;18;19	2026-10-21	docs/how-to.md: a paragraph inserted between the pg_partman heading and its steps
+docs_style	docs_style	the how-to's parallel_copy example does not read the CSV file its COPY example loads	15;16;17;18;19	2026-11-24	-
 docs_style	docs_style	the roadmap is in the documentation nav	15;16;17;18;19	2026-10-21	mkdocs.yml: the roadmap nav entry commented out with #
 docs_style	docs_style	the script META.json names is in the published distribution	15;16;17;18;19	2026-10-21	META.json: provides.pgcolumnar.file names pgcolumnar--1.0-alpha3.sql
 docs_style	docs_style	the version badge names no version other than VERSION's	15;16;17;18;19	2026-10-21	badges/version.svg: one of its three version strings left at 1.0-alpha3
@@ -4251,6 +4255,11 @@ native_cluster	native_cluster	row count	15;16;17;18;19	never	-
 native_cluster	native_cluster	row count after cluster	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the eager curve rewrite drops the first sorted row it writes back
 native_cluster	native_cluster	single-column cluster parity	15;16;17;18;19	2026-10-22	columnar_vacuum.c: the eager curve rewrite drops the first sorted row it writes back
 native_cluster	native_cluster	single-column clustering lets an id range skip most groups	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb rewrites only when given more than one column, so a single-column cluster() does nothing
+native_cluster	native_cluster	the how-to's bloom example runs on that events table	15;16;17;18;19	2026-11-24	-
+native_cluster	native_cluster	the how-to's first example creates its events table	15;16;17;18;19	never	-
+native_cluster	native_cluster	the how-to's index example runs on that events table	15;16;17;18;19	2026-11-24	-
+native_cluster	native_cluster	the how-to's projection example runs on that events table	15;16;17;18;19	2026-11-24	-
+native_cluster	native_cluster	the how-to's sort examples run on that events table	15;16;17;18;19	2026-11-24	-
 native_cluster	native_cluster	the plan under test is a columnar custom scan	15;16;17;18;19	never	-
 native_cluster	native_cluster	unsupported type errors cleanly	15;16;17;18;19	2026-10-22	columnar_vacuum.c: cluster_verb_validate drops its unsupported-type guard, so a later guard refuses text in other words
 native_compact	native_compact	and still reads all of them after the delete and the compact	15;16;17;18;19	never	-
@@ -6709,6 +6718,7 @@ parallel_copy	parallel_copy	max_prepared_transactions guard fires	15;16;17;18;19
 parallel_copy	parallel_copy	missing file: errors, not crashes	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	missing file: nothing loaded	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	missing file: server still up (no worker crash)	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	no prepared transaction is left after the documented loads	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	no trailing newline / 4 workers: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
 parallel_copy	parallel_copy	no trailing newline / 4 workers: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	non-columnar target is rejected	15;16;17;18;19	never	-
@@ -6738,6 +6748,7 @@ parallel_copy	parallel_copy	parallel_copy(single table, 2 workers): rows returne
 parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): no prepared-transaction leak	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): result == single-COPY oracle	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	parallel_copy(single table, 4 workers): rows returned = 5000	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
+parallel_copy	parallel_copy	premise: the cluster runs at the default max_worker_processes	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	signed keys straddling 0: no prepared-transaction leak	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	signed keys straddling 0: result == oracle (no misbucketing/deadlock)	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	signed keys straddling 0: rows returned = 500	15;16;17;18;19	never	-
@@ -6747,6 +6758,9 @@ parallel_copy	parallel_copy	single table: no prepared-transaction leak after fai
 parallel_copy	parallel_copy	single-COPY heap and columnar agree	15;16;17;18;19	2026-10-22	columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	text partition key is rejected (not a crash)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the numeric or date/time partition-key restriction removed
 parallel_copy	parallel_copy	text partition key: server still up (no crash)	15;16;17;18;19	2026-10-22	test/parallel_copy.sh: a backend killed by SIGSEGV, and the server recovered, before each survival check
+parallel_copy	parallel_copy	the SQL reference's parallel_copy worker counts load at the default max_worker_processes	15;16;17;18;19	2026-11-24	-
+parallel_copy	parallel_copy	the how-to's parallel_copy worker counts load at the default max_worker_processes	15;16;17;18;19	2026-11-24	-
+parallel_copy	parallel_copy	the user guide's parallel_copy worker counts load at the default max_worker_processes	15;16;17;18;19	2026-11-24	-
 parallel_copy	parallel_copy	unsorted input is rejected	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	unsorted rejection loads nothing	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	witness: >4 distinct stripe ids (each worker reserved several stripes)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
@@ -7117,8 +7131,13 @@ parquet_import	parquet_import	premise: so it has no storage of its own	15;16;17;
 parquet_import	parquet_import	premise: the parent is partitioned and carries the columnar access method	15;16;17;18;19	never	-
 parquet_import	parquet_import	reject column-count mismatch	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the scalar binder's lf >= pf->ncols check is skipped, so a target with a column the file lacks reads past the file's leaves (signal 11)
 parquet_import	parquet_import	reject non-parquet file	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the magic check is skipped (if (false && (memcmp(head, PAR1 ...)))), so a file that is not Parquet is parsed as one
+parquet_import	parquet_import	the SQL reference's Parquet round trip runs on the user guide's events table	15;16;17;18;19	2026-11-24	-
 parquet_import	parquet_import	the failed second import left the row count alone	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
+parquet_import	parquet_import	the how-to's Parquet export example runs on that events table	15;16;17;18;19	never	-
+parquet_import	parquet_import	the how-to's Parquet read example runs on the file that export wrote	15;16;17;18;19	2026-11-24	-
+parquet_import	parquet_import	the how-to's first example creates its events table	15;16;17;18;19	never	-
 parquet_import	parquet_import	the index-scan check really uses the index	15;16;17;18;19	never	-
+parquet_import	parquet_import	the user guide's first example creates its events table	15;16;17;18;19	never	-
 parquet_import	parquet_import	v1 contents match heap oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATE adds the Unix-to-PostgreSQL epoch offset instead of subtracting it (pg_sub_s32_overflow -> pg_add_s32_overflow)
 parquet_import	parquet_import	v1 row count matches oracle	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
 parquet_import	parquet_import	v1 rows imported	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
@@ -8365,6 +8384,8 @@ rollup	rollup	the dump restores into its own database after DROP EXTENSION, agai
 rollup	rollup	the first refresh folds every row	15;16;17;18;19	2026-10-14	refresh_rollup folding only the first new group;refresh_rollup returns one more than it folded
 rollup	rollup	the history rollup folded every row	15;16;17;18;19	2026-10-14	refresh_rollup folding only the first new group;refresh_rollup returns one more than it folded
 rollup	rollup	the history rollup holds old buckets	15;16;17;18;19	never	-
+rollup	rollup	the how-to's partitions example runs	15;16;17;18;19	never	-
+rollup	rollup	the how-to's rollup example runs after it	15;16;17;18;19	2026-11-24	-
 rollup	rollup	the next refresh folds the rows committed during the last one, once	15;16;17;18;19	2026-10-14	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup folding only the first new group;refresh_rollup recording the folded groups from a fresh read after the fold;refresh_rollup returns one more than it folded;row_tid mapping 290 rows a block instead of the AM's
 rollup	rollup	the owner reads its source's groups through the definer helpers	15;16;17;18;19	never	-
 rollup	rollup	the paused refresh folded what was there before it began	15;16;17;18;19	2026-10-14	refresh_rollup folding every group, ignoring the recorded snapshot;refresh_rollup folding only the first new group;refresh_rollup returns one more than it folded;row_tid mapping 290 rows a block instead of the AM's

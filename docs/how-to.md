@@ -16,7 +16,8 @@ Create a new table with the access method, or convert an existing heap table.
 
 ```sql
 -- new table
-CREATE TABLE events (id bigint, ts timestamptz, region text, amount numeric)
+CREATE TABLE events (id bigint, ts timestamptz, region text,
+                     customer_id bigint, order_id bigint, amount numeric(12,2))
   USING pgcolumnar;
 
 -- convert an existing table (heap to columnar, or back)
@@ -42,11 +43,21 @@ COPY events FROM '/data/events.csv' WITH (FORMAT csv, HEADER true);
 ```
 
 Load a local file in parallel with a pool of background writers.
+`parallel_copy` reads COPY text format only, with no header line, so give it a
+text file rather than the CSV file above.
 
 ```sql
-SELECT pgcolumnar.parallel_copy('events', '/data/events.csv');   -- workers auto
-SELECT pgcolumnar.parallel_copy('events', '/data/events.csv', 8);
+SELECT pgcolumnar.parallel_copy('events', '/data/events.txt');   -- workers auto
+SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 4);
 ```
+
+Set two server settings first. Both take effect only after a restart.
+
+- `max_prepared_transactions` at least the worker count, because the load
+  prepares one transaction per worker.
+- `max_worker_processes` above the worker count. The load takes one background
+  worker slot per worker, plus one for its coordinator, and the server's own
+  background workers hold slots too. At the default of 8, four workers fit.
 
 **Tuning.** Many small commits produce many small row groups, which read less
 efficiently. Run `pgcolumnar.vacuum` after a trickle load to combine them.
@@ -94,7 +105,7 @@ SELECT pgcolumnar.set_options('events', sort_by => ARRAY['region','ts']);
 SELECT pgcolumnar.vacuum_sorted('events');
 
 -- Z-order (Morton) clustering over several columns at once
-SELECT pgcolumnar.cluster('events', 'customer_id', 'amount');
+SELECT pgcolumnar.cluster('events', 'customer_id', 'ts');
 
 -- the same, on the Hilbert curve
 SELECT pgcolumnar.cluster_hilbert('events', 'customer_id', 'ts');
@@ -141,7 +152,7 @@ weaker lock so reads and writes continue. Read `pgcolumnar.sort_status` to see h
 much order remains, and re-sort when it decays.
 
 ```sql
-SELECT pgcolumnar.recluster('events', 'customer_id', 'amount');   -- online
+SELECT pgcolumnar.recluster('events', 'customer_id', 'ts');   -- online
 SELECT * FROM pgcolumnar.sort_status('events');
 ```
 
@@ -620,15 +631,21 @@ folds in the rows added since the last refresh, and recomputes only the buckets
 whose rows were deleted or updated. Queries read the rollup instead of the raw
 table.
 
+The source must be a columnar table. A partitioned table, such as `metrics`
+above, is refused.
+
 ```sql
+CREATE TABLE sensor_data (ts timestamptz NOT NULL, device int, value float8)
+    USING pgcolumnar;
+
 SELECT pgcolumnar.create_rollup(
-    'metrics_hourly', 'metrics', 'ts', '1 hour', '2026-01-01 00:00:00+00',
+    'sensor_hourly', 'sensor_data', 'ts', '1 hour', '2026-01-01 00:00:00+00',
     group_by      => '{device}',
     agg_functions => '{count,sum,min,max,avg}',
     agg_columns   => '{*,value,value,value,value}');
 
-SELECT pgcolumnar.refresh_rollup('metrics_hourly');   -- returns rows read
-SELECT * FROM metrics_hourly WHERE bucket >= now() - interval '1 day';
+SELECT pgcolumnar.refresh_rollup('sensor_hourly');   -- returns rows read
+SELECT * FROM sensor_hourly WHERE bucket >= now() - interval '1 day';
 ```
 
 The rollup is a view with a `bucket` column, the `group_by` columns, and one
@@ -866,8 +883,8 @@ After the move:
 A background daemon can compact and recluster tables on a schedule. The threshold
 values below are examples, not the defaults.
 
-```sql
--- postgresql.conf
+```conf
+# postgresql.conf
 pgcolumnar.autovacuum = on
 pgcolumnar.autovacuum_naptime = '60s'
 pgcolumnar.autovacuum_compact_threshold = 0.2
@@ -882,10 +899,13 @@ fast no-op, so the daemon does not churn storage.
 ## Read and write Parquet
 
 Read a Parquet file directly, inspect its schema, or load it into a table.
+`read_parquet` needs every column of the file in its column list, in the file's
+order. `parquet_schema` lists them.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('/data/events.parquet')
-  AS t(id bigint, ts timestamptz, region text);
+  AS t(id bigint, ts timestamptz, region text,
+       customer_id bigint, order_id bigint, amount numeric(12,2));
 SELECT * FROM pgcolumnar.parquet_schema('/data/events.parquet');
 SELECT pgcolumnar.import_parquet('events', '/data/events.parquet');
 ```
@@ -943,14 +963,15 @@ from the server process environment.
 
 ```sql
 SELECT * FROM pgcolumnar.read_parquet('s3://bucket/events.parquet')
-  AS t(id bigint, region text);
+  AS t(id bigint, ts timestamptz, region text,
+       customer_id bigint, order_id bigint, amount numeric(12,2));
 SELECT pgcolumnar.export_parquet('events', 's3://bucket/events.parquet');
 ```
 
 Set the endpoint allow-list first, because it gates every remote scheme.
 
-```sql
--- postgresql.conf (a superuser setting)
+```conf
+# postgresql.conf (a superuser setting)
 pgcolumnar.objstore_allowed_endpoints = 's3.amazonaws.com, minio.internal'
 ```
 

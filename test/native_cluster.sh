@@ -164,4 +164,45 @@ check "missing column errors cleanly" \
 	"$(refusal "SELECT pgcolumnar.cluster('n', 'nope')" 'column "nope" does not exist in table "n"')" "42703"
 check "backend still up after the refusals" "$(survived "$crashes_before")" "1"
 
+
+# THE HOW-TO'S EXAMPLES RUN ON THE TABLE THE HOW-TO CREATES (#2093). Its first
+# example creates `events`; later examples clustered it on customer_id, which that
+# table did not have, and on amount, a numeric column that cluster refuses. Each
+# block is read from the document and run as written, so an example edited in the
+# docs is the example tested. A block that is missing fails as "no block".
+HOWTO="$PGC_SRCDIR/docs/how-to.md"
+# doc_sql HEADING N: the Nth ```sql block in the section whose heading line starts with HEADING.
+doc_sql() {
+	awk -v h="$1" -v n="$2" '!f {if (index($0, h) == 1) f=1; next}
+		/^```/ {if (c) {c=0; if (t) exit; next} c=1; if ($0 ~ /^```sql[[:space:]]*$/ && ++k == n) t=1; next}
+		!c && /^#/ {exit}
+		t {print}' "$HOWTO"
+}
+# run_doc HEADING N...: run those blocks in order; the first error, "no block", or "ok".
+run_doc() {
+	local h="$1" n b out; shift
+	for n in "$@"; do
+		b="$(doc_sql "$h" "$n")"
+		[ -n "$b" ] || { echo "no block $n under '$h'"; return; }
+		out="$(printf '%s\n' "$b" | env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" \
+			-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null | grep -m1 -E 'ERROR|FATAL')"
+		[ -z "$out" ] || { echo "$out"; return; }
+	done
+	echo ok
+}
+check "the how-to's first example creates its events table" "$(run_doc '## Create a columnar table' 1)" "ok"
+psql_run "INSERT INTO events (id, ts, region)
+	SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', 'r' || (g % 5)
+	  FROM generate_series(1, 5000) g;"
+# Blocks 1 and 3 of the sort section name events; block 2 names a table `h` of its own.
+check "the how-to's sort examples run on that events table" \
+	"$(run_doc '## Sort a table to skip more chunk groups' 1 3)" "ok"
+check "the how-to's bloom example runs on that events table" \
+	"$(run_doc '## Skip more chunk groups on equality filters' 1)" "ok"
+check "the how-to's projection example runs on that events table" \
+	"$(run_doc '## Add a projection for a second sort order' 1)" "ok"
+check "the how-to's index example runs on that events table" \
+	"$(run_doc '## Add indexes and use index-only scans' 1)" "ok"
+
+
 pgc_summary

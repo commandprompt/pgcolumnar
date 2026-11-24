@@ -677,6 +677,29 @@ else
 	done
 fi
 
+# THE HOW-TO'S ROLLUP EXAMPLE RUNS AS WRITTEN (#2093). It created a rollup on
+# `metrics`, which the how-to's partitions section creates PARTITION BY RANGE, and
+# create_rollup refused it: "relation "metrics" is not a columnar table". The two
+# sections are read from the document and run in the how-to's order.
+HOWTO="$PGC_SRCDIR/docs/how-to.md"
+# doc_sql HEADING N: the Nth ```sql block in the section whose heading line starts with HEADING.
+doc_sql() {
+	awk -v h="$1" -v n="$2" '!f {if (index($0, h) == 1) f=1; next}
+		/^```/ {if (c) {c=0; if (t) exit; next} c=1; if ($0 ~ /^```sql[[:space:]]*$/ && ++k == n) t=1; next}
+		!c && /^#/ {exit}
+		t {print}' "$HOWTO"
+}
+run_doc() {	# run_doc HEADING N -> the block's first error, "no block", or "ok"
+	local b out
+	b="$(doc_sql "$1" "$2")"
+	[ -n "$b" ] || { echo "no block $2 under '$1'"; return; }
+	out="$(printf '%s\n' "$b" | env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null | grep -m1 -E 'ERROR|FATAL')"
+	echo "${out:-ok}"
+}
+check "the how-to's partitions example runs" "$(run_doc '## Create time partitions ahead' 1)" "ok"
+check "the how-to's rollup example runs after it" "$(run_doc '## Keep a rollup up to date' 1)" "ok"
+
 # Row numbers start at 1 (#1341). LAST IN THE SUITE ON PURPOSE: without the floor,
 # row_tid(0) crashed the backend (measured on PG17), and a crash mid-suite takes the
 # checks after it down with it, premises included.

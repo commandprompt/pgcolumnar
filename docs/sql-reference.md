@@ -1001,6 +1001,12 @@ pattern. Returns the number of rows inserted.
 A partitioned table is refused with `42809`, because it has no storage of its
 own. Import into each partition instead.
 
+The example below uses the `events` table of the
+[user guide](user-guide.md#create-a-columnar-table). A round trip needs every
+column type to be one that `import_parquet` reads back. A `numeric` column needs
+a declared precision, as `numeric(12,2)` there does; see
+[Import and export type coverage](limitations.md#import-and-export-type-coverage).
+
 ```sql
 -- round-trip a table through Parquet
 SELECT pgcolumnar.export_parquet('events', '/tmp/events.parquet');   -- returns row count
@@ -1036,8 +1042,12 @@ and a coordinator commits them together only if every worker succeeded. A bad
 row, a full disk, or a constraint failure in any range rolls the whole load back.
 The target keeps its earlier contents. The load runs in background workers, so it
 commits on its own. It is not part of the calling transaction, and a caller
-`ROLLBACK` does not undo it. Set `max_prepared_transactions` above the worker
-count, because the load prepares one transaction per worker.
+`ROLLBACK` does not undo it. Set `max_prepared_transactions` to at least the
+worker count, because the load prepares one transaction per worker. Set
+`max_worker_processes` above the worker count. The load takes one background
+worker slot per worker, plus one for its coordinator, and the server's own
+background workers hold slots too. At the default of 8, four workers fit. Both
+settings take effect only after a restart.
 
 When `workers` is omitted the function derives a value from the target. For a
 partitioned target it lowers `workers` to the partition count when the count is
@@ -1076,16 +1086,16 @@ load, while the fingerprint as implemented has no measurable cost.
 
 ```sql
 -- refuse a repeat of a load this table has already taken
-SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 8, true);
+SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 4, true);
 ```
 
 ```sql
 -- single columnar table, any row order
 CREATE TABLE events (id bigint, ts timestamptz, val double precision) USING pgcolumnar;
-SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 8);   -- returns row count
+SELECT pgcolumnar.parallel_copy('events', '/data/events.txt', 4);   -- returns row count
 
 -- RANGE-partitioned target, file sorted ascending by the partition key
-SELECT pgcolumnar.parallel_copy('events_by_day', '/data/events_sorted.txt', 8);
+SELECT pgcolumnar.parallel_copy('events_by_day', '/data/events_sorted.txt', 4);
 ```
 
 ### pgcolumnar.parallel_export_parquet(target regclass, path text, workers int DEFAULT NULL) returns bigint
