@@ -1926,4 +1926,8 @@ guard_tests 895
 # from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
 # collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
 # collected, less guard_tests 894.
-cluster_tests 5389
+# cluster_tests 5389 -> 5391 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5391
+# tests collected.
+cluster_tests 5391

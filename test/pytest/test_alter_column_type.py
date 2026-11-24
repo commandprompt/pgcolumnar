@@ -151,6 +151,34 @@ def _same_xact(dsn, between):
     return _value(dsn, "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM at_x")
 
 
+# #2067: a type or collation change that needs no rewrite keeps the relfilenode
+# but changes the descriptor. The reused write state kept the old descriptor, so
+# the chunk min and max of the rows inserted after the ALTER were computed under
+# the old ordering, and a filtered read pruned the chunk holding the match. A heap
+# table altered the same way in the same transaction is the oracle. label, old
+# type, first value, alter clause, new values, filter, read, want: the shell's
+# same_desc() calls, in order.
+OID_CASE = ("a filtered read finds a row inserted after int4 becomes oid in the same transaction",
+            "int4", "1", "oid", "(1, 4294967295), (2, 5)", "v = 4294967295", "count(*)::text", "1")
+COLL_CASE = ("a filtered read finds a row inserted after a collation change in the same transaction",
+             'text COLLATE "C"', "'m'", 'text COLLATE "und-x-icu"', "(1, 'a'), (2, 'B')",
+             "v > 'A' AND v < 'Z' AND v <> 'm'", "string_agg(v, ',' ORDER BY v)", "B")
+
+
+def _same_desc(dsn, old, first, clause, rows, where, read):
+    """The shell's same_desc(): -> "<relfilenode unchanged>|<columnar>|<heap>"."""
+    _run(dsn, f"DROP TABLE IF EXISTS at_d, at_dh; CREATE TABLE at_d (id int, v {old}) USING pgcolumnar; "
+              f"CREATE TABLE at_dh (id int, v {old});")
+    before = _value(dsn, "SELECT relfilenode FROM pg_class WHERE relname = 'at_d'")
+    _run(dsn, f"BEGIN; INSERT INTO at_d VALUES (0, {first}); INSERT INTO at_dh VALUES (0, {first}); "
+              f"ALTER TABLE at_d ALTER COLUMN v TYPE {clause}; ALTER TABLE at_dh ALTER COLUMN v TYPE {clause}; "
+              f"INSERT INTO at_d VALUES {rows}; INSERT INTO at_dh VALUES {rows}; COMMIT;")
+    return _value(dsn, f"SELECT (relfilenode = '{before}') || '|' || "
+                       f"coalesce((SELECT {read} FROM at_d WHERE {where}), '') || '|' || "
+                       f"coalesce((SELECT {read} FROM at_dh WHERE {where}), '') "
+                       "FROM pg_class WHERE relname = 'at_d'")
+
+
 @pytest.fixture(scope="module")
 def act(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -193,6 +221,11 @@ def act(pgc_cluster):
         # an INSERT after the rewrite, in the same transaction (#2067)
         for label, between in SAME_XACT:
             r[label] = _same_xact(dsn, between)
+
+        # a type or collation change without a rewrite, in the same transaction (#2067)
+        r[OID_CASE[0]] = _same_desc(dsn, *OID_CASE[1:7])
+        icu = _value(dsn, "SELECT count(*) FROM pg_collation WHERE collname = 'und-x-icu'")
+        r[COLL_CASE[0]] = _same_desc(dsn, *COLL_CASE[1:7]) if icu == "1" else None
 
         # the crash, deliberately last
         label, typ, expr, clause = CRASH
@@ -323,3 +356,19 @@ def test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit
 def test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept(act, expect):
     expect.text(act["by-value after text"], "1:5,2:7",
                 "a by-value row inserted after text becomes int8 in the same transaction is kept")
+
+
+def test_a_filtered_read_finds_a_row_inserted_after_int4_becomes_oid_in_the_same_transaction(act, expect):
+    expect.text(act["a filtered read finds a row inserted after int4 becomes oid in the same transaction"],
+                "true|1|1",
+                "a filtered read finds a row inserted after int4 becomes oid in the same transaction")
+
+
+def test_a_filtered_read_finds_a_row_inserted_after_a_collation_change_in_the_same_transaction(act, expect):
+    got = act["a filtered read finds a row inserted after a collation change in the same transaction"]
+    if got is None:
+        expect.cannot_run("MISSING_DEPENDENCY", "this server has no ICU collation und-x-icu",
+                          name="a filtered read finds a row inserted after a collation change in the same transaction")
+        return
+    expect.text(got, "true|B|B",
+                "a filtered read finds a row inserted after a collation change in the same transaction")

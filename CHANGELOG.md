@@ -612,8 +612,12 @@ true until the next version shipped.
   the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
   an error. When the type changed from a by-reference type to a by-value type,
   such as `text` to `int8`, the backend died with a segmentation fault and
-  PostgreSQL restarted every session. The write state now notices the
-  rewrite and starts over for the new storage. `test/alter_column_type.sh` and
+  PostgreSQL restarted every session. A type or collation change that needs no
+  rewrite, such as `int4` to `oid`, also reused the old state: the rows inserted
+  after it got chunk min and max under the old type or collation, and a filtered
+  read could miss them. The write state now notices the rewrite and starts over
+  for the new storage, and flushes and starts over when a column's type, typmod
+  or collation changed. `test/alter_column_type.sh` and
   `test_alter_column_type.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values

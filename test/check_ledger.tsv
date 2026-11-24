@@ -64,6 +64,8 @@ alter_am_cleanup	alter_am_cleanup	premise: with a columnar table carrying both r
 alter_am_cleanup	alter_am_cleanup	the pre-extension table's options row is gone	15;16;17;18;19	2026-10-16	columnar_tableam.c: the drop hook clears relid-keyed rows only for a table still on the columnar AM (the #304 shape);columnar_tableam.c: the drop hook does not delete the options row
 alter_am_cleanup	alter_am_cleanup	the table is heap after the conversion	15;16;17;18;19	never	-
 alter_column_type	alter_column_type	a by-value row inserted after text becomes int8 in the same transaction is kept	15;16;17;18;19	2026-11-24	main d52f6e8c: write state reused after a same-transaction rewrite (#2067)
+alter_column_type	alter_column_type	a filtered read finds a row inserted after a collation change in the same transaction	15;16;17;18;19	2026-11-24	d88d505c without the descriptor comparison: write state reused after a type or collation change without a rewrite (#2067)
+alter_column_type	alter_column_type	a filtered read finds a row inserted after int4 becomes oid in the same transaction	15;16;17;18;19	2026-11-24	d88d505c without the descriptor comparison: write state reused after a type or collation change without a rewrite (#2067)
 alter_column_type	alter_column_type	an index scan finds every row after the rewrite	15;16;17;18;19	2026-10-20	index build: every other row left out of the index
 alter_column_type	alter_column_type	an index scan still finds a row after the rewrite	15;16;17;18;19	never	-
 alter_column_type	alter_column_type	bigint to int	15;16;17;18;19	2026-10-20	scan: decode against the relation's descriptor, not the slot's (#178)

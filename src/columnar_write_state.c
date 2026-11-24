@@ -758,6 +758,29 @@ grow_uint64_array(uint64 *arr, int oldSize, int newSize)
 }
 
 /*
+ * write_state_descriptor_matches
+ *		True when every column of the write state's descriptor has the type,
+ *		typmod and collation the relation's descriptor has now. The caller has
+ *		already checked that the column counts match. equalRowTypes would do
+ *		this, but it first appeared in PostgreSQL 17.
+ */
+static bool
+write_state_descriptor_matches(TupleDesc have, TupleDesc now)
+{
+	for (int i = 0; i < now->natts; i++)
+	{
+		Form_pg_attribute a = TupleDescAttr(have, i);
+		Form_pg_attribute b = TupleDescAttr(now, i);
+
+		if (a->atttypid != b->atttypid ||
+			a->atttypmod != b->atttypmod ||
+			a->attcollation != b->attcollation)
+			return false;
+	}
+	return true;
+}
+
+/*
  * PgColumnarGetWriteState
  *		Find or create the pending write state for a relation.
  */
@@ -801,18 +824,25 @@ PgColumnarGetWriteState(Relation rel)
 		 * without an error; and a by-value Datum encoded under the old by-reference
 		 * descriptor was dereferenced as a pointer. A rewrite always changes the
 		 * relfilenode, so that is the trigger to look closer.
+		 *
+		 * A type or collation change that needs no rewrite (int4 to oid, a new
+		 * collation on a text column) keeps the relfilenode but changes the
+		 * descriptor. A reused state computed chunk min and max under the old
+		 * type or collation, so a filtered read pruned the chunk that holds the
+		 * match (#2067). Compare each column's type, typmod and collation too.
 		 */
 		if (writeState->natts == RelationGetDescr(rel)->natts &&
-			writeState->relfilenode == RelationGetForm(rel)->relfilenode)
+			writeState->relfilenode == RelationGetForm(rel)->relfilenode &&
+			write_state_descriptor_matches(writeState->tupdesc, RelationGetDescr(rel)))
 			return writeState;
 
 		/*
 		 * New storage: forget the state rather than flush it. Its storage is
 		 * retired, and the rewrite already flushed its rows before copying them
-		 * (the scan begins with a flush). Same storage with a new relfilenode
-		 * has no path today (SET TABLESPACE and CLUSTER refuse a columnar
-		 * table), but if one appears its rows belong to live storage: flush
-		 * them, as for a new column count.
+		 * (the scan begins with a flush). Same storage: a new column count, or
+		 * a type or collation change without a rewrite. Its rows belong to live
+		 * storage and are correct under the descriptor they were written with:
+		 * flush them under it.
 		 */
 		if (writeState->storageId == PgColumnarStorageId(rel))
 		{
