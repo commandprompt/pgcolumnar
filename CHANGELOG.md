@@ -614,7 +614,9 @@ true until the next version shipped.
   inside the retention. The rename already updated `sort_by` and
   `sketch_columns`; it now updates `ttl_column` in the same catalog row.
   `DROP COLUMN` of the retention column is unchanged: the declaration keeps
-  the name and `expire` refuses with 42703. `test/ttl_expire.sh` and
+  the name and `expire` refuses with 42703. If another column later takes
+  the dropped name, `expire` cuts on it and can still delete rows inside the
+  retention; #2070 stays open for that half. `test/ttl_expire.sh` and
   `test_ttl_expire.py`. Four more checks pin the name test: a rename leaves a
   NULL `ttl_column` NULL, and renaming a column whose name is a prefix or a
   case variant of the retention column leaves `ttl_column` alone. Each went
