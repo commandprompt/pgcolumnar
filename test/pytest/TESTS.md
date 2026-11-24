@@ -11896,7 +11896,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec
 
-The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; and a chunk too small to sample is still encoded.
+The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; a chunk too small to sample is still encoded; and repeated values of a fixed-width type that is not 1, 2, 4 or 8 bytes wide (uuid, interval, timetz, name, macaddr, tid, point) are stored as RLE and read back, survive ANALYZE, DELETE and a pg_dump round trip, on both the exhaustive and the sampled path (#2061).
 
 ### Every test
 
@@ -11955,6 +11955,14 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_a_sample_below_the_floor_still_encodes` | a sample setting below the floor still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_is_encoded` | a chunk smaller than the sample window still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_reads_back` | a chunk smaller than the sample window reads back exactly |
+| `test_repeated_wide_fixed_width_values_are_stored_as_rle` | premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE |
+| `test_repeated_wide_fixed_width_values_read_back_exactly` | repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly (#2061) |
+| `test_repeated_wide_fixed_width_values_read_back_on_the_sampled_path` | repeated wide fixed-width values read back exactly on the sampled path |
+| `test_analyze_reads_repeated_wide_fixed_width_values` | ANALYZE reads a table of repeated wide fixed-width values |
+| `test_pg_dump_reads_repeated_wide_fixed_width_values` | pg_dump of a table of repeated wide fixed-width values succeeds |
+| `test_restore_of_repeated_wide_fixed_width_values_succeeds` | restore of a table of repeated wide fixed-width values succeeds |
+| `test_repeated_wide_fixed_width_values_survive_a_pg_dump_round_trip` | repeated wide fixed-width values read back exactly after a pg_dump round trip |
+| `test_delete_removes_repeated_wide_fixed_width_values` | DELETE removes every row of a table of repeated wide fixed-width values |
 
 ## 292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump
 
@@ -14337,10 +14345,11 @@ On PG18, against a private prefix, the whole corpus (312 files at the time, one 
 | `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
 | `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
 | `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
-| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report and exits nonzero; a corpus that declined a test exits 0 |
+| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report, names each failed test in its own output (#2054) and exits nonzero; a corpus that declined a test exits 0 |
 | `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
 | `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
 | `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |
+| `test_the_coverage_job_fetches_the_release_tags_its_corpus_reads` | a corpus file reads the release tags, so every workflow job that runs `run_coverage.py` fetches the `v1.0-alpha` tags before it. The nightly's coverage job ran from a plain checkout, and the tag arms' UNMET_PRECONDITION failed the run every night (#2054) |
 
 ## 360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading
 
