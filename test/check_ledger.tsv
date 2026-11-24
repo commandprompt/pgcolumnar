@@ -4402,6 +4402,8 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_encoding	native_encoding	ANALYZE reads a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	DELETE removes every row of a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
 native_encoding	native_encoding	[lz4] aggregate over encoded column	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] all columns round-trip	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] constant column encoded small	15;16;17;18;19	never	-
@@ -4449,6 +4451,12 @@ native_encoding	native_encoding	fsst filtered scan round-trips	15;16;17;18;19	ne
 native_encoding	native_encoding	fsst shrinks the url column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	fsst stores one shared table per chunk (E3b)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	misleading-head column still reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	pg_dump of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE	15;16;17;18;19	never	-
+native_encoding	native_encoding	repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly after a pg_dump round trip	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly on the sampled path	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	restore of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	never	-
 native_encoding	native_encoding	run-length column reads back exactly	15;16;17;18;19	2026-10-22	columnar_encoding.c: RLE decode flips one bit of each vector's last value
 native_encoding	native_encoding	sampling changes nothing a query can see	15;16;17;18;19	never	-
 native_encoding	native_encoding	sampling off == heap oracle	15;16;17;18;19	never	-
@@ -4902,6 +4910,8 @@ native_join_runtime_filter	native_join_runtime_filter	collation-mismatch bloom r
 native_join_runtime_filter	native_join_runtime_filter	collation-mismatch interval stays off	15;16;17;18;19	2026-10-13	the runtime filter's interval allowed whatever the operator's collation
 native_join_runtime_filter	native_join_runtime_filter	collation-mismatch plan has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	default plan has runtime coordinator	15;16;17;18;19	2026-09-18	pgcolumnar.enable_join_runtime_filter boot value true -> false
+native_join_runtime_filter	native_join_runtime_filter	each distinct rescan joins against its own build	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	each subquery rescan joins against its own build	15;16;17;18;19	2026-11-24	-
 native_join_runtime_filter	native_join_runtime_filter	early limit equals heap	15;16;17;18;19	2026-09-23	the runtime bloom probe's verdict inverted, so the filter rejects what matches
 native_join_runtime_filter	native_join_runtime_filter	early limit has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	empty-build answer equals heap	15;16;17;18;19	never	-
@@ -4920,10 +4930,26 @@ native_join_runtime_filter	native_join_runtime_filter	plan retains core Hash Joi
 native_join_runtime_filter	native_join_runtime_filter	premise: and its build is empty	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds every joined row	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds every joined row	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default LATERAL answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default scalar answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default uncorrelated answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's distinct answer grows with each outer value	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds every dimension key	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only LATERAL answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only scalar answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only uncorrelated answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's subquery answer grows with each outer value	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default LATERAL query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default scalar query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default uncorrelated query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the distinct rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the fact qual removes matching rows on heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only LATERAL query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only scalar query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only uncorrelated query runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the subquery rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection join equals heap	15;16;17;18;19	never	-
@@ -4940,16 +4966,37 @@ native_join_runtime_filter	native_join_runtime_filter	scattered bloom rejects mo
 native_join_runtime_filter	native_join_runtime_filter	scattered interval cannot drop groups	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	scattered plan has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	scattered still reads every group	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	the default LATERAL query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the default scalar query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the default uncorrelated query equals heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only LATERAL query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only scalar query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only uncorrelated query equals heap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	with matching collations the same fixture's interval removes row groups	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join refuses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys answer equals heap	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys refuse the join fold	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
+native_join_vector_agg	native_join_vector_agg	each default LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each default distinct fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each default scalar fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only distinct fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only scalar fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
 native_join_vector_agg	native_join_vector_agg	extra join filter answer equals GUC off	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	extra join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	extra join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's LATERAL rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's distinct rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's scalar rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default LATERAL rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default distinct rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default scalar rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only LATERAL rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only distinct rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only scalar rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
