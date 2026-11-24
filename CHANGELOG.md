@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
+  `virtual` (#2091). The setting was a free-form string, and the object-store
+  module used virtual-host addressing only for `virtual`. So a typo such as
+  `virtaul`, a padded `'VIRTUAL '` or an empty string was accepted, `SHOW` echoed
+  it back, and every request went out path-style without a word. The setting is
+  now an enum, like `pgcolumnar.compression`: such a value fails with
+  `invalid value for parameter`, SQLSTATE 22023. Case still does not matter.
+  A bad value already in `postgresql.conf` now draws a warning and the server
+  uses `path`, which is what the module did with it before.
+  docs/configuration.md. `test/objstore_addressing.sh` and
+  `test_objstore_addressing.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

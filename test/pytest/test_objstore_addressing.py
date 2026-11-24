@@ -513,3 +513,39 @@ def test_gs_with_no_endpoint_goes_to_storage_googleapis_com(osa, expect):
         return
     expect.text(osa["gs no endpoint"], "42501 by the allow-list naming storage.googleapis.com:443",
                 "gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)")
+
+
+# ---- the addressing setting takes only path or virtual (#2091) ----------------
+# A free-form string let a typo through: SET accepted 'virtaul', SHOW echoed it back,
+# and every request then went out path-style without a word. These tests need no
+# fixture server and no private cluster, so they never decline with the rest.
+
+def _set_addressing(dsn, value):
+    """SET the addressing setting to `value` -> "22023 invalid value" when PostgreSQL
+    refused it as an invalid parameter value, else what SHOW reports afterwards."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute("SELECT set_config('pgcolumnar.objstore_s3_addressing', %s, false)",
+                         (value,))
+            return conn.execute("SHOW pgcolumnar.objstore_s3_addressing").fetchone()[0]
+    except psycopg.Error as exc:
+        if exc.sqlstate == "22023" and "invalid value for parameter" in str(exc):
+            return "22023 invalid value"
+        return query_error(_message(exc))
+
+
+@pytest.mark.parametrize("value, name", [
+    ("virtaul", "the addressing setting refuses the typo 'virtaul'"),
+    ("VIRTUAL ", "the addressing setting refuses 'VIRTUAL ' with a trailing space"),
+    ("", "the addressing setting refuses the empty string"),
+], ids=["typo", "trailing-space", "empty"])
+def test_the_addressing_setting_refuses_a_value_other_than_path_or_virtual(
+        pgc_cluster, expect, value, name):
+    expect.text(_set_addressing(pgc_cluster.dsn(), value), "22023 invalid value", name)
+
+
+def test_the_addressing_setting_still_takes_path_and_virtual(pgc_cluster, expect):
+    got = " ".join(str(_set_addressing(pgc_cluster.dsn(), v)).lower()
+                   for v in ("path", "virtual", "VIRTUAL"))
+    expect.text(got, "path virtual virtual",
+                "the addressing setting still takes path, virtual and VIRTUAL")

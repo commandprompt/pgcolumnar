@@ -26,6 +26,25 @@ set -uo pipefail
 export PGC_EXTRA_CONF=$'pgcolumnar.objstore_allowed_endpoints=\'s3.local\'\npgcolumnar.objstore_part_size=262144'
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
+# ---- the addressing setting takes only path or virtual (#2091) --------------
+# A free-form string let a typo through: SET accepted 'virtaul', SHOW echoed it back,
+# and every request then went out path-style without a word. These checks need no
+# fixture, so they run before the skips below.
+set_refusal() {  # set_refusal <value> -> the ERROR line of the SET, or what SHOW says
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtAX -c "SET pgcolumnar.objstore_s3_addressing = '$1'" \
+		-c "SHOW pgcolumnar.objstore_s3_addressing" 2>&1 | head -1
+}
+check "the addressing setting refuses the typo 'virtaul'" "$(set_refusal virtaul)" \
+	'ERROR:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": "virtaul"'
+check "the addressing setting refuses 'VIRTUAL ' with a trailing space" "$(set_refusal 'VIRTUAL ')" \
+	'ERROR:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": "VIRTUAL "'
+check "the addressing setting refuses the empty string" "$(set_refusal '')" \
+	'ERROR:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": ""'
+check "the addressing setting still takes path, virtual and VIRTUAL" \
+	"$(echo "$(set_refusal path) $(set_refusal virtual) $(set_refusal VIRTUAL)" | tr A-Z a-z)" \
+	"path virtual virtual"
+
 python3 -c 'import pyarrow' 2>/dev/null || pgc_skip pyarrow "pyarrow is required to write the fixture"
 # Virtual-host needs bucket.endpoint to resolve; skip cleanly where it does not.
 getent hosts pgc-bucket.s3.local >/dev/null 2>&1 || \

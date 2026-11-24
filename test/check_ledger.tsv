@@ -6063,6 +6063,10 @@ objstore_addressing	objstore_addressing	s3:// pattern read, virtual-host	15;16;1
 objstore_addressing	objstore_addressing	s3:// prefix read, path-style	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	the addressing setting refuses 'VIRTUAL ' with a trailing space	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting refuses the empty string	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting refuses the typo 'virtaul'	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting still takes path, virtual and VIRTUAL	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried	15;16;17;18;19	2026-10-31	os_v4_is_metadata() refusing all of 100.64.0.0/10 instead of the single address 100.100.100.200 (#1848)
