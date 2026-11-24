@@ -70,6 +70,17 @@ survived() {	# survived BEFORE -> "1" when the server answers and no backend die
 }
 CRASHES_BEFORE="$(crashes)"
 
+# #2083: a failed loader closed its file twice. AbortOutOfAnyTransaction already
+# closes every transient file, so a second CloseTransientFile logged "fd passed
+# to CloseTransientFile was not obtained from OpenTransientFile" and called
+# close() on a descriptor number that might belong to something else by then.
+double_closes() {	# -> count of those WARNINGs in the server log, or nothing
+	local _n
+	_n="$(pgc_pg "grep -c 'CloseTransientFile was not obtained' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+DOUBLE_CLOSES_BEFORE="$(double_closes)"
+
 # ---- structural checks: boundaries land after a newline, cover the file -------
 # Each helper below echoes one reading; the check, with its literal name, is at the
 # call site.
@@ -501,6 +512,12 @@ check "single table: a bad row fails the whole load" \
 	"$(grep -qi 'failed: invalid input syntax' <<<"$st_bad" && echo ok || echo no)" ok
 check "single table: failed load leaves the target empty" "$(q "SELECT count(*) FROM t_single")" 0
 check "single table: no prepared-transaction leak after failure" "$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+# The loads above that failed in their loaders (the gapped target and the bad row)
+# must not have closed a loader's file twice (#2083).
+dc_now="$(double_closes)"
+check "failed loaders close their file once: no CloseTransientFile WARNING in the server log (#2083)" \
+	"$( [[ "$DOUBLE_CLOSES_BEFORE" =~ ^[0-9]+$ && "$dc_now" =~ ^[0-9]+$ ]] \
+		&& echo $(( dc_now - DOUBLE_CLOSES_BEFORE )) || echo "unreadable [$DOUBLE_CLOSES_BEFORE] [$dc_now]")" 0
 
 # --- #686: parallel_copy must refuse a FIFO, not hang the backend -------------
 # pcopy_open_regular_file opened O_RDONLY then fstat, so a FIFO blocked in open(2)
