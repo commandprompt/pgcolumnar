@@ -280,11 +280,14 @@ vm_race() {
 
 	vr_after="$(q "SELECT pgcolumnar.vm_is_visible('$tbl', 1);")"
 	plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM $tbl WHERE id BETWEEN 300 AND 400;")"
-	if printf '%s' "$plan" | grep -q 'Index Only Scan'; then
-		vr_ios="$(q "SELECT count(*) FROM $tbl WHERE id BETWEEN 300 AND 400;")"
-	else
-		vr_ios="no index-only scan was planned: $plan"
-	fi
+	# `case`, not a pipe into grep -q: under pipefail that pipe can report a
+	# plan that holds the node as one that does not (selftest part 080, #486).
+	case "$plan" in
+	*'Index Only Scan'*)
+		vr_ios="$(q "SELECT count(*) FROM $tbl WHERE id BETWEEN 300 AND 400;")" ;;
+	*)
+		vr_ios="no index-only scan was planned: $plan" ;;
+	esac
 }
 
 vm_race vr_del "DELETE FROM vr_del WHERE id BETWEEN 300 AND 400"
@@ -332,11 +335,12 @@ wait "$vpid" 2>/dev/null || true
 
 vm_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_mid', 1);")"
 plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")"
-if printf '%s' "$plan" | grep -q 'Index Only Scan'; then
-	vm_ios="$(q "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")"
-else
-	vm_ios="no index-only scan was planned: $plan"
-fi
+case "$plan" in
+*'Index Only Scan'*)
+	vm_ios="$(q "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")" ;;
+*)
+	vm_ios="no index-only scan was planned: $plan" ;;
+esac
 check "delete between vacuum's two steps: block 1 all-visible before the writer starts" "$vm_before" "t"
 check "delete between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
 check "delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
