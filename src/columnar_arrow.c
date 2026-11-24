@@ -2088,6 +2088,7 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		fprec;
 					int32		fscale;
+					int32		fbits;
 
 					if (n->kind != A_DECIMAL128)
 						break;		/* cross-family: see the Int case */
@@ -2095,6 +2096,18 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
 					fscale = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					pos = pgc_fb_field(meta, metaLen, tt, 2);	/* bitWidth */
+					fbits = pos ? fbr_i32(meta, metaLen, pos) : 128;
+
+					/*
+					 * The reader decodes 16-byte values only (#2081). A
+					 * decimal256 buffer is twice as long as that, so it passed
+					 * the length check and was read at the wrong offsets: 1.25,
+					 * 2.50, -3.75 stored 1.25, 0.00, 2.50. A decimal32 or
+					 * decimal64 buffer was refused, but as "malformed".
+					 */
+					if (fbits != 128)
+						imp_field_mismatch("a decimal of another width", n->typid);
 
 					/*
 					 * The unscaled integer is read as-is and the TARGET's scale

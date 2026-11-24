@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` now refuses a `decimal256` column for a `numeric`
+  target, instead of storing wrong values (#2081). The reader decodes 16-byte
+  `decimal128` values only, and never read the file's Decimal bit width. A
+  `decimal256` buffer is twice as long, so it passed the length check and was
+  read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50, with
+  no error. Such a file now fails with SQLSTATE 42804, `Arrow field is a
+  decimal of another width`, and no row is stored. A `decimal32` or
+  `decimal64` file gets the same refusal; before, it failed as a malformed
+  file (XX001). pyarrow writes `decimal256` for any precision above 38, and
+  when asked to. `test/arrow_import.sh` and `test_arrow_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
