@@ -28,6 +28,7 @@ import pytest
 from pgc_vacuity import QUERY_ERROR, query_error
 
 DB = "pgc_sorted_mark_rename"
+NOCX = "pgc_sorted_mark_rename_nocx"
 LOAD = "SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000 FROM generate_series(1,20000) g"
 
 
@@ -275,6 +276,29 @@ def sm(pgc_cluster):
         d.run("ALTER TABLE vd_z DROP COLUMN b")
         r["vd_z mark after"] = d.mark("vd_z")
 
+        # an inheritance child, dropped through its parent. Not (LIKE ...) INHERITS: LIKE
+        # makes the child's columns local, and the parent's drop then keeps the child's.
+        for sql in ["CREATE TABLE vdi (k int, j int)", "CREATE TABLE vdi1 () INHERITS (vdi) USING pgcolumnar",
+                    f"INSERT INTO vdi1 {LOAD}"]:
+            d.run(sql)
+        d.vsort("vdi1", "k")
+        r["vdi mark before"] = d.mark("vdi1")
+        d.run("ALTER TABLE vdi DROP COLUMN k")
+        r["vdi mark after"] = d.mark("vdi1")
+
+        # a heap column drop, here and in a database without the extension: the preloaded
+        # drop hook must leave heap tables alone (#2135 review, mutant M3d)
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {NOCX} WITH (FORCE)")
+            a.execute(f"CREATE DATABASE {NOCX}")
+        nx = _Db(pgc_cluster.dsn(dbname=NOCX))
+        r["nocx ext"] = nx.q("SELECT count(*) FROM pg_extension WHERE extname='pgcolumnar'")
+        r["nocx lib"] = nx.q("SELECT CASE WHEN current_setting('shared_preload_libraries') ~ 'pgcolumnar' "
+                             "THEN 'loaded' ELSE 'not loaded' END")
+        for key, db, t, n in [("heap empty", d, "vd_he", 0), ("heap full", d, "vd_hf", 1000),
+                              ("nocx heap empty", nx, "vd_he", 0), ("nocx heap full", nx, "vd_hf", 1000)]:
+            r[key] = _heapdrop(db, t, n)
+
         # recluster's mark
         d.mkz("rr_ctl")
         r["rr_ctl rows"] = d.rows("rr_ctl")
@@ -292,6 +316,19 @@ def sm(pgc_cluster):
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {NOCX} WITH (FORCE)")
+
+
+def _heapdrop(d, t, n):
+    """-> "rc=0/live=1" when DROP COLUMN worked on a heap table of n rows, else the
+    drop's error and the live column count."""
+    d.run(f"DROP TABLE IF EXISTS {t}")
+    d.run(f"CREATE TABLE {t} (a int, b int) USING heap")
+    d.run(f"INSERT INTO {t} SELECT g, g FROM generate_series(1,{n}) g")
+    err = d.run(f"ALTER TABLE {t} DROP COLUMN a")
+    live = d.q(f"SELECT count(*) FROM pg_attribute WHERE attrelid = '{t}'::regclass "
+               "AND attnum > 0 AND NOT attisdropped")
+    return f"{'rc=0' if not err else 'rc=1 ' + err}/live={live}"
 
 
 def _positive(v, yes, no):
@@ -532,6 +569,43 @@ def test_vd_z_mark_records_a_zorder_run(sm, expect):
 
 def test_dropping_one_zorder_column_clears_the_mark(sm, expect):
     expect.text(sm["vd_z mark after"], "-/-", "dropping one Z-order column clears the mark")
+
+
+def test_the_inheritance_childs_mark_records_k(sm, expect):
+    expect.text(sm["vdi mark before"], "{k}/lexicographic", "premise: the inheritance child's mark records key {k}")
+
+
+def test_a_drop_on_the_parent_clears_the_inheritance_childs_mark(sm, expect):
+    expect.text(sm["vdi mark after"], "-/-",
+                "the inheritance CHILD's mark is cleared by a drop issued on the parent")
+
+
+# ---- a heap column drop, with and without the extension (#2135 review, M3d) ------------
+
+def test_the_extension_is_absent_in_the_second_database(sm, expect):
+    expect.text(sm["nocx ext"], "0", "premise: the extension is absent in the second database")
+
+
+def test_the_library_is_loaded_in_the_second_database(sm, expect):
+    expect.text(sm["nocx lib"], "loaded", "premise: and the library is loaded there, so its drop hook runs")
+
+
+def test_an_empty_heap_tables_column_drops(sm, expect):
+    expect.text(sm["heap empty"], "rc=0/live=1", "a column of an EMPTY heap table drops, in this database")
+
+
+def test_a_populated_heap_tables_column_drops(sm, expect):
+    expect.text(sm["heap full"], "rc=0/live=1", "a column of a POPULATED heap table drops, in this database")
+
+
+def test_an_empty_heap_tables_column_drops_without_the_extension(sm, expect):
+    expect.text(sm["nocx heap empty"], "rc=0/live=1",
+                "a column of an EMPTY heap table drops, in a database without the extension")
+
+
+def test_a_populated_heap_tables_column_drops_without_the_extension(sm, expect):
+    expect.text(sm["nocx heap full"], "rc=0/live=1",
+                "a column of a POPULATED heap table drops, in a database without the extension")
 
 
 # ---- recluster ---------------------------------------------------------------------------

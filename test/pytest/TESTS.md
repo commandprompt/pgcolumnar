@@ -9204,7 +9204,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child. The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review). On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9265,6 +9265,14 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_a_drop_on_the_parent_clears_the_partitions_mark` | the PARTITION's mark is cleared by a drop issued on the parent |
 | `test_vd_z_mark_records_a_zorder_run` | premise: vd_z's mark records {a,b} as zorder |
 | `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
+| `test_the_inheritance_childs_mark_records_k` | premise: the inheritance child's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_inheritance_childs_mark` | the inheritance CHILD's mark is cleared by a drop issued on the parent |
+| `test_the_extension_is_absent_in_the_second_database` | premise: the extension is absent in the second database |
+| `test_the_library_is_loaded_in_the_second_database` | premise: and the library is loaded there, so its drop hook runs |
+| `test_an_empty_heap_tables_column_drops` | a column of an EMPTY heap table drops, in this database |
+| `test_a_populated_heap_tables_column_drops` | a column of a POPULATED heap table drops, in this database |
+| `test_an_empty_heap_tables_column_drops_without_the_extension` | a column of an EMPTY heap table drops, in a database without the extension |
+| `test_a_populated_heap_tables_column_drops_without_the_extension` | a column of a POPULATED heap table drops, in a database without the extension |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |

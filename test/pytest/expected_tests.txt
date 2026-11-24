@@ -1925,4 +1925,8 @@ guard_tests 895
 # sort-key column clears the ordering mark, so ORDER BY plans a Sort and vacuum_sorted rewrites after
 # another column takes the dropped name; a partition and a Z-order run too; an unrelated drop keeps the
 # mark), by collection: 6284 tests collected, less guard_tests 894.
-cluster_tests 5398
+# cluster_tests 5398 -> 5406 for the #2135 review's 8 new tests in test_sorted_mark_rename.py (a drop on an
+# inheritance parent clears the child's mark; a column of an empty and of a populated heap table drops, in the
+# suite's database and in one without the extension, so the drop hook leaves heap tables alone), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+cluster_tests 5406

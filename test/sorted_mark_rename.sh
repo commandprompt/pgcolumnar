@@ -306,6 +306,62 @@ check "premise: vd_z's mark records {a,b} as zorder" "$(markof vd_z)" "{a,b}/zor
 psql_run "ALTER TABLE vd_z DROP COLUMN b;"
 check "dropping one Z-order column clears the mark" "$(markof vd_z)" "-/-"
 
+# ---- a drop issued on an inheritance parent clears the child's mark --------
+# Not (LIKE ...) INHERITS: LIKE makes the child's columns local, and PostgreSQL
+# then keeps the child's column when the parent drops its own.
+psql_run "CREATE TABLE vdi (k int, j int);"
+psql_run "CREATE TABLE vdi1 () INHERITS (vdi) USING pgcolumnar;"
+psql_run "INSERT INTO vdi1 SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
+          FROM generate_series(1,20000) g;"
+vsort "'vdi1','k'"
+check "premise: the inheritance child's mark records key {k}" "$(markof vdi1)" "{k}/lexicographic"
+psql_run "ALTER TABLE vdi DROP COLUMN k;"
+check "the inheritance CHILD's mark is cleared by a drop issued on the parent" "$(markof vdi1)" "-/-"
+
+# ---- a drop on a HEAP table succeeds, with and without the extension -------
+# The library is preloaded, so the drop hook runs for every column drop in
+# every database. Only its columnar-AM test keeps a heap table away from
+# PgColumnarStorageId, which reads block 0 as a columnar metapage. Without that
+# test an empty heap's drop fails with "could not read blocks 0..0", a
+# populated one's with "unsupported columnar format version", and the column
+# stays. Each reading is the drop's status, then the live column count.
+smr_dbrun() {	# smr_dbrun DB SQL -> rc=0, or rc=N and the first ERROR line
+	local out rc
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$1" -v ON_ERROR_STOP=1 -At -c "$2" 2>&1)"
+	rc=$?
+	[ "$rc" = 0 ] && { echo "rc=0"; return; }
+	echo "rc=$rc $(printf '%s\n' "$out" | grep -m1 -E 'ERROR|FATAL' | head -c 120)"
+}
+smr_dbq() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$1" -At -c "$2" 2>/dev/null || true
+}
+smr_heapdrop() {	# smr_heapdrop DB TABLE ROWS -> "rc=0/live=1" when the drop worked
+	local st
+	smr_dbrun "$1" "DROP TABLE IF EXISTS $2; CREATE TABLE $2 (a int, b int) USING heap;
+	                INSERT INTO $2 SELECT g, g FROM generate_series(1,$3) g;" >/dev/null
+	st="$(smr_dbrun "$1" "ALTER TABLE $2 DROP COLUMN a;")"
+	echo "$st/live=$(smr_dbq "$1" "SELECT count(*) FROM pg_attribute
+	                              WHERE attrelid = '$2'::regclass AND attnum > 0 AND NOT attisdropped;")"
+}
+psql_admin "DROP DATABASE IF EXISTS smr_nocx;" >/dev/null 2>&1
+psql_admin "CREATE DATABASE smr_nocx;" >/dev/null 2>&1
+check "premise: the extension is absent in the second database" \
+	"$(smr_dbq smr_nocx "SELECT count(*) FROM pg_extension WHERE extname='pgcolumnar'")" "0"
+check "premise: and the library is loaded there, so its drop hook runs" \
+	"$(smr_dbq smr_nocx "SELECT CASE WHEN current_setting('shared_preload_libraries') ~ 'pgcolumnar'
+	                      THEN 'loaded' ELSE 'not loaded' END")" "loaded"
+check "a column of an EMPTY heap table drops, in this database" \
+	"$(smr_heapdrop "$PGC_DB" vd_he 0)" "rc=0/live=1"
+check "a column of a POPULATED heap table drops, in this database" \
+	"$(smr_heapdrop "$PGC_DB" vd_hf 1000)" "rc=0/live=1"
+check "a column of an EMPTY heap table drops, in a database without the extension" \
+	"$(smr_heapdrop smr_nocx vd_he 0)" "rc=0/live=1"
+check "a column of a POPULATED heap table drops, in a database without the extension" \
+	"$(smr_heapdrop smr_nocx vd_hf 1000)" "rc=0/live=1"
+psql_admin "DROP DATABASE IF EXISTS smr_nocx;" >/dev/null 2>&1
+
 # ============================ recluster (#415) ===============================
 # The same comparison, character for character, in the online recluster gate.
 mkz() {

@@ -614,8 +614,12 @@ true until the next version shipped.
   `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
   column in the key now clears the mark, on the table and on every
   partition or inheritance child the drop reaches. A drop of any other
-  column keeps it. `test/sorted_mark_rename.sh` and
-  `test_sorted_mark_rename.py`.
+  column keeps it. A column drop on a heap table never reaches this code,
+  in a database with or without the extension; the tests drop a column of
+  an empty and a populated heap table in both. A table whose key column
+  was dropped on an older build keeps its stale mark: run `vacuum_sorted`
+  on it again before renaming another column to the dropped name.
+  `test/sorted_mark_rename.sh` and `test_sorted_mark_rename.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types
