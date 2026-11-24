@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` no longer stores wrong values from a large binary or
+  large string column (#2097). It read their 64-bit offsets as 32-bit ones, so a
+  one-row large binary `b'x'` imported into `bytea` as an empty value, and a
+  large string `['hi','there']` imported into `text` as `''` and `'hi'`, with no
+  error. A string view or binary view was refused as a damaged file (XX001). It
+  now refuses all four types with SQLSTATE 42804, naming the column and the
+  Arrow type, at any depth. A plain binary or string column imports as before.
+  Reading these types is a separate feature. docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

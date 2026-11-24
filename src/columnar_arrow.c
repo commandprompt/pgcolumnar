@@ -1915,6 +1915,12 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
  * target has the layout of (large and fixed-size lists, list views, unions,
  * run-end encoding) are refused under every node. The wording follows
  * import_parquet's for the same shape (#1917).
+ *
+ * Large binary and large string carry 64-bit offsets, and the binary and string
+ * views carry no offset buffer at all, but the bytea and text decoders read
+ * 32-bit offsets. So a large_binary b'x' imported as an empty bytea, a
+ * large_string ['hi','there'] as '' and 'hi', and the views were called
+ * malformed. No target reads those layouts yet, so they are refused too (#2097).
  */
 static void
 imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
@@ -1928,7 +1934,11 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 							 typetag == ARROW_TYPE_LargeList ||
 							 typetag == ARROW_TYPE_RunEndEncoded ||
 							 typetag == ARROW_TYPE_ListView ||
-							 typetag == ARROW_TYPE_LargeListView);
+							 typetag == ARROW_TYPE_LargeListView ||
+							 typetag == ARROW_TYPE_LargeBinary ||
+							 typetag == ARROW_TYPE_LargeUtf8 ||
+							 typetag == ARROW_TYPE_BinaryView ||
+							 typetag == ARROW_TYPE_Utf8View);
 
 	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
 		!fileOther)

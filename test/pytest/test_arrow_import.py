@@ -784,3 +784,103 @@ def test_a_list_whose_offset_runs_past_its_values_is_still_malformed(pgc_conn, s
                 "1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0",
                 "a list<int64> file whose last offset runs past its value buffer is still refused as malformed"
                 " with XX001 (#1932)")
+
+
+def _layout_fixtures(pa, out):
+    """#2097's files, as the shell writes them: a column `v` of each binary or string
+    layout beside an int32 `n` counting from 0."""
+    def write(name, arr):
+        t = pa.table({"v": arr, "n": pa.array(range(len(arr)), pa.int32())})
+        _write_stream(pa, out / f"{name}.arrows", t)
+
+    write("lv_lb1", pa.array([b"x"], pa.large_binary()))
+    write("lv_lb3", pa.array([b"hello", b"world!", None], pa.large_binary()))
+    write("lv_ls", pa.array(["hi", "there"], pa.large_string()))
+    write("lv_lls", pa.array([["hi"], ["there"]], pa.list_(pa.large_string())))
+    write("lv_sv", pa.array(["hi", "there"], pa.string_view()))
+    write("lv_bv", pa.array([b"hi"], pa.binary_view()))
+    write("lv_bin", pa.array([b"x"], pa.binary()))
+    write("lv_str", pa.array(["hi", "there"], pa.string()))
+    for f in out.glob("lv_*.arrows"):
+        f.chmod(0o644)
+
+
+def _lv_import(conn, out, fixture, pgtype):
+    """-> "<what import_arrow returned, or 'SQLSTATE message'>|<rows stored>", as the
+    shell's lv_import."""
+    t = f"lv_t_{fixture}"
+    _run(conn, f"CREATE TABLE {t} (v {pgtype}, n int) USING pgcolumnar")
+    got = _outcome(conn, f"SELECT pgcolumnar.import_arrow('{t}', '{out / (fixture + '.arrows')}')")
+    return f"{got}|{_one(conn, f'SELECT count(*) FROM {t}')}"
+
+
+def _layout_pa(expect, name, out):
+    """-> pyarrow, with #2097's fixtures written to `out`, or None after declining by
+    `name` because pyarrow is absent."""
+    pa = expect.require_module("pyarrow", name=name)
+    if pa is not None:
+        _layout_fixtures(pa, out)
+    return pa
+
+
+def _refused(column, arrow_desc, pgtype):
+    return (f'42804 Arrow column "{column}" holds {arrow_desc}, which pgcolumnar.import_arrow cannot'
+            f" read into type {pgtype}|0")
+
+
+# #2097: a large_binary column holding b'x' imported into bytea as an empty value,
+# with no error, and a three-row one failed as malformed. A large_string file
+# ['hi','there'] imported into text as '' and 'hi'. The reader takes every Binary
+# and Utf8 offset buffer as 32-bit, so the 64-bit offsets [0, 1] read as 0 and 0.
+# The views have no offset buffer and were called malformed (XX001). Each is now
+# refused with 42804, naming the column and the Arrow type. One test per check.
+
+def test_a_large_binary_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_lb1", "bytea") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_lb3", "bytea"),
+                _refused("v", "a large binary", "bytea") + " / " + _refused("v", "a large binary", "bytea"),
+                "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty"
+                " bytea (#2097)")
+
+
+def test_a_large_string_is_refused_by_type_at_any_depth(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong"
+            " strings (#2097)")
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_ls", "text") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_lls", "text[]"),
+                _refused("v", "a large string", "text") + " / " + _refused("v", "a large string", "text"),
+                "import_arrow refuses a large string for a text or a text[] column with 42804, not stored as"
+                " wrong strings (#2097)")
+
+
+def test_a_string_or_binary_view_is_refused_by_type_not_as_malformed(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_sv", "text") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_bv", "bytea"),
+                _refused("v", "a string view", "text") + " / " + _refused("v", "a binary view", "bytea"),
+                "import_arrow refuses a string view and a binary view with 42804, not as a malformed file"
+                " (#2097)")
+
+
+def test_a_binary_or_string_file_still_imports_with_its_values(pgc_conn, server_dir, expect):
+    """#2097's control: the refusal is by type, so a plain binary and a plain string
+    file must still import, with their values."""
+    name = "control: a binary and a string file still import into bytea and text, with their values (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    conn = pgc_conn
+    got_bin = _lv_import(conn, server_dir, "lv_bin", "bytea")
+    hex_bin = _one(conn, "SELECT encode(v, 'hex') FROM lv_t_lv_bin")
+    got_str = _lv_import(conn, server_dir, "lv_str", "text")
+    joined = _one(conn, "SELECT string_agg(v, ',' ORDER BY n) FROM lv_t_lv_str")
+    expect.text(f"{got_bin}|{hex_bin} / {got_str}|{joined}",
+                "1|1|78 / 2|2|hi,there",
+                "control: a binary and a string file still import into bytea and text, with their values"
+                " (#2097)")
