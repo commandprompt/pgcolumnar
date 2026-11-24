@@ -13678,7 +13678,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
 
-The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+The twin of `test/cancel_decode.sh`. On a private database, two 2,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
 
 ### Every test
 
