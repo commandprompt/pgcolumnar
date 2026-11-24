@@ -209,33 +209,33 @@ same_xact "rows inserted after a rewrite rolled back to a savepoint survive COMM
 # chunk min and max of the rows inserted after the ALTER were computed under the
 # old ordering, and a filtered read pruned the chunk that holds the match
 # (#2067). A heap table altered the same way in the same transaction is the
-# oracle and must agree with the answer written here. Each value starts with
-# whether the relfilenode stayed the same: if it did not, the check no longer
-# tests a change without a rewrite.
-same_desc() {  # label, old type, first value, alter clause, new values, filter, read, want
+# oracle and must agree with the answer written here. same_desc prints
+# "<relfilenode unchanged>|<columnar>|<heap>": if the relfilenode changed, the
+# check no longer tests a change without a rewrite. The check names stay literal
+# at the call sites, so selftest 480 can match the unrunnable record (#1040).
+same_desc() {  # old type, first value, alter clause, new values, filter, read
 	psql_run "DROP TABLE IF EXISTS at_d, at_dh;
-		CREATE TABLE at_d (id int, v $2) USING pgcolumnar;
-		CREATE TABLE at_dh (id int, v $2);" >/dev/null 2>&1
+		CREATE TABLE at_d (id int, v $1) USING pgcolumnar;
+		CREATE TABLE at_dh (id int, v $1);" >/dev/null 2>&1
 	local before
 	before="$(q "SELECT relfilenode FROM pg_class WHERE relname = 'at_d';" | tail -1)"
 	psql_run "BEGIN;
-		INSERT INTO at_d VALUES (0, $3);  INSERT INTO at_dh VALUES (0, $3);
-		ALTER TABLE at_d ALTER COLUMN v TYPE $4;  ALTER TABLE at_dh ALTER COLUMN v TYPE $4;
-		INSERT INTO at_d VALUES $5;  INSERT INTO at_dh VALUES $5;
+		INSERT INTO at_d VALUES (0, $2);  INSERT INTO at_dh VALUES (0, $2);
+		ALTER TABLE at_d ALTER COLUMN v TYPE $3;  ALTER TABLE at_dh ALTER COLUMN v TYPE $3;
+		INSERT INTO at_d VALUES $4;  INSERT INTO at_dh VALUES $4;
 		COMMIT;" >/dev/null 2>&1
-	check "$1" "$(q "SELECT (relfilenode = '$before') || '|' ||
-			coalesce((SELECT $7 FROM at_d WHERE $6), '') || '|' ||
-			coalesce((SELECT $7 FROM at_dh WHERE $6), '')
-		FROM pg_class WHERE relname = 'at_d';" | tail -1)" \
-		"true|$8|$8"
+	q "SELECT (relfilenode = '$before') || '|' ||
+			coalesce((SELECT $6 FROM at_d WHERE $5), '') || '|' ||
+			coalesce((SELECT $6 FROM at_dh WHERE $5), '')
+		FROM pg_class WHERE relname = 'at_d';" | tail -1
 }
 
-same_desc "a filtered read finds a row inserted after int4 becomes oid in the same transaction" \
-	int4 1 "oid" "(1, 4294967295), (2, 5)" "v = 4294967295" "count(*)::text" 1
+check "a filtered read finds a row inserted after int4 becomes oid in the same transaction" \
+	"$(same_desc int4 1 "oid" "(1, 4294967295), (2, 5)" "v = 4294967295" "count(*)::text")" "true|1|1"
 if [ "$(q "SELECT count(*) FROM pg_collation WHERE collname = 'und-x-icu';" | tail -1)" = 1 ]; then
-	same_desc "a filtered read finds a row inserted after a collation change in the same transaction" \
-		"text COLLATE \"C\"" "'m'" "text COLLATE \"und-x-icu\"" "(1, 'a'), (2, 'B')" \
-		"v > 'A' AND v < 'Z' AND v <> 'm'" "string_agg(v, ',' ORDER BY v)" B
+	check "a filtered read finds a row inserted after a collation change in the same transaction" \
+		"$(same_desc "text COLLATE \"C\"" "'m'" "text COLLATE \"und-x-icu\"" "(1, 'a'), (2, 'B')" \
+			"v > 'A' AND v < 'Z' AND v <> 'm'" "string_agg(v, ',' ORDER BY v)")" "true|B|B"
 else
 	check_unrunnable "a filtered read finds a row inserted after a collation change in the same transaction" \
 		MISSING_DEPENDENCY "this server has no ICU collation und-x-icu"
