@@ -415,6 +415,8 @@ Read-only support for Apache Iceberg tables at their current snapshot.
 - Partition pruning covers identity, `bucket[N]` (murmur3), `truncate[W]`, and the
   temporal transforms. It prunes `year`, `month`, `day`, and `hour` on a timestamp
   or timestamptz column, and `year`, `month`, and `day` on a date column. Metrics
-  pruning covers integer and boolean columns by their stored minimum and maximum.
+  pruning covers integer and boolean columns by their stored minimum and maximum,
+  when the Iceberg field is an `int`, `long` or `boolean`. An Iceberg `decimal`
+  read as `int` or `bigint` is not pruned by metrics or by `bucket[N]` (#2086).
 - Pruning is only an optimization. A predicate the wrapper cannot decide reads the
   file and returns the same rows. `EXPLAIN (ANALYZE)` reports `Files Pruned`.

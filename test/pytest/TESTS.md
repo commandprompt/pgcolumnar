@@ -4487,7 +4487,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-89 literal matches and 0 missing (#1818's twelve included).
+104 literal matches and 0 missing (#1818's twelve and #2086's ten included).
 
 | test | asserts |
 | --- | --- |
@@ -4526,6 +4526,11 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range` | typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2 |
 | `test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3 |
 | `test_a_timestamp_6_hour_partition_still_prunes` | typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1) |
+| `test_a_decimal_9_read_as_int_is_not_pruned_on_its_bounds` | #2086: `decimal(9,2)` stored as Parquet INT32 and declared `int` returns both unscaled values; `d = 20000000` returns id 2, as `iceberg_scan` does, and `d > 15000000` counts 1. Iceberg writes a decimal's bounds big-endian, so reading them as an integer's prunes the file |
+| `test_a_decimal_18_read_as_bigint_is_not_pruned_on_its_bounds` | #2086: `decimal(18,2)` stored as INT64 and declared `bigint`: `d = 20000000` and `d >= 15000000` each return id 2 |
+| `test_a_refused_decimal_declaration_is_refused_with_a_filter_too` | #2086: `bigint` over an INT32 decimal is refused (42804) by a full scan, and by a filtered scan, which must not prune every file and return nothing |
+| `test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned` | #2086: `bucket[8]` on a decimal declared `int` returns id 1 for `d = 10000000` and id 2 for `d = 20000000`; Iceberg hashes a decimal's bytes, not a long |
+| `test_the_long_column_beside_a_decimal_still_prunes` | #2086's control: `id = 5` on the `long` column of the same file still prunes it on min/max (Files Pruned: 1) |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 

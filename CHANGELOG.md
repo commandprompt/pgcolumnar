@@ -605,6 +605,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows.
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

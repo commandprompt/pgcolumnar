@@ -3314,6 +3314,16 @@ iceberg_fdw	iceberg_fdw	an unknown table option is refused (FDW_INVALID_OPTION_N
 iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: a full scan of decimal(9,2) read as bigint is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: count where d > 15000000 on decimal(9,2) read as int is 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(9,2) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: dec9 read as int returns both unscaled values (premise)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt < 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt < 2020-01-02 returns id 1	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt = 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-

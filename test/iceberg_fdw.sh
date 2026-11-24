@@ -489,6 +489,53 @@ q "CREATE FOREIGN TABLE th6 (id bigint, ts timestamp(6))
 check "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)" \
 	"$(fp "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1"
 
+# ---- a decimal declared int or bigint is not pruned on its bounds (#2086) -----
+# Spark stores a decimal of precision 18 or less as a Parquet INT32 or INT64
+# holding the unscaled value, and the reader lets the foreign table declare it
+# int or bigint. Iceberg writes a decimal's bounds big-endian, not as an
+# integer's little-endian bytes, and hashes a decimal's bytes for bucket[N], not
+# a long. warehouse_decimal (fixtures/iceberg/gen_iceberg_decimal.py) holds the
+# unscaled values 10000000 and 20000000 in dec9 (decimal(9,2), INT32), dec18
+# (decimal(18,2), INT64) and dec9_bucket (bucket[8](d), one file per row).
+DCWH="$PGC_WORKDIR/dcwh"
+rm -rf "$DCWH"; mkdir -p "$DCWH"
+cp -r "$FX/warehouse_decimal/db" "$DCWH/db"
+chmod -R u+rwX "$DCWH"
+MD_D9="$(ls "$DCWH"/db/dec9/metadata/*.metadata.json | sort | tail -1)"
+MD_D18="$(ls "$DCWH"/db/dec18/metadata/*.metadata.json | sort | tail -1)"
+MD_DB="$(ls "$DCWH"/db/dec9_bucket/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dec9i (id bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_D9')" >/dev/null
+q "CREATE FOREIGN TABLE dec9b (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_D9')" >/dev/null
+q "CREATE FOREIGN TABLE dec18b (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_D18')" >/dev/null
+q "CREATE FOREIGN TABLE dec9k (id bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_DB')" >/dev/null
+check "decimal: dec9 read as int returns both unscaled values (premise)" \
+	"$(q "SELECT coalesce(string_agg(id||'|'||d, ',' ORDER BY id), 'none') FROM dec9i")" \
+	"1|10000000,2|20000000"
+check "decimal: d = 20000000 on decimal(9,2) read as int returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9i WHERE d = 20000000")" "2"
+check "decimal: count where d > 15000000 on decimal(9,2) read as int is 1" \
+	"$(q "SELECT count(*) FROM dec9i WHERE d > 15000000")" "1"
+check "decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec18b WHERE d = 20000000")" "2"
+check "decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec18b WHERE d >= 15000000")" "2"
+check "decimal: a full scan of decimal(9,2) read as bigint is refused (42804)" \
+	"$(tm_state "SELECT * FROM dec9b")" "42804"
+check "decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM dec9b WHERE d = 20000000")" "42804"
+check "decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 10000000")" "1"
+check "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 20000000")" "2"
+# The long column beside it still prunes on its own bounds, so the fix did not
+# switch min/max pruning off.
+check "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM dec9i WHERE id = 5")" "1"
+
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1

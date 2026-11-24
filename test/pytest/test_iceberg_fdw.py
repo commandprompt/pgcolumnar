@@ -68,6 +68,11 @@ WAREHOUSES = {
     "frac0": ("warehouse_typmod",   "byhour_frac",  "id bigint, ts timestamp(0)"),
     "bkt2":  ("warehouse_typmod",   "byregion_bucket", "id bigint, region varchar(2)"),
     "th6":   ("warehouse_temporal", "byhour",       "id bigint, ts timestamp(6)"),
+    # decimals stored as Parquet INT32/INT64, declared int or bigint (#2086)
+    "dec9i":  ("warehouse_decimal", "dec9",        "id bigint, d int"),
+    "dec9b":  ("warehouse_decimal", "dec9",        "id bigint, d bigint"),
+    "dec18b": ("warehouse_decimal", "dec18",       "id bigint, d bigint"),
+    "dec9k":  ("warehouse_decimal", "dec9_bucket", "id bigint, d int"),
 }
 
 
@@ -858,6 +863,85 @@ def test_a_timestamp_6_hour_partition_still_prunes(ice, expect):
         return
     expect.num(_pruned(conn, "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'"), 1,
                "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)")
+
+
+# ------------------------------------- a decimal declared int or bigint, and pruning (#2086)
+#
+# Spark stores a decimal of precision 18 or less as a Parquet INT32 or INT64 holding
+# the unscaled value, and the reader lets the foreign table declare it int or bigint.
+# Iceberg writes a decimal's bounds as big-endian bytes, where an integer's are
+# little-endian, and its bucket[N] hashes the decimal's bytes, not a long. So neither
+# the bounds nor the bucket of a decimal can be read as an integer's.
+# warehouse_decimal (fixtures/iceberg/gen_iceberg_decimal.py) holds the unscaled
+# values 10000000 (id 1) and 20000000 (id 2) in dec9 (decimal(9,2) as INT32), dec18
+# (decimal(18,2) as INT64) and dec9_bucket (bucket[8](d), one file per row).
+
+def _sqlstate(conn, sql):
+    """-> the SQLSTATE the query raises, or 'no error (<rows>)'."""
+    import psycopg
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return f"no error ({cur.fetchall()!r})"
+    except psycopg.Error as e:
+        return e.sqlstate
+
+
+def test_a_decimal_9_read_as_int_is_not_pruned_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9i"):
+        return
+    expect.text(_one(conn, "SELECT string_agg(id||'|'||d, ',' ORDER BY id) FROM dec9i"),
+                "1|10000000,2|20000000",
+                "decimal: dec9 read as int returns both unscaled values (premise)")
+    fdw = _ids(conn, "dec9i", "d = 20000000") or "none"
+    expect.text(fdw, "2", "decimal: d = 20000000 on decimal(9,2) read as int returns id 2")
+    expect.text(fdw, _scan_ids(conn, meta["dec9i"], "id bigint, d int", "d = 20000000") or "none",
+                "decimal: d = 20000000 on decimal(9,2) read as int matches iceberg_scan")
+    expect.num(int(_one(conn, "SELECT count(*) FROM dec9i WHERE d > 15000000")), 1,
+               "decimal: count where d > 15000000 on decimal(9,2) read as int is 1")
+
+
+def test_a_decimal_18_read_as_bigint_is_not_pruned_on_its_bounds(ice, expect):
+    """The most serious case: the declaration is one the full scan accepts."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec18b"):
+        return
+    expect.text(_ids(conn, "dec18b", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2")
+    expect.text(_ids(conn, "dec18b", "d >= 15000000") or "none", "2",
+                "decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2")
+
+
+def test_a_refused_decimal_declaration_is_refused_with_a_filter_too(ice, expect):
+    """bigint over an INT32 decimal is refused (42804). A filter must not turn the
+    refusal into an empty answer by pruning every file before one is opened."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec9b"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9b"), "42804",
+                "decimal: a full scan of decimal(9,2) read as bigint is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9b WHERE d = 20000000"), "42804",
+                "decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty")
+
+
+def test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9k"):
+        return
+    expect.text(_ids(conn, "dec9k", "d = 10000000") or "none", "1",
+                "decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1")
+    expect.text(_ids(conn, "dec9k", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2")
+
+
+def test_the_long_column_beside_a_decimal_still_prunes(ice, expect):
+    """The fix stops pruning on a decimal's bounds, not min/max pruning as a whole."""
+    conn, meta = ice
+    if not _need(expect, meta, "dec9i"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM dec9i WHERE id = 5"), 1,
+               "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)")
 
 
 # ------------------------------------------------------------------- option validation

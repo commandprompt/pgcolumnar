@@ -1513,6 +1513,69 @@ ice_field_timestamp_kind_differs(JsonbContainer *fieldsc, uint32 nf,
 }
 
 /*
+ * Whether the current-schema field named `nm` has the primitive type `want`
+ * exactly ("int", "long", "boolean", "string"). A nested field's type is an
+ * object, never a string, so it matches nothing.
+ */
+static bool
+ice_field_type_is(JsonbContainer *fieldsc, uint32 nf, const char *nm,
+				  const char *want)
+{
+	uint32		j;
+
+	for (j = 0; j < nf; j++)
+	{
+		JsonbValue *sf = getIthJsonbValueFromContainer(fieldsc, j);
+		JsonbValue *v;
+
+		if (sf == NULL || sf->type != jbvBinary)
+			continue;
+		v = ice_field(sf->val.binary.data, "name");
+		if (v == NULL || v->type != jbvString ||
+			(int) strlen(nm) != v->val.string.len ||
+			strncmp(nm, v->val.string.val, v->val.string.len) != 0)
+			continue;
+		v = ice_field(sf->val.binary.data, "type");
+		return v != NULL && v->type == jbvString &&
+			(int) strlen(want) == v->val.string.len &&
+			strncmp(want, v->val.string.val, v->val.string.len) == 0;
+	}
+	return false;
+}
+
+/*
+ * Whether the FDW may read the field's bounds or bucket the way it reads an
+ * integer, boolean or string column's (#2086). Iceberg writes an int, long or
+ * boolean bound as little-endian bytes, and hashes an int or long for bucket[N]
+ * as an 8-byte long. It writes a decimal's bound as the unscaled value in
+ * big-endian two's complement, and hashes those bytes. The reader lets an int or
+ * bigint column read a decimal stored as Parquet INT32 or INT64, so the
+ * PostgreSQL type alone cannot tell the two apart. `forBucket` asks about the
+ * bucket hash, which also covers a text column over an Iceberg string; without
+ * it, about the bounds of an int2, int4, int8 or bool column.
+ */
+static bool
+ice_field_prunes_as_column_type(JsonbContainer *fieldsc, uint32 nf,
+								const char *nm, Oid typid, bool forBucket)
+{
+	switch (typid)
+	{
+		case INT2OID:
+		case INT4OID:
+		case INT8OID:
+			return ice_field_type_is(fieldsc, nf, nm, "int") ||
+				ice_field_type_is(fieldsc, nf, nm, "long");
+		case BOOLOID:
+			return !forBucket && ice_field_type_is(fieldsc, nf, nm, "boolean");
+		case TEXTOID:
+		case VARCHAROID:
+			return forBucket && ice_field_type_is(fieldsc, nf, nm, "string");
+		default:
+			return false;
+	}
+}
+
+/*
  * Map the current partition spec's IDENTITY fields to foreign-table columns, for
  * FDW pruning. On return *out_attno[k] is the 1-based attno of the table column
  * an identity partition field at partition-tuple position k maps to (0 when the
@@ -1722,6 +1785,11 @@ PgColumnarIcebergBucketMap(const char *path, const PgColumnarObjStoreConfig *cfg
 				continue;
 			if (ice_field_id_by_name(fieldsc, nf, NameStr(att->attname)) == srcid)
 			{
+				/* a decimal hashes its bytes, not the int the column reads */
+				if (!ice_field_prunes_as_column_type(fieldsc, nf,
+													 NameStr(att->attname),
+													 att->atttypid, true))
+					break;
 				pos[cnt] = (int) k;
 				attno[cnt] = a + 1;
 				nn[cnt] = N;
@@ -2079,8 +2147,11 @@ PgColumnarIcebergTemporalMap(const char *path, const PgColumnarObjStoreConfig *c
 
 /*
  * Return, for each column of `tupdesc`, the current-schema field id of the
- * column with that name (0 when the table has no such column), for FDW metrics
- * pruning that keys a data file's bounds by field id. palloc'd, length natts.
+ * column with that name, for FDW metrics pruning that keys a data file's bounds
+ * by field id. palloc'd, length natts. It is 0 when the table has no such
+ * column, and 0 when the field's bounds cannot be read as the column's type: an
+ * int column over a decimal stored as Parquet INT32 has big-endian bounds that
+ * would decode as wrong integers and prune a file that matches (#2086).
  */
 int *
 PgColumnarIcebergColumnFieldIds(const char *path,
@@ -2103,7 +2174,9 @@ PgColumnarIcebergColumnFieldIds(const char *path,
 		if (att->attisdropped)
 			continue;
 		fid = ice_field_id_by_name(fieldsc, nf, NameStr(att->attname));
-		if (fid > 0 && fid <= PG_INT32_MAX)
+		if (fid > 0 && fid <= PG_INT32_MAX &&
+			ice_field_prunes_as_column_type(fieldsc, nf, NameStr(att->attname),
+											att->atttypid, false))
 			out[a] = (int) fid;
 	}
 	return out;
