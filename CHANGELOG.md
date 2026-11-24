@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
+  sort column is dropped and another column takes its name (#2069). The
+  ordering mark that `vacuum_sorted` and `recluster` record names its key
+  columns by name, and DROP COLUMN left it in place. PostgreSQL frees a
+  dropped column's name, so after `ALTER TABLE ... RENAME COLUMN` onto that
+  name the planner left out the Sort for the new column, and
+  `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
+  column in the key now clears the mark, on the table and on every
+  partition or inheritance child the drop reaches. A drop of any other
+  column keeps it. `test/sorted_mark_rename.sh` and
+  `test_sorted_mark_rename.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

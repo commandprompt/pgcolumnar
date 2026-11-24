@@ -4044,6 +4044,34 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 	if (access == OAT_POST_CREATE && classId == ConstraintRelationId)
 		pgcolumnar_reject_fk_to_columnar(objectId);
 
+	/*
+	 * A dropped column frees its name, so the ordering mark must stop naming
+	 * it (#2069). See PgColumnarForgetSortKeyColumn. The object-access hook
+	 * sees every column drop: ALTER TABLE ... DROP COLUMN, its recursion into
+	 * inheritance children and partitions, and a drop that cascades from
+	 * another object. The column still has its name here, because the hook
+	 * runs before the deletion, and the drop already holds AccessExclusiveLock
+	 * on the relation.
+	 */
+	if (access == OAT_DROP && classId == RelationRelationId && subId > 0)
+	{
+		char		relkind = get_rel_relkind(objectId);
+		char	   *attname;
+
+		if ((relkind != RELKIND_RELATION && relkind != RELKIND_MATVIEW) ||
+			!PgColumnarIsColumnarRelation(objectId))
+			return;
+		attname = get_attname(objectId, (AttrNumber) subId, true);
+		if (attname != NULL)
+		{
+			Relation	rel = relation_open(objectId, NoLock);
+
+			PgColumnarForgetSortKeyColumn(PgColumnarStorageId(rel), attname);
+			relation_close(rel, NoLock);
+		}
+		return;
+	}
+
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
 		Relation	rel;

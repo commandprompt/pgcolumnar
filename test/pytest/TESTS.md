@@ -4719,7 +4719,7 @@ psql as the same user.
 | `test_a_type_change_rewrite_drops_the_mark` | a rewriting ALTER TYPE changes the values, so the old mark cannot survive it |
 | `test_one_updated_row_is_a_row_outside_the_run` | a single UPDATE appends, and one row outside the run is enough |
 | `test_the_mark_follows_a_rename` | #778: the mark is stored by name, so a RENAME COLUMN must carry it |
-| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through |
+| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through; since #2069 the drop clears the mark, so the test writes back the mark an older build left |
 | `test_the_guc_turns_the_claim_off` | the GUC is a real off switch, checked with the Sort back |
 | `test_a_ctas_relation_claims_nothing` | CTAS writes rows in whatever order the query produced; nothing records an order |
 | `test_a_collatable_sort_column_is_not_claimed` | text order is collation-dependent, so a run sorted under one collation is not sorted under another |
@@ -9204,7 +9204,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069). On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9251,6 +9251,20 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_the_declared_key_follows_the_rename` | the DECLARED key follows the rename too |
 | `test_the_two_catalogs_still_agree` | so the two catalogs still agree after the rename |
 | `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
+| `test_vd_t_loaded_every_row` | premise: vd_t loaded every row |
+| `test_before_the_drop_the_mark_records_a` | premise: before the drop, the mark records key {a} |
+| `test_dropping_the_sort_key_column_clears_the_mark` | DROP COLUMN of the sort-key column clears the mark |
+| `test_the_column_that_took_the_name_is_not_ordered` | premise: the column that took the name a is NOT ordered |
+| `test_after_a_drop_and_rename_order_by_plans_a_sort` | after the drop and a rename onto the name, ORDER BY plans a Sort |
+| `test_after_a_drop_and_rename_order_by_limit_is_right` | THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values |
+| `test_vacuum_sorted_after_a_drop_does_the_work` | and vacuum_sorted on the new a does the work |
+| `test_vd_t_is_ordered_by_a_afterwards` | and vd_t really is ordered by a afterwards |
+| `test_an_unrelated_drop_keeps_the_mark` | dropping an unrelated column keeps the mark |
+| `test_the_gate_still_fires_after_an_unrelated_drop` | and the gate still fires after an unrelated drop |
+| `test_the_partitions_mark_records_k` | premise: the partition's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_partitions_mark` | the PARTITION's mark is cleared by a drop issued on the parent |
+| `test_vd_z_mark_records_a_zorder_run` | premise: vd_z's mark records {a,b} as zorder |
+| `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |

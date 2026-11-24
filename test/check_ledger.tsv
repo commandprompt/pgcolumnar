@@ -8591,15 +8591,23 @@ sort_status_privilege	sort_status_privilege	the OWNER of the table can read its 
 sort_status_privilege	sort_status_privilege	the owner sees its sorted run, not a false empty	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status reports no group in the sorted run
 sorted_mark_rename	sorted_mark_rename	CONTROL: a repeat recluster on the same key is a no-op, so the gate fires	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	CONTROL: a second identical call is a no-op, so the gate does fire	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	DROP COLUMN of the sort-key column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE POINT: vacuum_sorted('a') after the swap does the work	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: and the rows really do come back ordered	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	after the drop and a rename onto the name, ORDER BY plans a Sort	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	after the swap, ORDER BY on the now-unordered column plans a Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and ORDER BY on the column that IS ordered still needs no Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and a bare vacuum_sorted() is a no-op, not a rewrite on a different key	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778);vacuum_sorted's skip raises instead of skipping (#760)
 sorted_mark_rename	sorted_mark_rename	and does not rewrite the storage row at all (xmin unchanged)	15;16;17;18;19	2026-10-20	a rename that touches no sort-key column still rewrites the storage row
 sorted_mark_rename	sorted_mark_rename	and the gate still fires	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	and the gate still fires after an unrelated drop	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	and the partition really is ordered by k afterwards	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and the table really is ordered by a afterwards	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	and vacuum_sorted on the new a does the work	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	and vd_t really is ordered by a afterwards	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	dropping an unrelated column keeps the mark	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	dropping one Z-order column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	premise: a bare vacuum_sorted() used the declared key	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the ordered column is the one now named b	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the partition's ordered column is named j	15;16;17;18;19	never	-
@@ -8607,9 +8615,11 @@ sorted_mark_rename	sorted_mark_rename	premise: and NOT by b	15;16;17;18;19	never
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named a is NOT ordered	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named k is NOT ordered	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: before sorting, a is not in order	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: before the drop, the mark records key {a}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_ctl loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_t loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the column that took the name a is NOT ordered	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the first recluster does real work	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the inheritance child is ordered by k	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the mark records key {a}	15;16;17;18;19	never	-
@@ -8617,7 +8627,10 @@ sorted_mark_rename	sorted_mark_rename	premise: the mark records {a,b} as zorder	
 sorted_mark_rename	sorted_mark_rename	premise: the parent is NOT itself columnar, so gating on it would skip the child	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition holds every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition is ordered by k and its mark says so	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the partition's mark records key {k}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vacuum_sorted really ordered it by a	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_t loaded every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_z's mark records {a,b} as zorder	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_t is ordered by a	15;16;17;18;19	never	-
@@ -8632,6 +8645,7 @@ sorted_mark_rename	sorted_mark_rename	so vacuum_sorted on the partition does the
 sorted_mark_rename	sorted_mark_rename	the CHILD's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	the DECLARED key follows the rename too	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778)
 sorted_mark_rename	sorted_mark_rename	the PARTITION's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the PARTITION's mark is cleared by a drop issued on the parent	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	the gate still fires for the right key after all that	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
 sorted_mark_rename	sorted_mark_rename	the mark FOLLOWS the rename, so it still names the ordered column	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	the mark follows both renames	15;16;17;18;19	never	-
