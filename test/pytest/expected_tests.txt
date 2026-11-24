@@ -1926,4 +1926,9 @@ guard_tests 895
 # the opt-in arm is renamed, not added, so it moves nothing. By collection: `cd test/pytest &&
 # PGC_PG_CONFIG=<PG 18.6 pg_config> python -m pytest --collect-only -q`: 6271 tests collected, less
 # guard_tests 894.
-cluster_tests 5385
+# cluster_tests 5385 -> 5387 for #2071's review fix-up (#2138): test_large_values.py's row-group test
+# splits into test_rows_past_1gb_per_row_group_load (which also checks the row-group shape) and
+# test_rows_past_1gb_per_chunk_group_load, and test_compressed_heap_rows_past_1gb_load is new (heap's
+# compressed values copied to columnar), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5387 tests collected.
+cluster_tests 5387

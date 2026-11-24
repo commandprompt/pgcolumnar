@@ -613,8 +613,11 @@ true until the next version shipped.
   exceeds maximum allowed length (1073741823 bytes)`, even when the values
   compressed to almost nothing. The writer now also writes a row group before a
   row would take its values past 256 MiB, summed over its columns, so wide rows
-  make row groups with fewer than `stripe_row_limit` rows. docs/limitations.md
-  ("Write size limits"). `test/large_values.sh` and `test_large_values.py`.
+  make row groups with fewer than `stripe_row_limit` rows. It counts each value
+  at its raw size, so rows copied from heap, which stores them compressed, are
+  bounded too. A single row whose values sum past about 1 GiB still fails
+  (#2178). docs/limitations.md ("Write size limits"). `test/large_values.sh` and
+  `test_large_values.py`, which also check the row-group shape of an 8 KB load.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

@@ -11,8 +11,9 @@
 #   - an UPDATE that takes a value heap has TOASTed and stores it in a columnar row.
 #
 # Rows whose column passes 1 GB in one row group, or in one chunk group, load and
-# are stored exactly (#2071). The writer closes a row group early instead of building
-# a buffer past what one allocation may hold. An opt-in arm (PGC_RUN_OVER_1GB=1)
+# are stored exactly (#2071), also when they are copied from heap, which stores them
+# compressed. The writer closes a row group early instead of building a buffer past
+# what one allocation may hold, so the 8 KB rows make row groups just under 256 MiB. An opt-in arm (PGC_RUN_OVER_1GB=1)
 # does the same with about 1.1 GB of incompressible text and compression off, so no
 # codec makes the data smaller. Before #2071 that INSERT failed with 54000. It is
 # opt-in because it needs several GB of memory, more than a CI runner should spend
@@ -66,10 +67,28 @@ psql_run "CREATE TABLE lv_rg (id int, t text) USING pgcolumnar;
 check "150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly" \
 	"$(lv_load "INSERT INTO lv_rg SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g")|$(q "$LVSUM('y', 8000)) FROM lv_rg")" \
 	"INSERT 0 150000|150000,11250075000,1200000000,0"
+# A row of 8 KB measures 8012 bytes (8000, a 4-byte header, a 4-byte int), and
+# 33504 x 8012 = 268434048 is the most rows under the 256 MiB cap (268435456). So
+# this shape pins the cap's value, and that the byte count goes back to 0 after
+# each flush: without that, every row group after the first holds one row.
+check "the 8 KB rows make 5 row groups of 15984 to 33504 rows: the cap closes each one just under 256 MiB" \
+	"$(q "SELECT count(*) || ',' || min(rowcount) || ',' || max(rowcount) FROM pgcolumnar.stats('lv_rg')")" \
+	"5,15984,33504"
 check "10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly" \
 	"$(lv_load "INSERT INTO lv_cg SELECT g, repeat('x', 120000) FROM generate_series(1, 10000) g")|$(q "$LVSUM('x', 120000)) FROM lv_cg")" \
 	"INSERT 0 10000|10000,50005000,1200000000,0"
-psql_run "DROP TABLE lv_rg, lv_cg;"
+# The same 1.2 GB copied from heap, which stores each 8 KB value compressed to about
+# 100 bytes. The writer detoasts every value before it encodes it, so the cap must
+# count a value at its raw size, not at the size it is stored at in the source.
+psql_run "CREATE TABLE lv_hz (id int, t text);
+          INSERT INTO lv_hz SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g;
+          CREATE TABLE lv_hc (id int, t text) USING pgcolumnar;"
+check "premise: heap stores the 150000 values of 8 KB compressed, under 20 MB in all" \
+	"$(q "SELECT sum(pg_column_size(t)) < 20000000 FROM lv_hz")" "t"
+check "150000 rows of 8 KB text that heap stores compressed, copied to columnar, load and are stored exactly" \
+	"$(lv_load "INSERT INTO lv_hc SELECT * FROM lv_hz")|$(q "$LVSUM('y', 8000)) FROM lv_hc")" \
+	"INSERT 0 150000|150000,11250075000,1200000000,0"
+psql_run "DROP TABLE lv_rg, lv_cg, lv_hz, lv_hc;"
 
 # ---- 1.1 GB of incompressible text in one chunk group's rows (opt-in) -----------------
 OVER="1.1 GB of incompressible text in one chunk group's rows loads, and the server stays up"

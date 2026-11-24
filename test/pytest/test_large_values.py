@@ -8,8 +8,9 @@ values and a 200 MB compressible one, then an UPDATE that takes a value heap has
 TOASTed.
 
 Rows whose column passes 1 GB in one row group, or in one chunk group, load and are
-stored exactly (#2071): the writer closes a row group early instead of building a
-buffer past what one allocation may hold. An opt-in arm does the same with about
+stored exactly (#2071), also when they are copied from heap, which stores them
+compressed: the writer closes a row group early instead of building a buffer past
+what one allocation may hold, so the 8 KB rows make row groups just under 256 MiB. An opt-in arm does the same with about
 1.1 GB of incompressible text and compression off; before #2071 that INSERT failed
 with 54000. That arm needs several GB of memory, so it is opt-in, as the shell's is:
 it runs only with PGC_RUN_OVER_1GB=1, and otherwise declines as UNMET_PRECONDITION,
@@ -75,31 +76,77 @@ def _summary(conn, table, value_sql):
                       f"|| count(*) FILTER (WHERE t <> {value_sql}) FROM {table}")
 
 
-def test_rows_past_1gb_per_row_group_or_chunk_group_load(pgc_conn, expect):
-    """#2071. The writer used to cut row groups and chunk groups by row count alone.
-    With the default limits, 150000 rows of 8 KB, or 10000 rows of 120 KB, put 1.2 GB
-    of one column into one buffer, and the INSERT failed with "string buffer exceeds
-    maximum allowed length". The values compress to almost nothing."""
-    expect.text(_one(pgc_conn, "SELECT current_setting('pgcolumnar.stripe_row_limit') || ',' "
-                               "|| current_setting('pgcolumnar.chunk_group_row_limit')"),
+def _premise_default_limits(conn, expect):
+    expect.text(_one(conn, "SELECT current_setting('pgcolumnar.stripe_row_limit') || ',' "
+                           "|| current_setting('pgcolumnar.chunk_group_row_limit')"),
                 "150000,10000",
                 "premise: the row limits are the defaults, 150000 per row group and 10000 per chunk group")
+    with conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '600s'")
+
+
+def test_rows_past_1gb_per_row_group_load(pgc_conn, expect):
+    """#2071. The writer used to cut row groups by row count alone. With the default
+    limits, 150000 rows of 8 KB put 1.2 GB of one column into one buffer, and the
+    INSERT failed with "string buffer exceeds maximum allowed length". The values
+    compress to almost nothing.
+
+    A row of 8 KB measures 8012 bytes (8000, a 4-byte header, a 4-byte int), and
+    33504 x 8012 = 268434048 is the most rows under the 256 MiB cap (268435456). So
+    the row-group shape pins the cap's value, and that the byte count goes back to 0
+    after each flush: without that, every row group after the first holds one row."""
+    _premise_default_limits(pgc_conn, expect)
     with pgc_conn.cursor() as cur:
         cur.execute("CREATE TABLE lv_rg (id int, t text) USING pgcolumnar")
-        cur.execute("CREATE TABLE lv_cg (id int, t text) USING pgcolumnar")
-        cur.execute("SET statement_timeout = '600s'")
     tag = _load(pgc_conn, "INSERT INTO lv_rg SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g")
     got = _summary(pgc_conn, "lv_rg", "repeat('y', 8000)")
     expect.text(f"{tag}|{got}",
                 "INSERT 0 150000|150000,11250075000,1200000000,0",
                 "150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly")
+    expect.text(_one(pgc_conn, "SELECT count(*) || ',' || min(rowcount) || ',' || max(rowcount) "
+                               "FROM pgcolumnar.stats('lv_rg')"),
+                "5,15984,33504",
+                "the 8 KB rows make 5 row groups of 15984 to 33504 rows: the cap closes each one just under 256 MiB")
+    with pgc_conn.cursor() as cur:
+        cur.execute("DROP TABLE lv_rg")
+
+
+def test_rows_past_1gb_per_chunk_group_load(pgc_conn, expect):
+    """#2071. With the default limits, 10000 rows of 120 KB put 1.2 GB of one column
+    into one chunk group's value stream, and the INSERT failed with "string buffer
+    exceeds maximum allowed length". A test of its own, so a failed 8 KB load does not
+    hide this one."""
+    _premise_default_limits(pgc_conn, expect)
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE lv_cg (id int, t text) USING pgcolumnar")
     tag = _load(pgc_conn, "INSERT INTO lv_cg SELECT g, repeat('x', 120000) FROM generate_series(1, 10000) g")
     got = _summary(pgc_conn, "lv_cg", "repeat('x', 120000)")
     expect.text(f"{tag}|{got}",
                 "INSERT 0 10000|10000,50005000,1200000000,0",
                 "10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly")
     with pgc_conn.cursor() as cur:
-        cur.execute("DROP TABLE lv_rg, lv_cg")
+        cur.execute("DROP TABLE lv_cg")
+
+
+def test_compressed_heap_rows_past_1gb_load(pgc_conn, expect):
+    """#2071. The same 1.2 GB copied from heap, which stores each 8 KB value
+    compressed to about 100 bytes. The writer detoasts every value before it encodes
+    it, so the cap must count a value at its raw size, not at the size it is stored
+    at in the source."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("SET statement_timeout = '600s'")
+        cur.execute("CREATE TABLE lv_hz (id int, t text)")
+        cur.execute("INSERT INTO lv_hz SELECT g, repeat('y', 8000) FROM generate_series(1, 150000) g")
+        cur.execute("CREATE TABLE lv_hc (id int, t text) USING pgcolumnar")
+    expect.text(str(_one(pgc_conn, "SELECT sum(pg_column_size(t)) < 20000000 FROM lv_hz")), "True",
+                "premise: heap stores the 150000 values of 8 KB compressed, under 20 MB in all")
+    tag = _load(pgc_conn, "INSERT INTO lv_hc SELECT * FROM lv_hz")
+    got = _summary(pgc_conn, "lv_hc", "repeat('y', 8000)")
+    expect.text(f"{tag}|{got}",
+                "INSERT 0 150000|150000,11250075000,1200000000,0",
+                "150000 rows of 8 KB text that heap stores compressed, copied to columnar, load and are stored exactly")
+    with pgc_conn.cursor() as cur:
+        cur.execute("DROP TABLE lv_hz, lv_hc")
 
 
 def test_incompressible_text_past_1gb_loads(pgc_cluster, expect):
