@@ -2596,6 +2596,27 @@ PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 			}
 		}
 
+		/*
+		 * #2070: ttl_column is a single NAME, held by name for the same reason,
+		 * and expire() resolves it on every run. Left stale, expire() fails, and
+		 * once another time column takes the old name it cuts on that column and
+		 * retires rows still inside the retention.
+		 */
+		if (tupdesc->natts >= Anum_options_ttl_column)
+		{
+			bool		isnull;
+			Datum		d = heap_getattr(tuple, Anum_options_ttl_column, tupdesc,
+										 &isnull);
+
+			if (!isnull && strcmp(NameStr(*DatumGetName(d)), oldName) == 0)
+			{
+				values[Anum_options_ttl_column - 1] =
+					DirectFunctionCall1(namein, CStringGetDatum((char *) newName));
+				replace[Anum_options_ttl_column - 1] = true;
+				any = true;
+			}
+		}
+
 		/* a rename touching no declared column must not rewrite the row */
 		if (any)
 		{

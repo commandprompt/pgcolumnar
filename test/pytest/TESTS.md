@@ -6727,6 +6727,7 @@ restored byte-identical.
 | `test_a_timestamp_retention_column_uses_the_sessions_local_time` | a `timestamp` column's cutoff is the session's local now: in UTC+14, exactly the groups wholly before it are retired (#1339) |
 | `test_expire_records_what_it_retires_and_nothing_else` | `expire` writes exactly the groups it retires to `pgcolumnar.retired_group` (#1294); a rolled-back `expire` and a `compact_rewrite` record nothing; dropping the table drops its rows |
 | `test_a_no_op_expire_reads_the_extent_not_every_zone_map` | #1310: with the retention column's extent (#1304 option 5) past the cutoff, a no-op `expire` makes 0 zone-map scans where it made one per group; the same groups retire with or without the extent; aged rows written in `expire`'s own transaction retire; a column left with only NULLs needs no reads. Counted in a fresh connection, with the test schema's `search_path` carried over. Seen red first: 40 scans |
+| `test_the_retention_column_follows_a_rename` | #2070: `ALTER TABLE ... RENAME COLUMN` carries the new name into `ttl_column`, `expire` still runs, and a column that later takes the old name, holding values two years old, retires no group and drops no row. Seen red first: `ttl_column` stayed `ts` |
 
 The shell twin is `test/ttl_expire.sh`, 67 checks since #1310, all in the mutation ledger. The two halves share no code:
 different tables, different row counts, different retention windows, and the

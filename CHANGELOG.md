@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
+  renames it in `pgcolumnar.options` too (#2070). Before this fix,
+  `ttl_column` kept the old name. `pgcolumnar.expire` then failed with
+  `retention column "..." does not exist`, so retention stopped. If another
+  `date`, `timestamp` or `timestamptz` column later took the old name,
+  `expire` cut on that column and retired row groups whose rows were all
+  inside the retention. The rename already updated `sort_by` and
+  `sketch_columns`; it now updates `ttl_column` in the same catalog row.
+  `DROP COLUMN` of the retention column is unchanged: the declaration keeps
+  the name and `expire` refuses with 42703. `test/ttl_expire.sh` and
+  `test_ttl_expire.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

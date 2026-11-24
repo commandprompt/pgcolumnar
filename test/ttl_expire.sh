@@ -688,6 +688,28 @@ check_num "expire retires the aged groups and keeps those of NULLs" \
 	"$(q "SELECT pgcolumnar.expire('ttl_n');")" "2"
 check "a later expire on a column of only NULLs reads no zone map" "$(_expire_scans ttl_n)" "n=0 scans=0"
 
+# The retention column follows RENAME COLUMN (#2070). options.ttl_column holds a
+# NAME, and expire resolves it on every run. A stale name made expire fail, and
+# once another timestamp column took the old name, expire cut on that column. The
+# second column holds old values on purpose: cutting on it would retire every group.
+psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_rn', ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;"
+check_num "premise: the rename fixture has several row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_rn');")" "3"
+check_num "premise: expire retires nothing while every row is inside the retention" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts TO event_at;"
+check "the retention column follows RENAME COLUMN (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "event_at"
+check_num "expire still runs after the retention column is renamed" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN imported TO ts;"
+check_num "a column that takes the old name is not used for retention (#2070)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+check_num "NO row inside the retention is dropped after the retention column is renamed" \
+	"$(q "SELECT count(*) FROM ttl_rn;")" "3000"
+
 # The interval-only half (#1341), LAST IN THE SUITE ON PURPOSE: with the reader's
 # column test removed, expire on ttl_hiv crashed the backend (PG17), and a crash
 # mid-suite takes the checks after it down with it, premises included.
