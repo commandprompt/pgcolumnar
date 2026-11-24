@@ -176,6 +176,34 @@ check "nulls stay on the same rows through a conversion" \
 	"$(q "SELECT count(*) FROM at_n a JOIN at_nh b USING (id)
 		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)/$(q "SELECT count(*) FROM at_n;" | tail -1)" "0/$ROWS"
 
+# --- an INSERT after the rewrite, in the same transaction (#2067) -------------
+#
+# The write state for a table is cached for the transaction. A rewrite gives the
+# table new storage and, for a type change, new column types, but keeps the
+# column count. The cache was checked by column count alone, so an INSERT after
+# the rewrite reused the old state: its rows went to the retired storage and
+# COMMIT lost them without an error. Each transaction below inserts 100 rows,
+# rewrites, and inserts 100 more; all 200 must be there after COMMIT.
+same_xact() {  # label, the statements between the two inserts
+	psql_run "DROP TABLE IF EXISTS at_x;
+		CREATE TABLE at_x (id int, v int8) USING pgcolumnar;" >/dev/null 2>&1
+	psql_run "BEGIN;
+		INSERT INTO at_x SELECT g, g FROM generate_series(1, 100) g;
+		$2
+		INSERT INTO at_x SELECT g, g FROM generate_series(101, 200) g;
+		COMMIT;" >/dev/null 2>&1
+	check "$1" "$(q "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM at_x;" | tail -1)" "200|1|200"
+}
+
+same_xact "rows inserted after a type change in the same transaction survive COMMIT" \
+	"ALTER TABLE at_x ALTER COLUMN v TYPE numeric;"
+same_xact "rows inserted after a same-type rewrite in the same transaction survive COMMIT" \
+	"ALTER TABLE at_x ALTER COLUMN v TYPE int8 USING v + 0;"
+same_xact "rows inserted after a rewrite released from a savepoint survive COMMIT" \
+	"SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; RELEASE SAVEPOINT s;"
+same_xact "rows inserted after a rewrite rolled back to a savepoint survive COMMIT" \
+	"SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; ROLLBACK TO SAVEPOINT s;"
+
 # --- the crash, deliberately last ---------------------------------------------
 #
 # The stored bytes are varlena, the new type is fixed width, and against the
@@ -186,5 +214,19 @@ check "nulls stay on the same rows through a conversion" \
 # a run against a broken build unreadable. Ordering it here keeps the controls
 # above meaningful.
 conv "text to int (the crash)"  text     "g::text"                    "int USING v::int"
+
+# The same stale write state, when the type change crosses from by-reference to
+# by-value: the new int8 Datum was encoded under the old text descriptor and
+# dereferenced as a pointer, and the backend died with SIGSEGV (#2067). After the
+# other crash for the same reason: it takes the cluster down.
+psql_run "DROP TABLE IF EXISTS at_s;
+	CREATE TABLE at_s (id int, v text) USING pgcolumnar;" >/dev/null 2>&1
+psql_run "BEGIN;
+	INSERT INTO at_s VALUES (1, '5');
+	ALTER TABLE at_s ALTER COLUMN v TYPE int8 USING v::int8;
+	INSERT INTO at_s VALUES (2, 7);
+	COMMIT;" >/dev/null 2>&1
+check "a by-value row inserted after text becomes int8 in the same transaction is kept" \
+	"$(q "SELECT string_agg(id || ':' || v, ',' ORDER BY id) FROM at_s;" | tail -1)" "1:5,2:7"
 
 pgc_summary

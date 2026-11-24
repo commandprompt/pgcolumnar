@@ -1912,4 +1912,9 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5381 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+cluster_tests 5381

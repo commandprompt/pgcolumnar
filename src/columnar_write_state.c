@@ -338,6 +338,14 @@ struct PgColumnarWriteState
 	bool		bloomEnabled;		/* columnar.enable_bloom_filter at open time */
 	int			encodeEffort;		/* per-table encode_effort at open time */
 	uint64		storageId;
+
+	/*
+	 * pg_class.relfilenode when the state was opened (#2067). Every rewrite
+	 * changes it, so a mismatch is the cheap sign that the table may have new
+	 * storage and new column types since; PgColumnarGetWriteState then checks
+	 * the storage id, which needs a metapage read.
+	 */
+	Oid			relfilenode;
 	PgColumnarColumnDef *colDefs;		/* array [natts], in writeContext */
 
 	/*
@@ -785,13 +793,33 @@ PgColumnarGetWriteState(Relation rel)
 		 *
 		 * The buffered rows are correct under the descriptor they were written
 		 * with, so flush them under it and open a new buffer for the new shape.
+		 *
+		 * A rewrite that keeps the column count is the other way the state goes
+		 * stale (#2067). ALTER COLUMN TYPE, or any rewrite through a transient
+		 * table, gives the table new storage and possibly new column types. A
+		 * reused state flushed into the retired storage, so COMMIT lost the rows
+		 * without an error; and a by-value Datum encoded under the old by-reference
+		 * descriptor was dereferenced as a pointer. A rewrite always changes the
+		 * relfilenode, so that is the trigger to look closer.
 		 */
-		if (writeState->natts == RelationGetDescr(rel)->natts)
+		if (writeState->natts == RelationGetDescr(rel)->natts &&
+			writeState->relfilenode == RelationGetForm(rel)->relfilenode)
 			return writeState;
 
-		if (writeState->stripeRowCount > 0)
-			pgcolumnar_flush_row_group(writeState);
-		flush_ws_projections(writeState);
+		/*
+		 * New storage: forget the state rather than flush it. Its storage is
+		 * retired, and the rewrite already flushed its rows before copying them
+		 * (the scan begins with a flush). Same storage with a new relfilenode
+		 * has no path today (SET TABLESPACE and CLUSTER refuse a columnar
+		 * table), but if one appears its rows belong to live storage: flush
+		 * them, as for a new column count.
+		 */
+		if (writeState->storageId == PgColumnarStorageId(rel))
+		{
+			if (writeState->stripeRowCount > 0)
+				pgcolumnar_flush_row_group(writeState);
+			flush_ws_projections(writeState);
+		}
 
 		oldContext = MemoryContextSwitchTo(PgColumnarWriteContext);
 		PgColumnarWriteStates = list_delete_ptr(PgColumnarWriteStates, writeState);
@@ -828,6 +856,7 @@ PgColumnarGetWriteState(Relation rel)
 	writeState->bloomEnabled = pgcolumnar_enable_bloom_filter;
 	writeState->encodeEffort = COLUMNAR_ENCODE_EFFORT_FULL;
 	writeState->storageId = PgColumnarStorageId(rel);
+	writeState->relfilenode = RelationGetForm(rel)->relfilenode;
 
 	/*
 	 * Per-table options (spec 7.4) override the instance-wide GUC defaults for

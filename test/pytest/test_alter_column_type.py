@@ -126,6 +126,31 @@ def _want(dsn, clause):
     return f"0/{ROWS}/{target or 'the target type'}"
 
 
+# #2067: label, the statements between two 100-row inserts in one transaction. The
+# write state is cached for the transaction; a rewrite gives the table new storage
+# but keeps the column count, and the cache was checked by column count alone, so
+# the second insert went to the retired storage and COMMIT lost it.
+SAME_XACT = [
+    ("rows inserted after a type change in the same transaction survive COMMIT",
+     "ALTER TABLE at_x ALTER COLUMN v TYPE numeric;"),
+    ("rows inserted after a same-type rewrite in the same transaction survive COMMIT",
+     "ALTER TABLE at_x ALTER COLUMN v TYPE int8 USING v + 0;"),
+    ("rows inserted after a rewrite released from a savepoint survive COMMIT",
+     "SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; RELEASE SAVEPOINT s;"),
+    ("rows inserted after a rewrite rolled back to a savepoint survive COMMIT",
+     "SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; ROLLBACK TO SAVEPOINT s;"),
+]
+
+
+def _same_xact(dsn, between):
+    """-> "count|min|max" of at_x after one transaction inserts ids 1-100, runs
+    `between`, inserts ids 101-200 and commits."""
+    _run(dsn, "DROP TABLE IF EXISTS at_x; CREATE TABLE at_x (id int, v int8) USING pgcolumnar;")
+    _run(dsn, "BEGIN; INSERT INTO at_x SELECT g, g FROM generate_series(1, 100) g; "
+              f"{between} INSERT INTO at_x SELECT g, g FROM generate_series(101, 200) g; COMMIT;")
+    return _value(dsn, "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM at_x")
+
+
 @pytest.fixture(scope="module")
 def act(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -165,9 +190,22 @@ def act(pgc_cluster):
         mismatch = _num(dsn, "SELECT count(*) FROM at_n a JOIN at_nh b USING (id) WHERE a.v IS DISTINCT FROM b.v")
         r["n rows"] = f"{_part(mismatch)}/{_part(_num(dsn, 'SELECT count(*) FROM at_n'))}"
 
+        # an INSERT after the rewrite, in the same transaction (#2067)
+        for label, between in SAME_XACT:
+            r[label] = _same_xact(dsn, between)
+
         # the crash, deliberately last
         label, typ, expr, clause = CRASH
         r[label] = (_conv(dsn, typ, expr, clause), _want(dsn, clause))
+
+        # the by-reference to by-value crash of #2067, after the other crash for
+        # the same reason: it takes the cluster down
+        _run(dsn, "DROP TABLE IF EXISTS at_s; CREATE TABLE at_s (id int, v text) USING pgcolumnar;")
+        _run(dsn, "BEGIN; INSERT INTO at_s VALUES (1, '5'); "
+                  "ALTER TABLE at_s ALTER COLUMN v TYPE int8 USING v::int8; "
+                  "INSERT INTO at_s VALUES (2, 7); COMMIT;")
+        r["by-value after text"] = _value(
+            dsn, "SELECT string_agg(id || ':' || v, ',' ORDER BY id) FROM at_s")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -260,3 +298,28 @@ def test_nulls_stay_on_the_same_rows_through_a_conversion(act, expect):
 
 def test_text_to_int_the_crash(act, expect):
     expect.text(*act["text to int (the crash)"], "text to int (the crash)")
+
+
+def test_rows_inserted_after_a_type_change_in_the_same_transaction_survive_commit(act, expect):
+    expect.text(act["rows inserted after a type change in the same transaction survive COMMIT"], "200|1|200",
+                "rows inserted after a type change in the same transaction survive COMMIT")
+
+
+def test_rows_inserted_after_a_same_type_rewrite_in_the_same_transaction_survive_commit(act, expect):
+    expect.text(act["rows inserted after a same-type rewrite in the same transaction survive COMMIT"], "200|1|200",
+                "rows inserted after a same-type rewrite in the same transaction survive COMMIT")
+
+
+def test_rows_inserted_after_a_rewrite_released_from_a_savepoint_survive_commit(act, expect):
+    expect.text(act["rows inserted after a rewrite released from a savepoint survive COMMIT"], "200|1|200",
+                "rows inserted after a rewrite released from a savepoint survive COMMIT")
+
+
+def test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit(act, expect):
+    expect.text(act["rows inserted after a rewrite rolled back to a savepoint survive COMMIT"], "200|1|200",
+                "rows inserted after a rewrite rolled back to a savepoint survive COMMIT")
+
+
+def test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept(act, expect):
+    expect.text(act["by-value after text"], "1:5,2:7",
+                "a by-value row inserted after text becomes int8 in the same transaction is kept")

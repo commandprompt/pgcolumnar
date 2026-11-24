@@ -8941,6 +8941,11 @@ A module fixture on a private database runs every conversion in the shell's orde
 | `test_the_nullable_column_really_is_bigint_now` | the nullable column is `bigint` after its ALTER |
 | `test_nulls_stay_on_the_same_rows_through_a_conversion` | no row differs from heap, and the columnar table still holds all 20000 rows |
 | `test_text_to_int_the_crash` | the varlena-to-fixed conversion that dereferenced an integer as a pointer, run last |
+| `test_rows_inserted_after_a_type_change_in_the_same_transaction_survive_commit` | one transaction inserts 100 rows, changes `int8` to `numeric` and inserts 100 more; after COMMIT all 200 are there (#2067) |
+| `test_rows_inserted_after_a_same_type_rewrite_in_the_same_transaction_survive_commit` | the same with `int8 USING v + 0`, a rewrite that changes no type (#2067) |
+| `test_rows_inserted_after_a_rewrite_released_from_a_savepoint_survive_commit` | the same with the type change inside a savepoint that is released (#2067) |
+| `test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit` | control: the same with the savepoint rolled back, so the first write state is still the right one (#2067) |
+| `test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept` | one transaction inserts a row, changes `text` to `int8` and inserts another; both rows are there, and the backend does not crash (#2067). Runs after the other crash |
 
 ## 200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory
 

@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- An INSERT into a columnar table after a rewrite in the same transaction now
+  keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
+  rewrites the table and keeps its column count. Before this fix, a transaction
+  that inserted, rewrote and inserted again reused the write state from before
+  the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
+  an error. When the type changed from a by-reference type to a by-value type,
+  such as `text` to `int8`, the backend died with a segmentation fault and
+  PostgreSQL restarted every session. The write state now notices the
+  rewrite and starts over for the new storage. `test/alter_column_type.sh` and
+  `test_alter_column_type.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
