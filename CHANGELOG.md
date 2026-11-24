@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `avg()` over a `float8` or `real` column no longer fails with `value out of
+  range: overflow` where heap returns `Infinity`. It failed when one group's
+  values were split into partial results and one of them held a single
+  `Infinity`: past `pgcolumnar.groupagg_max_groups` under a cached plan, with
+  `pgcolumnar.enable_parallel_vector_agg = on`, or in the serial node's merge
+  of its runs. The grouped aggregate kept the sum of squared differences at 0
+  after an infinite first value, where core's `float8_accum` keeps it NaN, so
+  combining that result with a finite one looked like an overflow from finite
+  inputs. It now keeps NaN where core does. The returned average was never
+  affected. `test_native_groupagg.py`, `test/native_groupagg.sh` (#2068).
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
