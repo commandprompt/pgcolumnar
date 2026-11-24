@@ -132,4 +132,76 @@ check "and the rewrite still held its lock when both had finished" "$(held)" "1"
 wait "$holder_pid"
 check "the held rewrite itself completed" "$(tail -1 "$PGC_WORKDIR/holder.out")" "rc=0"
 
+# ---- an online rewrite and a single-row UPDATE take the locks in one order -----
+#
+# Issue #2074. Two advisory locks meet here. The chunk-group lock (class 101)
+# guards a group's delete vector. The storage-row lock (class 102) is taken by
+# every row-group flush and held to commit, so it serializes writers to a table.
+# An UPDATE flushes its new row first (102), then its delete vector (101). The
+# online rewrites took 101 on their groups first and 102 at their own flush: the
+# opposite order, so the two deadlocked and one was aborted with 40P01.
+#
+# To place the cycle deterministically, an open writer flushes one inserted row,
+# so it holds 102 and no 101. The rewrite, released from its hold, runs until it
+# waits on that 102. Only then does the writer UPDATE a row of a group the rewrite
+# covers and commit. With one lock order the writer commits and the rewrite then
+# finishes; with the old order one of them gets "deadlock detected".
+#
+# dl_race VERB-SQL -> "waited=<t|f> update=<ok|error> rewrite=<ok|error>"
+dl_race() {
+	local verb="$1"
+	q "DROP TABLE IF EXISTS dl;
+	   CREATE TABLE dl (id int, bal int) USING pgcolumnar;
+	   SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, chunk_group_row_limit => 100);
+	   INSERT INTO dl SELECT g, 1000 FROM generate_series(1, 3000) g;
+	   DELETE FROM dl WHERE id <= 1000 AND id % 3 = 0;" >/dev/null
+	rm -f "$PGC_WORKDIR/dl.rw" "$PGC_WORKDIR/dl.up"
+	(
+		env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+			-qAt -v ON_ERROR_STOP=1 -c "SET pgcolumnar.maintenance_hold_ms = 3000;" \
+			-c "SELECT $verb;" >"$PGC_WORKDIR/dl.rw" 2>&1
+		echo "rc=$?" >>"$PGC_WORKDIR/dl.rw"
+	) &
+	local rw_pid=$!
+	# wait (bounded) until the rewrite holds its table lock, so it is inside its hold
+	for _ in $(seq 1 50); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 'dl'::regclass AND granted
+		        AND mode = 'ShareUpdateExclusiveLock' AND pid <> pg_backend_pid();")" = "1" ] && break
+		sleep 0.1
+	done
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.up" 2>&1 <<'SQL'
+BEGIN;
+INSERT INTO dl VALUES (0, 0);
+SELECT count(*) > 0 FROM dl;
+DO $$
+BEGIN
+	FOR i IN 1..300 LOOP
+		EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
+		                  AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid());
+		PERFORM pg_sleep(0.1);
+	END LOOP;
+END $$;
+SELECT 'waited=' || EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory'
+                            AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid());
+UPDATE dl SET bal = bal + 1 WHERE id = 5;
+COMMIT;
+SQL
+	local up_rc=$?
+	wait "$rw_pid"
+	echo "$(grep -o 'waited=[tf]' "$PGC_WORKDIR/dl.up" || echo waited=none)" \
+		"update=$([ "$up_rc" = 0 ] && echo ok || echo error)" \
+		"rewrite=$([ "$(tail -1 "$PGC_WORKDIR/dl.rw")" = "rc=0" ] && echo ok || echo error)"
+	grep -h 'deadlock detected' "$PGC_WORKDIR/dl.up" "$PGC_WORKDIR/dl.rw" >&2
+}
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_race "$verb")"
+	check "a $name waited on the storage-row lock of an open writer" \
+		"$(grep -o 'waited=[a-z]*' <<<"$got")" "waited=t"
+	check "a single-row UPDATE from that writer and the $name both commit, with no deadlock" \
+		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "update=ok rewrite=ok"
+done
+check "and that UPDATE took effect" "$(q "SELECT bal FROM dl WHERE id = 5;")" "1001"
+
 pgc_summary

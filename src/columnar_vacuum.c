@@ -340,6 +340,14 @@ rewrite_one_group(Relation rel, PgColumnarIndexInsertState *ris, uint64 storageI
 	uint64		oldRn;
 	int64		moved = 0;
 
+	/*
+	 * Take the storage-row lock (class 102) before the chunk-group lock (class
+	 * 101), the order an UPDATE uses (#2074). pgcolumnar_recluster_online says
+	 * why. A second group in the same call already holds 102, so this only
+	 * re-checks the storage row.
+	 */
+	PgColumnarEnsureStorageRow(rel);
+
 	/* serialize with concurrent deleters to this group (see PgColumnarUpsertDeleteVector) */
 	PgColumnarLockChunkGroup(storageId, groupNumber);
 
@@ -738,6 +746,18 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 	 * the group locks is part of that window in production too.
 	 */
 	pgcolumnar_maintenance_hold();
+
+	/*
+	 * Take the storage-row lock (class 102) before the chunk-group locks (class
+	 * 101), the order an UPDATE uses (#2074). An UPDATE takes 102 when it
+	 * flushes its new row and 101 when it then flushes its delete vector, and
+	 * holds both to commit. This rewrite needs 102 anyway, at its own flush below;
+	 * taking it there, after 101, closed a cycle with such an UPDATE, and the
+	 * deadlock detector aborted one of the two. PgColumnarEnsureStorageRow takes
+	 * 102 and changes nothing when the storage row exists, which it does for a
+	 * table with groups.
+	 */
+	PgColumnarEnsureStorageRow(rel);
 
 	for (i = 0; i < nGroups; i++)
 		PgColumnarLockChunkGroup(storageId, oldGroups[i].groupNumber);

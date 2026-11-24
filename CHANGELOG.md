@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent single-row `UPDATE` (#2074). Both verbs took the
+  delete-vector lock on their row groups first and the storage-row lock at
+  their own flush. An `UPDATE` takes the two in the opposite order, so one of
+  the two failed with `deadlock detected` (40P01). The maintenance daemon runs
+  both verbs, so turning it on could make application `UPDATE`s fail this way.
+  Both verbs now take the storage-row lock first. An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

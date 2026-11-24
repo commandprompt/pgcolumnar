@@ -12,6 +12,8 @@ assumed), the two tables agree by whole row, by count and sum, and over a range,
 compact_rewrite held mid-verb with its lock taken lets a reader and a writer, each with a
 3 s lock_timeout, finish while it still holds the lock -- a rewrite that took a stronger
 lock would otherwise pass everything above, since the workers would simply wait for it.
+Last, on a second private database, recluster and compact_rewrite each meet a single-row
+UPDATE from an open writer without a deadlock (#2074).
 
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture.
 """
@@ -233,3 +235,106 @@ def test_the_rewrite_still_held_its_lock_when_both_had_finished(rc, expect):
 
 def test_the_held_rewrite_itself_completed(rc, expect):
     expect.text(rc["holder"], "rc=0", "the held rewrite itself completed")
+
+
+# ---- an online rewrite and a single-row UPDATE take the locks in one order -----
+#
+# Issue #2074. The storage-row lock (class 102) is taken by every row-group flush and
+# held to commit; the chunk-group lock (class 101) guards a group's delete vector. An
+# UPDATE takes 102 at its row flush, then 101 at its delete-vector flush. The online
+# rewrites took 101 on their groups first and 102 at their own flush, so the two
+# deadlocked. To place the cycle deterministically, an open writer flushes one inserted
+# row (it holds 102 and no 101), the rewrite runs out of its hold until it waits on
+# that 102, and only then does the writer UPDATE a row of a covered group and commit.
+
+DL_DB = "pgc_native_rewrite_conc_dl"
+DL_VERBS = {
+    "recluster": "pgcolumnar.recluster('dl', 'id')",
+    "compact_rewrite": "pgcolumnar.compact_rewrite('dl', 0.0)",
+}
+_WAITING_102 = ("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                "AND objsubid = 102 AND NOT granted AND pid <> pg_backend_pid())")
+
+
+def _dl_race(d, verb):
+    """-> {"waited": bool | error, "update": "ok" | error, "rewrite": "ok" | error,
+    "bal": the UPDATEd row's balance afterwards}."""
+    for sql in ("DROP TABLE IF EXISTS dl",
+                "CREATE TABLE dl (id int, bal int) USING pgcolumnar",
+                "SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, "
+                "chunk_group_row_limit => 100)",
+                "INSERT INTO dl SELECT g, 1000 FROM generate_series(1, 3000) g",
+                "DELETE FROM dl WHERE id <= 1000 AND id % 3 = 0"):
+        e = d.run(sql)
+        if e:
+            return {"waited": e, "update": e, "rewrite": e, "bal": e}
+    out = {}
+
+    def rewrite():
+        e = d.run(f"SELECT {verb}", settings=("SET pgcolumnar.maintenance_hold_ms = 3000",))
+        out["rewrite"] = e or "ok"
+
+    rt = threading.Thread(target=rewrite)
+    rt.start()
+    try:
+        # bounded wait until the rewrite holds its table lock, so it is inside its hold
+        for _ in range(50):
+            if d.n("SELECT count(*) FROM pg_locks WHERE relation = 'dl'::regclass AND granted "
+                   "AND mode = 'ShareUpdateExclusiveLock' AND pid <> pg_backend_pid()") == 1:
+                break
+            time.sleep(0.1)
+        with psycopg.connect(d.dsn) as w:
+            try:
+                w.execute("INSERT INTO dl VALUES (0, 0)")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: takes 102
+                waited = False
+                with psycopg.connect(d.dsn, autocommit=True) as probe:
+                    for _ in range(300):
+                        waited = probe.execute(_WAITING_102).fetchone()[0]
+                        if waited:
+                            break
+                        time.sleep(0.1)
+                out["waited"] = waited
+                w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 5")
+                w.commit()
+                out["update"] = "ok"
+            except psycopg.Error as exc:
+                out.setdefault("waited", _err(exc))
+                out["update"] = _err(exc)
+    finally:
+        rt.join()
+    out["bal"] = d.n("SELECT bal FROM dl WHERE id = 5")
+    return out
+
+
+@pytest.fixture(scope="module")
+def dl(pgc_cluster):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {DL_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DL_DB}")
+    try:
+        d = _Db(pgc_cluster.dsn(dbname=DL_DB))
+        d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        yield {name: _dl_race(d, verb) for name, verb in DL_VERBS.items()}
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DL_DB} WITH (FORCE)")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_waited_on_the_storage_row_lock_of_an_open_writer(dl, name, expect):
+    expect.text(str(dl[name]["waited"]), "True",
+                f"a {name} waited on the storage-row lock of an open writer")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_single_row_update_and_the_rewrite_both_commit(dl, name, expect):
+    r = dl[name]
+    expect.text(f"update={r['update']} rewrite={r['rewrite']}", "update=ok rewrite=ok",
+                f"a single-row UPDATE from that writer and the {name} both commit, "
+                "with no deadlock")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_and_that_update_took_effect(dl, name, expect):
+    expect.num(dl[name]["bal"], 1001, "and that UPDATE took effect")
