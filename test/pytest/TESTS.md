@@ -9816,11 +9816,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059).
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set.
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause.
 
 | test | what it holds |
 | --- | --- |
@@ -9859,6 +9859,11 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused` | concurrent vacuum during update: vacuum ran while the writer was paused |
 | `test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit` | concurrent vacuum during update: block 1 not all-visible after commit (#2059) |
 | `test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row` | concurrent vacuum during update: index-only scan returns no deleted row (#2059) |
+| `test_delete_between_vacuum_steps_block_1_all_visible_before` | delete between vacuum's two steps: block 1 all-visible before the writer starts |
+| `test_delete_between_vacuum_steps_vacuum_paused_before_its_set` | delete between vacuum's two steps: vacuum paused before its set |
+| `test_delete_between_vacuum_steps_delete_committed_while_paused` | delete between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_between_vacuum_steps_block_1_not_all_visible_after` | delete between vacuum's two steps: block 1 not all-visible after vacuum (#2059) |
+| `test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete between vacuum's two steps: index-only scan returns no deleted row (#2059) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 

@@ -9,7 +9,9 @@ all-visible blocks are served with zero heap fetches while a deleted range falls
 to the fetch. And an old REPEATABLE READ snapshot never sees, through an index-only
 scan, rows committed after it, even after a VACUUM.
 A VACUUM that runs while a DELETE or UPDATE is still inside its statement does not
-leave the changed block all-visible after the writer commits (#2059).
+leave the changed block all-visible after the writer commits (#2059), nor does one
+whose set comes after a DELETE that committed during its pause
+(pgcolumnar.vm_set_hold_ms).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The planner settings are set on that database, as the
@@ -129,6 +131,54 @@ def _vm_race(dsn, r, tag, tbl, dml):
                             else f"no index-only scan was planned: {plan}")
 
 
+def _vm_mid(dsn, r):
+    """#2059: a DELETE commits between VACUUM's first computation and its set.
+
+    pgcolumnar.vm_set_hold_ms pauses the VACUUM in that window. The writer's own
+    clears then run before the set, so only VACUUM's second computation can clear
+    the bit. Rows 300..400 lie in synthetic block 1.
+    """
+    vis = "SELECT pgcolumnar.vm_is_visible('vr_mid', 1)"
+    held = ("SELECT count(*) FROM pg_stat_activity "
+            "WHERE query = 'VACUUM vr_mid' AND wait_event_type = 'Extension'")
+    _run(dsn, "CREATE TABLE vr_mid (id int, pad int) USING pgcolumnar; "
+              "INSERT INTO vr_mid SELECT g, g FROM generate_series(1, 20000) g; "
+              "CREATE INDEX vr_mid_id ON vr_mid (id);")
+    _run(dsn, "VACUUM vr_mid")
+    r["mid before"] = _value(dsn, vis)
+    out = {}
+    try:
+        with psycopg.connect(dsn, autocommit=True) as vac:
+            vac.execute("SET pgcolumnar.vm_set_hold_ms = 5000")
+
+            def vacuum():
+                try:
+                    vac.execute("VACUUM vr_mid")
+                except psycopg.Error as exc:
+                    out["vacuum"] = query_error(_message(exc))
+
+            t = threading.Thread(target=vacuum)
+            t.start()
+            r["mid held"] = "no"
+            for _ in range(100):
+                if _value(dsn, held) == "1":
+                    r["mid held"] = "yes"
+                    break
+                time.sleep(0.1)
+            err = _run(dsn, "DELETE FROM vr_mid WHERE id BETWEEN 300 AND 400")
+            r["mid still"] = query_error(err) if err else ("yes" if _value(dsn, held) == "1" else "no")
+            t.join(60)
+    except psycopg.Error as exc:
+        r["mid held"] = query_error(_message(exc))
+    if "vacuum" in out:
+        r["mid held"] = out["vacuum"]
+    r["mid after"] = _value(dsn, vis)
+    rng = "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400"
+    plan = _plan(dsn, "EXPLAIN (COSTS OFF) " + rng)
+    r["mid ios"] = (_value(dsn, rng) if not _failed(plan) and "Index Only Scan" in plan
+                    else f"no index-only scan was planned: {plan}")
+
+
 @pytest.fixture(scope="module")
 def io(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -205,6 +255,7 @@ def io(pgc_cluster):
         for tag, tbl, dml in (("del", "vr_del", "DELETE FROM vr_del WHERE id BETWEEN 300 AND 400"),
                               ("upd", "vr_upd", "UPDATE vr_upd SET id = id + 1000000 WHERE id BETWEEN 300 AND 400")):
             _vm_race(dsn, r, tag, tbl, dml)
+        _vm_mid(dsn, r)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -370,3 +421,25 @@ def test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit(io
 
 def test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["race upd ios"], "0", "concurrent vacuum during update: index-only scan returns no deleted row")
+
+
+def test_delete_between_vacuum_steps_block_1_all_visible_before(io, expect):
+    expect.text(io["mid before"], "t",
+                "delete between vacuum's two steps: block 1 all-visible before the writer starts")
+
+
+def test_delete_between_vacuum_steps_vacuum_paused_before_its_set(io, expect):
+    expect.text(io["mid held"], "yes", "delete between vacuum's two steps: vacuum paused before its set")
+
+
+def test_delete_between_vacuum_steps_delete_committed_while_paused(io, expect):
+    expect.text(io.get("mid still", "not reached"), "yes",
+                "delete between vacuum's two steps: the delete committed while vacuum was paused")
+
+
+def test_delete_between_vacuum_steps_block_1_not_all_visible_after(io, expect):
+    expect.text(io["mid after"], "f", "delete between vacuum's two steps: block 1 not all-visible after vacuum")
+
+
+def test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["mid ios"], "0", "delete between vacuum's two steps: index-only scan returns no deleted row")

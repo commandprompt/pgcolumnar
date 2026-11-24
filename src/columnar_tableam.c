@@ -103,6 +103,7 @@ double		pgcolumnar_autovacuum_compact_threshold = 0.2;
 double		pgcolumnar_autovacuum_recluster_threshold = 0.05;
 bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
+int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
 
 /* value set for columnar.compression (spec 5, 8.3) */
 static const struct config_enum_entry pgcolumnar_compression_options[] = {
@@ -4942,6 +4943,22 @@ _PG_init(void)
 							0, 0, 600000,
 							PGC_USERSET,
 							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	/*
+	 * A developer pause for lazy VACUUM (#2059): PgColumnarVMSetVisibleForRelation
+	 * waits this long after it first computes the all-visible blocks and before
+	 * it sets them, so a test can commit a delete in that window and show the
+	 * second computation clears the bit. Superuser-only and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.vm_set_hold_ms",
+							"Dev/test: wait this many ms in lazy VACUUM between computing "
+							"the all-visible blocks and setting them.",
+							NULL,
+							&pgcolumnar_vm_set_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
 							NULL, NULL, NULL);
 
 	pgcolumnar_prev_planner_hook = planner_hook;

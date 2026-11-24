@@ -611,11 +611,13 @@ true until the next version shipped.
   mark in memory until the statement ends. A VACUUM in between could not see the
   mark, so it set the bit again, and nothing cleared it at commit. An index-only
   scan then skipped the row check and counted the deleted rows until a later
-  write touched the block. Autovacuum can hit this during any long DELETE or
-  UPDATE. The writer now clears the bits again after it writes the marks to the
-  catalog, and VACUUM checks the row groups again after it sets bits and clears
-  any that are no longer all-visible. `test/index_only.sh` and
-  `test_index_only.py`.
+  write touched the block. Only a manual VACUUM was tested. Autovacuum takes
+  the same lock, which does not block a DELETE or UPDATE, so it can probably hit
+  this too. The writer now clears the bits again after it writes the marks to
+  the catalog, and VACUUM checks the row groups again after it sets bits and
+  clears any that are no longer all-visible. A new test-only setting,
+  `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
+  prove the second check. `test/index_only.sh` and `test_index_only.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

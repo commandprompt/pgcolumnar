@@ -42,8 +42,10 @@
 #include "access/visibilitymap.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/latch.h"
 #include "storage/procarray.h"
 #include "utils/rel.h"
 
@@ -315,6 +317,8 @@ vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
  *		computation is caught by it; one that wrote it after clears the bit
  *		itself, after this set it. Without the second pass, a writer whose row
  *		landed between the first computation and the set lost its clear.
+ *		pgcolumnar.vm_set_hold_ms pauses between the first computation and
+ *		the set, so a test can commit a delete in that window.
  *
  *		Returns how many ROWS the surviving bits cover, which is what the caller
  *		needs to record the result in pg_class (#507). Rows and not blocks on
@@ -323,6 +327,31 @@ vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
  *		Handing a synthetic block count to a field core divides by relpages
  *		produces an all-visible fraction above 1 from arithmetic alone.
  */
+/*
+ * vm_set_hold
+ *		Dev/test pause (#2059): wait pgcolumnar.vm_set_hold_ms, interruptibly,
+ *		between the first computation and the set, so a test can commit a
+ *		delete in that window. Zero (the default) returns at once.
+ */
+static void
+vm_set_hold(void)
+{
+	long		remaining = (long) pgcolumnar_vm_set_hold_ms;
+
+	while (remaining > 0)
+	{
+		long		slice = Min(remaining, 1000L);
+		int			rc;
+
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   slice, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		remaining -= slice;
+	}
+}
+
 uint64
 PgColumnarVMSetVisibleForRelation(Relation rel)
 {
@@ -340,6 +369,8 @@ PgColumnarVMSetVisibleForRelation(Relation rel)
 	runs = vm_all_visible_runs(storageId, oldestXmin, &n);
 	if (n == 0)
 		return 0;
+
+	vm_set_hold();
 
 	for (i = 0; i < n; i++)
 	{

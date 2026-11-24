@@ -3867,6 +3867,11 @@ index_only	index_only	concurrent vacuum during update: block 1 all-visible befor
 index_only	index_only	concurrent vacuum during update: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
 index_only	index_only	concurrent vacuum during update: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
 index_only	index_only	concurrent vacuum during update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 not all-visible after vacuum	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
 index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set

@@ -302,4 +302,45 @@ check "concurrent vacuum during update: index-only scan returns no deleted row" 
 exec 9>&-
 wait "$H_PID" 2>/dev/null || true
 
+# ---------------------------------------------------------------------------
+# Phase 7 (#2059): the writer's delete_vector row lands between VACUUM's first
+# computation of the all-visible blocks and its set. The writer's own clears
+# run before the set, so only VACUUM's second computation can clear the bit.
+# pgcolumnar.vm_set_hold_ms pauses VACUUM in that window; the DELETE runs and
+# commits during the pause.
+# ---------------------------------------------------------------------------
+echo "-- phase 7: a delete commits between vacuum's computation and its set (#2059)"
+psql_run "CREATE TABLE vr_mid (id int, pad int) USING pgcolumnar;"
+psql_run "INSERT INTO vr_mid SELECT g, g FROM generate_series(1, 20000) g;"
+psql_run "CREATE INDEX vr_mid_id ON vr_mid (id);"
+psql_run "VACUUM vr_mid;"
+vm_before="$(q "SELECT pgcolumnar.vm_is_visible('vr_mid', 1);")"
+held="SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM vr_mid;' AND wait_event_type = 'Extension';"
+
+env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c pgcolumnar.vm_set_hold_ms=5000' \
+	psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "VACUUM vr_mid;" \
+	> "$PGC_WORKDIR/vr_mid.vacuum.out" 2>&1 &
+vpid=$!
+vm_held="no"
+for i in $(seq 1 100); do
+	if [ "$(q "$held")" = "1" ]; then vm_held="yes"; break; fi
+	sleep 0.1
+done
+psql_run "DELETE FROM vr_mid WHERE id BETWEEN 300 AND 400;"
+vm_still="$( [ "$(q "$held")" = "1" ] && echo yes || echo no )"
+wait "$vpid" 2>/dev/null || true
+
+vm_after="$(q "SELECT pgcolumnar.vm_is_visible('vr_mid', 1);")"
+plan="$(q "EXPLAIN (COSTS OFF) SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")"
+if printf '%s' "$plan" | grep -q 'Index Only Scan'; then
+	vm_ios="$(q "SELECT count(*) FROM vr_mid WHERE id BETWEEN 300 AND 400;")"
+else
+	vm_ios="no index-only scan was planned: $plan"
+fi
+check "delete between vacuum's two steps: block 1 all-visible before the writer starts" "$vm_before" "t"
+check "delete between vacuum's two steps: vacuum paused before its set" "$vm_held" "yes"
+check "delete between vacuum's two steps: the delete committed while vacuum was paused" "$vm_still" "yes"
+check "delete between vacuum's two steps: block 1 not all-visible after vacuum" "$vm_after" "f"
+check "delete between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
+
 pgc_summary
