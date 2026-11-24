@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- `export_parquet`, `parallel_export_parquet`, `export_arrow` and
+  `tier_partition` now export a table that has had a column dropped (#2076).
+  They failed with `does not support dropped columns`, wherever the dropped
+  column was, and nothing in the table could clear it. This included a
+  partition made on its own, given an extra column that was then dropped, and
+  attached. The writers now skip a dropped column and write the live columns
+  in order. `import_arrow` now loads into a table with a dropped column, as
+  `import_parquet` already did; the dropped column is stored as null.
+  `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

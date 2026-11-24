@@ -1143,6 +1143,9 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	uint32	   *fieldOff;
 	MemoryContext batchCtx,
 				oldCtx;
+	int		   *live;
+	Datum	   *liveValues;
+	bool	   *liveNulls;
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -1187,7 +1190,17 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	}
 
 	tupdesc = RelationGetDescr(rel);
-	ncols = tupdesc->natts;
+
+	/*
+	 * The live columns only: output column i is attribute live[i]. A dropped
+	 * column stays in the tuple descriptor, so a table that ever lost one
+	 * still has it there (#2076).
+	 */
+	live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	ncols = 0;
+	for (i = 0; i < tupdesc->natts; i++)
+		if (!TupleDescAttr(tupdesc, i)->attisdropped)
+			live[ncols++] = i;
 	if (ncols > 16)
 	{
 		table_close(rel, AccessShareLock);
@@ -1196,19 +1209,12 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 				 errmsg("columnar.export_arrow supports at most 16 columns")));
 	}
 
-	cols = palloc0(sizeof(ArrowCol) * ncols);
+	cols = palloc0(sizeof(ArrowCol) * Max(ncols, 1));
 	for (i = 0; i < ncols; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
-		if (att->attisdropped)
-		{
-			table_close(rel, AccessShareLock);
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar.export_arrow does not support dropped columns")));
-		}
 		/* build the (possibly nested) accumulator tree for this column */
 		arrowcol_init(&cols[i], NameStr(att->attname),
 					  att->atttypid, att->atttypmod, &ok);
@@ -1270,8 +1276,11 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 									 "columnar arrow batch",
 									 ALLOCSET_DEFAULT_SIZES);
 
-	values = palloc(sizeof(Datum) * ncols);
-	nulls = palloc(sizeof(bool) * ncols);
+	/* the reader fills one slot per attribute, dropped ones included */
+	values = palloc(sizeof(Datum) * Max(tupdesc->natts, 1));
+	nulls = palloc(sizeof(bool) * Max(tupdesc->natts, 1));
+	liveValues = palloc(sizeof(Datum) * Max(ncols, 1));
+	liveNulls = palloc(sizeof(bool) * Max(ncols, 1));
 
 	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	readState = PgColumnarBeginRead(rel, snapshot, NULL, NULL, 0, NULL);
@@ -1283,6 +1292,12 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 		CHECK_FOR_INTERRUPTS();
 
+		for (i = 0; i < ncols; i++)
+		{
+			liveValues[i] = values[live[i]];
+			liveNulls[i] = nulls[live[i]];
+		}
+
 		/*
 		 * Cut by bytes too (#1811): write the batch before a row that would
 		 * take its buffered bytes past the cap. The batch body is built in
@@ -1292,7 +1307,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 		for (i = 0; i < ncols; i++)
 		{
 			batchBytes += arrowcol_bytes(&cols[i]);
-			rowBytes += arrowcol_value_bytes(&cols[i], values[i], nulls[i]);
+			rowBytes += arrowcol_value_bytes(&cols[i], liveValues[i], liveNulls[i]);
 		}
 		if (batchRows > 0 &&
 			batchBytes + rowBytes > (int64) pgcolumnar_export_group_bytes)
@@ -1302,7 +1317,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 		}
 
 		for (i = 0; i < ncols; i++)
-			arrowcol_append(&cols[i], values[i], nulls[i]);
+			arrowcol_append(&cols[i], liveValues[i], liveNulls[i]);
 		batchRows++;
 		total++;
 
@@ -2541,6 +2556,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	int64		nsTrunc = 0;	/* values that lost sub-microsecond digits */
 	bool		sawSchema = false;
 	int			i;
+	int		   *live;
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -2588,21 +2604,23 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	}
 
 	tupdesc = RelationGetDescr(rel);
-	ncols = tupdesc->natts;
 
-	tops = palloc0(sizeof(ImpNode) * ncols);
+	/*
+	 * The live columns only: Arrow field i loads into attribute live[i], and a
+	 * dropped attribute is stored as null, as import_parquet does (#2076).
+	 */
+	live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	ncols = 0;
+	for (i = 0; i < tupdesc->natts; i++)
+		if (!TupleDescAttr(tupdesc, i)->attisdropped)
+			live[ncols++] = i;
+
+	tops = palloc0(sizeof(ImpNode) * Max(ncols, 1));
 	for (i = 0; i < ncols; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
-		if (att->attisdropped)
-		{
-			table_close(rel, RowExclusiveLock);
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar.import_arrow does not support dropped columns")));
-		}
 		imp_build_node(&tops[i], att->atttypid, att->atttypmod, &ok);
 		if (!ok)
 		{
@@ -2769,7 +2787,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 				imp_apply_field(&tops[i], meta, metaLen,
 								pgc_fb_indirect(meta, metaLen,
 												fieldsVec + 4 + (uint32) i * 4),
-								NameStr(TupleDescAttr(tupdesc, i)->attname),
+								NameStr(TupleDescAttr(tupdesc, live[i])->attname),
 								path, 0);
 			sawSchema = true;
 		}
@@ -2836,14 +2854,19 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 					CHECK_FOR_INTERRUPTS();
 					ExecClearTuple(slot);
 					oldCtx = MemoryContextSwitchTo(rowCtx);
+					for (i = 0; i < tupdesc->natts; i++)
+					{
+						slot->tts_values[i] = (Datum) 0;
+						slot->tts_isnull[i] = true;
+					}
 					for (i = 0; i < ncols; i++)
 					{
 						bool		isnull;
 
-						slot->tts_values[i] = imp_value_at(&tops[i], body, bufOff,
-														   bufLen, r, &isnull,
-														   &nsTrunc);
-						slot->tts_isnull[i] = isnull;
+						slot->tts_values[live[i]] = imp_value_at(&tops[i], body, bufOff,
+																 bufLen, r, &isnull,
+																 &nsTrunc);
+						slot->tts_isnull[live[i]] = isnull;
 					}
 					ExecStoreVirtualTuple(slot);
 					table_tuple_insert(rel, slot, cid, 0, NULL);

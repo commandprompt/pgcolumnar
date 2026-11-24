@@ -345,6 +345,56 @@ PY
 check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them" \
 	"$ar_txt_rows|$ar_txt_read" "300|$(q "$TXT_DIGEST")"
 
+# ---- a table with dropped columns exports and imports its live columns (#2076) -----
+# A dropped column stays in the tuple descriptor, marked attisdropped. export_arrow
+# and import_arrow refused any such table ("does not support dropped columns"). The
+# table below loses a middle column and its last column, with rows written before and
+# after the drops. The stream must hold the live columns a, c, d, in order, and every
+# row. import_arrow must load a stream of a, c, d into a table that has a dropped
+# column. That stream comes from a copy of the table with no dropped column, so the
+# import is tested on its own, whatever export_arrow does.
+# qerr SQL -> the value, or the ERROR line when the statement fails
+qerr() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)" || { grep -m1 '^ERROR' <<<"$out" || echo "failed: $out"; return; }
+	echo "$out"
+}
+# ar_live PATH -> "columns|rows|md5 of a:c:d ..." read with pyarrow, in the form
+# drop_digest reads a table
+ar_live() {
+	python3 - "$1" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    d = t.to_pydict()
+    rows = sorted(zip(d["a"], d["c"], d["d"]))
+    s = " ".join("%d:%s:%d" % (a, "N" if c is None else c, dd) for a, c, dd in rows)
+    print("%s|%d|%s" % (",".join(t.schema.names), t.num_rows, hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+drop_digest() { echo "SELECT 'a,c,d|' || count(*) || '|' || md5(string_agg(a || ':' || coalesce(c, 'N') || ':' || d, ' ' ORDER BY a)) FROM $1"; }
+psql_run "CREATE TABLE ar_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar;
+          INSERT INTO ar_drop SELECT g, -g, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g END, g * 1000, 'x'
+            FROM generate_series(1, 150) g;
+          ALTER TABLE ar_drop DROP COLUMN junk;
+          ALTER TABLE ar_drop DROP COLUMN tail;
+          INSERT INTO ar_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g;
+          CREATE TABLE ar_nodrop USING pgcolumnar AS SELECT a, c, d FROM ar_drop;
+          CREATE TABLE ar_drop_in (a int, junk int, c text, d int8) USING pgcolumnar;
+          ALTER TABLE ar_drop_in DROP COLUMN junk;"
+ar_drop_want="$(q "$(drop_digest ar_drop)")"
+check "export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_drop', '$PGC_WORKDIR/drop.arrow')")|$(ar_live "$PGC_WORKDIR/drop.arrow")" \
+	"200|$ar_drop_want"
+q "SELECT pgcolumnar.export_arrow('ar_nodrop', '$PGC_WORKDIR/nodrop.arrow')" >/dev/null
+check "import_arrow loads a,c,d into a table with a dropped column, every row" \
+	"$(qerr "SELECT pgcolumnar.import_arrow('ar_drop_in', '$PGC_WORKDIR/nodrop.arrow')")|$(qerr "$(drop_digest ar_drop_in)")" \
+	"200|$ar_drop_want"
+
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB batch holds 536 rows and

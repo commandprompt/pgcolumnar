@@ -7,7 +7,8 @@ unicode text, bytea) copied from a heap table is exported across more than one r
 batch, and every value must equal the heap's; an empty table writes a readable
 schema-only stream; a heap table and an unsupported column type are refused, each by
 its own message; and date, time, timestamps, uuid, numeric and json export to the
-representation each maps to.
+representation each maps to. A table with dropped columns exports its live columns,
+and import_arrow loads into a table with a dropped column (#2076).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading, so one red cannot stop the next (#1339). The heap oracle is read
@@ -525,3 +526,82 @@ def test_every_kept_text_reaches_its_own_value_in_the_stream(ae, expect):
         return
     expect.text(f"{ae['txt rows']}|{_reading(_texts, pa, ae['files']['txt'])}", f"300|{ae['txt digest']}",
                 "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them")
+
+
+# ---- #2076: a table with dropped columns exports and imports its live columns ------
+#
+# A dropped column stays in the tuple descriptor, marked attisdropped, and export_arrow
+# and import_arrow refused any such table. The table loses a middle column and its last
+# column, with rows written before and after the drops. The stream must hold the live
+# columns a, c, d, in order, and every row. import_arrow loads a stream of a, c, d,
+# exported from a copy of the table with no dropped column, into a table that has one,
+# so the import is tested whatever export_arrow does. On its own database.
+DROP_DB = "pgc_arrow_export_drop"
+DROP_SETUP = (
+    "CREATE TABLE ar_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar",
+    "INSERT INTO ar_drop SELECT g, -g, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g END, g * 1000, 'x' "
+    "FROM generate_series(1, 150) g",
+    "ALTER TABLE ar_drop DROP COLUMN junk",
+    "ALTER TABLE ar_drop DROP COLUMN tail",
+    "INSERT INTO ar_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g",
+    "CREATE TABLE ar_nodrop USING pgcolumnar AS SELECT a, c, d FROM ar_drop",
+    "CREATE TABLE ar_drop_in (a int, junk int, c text, d int8) USING pgcolumnar",
+    "ALTER TABLE ar_drop_in DROP COLUMN junk",
+)
+
+
+@pytest.fixture(scope="module")
+def aed(pgc_cluster, server_dir):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {DROP_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DROP_DB}")
+    try:
+        dsn = pgc_cluster.dsn(dbname=DROP_DB)
+        _run(dsn, "CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        for st in DROP_SETUP:
+            _run(dsn, st)
+        f = {"drop": server_dir / "drop.arrows", "nodrop": server_dir / "nodrop.arrows"}
+        r = {"files": f, "oracle": _rows(dsn, "SELECT a, c, d FROM ar_drop ORDER BY a")}
+        r["export"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_drop', '{f['drop']}')")
+        _run(dsn, f"SELECT pgcolumnar.export_arrow('ar_nodrop', '{f['nodrop']}')")
+        r["import"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('ar_drop_in', '{f['nodrop']}')")
+        r["imported"] = _rows(dsn, "SELECT a, c, d FROM ar_drop_in ORDER BY a")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DROP_DB} WITH (FORCE)")
+
+
+def _live(pa, path, oracle):
+    """-> "columns|rows|MATCH" for the stream at `path` against `oracle`."""
+    if isinstance(oracle, str):
+        return oracle
+    if len(oracle) != 200:
+        return f"the oracle holds {len(oracle)} rows, not the 200 the setup wrote"
+    t = _read(pa, path)
+    d = t.to_pydict()
+    got = sorted(zip(d.get("a", []), d.get("c", []), d.get("d", [])))
+    return f"{','.join(t.schema.names)}|{t.num_rows}|{'MATCH' if got == sorted(oracle) else 'MISMATCH'}"
+
+
+def test_export_arrow_writes_the_live_columns_of_a_table_with_dropped_columns(aed, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{aed['export']}|{_reading(_live, pa, aed['files']['drop'], aed['oracle'])}",
+                "200|a,c,d|200|MATCH",
+                "export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row")
+
+
+def test_import_arrow_loads_into_a_table_with_a_dropped_column(aed, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    oracle, got = aed["oracle"], aed["imported"]
+    if isinstance(oracle, str) or len(oracle) != 200:
+        reading = f"premise: the source holds {oracle!r}, not 200 rows"
+    elif isinstance(got, str):
+        reading = got
+    else:
+        reading = f"{len(got)}|{'MATCH' if got == oracle else 'MISMATCH'}"
+    expect.text(f"{aed['import']}|{reading}", "200|200|MATCH",
+                "import_arrow loads a,c,d into a table with a dropped column, every row")

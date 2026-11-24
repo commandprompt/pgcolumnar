@@ -388,6 +388,65 @@ check "export_group_bytes refuses a value above its 256 MiB maximum" \
 	"$(out="$(psql_run "SET pgcolumnar.export_group_bytes = 268435457" 2>&1)"; e="$(sed -n 's/^ERROR: *//p' <<<"$out" | head -1)"; echo "${e:-accepted}")" \
 	'268435457 is outside the valid range for parameter "pgcolumnar.export_group_bytes" (1024 .. 268435456)'
 
+# ---- a table with dropped columns exports its live columns (#2076) -----------------
+# A dropped column stays in the tuple descriptor, marked attisdropped. The writer
+# refused any such table ("does not support dropped columns"), so a table that had
+# ever lost a column could not be exported or tiered. The table below loses a middle
+# column and its last column, with rows written before and after the drops; each
+# export must hold the live columns a, c, d, in order, and every row.
+# qerr SQL -> the value, or the ERROR line when the statement fails
+qerr() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)" || { grep -m1 '^ERROR' <<<"$out" || echo "failed: $out"; return; }
+	echo "$out"
+}
+# pq_live PATH -> "columns|rows|md5 of a:c:d ..." read with pyarrow from a file or a
+# directory, in the form DROP_DIGEST reads the table
+pq_live() {
+	python3 - "$1" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    d = t.to_pydict()
+    rows = sorted(zip(d["a"], d["c"], d["d"]))
+    s = " ".join("%d:%s:%d" % (a, "N" if c is None else c, dd) for a, c, dd in rows)
+    print("%s|%d|%s" % (",".join(t.schema.names), t.num_rows, hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+psql_run "CREATE TABLE pq_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar;
+          INSERT INTO pq_drop SELECT g, -g, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g END, g * 1000, 'x'
+            FROM generate_series(1, 150) g;
+          ALTER TABLE pq_drop DROP COLUMN junk;
+          ALTER TABLE pq_drop DROP COLUMN tail;
+          INSERT INTO pq_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g;"
+DROP_DIGEST="SELECT 'a,c,d|' || count(*) || '|' || md5(string_agg(a || ':' || coalesce(c, 'N') || ':' || d, ' ' ORDER BY a)) FROM pq_drop"
+drop_want="$(q "$DROP_DIGEST")"
+check "export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row" \
+	"$(qerr "SELECT pgcolumnar.export_parquet('pq_drop', '$PGC_WORKDIR/drop.parquet')")|$(pq_live "$PGC_WORKDIR/drop.parquet")" \
+	"200|$drop_want"
+check "parallel_export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row" \
+	"$(qerr "SELECT pgcolumnar.parallel_export_parquet('pq_drop'::regclass, '$PGC_WORKDIR/drop_par', 2)")|$(pq_live "$PGC_WORKDIR/drop_par")" \
+	"200|$drop_want"
+# tier_partition exports with export_parquet. A partition prepared on its own, given
+# an extra column that is dropped to match the parent, and then attached, is a common
+# way to build one.
+psql_run "CREATE SERVER pq_drop_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;
+          CREATE TABLE pq_dpar (id int, v text) PARTITION BY RANGE (id);
+          CREATE TABLE pq_dpar1 (id int, junk int, v text) USING pgcolumnar;
+          ALTER TABLE pq_dpar1 DROP COLUMN junk;
+          ALTER TABLE pq_dpar ATTACH PARTITION pq_dpar1 FOR VALUES FROM (0) TO (100);
+          CREATE TABLE pq_dpar2 PARTITION OF pq_dpar FOR VALUES FROM (100) TO (200) USING pgcolumnar;
+          INSERT INTO pq_dpar SELECT g, 'p' || g FROM generate_series(1, 150) g;"
+DPAR_DIGEST="SELECT count(*) || '|' || md5(string_agg(id || ':' || v, ' ' ORDER BY id)) FROM pq_dpar"
+dpar_want="$(q "$DPAR_DIGEST")"
+check "tier_partition moves a partition with a dropped column, and the parent reads back every row" \
+	"$(qerr "SELECT pgcolumnar.tier_partition('pq_dpar1', 'pq_drop_srv', '$PGC_WORKDIR/dpar1.parquet')")|$(qerr "$DPAR_DIGEST")" \
+	"99|$dpar_want"
+
 # Over 1 GiB of one column at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB group holds 536 rows and

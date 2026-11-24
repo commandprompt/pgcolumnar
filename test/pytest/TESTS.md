@@ -8884,6 +8884,8 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_every_kept_text_reaches_its_own_value_in_the_stream` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them (#1843 review) |
 | `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_export_arrow_writes_the_live_columns_of_a_table_with_dropped_columns` | export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row (#2076); a second module fixture on its own database, with rows written before and after the drops, read with pyarrow against the table's rows |
+| `test_import_arrow_loads_into_a_table_with_a_dropped_column` | import_arrow loads a,c,d into a table with a dropped column, every row (#2076); the stream comes from a copy of the table with no dropped column, so the import is tested whatever export_arrow does |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 
@@ -13864,6 +13866,9 @@ Each value comparison needs the generator's ids on both sides and the file's row
 | `test_every_kept_text_reaches_its_own_value_in_the_file` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them (#1843 review) |
 | `test_over_1gib_of_one_column_exports_in_several_row_groups` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 row groups of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_a_row_far_wider_as_written_than_stored_goes_in_a_group_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 row groups of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_export_parquet_writes_the_live_columns_of_a_table_with_dropped_columns` | export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row (#2076); a second module fixture on its own database, with rows written before and after the drops, read with pyarrow against the table's rows |
+| `test_parallel_export_parquet_writes_the_live_columns_of_a_table_with_dropped_columns` | parallel_export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row (#2076); the two workers' files are read as one directory |
+| `test_tier_partition_moves_a_partition_with_a_dropped_column` | tier_partition moves a partition with a dropped column, and the parent reads back every row (#2076); the partition is created on its own, loses an extra column, and is then attached |
 
 ## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
 
