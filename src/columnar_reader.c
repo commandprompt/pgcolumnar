@@ -1073,6 +1073,46 @@ pgcolumnar_build_predicates(PgColumnarReadState *readState, int nkeys, ScanKey k
 
 
 /*
+ * PgColumnarReadSetScanKeys
+ *		Replace the skip predicates built from the scan keys, before the read
+ *		starts. The custom scan freezes a stable operand such as "x > f($1)" only
+ *		when it first runs (#2065), after it opened this read with the keys it
+ *		could build without calling anything. A runtime range attached in the
+ *		meantime is kept, after the new predicates.
+ */
+void
+PgColumnarReadSetScanKeys(PgColumnarReadState *readState, int nkeys, ScanKey keys)
+{
+	SkipPredicate runtime[2];
+	int			nruntime = readState->runtimePredicateCount;
+	MemoryContext oldContext;
+
+	Assert(!readState->started);
+	Assert(nruntime <= 2);
+	if (nruntime > 0)
+		memcpy(runtime, readState->predicates + readState->runtimePredicateStart,
+			   sizeof(SkipPredicate) * nruntime);
+
+	oldContext = MemoryContextSwitchTo(readState->readContext);
+	readState->predicates = palloc0(sizeof(SkipPredicate) * (Max(nkeys, 0) + nruntime));
+	readState->predOrder = palloc0(sizeof(int) * (Max(nkeys, 0) + nruntime));
+	readState->numPredicates = 0;
+	if (pgcolumnar_enable_qual_pushdown && nkeys > 0 && keys != NULL)
+		readState->numPredicates =
+			pgcolumnar_make_predicates(readState->predicates, nkeys, keys,
+									   readState->tupdesc, readState->natts,
+									   readState->readContext);
+	readState->runtimePredicateStart = readState->numPredicates;
+	if (nruntime > 0)
+		memcpy(readState->predicates + readState->numPredicates, runtime,
+			   sizeof(SkipPredicate) * nruntime);
+	readState->numPredicates += nruntime;
+	for (int i = 0; i < readState->numPredicates; i++)
+		readState->predOrder[i] = i;
+	MemoryContextSwitchTo(oldContext);
+}
+
+/*
  * PgColumnarReadSetRuntimeRange
  *		Attach or replace the two conservative bounds derived from a fully
  *		spooled hash-join build side.  The bounds use the same predicate builder

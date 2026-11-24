@@ -606,16 +606,18 @@ true until the next version shipped.
 ### Fixed
 
 - A pgcolumnar scan no longer loses an error raised while it evaluates a stable
-  `WHERE` operand at start-up, such as `x > stable_func($1)` (#2065). The scan
-  caught the error and threw it away without a subtransaction. So a
-  `statement_timeout` or query cancel that fired there was lost and the query
-  returned rows, a function that raised once returned a count where heap fails,
-  and the failed call's plancache, snapshot and SPI state leaked as WARNINGs.
-  The error now reaches the client, as it does from a btree index scan's keys.
-  One consequence: such an error now fails the query even when the scan would
-  have returned no rows. A plain `EXPLAIN` no longer calls the operand; it
-  still reports a bound parameter as pushed down. `test/native_param_pushdown.sh`
-  and `test_native_param_pushdown.py`.
+  `WHERE` operand, such as `x > stable_func($1)` (#2065). The scan caught the
+  error and threw it away without a subtransaction. So a `statement_timeout` or
+  query cancel that fired there was lost and the query returned rows, a function
+  that raised once returned a count where heap fails, and the failed call's
+  plancache, snapshot and SPI state leaked as WARNINGs. The error now reaches the
+  client. The scan now evaluates such an operand when it first runs, not while
+  the plan is set up, as a btree index scan evaluates its runtime keys. A scan
+  that never runs, such as an `Append` arm that `LIMIT` cuts off, calls nothing.
+  One consequence: a scan that runs on an empty table now raises the error,
+  where heap, which calls the operand once per row, does not. A plain `EXPLAIN`
+  no longer calls the operand; it still reports a bound parameter as pushed
+  down. `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

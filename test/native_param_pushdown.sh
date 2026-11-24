@@ -7,10 +7,12 @@
 # statement, PL/pgSQL, or the extended protocol -- built no scan key and disabled
 # chunk-group skipping entirely. On a generic plan the scan then read every group.
 #
-# Begin now freezes execution-stable operands (a PARAM_EXTERN, or any subexpression
+# The scan now freezes execution-stable operands (a PARAM_EXTERN, or any subexpression
 # with no Var, no PARAM_EXEC, and no volatile function) into Consts before building
-# the keys. This is exact: such an operand cannot change within the execution, and
-# the executor still re-applies the original qual to every surviving row.
+# the keys. Begin freezes a bound parameter; an operand that needs a call, such as
+# "ts > f($1)", waits until the scan first runs (#2065). This is exact: such an
+# operand cannot change within the execution, and the executor still re-applies the
+# original qual to every surviving row.
 #
 # The correctness hazard is a correlated PARAM_EXEC (a nestloop inner scan whose
 # qual references the outer row): it changes per rescan, and the keys are built
@@ -115,14 +117,14 @@ check "a second execution in the same session counts with its own value" \
 check "and prunes with its own value too (18 of 20 removed)" \
 	"$(sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$TWICE" | head -1)" "18"
 
-# An error raised while Begin freezes a stable operand must reach the client (#2065).
+# An error raised while the scan freezes a stable operand must reach the client (#2065).
 # Begin used to catch it with PG_TRY and throw it away, with no subtransaction to
 # release what the failed call held. So a statement_timeout that fired during that one
 # evaluation was lost and the query returned rows, and the plancache, snapshot and SPI
 # state of the failed call leaked as WARNINGs.
 #
 # Each function below misbehaves on its FIRST call only. On a generic plan the planner
-# cannot fold "fn($1)" (the value is unknown), so that first call is the one Begin
+# cannot fold "fn($1)" (the value is unknown), so that first call is the one the scan
 # makes; a heap scan makes it on the first row and fails. A literal argument would not
 # do: the planner's selectivity estimate calls a stable function itself. Each statement
 # goes in its own -c, so each gets its own statement_timeout timer.
@@ -157,6 +159,32 @@ check "a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065)" \
 	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE b(int) AS SELECT count(*) FROM t WHERE ts >= \$1" \
 		"EXPLAIN (COSTS off) EXECUTE b(39000)" \
 		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "1"
+
+# A scan that is set up but never run must not call its stable operand either (#2065).
+# The executor sets up every plan node, including one that never runs: an Append arm
+# that LIMIT cuts off, or a branch under a one-time filter that is false. A btree index
+# scan evaluates its runtime keys when it first runs, not when it is set up, and heap
+# calls the operand per row, so both answer these queries. boom() raises on every call.
+q "CREATE FUNCTION boom(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN RAISE EXCEPTION 'boom called'; END \$\$;" >/dev/null
+check "a columnar scan that LIMIT cuts off never calls its stable operand (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
+		"PREPARE l(int) AS SELECT 1 UNION ALL (SELECT ts FROM t WHERE ts > boom(\$1)) LIMIT 1" \
+		"EXECUTE l(0)" | tail -1)" "1"
+check "a columnar scan under a false one-time filter never calls its stable operand (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
+		"PREPARE o(int, int) AS SELECT count(*) FROM t WHERE ts > boom(\$1) AND \$2 = 0" \
+		"EXECUTE o(0, 1)" | tail -1)" "0"
+# Freezing at the first run must still prune: a stable function operand, not only a
+# bare parameter, drives chunk-group skipping once the scan runs. PL/pgSQL, so the
+# planner cannot inline it into a bare parameter.
+q "CREATE FUNCTION same(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN RETURN \$1; END \$\$;" >/dev/null
+check "a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
+		"PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)" \
+		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "19"
 
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 

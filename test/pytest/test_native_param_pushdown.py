@@ -22,7 +22,11 @@ Begin caught it with PG_TRY and threw it away, with no subtransaction to release
 the failed call held: a statement_timeout during that evaluation was lost, the query
 returned rows, and the failed call's plancache, snapshot and SPI state leaked as
 WARNINGs. The functions misbehave on their FIRST call only, on a generic plan, where
-the planner cannot fold "fn($1)", so that first call is the one Begin makes.
+the planner cannot fold "fn($1)", so that first call is the one the scan makes.
+
+A scan that is set up but never run must not call the operand at all: an Append arm
+that LIMIT cuts off, or a branch under a false one-time filter. A btree index scan
+evaluates its runtime keys when it first runs, and heap per row, so both answer.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading. A failed query is a `query_error()`, so two failures never agree.
@@ -93,6 +97,13 @@ FIRST_CALL = """CREATE FUNCTION {name}(int) RETURNS int LANGUAGE plpgsql STABLE 
     DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
     BEGIN PERFORM set_config('t.n', n::text, false);
     IF n = 1 THEN {act}; END IF; RETURN $1; END $$"""
+
+# boom() raises on every call. same() is PL/pgSQL so the planner cannot inline it into
+# a bare parameter.
+BOOM = """CREATE FUNCTION boom(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
+    BEGIN RAISE EXCEPTION 'boom called'; END $$"""
+SAME = """CREATE FUNCTION same(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
+    BEGIN RETURN $1; END $$"""
 
 
 def _transcript(dsn, statements):
@@ -200,6 +211,17 @@ def pp(pgc_cluster):
         bound = _transcript(dsn, [GENERIC, "PREPARE b(int) AS SELECT count(*) FROM t WHERE ts >= $1",
                                   "EXPLAIN (COSTS off) EXECUTE b(39000)"])
         r["explain bound"] = _field(bound, "Columnar Pushed-Down Filters")
+        # A scan that is set up but never run calls no operand; boom() always raises.
+        _session(dsn, [BOOM, SAME])
+        cut = _transcript(dsn, [GENERIC, "PREPARE l(int) AS SELECT 1 UNION ALL "
+                                "(SELECT ts FROM t WHERE ts > boom($1)) LIMIT 1", "EXECUTE l(0)"])
+        r["limit cut"] = cut if isinstance(cut, str) else (cut[-1] if cut else query_error("no row"))
+        off = _transcript(dsn, [GENERIC, "PREPARE o(int, int) AS SELECT count(*) FROM t "
+                                "WHERE ts > boom($1) AND $2 = 0", "EXECUTE o(0, 1)"])
+        r["one-time off"] = off if isinstance(off, str) else (off[-1] if off else query_error("no row"))
+        fn = _transcript(dsn, [GENERIC, "PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
+                               "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)"])
+        r["fn removed"] = _field(fn, "Chunk Groups Removed by Filter")
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -266,6 +288,21 @@ def test_param_pushdown_a_plain_explain_does_not_call_a_stable_operand(pp, expec
 def test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_param(pp, expect):
     expect.text(pp["explain bound"], "1",
                 "a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065)")
+
+
+def test_param_pushdown_a_scan_that_limit_cuts_off_calls_no_stable_operand(pp, expect):
+    expect.text(pp["limit cut"], "1",
+                "a columnar scan that LIMIT cuts off never calls its stable operand (#2065)")
+
+
+def test_param_pushdown_a_scan_under_a_false_one_time_filter_calls_no_stable_operand(pp, expect):
+    expect.text(pp["one-time off"], "0",
+                "a columnar scan under a false one-time filter never calls its stable operand (#2065)")
+
+
+def test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_runs(pp, expect):
+    expect.text(pp["fn removed"], "19",
+                "a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

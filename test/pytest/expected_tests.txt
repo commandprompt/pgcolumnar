@@ -1916,4 +1916,7 @@ guard_tests 894
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-cluster_tests 5381
+# cluster_tests 5381 -> 5384 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
+# still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
+cluster_tests 5384

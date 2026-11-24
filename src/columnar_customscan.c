@@ -96,6 +96,12 @@ typedef struct PgColumnarCustomScanState
 	Bitmapset  *projectedColumns;	/* 0-based; NULL means all columns */
 	ScanKey		scanKeys;
 	int			nScanKeys;
+	/*
+	 * A stable operand that needs a call to evaluate, such as "x > f($1)", is
+	 * frozen when the scan first runs, not at Begin (#2065). This says one is
+	 * still waiting.
+	 */
+	bool		keysPending;
 	int			nProjected;			/* for EXPLAIN */
 	int			nTotalColumns;
 
@@ -1249,13 +1255,14 @@ pgcolumnar_make_frozen_const(Node *expr, Datum d, bool isnull)
 }
 
 /*
- * Evaluate a scan-key operand to a Const.
+ * Evaluate a scan-key operand to a Const. Called only when the scan first runs.
  *
  * An error raised here propagates (#2065). This used to catch it with PG_TRY
  * and FlushErrorState, with no subtransaction, so nothing released what the
  * failed call held: a statement_timeout or cancel that fired here was lost, the
  * query ran on, and the call's plancache, snapshot and SPI state leaked. A
- * btree index scan evaluates its runtime keys the same way, unguarded.
+ * btree index scan also evaluates its runtime keys unguarded, when it first
+ * runs or rescans, and never while the plan is only being set up.
  */
 static Node *
 pgcolumnar_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
@@ -1268,14 +1275,16 @@ pgcolumnar_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
 }
 
 /*
- * Under a plain EXPLAIN, freeze only a bare PARAM_EXTERN whose value is bound,
- * and read that value directly. Nothing executes, so nothing may be called: a
- * stable function would run its side effects, or raise, where a heap EXPLAIN
- * calls nothing. An unbound parameter (EXPLAIN (GENERIC_PLAN)) is left as it is.
- * Returns NULL when the operand is not frozen.
+ * At Begin, freeze only a bare PARAM_EXTERN whose value is bound, and read that
+ * value directly. Begin runs for every plan node, including one that never runs
+ * (an Append arm that LIMIT cuts off, a branch under a false one-time filter)
+ * and under a plain EXPLAIN, so it must call nothing: a stable function would
+ * run its side effects, or raise, where heap calls nothing. An unbound
+ * parameter (EXPLAIN (GENERIC_PLAN)) is left as it is. Returns NULL when the
+ * operand is not frozen.
  */
 static Node *
-pgcolumnar_explain_only_const(Node *expr, PlanState *ps)
+pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 {
 	Node	   *bare = expr;
 	Param	   *param;
@@ -1311,11 +1320,16 @@ pgcolumnar_explain_only_const(Node *expr, PlanState *ps)
  * wrong-results bug (a group wrongly skipped is never rechecked); freezing a
  * stable one is exact, and the executor still re-applies the original qual to
  * every surviving row. Returns the qual unchanged when no expression context is
- * available yet. Under a plain EXPLAIN (`explain_only`), only a bound parameter
- * is frozen; see pgcolumnar_explain_only_const.
+ * available yet.
+ *
+ * With `evaluate` false (Begin), only a bound parameter is frozen; see
+ * pgcolumnar_bound_param_const. `*pending` is then set when an operand that
+ * could be frozen was left for the first run. With `evaluate` true (the first
+ * run), every such operand is evaluated, and an error it raises propagates.
  */
 static List *
-pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool explain_only)
+pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool evaluate,
+						   bool *pending)
 {
 	ExprContext *econtext;
 	List	   *out = NIL;
@@ -1362,9 +1376,9 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool explain_only)
 				!pgcolumnar_operand_unstable_walker(arg, NULL) &&
 				!contain_volatile_functions(arg))
 			{
-				Node	   *c = explain_only
-					? pgcolumnar_explain_only_const(arg, ps)
-					: pgcolumnar_eval_const(arg, ps, econtext);
+				Node	   *c = evaluate
+					? pgcolumnar_eval_const(arg, ps, econtext)
+					: pgcolumnar_bound_param_const(arg, ps);
 
 				if (c != NULL)
 				{
@@ -1372,6 +1386,8 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool explain_only)
 					changed = true;
 					continue;
 				}
+				if (pending != NULL)
+					*pending = true;
 			}
 			newargs = lappend(newargs, arg);
 		}
@@ -3544,6 +3560,37 @@ pgcolumnar_chosen_projection(CustomScan *cscan)
 }
 
 /*
+ * pgcolumnar_projection_keys
+ *		Translate the pushed-down scan keys to the projection's attnums. A key
+ *		on a column the projection does not store is dropped.
+ */
+static ScanKey
+pgcolumnar_projection_keys(PgColumnarCustomScanState *cstate, int *nProjKeys)
+{
+	ScanKey		projKeys = NULL;
+	int			i;
+
+	*nProjKeys = 0;
+	if (cstate->nScanKeys <= 0)
+		return NULL;
+	projKeys = palloc0(sizeof(ScanKeyData) * cstate->nScanKeys);
+	for (i = 0; i < cstate->nScanKeys; i++)
+	{
+		AttrNumber	baseAtt = cstate->scanKeys[i].sk_attno;
+
+		if (baseAtt >= 1 && baseAtt <= cstate->nTotalColumns &&
+			cstate->projColMap[baseAtt - 1] > 0)
+		{
+			projKeys[*nProjKeys] = cstate->scanKeys[i];
+			projKeys[*nProjKeys].sk_attno =
+				(AttrNumber) (cstate->projColMap[baseAtt - 1] + 1);
+			(*nProjKeys)++;
+		}
+	}
+	return projKeys;
+}
+
+/*
  * pgcolumnar_setup_projection_scan
  *		Open a read on the named projection's storage with a synthetic
  *		[rownumber, cols...] descriptor, build the base<->projection column map,
@@ -3602,23 +3649,7 @@ pgcolumnar_setup_projection_scan(PgColumnarCustomScanState *cstate, Relation rel
 		TupleDescCopyEntry(projTupdesc, i + 2, tableDesc,
 						   (AttrNumber) proj->columns[i]);
 
-	if (cstate->nScanKeys > 0)
-	{
-		projKeys = palloc0(sizeof(ScanKeyData) * cstate->nScanKeys);
-		for (i = 0; i < cstate->nScanKeys; i++)
-		{
-			AttrNumber	baseAtt = cstate->scanKeys[i].sk_attno;
-
-			if (baseAtt >= 1 && baseAtt <= cstate->nTotalColumns &&
-				cstate->projColMap[baseAtt - 1] > 0)
-			{
-				projKeys[nProjKeys] = cstate->scanKeys[i];
-				projKeys[nProjKeys].sk_attno =
-					(AttrNumber) (cstate->projColMap[baseAtt - 1] + 1);
-				nProjKeys++;
-			}
-		}
-	}
+	projKeys = pgcolumnar_projection_keys(cstate, &nProjKeys);
 
 	cstate->readState = PgColumnarBeginReadWithStorage(rel, snapshot,
 													 proj->projStorageId,
@@ -3818,13 +3849,16 @@ PgColumnarBeginCustomScan(CustomScanState *node, EState *estate, int eflags)
 	cstate->projectedColumns =
 		pgcolumnar_projected_columns(cscan, tupdesc->natts, &cstate->nProjected);
 	/*
-	 * Freeze stable parameters (e.g. "col >= $1" from a prepared statement) into
+	 * Freeze bound parameters (e.g. "col >= $1" from a prepared statement) into
 	 * Consts so they drive chunk-group skipping; a plain Const qual is unchanged.
+	 * An operand that needs a call, such as "col >= f($1)", waits for the first
+	 * run (#2065); see pgcolumnar_freeze_pending_keys.
 	 */
+	cstate->keysPending = false;
 	cstate->scanKeys =
 		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
-														   &node->ss.ps,
-														   (eflags & EXEC_FLAG_EXPLAIN_ONLY) != 0),
+														   &node->ss.ps, false,
+														   &cstate->keysPending),
 							  cscan->scan.scanrelid,
 							  tupdesc, &cstate->nScanKeys);
 
@@ -3978,9 +4012,55 @@ PgColumnarScanRecheck(ScanState *ss, TupleTableSlot *slot)
 	return true;
 }
 
+/*
+ * pgcolumnar_freeze_pending_keys
+ *		Evaluate the stable operands Begin left alone, rebuild the scan keys, and
+ *		give them to the reader before it reads anything (#2065).
+ *
+ *		This runs when the scan first runs, as a btree index scan evaluates its
+ *		runtime keys in ExecIndexScan and not in ExecInitIndexScan. A scan that is
+ *		set up but never run calls nothing. An error from the operand propagates;
+ *		the transaction abort releases what the failed call held. The operands are
+ *		stable and hold no PARAM_EXEC, so a rescan needs no second freeze.
+ */
+static void
+pgcolumnar_freeze_pending_keys(PgColumnarCustomScanState *cstate)
+{
+	CustomScanState *node = &cstate->css;
+	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
+	MemoryContext oldcxt = MemoryContextSwitchTo(node->ss.ps.state->es_query_cxt);
+
+	cstate->scanKeys =
+		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
+														   &node->ss.ps, true,
+														   NULL),
+							  cscan->scan.scanrelid,
+							  RelationGetDescr(node->ss.ss_currentRelation),
+							  &cstate->nScanKeys);
+	if (cstate->readState != NULL)
+	{
+		if (cstate->projScan)
+		{
+			int			nProjKeys;
+			ScanKey		projKeys = pgcolumnar_projection_keys(cstate, &nProjKeys);
+
+			PgColumnarReadSetScanKeys(cstate->readState, nProjKeys, projKeys);
+		}
+		else
+			PgColumnarReadSetScanKeys(cstate->readState, cstate->nScanKeys,
+									  cstate->scanKeys);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	cstate->keysPending = false;
+}
+
 static TupleTableSlot *
 PgColumnarExecCustomScan(CustomScanState *node)
 {
+	PgColumnarCustomScanState *cstate = (PgColumnarCustomScanState *) node;
+
+	if (cstate->keysPending)
+		pgcolumnar_freeze_pending_keys(cstate);
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) PgColumnarScanNext,
 					(ExecScanRecheckMtd) PgColumnarScanRecheck);

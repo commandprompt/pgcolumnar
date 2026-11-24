@@ -12386,7 +12386,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
 
-The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter.
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter. A scan that is set up but never run calls no stable operand: not one that LIMIT cuts off, and not one under a false one-time filter. A stable function operand, frozen when the scan first runs, still prunes 19 of 20 groups.
 
 ### Every test
 
@@ -12408,6 +12408,9 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_param_pushdown_no_failed_query_leaves_a_warning` | neither failed query leaves a resource or SPI-stack WARNING (#2065) |
 | `test_param_pushdown_a_plain_explain_does_not_call_a_stable_operand` | a plain EXPLAIN does not call a stable operand (#2065) |
 | `test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_param` | a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065) |
+| `test_param_pushdown_a_scan_that_limit_cuts_off_calls_no_stable_operand` | a columnar scan that LIMIT cuts off never calls its stable operand (#2065) |
+| `test_param_pushdown_a_scan_under_a_false_one_time_filter_calls_no_stable_operand` | a columnar scan under a false one-time filter never calls its stable operand (#2065) |
+| `test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_runs` | a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065) |
 | `test_param_pushdown_the_backend_is_alive` | backend alive |
 
 ## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's

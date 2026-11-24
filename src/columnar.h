@@ -844,6 +844,8 @@ extern bool PgColumnarReadSetRuntimeRange(PgColumnarReadState *readState,
 										AttrNumber attno, Oid subtype,
 										Datum minimum, Datum maximum);
 extern void PgColumnarReadClearRuntimeRange(PgColumnarReadState *readState);
+extern void PgColumnarReadSetScanKeys(PgColumnarReadState *readState,
+									  int nkeys, ScanKey keys);
 extern uint64 PgColumnarRuntimeGroupsRemoved(PgColumnarReadState *readState);
 extern void PgColumnarReadStats(PgColumnarReadState *readState,
 							  uint64 *groupsRead, uint64 *groupsSkipped,
