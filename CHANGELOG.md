@@ -616,13 +616,21 @@ true until the next version shipped.
   way. Both verbs now take the storage-row lock first and try the
   delete-vector locks without waiting. When a writer holds one, the verb gives
   back its locks, waits for that writer to finish, and tries again. So the
-  verb never waits while it holds a lock a writer may need. An `UPDATE` that
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184). An `UPDATE` that
   meets a rewrite of its group still gets the documented retryable `row group
   was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
   from the start of its read, not only from the start of its write.
   `compact_rewrite` now takes all its groups' locks before it rewrites the
   first, so a `DELETE` on a later group waits from that point.
-  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py`.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a writer that stays open.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

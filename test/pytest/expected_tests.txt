@@ -1928,4 +1928,9 @@ guard_tests 895
 # cluster_tests 5390 -> 5396, still #2074: three more tests, each parametrized over the two verbs. A writer that
 # deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
 # "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
-cluster_tests 5396
+# cluster_tests 5396 -> 5422, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
+# before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
+# with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
+cluster_tests 5422

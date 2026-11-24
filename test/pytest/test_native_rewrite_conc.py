@@ -14,7 +14,11 @@ compact_rewrite held mid-verb with its lock taken lets a reader and a writer, ea
 lock would otherwise pass everything above, since the workers would simply wait for it.
 Last, on a second private database, recluster and compact_rewrite each meet a single-row
 UPDATE from an open writer, and a writer that deleted, scanned and then inserts, without
-a deadlock (#2074).
+a deadlock (#2074). Then each verb gives back the group locks it took before it waits
+on a busy group, and the busy group's lock after that wait, counts a group lock its own
+transaction holds as taken, and stops with SQLSTATE 55P03 within
+pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open
+(review of #2139 at 630f63e3).
 
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture.
 """
@@ -325,6 +329,236 @@ def _dl_race(d, verb, shape):
     return out
 
 
+# ---- the rewrite gives its locks back, and its waiting has a bound ------------
+#
+# Review of #2139 at 630f63e3. lock_rewrite_groups waits for one lock at a time while
+# it holds no other, and gives up after pgcolumnar.rewrite_lock_timeout. Each arm
+# reddens one way of getting that wrong. Gives back: the writer deletes in group 1, the
+# rewrite waits on it, then the writer updates group 0; a rewrite that kept group 0
+# deadlocks. After the wait: W1 holds group 0's lock and W2 the storage-row lock; when
+# W1 commits the rewrite waits on W2, then W2 updates group 0; a rewrite that kept group
+# 0 deadlocks. Same transaction: a verb after a DELETE in its own transaction already
+# holds that group's lock and must count it as taken. Bound: under steady deletes, and
+# behind a writer that does not commit, the verb stops with 55P03 within the limit.
+
+DL_SAMETXN_WANT = {"recluster": "3", "compact_rewrite": "1"}
+
+
+def _dl_make(d, extra=False, rows=3000, deletes="id <= 1000 AND id % 3 = 0"):
+    for sql in ("DROP TABLE IF EXISTS dl",
+                "CREATE TABLE dl (id int, bal int) USING pgcolumnar",
+                "SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, "
+                "chunk_group_row_limit => 100)",
+                f"INSERT INTO dl SELECT g, 1000 FROM generate_series(1, {rows}) g",
+                f"DELETE FROM dl WHERE {deletes}"):
+        e = d.run(sql)
+        if e:
+            return e
+    if extra:
+        return d.run("DELETE FROM dl WHERE id BETWEEN 1001 AND 2000 AND id % 3 = 0")
+    return ""
+
+
+def _dl_wait(d, sql):
+    """Poll `sql` (a boolean query) every 0.1 s for up to 30 s. -> its last value."""
+    v = False
+    with psycopg.connect(d.dsn, autocommit=True) as probe:
+        for _ in range(300):
+            v = probe.execute(sql).fetchone()[0]
+            if v:
+                break
+            time.sleep(0.1)
+    return v
+
+
+def _dl_rewrite_bg(d, verb, out):
+    """Start the verb with a 3 s hold in a thread; return once it holds its table lock."""
+    def rewrite():
+        e = d.run(f"SELECT {verb}", settings=("SET pgcolumnar.maintenance_hold_ms = 3000",))
+        out["rewrite"] = e or "ok"
+
+    rt = threading.Thread(target=rewrite)
+    rt.start()
+    for _ in range(50):
+        if d.n("SELECT count(*) FROM pg_locks WHERE relation = 'dl'::regclass AND granted "
+               "AND mode = 'ShareUpdateExclusiveLock' AND pid <> pg_backend_pid()") == 1:
+            break
+        time.sleep(0.1)
+    return rt
+
+
+def _dl_giveback(d, verb):
+    """-> {"waited", "writer", "rewrite", "after": "<id 1501 count> <bal of id 5>"}."""
+    e = _dl_make(d, extra=True)
+    if e:
+        return {"waited": e, "writer": e, "rewrite": e, "after": e}
+    out = {}
+    rt = _dl_rewrite_bg(d, verb, out)
+    try:
+        with psycopg.connect(d.dsn) as w:
+            try:
+                w.execute("DELETE FROM dl WHERE id = 1501")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: group 1's lock
+                out["waited"] = _dl_wait(d, _waiting(101))
+                w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 5")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: group 0's lock
+                w.commit()
+                out["writer"] = "ok"
+            except psycopg.Error as exc:
+                out.setdefault("waited", _err(exc))
+                out["writer"] = _err(exc)
+    finally:
+        rt.join()
+    out["after"] = d.q("SELECT count(*) FILTER (WHERE id = 1501) || ' ' || "
+                       "max(bal) FILTER (WHERE id = 5) FROM dl")
+    return out
+
+
+def _dl_afterwait(d, verb):
+    """-> {"waited102", "w1", "w2", "rewrite", "after": "<id 5> <id 0> <bal of id 7>"}."""
+    e = _dl_make(d)
+    if e:
+        return {"waited102": e, "w1": e, "w2": e, "rewrite": e, "after": e}
+    out = {}
+    rt = _dl_rewrite_bg(d, verb, out)
+
+    def w1():
+        try:
+            with psycopg.connect(d.dsn) as c:
+                c.execute("DELETE FROM dl WHERE id = 5")
+                c.execute("SELECT count(*) FROM dl").fetchone()  # group 0's lock
+                _dl_wait(d, _waiting(101))
+                _dl_wait(d, "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                            "AND objsubid = 102 AND granted)")
+                c.commit()
+            out["w1"] = "ok"
+        except psycopg.Error as exc:
+            out["w1"] = _err(exc)
+
+    t1 = threading.Thread(target=w1)
+    t1.start()
+    try:
+        _dl_wait(d, _waiting(101))
+        with psycopg.connect(d.dsn) as w:
+            try:
+                w.execute("INSERT INTO dl VALUES (0, 0)")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # the storage-row lock
+                out["waited102"] = _dl_wait(d, _waiting(102))
+                w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 7")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # group 0's lock
+                w.commit()
+                out["w2"] = "ok"
+            except psycopg.Error as exc:
+                out.setdefault("waited102", _err(exc))
+                out["w2"] = _err(exc)
+    finally:
+        t1.join()
+        rt.join()
+    out["after"] = d.q("SELECT count(*) FILTER (WHERE id = 5) || ' ' || "
+                       "count(*) FILTER (WHERE id = 0) || ' ' || "
+                       "max(bal) FILTER (WHERE id = 7) FROM dl")
+    return out
+
+
+def _dl_sametxn(d, verb):
+    """-> {"result": "rc=<0|error> verb=<value>", "after": id 7's count}."""
+    e = _dl_make(d)
+    if e:
+        return {"result": e, "after": e}
+    try:
+        with psycopg.connect(d.dsn) as c:
+            c.execute("SET statement_timeout = '20s'")
+            c.execute("DELETE FROM dl WHERE id = 7")
+            v = c.execute(f"SELECT {verb}").fetchone()[0]
+            c.commit()
+        result = f"rc=0 verb={v}"
+    except psycopg.Error as exc:
+        result = f"rc=error verb={_err(exc)}"
+    return {"result": result, "after": d.q("SELECT count(*) FROM dl WHERE id = 7")}
+
+
+def _dl_timed(d, verb, limit):
+    """Run the verb with pgcolumnar.rewrite_lock_timeout = limit.
+    -> (elapsed ms, "ok" or the SQLSTATE, the error message or "")."""
+    t0 = time.monotonic()
+    try:
+        with psycopg.connect(d.dsn, autocommit=True) as c:
+            c.execute("SET statement_timeout = '30s'")
+            c.execute(f"SET pgcolumnar.rewrite_lock_timeout = '{limit}'")
+            c.execute(f"SELECT {verb}")
+        state, msg = "ok", ""
+    except psycopg.Error as exc:
+        state, msg = exc.sqlstate or _err(exc), str(exc)
+    return int((time.monotonic() - t0) * 1000), state, msg
+
+
+def _dl_starve(d, verb):
+    """Eight deleters each delete one random row, flush it with a scan and hold the group
+    lock for 200 ms, in a loop; the verb runs with a 2 s limit.
+    -> {"ms", "state", "deadlocks": deleter errors that name a deadlock}."""
+    e = _dl_make(d, rows=20000, deletes="id % 3 = 0")
+    if e:
+        return {"ms": e, "state": e, "deadlocks": e}
+    stop = threading.Event()
+    errors = []
+
+    def deleter(seed):
+        import random
+        r = random.Random(seed)
+        while not stop.is_set():
+            a = r.randint(1, 20000)
+            try:
+                with psycopg.connect(d.dsn) as c:
+                    c.execute(f"DELETE FROM dl WHERE id = {a}")
+                    c.execute(f"SELECT count(*) FROM dl WHERE id = {a}").fetchone()
+                    c.execute("SELECT pg_sleep(0.2)")
+                    c.commit()
+            except psycopg.Error as exc:
+                errors.append(str(exc))
+
+    ts = [threading.Thread(target=deleter, args=(i,)) for i in range(8)]
+    for t in ts:
+        t.start()
+    try:
+        time.sleep(2)
+        ms, state, _ = _dl_timed(d, verb, "2s")
+    finally:
+        stop.set()
+        for t in ts:
+            t.join()
+    return {"ms": ms, "state": state,
+            "deadlocks": sum("deadlock detected" in x for x in errors)}
+
+
+def _dl_stuck(d, verb):
+    """A writer deletes, flushes and keeps its transaction open for 8 s; the verb runs
+    with a 1 s limit. -> {"ms", "state", "names": whether the error names the setting}."""
+    e = _dl_make(d)
+    if e:
+        return {"ms": e, "state": e, "names": e}
+
+    def writer():
+        try:
+            with psycopg.connect(d.dsn) as c:
+                c.execute("DELETE FROM dl WHERE id = 5")
+                c.execute("SELECT count(*) FROM dl").fetchone()
+                c.execute("SELECT pg_sleep(8)")
+                c.commit()
+        except psycopg.Error:
+            pass
+
+    wt = threading.Thread(target=writer)
+    wt.start()
+    try:
+        _dl_wait(d, "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND objsubid = 101 AND granted)")
+        ms, state, msg = _dl_timed(d, verb, "1s")
+    finally:
+        wt.join()
+    return {"ms": ms, "state": state,
+            "names": "names-limit" if "pgcolumnar.rewrite_lock_timeout" in msg else "other"}
+
+
 @pytest.fixture(scope="module")
 def dl(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -333,9 +567,17 @@ def dl(pgc_cluster):
     try:
         d = _Db(pgc_cluster.dsn(dbname=DL_DB))
         d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
-        # the shell's order: for each verb, the update shape, then the delete shape
-        yield {(name, shape): _dl_race(d, verb, shape)
+        # the shell's order: for each verb, the update shape, then the delete shape;
+        # then for each verb the arms of the 630f63e3 review
+        out = {(name, shape): _dl_race(d, verb, shape)
                for name, verb in DL_VERBS.items() for shape in DL_SHAPES}
+        for name, verb in DL_VERBS.items():
+            out[name, "giveback"] = _dl_giveback(d, verb)
+            out[name, "afterwait"] = _dl_afterwait(d, verb)
+            out[name, "sametxn"] = _dl_sametxn(d, verb)
+            out[name, "starve"] = _dl_starve(d, verb)
+            out[name, "stuck"] = _dl_stuck(d, verb)
+        yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DL_DB} WITH (FORCE)")
@@ -380,3 +622,91 @@ def test_a_delete_scan_insert_writer_and_the_rewrite_both_commit(dl, name, expec
 def test_the_delete_and_insert_beside_the_rewrite_took_effect(dl, name, expect):
     expect.text(dl[name, "delete"]["after"], "0 1",
                 f"and the DELETE and INSERT beside the {name} took effect")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_gave_back_its_group_locks_before_it_waited(dl, name, expect):
+    expect.text(str(dl[name, "giveback"]["waited"]), "True",
+                f"a {name} gave back its group locks before it waited on a later busy group")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_delete_in_group_1_then_an_update_in_group_0_and_the_rewrite_both_commit(dl, name, expect):
+    r = dl[name, "giveback"]
+    expect.text(f"writer={r['writer']} rewrite={r['rewrite']}", "writer=ok rewrite=ok",
+                f"a DELETE in group 1 then an UPDATE in group 0 from one writer and the {name} "
+                "both commit")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_delete_in_group_1_and_the_update_in_group_0_took_effect(dl, name, expect):
+    expect.text(dl[name, "giveback"]["after"], "0 1001",
+                f"and the DELETE in group 1 and the UPDATE in group 0 beside the {name} took effect")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_waited_on_the_storage_row_lock_after_its_group_wait(dl, name, expect):
+    expect.text(str(dl[name, "afterwait"]["waited102"]), "True",
+                f"a {name} waited on the storage-row lock after the group lock it waited for "
+                "came free")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_two_writers_and_the_rewrite_all_commit(dl, name, expect):
+    r = dl[name, "afterwait"]
+    expect.text(f"w1={r.get('w1')} w2={r.get('w2')} rewrite={r.get('rewrite')}",
+                "w1=ok w2=ok rewrite=ok",
+                f"two writers and the {name} all commit when the second writer updates that group")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_both_writers_changes_beside_the_rewrite_took_effect(dl, name, expect):
+    expect.text(dl[name, "afterwait"]["after"], "0 1 1001",
+                f"and both writers' changes beside the {name} took effect")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_after_a_delete_in_its_own_transaction_commits(dl, name, expect):
+    expect.text(dl[name, "sametxn"]["result"], f"rc=0 verb={DL_SAMETXN_WANT[name]}",
+                f"a {name} after a DELETE in its own transaction commits and returns its count")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_row_deleted_before_the_rewrite_stays_deleted(dl, name, expect):
+    expect.text(dl[name, "sametxn"]["after"], "0",
+                f"and the row deleted before the {name} in its transaction stays deleted")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_under_steady_deletes_ends_within_its_limit(dl, name, expect):
+    ms = dl[name, "starve"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and ms < 6000 else f"no ({ms} ms)", "yes",
+                f"a {name} under steady deletes ends within its 2 s rewrite_lock_timeout plus 4 s")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_under_steady_deletes_finished_or_stopped_with_55p03(dl, name, expect):
+    st = dl[name, "starve"]["state"]
+    expect.text("ok-or-55P03" if st in ("ok", "55P03") else st, "ok-or-55P03",
+                f"and the {name} either finished or stopped with the lock error 55P03")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_no_deleter_beside_the_rewrite_hit_a_deadlock(dl, name, expect):
+    expect.text(str(dl[name, "starve"]["deadlocks"]), "0",
+                f"and no deleter beside the {name} hit a deadlock")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_behind_an_open_writer_stops_with_55p03(dl, name, expect):
+    r = dl[name, "stuck"]
+    expect.text(f"{r['state']} {r['names']}", "55P03 names-limit",
+                f"a {name} behind a writer that stays open stops with 55P03 naming "
+                "rewrite_lock_timeout")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_behind_an_open_writer_stops_within_its_limit(dl, name, expect):
+    ms = dl[name, "stuck"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
+                f"and the {name} stops within its 1 s rewrite_lock_timeout plus 3 s")

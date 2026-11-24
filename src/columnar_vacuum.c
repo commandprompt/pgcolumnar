@@ -43,6 +43,7 @@
 #include "storage/latch.h"
 #include "storage/lmgr.h"
 #include "storage/lockdefs.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/acl.h"
@@ -320,6 +321,70 @@ retired_group_cmp(const void *a, const void *b)
  * conflict check in PgColumnarUpsertDeleteVector.
  * ------------------------------------------------------------------------- */
 
+/* the error a rewrite stops with when rewrite_lock_timeout runs out (#2074) */
+static void
+rewrite_lock_timeout_error(Relation rel)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+			 errmsg("could not lock the row groups of table \"%s\" for a rewrite within pgcolumnar.rewrite_lock_timeout (%d ms)",
+					RelationGetRelationName(rel), pgcolumnar_rewrite_lock_timeout),
+			 errdetail("Concurrent writers kept a row group or the table's storage row locked at every try."),
+			 errhint("Run it again when fewer writers are active, or raise pgcolumnar.rewrite_lock_timeout. The table is unchanged.")));
+}
+
+/*
+ * Wait for one rewrite lock (class 101 for `group`, or class 102 when
+ * storageRow), holding no other, and give it back at once when giveBack.
+ * With a deadline, lock_timeout is lowered to the time left for this wait,
+ * and its expiry past the deadline becomes rewrite_lock_timeout_error.
+ */
+static void
+wait_rewrite_lock(Relation rel, uint64 storageId, bool storageRow, uint64 group,
+				  TimestampTz deadline, bool giveBack)
+{
+	int			savedLockTimeout = LockTimeout;
+	MemoryContext cxt = CurrentMemoryContext;
+
+	if (deadline != 0)
+	{
+		long		left = TimestampDifferenceMilliseconds(GetCurrentTimestamp(), deadline);
+
+		if (left <= 0)
+			rewrite_lock_timeout_error(rel);
+		if (LockTimeout == 0 || left < LockTimeout)
+			LockTimeout = (int) left;
+	}
+	PG_TRY();
+	{
+		if (storageRow)
+			PgColumnarLockStorageRow(storageId);
+		else
+			PgColumnarLockChunkGroup(storageId, group);
+	}
+	PG_CATCH();
+	{
+		LockTimeout = savedLockTimeout;
+		if (deadline != 0 && geterrcode() == ERRCODE_LOCK_NOT_AVAILABLE &&
+			GetCurrentTimestamp() >= deadline)
+		{
+			MemoryContextSwitchTo(cxt);
+			FlushErrorState();
+			rewrite_lock_timeout_error(rel);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	LockTimeout = savedLockTimeout;
+	if (giveBack)
+	{
+		if (storageRow)
+			PgColumnarUnlockStorageRow(storageId);
+		else
+			PgColumnarUnlockChunkGroup(storageId, group);
+	}
+}
+
 /*
  * lock_rewrite_groups
  *		Take the storage-row lock (class 102) and the chunk-group lock (class 101)
@@ -345,18 +410,30 @@ retired_group_cmp(const void *a, const void *b)
  * stays held through the wait, since an unlock undoes only this call's
  * acquisition. The maintenance daemon runs each verb in its own transaction.
  *
+ * The waiting has a bound, pgcolumnar.rewrite_lock_timeout. Writers never
+ * queue behind the rewrite, so a steady stream of them can keep one group busy
+ * at every try. When the time runs out the rewrite stops with SQLSTATE 55P03
+ * and has changed nothing; the maintenance daemon logs a skip and moves on.
+ * Each wait runs with lock_timeout lowered to the time left, so a writer that
+ * stays open cannot hold the rewrite past the limit either.
+ *
  * Groups are tried in the order given; callers pass them ascending.
  */
 static void
-lock_rewrite_groups(uint64 storageId, const uint64 *groups, int nGroups)
+lock_rewrite_groups(Relation rel, uint64 storageId, const uint64 *groups, int nGroups)
 {
+	TimestampTz deadline = 0;
+
+	if (pgcolumnar_rewrite_lock_timeout > 0)
+		deadline = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+											   pgcolumnar_rewrite_lock_timeout);
 	for (;;)
 	{
 		int			i;
 		uint64		busy;
 
 		CHECK_FOR_INTERRUPTS();
-		PgColumnarLockStorageRow(storageId);
+		wait_rewrite_lock(rel, storageId, true, 0, deadline, false);
 		for (i = 0; i < nGroups; i++)
 			if (!PgColumnarConditionalLockChunkGroup(storageId, groups[i]))
 				break;
@@ -369,8 +446,7 @@ lock_rewrite_groups(uint64 storageId, const uint64 *groups, int nGroups)
 		PgColumnarUnlockStorageRow(storageId);
 
 		/* wait for the writer that holds it to finish, holding neither class */
-		PgColumnarLockChunkGroup(storageId, busy);
-		PgColumnarUnlockChunkGroup(storageId, busy);
+		wait_rewrite_lock(rel, storageId, false, busy, deadline, true);
 	}
 }
 
@@ -547,7 +623,7 @@ pgcolumnar_rewrite_partial_groups(Relation rel, double minDeletedFraction,
 
 		foreach(lc, cands)
 			groups[n++] = ((RewriteCandidate *) lfirst(lc))->groupNumber;
-		lock_rewrite_groups(storageId, groups, n);
+		lock_rewrite_groups(rel, storageId, groups, n);
 		pfree(groups);
 	}
 
@@ -814,7 +890,7 @@ pgcolumnar_recluster_online(Relation rel, int ncols, AttrNumber *atts,
 
 		for (i = 0; i < nGroups; i++)
 			groups[i] = oldGroups[i].groupNumber;
-		lock_rewrite_groups(storageId, groups, nGroups);
+		lock_rewrite_groups(rel, storageId, groups, nGroups);
 		pfree(groups);
 	}
 

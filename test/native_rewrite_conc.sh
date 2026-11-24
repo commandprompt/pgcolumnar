@@ -227,4 +227,242 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(q "SELECT count(*) FILTER (WHERE id = 5) || ' ' || count(*) FILTER (WHERE id = 0) FROM dl;")" "0 1"
 done
 
+# ---- the rewrite gives its locks back, and its waiting has a bound ------------
+#
+# Review of #2139 at 630f63e3. lock_rewrite_groups waits for one lock at a time
+# while it holds no other, and gives up after pgcolumnar.rewrite_lock_timeout.
+# Each arm below reddens one way of getting that wrong:
+#
+#   - gives back: the rewrite must give back the group locks it took in a round
+#     before it waits on a later busy group. The writer deletes in group 1, the
+#     rewrite waits on it, then the writer updates group 0. A rewrite that kept
+#     group 0 deadlocks with the writer.
+#   - after the wait: the rewrite must give back the busy group's lock once its
+#     wait ends. W1 holds group 0's lock and W2 the storage-row lock. When W1
+#     commits, the rewrite waits on W2. Then W2 updates group 0. A rewrite that
+#     kept group 0 deadlocks with W2.
+#   - same transaction: a verb run after a DELETE in its own transaction already
+#     holds that group's lock, and must count it as taken.
+#   - bound: under steady deletes, and behind a writer that does not commit, the
+#     verb stops with the documented lock error within the limit.
+
+dlp() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" "$@"; }
+
+# dl_make [extra]: the dl table; "extra" adds committed deletes in group 1 (ids 1001-2000)
+dl_make() {
+	q "DROP TABLE IF EXISTS dl;
+	   CREATE TABLE dl (id int, bal int) USING pgcolumnar;
+	   SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, chunk_group_row_limit => 100);
+	   INSERT INTO dl SELECT g, 1000 FROM generate_series(1, 3000) g;
+	   DELETE FROM dl WHERE id <= 1000 AND id % 3 = 0;" >/dev/null
+	[ "${1:-}" = extra ] && q "DELETE FROM dl WHERE id BETWEEN 1001 AND 2000 AND id % 3 = 0;" >/dev/null
+	return 0
+}
+
+# dl_rewrite_bg VERB-SQL: run the verb with a 3 s hold in the background, output in dl.rw;
+# returns once it holds its table lock, so it is inside its hold
+dl_rewrite_bg() {
+	rm -f "$PGC_WORKDIR/dl.rw"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 -c "SET pgcolumnar.maintenance_hold_ms = 3000;" \
+			-c "SELECT $1;" >"$PGC_WORKDIR/dl.rw" 2>&1
+		echo "rc=$?" >>"$PGC_WORKDIR/dl.rw"
+	) &
+	DL_RW_PID=$!
+	for _ in $(seq 1 50); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 'dl'::regclass AND granted
+		        AND mode = 'ShareUpdateExclusiveLock' AND pid <> pg_backend_pid();")" = "1" ] && break
+		sleep 0.1
+	done
+}
+
+# dl_wait_sql CONDITION: a DO block that waits (bounded, 30 s) until CONDITION holds
+dl_wait_sql() {
+	printf 'DO $$ BEGIN FOR i IN 1..300 LOOP EXIT WHEN %s; PERFORM pg_sleep(0.1); END LOOP; END $$;\n' "$1"
+}
+dl_waiting() {
+	echo "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = $1 AND NOT granted AND pid <> pg_backend_pid())"
+}
+# dl_rw_wait: wait for the background verb (not from a subshell: it is this shell's
+# child), then DL_RW is ok or error
+dl_rw_wait() {
+	wait "$DL_RW_PID"
+	DL_RW=$([ "$(tail -1 "$PGC_WORKDIR/dl.rw")" = "rc=0" ] && echo ok || echo error)
+}
+
+# dl_giveback VERB-SQL -> "waited=<t|f> writer=<ok|error> rewrite=<ok|error>"
+dl_giveback() {
+	dl_make extra
+	dl_rewrite_bg "$1"
+	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.w" 2>&1 <<SQL
+BEGIN;
+DELETE FROM dl WHERE id = 1501;
+SELECT count(*) > 0 FROM dl;
+$(dl_wait_sql "$(dl_waiting 101)")
+SELECT 'waited=' || $(dl_waiting 101);
+UPDATE dl SET bal = bal + 1 WHERE id = 5;
+SELECT count(*) > 0 FROM dl;
+COMMIT;
+SQL
+	local w_rc=$?
+	dl_rw_wait
+	echo "$(grep -o 'waited=[tf]' "$PGC_WORKDIR/dl.w" || echo waited=none)" \
+		"writer=$([ "$w_rc" = 0 ] && echo ok || echo error)" "rewrite=$DL_RW"
+	grep -h 'deadlock detected' "$PGC_WORKDIR/dl.w" "$PGC_WORKDIR/dl.rw" >&2
+}
+
+# dl_afterwait VERB-SQL -> "waited102=<t|f> w1=<ok|error> w2=<ok|error> rewrite=<ok|error>"
+dl_afterwait() {
+	dl_make
+	dl_rewrite_bg "$1"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.w1" 2>&1 <<SQL
+BEGIN;
+DELETE FROM dl WHERE id = 5;
+SELECT count(*) > 0 FROM dl;
+$(dl_wait_sql "$(dl_waiting 101)")
+$(dl_wait_sql "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 102 AND granted)")
+COMMIT;
+SQL
+		echo "rc=$?" >>"$PGC_WORKDIR/dl.w1"
+	) &
+	local w1_pid=$!
+	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.w2" 2>&1 <<SQL
+$(dl_wait_sql "$(dl_waiting 101)")
+BEGIN;
+INSERT INTO dl VALUES (0, 0);
+SELECT count(*) > 0 FROM dl;
+$(dl_wait_sql "$(dl_waiting 102)")
+SELECT 'waited102=' || $(dl_waiting 102);
+UPDATE dl SET bal = bal + 1 WHERE id = 7;
+SELECT count(*) > 0 FROM dl;
+COMMIT;
+SQL
+	local w2_rc=$?
+	wait "$w1_pid"
+	dl_rw_wait
+	echo "$(grep -o 'waited102=[tf]' "$PGC_WORKDIR/dl.w2" || echo waited102=none)" \
+		"w1=$([ "$(tail -1 "$PGC_WORKDIR/dl.w1")" = "rc=0" ] && echo ok || echo error)" \
+		"w2=$([ "$w2_rc" = 0 ] && echo ok || echo error)" "rewrite=$DL_RW"
+	grep -h 'deadlock detected' "$PGC_WORKDIR/dl.w1" "$PGC_WORKDIR/dl.w2" "$PGC_WORKDIR/dl.rw" >&2
+}
+
+# dl_sametxn VERB-SQL -> "rc=<n> verb=<value>" for the verb after a DELETE in its own transaction
+dl_sametxn() {
+	dl_make
+	local out rc
+	out="$(dlp -qAt -v ON_ERROR_STOP=1 2>&1 <<SQL
+SET statement_timeout = '20s';
+BEGIN;
+DELETE FROM dl WHERE id = 7;
+SELECT $1;
+COMMIT;
+SQL
+)"
+	rc=$?
+	echo "rc=$rc verb=$(head -1 <<<"$out")"
+	[ "$rc" = 0 ] || echo "$out" >&2
+}
+
+# dl_ms: milliseconds since the epoch
+dl_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+# dl_starve VERB-SQL -> "<elapsed ms> <ok|SQLSTATE>" and dl.del holds the deleters' errors:
+# eight deleters each delete one random row, flush it with a scan and hold the group lock
+# for 200 ms, in a loop; the verb runs with a 2 s pgcolumnar.rewrite_lock_timeout
+dl_starve() {
+	q "DROP TABLE IF EXISTS dl;
+	   CREATE TABLE dl (id int, bal int) USING pgcolumnar;
+	   SELECT pgcolumnar.set_options('dl', stripe_row_limit => 1000, chunk_group_row_limit => 100);
+	   INSERT INTO dl SELECT g, 1000 FROM generate_series(1, 20000) g;
+	   DELETE FROM dl WHERE id % 3 = 0;" >/dev/null
+	local stop="$PGC_WORKDIR/dl.stop" pids=() c
+	rm -f "$stop" "$PGC_WORKDIR"/dl.del.*
+	for c in $(seq 1 8); do
+		(
+			while [ ! -f "$stop" ]; do
+				a=$(( (RANDOM * 32768 + RANDOM) % 20000 + 1 ))
+				dlp -qAt -v ON_ERROR_STOP=1 -c "BEGIN; DELETE FROM dl WHERE id = $a;
+					SELECT count(*) FROM dl WHERE id = $a; SELECT pg_sleep(0.2); COMMIT;" \
+					>/dev/null 2>>"$PGC_WORKDIR/dl.del.$c"
+			done
+		) &
+		pids+=($!)
+	done
+	sleep 2
+	local t0 out rc
+	t0=$(dl_ms)
+	out="$(dlp -qAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2>&1 <<SQL
+SET statement_timeout = '30s';
+SET pgcolumnar.rewrite_lock_timeout = '2s';
+SELECT $1;
+SQL
+)"
+	rc=$?
+	echo "$(( $(dl_ms) - t0 )) $([ "$rc" = 0 ] && echo ok || grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9-)"
+	touch "$stop"
+	wait "${pids[@]}"
+	[ "$rc" = 0 ] || echo "$out" >&2
+}
+
+# dl_stuck VERB-SQL -> "<elapsed ms> <SQLSTATE or ok> <names-limit|other>": a writer deletes,
+# flushes and keeps its transaction open for 8 s; the verb runs with a 1 s limit
+dl_stuck() {
+	dl_make
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 -c "BEGIN; DELETE FROM dl WHERE id = 5;
+			SELECT count(*) FROM dl; SELECT pg_sleep(8); COMMIT;" >/dev/null 2>&1
+	) &
+	local w_pid=$! t0 out rc
+	dlp -qAt -c "$(dl_wait_sql "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 101 AND granted)")" >/dev/null
+	t0=$(dl_ms)
+	out="$(dlp -qAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2>&1 <<SQL
+SET statement_timeout = '30s';
+SET pgcolumnar.rewrite_lock_timeout = '1s';
+SELECT $1;
+SQL
+)"
+	rc=$?
+	echo "$(( $(dl_ms) - t0 ))" \
+		"$([ "$rc" = 0 ] && echo ok || grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9-)" \
+		"$(grep -q 'pgcolumnar.rewrite_lock_timeout' <<<"$out" && echo names-limit || echo other)"
+	wait "$w_pid"
+	[ "$rc" = 0 ] || echo "$out" >&2
+}
+
+declare -A DL_SAMETXN_WANT=([recluster]=3 [compact_rewrite]=1)
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_giveback "$verb")"
+	check "a $name gave back its group locks before it waited on a later busy group" \
+		"$(grep -o 'waited=[a-z]*' <<<"$got")" "waited=t"
+	check "a DELETE in group 1 then an UPDATE in group 0 from one writer and the $name both commit" \
+		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "writer=ok rewrite=ok"
+	check "and the DELETE in group 1 and the UPDATE in group 0 beside the $name took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id = 1501) || ' ' || max(bal) FILTER (WHERE id = 5) FROM dl;")" "0 1001"
+	got="$(dl_afterwait "$verb")"
+	check "a $name waited on the storage-row lock after the group lock it waited for came free" \
+		"$(grep -o 'waited102=[a-z]*' <<<"$got")" "waited102=t"
+	check "two writers and the $name all commit when the second writer updates that group" \
+		"$(sed 's/^waited102=[a-z]* //' <<<"$got")" "w1=ok w2=ok rewrite=ok"
+	check "and both writers' changes beside the $name took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id = 5) || ' ' || count(*) FILTER (WHERE id = 0) || ' ' || max(bal) FILTER (WHERE id = 7) FROM dl;")" "0 1 1001"
+	check "a $name after a DELETE in its own transaction commits and returns its count" \
+		"$(dl_sametxn "$verb")" "rc=0 verb=${DL_SAMETXN_WANT[$name]}"
+	check "and the row deleted before the $name in its transaction stays deleted" \
+		"$(q "SELECT count(*) FROM dl WHERE id = 7;")" "0"
+	got="$(dl_starve "$verb")"
+	check "a $name under steady deletes ends within its 2 s rewrite_lock_timeout plus 4 s" \
+		"$(awk '{print ($1 < 6000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the $name either finished or stopped with the lock error 55P03" \
+		"$(awk '{print ($2 == "ok" || $2 == "55P03") ? "ok-or-55P03" : $2}' <<<"$got")" "ok-or-55P03"
+	check "and no deleter beside the $name hit a deadlock" \
+		"$(cat "$PGC_WORKDIR"/dl.del.* 2>/dev/null | grep -c 'deadlock detected')" "0"
+	got="$(dl_stuck "$verb")"
+	check "a $name behind a writer that stays open stops with 55P03 naming rewrite_lock_timeout" \
+		"$(cut -d' ' -f2- <<<"$got")" "55P03 names-limit"
+	check "and the $name stops within its 1 s rewrite_lock_timeout plus 3 s" \
+		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+done
+
 pgc_summary
