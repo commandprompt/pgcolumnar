@@ -172,12 +172,18 @@ pcopy_open_regular_file(const char *path, off_t *size_out)
 
 /*
  * pcopy_line_offsets
- *		Compute nranges+1 line-aligned byte offsets partitioning an open file of
+ *		Compute nranges+1 record-aligned byte offsets partitioning an open file of
  *		`size` bytes into that many ranges, in ONE forward pass (O(filesize),
  *		interruptible), rather than a separate seek+scan per boundary. Each
- *		interior boundary is the first byte after the first newline at or beyond
- *		the even split point size*i/nranges; ranges may be empty when the file has
- *		fewer records than ranges. Returns a palloc'd int64[nranges+1].
+ *		interior boundary is the first byte after the first record-ending newline
+ *		at or beyond the even split point size*i/nranges; ranges may be empty when
+ *		the file has fewer records than ranges. Returns a palloc'd int64[nranges+1].
+ *
+ *		A newline ends a record only when an even number of backslashes comes
+ *		right before it. In COPY text format a backslash followed by a raw newline
+ *		is data inside the field (#2084), so a cut there would split one record in
+ *		two. The scan starts at byte 0, so the backslash-run parity is exact, and
+ *		it carries across chunk reads.
  */
 static int64 *
 pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
@@ -186,6 +192,7 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
 	int64		bufbase = 0;		/* absolute file offset of buf[0] */
 	int			next = 1;
+	bool		escaped = false;	/* the previous byte ends an odd backslash run */
 
 	offs[0] = 0;
 	offs[nranges] = (int64) size;
@@ -208,6 +215,17 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 			break;
 		for (j = 0; j < got && next < nranges; j++)
 		{
+			if (buf[j] == '\\')
+			{
+				escaped = !escaped;
+				continue;
+			}
+			if (escaped)
+			{
+				/* this byte is escaped: data, even when it is a newline */
+				escaped = false;
+				continue;
+			}
 			if (buf[j] == '\n')
 			{
 				int64		boundary = bufbase + j + 1;
@@ -262,14 +280,15 @@ PG_FUNCTION_INFO_V1(pgcolumnar_file_split_offsets);
  * Returns workers+1 ascending byte offsets [0 .. filesize] that split the file
  * into `workers` line-aligned ranges. off[0] is always 0 and off[workers] is
  * always the file size; each interior boundary is placed at the first byte after
- * the newline that follows the even split point filesize*i/workers. This is a
- * record boundary only for COPY *text* format, where a raw newline always ends a
- * record (text format escapes any embedded newline). It is NOT safe for CSV,
- * whose quoted fields may contain literal newlines -- quote-aware splitting is a
- * later phase; callers holding a CSV must not use these offsets. Ranges may be
- * empty (equal consecutive offsets) when the file has fewer records than workers
- * -- that worker then loads nothing, which is harmless. `workers` is capped at
- * PCOPY_MAX_WORKERS.
+ * the first record-ending newline that follows the even split point
+ * filesize*i/workers. This is a record boundary only for COPY *text* format,
+ * where a raw newline ends a record unless an odd run of backslashes comes right
+ * before it: a backslash followed by a raw newline is data (#2084). It is NOT
+ * safe for CSV, whose quoted fields may contain literal newlines -- quote-aware
+ * splitting is a later phase; callers holding a CSV must not use these
+ * offsets. Ranges may be empty (equal consecutive offsets) when the file has
+ * fewer records than workers -- that worker then loads nothing, which is
+ * harmless. `workers` is capped at PCOPY_MAX_WORKERS.
  */
 Datum
 pgcolumnar_file_split_offsets(PG_FUNCTION_ARGS)
@@ -384,6 +403,8 @@ typedef struct PcopyWorkerSlot
 	int64		end_off;
 	pg_atomic_uint32 state;		/* PcopyState */
 	int64		rows;			/* rows loaded (valid when state == PCOPY_PREPARED) */
+	bool		ended_at_marker;	/* COPY stopped at a \. line before the range
+									 * end, so later ranges are not data (#2084) */
 	int			sqlerrcode;
 	char		errmsg[512];
 	char		gid[GIDSIZE];	/* 2PC gid the coordinator assigned this loader */
@@ -424,15 +445,20 @@ typedef struct PcopyHeader
  * The COPY data-source callback has no context argument, and a worker runs one
  * COPY at a time, so the bounded range lives in this per-process static. It hands
  * COPY only the bytes in the worker's range and reports EOF at the range end.
+ *
+ * eof_seen records that COPY asked for more and got none. COPY asks again only
+ * when it has parsed everything it was given, so a COPY that finishes without
+ * eof_seen stopped at an end-of-data marker (a \. line) inside the range (#2084).
  */
 typedef struct PcopyRangeSource
 {
 	int			fd;
 	int64		remaining;
 	const char *path;
+	bool		eof_seen;
 } PcopyRangeSource;
 
-static PcopyRangeSource pcopy_src = {-1, 0, NULL};
+static PcopyRangeSource pcopy_src = {-1, 0, NULL, false};
 
 /* background-worker entry points, resolved via bgw_function_name */
 PGDLLEXPORT void pgcolumnar_parallel_copy_worker(Datum main_arg);
@@ -459,6 +485,8 @@ pcopy_range_read(void *outbuf, int minread, int maxread)
 		total += got;
 		pcopy_src.remaining -= got;
 	}
+	if (total == 0)
+		pcopy_src.eof_seen = true;
 	return total;
 }
 
@@ -547,6 +575,8 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	size_t		cap = 0;
 	ssize_t		len;
 	int64		off = 0;
+	StringInfoData rec;			/* a record that spans physical lines (#2084) */
+	int64		rec_start = 0;
 	int			cur = 0;
 	int			prev_bucket = 0;
 	uint64		nrows = 0;
@@ -686,19 +716,70 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	 * field, non-numeric text) -- frees the getline() buffer (malloc'd, NOT
 	 * reclaimed by memory-context reset) and the AllocateFile handle.
 	 */
+	initStringInfo(&rec);
 	PG_TRY();
 	{
-		while ((len = getline(&line, &cap, fp)) != -1)
+		for (;;)
 		{
 			int64		line_start = off;
-			char	   *p = line;
+			char	   *p;
 			int			f = 0;
 			int			flen;
 			char	   *fld;
 			Datum		kd;
 			int			bucket;
+			bool		at_eof = false;
 
-			off += len;
+			len = getline(&line, &cap, fp);
+			if (len == -1)
+			{
+				/* a file that ends inside a record: that record is the last row */
+				if (rec.len == 0)
+					break;
+				at_eof = true;
+			}
+			else
+			{
+				int			nbs = 0;
+				ssize_t		e;
+
+				off += len;
+
+				/*
+				 * COPY text syntax (#2084): a newline after an odd run of
+				 * backslashes is data, so the record goes on in the next line.
+				 */
+				if (len > 0 && line[len - 1] == '\n')
+					for (e = len - 2; e >= 0 && line[e] == '\\'; e--)
+						nbs++;
+				if (nbs % 2 == 1)
+				{
+					if (rec.len == 0)
+						rec_start = line_start;
+					appendBinaryStringInfo(&rec, line, (int) len);
+					continue;
+				}
+				if (rec.len > 0)
+					appendBinaryStringInfo(&rec, line, (int) len);
+				else if (len >= 2 && line[0] == '\\' && line[1] == '.' &&
+						 (len == 2 || line[2] == '\n' || line[2] == '\r'))
+				{
+					/*
+					 * The end-of-data marker. COPY reads nothing after it, so
+					 * the load ends here: the last range keeps the marker line,
+					 * and core COPY in that loader stops at it.
+					 */
+					size = off;
+					break;
+				}
+			}
+			if (rec.len > 0)
+			{
+				p = rec.data;
+				line_start = rec_start;
+			}
+			else
+				p = line;
 
 			/* advance to the key field */
 			for (f = 0; f < keyfield; f++)
@@ -735,9 +816,12 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			while (cur < bucket)
 				seg_start[++cur] = line_start;
 			prev_bucket = bucket;
+			resetStringInfo(&rec);
 
 			if ((++nrows & 0xFFFF) == 0)
 				CHECK_FOR_INTERRUPTS();
+			if (at_eof)
+				break;
 		}
 	}
 	PG_CATCH();
@@ -751,6 +835,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	if (line)
 		free(line);				/* getline() uses malloc, not palloc */
 	fclose(fp);
+	pfree(rec.data);
 
 	while (cur < nseg - 1)
 		seg_start[++cur] = size;
@@ -864,6 +949,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		List	   *options;
 		CopyFromState cstate;
 		uint64		processed;
+		bool		ended_at_marker;
 		int			fd;
 
 		/*
@@ -885,6 +971,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		pcopy_src.fd = fd;
 		pcopy_src.remaining = me->end_off - me->start_off;
 		pcopy_src.path = hdr->filename;
+		pcopy_src.eof_seen = false;
 
 		rel = table_open(hdr->relid, RowExclusiveLock);
 		pstate = make_parsestate(NULL);
@@ -942,6 +1029,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		cstate = BeginCopyFrom(pstate, rel, NULL, NULL, false,
 							   pcopy_range_read, NIL, options);
 		processed = CopyFrom(cstate);
+		ended_at_marker = !pcopy_src.eof_seen;
 		EndCopyFrom(cstate);
 		PopActiveSnapshot();
 		free_parsestate(pstate);
@@ -986,6 +1074,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		CommitTransactionCommand();		/* TBLOCK_PREPARE -> PrepareTransaction() */
 
 		me->rows = (int64) processed;
+		me->ended_at_marker = ended_at_marker;
 		pg_atomic_write_u32(&me->state, PCOPY_PREPARED);
 	}
 	PG_CATCH();
@@ -1245,6 +1334,7 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		bool		all_prepared = true;
 		int			failed = -1;
 		int64		total = 0;
+		int			ncommit = nworkers;	/* ranges that hold data */
 
 		for (i = 0; i < nworkers; i++)
 		{
@@ -1326,19 +1416,34 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		}
 		else
 		{
+		/*
+		 * The ranges are in file order. A range whose COPY stopped at an
+		 * end-of-data marker is the last one with data: COPY FROM reads nothing
+		 * after the marker, so the later ranges are rolled back and their rows,
+		 * or their errors, do not count (#2084).
+		 */
 		for (i = 0; i < nworkers; i++)
 		{
 			if (pg_atomic_read_u32(&slots[i].state) != PCOPY_PREPARED)
 			{
 				all_prepared = false;
-				if (failed < 0)
-					failed = i;
+				failed = i;
+				break;
+			}
+			if (slots[i].ended_at_marker)
+			{
+				ncommit = i + 1;
+				break;
 			}
 		}
 
 		if (all_prepared)
 		{
 			bool		duplicate = false;
+
+			for (i = ncommit; i < nworkers; i++)
+				if (pg_atomic_read_u32(&slots[i].state) == PCOPY_PREPARED)
+					pcopy_rollback_prepared_quietly(slots[i].gid);
 
 			/*
 			 * The load is done and prepared; nothing is visible yet. This is the
@@ -1380,7 +1485,7 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			if (duplicate)
 			{
 				/* refuse it: roll every range back, so nothing becomes visible */
-				for (i = 0; i < nworkers; i++)
+				for (i = 0; i < ncommit; i++)
 					pcopy_rollback_prepared_quietly(slots[i].gid);
 				hdr->total_rows = 0;
 				hdr->skipped_duplicate = true;
@@ -1395,7 +1500,7 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			 * pg_prepared_xacts for resolution). COMMIT PREPARED does not fail
 			 * transiently, so short of a crash this loop completes.
 			 */
-			for (i = 0; i < nworkers; i++)
+			for (i = 0; i < ncommit; i++)
 			{
 				pcopy_finish_prepared(slots[i].gid, true);
 				total += slots[i].rows;
@@ -1677,6 +1782,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		slots[i].start_off = offs[i];
 		slots[i].end_off = offs[i + 1];
 		slots[i].rows = 0;
+		slots[i].ended_at_marker = false;
 		slots[i].sqlerrcode = 0;
 		slots[i].errmsg[0] = '\0';
 		pg_atomic_init_u32(&slots[i].state, PCOPY_PENDING);

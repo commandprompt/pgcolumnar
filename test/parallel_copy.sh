@@ -662,4 +662,66 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
 
+
+# ---- #2084: ranges follow COPY text syntax, not every newline byte ------------
+# In COPY text format a backslash before a raw newline makes the newline part of
+# the value, and a line holding only \. ends the data. Heap COPY of the same file
+# is the oracle. A cut at an escaped newline split one value into two rows (single
+# table) or fed "line2" to the key parser (partitioned target). A range that
+# started after the \. line loaded rows COPY never reads.
+F_BSNL="$DATADIR/bsnl.txt"
+awk 'BEGIN { for (i = 0; i < 2000; i++) printf "first%d\\\nsecond%d\n", i, i }' >"$F_BSNL"
+F_BSNL2="$DATADIR/bsnl2.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tline1_%d\\\nline2_%d\n", i, i, i }' >"$F_BSNL2"
+F_EOD="$DATADIR/eod.txt"
+awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\n", i; printf "\\.\n";
+             for (i = 1001; i <= 2000; i++) printf "%d\ty\n", i }' >"$F_EOD"
+chmod 644 "$F_BSNL" "$F_BSNL2" "$F_EOD"
+psql_run "DROP TABLE IF EXISTS h_bsnl, h_bsnl2, h_eod, c_bsnl, c_eod CASCADE;
+          CREATE TABLE h_bsnl (t text);           COPY h_bsnl FROM '$F_BSNL';
+          CREATE TABLE h_bsnl2 (id int, txt text); COPY h_bsnl2 FROM '$F_BSNL2';
+          CREATE TABLE h_eod (id int, txt text);   COPY h_eod FROM '$F_EOD';
+          CREATE TABLE c_bsnl (t text) USING pgcolumnar;
+          CREATE TABLE c_eod (id int, txt text) USING pgcolumnar;" >/dev/null
+mkpart t_bsnlp 4
+psql_run "DROP TABLE IF EXISTS t_eodp CASCADE;
+          CREATE TABLE t_eodp (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_eodp_a PARTITION OF t_eodp FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar;
+          CREATE TABLE t_eodp_b PARTITION OF t_eodp FOR VALUES FROM (500) TO (1000) USING pgcolumnar;
+          CREATE TABLE t_eodp_c PARTITION OF t_eodp FOR VALUES FROM (1000) TO (1500) USING pgcolumnar;
+          CREATE TABLE t_eodp_d PARTITION OF t_eodp FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+
+# the byte two before each interior offset: a backslash there means the cut
+# follows an escaped newline (this file has no doubled backslashes)
+escaped_cuts() {	# path workers -> how many interior offsets follow an escaped newline
+	local f="$1" w="$2" arr i n=0 b
+	read -r -a arr <<<"$(offsets_of "$f" "$w")"
+	for i in $(seq 1 $((w - 1))); do
+		[ "${arr[$i]:-0}" -ge 2 ] || continue
+		b=$(dd if="$f" bs=1 skip=$((arr[i] - 2)) count=1 2>/dev/null | od -An -tx1 | tr -d ' ')
+		[ "$b" = "5c" ] && n=$((n + 1))
+	done
+	echo "$n"
+}
+check "#2084 escaped newline / 4 workers: no split offset follows an escaped newline" \
+	"$(escaped_cuts "$F_BSNL" 4)" 0
+check "#2084 escaped newline / single table, 4 workers: rows returned = heap COPY's 2000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_bsnl'::regclass, '$F_BSNL', 4)")" "$(q "SELECT count(*) FROM h_bsnl")"
+check "#2084 escaped newline / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_bsnl")" "$(pgc_set_hash "SELECT * FROM h_bsnl")"
+check "#2084 escaped newline / partitioned, 4 workers: rows returned = heap COPY's 2000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_bsnlp'::regclass, '$F_BSNL2', 4)")" "$(q "SELECT count(*) FROM h_bsnl2")"
+check "#2084 escaped newline / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_bsnlp")" "$(pgc_set_hash "SELECT * FROM h_bsnl2")"
+check "#2084 end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_eod'::regclass, '$F_EOD', 4)")" "$(q "SELECT count(*) FROM h_eod")"
+check "#2084 end-of-data marker / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_eod")" "$(pgc_set_hash "SELECT * FROM h_eod")"
+check "#2084 end-of-data marker / single table: no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+check "#2084 end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_eodp'::regclass, '$F_EOD', 4)")" "$(q "SELECT count(*) FROM h_eod")"
+check "#2084 end-of-data marker / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_eodp")" "$(pgc_set_hash "SELECT * FROM h_eod")"
+
 pgc_summary

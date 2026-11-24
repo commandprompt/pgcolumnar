@@ -519,6 +519,45 @@ def pcopy(pgc_cluster, server_dir):
         except OSError as exc:
             r["split local s3a size"] = query_error(f"cannot stat the control file: {exc}")
         r["pcopy local s3a"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local_a}', 2)")
+
+        # ---- #2084: ranges follow COPY text syntax, not every newline byte ----------
+        bsnl = d / "bsnl.txt"
+        bsnl.write_bytes(b"".join(b"first%d\\\nsecond%d\n" % (i, i) for i in range(2000)))
+        bsnl2 = d / "bsnl2.txt"
+        bsnl2.write_bytes(b"".join(b"%d\tline1_%d\\\nline2_%d\n" % (i, i, i) for i in range(1, 2001)))
+        eod = d / "eod.txt"
+        eod.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.\n"
+                        + b"".join(b"%d\ty\n" % i for i in range(1001, 2001)))
+        for f_ in (bsnl, bsnl2, eod):
+            os.chmod(f_, 0o644)
+        db.run(f"CREATE TABLE h_bsnl (t text); COPY h_bsnl FROM '{bsnl}'; "
+               f"CREATE TABLE h_bsnl2 (id int, txt text); COPY h_bsnl2 FROM '{bsnl2}'; "
+               f"CREATE TABLE h_eod (id int, txt text); COPY h_eod FROM '{eod}'; "
+               "CREATE TABLE c_bsnl (t text) USING pgcolumnar; "
+               "CREATE TABLE c_eod (id int, txt text) USING pgcolumnar")
+        _mkpart(db, "t_bsnlp", 4)
+        db.run("CREATE TABLE t_eodp (id int, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_eodp_a PARTITION OF t_eodp FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+               "CREATE TABLE t_eodp_b PARTITION OF t_eodp FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+               "CREATE TABLE t_eodp_c PARTITION OF t_eodp FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+               "CREATE TABLE t_eodp_d PARTITION OF t_eodp FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+        data = _read(bsnl)
+        offs = db.offsets(bsnl, 4)
+        if isinstance(data, bytes) and isinstance(offs, list) and len(offs) == 5:
+            # a backslash two bytes before a cut: the cut follows an escaped newline
+            r["2084 escaped cuts"] = sum(1 for o in offs[1:4] if o >= 2 and data[o - 2] == 0x5c)
+        else:
+            r["2084 escaped cuts"] = data if not isinstance(data, bytes) else query_error(f"offsets: {offs}")
+        for key, tgt, src, heap in (("bsnl single", "c_bsnl", bsnl, "h_bsnl"),
+                                    ("bsnl part", "t_bsnlp", bsnl2, "h_bsnl2"),
+                                    ("eod single", "c_eod", eod, "h_eod"),
+                                    ("eod part", "t_eodp", eod, "h_eod")):
+            r[f"2084 {key} rows"] = db.value(f"SELECT pgcolumnar.parallel_copy('{tgt}'::regclass, '{src}', 4)")
+            r[f"2084 {key} rows want"] = db.value(f"SELECT count(*) FROM {heap}")
+            r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
+            r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
+            if key == "eod single":
+                r["2084 eod single leak"] = db.value(LEAK)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -806,3 +845,41 @@ def test_parallel_copy_split_still_reads_a_local_path_holding_s3a(pcopy, expect)
 def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
     expect.num(pcopy["pcopy local s3a"], 5000,
                "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")
+
+
+# ---- #2084: ranges follow COPY text syntax, not every newline byte ----------------
+# In COPY text format a backslash before a raw newline makes the newline part of the
+# value, and a line holding only \. ends the data. Heap COPY of the same file is the
+# oracle.
+
+def test_parallel_copy_split_never_cuts_at_an_escaped_newline(pcopy, expect):
+    expect.num(pcopy["2084 escaped cuts"], 0,
+               "#2084 escaped newline / 4 workers: no split offset follows an escaped newline")
+
+
+SYNTAX_ROWS = (
+    ("bsnl single", "#2084 escaped newline / single table, 4 workers: rows returned = heap COPY's 2000"),
+    ("bsnl part", "#2084 escaped newline / partitioned, 4 workers: rows returned = heap COPY's 2000"),
+    ("eod single", "#2084 end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000"),
+    ("eod part", "#2084 end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000"),
+)
+SYNTAX_VALUES = (
+    ("bsnl single", "#2084 escaped newline / single table, 4 workers: result == heap COPY"),
+    ("bsnl part", "#2084 escaped newline / partitioned, 4 workers: result == heap COPY"),
+    ("eod single", "#2084 end-of-data marker / single table, 4 workers: result == heap COPY"),
+    ("eod part", "#2084 end-of-data marker / partitioned, 4 workers: result == heap COPY"),
+)
+
+
+@pytest.mark.parametrize("key,name", SYNTAX_ROWS, ids=[k for k, _ in SYNTAX_ROWS])
+def test_parallel_copy_loads_the_rows_heap_copy_loads(pcopy, expect, key, name):
+    expect.num(pcopy[f"2084 {key} rows"], pcopy[f"2084 {key} rows want"], name)
+
+
+@pytest.mark.parametrize("key,name", SYNTAX_VALUES, ids=[k for k, _ in SYNTAX_VALUES])
+def test_parallel_copy_loads_the_values_heap_copy_loads(pcopy, expect, key, name):
+    expect.hash(pcopy[f"2084 {key} hash"], pcopy[f"2084 {key} hash want"], name)
+
+
+def test_parallel_copy_end_of_data_marker_leaves_no_prepared_transaction(pcopy, expect):
+    expect.num(pcopy["2084 eod single leak"], 0, "#2084 end-of-data marker / single table: no prepared-transaction leak")

@@ -605,6 +605,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
+  text-format file holds a backslash before a raw newline, or a `\.`
+  end-of-data line (#2084). The splitter cut the file at any newline byte. In
+  COPY text format a backslash followed by a raw newline is data inside the
+  field, so a cut there split one value into two rows: 2000 input rows stored
+  2003 with no error. A partitioned target refused the same file with
+  `invalid input syntax for type integer`. A worker whose range started after
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1920 rows instead
+  of 1000. The splitters now cut only at a newline with an even run of
+  backslashes before it. The partitioned splitter ends the load at a `\.`
+  line. A loader whose COPY stops at a `\.` line reports it, and the
+  coordinator rolls back every range after it. `file_split_offsets` uses the
+  same rule. `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

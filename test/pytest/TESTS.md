@@ -12132,6 +12132,10 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_split_never_cuts_at_an_escaped_newline` | `file_split_offsets` never places a cut right after a backslash and a raw newline, which COPY text format reads as data inside the field (#2084) |
+| `test_parallel_copy_loads_the_rows_heap_copy_loads` | `parallel_copy` with 4 workers returns the row count heap `COPY` loads from the same file, for 4 cases: an escaped newline into a single table and into a partitioned target (2000 rows), and a `\.` end-of-data line in the middle of the file into a single table and into a partitioned target (1000 rows) |
+| `test_parallel_copy_loads_the_values_heap_copy_loads` | in the same 4 cases, the loaded rows equal heap `COPY`'s |
+| `test_parallel_copy_end_of_data_marker_leaves_no_prepared_transaction` | the single-table load that stops at the `\.` line leaves no prepared transaction: the ranges after the marker are rolled back |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 
