@@ -106,6 +106,7 @@ am_contracts	am_contracts	CREATE INDEX CONCURRENTLY is refused (0A000), and the 
 am_contracts	am_contracts	CREATE UNLOGGED TABLE ... USING pgcolumnar is refused (0A000) and leaves no table	15;16;17;18;19	2026-10-15	the storage hook accepting an unlogged columnar table
 am_contracts	am_contracts	ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began	15;16;17;18;19	never	-
 am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 through a partitioned parent onto a pgcolumnar partition	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 am_contracts	am_contracts	ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 am_contracts	am_contracts	ON CONFLICT DO NOTHING skips the duplicate and inserts the new row	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
 am_contracts	am_contracts	ON CONFLICT DO UPDATE is refused as unsupported (0A000), and changes nothing	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
@@ -1514,6 +1515,7 @@ fdw_plan_privilege	fdw_plan_privilege	the unprivileged Iceberg scan is still ref
 fk_referencing	fk_referencing	ALTER TABLE ADD CONSTRAINT is refused by the same rule	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar partition of an FK-referenced parent is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar table may reference a heap table	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a deferred foreign key does not check a referencing row deleted before commit, as heap	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 fk_referencing	fk_referencing	a foreign key between two heap tables is unaffected	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	a foreign key referencing a columnar table is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a partitioned table with no foreign key still converts	17;18;19	never	-
