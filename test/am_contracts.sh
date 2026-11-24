@@ -106,8 +106,14 @@ ocv_wait_for() {	# ocv_wait_for APPLICATION_NAME -> its pid, once it has named i
 	echo "$pid"
 }
 ocv_race() {	# ocv_race AM ISOLATION -> the racer's outcome|v of row 5 afterwards
-	local tbl="ocv_$1" out="$PGC_WORKDIR/ocv_$1_${2// /_}.out" gate gate_pid snap_pid racer got
-	psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) USING $1; INSERT INTO $tbl VALUES (1, 1);"
+	local tbl="ocv_$1" out="$PGC_WORKDIR/ocv_$1_${2// /_}.out" gate gate_pid snap_pid racer got rc
+	if [ "$1" = part ]; then	# a pgcolumnar partition under a partitioned parent
+		psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) PARTITION BY RANGE (id);
+		          CREATE TABLE ${tbl}_1 PARTITION OF $tbl FOR VALUES FROM (0) TO (1000) USING pgcolumnar;
+		          INSERT INTO $tbl VALUES (1, 1);"
+	else
+		psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) USING $1; INSERT INTO $tbl VALUES (1, 1);"
+	fi
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
 		-c "SELECT pg_advisory_lock(4343); SET application_name = 'ocv_gate'; SELECT pg_sleep(600);" >/dev/null 2>&1 &
 	gate=$!
@@ -122,12 +128,13 @@ ocv_race() {	# ocv_race AM ISOLATION -> the racer's outcome|v of row 5 afterward
 	psql_run "INSERT INTO $tbl VALUES (5, 5);"
 	q "SELECT pg_terminate_backend(${gate_pid:-0})" >/dev/null
 	wait "$gate" 2>/dev/null
-	wait "$racer"
+	wait "$racer"; rc=$?
 	if [ -z "$gate_pid" ] || [ -z "$snap_pid" ]; then
 		echo "no session (gate ${gate_pid:-none}, racer ${snap_pid:-none})"
 		return
 	fi
 	got="$(sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p' "$out" | head -1)"
+	[ -z "$got" ] && [ "$rc" -ne 0 ] && got="psql rc=$rc"	# a crash prints no SQLSTATE
 	echo "${got:-ok}|$(q "SELECT v FROM $tbl WHERE id = 5")"
 }
 check "premise: heap raises 40001 for a DO NOTHING conflict its REPEATABLE READ snapshot cannot see" \
@@ -138,6 +145,9 @@ check "ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed a
 	"$(ocv_race pgcolumnar 'SERIALIZABLE')" "40001|5"
 check "ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began" \
 	"$(ocv_race pgcolumnar 'READ COMMITTED')" "ok|5"
+# Through a partitioned parent, core asks the partition's access method the same question.
+check "ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 through a partitioned parent onto a pgcolumnar partition" \
+	"$(ocv_race part 'REPEATABLE READ')" "40001|5"
 
 # The conflicts that must NOT fail: a row the snapshot sees, and rows this transaction
 # inserted itself -- in an earlier statement, earlier in the same statement while still
@@ -170,7 +180,7 @@ check "at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an 
 #
 # Same gate as ocv_race: the racer takes its snapshot, then waits while the rewrite runs.
 ocm_race() {	# ocm_race AM VERB -> the racer's outcome|v of row 5|what the rewrite returned
-	local tbl="ocm_$1_$2" out="$PGC_WORKDIR/ocm_$1_$2.out" gate gate_pid snap_pid racer got moved
+	local tbl="ocm_$1_$2" out="$PGC_WORKDIR/ocm_$1_$2.out" gate gate_pid snap_pid racer got moved rc
 	psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) USING $1;
 	          INSERT INTO $tbl SELECT g, g FROM generate_series(1, 100) g; DELETE FROM $tbl WHERE id > 60;"
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
@@ -191,12 +201,13 @@ ocm_race() {	# ocm_race AM VERB -> the racer's outcome|v of row 5|what the rewri
 	esac
 	q "SELECT pg_terminate_backend(${gate_pid:-0})" >/dev/null
 	wait "$gate" 2>/dev/null
-	wait "$racer"
+	wait "$racer"; rc=$?
 	if [ -z "$gate_pid" ] || [ -z "$snap_pid" ]; then
 		echo "no session (gate ${gate_pid:-none}, racer ${snap_pid:-none})"
 		return
 	fi
 	got="$(sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p' "$out" | head -1)"
+	[ -z "$got" ] && [ "$rc" -ne 0 ] && got="psql rc=$rc"	# a crash prints no SQLSTATE
 	echo "${got:-ok}|$(q "SELECT v FROM $tbl WHERE id = 5")|$moved"
 }
 check "heap control: a concurrent VACUUM does not make DO NOTHING at REPEATABLE READ fail" \

@@ -3522,6 +3522,8 @@ PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot)
  *
  *		Read under SnapshotSelf, so the answer covers committed groups and this
  *		transaction's own, including groups flushed by the current command.
+ *		No tested path reaches it for an own group today: the snapshot check
+ *		finds this transaction's rows live first, and returns before asking.
  */
 TransactionId
 PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber)

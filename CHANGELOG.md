@@ -615,13 +615,17 @@ true until the next version shipped.
   and the slot reports the row's inserting transaction, which core reads to tell
   the transaction's own rows from another's. A conflict with a row the snapshot
   sees, or with a row the transaction inserted itself, still skips the row
-  without error. READ COMMITTED is unchanged. Known limitation: the insert also
+  without error. READ COMMITTED is unchanged. The same answer now reaches
+  deferred foreign keys on a pgcolumnar referencing table: a row inserted and
+  then deleted before commit is no longer checked at commit, as heap does.
+  Before this fix that commit failed with 23503 for a row that no longer
+  existed. Known limitation: the insert also
   raises 40001, where heap does not, when an online `compact_rewrite` or
   `recluster` (the autovacuum daemon runs both) moved the conflicting row after
   the snapshot was taken. The moved copy has a new row number the snapshot cannot
   see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
-  insert skipped the row and committed in that case. `test/am_contracts.sh` and
-  `test_am_contracts.py`.
+  insert skipped the row and committed in that case. `test/am_contracts.sh`,
+  `test_am_contracts.py`, `test/fk_referencing.sh` and `test_fk_referencing.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

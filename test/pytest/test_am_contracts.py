@@ -168,7 +168,11 @@ def test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see(pgc_cluste
         tbl = f"ocv_{am}"
         with pgc_conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {tbl}")
-            cur.execute(f"CREATE TABLE {tbl} (id int PRIMARY KEY, v int) USING {am}")
+            if am == "part":    # a pgcolumnar partition under a partitioned parent
+                cur.execute(f"CREATE TABLE {tbl} (id int PRIMARY KEY, v int) PARTITION BY RANGE (id)")
+                cur.execute(f"CREATE TABLE {tbl}_1 PARTITION OF {tbl} FOR VALUES FROM (0) TO (1000) USING pgcolumnar")
+            else:
+                cur.execute(f"CREATE TABLE {tbl} (id int PRIMARY KEY, v int) USING {am}")
             cur.execute(f"INSERT INTO {tbl} VALUES (1, 1)")
         racer = psycopg.connect(dsn, autocommit=True)
         try:
@@ -197,6 +201,8 @@ def test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see(pgc_cluste
                 "ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot")
     expect.text(race("pgcolumnar", "READ COMMITTED"), "ok|5",
                 "ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began")
+    expect.text(race("part", "REPEATABLE READ"), "40001|5",
+                "ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 through a partitioned parent onto a pgcolumnar partition")
 
 
 def test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip(pgc_cluster, pgc_conn, expect):

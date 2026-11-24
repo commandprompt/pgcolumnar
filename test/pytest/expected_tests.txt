@@ -1927,4 +1927,7 @@ guard_tests 895
 # NO_CLUSTER does not name: 5386 tests collected after the merge of main.
 # cluster_tests 5386 -> 5387 for test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation
 # in test_am_contracts.py (#2060 review), by collection over the files NO_CLUSTER does not name.
+# cluster_tests stays 5387 for the #2060 review's two new checks: the deferred foreign key check joins
+# test_fk_referencing.py::test_the_referencing_side_still_works and the partitioned-parent check joins
+# test_am_contracts.py::test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see, so no test is added.
 cluster_tests 5387
