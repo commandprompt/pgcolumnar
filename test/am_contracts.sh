@@ -86,6 +86,78 @@ check "premise: the racing sessions contended for keys" \
 check "sessions racing DO NOTHING on the same keys leave each key once, with no error" \
 	"$(q "SELECT count(*) - count(DISTINCT id) FROM ocs")|$_oc_errors" "0|0"
 
+# ---- ON CONFLICT DO NOTHING against a row the snapshot cannot see (#2060) ------------
+#
+# At REPEATABLE READ and SERIALIZABLE, core asks the access method whether the
+# transaction's snapshot sees the conflicting row. When it does not, and another
+# transaction inserted that row, core raises 40001 so the application can retry.
+# Skipping the row and committing instead breaks the isolation level. Measured before
+# the fix: pgcolumnar printed INSERT 0 0 and committed where heap raised 40001.
+#
+# The racer takes its snapshot, names itself, then waits on an advisory lock held by
+# a gate session. The key is committed while it waits, and the gate is then ended.
+ocv_wait_for() {	# ocv_wait_for APPLICATION_NAME -> its pid, once it has named itself
+	local i pid=""
+	for i in $(seq 1 300); do
+		pid="$(q "SELECT pid FROM pg_stat_activity WHERE application_name = '$1'")"
+		[ -n "$pid" ] && break
+		sleep 0.1
+	done
+	echo "$pid"
+}
+ocv_race() {	# ocv_race AM ISOLATION -> the racer's outcome|v of row 5 afterwards
+	local tbl="ocv_$1" out="$PGC_WORKDIR/ocv_$1_${2// /_}.out" gate gate_pid snap_pid racer got
+	psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) USING $1; INSERT INTO $tbl VALUES (1, 1);"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "SELECT pg_advisory_lock(4343); SET application_name = 'ocv_gate'; SELECT pg_sleep(600);" >/dev/null 2>&1 &
+	gate=$!
+	gate_pid="$(ocv_wait_for ocv_gate)"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate \
+		-c "BEGIN ISOLATION LEVEL $2; SELECT count(*) FROM $tbl; SET application_name = 'ocv_snap';
+		    SELECT pg_advisory_lock_shared(4343);
+		    INSERT INTO $tbl VALUES (5, 50) ON CONFLICT DO NOTHING; COMMIT;" > "$out" 2>&1 &
+	racer=$!
+	snap_pid="$(ocv_wait_for ocv_snap)"
+	psql_run "INSERT INTO $tbl VALUES (5, 5);"
+	q "SELECT pg_terminate_backend(${gate_pid:-0})" >/dev/null
+	wait "$gate" 2>/dev/null
+	wait "$racer"
+	if [ -z "$gate_pid" ] || [ -z "$snap_pid" ]; then
+		echo "no session (gate ${gate_pid:-none}, racer ${snap_pid:-none})"
+		return
+	fi
+	got="$(sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p' "$out" | head -1)"
+	echo "${got:-ok}|$(q "SELECT v FROM $tbl WHERE id = 5")"
+}
+check "premise: heap raises 40001 for a DO NOTHING conflict its REPEATABLE READ snapshot cannot see" \
+	"$(ocv_race heap 'REPEATABLE READ')" "40001|5"
+check "ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 for a row committed after the snapshot" \
+	"$(ocv_race pgcolumnar 'REPEATABLE READ')" "40001|5"
+check "ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot" \
+	"$(ocv_race pgcolumnar 'SERIALIZABLE')" "40001|5"
+check "ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began" \
+	"$(ocv_race pgcolumnar 'READ COMMITTED')" "ok|5"
+
+# The conflicts that must NOT fail: a row the snapshot sees, and rows this transaction
+# inserted itself -- in an earlier statement, earlier in the same statement while still
+# buffered, and earlier in the same statement in a stripe already flushed.
+psql_run "CREATE TABLE ocv_own (id int PRIMARY KEY, v int) USING pgcolumnar;"
+psql_run "SELECT pgcolumnar.set_options('ocv_own', stripe_row_limit => 1000);"
+psql_run "INSERT INTO ocv_own VALUES (1, 1);"
+check "at REPEATABLE READ, DO NOTHING skips a conflicting row the snapshot sees, without error" \
+	"$(state "BEGIN ISOLATION LEVEL REPEATABLE READ; INSERT INTO ocv_own VALUES (1, 10) ON CONFLICT DO NOTHING; COMMIT;")|$(q "SELECT v FROM ocv_own WHERE id = 1")" \
+	"ok|1"
+check "at REPEATABLE READ, DO NOTHING skips a key this transaction inserted in an earlier statement" \
+	"$(state "BEGIN ISOLATION LEVEL REPEATABLE READ; INSERT INTO ocv_own VALUES (2, 2); INSERT INTO ocv_own VALUES (2, 20) ON CONFLICT DO NOTHING; COMMIT;")|$(q "SELECT v FROM ocv_own WHERE id = 2")" \
+	"ok|2"
+check "at REPEATABLE READ, a key twice in one DO NOTHING statement is inserted once, without error" \
+	"$(state "BEGIN ISOLATION LEVEL REPEATABLE READ; INSERT INTO ocv_own VALUES (5, 1), (5, 2) ON CONFLICT DO NOTHING; COMMIT;")|$(q "SELECT count(*) || '|' || min(v) FROM ocv_own WHERE id = 5")" \
+	"ok|1|1"
+check "at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an already flushed stripe" \
+	"$(state "BEGIN ISOLATION LEVEL REPEATABLE READ; INSERT INTO ocv_own SELECT CASE WHEN g <= 1500 THEN 1000 + g ELSE 1001 END, g FROM generate_series(1, 1501) g ON CONFLICT DO NOTHING; COMMIT;")|$(q "SELECT count(*) || '|' || min(v) FILTER (WHERE id = 1001) FROM ocv_own WHERE id > 1000")" \
+	"ok|1500|1"
+
 # ---- a TRUNCATE that rolls back restores every row (#1341) -------------------------
 #
 # TRUNCATE swaps the table onto new storage (set_new_filelocator), so the old

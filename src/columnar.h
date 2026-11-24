@@ -597,6 +597,7 @@ extern uint64 PgColumnarNextStorageId(void);
 
 extern void PgColumnarCheckNativeFormatVersion(uint64 storageId, const char *relName);
 extern List *PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot);
+extern TransactionId PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber);
 extern List *PgColumnarReadZoneMapList(uint64 storageId, uint64 groupNumber,
 									 Snapshot snapshot);
 /*

@@ -1912,4 +1912,8 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5378 for #2060's two tests in test_am_contracts.py
+# (test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see and
+# test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip), by collection over the files
+# NO_CLUSTER does not name: 5378 tests collected.
+cluster_tests 5378

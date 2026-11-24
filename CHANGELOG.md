@@ -605,6 +605,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
+  raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
+  when the conflicting row was committed by another transaction after the
+  snapshot was taken, as heap does (#2060). Before this fix the insert skipped
+  its row and committed: it gave way to a row its snapshot never saw, and the
+  application had no failure to retry. The access method's
+  snapshot check now looks at the row instead of always answering "visible",
+  and the slot reports the row's inserting transaction, which core reads to tell
+  the transaction's own rows from another's. A conflict with a row the snapshot
+  sees, or with a row the transaction inserted itself, still skips the row
+  without error. READ COMMITTED is unchanged. `test/am_contracts.sh` and
+  `test_am_contracts.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

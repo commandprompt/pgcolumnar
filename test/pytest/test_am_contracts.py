@@ -135,6 +135,103 @@ def test_insert_on_conflict_racing_sessions_leave_each_key_once(pgc_cluster, pgc
                 "sessions racing DO NOTHING on the same keys leave each key once, with no error")
 
 
+def _xact_state(dsn, schema, iso, statements):
+    """Run statements in one transaction at isolation level iso on a new connection.
+
+    -> "ok" when it commits, or the SQLSTATE the first failing statement raised.
+    """
+    with psycopg.connect(dsn, autocommit=True) as c:
+        c.execute(f'SET search_path TO "{schema}"')
+        try:
+            c.execute(f"BEGIN ISOLATION LEVEL {iso}")
+            for sql in statements:
+                c.execute(sql)
+            c.execute("COMMIT")
+            return "ok"
+        except psycopg.Error as e:
+            c.rollback()
+            return e.sqlstate
+
+
+def test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see(pgc_cluster, pgc_conn, expect):
+    """At REPEATABLE READ and SERIALIZABLE, a conflict with a row the snapshot cannot
+    see, inserted by another transaction, raises 40001 (#2060).
+
+    Core asks the access method whether the snapshot sees the conflicting row, and
+    raises the serialization failure when it does not. Measured before the fix:
+    pgcolumnar skipped the row and committed where heap raised 40001.
+    """
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    dsn = pgc_cluster.dsn()
+
+    def race(am, iso):
+        tbl = f"ocv_{am}"
+        with pgc_conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {tbl}")
+            cur.execute(f"CREATE TABLE {tbl} (id int PRIMARY KEY, v int) USING {am}")
+            cur.execute(f"INSERT INTO {tbl} VALUES (1, 1)")
+        racer = psycopg.connect(dsn, autocommit=True)
+        try:
+            racer.execute(f'SET search_path TO "{schema}"')
+            racer.execute(f"BEGIN ISOLATION LEVEL {iso}")
+            racer.execute(f"SELECT count(*) FROM {tbl}")      # takes the snapshot
+            with psycopg.connect(dsn, autocommit=True) as other:
+                other.execute(f'SET search_path TO "{schema}"')
+                other.execute(f"INSERT INTO {tbl} VALUES (5, 5)")
+            try:
+                racer.execute(f"INSERT INTO {tbl} VALUES (5, 50) ON CONFLICT DO NOTHING")
+                racer.execute("COMMIT")
+                got = "ok"
+            except psycopg.Error as e:
+                racer.rollback()
+                got = e.sqlstate
+        finally:
+            racer.close()
+        return f"{got}|{_one(pgc_conn, f'SELECT v FROM {tbl} WHERE id = 5')}"
+
+    expect.text(race("heap", "REPEATABLE READ"), "40001|5",
+                "premise: heap raises 40001 for a DO NOTHING conflict its REPEATABLE READ snapshot cannot see")
+    expect.text(race("pgcolumnar", "REPEATABLE READ"), "40001|5",
+                "ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 for a row committed after the snapshot")
+    expect.text(race("pgcolumnar", "SERIALIZABLE"), "40001|5",
+                "ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot")
+    expect.text(race("pgcolumnar", "READ COMMITTED"), "ok|5",
+                "ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began")
+
+
+def test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip(pgc_cluster, pgc_conn, expect):
+    """The conflicts that must not raise 40001 at REPEATABLE READ (#2060): a row the
+    snapshot sees, and rows the transaction inserted itself -- in an earlier statement,
+    earlier in the same statement while buffered, and in a stripe that statement
+    already flushed."""
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE ocv_own (id int PRIMARY KEY, v int) USING pgcolumnar")
+        cur.execute("SELECT pgcolumnar.set_options('ocv_own', stripe_row_limit => 1000)")
+        cur.execute("INSERT INTO ocv_own VALUES (1, 1)")
+
+    def rr(*statements):
+        return _xact_state(pgc_cluster.dsn(), schema, "REPEATABLE READ", statements)
+
+    got = rr("INSERT INTO ocv_own VALUES (1, 10) ON CONFLICT DO NOTHING")
+    expect.text(f"{got}|{_one(pgc_conn, 'SELECT v FROM ocv_own WHERE id = 1')}", "ok|1",
+                "at REPEATABLE READ, DO NOTHING skips a conflicting row the snapshot sees, without error")
+    got = rr("INSERT INTO ocv_own VALUES (2, 2)",
+             "INSERT INTO ocv_own VALUES (2, 20) ON CONFLICT DO NOTHING")
+    expect.text(f"{got}|{_one(pgc_conn, 'SELECT v FROM ocv_own WHERE id = 2')}", "ok|2",
+                "at REPEATABLE READ, DO NOTHING skips a key this transaction inserted in an earlier statement")
+    got = rr("INSERT INTO ocv_own VALUES (5, 1), (5, 2) ON CONFLICT DO NOTHING")
+    five = _one(pgc_conn, "SELECT count(*) || '|' || min(v) FROM ocv_own WHERE id = 5")
+    expect.text(f"{got}|{five}", "ok|1|1",
+                "at REPEATABLE READ, a key twice in one DO NOTHING statement is inserted once, without error")
+    got = rr("INSERT INTO ocv_own SELECT CASE WHEN g <= 1500 THEN 1000 + g ELSE 1001 END, g"
+             " FROM generate_series(1, 1501) g ON CONFLICT DO NOTHING")
+    flushed = _one(pgc_conn, "SELECT count(*) || '|' || min(v) FILTER (WHERE id = 1001)"
+                             " FROM ocv_own WHERE id > 1000")
+    expect.text(f"{got}|{flushed}", "ok|1500|1",
+                "at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an already flushed stripe")
+
+
 def test_a_truncate_that_rolls_back_restores_every_row(pgc_conn, expect):
     """TRUNCATE swaps the table onto new storage, so the old storage's rows and catalog
     entries must come back whole if the swap does not commit (#1341)."""
