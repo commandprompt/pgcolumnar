@@ -1924,4 +1924,9 @@ guard_tests 895
 # cluster_tests 5384 -> 5390 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
 # leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
 # `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-cluster_tests 5390
+# cluster_tests 5390 -> 5395 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
+# FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
+# file, and no backend killed by a signal), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
+cluster_tests 5395

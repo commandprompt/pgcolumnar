@@ -612,7 +612,9 @@ true until the next version shipped.
   step, and nothing removed the file later, so each one could hold up to the
   whole export's size. Remote exports already aborted their upload on such an
   exit (#1722). Local exports now use the same exit callback, which removes the
-  temp file. `test/export_sink.sh` and `test_export_sink.py`.
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. `test/export_sink.sh` and `test_export_sink.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

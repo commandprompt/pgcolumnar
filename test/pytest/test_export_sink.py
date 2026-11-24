@@ -14,7 +14,11 @@ An export that ends with FATAL leaves no temp file either (#2075). A FATAL exit
 exit callback can remove the file. exit_on_error promotes the injected ERROR to FATAL,
 which takes that same exit path at a known byte, with no timing race. The directory is
 read only after the backend has left pg_stat_activity, because the client sees the
-FATAL message before the backend runs its exit callbacks.
+FATAL message before the backend runs its exit callbacks. Each target holds a good file
+first, which the FATAL re-export must not delete. Two arms end a transaction with FATAL
+after a finished export and after a failed one rolled back to a savepoint, so the exit
+callback walks a list that once held other sinks. The server log must show no backend
+killed by a signal during these arms.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The files live in `server_dir`, because the backend writes
@@ -93,33 +97,61 @@ def _debris(d):
     return query_error(f"listing {d} failed: {errors[0]}") if errors else found
 
 
-def _fatal_export(dsn, sql):
-    """-> "fatal gone" when the export's backend ended with the injected FATAL and has
-    left pg_stat_activity; otherwise what was seen instead."""
+def _fatal_session(dsn, statements):
+    """Runs statements in one session; the last one must end it with FATAL.
+    -> (seen, results). seen is "fatal gone" when the session ended with the injected
+    fault's FATAL, SQLSTATE 53100, and its backend has left pg_stat_activity; otherwise
+    what was seen instead. results holds, for each earlier statement, its first value,
+    its SQLSTATE if it raised, or None."""
     try:
         conn = psycopg.connect(dsn, autocommit=True)
     except psycopg.Error as exc:
-        return query_error(_message(exc))
-    seen, pid = "no fatal (the export returned)", None
+        return query_error(_message(exc)), []
+    seen, pid, results = "no fatal (the export returned)", None, []
     try:
-        conn.execute("SET exit_on_error = on")
-        conn.execute("SET pgcolumnar.sink_fail_after = 8192")
         pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
-        conn.execute(sql)
+        for sql in statements[:-1]:
+            try:
+                cur = conn.execute(sql)
+                results.append(cur.fetchone()[0] if cur.description else None)
+            except psycopg.Error as exc:
+                results.append(exc.sqlstate or _message(exc))
+        conn.execute(statements[-1])
     except psycopg.Error as exc:
-        seen = "fatal" if "export write failed (injected fault)" in str(exc) \
-            and conn.closed else f"no fatal ({_message(exc)})"
+        seen = "fatal" if exc.sqlstate == "53100" and conn.closed \
+            and "export write failed (injected fault)" in str(exc) \
+            else f"no fatal ({exc.sqlstate} {_message(exc)})"
     finally:
         conn.close()
     if pid is None:
-        return query_error(f"no backend pid: {seen}")
+        return query_error(f"no backend pid: {seen}"), results
     n = None
     for _ in range(100):
         n = _value(dsn, f"SELECT count(*) FROM pg_stat_activity WHERE pid = {pid}")
         if n == 0:
             break
         time.sleep(0.1)
-    return f"{seen} {'gone' if n == 0 else f'still listed ({n})'}"
+    return f"{seen} {'gone' if n == 0 else f'still listed ({n})'}", results
+
+
+FATAL_PRE = ["SET exit_on_error = on", "SET pgcolumnar.sink_fail_after = 8192"]
+
+
+def _log_size(log):
+    try:
+        return log.stat().st_size
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+
+
+def _signals_since(log, offset):
+    """-> how many backends the server log says a signal killed after byte offset."""
+    if not isinstance(offset, int):
+        return query_error(f"no log offset: {offset}")
+    try:
+        return log.read_bytes()[offset:].decode(errors="replace").count("terminated by signal")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
 
 
 def _tmp_of(d, name):
@@ -194,11 +226,44 @@ def es(pgc_cluster, server_dir):
 
         r["again"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es2.parquet'}')")
 
-        for kind, name in (("parquet", "es_fatal.parquet"), ("arrow", "es_fatal.arrow")):
-            r[f"{kind} fatal"] = _fatal_export(
-                dsn, f"SELECT pgcolumnar.export_{kind}('es_src', '{d / name}')")
-            r[f"{kind} fatal final"] = "dirty" if (d / name).exists() else "clean"
+        # The client sees the FATAL before the backend runs its exit callbacks, so a
+        # callback that crashes after its unlink passes every other reading here.
+        log = pgc_cluster.datadir / "server.log"
+        log_at = _log_size(log)
+        for kind in ("parquet", "arrow"):
+            name = f"es_fatal.{kind}"
+            # a good file first: a callback that unlinked the final name would delete it
+            pre = _value(dsn, f"SELECT pgcolumnar.export_{kind}('es_src', '{d / name}')")
+            before = _md5(d / name) or "unread before the FATAL re-export"
+            r[f"{kind} fatal"], _ = _fatal_session(
+                dsn, FATAL_PRE + [f"SELECT pgcolumnar.export_{kind}('es_src', '{d / name}')"])
+            r[f"{kind} fatal intact"] = f"{pre}:{_md5(d / name)}"
+            r[f"{kind} fatal before"] = f"{ROWS}:{before}"
             r[f"{kind} fatal tmp"] = _tmp_of(d, name)
+        # a finished export stays listed only if Finish forgets to unlist it
+        seen, res = _fatal_session(dsn, [
+            "BEGIN",
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_tx1.parquet'}')",
+            f"SELECT pgcolumnar.export_arrow('es_src', '{d / 'es_tx2.arrow'}')",
+            *FATAL_PRE,
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_tx3.parquet'}')"])
+        r["tx fatal"] = f"{res.count(ROWS)}:{seen}"
+        r["tx debris"] = _debris(d)
+        # a failed export, rolled back to a savepoint, only if Abort forgets
+        seen, res = _fatal_session(dsn, [
+            "BEGIN", "SAVEPOINT s", "SET pgcolumnar.sink_fail_after = 8192",
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp1.parquet'}')",
+            "ROLLBACK TO SAVEPOINT s",
+            *FATAL_PRE,
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp2.parquet'}')"])
+        r["sp fatal"] = f"{res.count('53100')}:{seen}"
+        r["sp debris"] = _debris(d)
+        # a crash restarts the cluster: wait for it to answer before reading the log
+        for _ in range(100):
+            if _value(dsn, "SELECT 1") == 1:
+                break
+            time.sleep(0.1)
+        r["signals"] = _signals_since(log, log_at)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -278,10 +343,35 @@ def test_fatal_the_export_ends_its_backend_with_fatal(es, expect, kind):
 
 
 @pytest.mark.parametrize("kind", ["parquet", "arrow"])
-def test_fatal_nothing_exists_at_the_final_path(es, expect, kind):
-    expect.text(es[f"{kind} fatal final"], "clean", f"fatal: nothing exists at the {kind} FINAL path")
+def test_fatal_a_fatal_re_export_leaves_the_previous_file_intact(es, expect, kind):
+    expect.text(es[f"{kind} fatal intact"], es[f"{kind} fatal before"],
+                f"fatal: a FATAL re-export leaves the previous {kind} file intact")
 
 
 @pytest.mark.parametrize("kind", ["parquet", "arrow"])
 def test_fatal_no_temp_file_after_a_fatal_exit(es, expect, kind):
     expect.text(str(es[f"{kind} fatal tmp"]), "0", f"fatal: no {kind} temp file after a FATAL exit")
+
+
+def test_fatal_after_finished_exports_in_one_transaction_ends_with_fatal(es, expect):
+    expect.text(es["tx fatal"], "2:fatal gone",
+                "fatal: a FATAL export after two finished exports in one transaction ends with FATAL")
+
+
+def test_fatal_no_temp_file_after_finished_exports_in_one_transaction(es, expect):
+    expect.text(str(es["tx debris"]), "0",
+                "fatal: no temp file after a FATAL export that followed finished exports")
+
+
+def test_fatal_after_a_failed_export_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):
+    expect.text(es["sp fatal"], "1:fatal gone",
+                "fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_rolled_back_export(es, expect):
+    expect.text(str(es["sp debris"]), "0",
+                "fatal: no temp file after a FATAL export that followed a rolled-back export")
+
+
+def test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms(es, expect):
+    expect.text(str(es["signals"]), "0", "fatal: no backend died by a signal during the FATAL arms")

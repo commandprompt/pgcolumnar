@@ -307,9 +307,11 @@ pexport_prepare_dir(const char *dir)
  *
  *		Since #394 the workers write through the sink, so an in-flight part is
  *		part-NNNN.parquet.tmp.<pid>. A worker that ERRORs unlinks its own temp
- *		through the sink's abort, but a worker the dispatcher TERMINATES dies
- *		FATAL, which does not unwind through PG_CATCH, so its temp survives the
- *		worker. It is still ours by construction; remove it here.
+ *		through the sink's abort. A worker the dispatcher TERMINATES dies FATAL,
+ *		which does not unwind through PG_CATCH; since #2075 the sink's exit
+ *		callback unlinks that worker's temp instead. This sweep is the fallback
+ *		for a worker that died with no exit callback (SIGKILL, a crash). Every
+ *		such temp is still ours by construction; remove it here.
  */
 static void
 pexport_remove_outputs(const char *dir, int nkeys)
