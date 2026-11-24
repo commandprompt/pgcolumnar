@@ -412,6 +412,59 @@ check "positional read_parquet still refuses bigint over an INT32 column (42804)
 	                 AS t(id bigint, k bigint, f real, d numeric(10,2), dt date)" \
 	   "physical type is not compatible with target column \"k\"")" "42804"
 
+# ---- format-version 3 initial-default (#2087) ------------------------------
+# A v3 field may carry an initial-default: the value a reader must return for
+# the field in a data file written before the field existed. The reader does
+# not apply it yet, so it must refuse such a field (0A000), not read it as null.
+# v3default: the events table as format-version 3, whose current schema adds
+# field 4, qty, required, initial-default 7; no data file carries field 4.
+# eq_v3default: warehouse_promo's equality-delete table as format-version 3,
+# with initial-default 0 on k, the column its equality deletes compare.
+python3 - "$MD" "$MDDIR/v3default.metadata.json" "$PMD/eq.metadata.json" \
+	"$PMD/eq_v3default.metadata.json" <<'PYEOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m["format-version"] = 3
+cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+new = json.loads(json.dumps(cur))
+new["schema-id"] = max(s["schema-id"] for s in m["schemas"]) + 1
+new["fields"].append({"id": 4, "name": "qty", "required": True, "type": "int",
+                      "initial-default": 7, "write-default": 7})
+m["schemas"].append(new)
+m["current-schema-id"] = new["schema-id"]
+m["last-column-id"] = 4
+json.dump(m, open(sys.argv[2], "w"))
+e = json.load(open(sys.argv[3]))
+e["format-version"] = 3
+for s in e["schemas"]:
+    if s["schema-id"] == e["current-schema-id"]:
+        for f in s["fields"]:
+            if f["name"] == "k":
+                f["initial-default"] = 0
+json.dump(e, open(sys.argv[4], "w"))
+PYEOF
+check "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, qty int)
+	            ORDER BY id" 'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+check "iceberg_scan still reads the v3 table's columns that have no initial-default" \
+	"$(q "SELECT id || '|' || region || '|' || amount
+	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, region text, amount int)
+	      ORDER BY id")" \
+	"$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
+check "iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000)" \
+	"$(refusal "SELECT string_agg(id::text, ',' ORDER BY id)
+	            FROM pgcolumnar.iceberg_scan('$PMD/eq_v3default.metadata.json') AS t(id bigint)" \
+	   'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+q "CREATE FOREIGN TABLE v3_default (id bigint, qty int)
+   SERVER ice_promo OPTIONS (metadata_path '$MDDIR/v3default.metadata.json')" >/dev/null
+check "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null') FROM v3_default ORDER BY id" \
+	   'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+
 # ---- privilege -------------------------------------------------------------
 # USAGE on the schema, so the refusal is the FILE gate's: without it the role was
 # refused by "permission denied for schema pgcolumnar", also 42501, and with the

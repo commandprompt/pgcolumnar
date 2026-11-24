@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
+  table now refuse an Iceberg field that has an `initial-default` (#2087).
+  Format-version 3 lets a column added to a table name the value that older data
+  files must read for it. The reader ignored that value, so every row written
+  before the column existed read as null, even in a required column, with no
+  error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
+  The refusal covers an output column and the column an equality delete
+  compares. A query that leaves the field out still reads, and a null
+  `initial-default` counts as none. Reading the default is not supported yet.
+  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

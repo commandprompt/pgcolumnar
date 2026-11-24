@@ -1348,6 +1348,13 @@ table at its current snapshot. It has these limits:
 - Reads apply position deletes, equality deletes, and format-version-3 deletion
   vectors. The data files must be Parquet. The reader accepts the file format in
   any case, so `parquet` and `PARQUET` both read.
+- The reader does not apply a format-version-3 field's `initial-default`, the
+  value older data files must read for a column added later (#2087). It refuses
+  such a field with SQLSTATE 0A000 rather than read those rows as null. The
+  refusal applies when the field is an output column, or the column an
+  equality delete compares. A query that leaves the field out still reads. A
+  `pgcolumnar_iceberg` foreign table refuses any scan when one of its columns
+  has an `initial-default`. A null `initial-default` counts as none.
 - The table metadata file may be plain JSON or gzip-compressed. Writers produce a
   gzip file when the table property `write.metadata.compression-codec` is `gzip`,
   and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects

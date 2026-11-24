@@ -145,6 +145,36 @@ def _lines(v):
     return v if isinstance(v, str) else "\n".join(str(x) for x in v)
 
 
+def _v3_default_copies(md, eq_md):
+    """Write two format-version 3 copies of fixture metadata (#2087) and return
+    their paths. v3default.metadata.json: the events table, whose current schema
+    gains field 4, qty, required, initial-default 7, which no data file carries.
+    eq_v3default.metadata.json: warehouse_promo's equality-delete table, with
+    initial-default 0 on k, the column its equality deletes compare."""
+    m = json.loads(md.read_text())
+    m["format-version"] = 3
+    cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+    added = json.loads(json.dumps(cur))
+    added["schema-id"] = max(s["schema-id"] for s in m["schemas"]) + 1
+    added["fields"].append({"id": 4, "name": "qty", "required": True, "type": "int",
+                            "initial-default": 7, "write-default": 7})
+    m["schemas"].append(added)
+    m["current-schema-id"] = added["schema-id"]
+    m["last-column-id"] = 4
+    v3md = md.parent / "v3default.metadata.json"
+    v3md.write_text(json.dumps(m))
+    e = json.loads(eq_md.read_text())
+    e["format-version"] = 3
+    for f in next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])["fields"]:
+        if f["name"] == "k":
+            f["initial-default"] = 0
+    v3eq = eq_md.parent / "eq_v3default.metadata.json"
+    v3eq.write_text(json.dumps(e))
+    for p in (v3md, v3eq):
+        p.chmod(0o666)
+    return v3md, v3eq
+
+
 @pytest.fixture(scope="module")
 def isc(pgc_cluster, server_dir):
     if not list(WH.glob("db/events/data/*/*.parquet")):
@@ -307,6 +337,22 @@ def isc(pgc_cluster, server_dir):
             "promo positional": _refused_by(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{pdata}/old2.parquet') "
                                                  "AS t(id bigint, k bigint, f real, d numeric(10,2), dt date)",
                                             'physical type is not compatible with target column "k"'),
+        })
+        # #2087: format-version 3 initial-default, which the reader cannot apply yet
+        v3md, v3eq = _v3_default_copies(md, eq_md)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute("CREATE FOREIGN TABLE icescan_v3default (id bigint, qty int) "
+                      f"SERVER ice_promo OPTIONS (metadata_path '{v3md}')")
+        r.update({
+            "v3 default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3md)} AS t(id bigint, qty int) "
+                                        "ORDER BY id", r"initial-default", "initial-default refusal"),
+            "v3 other columns": _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM {scan.format(v3md)} "
+                                           "AS t(id bigint, region text, amount int) ORDER BY id"),
+            "v3 eq default": _refusal(dsn, "SELECT string_agg(id::text, ',' ORDER BY id) "
+                                           f"FROM {scan.format(v3eq)} AS t(id bigint)",
+                                      r"initial-default", "initial-default refusal"),
+            "v3 fdw default": _refusal(dsn, "SELECT id, qty FROM icescan_v3default ORDER BY id",
+                                       r"initial-default", "initial-default refusal"),
         })
         yield r
     finally:
@@ -650,3 +696,31 @@ def test_positional_read_parquet_keeps_its_exact_type_map(isc, expect):
         return
     expect.text(str(isc["promo positional"]), "42804",
                 "positional read_parquet still refuses bigint over an INT32 column (42804)")
+
+
+def test_iceberg_scan_refuses_a_v3_column_with_an_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 default"]), "0A000 (initial-default refusal)",
+                "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)")
+
+
+def test_iceberg_scan_reads_the_v3_columns_without_an_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["v3 other columns"]), ROWS5,
+                "iceberg_scan still reads the v3 table's columns that have no initial-default")
+
+
+def test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 eq default"]), "0A000 (initial-default refusal)",
+                "iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000)")
+
+
+def test_a_foreign_table_refuses_a_v3_column_with_an_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 fdw default"]), "0A000 (initial-default refusal)",
+                "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000)")

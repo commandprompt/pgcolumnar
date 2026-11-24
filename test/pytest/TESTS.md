@@ -9891,7 +9891,7 @@ One module fixture runs the three scenarios in a private database; session 2's b
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 
-The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens. Over format-version 3 copies of the events and `warehouse_promo` metadata (#2087), a field with an `initial-default` is refused with 0A000 as an output column, as the column an equality delete compares, and through a `pgcolumnar_iceberg` foreign table, while the columns without one still read.
 
 ### Every test
 
@@ -9945,6 +9945,10 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_a_date_column_declared_bigint_is_refused` | a date column declared bigint is refused, not widened (42804) |
 | `test_read_parquet_by_field_id_widens_an_int32_column` | read_parquet by field id reads an INT32 column as bigint |
 | `test_positional_read_parquet_keeps_its_exact_type_map` | positional read_parquet still refuses bigint over an INT32 column (42804) |
+| `test_iceberg_scan_refuses_a_v3_column_with_an_initial_default` | iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000) |
+| `test_iceberg_scan_reads_the_v3_columns_without_an_initial_default` | iceberg_scan still reads the v3 table's columns that have no initial-default |
+| `test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default` | iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000) |
+| `test_a_foreign_table_refuses_a_v3_column_with_an_initial_default` | a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000) |
 
 ## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
 
