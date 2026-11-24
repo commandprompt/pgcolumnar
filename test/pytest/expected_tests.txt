@@ -1912,4 +1912,8 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-cluster_tests 5376
+# cluster_tests 5376 -> 5381 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
+# SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
+# parameter), by collection: 6275 tests collected, less guard_tests 894.
+cluster_tests 5381

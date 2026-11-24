@@ -1231,41 +1231,72 @@ pgcolumnar_operand_unstable_walker(Node *node, void *ctx)
 }
 
 /*
- * Evaluate a scan-key operand to a Const, guarded. Returns NULL if evaluation
- * raises (e.g. a stable function that errors, or a param not yet bound under a
- * plain EXPLAIN), so the caller leaves the clause as-is rather than turning a
- * scan that might otherwise prune the operand away into an error.
+ * Make a Const of type `typ` holding `d`, copied into the current memory context.
  */
 static Node *
-pgcolumnar_try_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
+pgcolumnar_make_frozen_const(Node *expr, Datum d, bool isnull)
 {
-	Node	   *result = NULL;
-	MemoryContext oldcxt = CurrentMemoryContext;
+	Oid			typ = exprType(expr);
+	int16		typlen;
+	bool		typbyval;
 
-	PG_TRY();
-	{
-		ExprState  *es = ExecInitExpr((Expr *) expr, ps);
-		bool		isnull;
-		Datum		d = ExecEvalExprSwitchContext(es, econtext, &isnull);
-		Oid			typ = exprType(expr);
-		int16		typlen;
-		bool		typbyval;
+	get_typlenbyval(typ, &typlen, &typbyval);
+	if (!isnull && !typbyval)
+		d = datumCopy(d, typbyval, typlen);
+	return (Node *) makeConst(typ, exprTypmod(expr), exprCollation(expr),
+							  (int) typlen, isnull ? (Datum) 0 : d,
+							  isnull, typbyval);
+}
 
-		get_typlenbyval(typ, &typlen, &typbyval);
-		if (!isnull && !typbyval)
-			d = datumCopy(d, typbyval, typlen);
-		result = (Node *) makeConst(typ, exprTypmod(expr), exprCollation(expr),
-									(int) typlen, isnull ? (Datum) 0 : d,
-									isnull, typbyval);
-	}
-	PG_CATCH();
-	{
-		MemoryContextSwitchTo(oldcxt);
-		FlushErrorState();
-		result = NULL;
-	}
-	PG_END_TRY();
-	return result;
+/*
+ * Evaluate a scan-key operand to a Const.
+ *
+ * An error raised here propagates (#2065). This used to catch it with PG_TRY
+ * and FlushErrorState, with no subtransaction, so nothing released what the
+ * failed call held: a statement_timeout or cancel that fired here was lost, the
+ * query ran on, and the call's plancache, snapshot and SPI state leaked. A
+ * btree index scan evaluates its runtime keys the same way, unguarded.
+ */
+static Node *
+pgcolumnar_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
+{
+	ExprState  *es = ExecInitExpr((Expr *) expr, ps);
+	bool		isnull;
+	Datum		d = ExecEvalExprSwitchContext(es, econtext, &isnull);
+
+	return pgcolumnar_make_frozen_const(expr, d, isnull);
+}
+
+/*
+ * Under a plain EXPLAIN, freeze only a bare PARAM_EXTERN whose value is bound,
+ * and read that value directly. Nothing executes, so nothing may be called: a
+ * stable function would run its side effects, or raise, where a heap EXPLAIN
+ * calls nothing. An unbound parameter (EXPLAIN (GENERIC_PLAN)) is left as it is.
+ * Returns NULL when the operand is not frozen.
+ */
+static Node *
+pgcolumnar_explain_only_const(Node *expr, PlanState *ps)
+{
+	Node	   *bare = expr;
+	Param	   *param;
+	ParamListInfo params = ps->state->es_param_list_info;
+	ParamExternData *prm;
+	ParamExternData prmdata;
+
+	if (IsA(bare, RelabelType))
+		bare = (Node *) ((RelabelType *) bare)->arg;
+	if (!IsA(bare, Param) || ((Param *) bare)->paramkind != PARAM_EXTERN)
+		return NULL;
+	param = (Param *) bare;
+	if (params == NULL || param->paramid <= 0 || param->paramid > params->numParams)
+		return NULL;
+	if (params->paramFetch != NULL)
+		prm = params->paramFetch(params, param->paramid, false, &prmdata);
+	else
+		prm = &params->params[param->paramid - 1];
+	if (prm == NULL || prm->ptype != param->paramtype)
+		return NULL;
+	return pgcolumnar_make_frozen_const(bare, prm->value, prm->isnull);
 }
 
 /*
@@ -1280,10 +1311,11 @@ pgcolumnar_try_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
  * wrong-results bug (a group wrongly skipped is never rechecked); freezing a
  * stable one is exact, and the executor still re-applies the original qual to
  * every surviving row. Returns the qual unchanged when no expression context is
- * available yet.
+ * available yet. Under a plain EXPLAIN (`explain_only`), only a bound parameter
+ * is frozen; see pgcolumnar_explain_only_const.
  */
 static List *
-pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
+pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool explain_only)
 {
 	ExprContext *econtext;
 	List	   *out = NIL;
@@ -1330,7 +1362,9 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
 				!pgcolumnar_operand_unstable_walker(arg, NULL) &&
 				!contain_volatile_functions(arg))
 			{
-				Node	   *c = pgcolumnar_try_eval_const(arg, ps, econtext);
+				Node	   *c = explain_only
+					? pgcolumnar_explain_only_const(arg, ps)
+					: pgcolumnar_eval_const(arg, ps, econtext);
 
 				if (c != NULL)
 				{
@@ -3789,7 +3823,8 @@ PgColumnarBeginCustomScan(CustomScanState *node, EState *estate, int eflags)
 	 */
 	cstate->scanKeys =
 		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
-														   &node->ss.ps),
+														   &node->ss.ps,
+														   (eflags & EXEC_FLAG_EXPLAIN_ONLY) != 0),
 							  cscan->scan.scanrelid,
 							  tupdesc, &cstate->nScanKeys);
 

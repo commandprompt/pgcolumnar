@@ -12386,7 +12386,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
 
-The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right.
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter.
 
 ### Every test
 
@@ -12403,6 +12403,11 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_param_pushdown_a_correlated_upper_bound_is_not_mis_pruned` | a correlated PARAM_EXEC upper bound is not mis-pruned either |
 | `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
 | `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
+| `test_param_pushdown_a_statement_timeout_at_scan_start_cancels` | a statement_timeout during scan start-up cancels the columnar query (#2065) |
+| `test_param_pushdown_a_stable_operand_that_raises_once_reaches_the_client` | a stable operand that raises once reaches the client, as on heap (#2065) |
+| `test_param_pushdown_no_failed_query_leaves_a_warning` | neither failed query leaves a resource or SPI-stack WARNING (#2065) |
+| `test_param_pushdown_a_plain_explain_does_not_call_a_stable_operand` | a plain EXPLAIN does not call a stable operand (#2065) |
+| `test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_param` | a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065) |
 | `test_param_pushdown_the_backend_is_alive` | backend alive |
 
 ## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's

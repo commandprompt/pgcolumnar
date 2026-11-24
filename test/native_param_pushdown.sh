@@ -115,6 +115,49 @@ check "a second execution in the same session counts with its own value" \
 check "and prunes with its own value too (18 of 20 removed)" \
 	"$(sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$TWICE" | head -1)" "18"
 
+# An error raised while Begin freezes a stable operand must reach the client (#2065).
+# Begin used to catch it with PG_TRY and throw it away, with no subtransaction to
+# release what the failed call held. So a statement_timeout that fired during that one
+# evaluation was lost and the query returned rows, and the plancache, snapshot and SPI
+# state of the failed call leaked as WARNINGs.
+#
+# Each function below misbehaves on its FIRST call only. On a generic plan the planner
+# cannot fold "fn($1)" (the value is unknown), so that first call is the one Begin
+# makes; a heap scan makes it on the first row and fails. A literal argument would not
+# do: the planner's selectivity estimate calls a stable function itself. Each statement
+# goes in its own -c, so each gets its own statement_timeout timer.
+psql_m() { local a=(); for s in "$@"; do a+=(-c "$s"); done
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At "${a[@]}" 2>&1; }
+q "CREATE FUNCTION slow_first(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
+	BEGIN PERFORM set_config('t.n', n::text, false);
+	IF n = 1 THEN PERFORM pg_sleep(2); END IF; RETURN \$1; END \$\$;
+   CREATE FUNCTION fail_first(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
+	BEGIN PERFORM set_config('t.n', n::text, false);
+	IF n = 1 THEN RAISE EXCEPTION 'call 1 fails'; END IF; RETURN \$1; END \$\$;" >/dev/null
+TIMEOUT_OUT="$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE s(int) AS SELECT count(*) FROM t WHERE ts > slow_first(\$1)" \
+	"SET t.n = '0'" "SET statement_timeout = '300ms'" "EXECUTE s(0)")"
+check "a statement_timeout during scan start-up cancels the columnar query (#2065)" \
+	"$(grep -c 'canceling statement due to statement timeout' <<<"$TIMEOUT_OUT")" "1"
+FAIL_OUT="$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE f(int) AS SELECT count(*) FROM t WHERE ts > fail_first(\$1)" \
+	"SET t.n = '0'" "EXECUTE f(0)")"
+check "a stable operand that raises once reaches the client, as on heap (#2065)" \
+	"$(grep -c 'ERROR:  call 1 fails' <<<"$FAIL_OUT")" "1"
+check_num "neither failed query leaves a resource or SPI-stack WARNING (#2065)" \
+	"$(grep -c 'WARNING' <<<"$TIMEOUT_OUT$FAIL_OUT")" "0"
+# A plain EXPLAIN executes nothing, so it must not call the operand either. Begin
+# runs under EXPLAIN too, and froze the operand there as well.
+check "a plain EXPLAIN does not call a stable operand (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > fail_first(\$1)" \
+		"SET t.n = '0'" "EXPLAIN (COSTS off) EXECUTE e(0)" "SHOW t.n" | tail -1)" "0"
+# But a plain EXPLAIN EXECUTE still reports a bare bound parameter as pushed down:
+# reading a bound value calls nothing and cannot fail.
+check "a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE b(int) AS SELECT count(*) FROM t WHERE ts >= \$1" \
+		"EXPLAIN (COSTS off) EXECUTE b(39000)" \
+		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "1"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

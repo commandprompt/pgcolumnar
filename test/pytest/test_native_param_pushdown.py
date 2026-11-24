@@ -17,6 +17,13 @@ Three things the shell's first version could not see, now read in both twins:
   with their own value;
 - survival was a bare SELECT 1; it now also reads the server log's crash count.
 
+An error raised while Begin freezes a stable operand must reach the client (#2065).
+Begin caught it with PG_TRY and threw it away, with no subtransaction to release what
+the failed call held: a statement_timeout during that evaluation was lost, the query
+returned rows, and the failed call's plancache, snapshot and SPI state leaked as
+WARNINGs. The functions misbehave on their FIRST call only, on a generic plan, where
+the planner cannot fold "fn($1)", so that first call is the one Begin makes.
+
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading. A failed query is a `query_error()`, so two failures never agree.
 """
@@ -82,6 +89,42 @@ def _field(lines, label):
     return query_error(f"the plan has no {label} line")
 
 
+FIRST_CALL = """CREATE FUNCTION {name}(int) RETURNS int LANGUAGE plpgsql STABLE AS $$
+    DECLARE n int := coalesce(nullif(current_setting('t.n', true), ''), '0')::int + 1;
+    BEGIN PERFORM set_config('t.n', n::text, false);
+    IF n = 1 THEN {act}; END IF; RETURN $1; END $$"""
+
+
+def _transcript(dsn, statements):
+    """Run `statements` in ONE session and return everything the client saw, one line
+    per row, notice or raised error: "WARNING: ...", "raised: ...". The first raised
+    error ends the session, as psql's -c sequence does not; nothing after it matters
+    here. A raised error is the reading under test, compared with a fixed message; a
+    session that cannot connect at all is a query_error()."""
+    _await_up(dsn)
+    lines = []
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.add_notice_handler(lambda d: lines.append(f"{d.severity}: {d.message_primary}"))
+            for sql in statements:
+                try:
+                    cur = conn.execute(sql)
+                except psycopg.Error as exc:
+                    lines.append(f"raised: {exc.diag.message_primary}")
+                    break
+                for row in (cur.fetchall() if cur.description else []):
+                    lines.append("" if row[0] is None else str(row[0]))
+    except psycopg.Error as exc:
+        return _failed(exc)
+    return lines
+
+
+def _count(lines, needle):
+    if isinstance(lines, str):
+        return lines
+    return str(sum(1 for line in lines if needle in line))
+
+
 def _crashes(cluster):
     try:
         return (cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
@@ -141,6 +184,22 @@ def pp(pgc_cluster):
         else:
             r["twice count"] = twice[4][0] if twice[4] else query_error("no second count")
             r["twice removed"] = _field(twice[5], "Chunk Groups Removed by Filter")
+        _session(dsn, [FIRST_CALL.format(name="slow_first", act="PERFORM pg_sleep(2)"),
+                       FIRST_CALL.format(name="fail_first", act="RAISE EXCEPTION 'call 1 fails'")])
+        timeout = _transcript(dsn, [GENERIC, "PREPARE s(int) AS SELECT count(*) FROM t WHERE ts > slow_first($1)",
+                                    "SET t.n = '0'", "SET statement_timeout = '300ms'", "EXECUTE s(0)"])
+        r["timeout"] = _count(timeout, "raised: canceling statement due to statement timeout")
+        fail = _transcript(dsn, [GENERIC, "PREPARE f(int) AS SELECT count(*) FROM t WHERE ts > fail_first($1)",
+                                 "SET t.n = '0'", "EXECUTE f(0)"])
+        r["fail once"] = _count(fail, "raised: call 1 fails")
+        r["warnings"] = (timeout if isinstance(timeout, str) else fail if isinstance(fail, str)
+                         else _count(timeout + fail, "WARNING"))
+        expl = _transcript(dsn, [GENERIC, "PREPARE e(int) AS SELECT count(*) FROM t WHERE ts > fail_first($1)",
+                                 "SET t.n = '0'", "EXPLAIN (COSTS off) EXECUTE e(0)", "SHOW t.n"])
+        r["explain calls"] = expl if isinstance(expl, str) else (expl[-1] if expl else query_error("no SHOW"))
+        bound = _transcript(dsn, [GENERIC, "PREPARE b(int) AS SELECT count(*) FROM t WHERE ts >= $1",
+                                  "EXPLAIN (COSTS off) EXECUTE b(39000)"])
+        r["explain bound"] = _field(bound, "Columnar Pushed-Down Filters")
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -183,6 +242,30 @@ def test_param_pushdown_a_second_execution_counts_with_its_own_value(pp, expect)
 
 def test_param_pushdown_a_second_execution_prunes_with_its_own_value(pp, expect):
     expect.text(pp["twice removed"], "18", "and prunes with its own value too (18 of 20 removed)")
+
+
+def test_param_pushdown_a_statement_timeout_at_scan_start_cancels(pp, expect):
+    expect.text(pp["timeout"], "1",
+                "a statement_timeout during scan start-up cancels the columnar query (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_that_raises_once_reaches_the_client(pp, expect):
+    expect.text(pp["fail once"], "1",
+                "a stable operand that raises once reaches the client, as on heap (#2065)")
+
+
+def test_param_pushdown_no_failed_query_leaves_a_warning(pp, expect):
+    expect.text(pp["warnings"], "0",
+                "neither failed query leaves a resource or SPI-stack WARNING (#2065)")
+
+
+def test_param_pushdown_a_plain_explain_does_not_call_a_stable_operand(pp, expect):
+    expect.text(pp["explain calls"], "0", "a plain EXPLAIN does not call a stable operand (#2065)")
+
+
+def test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_param(pp, expect):
+    expect.text(pp["explain bound"], "1",
+                "a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):
