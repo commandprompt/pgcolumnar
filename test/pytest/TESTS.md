@@ -8164,14 +8164,14 @@ The alternative must reclaim, not only return. With `vacuum()` returning before 
 
 ## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
 
-The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. So must a join clause under another collation than the fact column's, because the fold compares under the column's own (#2066). Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell.
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. So must a join clause under another collation than the fact column's, or with another equality operator than the type's default, because the fold compares with the column's own equality and collation (#2066). Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
-| `test_a_join_clause_under_another_collation_refuses_the_fold` | a text key under one collation keeps the fold; a case-insensitive join clause over a plain column, and a byte join clause over a case-insensitive column, each refuse it and answer as heap does (#2066). Declines with MISSING_DEPENDENCY on a server without ICU |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join, an extra join filter and a join clause with a non-default equality operator (`##=` on absolute values) each refuse it and answer as heap does |
+| `test_a_join_clause_under_another_collation_refuses_the_fold` | a text key under one collation, plain or case-insensitive on both sides, keeps the fold and answers as heap does; a case-insensitive join clause over a plain column, and a byte join clause over a case-insensitive column, each refuse it and answer as heap does (#2066). Declines with MISSING_DEPENDENCY on a server without ICU |
 
 ## 158. test_native_writer.py: the native writer by its catalog rows
 

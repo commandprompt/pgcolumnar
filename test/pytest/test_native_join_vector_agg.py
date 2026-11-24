@@ -114,6 +114,44 @@ def test_the_join_fold(pgc_conn, expect):
                                                      "JOIN dim_xn ON heap_xn.k = dim_xn.k AND heap_xn.v <> dim_xn.t"),
                 "inequality join filter answer equals heap")
 
+    # The fold compares keys with the type's default equality (int4eq here). A join
+    # clause with another equality operator must refuse the fold (#2066). ##= says two
+    # ints are equal when their absolute values are, so fact keys 1,-1,2,-2,3 match
+    # dimension keys 1,2 in 4 of every 5 rows under ##=, and in 2 of every 5 under
+    # int4eq. The functions are PL/pgSQL so the planner cannot inline them away, and
+    # the unique index under abs_ops makes the dimension unique.
+    for name, body in (("abs_eq", "abs($1) = abs($2)"), ("abs_lt", "abs($1) < abs($2)"),
+                       ("abs_le", "abs($1) <= abs($2)"), ("abs_gt", "abs($1) > abs($2)"),
+                       ("abs_ge", "abs($1) >= abs($2)")):
+        _exec(conn, f"CREATE FUNCTION {name}(int, int) RETURNS bool IMMUTABLE STRICT LANGUAGE plpgsql "
+                    f"AS $f$BEGIN RETURN {body}; END$f$")
+    _exec(conn, "CREATE FUNCTION abs_cmp(int, int) RETURNS int IMMUTABLE STRICT LANGUAGE plpgsql "
+                "AS $f$BEGIN RETURN btint4cmp(abs($1), abs($2)); END$f$",
+          "CREATE FUNCTION abs_hash(int) RETURNS int IMMUTABLE STRICT LANGUAGE plpgsql "
+          "AS $f$BEGIN RETURN hashint4(abs($1)); END$f$",
+          "CREATE OPERATOR ##= (leftarg = int, rightarg = int, function = abs_eq, "
+          "commutator = ##=, hashes, merges, restrict = eqsel, join = eqjoinsel)",
+          "CREATE OPERATOR ##< (leftarg = int, rightarg = int, function = abs_lt)",
+          "CREATE OPERATOR ##<= (leftarg = int, rightarg = int, function = abs_le)",
+          "CREATE OPERATOR ##> (leftarg = int, rightarg = int, function = abs_gt)",
+          "CREATE OPERATOR ##>= (leftarg = int, rightarg = int, function = abs_ge)",
+          "CREATE OPERATOR CLASS abs_ops FOR TYPE int USING btree AS OPERATOR 1 ##<, OPERATOR 2 ##<=, "
+          "OPERATOR 3 ##=, OPERATOR 4 ##>=, OPERATOR 5 ##>, FUNCTION 1 abs_cmp(int, int)",
+          "CREATE OPERATOR CLASS abs_ops FOR TYPE int USING hash AS OPERATOR 1 ##=, FUNCTION 1 abs_hash(int)",
+          "CREATE TABLE dim_abs(k int)", "INSERT INTO dim_abs VALUES (1), (2)",
+          "CREATE UNIQUE INDEX ON dim_abs (k abs_ops)",
+          "CREATE TABLE fact_abs(v int, m int) USING pgcolumnar",
+          "INSERT INTO fact_abs SELECT (ARRAY[1,-1,2,-2,3])[1 + g % 5], g FROM generate_series(1,1000) g",
+          "CREATE TABLE heap_abs (v int, m int) USING heap", "INSERT INTO heap_abs SELECT * FROM fact_abs",
+          "ANALYZE dim_abs", "ANALYZE fact_abs")
+    sqlab = ("SELECT count(*), coalesce(sum(fact_abs.m)::text,'z') FROM fact_abs "
+             "JOIN dim_abs ON fact_abs.v ##= dim_abs.k")
+    expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqlab}").count("Columnar Join Fold: yes"), 0,
+               "non-default equality operator refuses the join fold")
+    expect.text(_with(conn, "on", sqlab), _row(conn, "SELECT count(*), coalesce(sum(heap_abs.m)::text,'z') "
+                                                     "FROM heap_abs JOIN dim_abs ON heap_abs.v ##= dim_abs.k"),
+                "non-default equality operator answer equals heap")
+
 
 def test_a_join_clause_under_another_collation_refuses_the_fold(pgc_conn, expect):
     """The fold compares keys with the fact column's own equality and collation (#2066).
@@ -122,8 +160,8 @@ def test_a_join_clause_under_another_collation_refuses_the_fold(pgc_conn, expect
     the wrong collation. Fact keys 'a','A','b','B','c' meet dimension keys 'a','b': a
     case-insensitive comparison matches 4 of every 5 fact rows, a byte comparison 2.
     Both directions are covered: a case-insensitive dimension against a plain fact
-    column, and a byte clause over a case-insensitive fact column. A plain text key,
-    one collation on both sides, is the control and must still fold.
+    column, and a byte clause over a case-insensitive fact column. One collation on
+    both sides, plain or case-insensitive, is the control and must still fold.
 
     ITS OWN TEST, because `cannot_run` declares a whole test unrunnable when the
     server has no ICU, and the checks above need none.
@@ -158,6 +196,16 @@ def test_a_join_clause_under_another_collation_refuses_the_fold(pgc_conn, expect
     expect.text(_with(conn, "on", sqltx), _row(conn, "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') "
                                                      "FROM heap_tx JOIN dim_tx ON heap_tx.k = dim_tx.k"),
                 "text key under one collation answer equals heap")
+
+    # One case-insensitive collation on both sides is a second control. The fold
+    # compares and hashes under the fact column's collation, so it must still fold
+    # here, through the nondeterministic equality and hash path.
+    sqltci = "SELECT count(*), coalesce(sum(fact_tci.m)::text,'z') FROM fact_tci JOIN dim_ci ON fact_tci.k = dim_ci.k"
+    expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqltci}").count(fold), 1,
+               "case-insensitive key under one collation keeps the join fold")
+    expect.text(_with(conn, "on", sqltci), _row(conn, "SELECT count(*), coalesce(sum(heap_tci.m)::text,'z') "
+                                                      "FROM heap_tci JOIN dim_ci ON heap_tci.k = dim_ci.k"),
+                "case-insensitive key under one collation answer equals heap")
 
     sqlci = "SELECT count(*), coalesce(sum(fact_tx.m)::text,'z') FROM fact_tx JOIN dim_ci ON fact_tx.k = dim_ci.k"
     expect.text(_with(conn, "on", sqlci), _row(conn, "SELECT count(*), coalesce(sum(heap_tx.m)::text,'z') "

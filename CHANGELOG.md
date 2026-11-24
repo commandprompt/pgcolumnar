@@ -613,8 +613,11 @@ true until the next version shipped.
   case, and a byte-wise join over a case-insensitive column counted rows it
   should not. The fold now runs only when the join's operator and collation are
   the ones it compares with. Otherwise the plan is a plain hash join, which
-  answers correctly. `test/native_join_vector_agg.sh` and
-  `test_native_join_vector_agg.py`.
+  answers correctly. A join with another equality operator than the type's
+  default, such as one on absolute values, gave the same kind of wrong count
+  and is refused the same way. `test/native_join_vector_agg.sh` and
+  `test_native_join_vector_agg.py` test both refusals, and test that a
+  case-insensitive key joined under one collation still folds.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types
