@@ -896,7 +896,12 @@ for _ps in "how-to.md|## Load data efficiently" "user-guide.md|### Parallel bulk
 	_pf="${_ps%%|*}"; _ph="${_ps#*|}"
 	_pt="$(_section_of "$SRCDIR/docs/$_pf" "$_ph")"
 	for _g in max_prepared_transactions max_worker_processes; do
-		printf '%s' "$_pt" | grep -q "$_g" || _pc_missing="$_pc_missing $_pf:$_g"
+		# A case match, not `printf | grep -q`: under pipefail that pipe can
+		# report a setting the section names as missing (selftest 080, #486).
+		case "$_pt" in
+		*"$_g"*) ;;
+		*) _pc_missing="$_pc_missing $_pf:$_g" ;;
+		esac
 	done
 done
 _pc_missing="${_pc_missing# }"
