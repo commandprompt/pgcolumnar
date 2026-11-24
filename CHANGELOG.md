@@ -615,7 +615,12 @@ true until the next version shipped.
   and the slot reports the row's inserting transaction, which core reads to tell
   the transaction's own rows from another's. A conflict with a row the snapshot
   sees, or with a row the transaction inserted itself, still skips the row
-  without error. READ COMMITTED is unchanged. `test/am_contracts.sh` and
+  without error. READ COMMITTED is unchanged. Known limitation: the insert also
+  raises 40001, where heap does not, when an online `compact_rewrite` or
+  `recluster` (the autovacuum daemon runs both) moved the conflicting row after
+  the snapshot was taken. The moved copy has a new row number the snapshot cannot
+  see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
+  insert skipped the row and committed in that case. `test/am_contracts.sh` and
   `test_am_contracts.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into

@@ -232,6 +232,60 @@ def test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip(pgc_
                 "at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an already flushed stripe")
 
 
+def test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation(pgc_cluster, pgc_conn, expect):
+    """Known limitation (#2060, docs/limitations.md): at REPEATABLE READ, a DO NOTHING
+    conflict with a row that a concurrent compact_rewrite or recluster moved raises 40001.
+
+    The rewrite gives the row a new row number in a row group its own transaction wrote,
+    so the older snapshot cannot see that copy, and core reads the row as changed. Heap
+    moves no row on VACUUM, so heap commits. A retry succeeds. When a fix links a moved
+    row to its source, the two pgcolumnar checks go red and must change to "ok".
+    """
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    dsn = pgc_cluster.dsn()
+
+    def race(am, verb):
+        tbl = f"ocm_{am}_{verb}"
+        with pgc_conn.cursor() as cur:
+            cur.execute(f"DROP TABLE IF EXISTS {tbl}")
+            cur.execute(f"CREATE TABLE {tbl} (id int PRIMARY KEY, v int) USING {am}")
+            cur.execute(f"INSERT INTO {tbl} SELECT g, g FROM generate_series(1, 100) g")
+            cur.execute(f"DELETE FROM {tbl} WHERE id > 60")
+        racer = psycopg.connect(dsn, autocommit=True)
+        try:
+            racer.execute(f'SET search_path TO "{schema}"')
+            racer.execute("BEGIN ISOLATION LEVEL REPEATABLE READ")
+            racer.execute(f"SELECT count(*) FROM {tbl}")      # takes the snapshot
+            with psycopg.connect(dsn, autocommit=True) as other:
+                other.execute(f'SET search_path TO "{schema}"')
+                if verb == "vacuum":
+                    other.execute(f"VACUUM {tbl}")
+                    moved = 0
+                elif verb == "compact":
+                    moved = other.execute(
+                        f"SELECT pgcolumnar.compact_rewrite('{tbl}', 0.2)").fetchone()[0]
+                else:
+                    moved = other.execute(
+                        f"SELECT pgcolumnar.recluster('{tbl}', 'v')").fetchone()[0]
+            try:
+                racer.execute(f"INSERT INTO {tbl} VALUES (5, 50) ON CONFLICT DO NOTHING")
+                racer.execute("COMMIT")
+                got = "ok"
+            except psycopg.Error as e:
+                racer.rollback()
+                got = e.sqlstate
+        finally:
+            racer.close()
+        return f"{got}|{_one(pgc_conn, f'SELECT v FROM {tbl} WHERE id = 5')}|{moved}"
+
+    expect.text(race("heap", "vacuum"), "ok|5|0",
+                "heap control: a concurrent VACUUM does not make DO NOTHING at REPEATABLE READ fail")
+    expect.text(race("pgcolumnar", "compact"), "40001|5|1",
+                "known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent compact_rewrite moved")
+    expect.text(race("pgcolumnar", "recluster"), "40001|5|1",
+                "known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent recluster moved")
+
+
 def test_a_truncate_that_rolls_back_restores_every_row(pgc_conn, expect):
     """TRUNCATE swaps the table onto new storage, so the old storage's rows and catalog
     entries must come back whole if the swap does not commit (#1341)."""

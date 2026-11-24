@@ -158,6 +158,54 @@ check "at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an 
 	"$(state "BEGIN ISOLATION LEVEL REPEATABLE READ; INSERT INTO ocv_own SELECT CASE WHEN g <= 1500 THEN 1000 + g ELSE 1001 END, g FROM generate_series(1, 1501) g ON CONFLICT DO NOTHING; COMMIT;")|$(q "SELECT count(*) || '|' || min(v) FILTER (WHERE id = 1001) FROM ocv_own WHERE id > 1000")" \
 	"ok|1500|1"
 
+# ---- known limitation: a row an online rewrite moved reads as changed (#2060) --------
+#
+# compact_rewrite and recluster run while other sessions read and write. They copy live
+# rows to new row numbers and add index entries for them. A REPEATABLE READ snapshot
+# taken before the rewrite cannot see the new copy, and the copy's row group was written
+# by the rewrite's transaction, so core raises 40001 although the row did not change.
+# Heap does not: VACUUM moves no row. A retry succeeds, because its new snapshot sees
+# the copy. docs/limitations.md states this. When a fix links a moved row to its source,
+# these two checks go red and must change to "ok", with the limitation removed.
+#
+# Same gate as ocv_race: the racer takes its snapshot, then waits while the rewrite runs.
+ocm_race() {	# ocm_race AM VERB -> the racer's outcome|v of row 5|what the rewrite returned
+	local tbl="ocm_$1_$2" out="$PGC_WORKDIR/ocm_$1_$2.out" gate gate_pid snap_pid racer got moved
+	psql_run "DROP TABLE IF EXISTS $tbl; CREATE TABLE $tbl (id int PRIMARY KEY, v int) USING $1;
+	          INSERT INTO $tbl SELECT g, g FROM generate_series(1, 100) g; DELETE FROM $tbl WHERE id > 60;"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-c "SELECT pg_advisory_lock(4344); SET application_name = 'ocm_gate'; SELECT pg_sleep(600);" >/dev/null 2>&1 &
+	gate=$!
+	gate_pid="$(ocv_wait_for ocm_gate)"
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -Atq \
+		-v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate \
+		-c "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM $tbl; SET application_name = 'ocm_snap';
+		    SELECT pg_advisory_lock_shared(4344);
+		    INSERT INTO $tbl VALUES (5, 50) ON CONFLICT DO NOTHING; COMMIT;" > "$out" 2>&1 &
+	racer=$!
+	snap_pid="$(ocv_wait_for ocm_snap)"
+	case "$2" in
+		vacuum) psql_run "VACUUM $tbl;"; moved=0 ;;
+		compact) moved="$(q "SELECT pgcolumnar.compact_rewrite('$tbl', 0.2)")" ;;
+		recluster) moved="$(q "SELECT pgcolumnar.recluster('$tbl', 'v')")" ;;
+	esac
+	q "SELECT pg_terminate_backend(${gate_pid:-0})" >/dev/null
+	wait "$gate" 2>/dev/null
+	wait "$racer"
+	if [ -z "$gate_pid" ] || [ -z "$snap_pid" ]; then
+		echo "no session (gate ${gate_pid:-none}, racer ${snap_pid:-none})"
+		return
+	fi
+	got="$(sed -n 's/^.*ERROR:[[:space:]]*\([0-9A-Z]\{5\}\).*$/\1/p' "$out" | head -1)"
+	echo "${got:-ok}|$(q "SELECT v FROM $tbl WHERE id = 5")|$moved"
+}
+check "heap control: a concurrent VACUUM does not make DO NOTHING at REPEATABLE READ fail" \
+	"$(ocm_race heap vacuum)" "ok|5|0"
+check "known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent compact_rewrite moved" \
+	"$(ocm_race pgcolumnar compact)" "40001|5|1"
+check "known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent recluster moved" \
+	"$(ocm_race pgcolumnar recluster)" "40001|5|1"
+
 # ---- a TRUNCATE that rolls back restores every row (#1341) -------------------------
 #
 # TRUNCATE swaps the table onto new storage (set_new_filelocator), so the old
