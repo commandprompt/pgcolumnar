@@ -605,6 +605,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` now refuses an Arrow column whose type family does
+  not match the target column (#2082). Before, it copied the file's bytes as
+  the column's type and stored bit patterns with no error: float64 `1.5` into
+  `bigint` stored `4609434218613702656`, int64 `1` into `float8` stored
+  `5e-324`, and a decimal into `uuid` stored `7d000000-...`. When the layouts
+  differed, it raised XX001 `malformed Arrow IPC file` for a valid file. Such a
+  column now fails with SQLSTATE 42804, naming the column, the Arrow type and
+  the target type, and no row is stored. Three pairings still import: a signed
+  int64 into `timestamp` or `timestamptz`, read as microseconds; a string into
+  `bytea`; and a binary into `text`, `varchar`, `json`, `jsonb` or `numeric`.
+  An int64 into a timestamp column now needs a signed 64-bit carrier.
+  docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

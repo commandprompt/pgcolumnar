@@ -1904,6 +1904,51 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
 }
 
 /*
+ * Whether a scalar Arrow type tag can be read into a scalar node of `kind`
+ * (#2082). The decode arms read the bytes in the layout of the TARGET's kind,
+ * so a file of another type family was copied bit for bit: float64 1.5 into
+ * bigint stored 4609434218613702656, and int64 7 into float8 stored 3.5e-323.
+ * When the layouts differed, the buffer-length check raised XX001 and called a
+ * valid file malformed. Three pairings are kept on purpose:
+ *  - Int under timestamp or timestamptz reads raw microseconds. This is
+ *    long-standing behaviour with its own control in test/arrow_import.sh, and
+ *    #881 kept it. imp_apply_field still requires a signed 64-bit carrier.
+ *  - Utf8 under bytea, and Binary under text, varchar, json, jsonb or numeric.
+ *    Both tags have the same three-buffer layout, so the bytes arrive intact,
+ *    and a Binary value read as text still passes imp_text_check and the type's
+ *    input function.
+ */
+static bool
+arrow_tag_fits_kind(uint8 typetag, ArrowKind kind)
+{
+	switch (typetag)
+	{
+		case ARROW_TYPE_Int:
+			return kind == A_INT16 || kind == A_INT32 || kind == A_INT64 ||
+				kind == A_TIMESTAMP || kind == A_TIMESTAMPTZ;
+		case ARROW_TYPE_FloatingPoint:
+			return kind == A_FLOAT32 || kind == A_FLOAT64;
+		case ARROW_TYPE_Bool:
+			return kind == A_BOOL;
+		case ARROW_TYPE_Utf8:
+		case ARROW_TYPE_Binary:
+			return kind == A_UTF8 || kind == A_BINARY;
+		case ARROW_TYPE_Date:
+			return kind == A_DATE32;
+		case ARROW_TYPE_Time:
+			return kind == A_TIME64;
+		case ARROW_TYPE_Timestamp:
+			return kind == A_TIMESTAMP || kind == A_TIMESTAMPTZ;
+		case ARROW_TYPE_FixedSizeBinary:
+			return kind == A_UUID;
+		case ARROW_TYPE_Decimal:
+			return kind == A_DECIMAL128;
+		default:
+			return false;
+	}
+}
+
+/*
  * A nested Arrow type must have the shape of the node the target type gave it
  * (#1932). Buffer indices are assigned from the TARGET's tree, so a List, Map or
  * Struct where the target has a scalar -- or a scalar where it has an array or a
@@ -1914,7 +1959,8 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
  * List layout, so it reads into an array of a two-field composite. Tags no
  * target has the layout of (large and fixed-size lists, list views, unions,
  * run-end encoding) are refused under every node. The wording follows
- * import_parquet's for the same shape (#1917).
+ * import_parquet's for the same shape (#1917). A scalar tag under a scalar node
+ * must also be of a family that node can hold; see arrow_tag_fits_kind (#2082).
  */
 static void
 imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
@@ -1931,7 +1977,9 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 							 typetag == ARROW_TYPE_LargeListView);
 
 	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
-		!fileOther)
+		!fileOther &&
+		(n->kind == A_LIST || n->kind == A_STRUCT ||
+		 arrow_tag_fits_kind(typetag, n->kind)))
 		return;
 
 	if (typetag == ARROW_TYPE_List && listDepth > 0 && n->kind != A_LIST)
@@ -1970,25 +2018,21 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 		imp_check_shape(n, typetag, meta, metaLen, field, colname, path,
 						listDepth);
 		/*
-		 * Stamp a node ONLY when the file's tag matches the kind the target type
-		 * gave it. n->width is both the stride and the divisor in
-		 * imp_check_bounds, while every non-temporal decode arm memcpy's a size
-		 * fixed by its kind. Taking a width from a tag the target does not share
-		 * severs those two, and a Date-tagged field would set width 4 under an
-		 * A_INT64 node that still reads 8 bytes -- passing the bounds check and
-		 * reading off the end of the body. A temporal tag under a target that
-		 * cannot hold it is refused by name. Leaving it alone kept a pre-existing
-		 * silent corruption: measured on unpatched main, a time64 file into a date
-		 * column stored 687342-02-27 and a timestamp file into one stored
-		 * 2722128-09-17, both from the low 4 bytes of an 8-byte carrier. A
-		 * NON-temporal tag is still left alone, so an int64 file into a timestamp
-		 * column keeps working exactly as it does today.
+		 * imp_check_shape has refused every tag the node's kind cannot hold, so
+		 * each arm below reaches only a node of its own family (or, for Int, a
+		 * timestamp read as raw microseconds). That matters for the width: it
+		 * is both the stride and the divisor in imp_check_bounds, while every
+		 * non-temporal decode arm memcpy's a size fixed by its kind. Taking a
+		 * width from a tag the target does not share severs those two, and a
+		 * Date-tagged field would set width 4 under an A_INT64 node that still
+		 * reads 8 bytes -- passing the bounds check and reading off the end of
+		 * the body. Measured on main before that refusal: a time64 file into a
+		 * date column stored 687342-02-27, from the low 4 bytes of an 8-byte
+		 * carrier.
 		 */
 		switch (typetag)
 		{
 			case ARROW_TYPE_Date:
-				if (n->kind != A_DATE32)
-					imp_field_mismatch("a date", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_DU_MILLI;
 				if (n->srcUnit != ARROW_DU_DAY && n->srcUnit != ARROW_DU_MILLI)
@@ -1999,8 +2043,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		bits;
 
-					if (n->kind != A_TIME64)
-						imp_field_mismatch("a time", n->typid);
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 					n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_MILLI;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* bitWidth (i32) */
@@ -2027,17 +2069,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					int32		bits;
 					bool		isSigned;
 
-					/*
-					 * Only when the target is the same FAMILY. A file whose tag
-					 * does not match the column's family at all -- an int64 read
-					 * into a timestamp as raw microseconds -- is long-standing
-					 * accepted behaviour with its own control in
-					 * test/arrow_import.sh, and #881 is about values corrupted
-					 * WITHIN a family, not about changing that.
-					 */
-					if (n->kind != A_INT16 && n->kind != A_INT32 &&
-						n->kind != A_INT64)
-						break;
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* bitWidth */
 					bits = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* is_signed */
@@ -2048,7 +2079,8 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					 * carrier is a different width is read at the wrong offsets:
 					 * int64 into int returned 0,0,1,2 for 1,2,3,4. And every
 					 * PostgreSQL integer is signed, so a uint64 carrying a value
-					 * above 2^63 reads as negative. Both were silent.
+					 * above 2^63 reads as negative. Both were silent. A timestamp
+					 * node has width 8, so it takes only a signed int64 (#2082).
 					 */
 					if (bits != n->width * 8)
 						imp_field_mismatch("an integer of a different width",
@@ -2061,8 +2093,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int16		prec;
 
-					if (n->kind != A_FLOAT32 && n->kind != A_FLOAT64)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
 					prec = pos ? fbr_i16(meta, metaLen, pos) : 0;
 					/* 0 HALF, 1 SINGLE, 2 DOUBLE; HALF has no PostgreSQL type */
@@ -2075,8 +2105,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		bw;
 
-					if (n->kind != A_UUID)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* byteWidth */
 					bw = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					if (bw != 16)
@@ -2089,8 +2117,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					int32		fprec;
 					int32		fscale;
 
-					if (n->kind != A_DECIMAL128)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
 					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
@@ -2112,8 +2138,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					break;
 				}
 			case ARROW_TYPE_Timestamp:
-				if (n->kind != A_TIMESTAMP && n->kind != A_TIMESTAMPTZ)
-					imp_field_mismatch("a timestamp", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_SECOND;
 				if (n->srcUnit < ARROW_TU_SECOND || n->srcUnit > ARROW_TU_NANO)

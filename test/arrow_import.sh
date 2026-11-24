@@ -577,6 +577,11 @@ extra = {
     # the reader would take the first half of each value.
     'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
     'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+    # #2082 fixtures: a file whose type family differs from the column's
+    'tu_utf8': pa.array(['10']),
+    'tu_bin': pa.array([b'ab'], pa.binary()),
+    'tu_bool': pa.array([True], pa.bool_()),
+    'tu_lf64': pa.array([[1.5]], pa.list_(pa.float64())),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -795,6 +800,51 @@ PY
 	check "control: a non-temporal tag is not caught by the temporal refusal" \
 		"$(tu_import_state tu_int64_ts timestamp)" "00000"
 
+	# ---- a file of another type family (#2082) -----------------------------
+	#
+	# The #881 checks run only when the file and the column share a family.
+	# Across families the reader copied the file's bytes as the column's type,
+	# so these imported bit patterns with no error on unpatched main:
+	#
+	#     float64 1.5      into bigint   -> 4609434218613702656
+	#     int64   7        into float8   -> 3.5e-323
+	#     decimal 1.25     into uuid     -> 7d000000-0000-...
+	#     list<float64>    into bigint[] -> {4609434218613702656}
+	#
+	# When the buffer layouts differed, the error was XX001 "malformed Arrow IPC
+	# file", which blames a valid file. Each is now refused by type, 42804.
+	check "a float64 file is refused for bigint (#2082)" \
+		"$(tu_import_state tu_f64 bigint)" "42804"
+	check "an int64 file is refused for float8 (#2082)" \
+		"$(tu_import_state tu_i64 float8)" "42804"
+	check "a float32 file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_f32 int)" "42804"
+	check "a decimal file is refused for uuid (#2082)" \
+		"$(tu_import_state tu_d102 uuid)" "42804"
+	check "a float64 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_f64 timestamp)" "42804"
+	check "an int32 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_i32 timestamp)" "42804"
+	check "an int32 file is refused for bool (#2082)" \
+		"$(tu_import_state tu_i32 bool)" "42804"
+	check "a string file is refused for bigint, not called malformed (#2082)" \
+		"$(tu_import_state tu_utf8 bigint)" "42804"
+	check "a boolean file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_bool int)" "42804"
+	check "a list of float64 is refused for a bigint[] column (#2082)" \
+		"$(tu_import_state tu_lf64 'bigint[]')" "42804"
+	tu_import_state tu_f64 bigint >/dev/null
+	check "and a cross-family refusal leaves the target empty (#2082)" \
+		"$(q "SELECT count(*) FROM tu_t;")" "0"
+	# The one cross-family pairing that is documented behaviour, and the two
+	# variable-width pairings that carry the same bytes, still import.
+	check "control: an int64 file still imports into timestamp as microseconds (#2082)" \
+		"$(tu_value tu_int64_ts timestamp)" "2000-01-01 00:00:00"
+	check "control: a string file still imports into bytea (#2082)" \
+		"$(tu_value tu_utf8 bytea)" '\x3130'
+	check "control: a binary file still imports into text (#2082)" \
+		"$(tu_value tu_bin text)" "ab"
+
 	# ---- the unit on a nested field ---------------------------------------
 	check "a list element's nanosecond unit is honoured, not just the top level" \
 		"$(tu_value tu_list_ns 'timestamp[]')" "{\"2000-01-01 00:00:00\"}"
@@ -852,6 +902,20 @@ else
 			"control: a matching decimal imports" \
 			"and a refused import leaves the target empty" \
 			"control: a non-temporal tag is not caught by the temporal refusal" \
+			"a float64 file is refused for bigint (#2082)" \
+			"an int64 file is refused for float8 (#2082)" \
+			"a float32 file is refused for a 4-byte int (#2082)" \
+			"a decimal file is refused for uuid (#2082)" \
+			"a float64 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for bool (#2082)" \
+			"a string file is refused for bigint, not called malformed (#2082)" \
+			"a boolean file is refused for a 4-byte int (#2082)" \
+			"a list of float64 is refused for a bigint[] column (#2082)" \
+			"and a cross-family refusal leaves the target empty (#2082)" \
+			"control: an int64 file still imports into timestamp as microseconds (#2082)" \
+			"control: a string file still imports into bytea (#2082)" \
+			"control: a binary file still imports into text (#2082)" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
 			"a struct field's nanosecond unit is honoured at child index 1"; do
 		check_skip "$_ai_types" \

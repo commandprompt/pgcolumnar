@@ -1024,6 +1024,12 @@ example with pyarrow.
 `import_arrow` refuses a list of lists or a list of maps for an array column
 too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
 a large list, which it does not read.
+`import_arrow` reads an Arrow column only into a column of the same type family.
+For example, it refuses a float64 for a `bigint` column and a string for a
+`bigint` column, with SQLSTATE 42804 (#2082). It does not convert the values.
+It reads three pairings across families. A signed int64 reads into `timestamp`
+or `timestamptz` as microseconds since 1970-01-01. A string reads into `bytea`,
+and a binary reads into `text`, `varchar`, `json`, `jsonb` or `numeric`.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |

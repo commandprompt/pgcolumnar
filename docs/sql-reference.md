@@ -976,9 +976,14 @@ Nanoseconds are narrowed to microseconds, the finest resolution PostgreSQL
 stores. Narrowing floors, so an instant before 1970 reports the microsecond it
 falls in. Sub-microsecond precision is lost; nothing else is.
 
-A temporal Arrow type the target column cannot hold is refused with `42804`
-rather than read. A `time64` file does not import into a `date` column. A file
-whose type is not temporal is unaffected.
+An Arrow type from another type family than the target column's is refused
+with `42804` rather than read, and the message names the column (#2082). A `time64` file does not
+import into a `date` column, and a `float64` file does not import into a
+`bigint` column. The reader does not convert values between type families.
+Three pairings across families are read. A signed `int64` reads into a
+`timestamp` or `timestamptz` column as microseconds since 1970-01-01. A `Utf8`
+column reads into `bytea`, and a `Binary` column reads into `text`, `varchar`,
+`json`, `jsonb` or `numeric`.
 
 A nested Arrow type the target column cannot hold is refused with `42804`, and
 the message names the column (#1932). An array column reads one `List` level.

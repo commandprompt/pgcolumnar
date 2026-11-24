@@ -321,6 +321,7 @@ arrow_export	arrow_export	the byte cut counts an int list's elements as written:
 arrow_export	arrow_export	the byte cut counts an int4's validity byte: 1000 int4 rows under a 1024-byte cap make batches of 204,204,204,204,184	15;16;17;18;19	2026-10-31	each row counted at its stored size, not as written (#1811)
 arrow_import	arrow_import	a Feather v2 file imports its rows too (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	a body length larger than the rest of the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed;import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
+arrow_import	arrow_import	a boolean file is refused for a 4-byte int (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a date32 before PostgreSQL's first date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a date32 file is refused for a bigint column, not read past its buffer	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date32 file is refused for a numeric(20,4) column, not read past its buffer	15;16;17;18;19	never	-
@@ -334,8 +335,13 @@ arrow_import	arrow_import	a date64 instant before the epoch floors rather than t
 arrow_import	arrow_import	a date64 instant mid-day reports the day it falls in	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date64 past PostgreSQL's last date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a decimal at another scale is refused (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	a decimal file is refused for uuid (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a float32 file is refused for a 4-byte int (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a float32 file is refused for float8 (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	a float64 file is refused for bigint (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a float64 file is refused for timestamp (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a list element's nanosecond unit is honoured, not just the top level	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	a list of float64 is refused for a bigint[] column (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)	15;16;17;18;19	2026-11-01	imp_check_bounds without its value-buffer row-count check (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a lossy nanosecond file imports every row	15;16;17;18;19	never	-
 arrow_import	arrow_import	a metadata length larger than the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
@@ -343,6 +349,7 @@ arrow_import	arrow_import	a nanosecond timestamp before the epoch floors rather 
 arrow_import	arrow_import	a nanosecond timestamp truncates to microseconds	15;16;17;18;19	never	-
 arrow_import	arrow_import	a negative nanosecond time is refused, not narrowed into midnight	15;16;17;18;19	never	-
 arrow_import	arrow_import	a second count that overflows on scaling is refused, not wrapped	15;16;17;18;19	never	-
+arrow_import	arrow_import	a string file is refused for bigint, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a struct field's nanosecond unit is honoured at child index 1	15;16;17;18;19	2026-11-01	imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a time past midnight is refused	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time32 in milliseconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
@@ -362,13 +369,18 @@ arrow_import	arrow_import	an Arrow IPC file whose footer length is negative or l
 arrow_import	arrow_import	an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)	15;16;17;18;19	2026-10-31	import_arrow: body-length bound > flipped to >=;import_arrow: streamPos += bodyLength removed;import_arrow: streamPos >= streamEnd removed from the message loop head
 arrow_import	arrow_import	an Arrow IPC file without its trailing magic is refused as malformed (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	an int32 file is refused for bigint (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	an int32 file is refused for bool (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	an int32 file is refused for timestamp (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	an int64 file is refused for a 4-byte int (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	an int64 file is refused for float8 (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	and a cross-family refusal leaves the target empty (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	and a microsecond file	15;16;17;18;19	never	-
 arrow_import	arrow_import	and a refused import leaves the target empty	15;16;17;18;19	never	-
 arrow_import	arrow_import	and does not report the row count instead	15;16;17;18;19	never	-
 arrow_import	arrow_import	and that file imports every row as well	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	backend still up after the import_arrow FIFO refusal	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a 16-byte fixed-size binary imports into uuid	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a binary file still imports into text (#2082)	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a map file still imports into an array of a composite (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a matching decimal imports	15;16;17;18;19	never	-
@@ -378,6 +390,8 @@ arrow_import	arrow_import	control: a matching int32 file imports into int	15;16;
 arrow_import	arrow_import	control: a matching int64 file imports into bigint	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a microsecond file reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a non-temporal tag is not caught by the temporal refusal	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a string file still imports into bytea (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: an int64 file still imports into timestamp as microseconds (#2082)	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: an ns file on microsecond boundaries reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3:// past its start (#1886)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1886)
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)

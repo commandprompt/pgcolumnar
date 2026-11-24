@@ -340,6 +340,10 @@ def _temporal_fixtures(pa, out):
         "tu_int64_ts": pa.array([946684800 * 10**6], pa.int64()),
         # three date32 rows: a 12-byte buffer a stride-8 decoder runs off the end of
         "tu_d32_3": pa.array([10957, 10958, 10959], pa.date32()),
+        # #2082: a file whose type family differs from the column's
+        "tu_utf8": pa.array(["10"]), "tu_bin": pa.array([b"ab"], pa.binary()),
+        "tu_bool": pa.array([True], pa.bool_()),
+        "tu_lf64": pa.array([[1.5]], pa.list_(pa.float64())),
     }
     for name, arr in extra.items():
         _write_stream(pa, out / f"{name}.arrows", pa.table({"v": arr}))
@@ -459,6 +463,48 @@ def test_the_refusals_and_every_temporal_carrier(pgc_conn, server_dir, expect):
     _run(conn, "DROP TYPE IF EXISTS tu_st CASCADE", "CREATE TYPE tu_st AS (a int, b timestamp)")
     expect.text(tu_value("tu_struct_ns", "tu_st"), '(7,"2000-01-01 00:00:00")',
                 "a struct field's nanosecond unit is honoured at child index 1")
+
+
+def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, expect):
+    """#2082: the #881 parameter checks ran only within a type family. Across
+    families the reader copied the file's bytes as the column's type, so float64
+    1.5 into bigint stored 4609434218613702656, and three strings into bigint failed
+    with XX001, calling a valid file malformed. Each pairing is refused by type."""
+    pa = expect.require_module("pyarrow", name="a float64 file is refused for bigint (#2082)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _temporal_fixtures(pa, server_dir)
+
+    def state(fixture, pgtype):
+        _run(conn, "DROP TABLE IF EXISTS cf_t", f"CREATE TABLE cf_t (v {pgtype}) USING pgcolumnar")
+        return _state(conn, f"SELECT pgcolumnar.import_arrow('cf_t', '{server_dir / (fixture + '.arrows')}')")
+
+    expect.text(state("tu_f64", "bigint"), "42804", "a float64 file is refused for bigint (#2082)")
+    expect.text(state("tu_i64", "float8"), "42804", "an int64 file is refused for float8 (#2082)")
+    expect.text(state("tu_f32", "int"), "42804", "a float32 file is refused for a 4-byte int (#2082)")
+    expect.text(state("tu_d102", "uuid"), "42804", "a decimal file is refused for uuid (#2082)")
+    expect.text(state("tu_f64", "timestamp"), "42804", "a float64 file is refused for timestamp (#2082)")
+    expect.text(state("tu_i32", "timestamp"), "42804", "an int32 file is refused for timestamp (#2082)")
+    expect.text(state("tu_i32", "bool"), "42804", "an int32 file is refused for bool (#2082)")
+    expect.text(state("tu_utf8", "bigint"), "42804",
+                "a string file is refused for bigint, not called malformed (#2082)")
+    expect.text(state("tu_bool", "int"), "42804", "a boolean file is refused for a 4-byte int (#2082)")
+    expect.text(state("tu_lf64", "bigint[]"), "42804",
+                "a list of float64 is refused for a bigint[] column (#2082)")
+    state("tu_f64", "bigint")
+    expect.num(_one(conn, "SELECT count(*) FROM cf_t"), 0,
+               "and a cross-family refusal leaves the target empty (#2082)")
+
+    def value(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT v::text FROM cf_t LIMIT 1") if st == "00000" else st
+
+    expect.text(value("tu_int64_ts", "timestamp"), "2000-01-01 00:00:00",
+                "control: an int64 file still imports into timestamp as microseconds (#2082)")
+    expect.text(value("tu_utf8", "bytea"), "\\x3130",
+                "control: a string file still imports into bytea (#2082)")
+    expect.text(value("tu_bin", "text"), "ab", "control: a binary file still imports into text (#2082)")
 
 
 def test_an_import_maintains_the_tables_indexes(pgc_conn, server_dir, expect):
