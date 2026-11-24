@@ -615,6 +615,12 @@ true until the next version shipped.
   combining that result with a finite one looked like an overflow from finite
   inputs. It now keeps NaN where core does. The returned average was never
   affected. `test_native_groupagg.py`, `test/native_groupagg.sh` (#2068).
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
+
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
