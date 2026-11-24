@@ -3859,6 +3859,14 @@ index_only	index_only	after vacuum: block 120 all-visible	15;16;17;18;19	2026-10
 index_only	index_only	after vacuum: block 50 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	before vacuum: block 50 not all-visible	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
 index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set

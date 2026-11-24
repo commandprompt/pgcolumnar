@@ -8,6 +8,8 @@ pgcolumnar.enable_index_only_scan off no index-only scan is planned; on, one is,
 all-visible blocks are served with zero heap fetches while a deleted range falls back
 to the fetch. And an old REPEATABLE READ snapshot never sees, through an index-only
 scan, rows committed after it, even after a VACUUM.
+A VACUUM that runs while a DELETE or UPDATE is still inside its statement does not
+leave the changed block all-visible after the writer commits (#2059).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The planner settings are set on that database, as the
@@ -15,6 +17,8 @@ shell sets them, so every fresh connection inherits them. Session A is a second
 connection holding its snapshot open while the writer commits and vacuums.
 """
 import re
+import threading
+import time
 
 import psycopg
 import pytest
@@ -72,6 +76,57 @@ def _plan(dsn, sql, sets=()):
 def _fetches(plan):
     m = None if _failed(plan) else re.search(r"Heap Fetches: (\d+)", plan)
     return m.group(1) if m else ""
+
+
+def _vm_race(dsn, r, tag, tbl, dml):
+    """#2059: VACUUM while `dml` is paused inside its statement, then commit it.
+
+    The writer keeps its delete marks in memory until the statement ends. Its CTE
+    waits on advisory lock 2059, which a holder connection takes first, so the
+    VACUUM runs after every row is marked and before the marks reach the catalog.
+    Rows 300..400 lie in synthetic block 1 (rows 291..581), inside row group 0.
+    """
+    vis = f"SELECT pgcolumnar.vm_is_visible('{tbl}', 1)"
+    _run(dsn, f"CREATE TABLE {tbl} (id int, pad int) USING pgcolumnar; "
+              f"INSERT INTO {tbl} SELECT g, g FROM generate_series(1, 20000) g; "
+              f"CREATE INDEX {tbl}_id ON {tbl} (id);")
+    _run(dsn, f"VACUUM {tbl}")
+    r[f"race {tag} before"] = _value(dsn, vis)
+    out = {}
+    try:
+        with psycopg.connect(dsn, autocommit=True) as holder, \
+                psycopg.connect(dsn, autocommit=True) as writer:
+            holder.execute("SELECT pg_advisory_lock(2059)")
+
+            def write():
+                try:
+                    writer.execute(f"WITH d AS ({dml} RETURNING 1) "
+                                   "SELECT count(*), pg_advisory_lock_shared(2059) FROM d")
+                except psycopg.Error as exc:
+                    out["writer"] = query_error(_message(exc))
+
+            t = threading.Thread(target=write)
+            t.start()
+            waiting = "no"
+            for _ in range(200):
+                if _value(dsn, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                               "AND objid = 2059 AND NOT granted") == "1":
+                    waiting = "yes"
+                    break
+                time.sleep(0.1)
+            _run(dsn, f"VACUUM {tbl}")
+            r[f"race {tag} paused"] = waiting
+            holder.execute("SELECT pg_advisory_unlock(2059)")
+            t.join(60)
+    except psycopg.Error as exc:
+        r[f"race {tag} paused"] = query_error(_message(exc))
+    if "writer" in out:
+        r[f"race {tag} paused"] = out["writer"]
+    r[f"race {tag} after"] = _value(dsn, vis)
+    rng = f"SELECT count(*) FROM {tbl} WHERE id BETWEEN 300 AND 400"
+    plan = _plan(dsn, "EXPLAIN (COSTS OFF) " + rng)
+    r[f"race {tag} ios"] = (_value(dsn, rng) if not _failed(plan) and "Index Only Scan" in plan
+                            else f"no index-only scan was planned: {plan}")
 
 
 @pytest.fixture(scope="module")
@@ -146,6 +201,10 @@ def io(pgc_cluster):
         except psycopg.Error as exc:
             for k in ("snap", "see", "a plan", "final"):
                 r.setdefault(k, query_error(_message(exc)))
+
+        for tag, tbl, dml in (("del", "vr_del", "DELETE FROM vr_del WHERE id BETWEEN 300 AND 400"),
+                              ("upd", "vr_upd", "UPDATE vr_upd SET id = id + 1000000 WHERE id BETWEEN 300 AND 400")):
+            _vm_race(dsn, r, tag, tbl, dml)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -277,3 +336,37 @@ def test_session_a_used_an_index_only_scan(io, expect):
 
 def test_new_snapshot_sees_both_batches(io, expect):
     expect.text(str(io["final"]), "20000", "new snapshot sees both batches")
+
+
+def test_concurrent_vacuum_during_delete_block_1_all_visible_before(io, expect):
+    expect.text(io["race del before"], "t",
+                "concurrent vacuum during delete: block 1 all-visible before the writer starts")
+
+
+def test_concurrent_vacuum_during_delete_vacuum_ran_while_writer_paused(io, expect):
+    expect.text(io["race del paused"], "yes", "concurrent vacuum during delete: vacuum ran while the writer was paused")
+
+
+def test_concurrent_vacuum_during_delete_block_1_not_all_visible_after_commit(io, expect):
+    expect.text(io["race del after"], "f", "concurrent vacuum during delete: block 1 not all-visible after commit")
+
+
+def test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["race del ios"], "0", "concurrent vacuum during delete: index-only scan returns no deleted row")
+
+
+def test_concurrent_vacuum_during_update_block_1_all_visible_before(io, expect):
+    expect.text(io["race upd before"], "t",
+                "concurrent vacuum during update: block 1 all-visible before the writer starts")
+
+
+def test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused(io, expect):
+    expect.text(io["race upd paused"], "yes", "concurrent vacuum during update: vacuum ran while the writer was paused")
+
+
+def test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit(io, expect):
+    expect.text(io["race upd after"], "f", "concurrent vacuum during update: block 1 not all-visible after commit")
+
+
+def test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["race upd ios"], "0", "concurrent vacuum during update: index-only scan returns no deleted row")

@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- An index-only scan no longer returns rows that a committed DELETE or UPDATE
+  removed, after a VACUUM ran while that statement was still running (#2059).
+  The writer clears a block's all-visible bit when it marks a row, but keeps the
+  mark in memory until the statement ends. A VACUUM in between could not see the
+  mark, so it set the bit again, and nothing cleared it at commit. An index-only
+  scan then skipped the row check and counted the deleted rows until a later
+  write touched the block. Autovacuum can hit this during any long DELETE or
+  UPDATE. The writer now clears the bits again after it writes the marks to the
+  catalog, and VACUUM checks the row groups again after it sets bits and clears
+  any that are no longer all-visible. `test/index_only.sh` and
+  `test_index_only.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

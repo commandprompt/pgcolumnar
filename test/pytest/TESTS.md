@@ -9816,11 +9816,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan.
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059).
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait.
 
 | test | what it holds |
 | --- | --- |
@@ -9851,6 +9851,14 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
 | `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
 | `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
+| `test_concurrent_vacuum_during_delete_block_1_all_visible_before` | concurrent vacuum during delete: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_block_1_not_all_visible_after_commit` | concurrent vacuum during delete: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row` | concurrent vacuum during delete: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_update_block_1_all_visible_before` | concurrent vacuum during update: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused` | concurrent vacuum during update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit` | concurrent vacuum during update: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row` | concurrent vacuum during update: index-only scan returns no deleted row (#2059) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
