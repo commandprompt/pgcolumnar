@@ -9261,6 +9261,12 @@ ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float avg :: on==off	15;16;
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered float sum :: on==off	15;16;17;18;19	2026-10-20	sum(float) on the fold drops the first non-null value
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered int8 sum :: on==off	15;16;17;18;19	never	-
 ungrouped_vector_agg	ungrouped_vector_agg	unfiltered numeric avg :: on==off	15;16;17;18;19	2026-10-20	the numeric refusal raises an error instead of declining
+unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: exactly one row with key 1	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	10 deferrable initially IMMEDIATE unique: the same-key inserter got a unique_violation	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	11 deferrable initially DEFERRED unique: a same-key inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	11 deferrable initially DEFERRED unique: exactly one row with key 1	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	11 deferrable initially DEFERRED unique: the same-key inserter got a unique_violation	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	1a pre-fix: lock disabled lets both same-key inserts commit (bug)	15;16;17;18;19	2026-10-15	pgcolumnar.enable_unique_insert_lock ignored, so the lock is taken when it is off
 unique_conc	unique_conc	1b post-fix: blocked inserter got a unique_violation	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
 unique_conc	unique_conc	1b post-fix: exactly one row with key 1	15;16;17;18;19	2026-10-15	the per-key advisory lock never taken
@@ -9292,6 +9298,9 @@ unique_conc	unique_conc	7 same-statement duplicate inserted no rows	15;16;17;18;
 unique_conc	unique_conc	7 same-statement duplicate raises unique_violation	15;16;17;18;19	never	-
 unique_conc	unique_conc	8 after first aborts, second insert succeeds; one row	15;16;17;18;19	never	-
 unique_conc	unique_conc	8 second inserter blocks behind uncommitted first	15;16;17;18;19	never	-
+unique_conc	unique_conc	9 exclusion constraint: an overlapping inserter blocks	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	9 exclusion constraint: exactly one row overlaps [5,15)	15;16;17;18;19	2026-11-24	-
+unique_conc	unique_conc	9 exclusion constraint: the overlapping inserter got an exclusion_violation	15;16;17;18;19	2026-11-24	-
 unique_conc	unique_conc	the bucket count cannot be changed per session	15;16;17;18;19	never	-
 unique_conc	unique_conc	the cluster runs the bucket count the suite needs	15;16;17;18;19	never	-
 update_conc	update_conc	CONTROL serial columnar keeps one row (GREEN today; proves the RED is the overlap)	15;16;17;18;19	never	-

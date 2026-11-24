@@ -7776,7 +7776,7 @@ A TIMESTAMP COLUMN AGAINST A TIMESTAMPTZ CONSTANT (#1738) is not skipped on: the
 
 The pytest twin of `test/unique_conc.sh` (#5, ported for #1341), every check by the shell's name. A columnar row's btree entry is written at once while its data waits for the stripe to flush, so a second inserter of the same key could not see the first's row and would insert a duplicate. The table AM takes a transaction-scoped advisory lock per unique key, hashed with the key type's default hash. So the second inserter waits for the first to commit and gets 23505, asserted by SQLSTATE and the index's name. T1 is held mid-INSERT, its key row indexed and unflushed, by a second row that waits in `cq_block` on a lock a holder session has. Every barrier polls `pg_stat_activity` for a lock wait.
 
-The shapes: one key, with the lock off in T2 as the control that shows the bug; keys equal under the opclass with different bytes (numeric 1.0 and 1.00, and citext by case); different keys, which must not wait; a multi-column key, equal and differing in its second column; a partial index, inside and outside its predicate; NULL keys under NULLS DISTINCT and NULLS NOT DISTINCT; a duplicate within one statement; and a first inserter that aborts. A private cluster runs `pgcolumnar.unique_lock_buckets` at 100003, which is fixed at server start, so unrelated keys do not share a bucket.
+The shapes: one key, with the lock off in T2 as the control that shows the bug; keys equal under the opclass with different bytes (numeric 1.0 and 1.00, and citext by case); different keys, which must not wait; a multi-column key, equal and differing in its second column; a partial index, inside and outside its predicate; NULL keys under NULLS DISTINCT and NULLS NOT DISTINCT; a duplicate within one statement; a first inserter that aborts; and (#2063) an exclusion constraint over ranges and a DEFERRABLE unique constraint, initially immediate and initially deferred. In those three T2 commits as soon as its INSERT returns, so a T2 that did not wait keeps its row and the count shows the duplicate. A private cluster runs `pgcolumnar.unique_lock_buckets` at 100003, which is fixed at server start, so unrelated keys do not share a bucket.
 
 ### Every test
 
@@ -7790,6 +7790,8 @@ The shapes: one key, with the lock off in T2 as the control that shows the bug; 
 | `test_a_multi_column_key` | (1,2) twice serializes and conflicts; (5,6) and (5,7) do not wait |
 | `test_a_partial_unique_index` | inside the predicate the keys serialize and conflict; outside it neither waits and both rows are kept |
 | `test_null_keys` | two NULLs never wait under NULLS DISTINCT; under NULLS NOT DISTINCT they serialize and conflict |
+| `test_an_exclusion_constraint` | `EXCLUDE USING gist (r WITH &&)`: an overlapping T2 waits, gets 23P01 naming the constraint, and one row overlaps (#2063) |
+| `test_a_deferrable_unique_constraint` | parametrized, initially immediate and initially deferred: a same-key T2 waits, gets 23505 naming the constraint (at COMMIT when deferred), and one row is left (#2063) |
 | `test_a_duplicate_within_one_statement` | one INSERT of the same key twice raises 23505 and inserts nothing |
 | `test_an_aborted_first_inserter` | T2 waits behind T1's flushed, uncommitted row; T1 rolls back and T2's insert succeeds |
 

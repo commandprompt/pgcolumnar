@@ -605,6 +605,18 @@ true until the next version shipped.
 
 ### Fixed
 
+- Two overlapping inserts can no longer both commit rows that violate an
+  exclusion constraint or a `DEFERRABLE` unique constraint (#2063). A columnar
+  row stays in its backend's buffer until the statement ends, so another
+  backend's constraint check could not see it, did not wait, and let the
+  conflicting row in. Since #5 a transaction-scoped advisory lock closes that
+  window, but it covered only immediate unique indexes. It now also covers
+  deferrable unique indexes, by key, and exclusion constraints, with one lock
+  for the whole index because the operator need not be equality. The second
+  insert now waits for the first and fails with 23P01 or 23505, as on heap.
+  Concurrent inserts into a table with an exclusion constraint now go in
+  sequence even when their rows do not conflict. docs/limitations.md.
+  `test/unique_conc.sh` and `test_unique_conc.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

@@ -363,3 +363,60 @@ def test_an_aborted_first_inserter(race, expect):
     race.run(race.s2, "COMMIT")
     expect.text(f"{race.one('SELECT count(*) FROM s_ab WHERE k = 1')}|{err.sqlstate if err else 'no error'}",
                 "1|no error", "8 after first aborts, second insert succeeds; one row")
+
+
+def _refused(err, sqlstate, constraint):
+    """'yes' when err carries sqlstate and names constraint, else what arrived."""
+    if err is not None and err.sqlstate == sqlstate and f'"{constraint}"' in str(err):
+        return "yes"
+    return f"no ({err.sqlstate}: {str(err).splitlines()[0]})" if err is not None else "no (no error)"
+
+
+def _settle_by_commit(race, hkey):
+    """After `conflict`: T2 commits as soon as its INSERT returns, and T1 finishes
+    and commits. A T2 that did not wait commits before T1 is released and keeps its
+    row for the count to find (#2063). Rolled back, or committed after T1, it would
+    hide the row: T1's flush waits for T2's transaction, and lock_timeout cancels T1.
+    -> T2's error from its INSERT or, for a deferred check, from its COMMIT."""
+    if not race.s2.thread.is_alive():
+        err = race.s2.error
+        commit_err = race.run(race.s2, "COMMIT")
+        race.release_s1(hkey)
+        race.run(race.s1, "COMMIT")
+    else:
+        race.release_s1(hkey)
+        race.run(race.s1, "COMMIT")
+        err = race.finish(race.s2)
+        commit_err = race.run(race.s2, "COMMIT")
+    return err or commit_err
+
+
+def test_an_exclusion_constraint(race, expect):
+    """#2063: the key lock covered only unique indexes. An exclusion constraint has
+    no equality key to hash, so an overlapping inserter must still wait for T1."""
+    race.run(race.s1, "CREATE TABLE s_ex (r int4range, "
+                      "CONSTRAINT s_ex_excl EXCLUDE USING gist (r WITH &&)) USING pgcolumnar")
+    expect.num(race.conflict(1013, "s_ex", _paused("int4range(1, 10)", "cq_block(1013, int4range(100, 101))"),
+                             "VALUES (int4range(5, 15))"), 1,
+               "9 exclusion constraint: an overlapping inserter blocks")
+    err = _settle_by_commit(race, 1013)
+    expect.text(_refused(err, "23P01", "s_ex_excl"), "yes",
+                "9 exclusion constraint: the overlapping inserter got an exclusion_violation")
+    expect.num(race.one("SELECT count(*) FROM s_ex WHERE r && int4range(5, 15)"), 1,
+               "9 exclusion constraint: exactly one row overlaps [5,15)")
+
+
+@pytest.mark.parametrize("num, tag, mode", [(10, "di", "IMMEDIATE"), (11, "dd", "DEFERRED")])
+def test_a_deferrable_unique_constraint(race, expect, num, tag, mode):
+    """#2063: the key lock skipped a DEFERRABLE unique index (indimmediate false).
+    Checked at statement end or at commit, a same-key inserter must wait for T1."""
+    hkey = 1004 + num
+    race.run(race.s1, f"CREATE TABLE s_{tag} (k int, CONSTRAINT s_{tag}_u UNIQUE (k) "
+                      f"DEFERRABLE INITIALLY {mode}) USING pgcolumnar")
+    expect.num(race.conflict(hkey, f"s_{tag}", _paused("1", f"cq_block({hkey}, -1)"), "VALUES (1)"), 1,
+               f"{num} deferrable initially {mode} unique: a same-key inserter blocks")
+    err = _settle_by_commit(race, hkey)
+    expect.text(_refused(err, "23505", f"s_{tag}_u"), "yes",
+                f"{num} deferrable initially {mode} unique: the same-key inserter got a unique_violation")
+    expect.num(race.one(f"SELECT count(*) FROM s_{tag} WHERE k = 1"), 1,
+               f"{num} deferrable initially {mode} unique: exactly one row with key 1")

@@ -653,12 +653,15 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.unique_lock_buckets` sets and which defaults to 128. Keys hash into
   those buckets. Two keys that are not related can share a bucket. Such keys go
   in sequence when they do not need to, but they never fail to go in sequence
-  when they must. This applies to unique, immediate and valid
-  indexes. It includes multi-column indexes, partial indexes and expression
-  indexes. Some indexes use a single lock for the whole index
-  instead. The first is an index whose operator class does not match
+  when they must. This applies to valid unique indexes, immediate or
+  deferrable, and to exclusion constraints. It includes multi-column indexes,
+  partial indexes and expression indexes. Some indexes use a single lock for the
+  whole index instead. The first is an index whose operator class does not match
   the default equality of its key type. The second is an index whose key type has
-  no hash support. A
+  no hash support. The third is an exclusion constraint, because its operator,
+  such as `&&`, need not be equality (#2063). Concurrent inserts into a table
+  with an exclusion constraint therefore go in sequence even when their rows do
+  not overlap, unless a key is NULL. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`.
