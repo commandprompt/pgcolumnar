@@ -169,6 +169,32 @@ check "...and its other columns still carry real data" \
 	        AS t(id bigint, region text, amount int)")" "$REGIONS_ALL"
 check "backend still up after the null-fill reads" "$(survived "$BEFORE")" "1"
 
+# ---- equality deletes over an id-less file (#2088) --------------------------
+# An imported table that later receives an equality delete. The delete file
+# carries field ids; the data file does not. The probe that finds the deleted
+# rows must bind the delete columns through the same mapping the data read
+# uses. Before the fix it ignored the mapping, and the scan failed with a hint
+# asking for the mapping the table already has.
+BEFORE="$(crashes)"
+check "an equality delete on a long column applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,3|us|30,5|us|50"
+check "an equality delete on a string column applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqstr.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "3|us,4|us,5|us"
+# The mapping does not bind the delete column. The delete is refused, as one on
+# a column missing from an older data file is: reading the column as null would
+# keep the row the delete removes.
+check "an equality column the mapping does not bind is still refused (22023)" \
+	"$(sqlstate_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmequnbound.metadata.json')
+	                AS t(id bigint, region text, amount int)")" "22023"
+check "...and the refusal names the unbound field id" \
+	"$(errmsg_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmequnbound.metadata.json')
+	              AS t(id bigint, region text, amount int)" | grep -c "no Parquet column has field id 3")" "1"
+check "backend still up after the equality-delete reads" "$(survived "$BEFORE")" "1"
+
 # ---- the name cap, and the allocation that opens for it (#711) --------------
 # ICE_MAX_NAME_MAPPING bounds the NAME count, and the entry count is not an
 # upper bound on it: one entry carries a whole list of names, so a single entry

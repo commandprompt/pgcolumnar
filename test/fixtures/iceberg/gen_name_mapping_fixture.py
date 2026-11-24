@@ -230,6 +230,80 @@ emit("nmbigid", SCHEMA_STD,
       {"field-id": 2, "names": ["region"]},
       {"field-id": 3, "names": ["amount"]}])
 
+# ---- equality deletes over the id-less file (#2088, additive) --------------
+# An imported table that later receives an equality delete (a Flink upsert, a
+# merge-on-read DELETE). The delete file carries real field ids, as any Iceberg
+# writer's does; the data file still carries none. The delete columns must bind
+# through the same name mapping the data read uses. Everything below ADDS files;
+# nothing written above is touched.
+ENTRY_SCHEMA_EQ = json.dumps({"type": "record", "name": "manifest_entry", "fields": [
+    {"name": "status", "type": "int"},
+    {"name": "sequence_number", "type": ["null", "long"]},
+    {"name": "data_file", "type": {"type": "record", "name": "df", "fields": [
+        {"name": "content", "type": "int"},
+        {"name": "file_path", "type": "string"},
+        {"name": "file_format", "type": "string"},
+        {"name": "record_count", "type": "long"},
+        {"name": "file_size_in_bytes", "type": "long"},
+        {"name": "equality_ids",
+         "type": ["null", {"type": "array", "items": "int"}]}]}}]}).encode()
+DEL_SEQ = 2
+
+
+def write_eqdel(name, col, field_id, typ, values):
+    """An equality-delete Parquet with one column carrying PARQUET:field_id."""
+    schema = pa.schema([pa.field(col, typ, metadata={b"PARQUET:field_id": str(field_id).encode()})])
+    pq.write_table(pa.table({col: pa.array(values, typ)}, schema=schema),
+                   os.path.join(OUT, "db", "t", "data", name))
+    return f"{LOC}/data/{name}"
+
+
+def emit_eq(tag, fields, mapping, del_path, eq_id, nrows):
+    """One arm: the id-less data.parquet (seq 1) plus one equality delete on
+    field eq_id (seq 2), under the given schema and name mapping."""
+    xm_name = f"eq-manifest-{tag}.avro"
+    rec = zz(1) + (zz(1) + zz(DEL_SEQ)) + zz(2) + s(del_path.encode()) + \
+        s(b"PARQUET") + zz(nrows) + zz(1000) + zz(1) + zz(1) + zz(eq_id) + zz(0)
+    open(os.path.join(md, xm_name), "wb").write(ocf(ENTRY_SCHEMA_EQ, rec))
+    ml_name = f"manifest-list-{tag}.avro"
+    sync = b"\x00" * 16
+    meta = zz(2) + s(b"avro.schema") + s(MFILE_SCHEMA) + s(b"avro.codec") + s(b"null") + zz(0)
+    ml = b"Obj\x01" + meta + sync
+    for r in (mfile(DM, 0, SEQ, SNAP, 1, 5),
+              mfile(f"{LOC}/metadata/{xm_name}", 1, DEL_SEQ, SNAP, 1, nrows)):
+        ml += zz(1) + zz(len(r)) + r + sync
+    open(os.path.join(md, ml_name), "wb").write(ml)
+    metadata = {
+        "format-version": 2, "location": LOC, "current-schema-id": 0,
+        "schemas": [{"schema-id": 0, "type": "struct", "fields": fields}],
+        "partition-specs": [{"spec-id": 0, "fields": []}], "default-spec-id": 0,
+        "properties": {"schema.name-mapping.default": json.dumps(mapping)},
+        "current-snapshot-id": SNAP,
+        "snapshots": [{"snapshot-id": SNAP, "sequence-number": DEL_SEQ,
+                       "timestamp-ms": 0,
+                       "manifest-list": f"{LOC}/metadata/{ml_name}",
+                       "summary": {"operation": "overwrite"}, "schema-id": 0}],
+    }
+    open(os.path.join(md, f"{tag}.metadata.json"), "w").write(json.dumps(metadata))
+
+
+EQ_ID = write_eqdel("eqdel-id.parquet", "id", 1, pa.int64(), [2, 4])
+EQ_REGION = write_eqdel("eqdel-region.parquet", "region", 2, pa.string(), ["eu"])
+EQ_AMOUNT = write_eqdel("eqdel-amount.parquet", "amount", 3, pa.int32(), [30])
+
+# nmeq: delete id IN (2, 4) -> rows 1, 3, 5
+emit_eq("nmeq", SCHEMA_STD, MAP_STD, EQ_ID, 1, 2)
+# nmeqstr: delete region = 'eu' -> rows 3, 4, 5
+emit_eq("nmeqstr", SCHEMA_STD, MAP_STD, EQ_REGION, 2, 1)
+# nmequnbound: the mapping has no name for "amount", so the delete column binds
+# to nothing in the data file. The delete must still be refused, as a delete
+# column missing from an older data file is; reading it as null would keep the
+# row the delete removes.
+emit_eq("nmequnbound", SCHEMA_STD,
+        [{"field-id": 1, "names": ["id"]},
+         {"field-id": 2, "names": ["region"]}],
+        EQ_AMOUNT, 3, 1)
+
 oracle = {"rows": [{"id": r[0], "region": r[1], "amount": r[2]} for r in ROWS]}
 open(os.path.join(OUT, "expected.json"), "w").write(json.dumps(oracle, indent=2))
 print("name-mapping fixtures written under", OUT)

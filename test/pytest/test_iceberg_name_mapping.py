@@ -170,6 +170,15 @@ def nmap(pgc_cluster, server_dir):
                                         f"FROM {scan('nmevolve')}")
         r["up nullfill"] = _survived(dsn, pgc_cluster, before)
 
+        # equality deletes over the id-less file (#2088)
+        before = _crashes(pgc_cluster)
+        r["eq long"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                 f"FROM {scan('nmeq')}")
+        r["eq string"] = _one(dsn, f"SELECT string_agg(id || '|' || region, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeqstr')}")
+        r["eq unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmequnbound')}")
+        r["up eq"] = _survived(dsn, pgc_cluster, before)
+
         before = _crashes(pgc_cluster)
         _write_caps(mdir)
         r["cap at"] = _one(dsn, f"SELECT count(*) FROM {scan('nmcap_at')}")
@@ -294,6 +303,46 @@ def test_name_mapping_backend_up_after_null_fill(nmap, expect):
     if _declined(nmap, expect):
         return
     expect.text(nmap["up nullfill"], "1", "backend still up after the null-fill reads")
+
+
+def test_name_mapping_equality_delete_long(nmap, expect):
+    """#2088: the equality-delete probe binds the delete column through the name
+    mapping, as the data read does. Before the fix the scan was refused with a hint
+    asking for the mapping the table already has."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq long"], "1|eu|10,3|us|30,5|us|50",
+                "an equality delete on a long column applies to an id-less file")
+
+
+def test_name_mapping_equality_delete_string(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq string"], "3|us,4|us,5|us",
+                "an equality delete on a string column applies to an id-less file")
+
+
+def test_name_mapping_equality_unbound_is_refused(nmap, expect):
+    """A delete column the mapping does not bind stays refused: reading it as null
+    would keep the row the delete removes."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq unbound"][0], "22023",
+                "an equality column the mapping does not bind is still refused (22023)")
+
+
+def test_name_mapping_equality_unbound_names_the_id(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    text = nmap["eq unbound"][1]
+    expect.text("1" if "no Parquet column has field id 3" in text else f"0 ({text})", "1",
+                "...and the refusal names the unbound field id")
+
+
+def test_name_mapping_backend_up_after_equality_deletes(nmap, expect):
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["up eq"], "1", "backend still up after the equality-delete reads")
 
 
 def test_name_mapping_at_the_cap_is_accepted(nmap, expect):

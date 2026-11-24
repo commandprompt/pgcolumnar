@@ -10851,7 +10851,7 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
-The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, and the cap's opening allocation by a source read with comments blanked out.
+The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, equality deletes applied through the mapping with an unbound delete column still refused (#2088), and the cap's opening allocation by a source read with comments blanked out.
 
 ### Every test
 
@@ -10876,6 +10876,11 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_added_column_reads_null` | a column added after the file was written reads null (schema evolution) |
 | `test_name_mapping_evolved_columns_are_real` | ...and its other columns still carry real data |
 | `test_name_mapping_backend_up_after_null_fill` | backend still up after the null-fill reads |
+| `test_name_mapping_equality_delete_long` | an equality delete on a long column applies to an id-less file |
+| `test_name_mapping_equality_delete_string` | an equality delete on a string column applies to an id-less file |
+| `test_name_mapping_equality_unbound_is_refused` | an equality column the mapping does not bind is still refused (22023) |
+| `test_name_mapping_equality_unbound_names_the_id` | ...and the refusal names the unbound field id |
+| `test_name_mapping_backend_up_after_equality_deletes` | backend still up after the equality-delete reads |
 | `test_name_mapping_at_the_cap_is_accepted` | a mapping with exactly the cap in names is accepted |
 | `test_name_mapping_over_the_cap_is_refused` | one name over the cap is refused |
 | `test_name_mapping_cap_refusal_names_the_cap` | ...and the refusal names the cap |

@@ -5640,6 +5640,27 @@ PgColumnarReadParquetByFieldIdNM(const char *path, TupleDesc tupdesc,
 }
 
 /*
+ * The name mapping of PgColumnarReadParquetByFieldIdNM with the missing-id rule
+ * of PgColumnarReadParquetByFieldId: an id-less column binds by name, and a
+ * requested id that still binds to nothing is an error. The Iceberg
+ * equality-delete probe reads the data file's delete columns this way (#2088).
+ */
+int64
+PgColumnarReadParquetByFieldIdNMStrict(const char *path, TupleDesc tupdesc,
+									   const int *field_ids, int nfield,
+									   const char *const *nm_names,
+									   const int *nm_ids, int nm_count,
+									   Tuplestorestate *tupstore,
+									   TupleTableSlot *slot,
+									   const PgColumnarObjStoreConfig *cfg,
+									   const char *caller)
+{
+	return pq_read_file_into(path, tupdesc, slot, pq_tuplestore_sink, tupstore,
+							 field_ids, nfield, nm_names, nm_ids, nm_count,
+							 false, NULL, 0, NULL, cfg, caller);
+}
+
+/*
  * pgcolumnar.import_parquet(rel regclass, path text) -> bigint
  */
 Datum

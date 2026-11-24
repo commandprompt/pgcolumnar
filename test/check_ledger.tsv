@@ -3465,6 +3465,7 @@ iceberg_malformed	iceberg_malformed	read_parquet on a FIFO is refused, not a han
 iceberg_name_mapping	iceberg_name_mapping	...and its other columns still carry real data	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: pq_read_rows reads every by-reference column as null past the first row group
 iceberg_name_mapping	iceberg_name_mapping	...and the refusal names schema.name-mapping.default	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	...and the refusal names the cap	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
+iceberg_name_mapping	iceberg_name_mapping	...and the refusal names the unbound field id	15;16;17;18;19	2026-11-24	-
 iceberg_name_mapping	iceberg_name_mapping	a column added after the file was written reads null (schema evolution)	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: build_imp_targets_by_field_id refuses a projected field id the file lacks instead of reading it as null
 iceberg_name_mapping	iceberg_name_mapping	a duplicate name in the mapping is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping skips the duplicate-name refusal
 iceberg_name_mapping	iceberg_name_mapping	a mapping field-id beyond int32 is refused (XX001)	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping skips the field-id range refusal
@@ -3472,9 +3473,13 @@ iceberg_name_mapping	iceberg_name_mapping	a mapping with exactly the cap in name
 iceberg_name_mapping	iceberg_name_mapping	a projected column absent from the mapping reads null, not an error	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: build_imp_targets_by_field_id refuses a projected field id the file lacks instead of reading it as null
 iceberg_name_mapping	iceberg_name_mapping	a renamed schema column still reads via the mapping name	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	an alias name in the mapping resolves the file column	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
+iceberg_name_mapping	iceberg_name_mapping	an equality column the mapping does not bind is still refused (22023)	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	an equality delete on a long column applies to an id-less file	15;16;17;18;19	2026-11-24	-
+iceberg_name_mapping	iceberg_name_mapping	an equality delete on a string column applies to an id-less file	15;16;17;18;19	2026-11-24	-
 iceberg_name_mapping	iceberg_name_mapping	an id-less data file reads by name mapping (all 5 rows)	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	an id-less file with no name mapping is refused (22023)	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	backend still up after the cap reads	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	backend still up after the equality-delete reads	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	backend still up after the name-mapping reads	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	backend still up after the name-mapping refusals	15;16;17;18;19	2026-10-21	columnar_iceberg.c: the duplicate-name refusal aborts the backend instead of raising
 iceberg_name_mapping	iceberg_name_mapping	backend still up after the null-fill reads	15;16;17;18;19	never	-

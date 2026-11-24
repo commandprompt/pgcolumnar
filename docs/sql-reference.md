@@ -1557,7 +1557,9 @@ field id to the column names an id-less file may use. Each id-less column is
 bound to the field id whose mapping lists its name. A file that carries field
 ids ignores the mapping. An id-less file with no such property is refused,
 because the specification defines no positional fallback, and the error names
-the property. The mapping is read for top-level scalar columns.
+the property. The mapping is read for top-level scalar columns. Equality
+deletes bind their columns through the same mapping, so an imported table that
+later receives an equality delete still reads (#2088).
 
 Only top-level primitive columns can be read. An output column that names a
 struct, list or map field is an error (SQLSTATE `0A000`). This holds whatever
@@ -1611,7 +1613,8 @@ refused rather than ignored. A table using them errors instead of returning
 rows it should have removed. A delete column is refused when its type has no
 supported mapping; the supported types are `int`, `long`, `string`, `boolean`,
 and `date`. A delete column that is no longer in the table's current schema is
-refused. A delete column missing from an older data file is also an error. A
+refused. A delete column missing from an older data file is also an error.
+So is a delete column that an id-less data file's name mapping does not bind. A
 partition value the reader cannot compare exactly, such as a floating-point
 value, is refused. The recorded file paths are rebased
 onto the table's actual location and resolved against a path boundary. A

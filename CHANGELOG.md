@@ -605,6 +605,17 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. docs/sql-reference.md. `test/iceberg_name_mapping.sh` and
+  `test_iceberg_name_mapping.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

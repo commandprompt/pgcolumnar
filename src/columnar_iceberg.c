@@ -3415,8 +3415,13 @@ ice_eq_probe(IceScanCtx *c, IceEntry *d, List *elig,
 	safe = ice_open_path(c->recorded_root, c->actual_root, d->file_path,
 						 "data-file", c->mdpath);
 	ts = tuplestore_begin_heap(false, false, work_mem);
-	(void) PgColumnarReadParquetByFieldId(safe, ptd, uids, nuni, ts, wslot,
-										  NULL, 0, c->cfg, c->caller);
+	/* bind through the table's name mapping, as the full read does, so an
+	 * id-less (imported) data file's delete columns resolve by name (#2088);
+	 * an id the file still lacks stays an error, never a null */
+	(void) PgColumnarReadParquetByFieldIdNMStrict(safe, ptd, uids, nuni,
+												  (const char *const *) c->nm_names,
+												  c->nm_ids, c->nm_count,
+												  ts, wslot, c->cfg, c->caller);
 	dv = (Datum *) palloc(nuni * sizeof(Datum));
 	dn = (bool *) palloc(nuni * sizeof(bool));
 	while (tuplestore_gettupleslot(ts, true, false, rslot))
