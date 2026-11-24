@@ -815,7 +815,7 @@ PgColumnarGetWriteState(Relation rel)
 	 * CreateTupleDescCopy would clear. */
 	writeState->tupdesc = CreateTupleDescCopyConstr(RelationGetDescr(rel));
 	writeState->natts = writeState->tupdesc->natts;
-	writeState->tupdescIsRel = true;	/* rebuildable by a parallel-flush worker */
+	writeState->tupdescIsRel = true;	/* matches relid, so workers may flush it */
 	writeState->stripeRowLimit = pgcolumnar_stripe_row_limit;
 	writeState->chunkGroupRowLimit = pgcolumnar_chunk_group_row_limit;
 	writeState->compressionType = pgcolumnar_compression;
@@ -2552,10 +2552,12 @@ pflush_auto_workers(void)
  *
  *		Modelled on pgcolumnar_parallel_export_worker. Unlike the export path
  *		this does NOT import the launcher's snapshot: the value data lives in the
- *		DSM, not the table, so the worker reads only committed catalog (the
- *		relation's tupdesc). StartTransactionCommand plus a pushed
- *		GetTransactionSnapshot is enough to open the relation; no
- *		ExportSnapshot/ImportSnapshot is needed (owner's default decision).
+ *		DSM, not the table, so the worker reads only committed catalog (the type
+ *		cache). It never opens the relation (#2072): the column attributes come
+ *		from the backend's tuple descriptor, copied into KEY_ATTRS.
+ *		StartTransactionCommand plus a pushed GetTransactionSnapshot is enough
+ *		for the type-cache reads; no ExportSnapshot/ImportSnapshot is needed
+ *		(owner's default decision).
  */
 PGDLLEXPORT void
 pgcolumnar_parallel_flush_worker(Datum main_arg)
