@@ -692,13 +692,22 @@ check "a later expire on a column of only NULLs reads no zone map" "$(_expire_sc
 # NAME, and expire resolves it on every run. A stale name made expire fail, and
 # once another timestamp column took the old name, expire cut on that column. The
 # second column holds old values on purpose: cutting on it would retire every group.
-psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz) USING pgcolumnar;
+# Columns t (a prefix of ts) and "TS" (ts in upper case) are near misses: a name
+# test that matched a prefix or ignored case would point retention at one of them,
+# and they hold old values too.
+psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz, t timestamptz, \"TS\" timestamptz) USING pgcolumnar;
 	SELECT pgcolumnar.set_options('ttl_rn', ttl_column => 'ts', ttl_interval => '7 days');
-	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;"
+	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year' FROM generate_series(1, 3000) g;"
 check_num "premise: the rename fixture has several row groups" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_rn');")" "3"
 check_num "premise: expire retires nothing while every row is inside the retention" \
 	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN t TO t2;"
+check "renaming a column whose name is a prefix of the retention column leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN \"TS\" TO upper_ts;"
+check "renaming a column whose name differs from the retention column only in case leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
 psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts TO event_at;"
 check "the retention column follows RENAME COLUMN (#2070)" \
 	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "event_at"
@@ -710,10 +719,26 @@ check_num "a column that takes the old name is not used for retention (#2070)" \
 check_num "NO row inside the retention is dropped after the retention column is renamed" \
 	"$(q "SELECT count(*) FROM ttl_rn;")" "3000"
 
+# A rename on a table that names no retention column (#2070). ttl_rniv declares
+# only an interval, so ttl_column is NULL and expire refuses it. The rename must
+# leave ttl_column NULL: writing the new name there would turn retention on for a
+# column nobody chose, and every row here is a year old. The expire check is at
+# the end of the suite, beside ttl_hiv's, for the reason given there.
+psql_run "CREATE TABLE ttl_rniv (id int, created timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_rniv', stripe_row_limit => 1000, ttl_interval => '7 days');
+	INSERT INTO ttl_rniv SELECT g, now() - interval '1 year' FROM generate_series(1, 3000) g;
+	ALTER TABLE ttl_rniv RENAME COLUMN created TO created_at;"
+check "a rename on a table with no retention column leaves ttl_column NULL (#2070)" \
+	"$(q "SELECT coalesce(ttl_column::text, 'NULL') || '|' || coalesce(ttl_interval::text, '-') FROM pgcolumnar.options WHERE regclass = 'ttl_rniv'::regclass;")" "NULL|7 days"
+
 # The interval-only half (#1341), LAST IN THE SUITE ON PURPOSE: with the reader's
 # column test removed, expire on ttl_hiv crashed the backend (PG17), and a crash
-# mid-suite takes the checks after it down with it, premises included.
+# mid-suite takes the checks after it down with it, premises included. The
+# ttl_rniv check after it expires an interval-only table too, so it sits here
+# for the same reason (#2070).
 check "and an interval without a column is no retention either" \
 	"$(ttl_state "SELECT pgcolumnar.expire('ttl_hiv');")|$(q 'SELECT count(*) FROM ttl_hiv')" "55000|3000"
+check "after a rename, a table with no retention column is still refused (55000) and keeps every row (#2070)" \
+	"$(ttl_state "SELECT pgcolumnar.expire('ttl_rniv');")|$(q 'SELECT count(*) FROM ttl_rniv')" "55000|3000"
 
 pgc_summary

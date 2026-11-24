@@ -615,7 +615,10 @@ true until the next version shipped.
   `sketch_columns`; it now updates `ttl_column` in the same catalog row.
   `DROP COLUMN` of the retention column is unchanged: the declaration keeps
   the name and `expire` refuses with 42703. `test/ttl_expire.sh` and
-  `test_ttl_expire.py`.
+  `test_ttl_expire.py`. Four more checks pin the name test: a rename leaves a
+  NULL `ttl_column` NULL, and renaming a column whose name is a prefix or a
+  case variant of the retention column leaves `ttl_column` alone. Each went
+  red under a mutant from @OffgridwithJD's review of #2136.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types
