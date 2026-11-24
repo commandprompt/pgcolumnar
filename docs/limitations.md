@@ -1067,6 +1067,24 @@ The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
 
+## Write size limits
+
+A row group holds at most `stripe_row_limit` rows, and at most 256 MiB of values
+summed over its columns (#2071). Before a row would take the row group past
+256 MiB, the writer writes the row group and starts a new one. Wide rows therefore
+make row groups with fewer rows than `stripe_row_limit`. For example, 150000 rows
+of one 8 KB text column make five row groups, not one. A row larger than 256 MiB
+goes in a row group of its own.
+
+The 256 MiB is counted before compression, so it holds even for values that
+compress to almost nothing. It is not a setting.
+
+Before #2071, a load failed once one column's values in one row group passed
+1 GiB, with PostgreSQL's error `string buffer exceeds maximum allowed length
+(1073741823 bytes)`. With the default limits, that was a column averaging more
+than about 7 KB per row. Lowering `stripe_row_limit` and `chunk_group_row_limit`
+is no longer needed for such rows.
+
 ## Export size limits
 
 `export_parquet`, `export_arrow` and `parallel_export_parquet` write a table of any

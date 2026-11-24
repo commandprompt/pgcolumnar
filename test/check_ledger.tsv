@@ -3941,11 +3941,14 @@ isolation	isolation	isolation spec recluster_vs_delete	15;16;17;18;19	2026-10-21
 isolation	isolation	isolation spec truncate_vs_reader	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
 isolation	isolation	isolation spec truncate_vs_truncate	15;16;17;18;19	never	-
 isolation	isolation	isolation spec truncate_vs_writer	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
-large_values	large_values	a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	1.1 GB of incompressible text in one chunk group's rows loads, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
+large_values	large_values	150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
 large_values	large_values	an UPDATE that takes a TOASTed heap value stores it exactly in the columnar row	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	and the other rows are unchanged	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	premise: heap holds a 1 MB, two 16 MB and a 200 MB value	15;16;17;18;19	never	-
 large_values	large_values	premise: heap stores the new 16 MB value TOASTed, not inline	15;16;17;18;19	never	-
+large_values	large_values	premise: the row limits are the defaults, 150000 per row group and 10000 per chunk group	15;16;17;18;19	never	-
 large_values	large_values	the values copied into a columnar table are stored exactly, by length and md5	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 latest_reading	latest_reading	premise: the document's index exists	15;16;17;18;19	never	-
 latest_reading	latest_reading	premise: the document's three recipe blocks were found	15;16;17;18;19	never	-

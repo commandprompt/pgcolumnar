@@ -7531,14 +7531,15 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. Rows whose column passes 1 GB in one row group, or in one chunk group, load and are stored exactly (#2071): before the fix the writer built one buffer past 1 GB and the INSERT failed. An opt-in arm loads about 1.1 GB of incompressible text with compression off; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
-| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
+| `test_rows_past_1gb_per_row_group_or_chunk_group_load` | under the default row limits, 150000 rows of 8 KB and 10000 rows of 120 KB each load, with the right count, id sum, total length and every value intact (#2071) |
+| `test_incompressible_text_past_1gb_loads` | opt-in: about 1.1 GB of incompressible text in one chunk group's rows, compression off, commits all 1100 rows at full length with the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
