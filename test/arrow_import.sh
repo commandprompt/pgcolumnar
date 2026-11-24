@@ -577,6 +577,13 @@ extra = {
     # the reader would take the first half of each value.
     'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
     'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+    # #2081: the same three values in every Decimal bit width. The reader's
+    # stride is 16 bytes, so a 32-byte decimal256 buffer is long enough and was
+    # read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50.
+    'tu_dw128': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal128(10, 2)),
+    'tu_dw256': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal256(10, 2)),
+    'tu_dw64':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal64(10, 2)),
+    'tu_dw32':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal32(9, 2)),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -784,6 +791,23 @@ PY
 	check "control: a matching decimal imports" \
 		"$(tu_import_state tu_d204 'numeric(20,4)')" "00000"
 
+	# The Decimal bit width (#2081). The reader decodes 16-byte decimal128
+	# values only. A decimal256 file stored every other row as the high half
+	# of the row before, with no error. A decimal64 or decimal32 file was
+	# refused only by the buffer-length check, as "malformed". All three now
+	# get the same 42804 refusal as the other width mismatches. The control
+	# is the same three values as decimal128, read back value by value.
+	check "control: a 3-row decimal128 file imports every value (#2081)" \
+		"$(tu_import_state tu_dw128 'numeric(10,2)')|$(q "SELECT string_agg(v::text, ',') FROM tu_t;")" \
+		"00000|1.25,2.50,-3.75"
+	check "a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+		"$(tu_import_state tu_dw256 'numeric(10,2)')|$(q "SELECT count(*) FROM tu_t;")" \
+		"42804|0"
+	check "a decimal64 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw64 'numeric(10,2)')" "42804"
+	check "a decimal32 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw32 'numeric(10,2)')" "42804"
+
 	# A refusal must leave nothing behind: an arm that only reads the SQLSTATE
 	# would pass for a fix that errored after writing the row.
 	tu_import_state tu_u64 bigint >/dev/null
@@ -850,6 +874,10 @@ else
 			"control: a 16-byte fixed-size binary imports into uuid" \
 			"a decimal at another scale is refused (#881)" \
 			"control: a matching decimal imports" \
+			"control: a 3-row decimal128 file imports every value (#2081)" \
+			"a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+			"a decimal64 file is refused as a width mismatch (#2081)" \
+			"a decimal32 file is refused as a width mismatch (#2081)" \
 			"and a refused import leaves the target empty" \
 			"control: a non-temporal tag is not caught by the temporal refusal" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
