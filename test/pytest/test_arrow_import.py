@@ -337,6 +337,10 @@ def _temporal_fixtures(pa, out):
         "tu_d204": pa.array([decimal.Decimal("1.25")], pa.decimal128(20, 4)),
         "tu_fsb32": pa.array([b"0123456789abcdef0123456789abcdef"], pa.binary(32)),
         "tu_fsb16": pa.array([b"0123456789abcdef"], pa.binary(16)),
+        # #2081: the same three values in every Decimal bit width
+        **{f"tu_dw{bits}": pa.array([decimal.Decimal(x) for x in ("1.25", "2.50", "-3.75")], ty)
+           for bits, ty in ((128, pa.decimal128(10, 2)), (256, pa.decimal256(10, 2)),
+                            (64, pa.decimal64(10, 2)), (32, pa.decimal32(9, 2)))},
         "tu_int64_ts": pa.array([946684800 * 10**6], pa.int64()),
         # three date32 rows: a 12-byte buffer a stride-8 decoder runs off the end of
         "tu_d32_3": pa.array([10957, 10958, 10959], pa.date32()),
@@ -448,6 +452,17 @@ def test_the_refusals_and_every_temporal_carrier(pgc_conn, server_dir, expect):
     expect.text(tu_state("tu_fsb16", "uuid"), "00000", "control: a 16-byte fixed-size binary imports into uuid")
     expect.text(tu_state("tu_d102", "numeric(20,4)"), "42804", "a decimal at another scale is refused (#881)")
     expect.text(tu_state("tu_d204", "numeric(20,4)"), "00000", "control: a matching decimal imports")
+    # the Decimal bit width (#2081): the reader decodes 16-byte decimal128 only, and a
+    # 32-byte decimal256 buffer is long enough to be read at the wrong offsets
+    st = tu_state("tu_dw128", "numeric(10,2)")
+    vals = _one(conn, "SELECT string_agg(v::text, ',') FROM tu_t")
+    expect.text(f"{st}|{vals}", "00000|1.25,2.50,-3.75",
+                "control: a 3-row decimal128 file imports every value (#2081)")
+    st = tu_state("tu_dw256", "numeric(10,2)")
+    expect.text(f"{st}|{_one(conn, 'SELECT count(*) FROM tu_t')}", "42804|0",
+                "a decimal256 file is refused, not read at a 16-byte stride (#2081)")
+    expect.text(tu_state("tu_dw64", "numeric(10,2)"), "42804", "a decimal64 file is refused as a width mismatch (#2081)")
+    expect.text(tu_state("tu_dw32", "numeric(10,2)"), "42804", "a decimal32 file is refused as a width mismatch (#2081)")
     tu_state("tu_u64", "bigint")
     expect.num(_one(conn, "SELECT count(*) FROM tu_t"), 0, "and a refused import leaves the target empty")
     expect.text(tu_state("tu_int64_ts", "timestamp"), "00000",
@@ -784,6 +799,89 @@ def test_a_list_whose_offset_runs_past_its_values_is_still_malformed(pgc_conn, s
                 "1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0",
                 "a list<int64> file whose last offset runs past its value buffer is still refused as malformed"
                 " with XX001 (#1932)")
+
+
+def _server_crashes(pgc_cluster):
+    """-> how many backends the server log says died, or None when the log can't be
+    read: a blind count must not read as "no crashes"."""
+    try:
+        return (pgc_cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
+    except OSError:
+        return None
+
+def _projection_import_case(pgc_cluster, server_dir, schema, opt, proj):
+    """-> 'oOPTpPROJ:imported/rows/projection rows' for one case of #2092's matrix.
+
+    Every statement runs on a fresh connection, because a crash ends every backend,
+    the fixture's own included. Each case has its own table."""
+    import time
+    import psycopg
+
+    def connect():
+        c = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
+        c.execute(f'SET search_path TO "{schema}", public')
+        return c
+
+    t = f"aip_o{opt}p{proj}"
+    path = server_dir / f"{t}.arrows"
+    with connect() as c:
+        c.execute(f"CREATE TABLE {t} (id bigint, c int) USING pgcolumnar")
+        c.execute(f"INSERT INTO {t} SELECT g, g % 10 FROM generate_series(1, 1000) g")
+        if opt:
+            c.execute(f"SELECT pgcolumnar.set_options('{t}', compression => 'zstd')")
+        if proj:
+            c.execute(f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['c','id'],"
+                      " sort_key => ARRAY['c'])")
+        c.execute(f"SELECT pgcolumnar.export_arrow('{t}', '{path}')")
+    try:
+        with connect() as c:
+            got = str(c.execute(f"SELECT pgcolumnar.import_arrow('{t}', '{path}')").fetchone()[0])
+    except psycopg.Error as e:
+        got = e.sqlstate or "lost connection"
+    # after a crash the server needs a moment of recovery before it answers
+    for _ in range(60):
+        try:
+            with connect() as c:
+                rows = c.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                prows = (c.execute(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')").fetchone()[0]
+                         if proj else "-")
+            break
+        except psycopg.OperationalError:
+            time.sleep(1)
+    else:
+        rows = prows = "server down"
+    return f"o{opt}p{proj}:{got}/{rows}/{prows}"
+
+
+def test_an_arrow_import_into_a_table_with_a_projection_keeps_the_server_up(pgc_conn, pgc_cluster, server_dir,
+                                                                      expect):
+    """#2092: the import writes the projection's rows when the statement ends. The
+    import is a SELECT, so its statement ends in portal cleanup, where no snapshot is
+    active. The flush then read the options catalog with a snapshot nobody had
+    registered. An assert build aborted on the first catalog row the read examined, and
+    the postmaster restarted every backend.
+
+    Any table's options row is enough, so the test gives one to a neighbour table first.
+    Without it, the case without set_options passed or failed on main's code depending
+    on what earlier tests had left in the catalog. The matrix crosses projection with
+    set_options; the crash count comes from the server log, not from timing."""
+    import psycopg
+
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute(f'SET search_path TO "{schema}", public')
+        c.execute("CREATE TABLE aip_neighbour (id int) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('aip_neighbour', compression => 'zstd')")
+    before = _server_crashes(pgc_cluster)
+    got = " ".join(_projection_import_case(pgc_cluster, server_dir, schema, opt, proj)
+                   for opt in (0, 1) for proj in (0, 1))
+    now = _server_crashes(pgc_cluster)
+    got += (f" | {now - before} backend crashes" if isinstance(before, int) and isinstance(now, int)
+            else " | crash count unreadable")
+    expect.text(got, "o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000"
+                     " | 0 backend crashes",
+                "import_arrow into a table with a projection, with or without set_options, keeps the server up"
+                " and fills the projection (#2092)")
 
 
 def _layout_fixtures(pa, out):
