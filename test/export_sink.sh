@@ -144,8 +144,13 @@ SQLEOF
 		[ "$n" = "0" ] && break
 		sleep 0.1
 	done
-	printf '%s %s %s\n' "$pid" \
-		"$(printf '%s' "$out" | grep -q 'FATAL:  columnar: export write failed (injected fault)' && echo fatal || echo 'no fatal')" \
+	# A `case`, not `printf "$out" | grep -q`: under pipefail an early-exit
+	# reader can report a present match as absent (selftest 080, #486).
+	local fatal='no fatal'
+	case "$out" in
+	*'FATAL:  columnar: export write failed (injected fault)'*) fatal=fatal ;;
+	esac
+	printf '%s %s %s\n' "$pid" "$fatal" \
 		"$([ "$n" = "0" ] && echo gone || echo "still listed ($n)")"
 }
 # debris_of NAME -> the count of NAME.tmp.* files, so each arm reads only its own
