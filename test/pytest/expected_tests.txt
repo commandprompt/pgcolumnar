@@ -364,7 +364,9 @@
 # collection over NO_CLUSTER.
 # guard_tests 892 -> 894 for test_architecture_map.py: the reader naming each kind of gap on a fixture tree, and
 # the module map naming every source file and catalog, by collection over NO_CLUSTER.
-guard_tests 894
+# guard_tests 894 -> 895 for test_coverage_report.py's derived guard that every job running run_coverage.py
+# fetches the release tags first (#2054), by collection over NO_CLUSTER.
+guard_tests 895
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1912,11 +1914,18 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-# cluster_tests 5376 -> 5381 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5376 -> 5381 for #2061's five tests in test_native_encoding.py (repeated uuid, interval,
+# timetz, name, macaddr, tid and point values are stored as RLE and read back, on the exhaustive and the
+# sampled path, and ANALYZE and DELETE read them), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5381 tests collected.
+# cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
+# tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
+# cluster_tests 5384 -> 5389 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5381 -> 5384 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5389 -> 5392 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-cluster_tests 5384
+cluster_tests 5392
