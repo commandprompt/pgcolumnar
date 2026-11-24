@@ -55,7 +55,11 @@ check "round-trips after delete" \
 #     without pyarrow  5 passed + 2 skipped = 7
 #
 # Same name set both ways, 7 records either way, and rc=0 without it. The two
-# that need the reference writer decline by name below.
+# that need the reference writer decline by name below. #2079 added four more
+# pyarrow arms at the end, which decline the same way. Measured on PG 18.6:
+#
+#     with pyarrow     11 passed + 0 skipped = 11
+#     without pyarrow   5 passed + 6 skipped = 11
 # pyarrow-written nested Parquet file: list<int32> and struct<x:int,y:string>.
 # This proves we read the Dremel levels the reference writer produces, not just
 # our own exporter's byte layout.
@@ -106,6 +110,79 @@ else
 		done
 	else
 		echo "FAIL: pyarrow nested file generation errored (rc=$rc)"
+		PGC_FAIL=1
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Definition levels that depend on the schema shape (#2079, #1916). The reader
+# used fixed levels: def 0 was a NULL list or struct and def 1 an empty list.
+# That holds only when the list or struct is OPTIONAL with no OPTIONAL parent.
+# A REQUIRED list, a REQUIRED struct, or a list inside a nullable struct moves
+# the levels, and the reader returned wrong values with no error. pyarrow wrote
+# both files; each check compares with the values pyarrow reads back.
+# ---------------------------------------------------------------------------
+LVL_STL="$PGC_WORKDIR/lvl_stl.parquet"
+LVL_REQ="$PGC_WORKDIR/lvl_req.parquet"
+LVL_ARMS=("list in a nullable struct reads like pyarrow"
+	"required lists and struct read like pyarrow"
+	"required lists and struct import like pyarrow"
+	"required lists and struct read like pyarrow through the FDW")
+if python3 - "$LVL_STL" "$LVL_REQ" <<'PY'
+import sys
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except Exception:
+    sys.exit(3)
+stl = pa.array([{"a": 1, "l": [1, 2]}, {"a": None, "l": None},
+                {"a": 2, "l": []}, {"a": 3, "l": [None]}],
+               pa.struct([("a", pa.int32()), ("l", pa.list_(pa.int64()))]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], pa.int32()), "stl": stl}), sys.argv[1])
+s = pa.schema([
+    pa.field("id", pa.int32(), nullable=False),
+    pa.field("rl", pa.list_(pa.field("item", pa.int32(), nullable=True)), nullable=False),
+    pa.field("rlr", pa.list_(pa.field("item", pa.int32(), nullable=False)), nullable=False),
+    pa.field("s", pa.struct([pa.field("a", pa.int32()), pa.field("b", pa.string())]), nullable=False),
+])
+pq.write_table(pa.Table.from_pylist([
+    {"id": 0, "rl": [], "rlr": [], "s": {"a": None, "b": "x"}},
+    {"id": 1, "rl": [None], "rlr": [5], "s": {"a": 5, "b": "y"}},
+    {"id": 2, "rl": [1, None], "rlr": [1, 2], "s": {"a": None, "b": None}},
+], schema=s), sys.argv[2])
+PY
+then
+	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
+	# One line per file: each row as id:value, NULL spelled out.
+	REQ_ROWS="string_agg(id || ':' || coalesce(rl::text, 'NULL') || ':' || coalesce(rlr::text, 'NULL') || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
+	REQ_WANT='0:{}:{}:(,x) 1:{NULL}:{5}:(5,y) 2:{1,NULL}:{1,2}:(,)'
+	check "list in a nullable struct reads like pyarrow" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || coalesce(sl::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_STL') AS t(id int, sa int, sl bigint[]);")" \
+		'0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL}'
+	check "required lists and struct read like pyarrow" \
+		"$(q "SELECT $REQ_ROWS FROM pgcolumnar.read_parquet('$LVL_REQ') AS t(id int, rl int[], rlr int[], s lvl_ab);")" \
+		"$REQ_WANT"
+	psql_run "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab);"
+	psql_run "SELECT pgcolumnar.import_parquet('lvl_heap', '$LVL_REQ');"
+	check "required lists and struct import like pyarrow" \
+		"$(q "SELECT $REQ_ROWS FROM lvl_heap;")" "$REQ_WANT"
+	psql_run "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
+	psql_run "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab)
+		SERVER lvl_srv OPTIONS (path '$LVL_REQ');"
+	check "required lists and struct read like pyarrow through the FDW" \
+		"$(q "SELECT $REQ_ROWS FROM lvl_f;")" "$REQ_WANT"
+else
+	rc=$?
+	if [ "$rc" = 3 ]; then
+		for _lvl_arm in "${LVL_ARMS[@]}"
+		do
+			check_skip "$_lvl_arm" \
+				"SKIP: $_lvl_arm (pyarrow not available for the reference writer)" \
+				"pyarrow not available"
+		done
+	else
+		echo "FAIL: pyarrow definition-level file generation errored (rc=$rc)"
 		PGC_FAIL=1
 	fi
 fi

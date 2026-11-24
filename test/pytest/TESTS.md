@@ -10589,7 +10589,7 @@ The pytest twin of `test/parquet_nested.sh` (ported for #1341), every check by t
 
 ## 259. test_parquet_nested_import.py: nested Parquet import round-trips arrays and composites
 
-The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every check by the shell's name. A table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet and imported into a fresh table, which must equal the original as a set, before and after a DELETE; a nested file written by pyarrow must import as the generator's rows. Sets are hashed in SQL as the shell's `pgc_set_hash` does, a failed query reading as a unique `query_error()`. On a private database, with the files in `server_dir`.
+The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every check by the shell's name. A table with int[], text[] and composite columns, NULL arrays, empty arrays, NULL elements and NULL composites among them, is exported to Parquet and imported into a fresh table, which must equal the original as a set, before and after a DELETE; a nested file written by pyarrow must import as the generator's rows. Two more pyarrow files hold a list inside a nullable struct, and REQUIRED lists and a REQUIRED struct, whose definition levels differ from the plain nullable shape; each must read as pyarrow reads it, through read_parquet, import_parquet and the FDW (#2079). Sets are hashed in SQL as the shell's `pgc_set_hash` does, a failed query reading as a unique `query_error()`. On a private database, with the files in `server_dir`.
 
 ### Every test
 
@@ -10602,6 +10602,10 @@ The pytest twin of `test/parquet_nested_import.sh` (ported for #1341), every che
 | `test_a_fresh_round_trip_after_a_delete_matches` | round-trips after delete |
 | `test_a_pyarrow_nested_file_imports_every_row` | pyarrow import rows; declines by this name without pyarrow |
 | `test_a_pyarrow_nested_file_matches_the_oracle` | pyarrow nested file matches oracle; declines by this name without pyarrow |
+| `test_a_list_in_a_nullable_struct_reads_like_pyarrow` | list in a nullable struct reads like pyarrow: a NULL struct reads as a NULL list, an empty list as `{}` (#2079); declines by this name without pyarrow |
+| `test_required_lists_and_struct_read_like_pyarrow` | required lists and struct read like pyarrow: through read_parquet, an empty REQUIRED list reads as `{}`, a REQUIRED list of REQUIRED items keeps its values, a REQUIRED struct with a NULL field is not NULL (#2079); declines by this name without pyarrow |
+| `test_required_lists_and_struct_import_like_pyarrow` | required lists and struct import like pyarrow: the same file through import_parquet into a heap table (#2079); declines by this name without pyarrow |
+| `test_required_lists_and_struct_read_like_pyarrow_through_the_fdw` | required lists and struct read like pyarrow through the FDW: the same file through a pgcolumnar_parquet foreign table (#2079); declines by this name without pyarrow |
 
 ## 260. test_parquet_count_bounds.py: file-declared Parquet counts are bounded before use
 

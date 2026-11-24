@@ -605,6 +605,16 @@ true until the next version shipped.
 
 ### Fixed
 
+- `read_parquet`, `import_parquet` and the Parquet foreign table now read a
+  REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
+  pyarrow does (#2079, #1916). They returned wrong values with no error: an
+  empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
+  values, a REQUIRED struct with a NULL field read as NULL, and a NULL struct
+  read its list as `{}`. The reader assumed that definition level 0 always
+  meant a NULL list or struct and level 1 an empty list. That holds only for a
+  nullable list or struct with no nullable parent. The reader now takes both
+  levels from the file's schema. `test/parquet_nested_import.sh` and
+  `test_parquet_nested_import.py`.
 - `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
   database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
   `text`, `varchar`, `json` and `jsonb` columns without checking them, so a

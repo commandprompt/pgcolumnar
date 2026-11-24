@@ -7141,9 +7141,13 @@ parquet_nested	parquet_nested	reject multi-dim array	15;16;17;18;19	2026-10-21	c
 parquet_nested_import	parquet_nested_import	export rows	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	import count matches	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	import rows	15;16;17;18;19	never	-
+parquet_nested_import	parquet_nested_import	list in a nullable struct reads like pyarrow	15;16;17;18;19	2026-11-24	-
 parquet_nested_import	parquet_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
 parquet_nested_import	parquet_nested_import	pyarrow import rows	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	pyarrow nested file matches oracle	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
+parquet_nested_import	parquet_nested_import	required lists and struct import like pyarrow	15;16;17;18;19	2026-11-24	-
+parquet_nested_import	parquet_nested_import	required lists and struct read like pyarrow	15;16;17;18;19	2026-11-24	-
+parquet_nested_import	parquet_nested_import	required lists and struct read like pyarrow through the FDW	15;16;17;18;19	2026-11-24	-
 parquet_nested_import	parquet_nested_import	round-trips after delete	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
 parquet_skip_cross_type	parquet_skip_cross_type	a constant on the left of the operator is compared the same way	15;16;17;18;19	2026-11-01	columnar_parquet_reader.c: the comparison function is called with the constant first, not the column's value;cross-type comparison reverted: a constant not of the column type skips no row group (#1887)
 parquet_skip_cross_type	parquet_skip_cross_type	a date constant on a timestamp column returns the heap copy's 86400 rows (#1887)	15;16;17;18;19	2026-10-31	columnar_parquet_reader.c: col < const skips a row group by its max, not its min, so it over-skips (#1887);columnar_parquet_reader.c: the column type's own comparison function is used for a constant of another type

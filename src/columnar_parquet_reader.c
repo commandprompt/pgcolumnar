@@ -167,6 +167,18 @@ typedef struct PqLeafInfo
 	int			max_rep;
 	int			depth;			/* tree depth: 1 for a top-level column, more
 								 * when nested under a struct/list/map */
+	/*
+	 * Where a NULL or an empty group shows in this leaf's definition levels
+	 * (#2079). They depend on the schema shape, so a reader must not assume
+	 * fixed values: a REQUIRED list or struct adds no level, and a list inside
+	 * a nullable struct adds one more.
+	 */
+	int			parent_def;		/* def of the leaf's parent group: a def
+								 * below it means that group, or one above
+								 * it, is NULL */
+	int			rep_def;		/* def of the innermost REPEATED node on the
+								 * path, 0 if none: def rep_def - 1 is a
+								 * present but empty list */
 } PqLeafInfo;
 
 typedef struct PqChunk
@@ -638,7 +650,7 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
  * +1 def, REPEATED +1 def and +1 rep (Dremel).
  */
 static bool
-walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
+walk_schema(PqFile *pf, int *cursor, int def, int rep, int repdef, int depth,
 			PqLeafInfo *leaves, int *nleaf)
 {
 	PqSchemaCol *e;
@@ -659,6 +671,8 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 	e = &pf->elems[(*cursor)++];
 	d = def + (e->repetition == 1 ? 1 : 0) + (e->repetition == 2 ? 1 : 0);
 	rp = rep + (e->repetition == 2 ? 1 : 0);
+	if (e->repetition == 2)
+		repdef = d;
 
 	if (e->num_children == 0)
 	{
@@ -666,6 +680,8 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 		leaves[*nleaf].max_def = d;
 		leaves[*nleaf].max_rep = rp;
 		leaves[*nleaf].depth = depth;
+		leaves[*nleaf].parent_def = def;
+		leaves[*nleaf].rep_def = repdef;
 		(*nleaf)++;
 	}
 	else
@@ -673,7 +689,7 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 		int			c;
 
 		for (c = 0; c < e->num_children; c++)
-			if (!walk_schema(pf, cursor, d, rp, depth + 1, leaves, nleaf))
+			if (!walk_schema(pf, cursor, d, rp, repdef, depth + 1, leaves, nleaf))
 				return false;
 	}
 	return true;
@@ -811,7 +827,7 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 
 		pf->ntop = pf->elems[0].num_children;
 		for (c = 0; c < pf->ntop; c++)
-			if (!walk_schema(pf, &cursor, 0, 0, 1, leaves, &nleaf))
+			if (!walk_schema(pf, &cursor, 0, 0, 0, 1, leaves, &nleaf))
 				return false;
 		pf->ncols = nleaf;
 		pf->leaves = leaves;
@@ -3097,6 +3113,8 @@ typedef struct ImpLeaf
 	PqColPlan	plan;
 	int			max_def;
 	int			max_rep;
+	int			parent_def;		/* PqLeafInfo.parent_def */
+	int			rep_def;		/* PqLeafInfo.rep_def */
 	/* decoded per row group */
 	uint32	   *defs;
 	uint32	   *reps;
@@ -3237,6 +3255,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
+			l->rep_def = pf->leaves[lf].rep_def;
 			lf++;
 		}
 		else if (get_typtype(typid) == TYPTYPE_COMPOSITE)
@@ -3292,6 +3311,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 				pq_plan_set_typmod(&l->plan, fa->atttypmod, pf->leaves[lf].sc);
 				l->max_def = pf->leaves[lf].max_def;
 				l->max_rep = pf->leaves[lf].max_rep;
+				l->parent_def = pf->leaves[lf].parent_def;
 				t->fieldLeaf[a] = lf;
 				lf++;
 			}
@@ -5420,13 +5440,19 @@ pq_read_rows(PqFile *pf, PqSource *src,
 					pq_require_entry(l);
 					def0 = l->defs[l->ei];
 
-					if (def0 == 0)
+					/*
+					 * The levels come from the schema, not fixed values (#2079).
+					 * Below rep_def - 1 the list or a parent is NULL; at
+					 * rep_def - 1 the list is present and empty. bind refuses
+					 * max_rep != 1, so rep_def is at least 1.
+					 */
+					if (def0 + 1 < (uint32) l->rep_def)
 					{
 						/* NULL array */
 						slot->tts_isnull[tp->attno] = true;
 						l->ei++;
 					}
-					else if (def0 == 1)
+					else if (def0 + 1 == (uint32) l->rep_def)
 					{
 						/* empty array */
 						ArrayType  *arr = construct_empty_array(tp->elemtype);
@@ -5498,8 +5524,15 @@ pq_read_rows(PqFile *pf, PqSource *src,
 						l = &leaves[li];
 						pq_require_entry(l);
 						d = l->defs[l->ei];
-						if (d == 0)
-							structNull = true;	/* every field agrees */
+
+						/*
+						 * Below the parent group's def, the struct or a parent of
+						 * it is NULL, and every field agrees. A REQUIRED struct
+						 * with no nullable parent has parent_def 0 and is never
+						 * NULL: there a def of 0 is a NULL field (#2079).
+						 */
+						if (d < (uint32) l->parent_def)
+							structNull = true;
 						if (d == (uint32) l->max_def)
 						{
 							/*

@@ -163,3 +163,103 @@ def test_a_pyarrow_nested_file_matches_the_oracle(ni, expect):
         return
     got, want = _pyarrow_arm(ni, pa, pq)["pyarrow oracle"]
     expect.text(got, want, "pyarrow nested file matches oracle")
+
+
+# Definition levels that depend on the schema shape (#2079, #1916). The reader used
+# fixed levels: def 0 was a NULL list or struct, def 1 an empty list. That holds only
+# for an OPTIONAL list or struct with no OPTIONAL parent. A REQUIRED list, a REQUIRED
+# struct, or a list inside a nullable struct moves the levels, and the reader returned
+# wrong values with no error. The wanted values are the ones pyarrow reads back.
+LVL_STL_WANT = "0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL}"
+LVL_REQ_WANT = "0:{}:{}:(,x) 1:{NULL}:{5}:(5,y) 2:{1,NULL}:{1,2}:(,)"
+LVL_REQ_ROWS = ("string_agg(id || ':' || coalesce(rl::text, 'NULL') || ':' || "
+                "coalesce(rlr::text, 'NULL') || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)")
+
+
+def _write_level_files(stl_path, req_path, pa, pq):
+    stl = pa.array([{"a": 1, "l": [1, 2]}, {"a": None, "l": None},
+                    {"a": 2, "l": []}, {"a": 3, "l": [None]}],
+                   pa.struct([("a", pa.int32()), ("l", pa.list_(pa.int64()))]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], pa.int32()), "stl": stl}),
+                   str(stl_path))
+    schema = pa.schema([
+        pa.field("id", pa.int32(), nullable=False),
+        pa.field("rl", pa.list_(pa.field("item", pa.int32(), nullable=True)), nullable=False),
+        pa.field("rlr", pa.list_(pa.field("item", pa.int32(), nullable=False)), nullable=False),
+        pa.field("s", pa.struct([pa.field("a", pa.int32()), pa.field("b", pa.string())]),
+                 nullable=False),
+    ])
+    pq.write_table(pa.Table.from_pylist([
+        {"id": 0, "rl": [], "rlr": [], "s": {"a": None, "b": "x"}},
+        {"id": 1, "rl": [None], "rlr": [5], "s": {"a": 5, "b": "y"}},
+        {"id": 2, "rl": [1, None], "rlr": [1, 2], "s": {"a": None, "b": None}},
+    ], schema=schema), str(req_path))
+    stl_path.chmod(0o644)
+    req_path.chmod(0o644)
+
+
+def _level_arm(ni, pa, pq):
+    """Write the two files and read them every way, once, on the first test here."""
+    if "levels" not in ni:
+        dsn = ni["dsn"]
+        stl, req = ni["dir"] / "lvl_stl.parquet", ni["dir"] / "lvl_req.parquet"
+        _write_level_files(stl, req, pa, pq)
+        _run(dsn, "CREATE TYPE lvl_ab AS (a int, b text)")
+        got = {"stl read": _value(
+            dsn, "SELECT string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || "
+                 "coalesce(sl::text, 'NULL'), ' ' ORDER BY id) "
+                 f"FROM pgcolumnar.read_parquet('{stl}') AS t(id int, sa int, sl bigint[])")}
+        got["req read"] = _value(
+            dsn, f"SELECT {LVL_REQ_ROWS} FROM pgcolumnar.read_parquet('{req}') "
+                 "AS t(id int, rl int[], rlr int[], s lvl_ab)")
+        _run(dsn, "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab)")
+        _run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_heap', '{req}')")
+        got["req import"] = _value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_heap")
+        _run(dsn, "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        _run(dsn, "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab) "
+                  f"SERVER lvl_srv OPTIONS (path '{req}')")
+        got["req fdw"] = _value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_f")
+        ni["levels"] = got
+    return ni["levels"]
+
+
+def _levels_or_decline(ni, pa, pq):
+    return None if pq is None else _level_arm(ni, pa, pq)
+
+
+def test_a_list_in_a_nullable_struct_reads_like_pyarrow(ni, expect):
+    pa = expect.require_module("pyarrow", name="list in a nullable struct reads like pyarrow")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="list in a nullable struct reads like pyarrow") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["stl read"], LVL_STL_WANT, "list in a nullable struct reads like pyarrow")
+
+
+def test_required_lists_and_struct_read_like_pyarrow(ni, expect):
+    pa = expect.require_module("pyarrow", name="required lists and struct read like pyarrow")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="required lists and struct read like pyarrow") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["req read"], LVL_REQ_WANT, "required lists and struct read like pyarrow")
+
+
+def test_required_lists_and_struct_import_like_pyarrow(ni, expect):
+    pa = expect.require_module("pyarrow", name="required lists and struct import like pyarrow")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="required lists and struct import like pyarrow") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["req import"], LVL_REQ_WANT, "required lists and struct import like pyarrow")
+
+
+def test_required_lists_and_struct_read_like_pyarrow_through_the_fdw(ni, expect):
+    pa = expect.require_module("pyarrow",
+                               name="required lists and struct read like pyarrow through the FDW")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="required lists and struct read like pyarrow through the FDW") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["req fdw"], LVL_REQ_WANT,
+                    "required lists and struct read like pyarrow through the FDW")
