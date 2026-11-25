@@ -41,8 +41,8 @@
 # concurrency), multi-column unique index, partial unique index (inside and
 # outside the predicate), NULLS DISTINCT (no false conflict) and NULLS NOT
 # DISTINCT (PG15+), a same-statement duplicate, an aborted first inserter, and
-# (#2063) exclusion constraints (gist && and btree =) and a DEFERRABLE unique
-# constraint.
+# (#2063) exclusion constraints (gist && and btree =, plain and DEFERRABLE)
+# and a DEFERRABLE unique constraint.
 #
 # Written fresh for pgColumnar; it reuses no upstream test file or expected
 # output. Derived from the format/interface spec, the issue #5 design analysis,
@@ -702,6 +702,36 @@ check "12 btree exclusion constraint: the same-key inserter got an exclusion_vio
 	"$(out_has s2 'ERROR:  23P01: conflicting key value violates exclusion constraint "s_eb_excl"' && echo yes || echo no)" "yes"
 check "12 btree exclusion constraint: exactly one row with id 1" \
 	"$(ctl_q "SELECT count(*) FROM s_eb WHERE id = 1;")" "1"
+
+# 13: a DEFERRABLE exclusion constraint, in two forms: gist && checked at commit,
+# and btree = checked at statement end. PostgreSQL checks a deferrable exclusion
+# at insert without waiting and queues a recheck only if it sees a conflict. T1's
+# row is still in T1's buffer, so without the lock T2 sees none, queues no
+# recheck, and both rows commit. Each form must wait for T1 and fail with 23P01.
+for xf in "xg|DEFERRED|gist|int4range|r WITH &&|int4range(1,10)|int4range(100,101)|int4range(5,15)|r && int4range(5,15)" \
+	"xb|IMMEDIATE|btree|int|r WITH =|1|-1|1|r = 1"; do
+	IFS='|' read -r tag mode am typ op key blk val hit <<<"$xf"
+	xname="13 deferrable initially $mode $am exclusion"
+	ctl_q "CREATE TABLE s_$tag (r $typ, CONSTRAINT s_${tag}_excl EXCLUDE USING $am ($op) DEFERRABLE INITIALLY $mode) USING pgcolumnar;" >/dev/null
+	if [ "$tag" = xg ]; then HKEY=1017; else HKEY=1018; fi
+	pause_s1 "INSERT INTO s_$tag SELECT CASE WHEN g=2 THEN cq_block($HKEY, $blk) ELSE $key END FROM generate_series(1,2) g;"
+	send_wait s2 "${tag}_beg" "BEGIN;"
+	send s2 "INSERT INTO s_$tag VALUES ($val);"
+	send s2 "\\echo <<${tag}_ins>>"
+	wait_blocked cc_s2 asserted
+	check "$xname: a conflicting inserter blocks" \
+		"$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='cc_s2' AND wait_event_type='Lock';")" "1"
+	send s2 "COMMIT;"
+	send s2 "\\echo <<${tag}_com>>"
+	release_s1
+	send_wait s1 "s1_com_13$tag" "COMMIT;"
+	wait_sentinel s2 "${tag}_ins"
+	wait_sentinel s2 "${tag}_com"
+	check "$xname: the conflicting inserter got an exclusion_violation" \
+		"$(out_has s2 "ERROR:  23P01: conflicting key value violates exclusion constraint \"s_${tag}_excl\"" && echo yes || echo no)" "yes"
+	check "$xname: exactly one conflicting row" \
+		"$(ctl_q "SELECT count(*) FROM s_$tag WHERE $hit;")" "1"
+done
 
 send s1 "\\q"
 send s2 "\\q"

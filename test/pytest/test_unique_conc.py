@@ -434,3 +434,25 @@ def test_a_btree_exclusion_constraint(race, expect):
                 "12 btree exclusion constraint: the same-key inserter got an exclusion_violation")
     expect.num(race.one("SELECT count(*) FROM s_eb WHERE id = 1"), 1,
                "12 btree exclusion constraint: exactly one row with id 1")
+
+
+@pytest.mark.parametrize("tag, mode, am, typ, op, key, blk, val, hit, hkey", [
+    ("xg", "DEFERRED", "gist", "int4range", "r WITH &&", "int4range(1, 10)", "int4range(100, 101)",
+     "int4range(5, 15)", "r && int4range(5, 15)", 1017),
+    ("xb", "IMMEDIATE", "btree", "int", "r WITH =", "1", "-1", "1", "r = 1", 1018),
+], ids=["xg-DEFERRED", "xb-IMMEDIATE"])
+def test_a_deferrable_exclusion_constraint(race, expect, tag, mode, am, typ, op, key, blk, val, hit, hkey):
+    """#2063: a DEFERRABLE exclusion constraint is checked at insert without waiting,
+    and a recheck is queued only for a conflict seen then. T1's row is still in its
+    buffer, so without the lock T2 sees none and both rows commit. A conflicting
+    inserter must wait for T1 and fail with 23P01, at statement end or at commit."""
+    name = f"13 deferrable initially {mode} {am} exclusion"
+    race.run(race.s1, f"CREATE TABLE s_{tag} (r {typ}, CONSTRAINT s_{tag}_excl EXCLUDE USING {am} ({op}) "
+                      f"DEFERRABLE INITIALLY {mode}) USING pgcolumnar")
+    expect.num(race.conflict(hkey, f"s_{tag}", _paused(key, f"cq_block({hkey}, {blk})"), f"VALUES ({val})"), 1,
+               f"{name}: a conflicting inserter blocks")
+    err = _settle_by_commit(race, hkey)
+    expect.text(_refused(err, "23P01", f"s_{tag}_excl"), "yes",
+                f"{name}: the conflicting inserter got an exclusion_violation")
+    expect.num(race.one(f"SELECT count(*) FROM s_{tag} WHERE {hit}"), 1,
+               f"{name}: exactly one conflicting row")

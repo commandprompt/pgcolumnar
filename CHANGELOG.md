@@ -611,8 +611,9 @@ true until the next version shipped.
   backend's constraint check could not see it, did not wait, and let the
   conflicting row in. Since #5 a transaction-scoped advisory lock closes that
   window, but it covered only immediate unique indexes. It now also covers
-  deferrable unique indexes, by key, and exclusion constraints, with one lock
-  for the whole index because the operator need not be equality. The second
+  deferrable unique indexes, by key, and exclusion constraints, immediate or
+  deferrable, with one lock for the whole index because the operator need not
+  be equality. The second
   insert now waits for the first and fails with 23P01 or 23505, as on heap.
   Concurrent inserts into a table with an exclusion constraint now go in
   sequence even when their rows do not conflict. The lock is held to the end of
