@@ -7118,6 +7118,8 @@ CURSORS. PostgreSQL counts a TID range scan as able to scan backward, so it puts
 
 Also held: rows inserted earlier in the same transaction are in the range; a rescan with new bounds per outer row (the plan premise is taken on the very query compared, because a draft whose lateral output went unreferenced planned no scan at all); deletes inside the range; and compaction, which gives a thinned group's surviving rows new, higher row numbers. On PostgreSQL 19, a parallel TID range scan with two workers is held too. Below 19 that test is `UNSUPPORTED_MAJOR` and listed in `expected_unrunnable.txt`.
 
+A SINGLE CTID NO ROW HAS (#2058). A TID scan asks the access method whether each ctid it was given is valid, and the access method said yes to all of them. On `'(0,0)'` the fetch then failed an assertion, which on an assert build ends every session. On an offset past 291 it read a row of a later block: `'(0,295)'` was the row at `(1,4)`, and an UPDATE or DELETE on that ctid changed or removed it. The oracle is the same table copied into heap. Each statement runs in a transaction that is rolled back, so a row one statement wrongly reached is still there for the next. Two arms keep a fix honest that refuses every ctid: `(0,291)` must still return its row, and `(1,4)` and `(0,5)` theirs beside `(0,295)`. The check names use the shell twin's names as templates, with this test's own ctids: the loop runs `(0,0)`, `(2,0)`, `(0,295)` and `(2,600)`, where the shell twin runs `(0,292)`, `(1,400)`, `(0,0)` and `(1,0)`. So only the four `(0,0)` names, the two premises and the two fixed-ctid arms match a shell name exactly. Red on PostgreSQL 18 on main d52f6e8c: the array of three returned `4,294,294`.
+
 On a private database, because `pg_stat_reset()` resets the whole database's counters.
 
 Removal proofs, each red on PostgreSQL 19 on the arm named:
@@ -7138,6 +7140,7 @@ THE MATERIAL'S NODE ID. `set_plan_references` numbers the main tree and then the
 | --- | --- |
 | `test_a_ctid_range_reads_only_its_row_groups` | the table has its rows and many groups; a ctid range plans a TID range scan; eleven ranges, including offsets 0, 291, 500 and 65535, return what the per-row filter returns; a rescanned scan does too; a SCROLL cursor and a plain cursor fetch backward correctly, and so does a SCROLL cursor whose query has a subplan; rows inserted earlier in the transaction are in the range; the tail range reads at least one block and under a fifth of the table; deleted rows stay deleted; after compaction moves rows, ranges over the old and new addresses return what the filter returns |
 | `test_a_parallel_tid_range_scan_returns_what_the_filter_returns` | PostgreSQL 19+: the range runs as a parallel TID range scan with two workers launched, and returns what the filter returns. Below 19, `UNSUPPORTED_MAJOR` |
+| `test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row` | the row after offset 291 sits at `(1,1)`; `(0,291)` returns its row, and `(1,4)` and `(0,5)` return theirs while `(0,295)` beside them adds none; for `(0,0)`, `(2,0)`, `(0,295)` and `(2,600)`, a SELECT, an `= ANY` array, an UPDATE and a DELETE reach the rows heap reaches (none) and leave the rows heap leaves (#2058) |
 
 ## 93. test_partition_lifecycle.py: partition_create_ahead keeps a time-partitioned parent ahead of now
 

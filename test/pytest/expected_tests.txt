@@ -1924,4 +1924,7 @@ guard_tests 895
 # cluster_tests 5385 -> 5387 for the rescan fix's two tests (#2128, #2062): the join fold rescan test in
 # test_native_join_vector_agg.py and the issue-shapes test in test_native_join_runtime_filter.py, by
 # collection over every file not in NO_CLUSTER: 5379 tests collected.
-cluster_tests 5387
+# cluster_tests 5387 -> 5388 for test_tid_range_scan.py's test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row
+# (#2058: a TID scan of ctid (0,0), or of an offset past a block's last, reaches no row), by collection of
+# every file NO_CLUSTER does not name: 5377 tests collected.
+cluster_tests 5388
