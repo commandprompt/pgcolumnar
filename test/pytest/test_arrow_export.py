@@ -539,7 +539,10 @@ def test_every_kept_text_reaches_its_own_value_in_the_stream(ae, expect):
 # is text: import_arrow must set every slot to null before it fills the live ones, or
 # the dropped slot keeps a stale pointer and the server crashes (#2143 review).
 # export_arrow writes at most 16 columns, counted as live columns: a table with 16 live
-# columns and 1 dropped column exports, and a table with 17 live columns is refused.
+# columns and 1 dropped column exports, and a table with 17 live columns is refused with
+# SQLSTATE 0A000. The second review round (#2143) added: imports into tables whose
+# first or last column is dropped, a table with 1 live column beside 60 dropped text
+# columns, and the byte cut on a table with a dropped column before its text column.
 # On its own database.
 DROP_DB = "pgc_arrow_export_drop"
 DROP_SETUP = (
@@ -557,7 +560,31 @@ DROP_SETUP = (
     "INSERT INTO ar_w16 SELECT g, " + ", ".join(f"g + {i}" for i in range(2, 17)) + " FROM generate_series(1, 5) g",
     "CREATE TABLE ar_w17 (" + ", ".join(f"c{i} int" for i in range(1, 18)) + ") USING pgcolumnar",
     "INSERT INTO ar_w17 SELECT g, " + ", ".join(f"g + {i}" for i in range(2, 18)) + " FROM generate_series(1, 5) g",
+    "CREATE TABLE ar_drop_last (a int, c text, d int8, junk text) USING pgcolumnar",
+    "ALTER TABLE ar_drop_last DROP COLUMN junk",
+    "CREATE TABLE ar_drop_first (junk text, a int, c text, d int8) USING pgcolumnar",
+    "ALTER TABLE ar_drop_first DROP COLUMN junk",
+    "CREATE TABLE ar_wdrop (a int" + "".join(f", x{i} text" for i in range(1, 61)) + ") USING pgcolumnar",
+    "INSERT INTO ar_wdrop SELECT g" + "".join(f", 'x{i}-' || g" for i in range(1, 61)) + " FROM generate_series(1, 2000) g",
+    "ALTER TABLE ar_wdrop " + ", ".join(f"DROP COLUMN x{i}" for i in range(1, 61)),
+    "INSERT INTO ar_wdrop SELECT g FROM generate_series(2001, 4000) g",
+    "CREATE TABLE ar_bdrop (id int, junk int, s text) USING pgcolumnar",
+    "ALTER TABLE ar_bdrop DROP COLUMN junk",
+    "INSERT INTO ar_bdrop SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g",
 )
+ONE_LIVE = ("SELECT 'a|' || count(*) || '|' || count(*) FILTER (WHERE a IS NULL) || '|' || "
+            "md5(string_agg(a::text, ' ' ORDER BY a)) FROM {}")
+
+
+def _state_refusal(dsn, sql):
+    """-> "SQLSTATE: message" of the error `sql` raises, or "succeeded"."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql)
+    except psycopg.Error as exc:
+        text = str(exc)
+        return f"{exc.sqlstate}: {text.splitlines()[0] if text else type(exc).__name__}"
+    return "succeeded"
 
 
 @pytest.fixture(scope="module")
@@ -577,8 +604,16 @@ def aed(pgc_cluster, server_dir):
         r["import"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('ar_drop_in', '{f['nodrop']}')")
         r["imported"] = _rows(dsn, "SELECT a, c, d FROM ar_drop_in ORDER BY a")
         r["w16"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_w16', '{server_dir / 'w16.arrows'}')")
-        r["w17"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_w17', '{server_dir / 'w17.arrows'}')",
-                            "columnar.export_arrow supports at most 16 columns")
+        r["w17"] = _state_refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_w17', '{server_dir / 'w17.arrows'}')")
+        for t in ("ar_drop_last", "ar_drop_first"):
+            r[f"{t} import"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('{t}', '{f['nodrop']}')")
+            r[f"{t} rows"] = _rows(dsn, f"SELECT a, c, d FROM {t} ORDER BY a")
+        f["wdrop"] = server_dir / "wdrop.arrows"
+        r["wdrop"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_wdrop', '{f['wdrop']}')")
+        r["wdrop want"] = _value(dsn, ONE_LIVE.format("ar_wdrop"))
+        f["bdrop"] = server_dir / "bdrop.arrows"
+        r["bdrop"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 65536"],
+                                  f"SELECT pgcolumnar.export_arrow('ar_bdrop', '{f['bdrop']}')")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -621,9 +656,70 @@ def test_import_arrow_loads_into_a_table_with_a_dropped_column(aed, expect):
 
 
 def test_export_arrow_writes_16_live_columns_beside_a_dropped_one(aed, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
     expect.text(aed["w16"], "5",
                 "export_arrow writes a table with 16 live columns and 1 dropped column, every row")
 
 
 def test_export_arrow_refuses_17_live_columns(aed, expect):
-    expect.text(aed["w17"], "refused", "export_arrow refuses a table with 17 live columns")
+    """The refusal is checked by its SQLSTATE, 0A000 (feature not supported), as well
+    as by its message."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(aed["w17"], "0A000: columnar.export_arrow supports at most 16 columns",
+                "export_arrow refuses a table with 17 live columns")
+
+
+def _imported(fix, table):
+    """-> "rows|rows|MATCH" for the import into `table` against the source's rows."""
+    oracle, got = fix["oracle"], fix[f"{table} rows"]
+    if isinstance(oracle, str) or len(oracle) != 200:
+        return f"{fix[table + ' import']}|premise: the source holds {oracle!r}, not 200 rows"
+    if isinstance(got, str):
+        return f"{fix[table + ' import']}|{got}"
+    return f"{fix[table + ' import']}|{len(got)}|{'MATCH' if got == oracle else 'MISMATCH'}"
+
+
+def test_import_arrow_loads_into_a_table_whose_last_column_is_dropped(aed, expect):
+    """#2143 review, second round: the dropped text column is last, at an index past
+    the live count, so a null fill bounded by the live count leaves its slot stale."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_imported(aed, "ar_drop_last"), "200|200|MATCH",
+                "import_arrow loads a,c,d into a table whose last column is dropped, every row")
+
+
+def test_import_arrow_loads_into_a_table_whose_first_column_is_dropped(aed, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(_imported(aed, "ar_drop_first"), "200|200|MATCH",
+                "import_arrow loads a,c,d into a table whose first column is dropped, every row")
+
+
+def _one_live(pa, path):
+    """-> "columns|rows|nulls|md5 of a, ascending", in the form ONE_LIVE reads the table."""
+    t = _read(pa, path)
+    a = t.column("a").to_pylist()
+    s = " ".join(str(v) for v in sorted(v for v in a if v is not None))
+    return f"{','.join(t.schema.names)}|{t.num_rows}|{sum(v is None for v in a)}|{hashlib.md5(s.encode()).hexdigest()}"
+
+
+def test_export_arrow_writes_one_live_column_beside_60_dropped_ones(aed, expect):
+    """#2143 review, second round: the reader fills one slot per attribute, so the row
+    buffer is sized by every attribute. The values are compared, not only the count."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{aed['wdrop']}|{_reading(_one_live, pa, aed['files']['wdrop'])}", f"4000|{aed['wdrop want']}",
+                "export_arrow writes the one live column of a table with 60 dropped text columns, every value")
+
+
+def test_a_record_batch_cut_on_a_table_with_a_dropped_column(aed, expect):
+    """#1811, #2143 review: each row is sized from its live values. A row sized from
+    the slots by position reads the dropped slot in place of the 10000-byte text."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{aed['bdrop']}|{_reading(_batches, pa, aed['files']['bdrop'])}", "40|40|6,6,6,6,6,6,4",
+                "a record batch is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make batches of 6,6,6,6,6,6,4")

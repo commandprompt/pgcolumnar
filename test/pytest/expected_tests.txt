@@ -1995,8 +1995,15 @@ guard_tests 895
 # in workers), by collection over the cluster files: 5394 tests collected.
 # cluster_tests 5478 -> 5483 for #2076 (export_parquet, parallel_export_parquet, tier_partition, export_arrow
 # and import_arrow on a table with dropped columns): 3 tests in test_parquet_export.py and 2 in
-# test_arrow_export.py, by collection: 6275 tests collected, less guard_tests 894.
+# test_arrow_export.py. On main d52f6e8c, collection gave 6275 tests, less guard_tests 894: 5381 cluster
+# tests (5376 -> 5381 there). restate.py has shifted the two numbers above at each merge of main.
 # cluster_tests 5483 -> 5485 for the #2143 review (#2076): test_export_arrow_writes_16_live_columns_beside_a_dropped_one
-# and test_export_arrow_refuses_17_live_columns in test_arrow_export.py, by collection over the cluster files
-# (the complement of NO_CLUSTER, as ci.yml derives it): 5391 tests collected.
-cluster_tests 5485
+# and test_export_arrow_refuses_17_live_columns in test_arrow_export.py. On main 078b37bb, collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it) gave 5391 (5389 -> 5391 there).
+# restate.py has shifted the two numbers above at each merge of main; at 6eed71af its collection gave 5485.
+# cluster_tests 5485 -> 5493 for the second #2143 review: 4 tests in test_arrow_export.py (imports into tables
+# whose first or last column is dropped, 1 live column beside 60 dropped ones, the byte cut beside a dropped
+# column) and 4 in test_parquet_export.py (export_parquet and parallel_export_parquet of a dropped first
+# column with composites after it, 1 live column beside 60 dropped ones, the byte cut beside a dropped
+# column), by collection over the cluster files: 5493 tests collected.
+cluster_tests 5493

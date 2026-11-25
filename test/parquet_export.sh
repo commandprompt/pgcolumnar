@@ -447,6 +447,86 @@ check "tier_partition moves a partition with a dropped column, and the parent re
 	"$(qerr "SELECT pgcolumnar.tier_partition('pq_dpar1', 'pq_drop_srv', '$PGC_WORKDIR/dpar1.parquet')")|$(qerr "$DPAR_DIGEST")" \
 	"99|$dpar_want"
 
+# A dropped first column, and composites after the dropped columns (#2143 review,
+# second round). The map of live attributes must leave out a dropped attribute 0. The
+# leaves of each composite are counted through that map, so each of the 3 composites
+# of 20 int fields gets its 20 leaves. pq_dcmp loses its first column and a middle
+# one; rows are written before and after the drops. Each field holds a * 100 + its
+# number, so a field written in another field's place does not match.
+tenf() { local i out="f1 int"; for ((i = 2; i <= 20; i++)); do out+=", f$i int"; done; echo "$out"; }
+tenv() { local i out="g * 100 + 1"; for ((i = 2; i <= 20; i++)); do out+=", g * 100 + $i"; done; echo "ROW($out)::pq_ten"; }
+# pq_cmp PATH -> "columns|rows|md5 of a:b:t.f1:t2.f10:t3.f20 ..." read with pyarrow, in
+# the form CMP_DIGEST reads the table
+pq_cmp() {
+	python3 - "$1" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    d = t.to_pydict()
+    rows = sorted(zip(d["a"], d["b"], d["t"], d["t2"], d["t3"]), key=lambda r: r[0])
+    s = " ".join("%d:%s:%d:%d:%d" % (a, b, x["f1"], y["f10"], z["f20"]) for a, b, x, y, z in rows)
+    print("%s|%d|%s" % (",".join(t.schema.names), t.num_rows, hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+psql_run "CREATE TYPE pq_ten AS ($(tenf));
+          CREATE TABLE pq_dcmp (junk text, a int, junk2 int, b text, t pq_ten, t2 pq_ten, t3 pq_ten) USING pgcolumnar;
+          INSERT INTO pq_dcmp SELECT 'j' || g, g, -g, 'b' || g, $(tenv), $(tenv), $(tenv) FROM generate_series(1, 1500) g;
+          ALTER TABLE pq_dcmp DROP COLUMN junk;
+          ALTER TABLE pq_dcmp DROP COLUMN junk2;
+          INSERT INTO pq_dcmp SELECT g, 'b' || g, $(tenv), $(tenv), $(tenv) FROM generate_series(1501, 3000) g;"
+CMP_DIGEST="SELECT 'a,b,t,t2,t3|' || count(*) || '|' || md5(string_agg(a || ':' || b || ':' || (t).f1 || ':' || (t2).f10 || ':' || (t3).f20, ' ' ORDER BY a)) FROM pq_dcmp"
+cmp_want="$(q "$CMP_DIGEST")"
+check "export_parquet writes a table with a dropped first column and composites after it as its live columns a,b,t,t2,t3, every row" \
+	"$(qerr "SELECT pgcolumnar.export_parquet('pq_dcmp', '$PGC_WORKDIR/dcmp.parquet')")|$(pq_cmp "$PGC_WORKDIR/dcmp.parquet")" \
+	"3000|$cmp_want"
+check "parallel_export_parquet writes a table with a dropped first column and composites after it as its live columns a,b,t,t2,t3, every row" \
+	"$(qerr "SELECT pgcolumnar.parallel_export_parquet('pq_dcmp'::regclass, '$PGC_WORKDIR/dcmp_par', 2)")|$(pq_cmp "$PGC_WORKDIR/dcmp_par")" \
+	"3000|$cmp_want"
+
+# The reader fills one slot per attribute, dropped ones included, so the writer sizes
+# its row buffer by every attribute, not by the live ones (#2143 review, second round).
+# pq_wdrop keeps 1 live column beside 60 dropped text columns. The first 2000 rows were
+# written with text in every dropped column, the next 2000 after the drop.
+xcols() { local i out=""; for ((i = 1; i <= 60; i++)); do out+=", x$i text"; done; echo "$out"; }
+xvals() { local i out=""; for ((i = 1; i <= 60; i++)); do out+=", 'x$i-' || g"; done; echo "$out"; }
+xdrops() { local i out="DROP COLUMN x1"; for ((i = 2; i <= 60; i++)); do out+=", DROP COLUMN x$i"; done; echo "$out"; }
+# pq_one PATH -> "columns|rows|nulls|md5 of a, ascending", in the form one_live_sql reads the table
+pq_one() {
+	python3 - "$1" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    a = t.column("a").to_pylist()
+    s = " ".join(str(v) for v in sorted(v for v in a if v is not None))
+    print("%s|%d|%d|%s" % (",".join(t.schema.names), t.num_rows, sum(v is None for v in a), hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+one_live_sql() { echo "SELECT 'a|' || count(*) || '|' || count(*) FILTER (WHERE a IS NULL) || '|' || md5(string_agg(a::text, ' ' ORDER BY a)) FROM $1"; }
+psql_run "CREATE TABLE pq_wdrop (a int$(xcols)) USING pgcolumnar;
+          INSERT INTO pq_wdrop SELECT g$(xvals) FROM generate_series(1, 2000) g;
+          ALTER TABLE pq_wdrop $(xdrops);
+          INSERT INTO pq_wdrop SELECT g FROM generate_series(2001, 4000) g;"
+check "export_parquet writes the one live column of a table with 60 dropped text columns, every value" \
+	"$(qerr "SELECT pgcolumnar.export_parquet('pq_wdrop', '$PGC_WORKDIR/wdrop.parquet')")|$(pq_one "$PGC_WORKDIR/wdrop.parquet")" \
+	"4000|$(q "$(one_live_sql pq_wdrop)")"
+
+# The byte cut sizes each row from its live values (#1811, #2143 review). In pq_bdrop a
+# dropped column sits before the wide text column, so a row sized from the slots by
+# position, not through the map of live attributes, reads the dropped slot in place of
+# the text. As in pq_bytes, 40 rows of 10000 bytes under a 65536-byte cap make groups
+# of 6,6,6,6,6,6,4.
+psql_run "CREATE TABLE pq_bdrop (id int, junk int, s text) USING pgcolumnar;
+          ALTER TABLE pq_bdrop DROP COLUMN junk;
+          INSERT INTO pq_bdrop SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g;"
+check "a row group is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make groups of 6,6,6,6,6,6,4" \
+	"$(pq_cut pq_bdrop "$PGC_WORKDIR/bdrop.parquet" 65536)" "40|40|6,6,6,6,6,6,4"
+
 # Over 1 GiB of one column at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB group holds 536 rows and

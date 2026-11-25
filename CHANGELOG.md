@@ -615,7 +615,10 @@ true until the next version shipped.
   `import_parquet` already did; the dropped column is stored as null.
   `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
   live columns and a dropped one exports. Tests pin that limit, the refusal of a
-  17th live column, and an import into a table whose dropped column is text.
+  17th live column (with SQLSTATE `0A000`), and an import into a table whose
+  dropped column is text. Further tests drop the first or the last column, keep
+  1 live column beside 60 dropped ones, put composites after the dropped
+  columns, and cut by bytes beside a dropped column (#2143 review).
   `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
