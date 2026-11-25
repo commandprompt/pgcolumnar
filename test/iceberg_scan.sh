@@ -422,7 +422,8 @@ check "positional read_parquet still refuses bigint over an INT32 column (42804)
 # field 4, qty, required, initial-default 7; no data file carries field 4.
 # v3optdefault: the same, but qty is optional with initial-default 42.
 # eq_v3default: warehouse_promo's equality-delete table as format-version 3,
-# with initial-default 0 on k, the column its equality deletes compare.
+# with initial-default 0 on k, the column its equality deletes compare. k is
+# made required, so an eq-delete refusal that skips required fields fails.
 python3 - "$MD" "$MDDIR/v3default.metadata.json" "$PMD/eq.metadata.json" \
 	"$PMD/eq_v3default.metadata.json" "$MDDIR/v3optdefault.metadata.json" <<'PYEOF'
 import json, sys
@@ -447,6 +448,7 @@ for s in e["schemas"]:
         for f in s["fields"]:
             if f["name"] == "k":
                 f["initial-default"] = 0
+                f["required"] = True
 json.dump(e, open(sys.argv[4], "w"))
 PYEOF
 check "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)" \
@@ -454,9 +456,11 @@ check "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, qty int)
 	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
 	"0A000 (refusal naming qty)"
+# qty comes first in the column list here, so a refusal that skips the
+# first output column fails.
 check "iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
-	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3optdefault.metadata.json') AS t(id bigint, qty int)
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3optdefault.metadata.json') AS t(qty int, id bigint)
 	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
 	"0A000 (refusal naming qty)"
 check "iceberg_scan still reads the v3 table's columns that have no initial-default" \
@@ -537,6 +541,47 @@ check "iceberg_scan still applies equality deletes when an earlier, uncompared v
 	"$(q "SELECT string_agg(id::text, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$PMD/eq_v3otherdefault.metadata.json') AS t(id bigint)")" \
 	"1,2,5,6,8"
+# Two more v3 copies (#2087, review of #2151 at 09098feb):
+# eq_v3strdefault: warehouse_del's eqnull table, whose equality deletes compare
+# region, a string, as format-version 3 with region's initial-default "x". A
+# refusal narrowed to long columns or to numeric defaults reads rows again.
+# v3writedefault: the events table with qty optional and only a write-default
+# of 5. With no initial-default, old rows read null, and the scan must not
+# refuse.
+DESTD="$PGC_WORKDIR/del_v3"
+rm -rf "$DESTD"; mkdir -p "$DESTD"
+cp -r "$FX/warehouse_del/db" "$DESTD/db"
+chmod -R u+rwX "$DESTD"
+DMD="$DESTD/db/t/metadata"
+python3 - "$DMD/eqnull.metadata.json" "$DMD/eq_v3strdefault.metadata.json" \
+	"$MDDIR/v3default.metadata.json" "$MDDIR/v3writedefault.metadata.json" <<'PYEOF'
+import json, sys
+eq_src, eq_out, v3_src, v3_out = sys.argv[1:]
+e = json.load(open(eq_src))
+e["format-version"] = 3
+cur = next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])
+for f in cur["fields"]:
+    if f["name"] == "region":
+        f["initial-default"] = "x"
+        f["write-default"] = "x"
+json.dump(e, open(eq_out, "w"))
+m = json.load(open(v3_src))
+cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+cur["fields"] = [f for f in cur["fields"] if f["id"] != 4]
+cur["fields"].append({"id": 4, "name": "qty", "required": False, "type": "int",
+                      "write-default": 5})
+json.dump(m, open(v3_out, "w"))
+PYEOF
+check "iceberg_scan refuses an equality delete on a v3 string column whose initial-default is a string (0A000)" \
+	"$(refusal "SELECT string_agg(id::text, ',' ORDER BY id)
+	            FROM pgcolumnar.iceberg_scan('$DMD/eq_v3strdefault.metadata.json') AS t(id bigint)" \
+	   'field "region" has an initial-default' "refusal naming region")" \
+	"0A000 (refusal naming region)"
+check "iceberg_scan reads an optional v3 column that has only a write-default as null" \
+	"$(q "SELECT id || '|' || coalesce(qty::text, 'null')
+	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3writedefault.metadata.json') AS t(id bigint, qty int)
+	      ORDER BY id")" \
+	"$(printf '1|null\n2|null\n3|null\n4|null\n5|null')"
 
 # ---- privilege -------------------------------------------------------------
 # USAGE on the schema, so the refusal is the FILE gate's: without it the role was

@@ -1998,15 +1998,17 @@ guard_tests 895
 # test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
 # test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
 # test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
-# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests, by collection: `cd test/pytest &&
-# PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest --collect-only -q`: 6275 tests
-# collected, less guard_tests 894.
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
 # cluster_tests 5483 -> 5488 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
 # test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
 # test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
 # test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
 # test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
-# files not in NO_CLUSTER: `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q
-# <files>`: 5408 tests collected.
-cluster_tests 5488
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5488 -> 5490 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER: 5490 tests collected.
+cluster_tests 5490

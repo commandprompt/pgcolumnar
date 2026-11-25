@@ -613,8 +613,10 @@ true until the next version shipped.
   error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
   A default of any JSON type is refused, including `""`, `false` and `0`.
   The refusal covers an output column and the column an equality delete
-  compares. A query that leaves the field out still reads, and a null
-  `initial-default` counts as none. Reading the default is not supported yet.
+  compares, whatever its type and whether it is required. A query that leaves
+  the field out still reads. A null `initial-default` counts as none, and so
+  does a field that has only a `write-default`. Reading the default is not
+  supported yet.
   docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
