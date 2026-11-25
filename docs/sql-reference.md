@@ -1287,9 +1287,14 @@ table's column definitions. Projection pushdown selects the declared columns
 that the reader decodes. This is a separate question from the number of columns
 that you must declare. Use
 `parquet_schema` to generate the full list: declare one column for each row it
-reports. A composite column covers all the leaves of its struct. A composite
-column whose leaves sit in no one struct, such as two top-level columns, is an
-error. Nothing in the file says when that composite is NULL (#2079).
+reports. A composite column covers all the leaves of its struct. It stands for
+the deepest struct that holds all the leaves it binds. It is NULL only when that
+struct, or a struct around it, is NULL. For example, a composite `(b int, c int)`
+over `s struct<inner struct<b, c>>` stands for `inner`, so it is NULL when
+`inner` is NULL. A composite column whose leaves sit in no one struct is an
+error. Two top-level columns are an example, and so is one top-level column under
+a one-field composite. Nothing in the file says when that composite is NULL
+(#2079).
 
 A string cell read into a `text` or `varchar` column must be valid in the
 server encoding (#1821). A cell with an invalid byte sequence or an embedded

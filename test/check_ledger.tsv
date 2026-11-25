@@ -7200,13 +7200,19 @@ parquet_nested	parquet_nested	np2 export rows	15;16;17;18;19	never	-
 parquet_nested	parquet_nested	np2 values match	15;16;17;18;19	never	-
 parquet_nested	parquet_nested	reject multi-dim array	15;16;17;18;19	2026-10-21	columnar_parquet.c: a multi-dimensional array is no longer refused
 parquet_nested_import	parquet_nested_import	a NULL sub-struct keeps its sibling field	15;16;17;18;19	2026-11-24	-
+parquet_nested_import	parquet_nested_import	a composite finds its struct when the deep leaf comes first	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: refuse a composite whose struct is not the first leaf's parent (#2146 review);columnar_parquet_reader.c: the struct is the first leaf's parent, not the group holding all leaves (#2146 review)
+parquet_nested_import	parquet_nested_import	a composite over a nested struct is NULL only when that struct is	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: a composite is NULL only one level below its struct (#2146 review);columnar_parquet_reader.c: main's struct rule, NULL only at def 0 under a nullable struct (#2146 review);columnar_parquet_reader.c: refuse a composite over a struct below the top level (#2146 review)
+parquet_nested_import	parquet_nested_import	a composite over a struct inside a struct reads like pyarrow	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: refuse a composite over a struct below the top level (#2146 review)
 parquet_nested_import	parquet_nested_import	a composite over top-level columns is refused	15;16;17;18;19	2026-11-24	-
+parquet_nested_import	parquet_nested_import	a list two structs deep is NULL under a NULL outer struct	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: a list is NULL only at its own level, not under a NULL parent (#2146 review)
+parquet_nested_import	parquet_nested_import	a one-field composite is NULL only when its struct is	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: the struct search starts from the leaves, not their parents (#2146 review)
+parquet_nested_import	parquet_nested_import	a one-field composite over a top-level column is refused	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: the struct search starts from the leaves, not their parents (#2146 review)
 parquet_nested_import	parquet_nested_import	export rows	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	import count matches	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	import rows	15;16;17;18;19	never	-
-parquet_nested_import	parquet_nested_import	list in a nullable struct imports like pyarrow	15;16;17;18;19	2026-11-24	-
-parquet_nested_import	parquet_nested_import	list in a nullable struct reads like pyarrow	15;16;17;18;19	2026-11-24	-
-parquet_nested_import	parquet_nested_import	list in a nullable struct reads like pyarrow through the FDW	15;16;17;18;19	2026-11-24	-
+parquet_nested_import	parquet_nested_import	list in a nullable struct imports like pyarrow	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: a list is NULL only at its own level, not under a NULL parent (#2146 review)
+parquet_nested_import	parquet_nested_import	list in a nullable struct reads like pyarrow	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: a list is NULL only at its own level, not under a NULL parent (#2146 review)
+parquet_nested_import	parquet_nested_import	list in a nullable struct reads like pyarrow through the FDW	15;16;17;18;19	2026-11-25	columnar_parquet_reader.c: a list is NULL only at its own level, not under a NULL parent (#2146 review)
 parquet_nested_import	parquet_nested_import	nested import round-trips (arrays + composite)	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array
 parquet_nested_import	parquet_nested_import	pyarrow import rows	15;16;17;18;19	never	-
 parquet_nested_import	parquet_nested_import	pyarrow nested file matches oracle	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: an empty Parquet list is read back as a NULL array

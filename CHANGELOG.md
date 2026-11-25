@@ -609,15 +609,16 @@ true until the next version shipped.
   REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
   pyarrow does (#2079, #1916). They returned wrong values with no error: an
   empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
-  values, a REQUIRED struct with a NULL field read as NULL, and a NULL struct
-  read its list as `{}`. The reader assumed that definition level 0 always
+  values, a REQUIRED struct with a NULL field read as NULL, and a NULL list
+  inside a present struct read as `{}`. The reader assumed that definition level 0 always
   meant a NULL list or struct and level 1 an empty list. That holds only for a
   nullable list or struct with no nullable parent. The reader now takes both
   levels from the file's schema. A composite is NULL only when the struct that
   holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
   field. A composite over leaves that no one struct holds, such as two
   top-level columns, is now an error: it read as NULL whenever any one field
-  was NULL. `test/parquet_nested_import.sh` and
+  was NULL. A one-field composite over one top-level column is now an error
+  too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
   `test_parquet_nested_import.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's

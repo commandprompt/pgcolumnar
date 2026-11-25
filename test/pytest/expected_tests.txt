@@ -1950,4 +1950,8 @@ guard_tests 895
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-cluster_tests 5406
+# cluster_tests 5406 -> 5412 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
+# two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
+cluster_tests 5412
