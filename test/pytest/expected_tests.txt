@@ -1953,4 +1953,8 @@ guard_tests 895
 # (test_a_timestamp_array_element_past_arrows_range_names_the_column,
 # test_a_timestamp_composite_field_past_arrows_range_names_the_column), by collection: 6277 tests
 # collected, less guard_tests 894.
-cluster_tests 5405
+# cluster_tests 5405 -> 5406 for the second #2085 review in test_arrow_export.py: a timestamp before 1970
+# (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
+# (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+cluster_tests 5406

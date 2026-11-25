@@ -106,14 +106,18 @@ def _run(dsn, sql):
         pass
 
 
-def _refusal(dsn, sql, msg):
-    """-> "refused" when `sql` fails with `msg`, "succeeded", or the other error."""
+def _refusal(dsn, sql, msg, sqlstate=None):
+    """-> "refused" when `sql` fails with `msg` (and, when given, with `sqlstate`),
+    "succeeded", or the other error, led by its SQLSTATE as the shell's verbose psql
+    prints it."""
     try:
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(sql)
     except psycopg.Error as exc:
         text = str(exc)
-        return "refused" if msg in text else f"other error: {text.splitlines()[0] if text else type(exc).__name__}"
+        if msg in text and (sqlstate is None or exc.sqlstate == sqlstate):
+            return "refused"
+        return f"other error: {exc.sqlstate}: {text.splitlines()[0] if text else type(exc).__name__}"
     return "succeeded"
 
 
@@ -214,15 +218,21 @@ def ae(pgc_cluster, server_dir):
         _run(dsn, "CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar")
         _run(dsn, "INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00')")
         r["tsover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsover', '{f['tsover']}')",
-                               TS_RANGE_MSG % "ts")
+                               TS_RANGE_MSG % "ts", "22008")
         r["tsover file"] = "present" if f["tsover"].exists() else "absent"
         r["tzover"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tzover', '{f['tzover']}')",
-                               TS_RANGE_MSG % "tz")
+                               TS_RANGE_MSG % "tz", "22008")
         r["tsedge rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsedge', '{f['tsedge']}')")
         _run(dsn, "CREATE TABLE ar_tsback (ts timestamp, tz timestamptz) USING pgcolumnar")
         r["tsback rows"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('ar_tsback', '{f['tsedge']}')")
         r["tsback values"] = _value(dsn, "SELECT string_agg(ts::text || ',' || (tz AT TIME ZONE 'UTC')::text, ' ')"
                                          " FROM ar_tsback")
+        # a timestamp before 1970 is a negative Arrow value and must still export
+        f["tspre"] = server_dir / "tspre.arrows"
+        _run(dsn, "CREATE TABLE ar_tspre (ts timestamp, tz timestamptz) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tspre VALUES ('1969-12-31 23:59:59.999999', '1969-12-31 23:59:59.999999+00'),"
+                  " ('4714-11-24 00:00:00 BC', '4714-11-24 00:00:00+00 BC')")
+        r["tspre rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_tspre', '{f['tspre']}')")
         # an array element and a composite field reach the same check; the error names the column
         _run(dsn, "CREATE TABLE ar_tsarr (tsarr timestamp[]) USING pgcolumnar")
         _run(dsn, "INSERT INTO ar_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[])")
@@ -230,9 +240,9 @@ def ae(pgc_cluster, server_dir):
         _run(dsn, "CREATE TABLE ar_tscomp (tscomp ar_tsfield) USING pgcolumnar")
         _run(dsn, "INSERT INTO ar_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'))")
         r["tsarr"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsarr', '{server_dir / 'tsarr.arrows'}')",
-                              TS_RANGE_MSG % "tsarr")
+                              TS_RANGE_MSG % "tsarr", "22008")
         r["tscomp"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tscomp', '{server_dir / 'tscomp.arrows'}')",
-                               TS_RANGE_MSG % "tscomp")
+                               TS_RANGE_MSG % "tscomp", "22008")
         r["dsn"] = dsn
         yield r
     finally:
@@ -604,6 +614,23 @@ def test_the_last_timestamp_arrow_holds_imports_back_unchanged(ae, expect):
     expect.text(f"{ae['tsback rows']}|{ae['tsback values']}",
                 "1|294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807",
                 "and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085)")
+
+
+def _pre1970(pa, path):
+    t = _read(pa, path)
+    ts, tz = (t.column(n).cast(pa.int64()).to_pylist() for n in ("ts", "tz"))
+    return " ".join(f"{a},{b}" for a, b in zip(ts, tz))
+
+
+def test_a_timestamp_before_1970_still_exports(ae, expect):
+    """#2085 review: Arrow stores a timestamp before 1970-01-01 as a negative number.
+    The range check must refuse only a value past the top, not every negative one."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['tspre rows']}|{_reading(_pre1970, pa, ae['files']['tspre'])}",
+                "2|-1,-1 -210866803200000000,-210866803200000000",
+                "a timestamp before 1970 still exports: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz (#2085 review)")
 
 
 def test_a_timestamp_array_element_past_arrows_range_names_the_column(ae, expect):

@@ -613,7 +613,9 @@ true until the next version shipped.
   readers saw a date before year 0, and `import_arrow` refused the file. Such a
   value now fails the export with SQLSTATE 22008, naming the table column, and
   no file is written. For an element of an array column or a field of a
-  composite column, the error names that table column too.
+  composite column, the error names that table column too. A timestamp
+  before 1970, down to 4714-11-24 BC, still exports. The tests check the
+  SQLSTATE as well as the message.
   docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
