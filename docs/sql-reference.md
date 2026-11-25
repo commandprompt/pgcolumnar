@@ -28,7 +28,10 @@ compression codec and level, encode effort, and the declared `sort_by` key). See
 with no explicit columns. It is not auto-maintained; rows inserted after a sort
 append in insertion order, so re-run `vacuum_sorted` to re-establish it, like
 PostgreSQL `CLUSTER`. Column names must exist and cannot be virtual generated
-columns.
+columns. The declared key follows `RENAME COLUMN`, but `DROP COLUMN` leaves it
+as it is. If you then rename another column to the dropped name, a bare
+`vacuum_sorted` sorts on that column, with no warning. After such a drop, check
+the declared key in `pgcolumnar.options`.
 
 `ttl_column name` and `ttl_interval interval` declare a retention. They are read
 only by [`pgcolumnar.expire`](#pgcolumnarexpiretablename-regclass-returns-bigint).
