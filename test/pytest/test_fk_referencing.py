@@ -72,6 +72,17 @@ def test_the_referencing_side_still_works(pgc_conn, expect):
     expect.num(_one(conn, "SELECT count(*) FROM fk_c_child"), 2, "and rows that satisfy it are accepted")
     expect.text(_has(_err(conn, "INSERT INTO fk_c_child VALUES (99, 'nope')"), "violates foreign key constraint"),
                 "yes", "a row that violates it is still rejected")
+    # A deferred key asks under SnapshotSelf whether the row is still live before it
+    # checks it (RI_FKey_check). Heap skips a row deleted before commit; pgcolumnar
+    # answered "live" until #2060 and failed with 23503. The check above is the control.
+    _run(conn, "CREATE TABLE fk_dc_child (id int, pid int REFERENCES fk_h_parent(id) "
+               "DEFERRABLE INITIALLY DEFERRED) USING pgcolumnar")
+    dc = _err(conn, "BEGIN; INSERT INTO fk_dc_child VALUES (3, 99999); "
+                    "DELETE FROM fk_dc_child WHERE id = 3; COMMIT")
+    if dc:
+        _err(conn, "ROLLBACK")
+    expect.text(f"{'ok' if not dc else f'no ({dc})'}|{_one(conn, 'SELECT count(*) FROM fk_dc_child')}", "ok|0",
+                "a deferred foreign key does not check a referencing row deleted before commit, as heap")
 
 
 def test_constraints_that_need_no_row_lock_are_unaffected(pgc_conn, expect):

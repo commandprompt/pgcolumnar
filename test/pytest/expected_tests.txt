@@ -1942,20 +1942,71 @@ guard_tests 895
 # (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
 # `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
 # collected, less guard_tests 894.
-# cluster_tests 5398 -> 5403 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5398 -> 5411 for #2059 in test_index_only.py. Eight tests for a VACUUM that runs while a
+# DELETE or UPDATE is paused inside its statement (test_concurrent_vacuum_during_{delete,update}_*), and
+# five for a DELETE that commits while pgcolumnar.vm_set_hold_ms pauses VACUUM between its computation and
+# its set (test_delete_between_vacuum_steps_*), by collection: `cd test/pytest &&
+# PGC_PG_CONFIG=<pg_config> /root/pyenv/bin/python -m pytest --collect-only -q`: 6283 tests collected,
+# less guard_tests 894.
+# cluster_tests 5411 -> 5439 for #2059's review fix-up in test_index_only.py (#2129). Twenty-eight tests: a
+# writer row count for the two single-block races; the race during a delete and an update across two blocks
+# (test_concurrent_vacuum_during_two_block_{delete,update}_*) and a delete over three row groups
+# (test_concurrent_vacuum_during_delete_over_three_row_groups_*); and a delete during vacuum's hold in the
+# second row group (test_delete_in_second_row_group_between_vacuum_steps_*) and over three row groups
+# (test_delete_over_three_row_groups_between_vacuum_steps_*), by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 5425 tests collected.
+# cluster_tests 5439 -> 5440 for #2066's test_a_join_clause_under_another_collation_refuses_the_fold in
+# test_native_join_vector_agg.py, by collection over the cluster files (the complement of NO_CLUSTER): 5385 tests collected.
+# cluster_tests 5440 -> 5442 for #2060's two tests in test_am_contracts.py
+# (test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see and
+# test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip), by collection over the files
+# NO_CLUSTER does not name: 5386 tests collected after the merge of main.
+# cluster_tests 5442 -> 5443 for test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation
+# in test_am_contracts.py (#2060 review), by collection over the files NO_CLUSTER does not name.
+# cluster_tests stays 5387 for the #2060 review's two new checks: the deferred foreign key check joins
+# test_fk_referencing.py::test_the_referencing_side_still_works and the partitioned-parent check joins
+# test_am_contracts.py::test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see, so no test is added.
+# cluster_tests 5443 -> 5457 for #2069's 14 new tests in test_sorted_mark_rename.py (DROP COLUMN of a
+# sort-key column clears the ordering mark, so ORDER BY plans a Sort and vacuum_sorted rewrites after
+# another column takes the dropped name; a partition and a Z-order run too; an unrelated drop keeps the
+# mark), by collection: 6284 tests collected, less guard_tests 894.
+# cluster_tests 5457 -> 5465 for the #2135 review's 8 new tests in test_sorted_mark_rename.py (a drop on an
+# inheritance parent clears the child's mark; a column of an empty and of a populated heap table drops, in the
+# suite's database and in one without the extension, so the drop hook leaves heap tables alone), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5465 -> 5466 for #2071's test_rows_past_1gb_per_row_group_or_chunk_group_load in
+# test_large_values.py (150000 rows of 8 KB and 10000 rows of 120 KB load under the default row limits);
+# the opt-in arm is renamed, not added, so it moves nothing. By collection: `cd test/pytest &&
+# PGC_PG_CONFIG=<PG 18.6 pg_config> python -m pytest --collect-only -q`: 6271 tests collected, less
+# guard_tests 894.
+# cluster_tests 5466 -> 5468 for #2071's review fix-up (#2138): test_large_values.py's row-group test
+# splits into test_rows_past_1gb_per_row_group_load (which also checks the row-group shape) and
+# test_rows_past_1gb_per_chunk_group_load, and test_compressed_heap_rows_past_1gb_load is new (heap's
+# compressed values copied to columnar), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5387 tests collected.
+# cluster_tests 5468 -> 5475 for #2072's arm 7 in test_parallel_flush_optin.py (a parallel flush after
+# TRUNCATE, LOCK TABLE or ALTER TABLE in the same transaction finishes in workers and writes the added
+# column; a parallel INSERT finishes while another session's ALTER TABLE waits, and the ALTER completes
+# after it; the premise that the ALTER waited), 7 tests, by collection: 6277 tests collected, less
+# guard_tests 894.
+# cluster_tests 5475 -> 5478 for the #2140 review's three tests in test_parallel_flush_optin.py (a parallel
+# flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
+# the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
+# in workers), by collection over the cluster files: 5394 tests collected.
+# cluster_tests 5478 -> 5483 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5403 -> 5406 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5483 -> 5486 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5406 -> 5410 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5486 -> 5490 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5410 -> 5412 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5490 -> 5492 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-cluster_tests 5412
+cluster_tests 5492
