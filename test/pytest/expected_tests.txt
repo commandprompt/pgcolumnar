@@ -364,7 +364,9 @@
 # collection over NO_CLUSTER.
 # guard_tests 892 -> 894 for test_architecture_map.py: the reader naming each kind of gap on a fixture tree, and
 # the module map naming every source file and catalog, by collection over NO_CLUSTER.
-guard_tests 894
+# guard_tests 894 -> 895 for test_coverage_report.py's derived guard that every job running run_coverage.py
+# fetches the release tags first (#2054), by collection over NO_CLUSTER.
+guard_tests 895
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -1912,7 +1914,35 @@ guard_tests 894
 # varchar, text[], json and jsonb columns and stores no row; valid multibyte UTF-8, valid JSON and bytea still
 # import), 11 tests, by collection: `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config
 # /root/pyenv/bin/python -m pytest --collect-only -q`: 6221 tests collected, less guard_tests 863.
-# cluster_tests 5376 -> 5381 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# cluster_tests 5376 -> 5381 for #2061's five tests in test_native_encoding.py (repeated uuid, interval,
+# timetz, name, macaddr, tid and point values are stored as RLE and read back, on the exhaustive and the
+# sampled path, and ANALYZE and DELETE read them), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5381 tests collected.
+# cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
+# tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
+# cluster_tests 5385 -> 5387 for the rescan fix's two tests (#2128, #2062): the join fold rescan test in
+# test_native_join_vector_agg.py and the issue-shapes test in test_native_join_runtime_filter.py, by
+# collection over every file not in NO_CLUSTER: 5379 tests collected.
+# cluster_tests 5387 -> 5388 for test_tid_range_scan.py's test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row
+# (#2058: a TID scan of ctid (0,0), or of an offset past a block's last, reaches no row), by collection of
+# every file NO_CLUSTER does not name: 5377 tests collected.
+# cluster_tests 5388 -> 5389 for #2083's test_parallel_copy_failed_loaders_close_their_file_once in
+# test_parallel_copy.py (a failed parallel_copy loader closes its file once, so the server log holds no
+# CloseTransientFile WARNING), by collection of the cluster files: 5377 tests collected.
+# cluster_tests 5389 -> 5391 for #2092's two tests, test_an_arrow_import_into_a_table_with_a_projection_
+# keeps_the_server_up in test_arrow_import.py and test_a_parquet_import_into_a_table_with_a_projection_keeps_
+# the_server_up in test_parquet_import.py (an import into a table with a projection keeps the server up and
+# fills the projection), by collection over the files NO_CLUSTER does not name, as ci.yml selects them:
+# 5378 tests collected.
+# cluster_tests 5391 -> 5392 for #2092's parallel_copy case,
+# test_parallel_copy_into_a_table_with_a_projection_fills_the_projection in test_parallel_copy.py, by the same
+# collection: 5379 tests collected.
+# cluster_tests 5396 -> 5398 for the avg(float8/real) Infinity fix's two tests in test_native_groupagg.py
+# (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
+# `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
+# collected, less guard_tests 894.
+# cluster_tests 5398 -> 5403 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
 # test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
 # test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
 # test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
@@ -1920,4 +1950,4 @@ guard_tests 894
 # test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests, by collection: `cd test/pytest &&
 # PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest --collect-only -q`: 6275 tests
 # collected, less guard_tests 894.
-cluster_tests 5381
+cluster_tests 5403
