@@ -635,6 +635,20 @@ true until the next version shipped.
   the server's own workers (two on PostgreSQL 18 with pgcolumnar preloaded).
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
+- An INSERT into a columnar table after a rewrite in the same transaction now
+  keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
+  rewrites the table and keeps its column count. Before this fix, a transaction
+  that inserted, rewrote and inserted again reused the write state from before
+  the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
+  an error. When the type changed from a by-reference type to a by-value type,
+  such as `text` to `int8`, the backend died with a segmentation fault and
+  PostgreSQL restarted every session. A type or collation change that needs no
+  rewrite, such as `int4` to `oid`, also reused the old state: the rows inserted
+  after it got chunk min and max under the old type or collation, and a filtered
+  read could miss them. The write state now notices the rewrite and starts over
+  for the new storage, and flushes and starts over when a column's type, typmod
+  or collation changed. `test/alter_column_type.sh` and
+  `test_alter_column_type.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
