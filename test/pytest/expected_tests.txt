@@ -1921,16 +1921,37 @@ guard_tests 895
 # cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
 # tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
-# cluster_tests 5384 -> 5389 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5385 -> 5387 for the rescan fix's two tests (#2128, #2062): the join fold rescan test in
+# test_native_join_vector_agg.py and the issue-shapes test in test_native_join_runtime_filter.py, by
+# collection over every file not in NO_CLUSTER: 5379 tests collected.
+# cluster_tests 5387 -> 5388 for test_tid_range_scan.py's test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row
+# (#2058: a TID scan of ctid (0,0), or of an offset past a block's last, reaches no row), by collection of
+# every file NO_CLUSTER does not name: 5377 tests collected.
+# cluster_tests 5388 -> 5389 for #2083's test_parallel_copy_failed_loaders_close_their_file_once in
+# test_parallel_copy.py (a failed parallel_copy loader closes its file once, so the server log holds no
+# CloseTransientFile WARNING), by collection of the cluster files: 5377 tests collected.
+# cluster_tests 5389 -> 5391 for #2092's two tests, test_an_arrow_import_into_a_table_with_a_projection_
+# keeps_the_server_up in test_arrow_import.py and test_a_parquet_import_into_a_table_with_a_projection_keeps_
+# the_server_up in test_parquet_import.py (an import into a table with a projection keeps the server up and
+# fills the projection), by collection over the files NO_CLUSTER does not name, as ci.yml selects them:
+# 5378 tests collected.
+# cluster_tests 5391 -> 5392 for #2092's parallel_copy case,
+# test_parallel_copy_into_a_table_with_a_projection_fills_the_projection in test_parallel_copy.py, by the same
+# collection: 5379 tests collected.
+# cluster_tests 5396 -> 5398 for the avg(float8/real) Infinity fix's two tests in test_native_groupagg.py
+# (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
+# `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
+# collected, less guard_tests 894.
+# cluster_tests 5398 -> 5403 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5389 -> 5392 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5403 -> 5406 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5392 -> 5396 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5406 -> 5410 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-cluster_tests 5396
+cluster_tests 5410
