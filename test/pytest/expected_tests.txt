@@ -2009,4 +2009,11 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-cluster_tests 5487
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+cluster_tests 5495
