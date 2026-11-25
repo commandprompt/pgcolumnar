@@ -22,6 +22,7 @@
 #include "columnar.h"
 
 #include "columnar_delete_vector.h"
+#include "access/relation.h"
 #include "access/xact.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -341,6 +342,7 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 {
 	ListCell   *lc;
 	bool		pushedSnapshot = false;
+	Relation	rel;
 
 	if (buf->chunks == NIL)
 		return;
@@ -428,6 +430,39 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 		}
 
 		PgColumnarUpsertDeleteVector(buf->storageId, &rm);
+	}
+
+	/*
+	 * Clear the VM bits again, now that the delete_vector rows exist (#2059).
+	 * PgColumnarMarkRowDeleted cleared them when the rows were marked, but a
+	 * VACUUM that ran since then could not see these marks, which were only in
+	 * this backend's memory, and may have set the bits again. From here on a
+	 * VACUUM sees the in-progress rows under its dirty snapshot and leaves the
+	 * groups alone.
+	 */
+	rel = try_relation_open(buf->relid, AccessShareLock);
+	if (rel != NULL)
+	{
+		foreach(lc, buf->chunks)
+		{
+			DeleteVectorChunkBuffer *chunk = (DeleteVectorChunkBuffer *) lfirst(lc);
+			uint64		lastBlock = PG_UINT64_MAX;
+			uint64		bitIndex;
+
+			/* only the marked rows' blocks, once each, as the mark cleared them */
+			for (bitIndex = 0; bitIndex < chunk->rowCount; bitIndex++)
+			{
+				uint64		rowNumber = chunk->startRowNumber + bitIndex;
+				uint64		block = rowNumber / COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
+
+				if (!dv_row_deleted(chunk->mask, chunk->maskLen, bitIndex) ||
+					block == lastBlock)
+					continue;
+				PgColumnarVMClearForRow(rel, rowNumber);
+				lastBlock = block;
+			}
+		}
+		relation_close(rel, AccessShareLock);
 	}
 
 	if (pushedSnapshot)
