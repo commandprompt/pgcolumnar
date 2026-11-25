@@ -84,6 +84,7 @@
 #include "utils/snapmgr.h"
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
+#include "utils/float.h"
 #include "utils/lsyscache.h"
 #include "access/stratnum.h"
 #include "access/tupmacs.h"
@@ -1246,6 +1247,27 @@ pgcolumnar_join_fold_vars(PlannerInfo *root, HashPath *hashPath,
 							TYPECACHE_EQ_OPR | TYPECACHE_HASH_PROC);
 	if (!OidIsValid(tce->eq_opr) || !OidIsValid(tce->hash_proc))
 		return false;
+
+	/*
+	 * Begin-scan compares keys with the type's default equality and hash under
+	 * the fact column's own collation. The join clause must mean the same
+	 * thing, or the fold answers under the wrong collation: a case-insensitive
+	 * clause over a plain text column would drop the rows that differ only in
+	 * case (#2066). Refuse when the clause's operator or input collation is
+	 * not the one begin-scan will use.
+	 */
+	if (operatorExpr->opno != tce->eq_opr)
+		return false;
+	{
+		Oid			attType;
+		int32		attTypmod;
+		Oid			attCollation;
+
+		get_atttypetypmodcoll(rte->relid, factVar->varattno,
+							  &attType, &attTypmod, &attCollation);
+		if (operatorExpr->inputcollid != attCollation)
+			return false;
+	}
 	*factVarOut = factVar;
 	*buildVarOut = buildVar;
 	return true;
@@ -1471,22 +1493,31 @@ pgcolumnar_join_fold_drain(PgColumnarAggScanState *state)
 
 	if (state->joinBuildState == NULL || state->joinFoldKeysReady)
 		return;
-	old = MemoryContextSwitchTo(state->joinFoldContext);
 	pgcolumnar_join_fold_reset_table(state);
 	for (;;)
 	{
 		bool		isnull;
 		Datum	   value;
 
+		/*
+		 * RUN THE DIMENSION PLAN OUTSIDE THE KEY CONTEXT (#2062). A node
+		 * allocates state on its first call, such as a Seq Scan's scan
+		 * descriptor, in whatever context is current. Run in joinFoldContext,
+		 * that state was freed when a rescan reset the context, and the next
+		 * rescan of the dimension crashed. Only the key table belongs there.
+		 */
 		slot = ExecProcNode(state->joinBuildState);
 		if (TupIsNull(slot))
 			break;
 		value = slot_getattr(slot, state->joinBuildResno, &isnull);
 		if (!isnull)
+		{
+			old = MemoryContextSwitchTo(state->joinFoldContext);
 			pgcolumnar_join_fold_insert(state, value);
+			MemoryContextSwitchTo(old);
+		}
 		CHECK_FOR_INTERRUPTS();
 	}
-	MemoryContextSwitchTo(old);
 	state->joinFoldKeysReady = true;
 }
 
@@ -3742,6 +3773,14 @@ pgcolumnar_apply_one(MemoryContext resultContext, PgColumnarAggSpec *spec,
 				 * goes finite+finite -> inf. Track Sxx only to reproduce that error
 				 * exactly (Sxx can overflow on finite inputs while Sx stays finite);
 				 * the returned average is Sx/N and is unaffected by it.
+				 *
+				 * Sxx also has to be NaN wherever core's is (#2068): at an infinite
+				 * or NaN first value, and once an infinite input makes Sx or Sxx
+				 * infinite. The state leaves this node for float8_combine (hand-off,
+				 * parallel partial) or pgcolumnar_spec_merge (sort-merge), and those
+				 * raise overflow when Sxx goes infinite from two finite inputs. A
+				 * run of {1, Infinity, 0} combined with a finite run did exactly
+				 * that, where core carries NaN and returns Infinity.
 				 */
 				float8		v = (spec->inputType == FLOAT4OID)
 					? (float8) DatumGetFloat4(val)
@@ -3755,13 +3794,18 @@ pgcolumnar_apply_one(MemoryContext resultContext, PgColumnarAggSpec *spec,
 					float8		tmp = v * newN - newSx;
 					float8		newSxx = spec->fsxx + tmp * tmp / (n * newN);
 
-					if ((isinf(newSx) || isinf(newSxx)) &&
-						!isinf(spec->fsum) && !isinf(v))
-						ereport(ERROR,
-								(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-								 errmsg("value out of range: overflow")));
+					if (isinf(newSx) || isinf(newSxx))
+					{
+						if (!isinf(spec->fsum) && !isinf(v))
+							ereport(ERROR,
+									(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+									 errmsg("value out of range: overflow")));
+						newSxx = get_float8_nan();
+					}
 					spec->fsxx = newSxx;
 				}
+				else if (isnan(v) || isinf(v))
+					spec->fsxx = get_float8_nan();
 				spec->fsum = newSx;
 				spec->count++;
 				spec->sawValue = true;
@@ -5485,6 +5529,14 @@ PgColumnarReScanAggScan(CustomScanState *node)
 
 	if (state->joinBuildState != NULL)
 	{
+		/*
+		 * PASS THE CHANGED PARAMETERS DOWN (#2062). The dimension plan is in
+		 * custom_ps, and ExecReScan forwards chgParam only to lefttree and
+		 * righttree. A node that caches its output, such as a HashAggregate,
+		 * would otherwise return the first execution's rows.
+		 */
+		if (node->ss.ps.chgParam != NULL)
+			UpdateChangedParamSet(state->joinBuildState, node->ss.ps.chgParam);
 		ExecReScan(state->joinBuildState);
 		if (state->joinFoldContext != NULL)
 			MemoryContextReset(state->joinFoldContext);
