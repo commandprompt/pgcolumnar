@@ -192,7 +192,9 @@ def fld(fields, fid):
 TWO = f"{W}/twolevel.parquet"
 two = pa.schema([pa.field("l", pa.list_(pa.field("element", I64, nullable=False)), nullable=False),
                  pa.field("n", pa.int32())])
-pq.write_table(pa.Table.from_pylist([{"l": [1, 2], "n": 1}, {"l": [3], "n": 2}], schema=two), TWO,
+# The empty row pins the empty-list branch of the two-level reading (#2146 fourth review).
+TWO_ROWS = [{"l": [1, 2], "n": 1}, {"l": [], "n": 2}, {"l": [3], "n": 3}]
+pq.write_table(pa.Table.from_pylist(TWO_ROWS, schema=two), TWO,
                store_schema=False)
 raw = open(TWO, "rb").read()
 flen = int.from_bytes(raw[-8:-4], "little")
@@ -212,7 +214,7 @@ foot = enc_struct(meta)
 open(TWO, "wb").write(raw[:base] + foot + len(foot).to_bytes(4, "little") + b"PAR1")
 # pyarrow, the independent reader, must read the rewritten file back unchanged
 got = pq.read_table(TWO).to_pylist()
-assert got == [{"l": [1, 2], "n": 1}, {"l": [3], "n": 2}], got
+assert got == TWO_ROWS, got
 
 for f in os.listdir(W):
     if f.endswith(".parquet"):

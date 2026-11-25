@@ -2029,4 +2029,8 @@ guard_tests 895
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-cluster_tests 5506
+# cluster_tests 5506 -> 5508 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
+# struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
+cluster_tests 5508

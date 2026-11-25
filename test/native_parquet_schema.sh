@@ -287,7 +287,7 @@ if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WOR
 	done
 	check_text "read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
 		"${read_rows% }" \
-		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2) twolevel=("{1,2}",1);({3},2)'
+		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2) twolevel=("{1,2}",1);({},2);({3},3)'
 	# A leaf under two repeated levels read into a one-dimensional array used to
 	# flatten: [[1], [2, 3]] read as {1,2,3}, with no error (#1917). The bind now
 	# refuses it with 42804, as it refuses other mismatches. The reading is the

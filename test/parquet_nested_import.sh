@@ -80,6 +80,11 @@ check "round-trips after delete" \
 #
 #     with pyarrow     26 passed + 0 skipped = 26
 #     without pyarrow   5 passed + 21 skipped = 26
+#
+# The fourth review of #2146 added two more, which decline the same way:
+#
+#     with pyarrow     28 passed + 0 skipped = 28
+#     without pyarrow   5 passed + 23 skipped = 28
 # pyarrow-written nested Parquet file: list<int32> and struct<x:int,y:string>.
 # This proves we read the Dremel levels the reference writer produces, not just
 # our own exporter's byte layout.
@@ -155,6 +160,7 @@ LVL_DEEP3="$PGC_WORKDIR/lvl_deep3.parquet"
 LVL_TWO="$PGC_WORKDIR/lvl_two.parquet"
 LVL_REQIN="$PGC_WORKDIR/lvl_reqin.parquet"
 LVL_PART="$PGC_WORKDIR/lvl_part.parquet"
+LVL_PRE="$PGC_WORKDIR/lvl_pre.parquet"
 LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"required lists and struct read like pyarrow"
 	"required lists and struct import like pyarrow"
@@ -173,7 +179,9 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"a composite over two top-level structs is refused"
 	"a composite over a struct and a top-level column is refused"
 	"a REQUIRED struct is NULL under a NULL parent"
-	"a composite over part of a struct is NULL only when that struct is")
+	"a composite over part of a struct is NULL only when that struct is"
+	"a composite over the leading part of a struct is NULL only when that struct is"
+	"a composite over a deep leaf stands for its own struct, not the next leaf's")
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
@@ -191,7 +199,7 @@ lvl_refusal() {
 }
 if python3 - "$LVL_STL" "$LVL_REQ" "$LVL_SUB" "$LVL_FLAT" \
 	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" "$LVL_DEEP3" \
-	"$LVL_TWO" "$LVL_REQIN" "$LVL_PART" <<'PY'
+	"$LVL_TWO" "$LVL_REQIN" "$LVL_PART" "$LVL_PRE" <<'PY'
 import sys
 try:
     import pyarrow as pa
@@ -271,6 +279,10 @@ pq.write_table(pa.table({"id": pa.array([0, 1, 2], I),
 # s struct<a, b>, for a composite over b alone: part of the struct.
 part = pa.array([{"a": 1, "b": 2}, None, {"a": 3, "b": None}], pa.struct([("a", I), ("b", I)]))
 pq.write_table(pa.table({"id": pa.array([0, 1, 2], I), "s": part}), sys.argv[13])
+# s struct<a, b> again, for a composite over a alone with b bound after it:
+# the leading part of the struct (#2146 fourth review).
+pre = pa.array([{"a": 1, "b": 2}, None, {"a": None, "b": 3}], pa.struct([("a", I), ("b", I)]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2], I), "s": pre}), sys.argv[14])
 PY
 then
 	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
@@ -376,6 +388,19 @@ then
 		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_PART') AS t(id int, x int, c lvl_b);")" \
 		'0:1:(2) 1:NULL:NULL 2:3:()'
+	# The composite binds s.a alone and y binds s.b after it. The next leaf is
+	# still inside s, but the composite's own leaves are, too: it stands for s.
+	check "a composite over the leading part of a struct is NULL only when that struct is" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(y::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_PRE') AS t(id int, c lvl_one, y int);")" \
+		'0:(1):2 1:NULL:NULL 2:():3'
+	# In s struct<inner struct<b>, a>, a composite over inner.b alone stands for
+	# inner, its own leaves' struct, not for s, which also holds the next leaf a.
+	# A NULL inner is a NULL composite.
+	check "a composite over a deep leaf stands for its own struct, not the next leaf's" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(a::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_MIR') AS t(id int, c lvl_b, a int);")" \
+		'0:(2):1 1:NULL:3 2:NULL:NULL 3:(4):NULL'
 else
 	rc=$?
 	if [ "$rc" = 3 ]; then

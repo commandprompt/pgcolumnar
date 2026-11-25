@@ -267,6 +267,10 @@ def _write_more_shape_files(paths, pa, pq):
     # s struct<a, b>, for a composite over b alone: part of the struct.
     part = pa.array([{"a": 1, "b": 2}, None, {"a": 3, "b": None}], pa.struct([("a", i32), ("b", i32)]))
     pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32), "s": part}), str(paths["part"]))
+    # s struct<a, b> again, for a composite over a alone with b bound after it:
+    # the leading part of the struct (#2146 fourth review).
+    pre = pa.array([{"a": 1, "b": 2}, None, {"a": None, "b": 3}], pa.struct([("a", i32), ("b", i32)]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32), "s": pre}), str(paths["pre"]))
     for path in paths.values():
         path.chmod(0o644)
 
@@ -325,7 +329,7 @@ def _level_arm(ni, pa, pq):
         got["flat refusal"] = _refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
         more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3",
-                                                                 "two", "reqin", "part")}
+                                                                 "two", "reqin", "part", "pre")}
         _write_more_shape_files(more, pa, pq)
         rows = "string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
         _run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
@@ -365,6 +369,14 @@ def _level_arm(ni, pa, pq):
         got["part read"] = _value(
             dsn, f"SELECT {x_c_rows} "
                  f"FROM pgcolumnar.read_parquet('{more['part']}') AS t(id int, x int, c lvl_b)")
+        got["pre read"] = _value(
+            dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || "
+                 "coalesce(y::text, 'NULL'), ' ' ORDER BY id) "
+                 f"FROM pgcolumnar.read_parquet('{more['pre']}') AS t(id int, c lvl_one, y int)")
+        got["mirror deep leaf read"] = _value(
+            dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || "
+                 "coalesce(a::text, 'NULL'), ' ' ORDER BY id) "
+                 f"FROM pgcolumnar.read_parquet('{more['mirror']}') AS t(id int, c lvl_b, a int)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -574,3 +586,31 @@ def test_a_composite_over_part_of_a_struct_is_null_only_when_that_struct_is(ni, 
     if got is not None:
         expect.text(got["part read"], "0:1:(2) 1:NULL:NULL 2:3:()",
                     "a composite over part of a struct is NULL only when that struct is")
+
+
+def test_a_composite_over_the_leading_part_of_a_struct_is_null_only_when_that_struct_is(ni, expect):
+    # The composite binds s.a alone and y binds s.b after it. The next leaf is
+    # still inside s, but the composite's own leaves are, too: it stands for s.
+    pa = expect.require_module(
+        "pyarrow", name="a composite over the leading part of a struct is NULL only when that struct is")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite over the leading part of a struct is NULL only when that struct is") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["pre read"], "0:(1):2 1:NULL:NULL 2:():3",
+                    "a composite over the leading part of a struct is NULL only when that struct is")
+
+
+def test_a_composite_over_a_deep_leaf_stands_for_its_own_struct_not_the_next_leafs(ni, expect):
+    # In s struct<inner struct<b>, a>, a composite over inner.b alone stands for
+    # inner, its own leaves' struct, not for s, which also holds the next leaf a.
+    pa = expect.require_module(
+        "pyarrow", name="a composite over a deep leaf stands for its own struct, not the next leaf's")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite over a deep leaf stands for its own struct, not the next leaf's") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["mirror deep leaf read"], "0:(2):1 1:NULL:3 2:NULL:NULL 3:(4):NULL",
+                    "a composite over a deep leaf stands for its own struct, not the next leaf's")

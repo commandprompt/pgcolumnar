@@ -322,7 +322,7 @@ def test_read_parquet_reads_each_nested_file_with_the_reported_column_list(pgc_c
     expect.text(" ".join(got),
                 'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) '
                 'shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2) '
-                'twolevel=("{1,2}",1);({3},2)',
+                'twolevel=("{1,2}",1);({},2);({3},3)',
                 "read_parquet reads each nested file with the column list parquet_schema reports (#1893)")
 
 

@@ -625,7 +625,8 @@ true until the next version shipped.
   LIST group such as `repeated int64 l`, as its values (#1916). It read every
   row as an empty array, `{}`, with no error. The #2079 fix above corrected
   this, and `test/native_parquet_schema.sh` and
-  `test_native_parquet_schema.py` now read `twolevel.parquet` to pin it.
+  `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
+  row, to pin it.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves
   `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
