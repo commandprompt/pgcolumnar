@@ -616,7 +616,8 @@ true until the next version shipped.
   the same way. Each worker checks again once it holds its lock on the table, so
   a unique index created after the first check, but before any worker has opened
   the table, is refused too. One worker still loads such a table, and a
-  partitioned target with a primary key still loads with more than one worker. docs/limitations.md and docs/sql-reference.md.
+  partitioned target with a primary key still loads with more than one worker.
+  docs/limitations.md and docs/sql-reference.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
