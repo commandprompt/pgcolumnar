@@ -355,6 +355,14 @@ struct PgColumnarWriteState
 	bool		bloomEnabled;		/* columnar.enable_bloom_filter at open time */
 	int			encodeEffort;		/* per-table encode_effort at open time */
 	uint64		storageId;
+
+	/*
+	 * pg_class.relfilenode when the state was opened (#2067). Every rewrite
+	 * changes it, so a mismatch is the cheap sign that the table may have new
+	 * storage and new column types since; PgColumnarGetWriteState then checks
+	 * the storage id, which needs a metapage read.
+	 */
+	Oid			relfilenode;
 	PgColumnarColumnDef *colDefs;		/* array [natts], in writeContext */
 
 	/*
@@ -768,6 +776,29 @@ grow_uint64_array(uint64 *arr, int oldSize, int newSize)
 }
 
 /*
+ * write_state_descriptor_matches
+ *		True when every column of the write state's descriptor has the type,
+ *		typmod and collation the relation's descriptor has now. The caller has
+ *		already checked that the column counts match. equalRowTypes would do
+ *		this, but it first appeared in PostgreSQL 17.
+ */
+static bool
+write_state_descriptor_matches(TupleDesc have, TupleDesc now)
+{
+	for (int i = 0; i < now->natts; i++)
+	{
+		Form_pg_attribute a = TupleDescAttr(have, i);
+		Form_pg_attribute b = TupleDescAttr(now, i);
+
+		if (a->atttypid != b->atttypid ||
+			a->atttypmod != b->atttypmod ||
+			a->attcollation != b->attcollation)
+			return false;
+	}
+	return true;
+}
+
+/*
  * PgColumnarGetWriteState
  *		Find or create the pending write state for a relation.
  */
@@ -803,13 +834,40 @@ PgColumnarGetWriteState(Relation rel)
 		 *
 		 * The buffered rows are correct under the descriptor they were written
 		 * with, so flush them under it and open a new buffer for the new shape.
+		 *
+		 * A rewrite that keeps the column count is the other way the state goes
+		 * stale (#2067). ALTER COLUMN TYPE, or any rewrite through a transient
+		 * table, gives the table new storage and possibly new column types. A
+		 * reused state flushed into the retired storage, so COMMIT lost the rows
+		 * without an error; and a by-value Datum encoded under the old by-reference
+		 * descriptor was dereferenced as a pointer. A rewrite always changes the
+		 * relfilenode, so that is the trigger to look closer.
+		 *
+		 * A type or collation change that needs no rewrite (int4 to oid, a new
+		 * collation on a text column) keeps the relfilenode but changes the
+		 * descriptor. A reused state computed chunk min and max under the old
+		 * type or collation, so a filtered read pruned the chunk that holds the
+		 * match (#2067). Compare each column's type, typmod and collation too.
 		 */
-		if (writeState->natts == RelationGetDescr(rel)->natts)
+		if (writeState->natts == RelationGetDescr(rel)->natts &&
+			writeState->relfilenode == RelationGetForm(rel)->relfilenode &&
+			write_state_descriptor_matches(writeState->tupdesc, RelationGetDescr(rel)))
 			return writeState;
 
-		if (writeState->stripeRowCount > 0)
-			pgcolumnar_flush_row_group(writeState);
-		flush_ws_projections(writeState);
+		/*
+		 * New storage: forget the state rather than flush it. Its storage is
+		 * retired, and the rewrite already flushed its rows before copying them
+		 * (the scan begins with a flush). Same storage: a new column count, or
+		 * a type or collation change without a rewrite. Its rows belong to live
+		 * storage and are correct under the descriptor they were written with:
+		 * flush them under it.
+		 */
+		if (writeState->storageId == PgColumnarStorageId(rel))
+		{
+			if (writeState->stripeRowCount > 0)
+				pgcolumnar_flush_row_group(writeState);
+			flush_ws_projections(writeState);
+		}
 
 		oldContext = MemoryContextSwitchTo(PgColumnarWriteContext);
 		PgColumnarWriteStates = list_delete_ptr(PgColumnarWriteStates, writeState);
@@ -846,6 +904,7 @@ PgColumnarGetWriteState(Relation rel)
 	writeState->bloomEnabled = pgcolumnar_enable_bloom_filter;
 	writeState->encodeEffort = COLUMNAR_ENCODE_EFFORT_FULL;
 	writeState->storageId = PgColumnarStorageId(rel);
+	writeState->relfilenode = RelationGetForm(rel)->relfilenode;
 
 	/*
 	 * Per-table options (spec 7.4) override the instance-wide GUC defaults for
