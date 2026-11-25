@@ -619,6 +619,52 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
+  after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
+  also no longer waits when another session queues `ALTER TABLE` on the table
+  during the INSERT. Each flush worker opened the table with ACCESS SHARE. The
+  workers are not in the inserting backend's lock group, and the backend waits
+  for them on a latch, so PostgreSQL's deadlock detector could not see the
+  wait. Only `statement_timeout`, `lock_timeout` or a cancel ended it. The
+  workers now take each column's attributes from the inserting backend, through
+  the shared memory segment, and do not open the table. The flush still runs
+  in workers, and the setting is still off by default (#2072). Two cases
+  remain, in #2182: a composite column still hangs when the transaction holds
+  ACCESS EXCLUSIVE on the composite's table, and a column whose type was
+  created in the same transaction is flushed serially after a WARNING.
+  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`. Arm 7
+  also retypes two columns in the same transaction and requires every column
+  encoded in workers, with the serial path's chunks and rows, so a worker that
+  reads the committed column attributes fails it (#2140 review).
+- An `INSERT` of rows whose one column holds more than 1 GiB per row group no
+  longer fails (#2071). The writer closed row groups and chunk groups by row
+  count only, and put each column's values for a row group into one buffer, which
+  PostgreSQL caps at 1 GiB. With the default limits, a column averaging more than
+  about 7 KB per row, such as a `jsonb` document, failed with `string buffer
+  exceeds maximum allowed length (1073741823 bytes)`, even when the values
+  compressed to almost nothing. The writer now also writes a row group before a
+  row would take its values past 256 MiB, summed over its columns, so wide rows
+  make row groups with fewer than `stripe_row_limit` rows. It counts each value
+  at its raw size, so rows copied from heap, which stores them compressed, are
+  bounded too. A single row whose values sum past about 1 GiB still fails
+  (#2178). docs/limitations.md ("Write size limits"). `test/large_values.sh` and
+  `test_large_values.py`, which also check the row-group shape of an 8 KB load.
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
+  sort column is dropped and another column takes its name (#2069). The
+  ordering mark that `vacuum_sorted` and `recluster` record names its key
+  columns by name, and DROP COLUMN left it in place. PostgreSQL frees a
+  dropped column's name, so after `ALTER TABLE ... RENAME COLUMN` onto that
+  name the planner left out the Sort for the new column, and
+  `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
+  column in the key now clears the mark, on the table and on every
+  partition or inheritance child the drop reaches. A drop of any other
+  column keeps it. A column drop on a heap table never reaches this code,
+  in a database with or without the extension; the tests drop a column of
+  an empty and a populated heap table in both. A table whose key column
+  was dropped on an older build keeps its stale mark: run `vacuum_sorted`
+  on it again before renaming another column to the dropped name.
+  `test/sorted_mark_rename.sh` and `test_sorted_mark_rename.py`.
 - `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
   raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
   when the conflicting row was committed by another transaction after the
