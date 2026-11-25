@@ -605,6 +605,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- An `INSERT` of rows whose one column holds more than 1 GiB per row group no
+  longer fails (#2071). The writer closed row groups and chunk groups by row
+  count only, and put each column's values for a row group into one buffer, which
+  PostgreSQL caps at 1 GiB. With the default limits, a column averaging more than
+  about 7 KB per row, such as a `jsonb` document, failed with `string buffer
+  exceeds maximum allowed length (1073741823 bytes)`, even when the values
+  compressed to almost nothing. The writer now also writes a row group before a
+  row would take its values past 256 MiB, summed over its columns, so wide rows
+  make row groups with fewer than `stripe_row_limit` rows. It counts each value
+  at its raw size, so rows copied from heap, which stores them compressed, are
+  bounded too. A single row whose values sum past about 1 GiB still fails
+  (#2178). docs/limitations.md ("Write size limits"). `test/large_values.sh` and
+  `test_large_values.py`, which also check the row-group shape of an 8 KB load.
 - `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
   sort column is dropped and another column takes its name (#2069). The
   ordering mark that `vacuum_sorted` and `recluster` record names its key

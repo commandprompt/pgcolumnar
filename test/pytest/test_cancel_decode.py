@@ -4,7 +4,7 @@
 Loading and decoding a row group happens inside one call into the access method, so no
 executor loop runs for its duration, and stripe_row_limit makes that window as long as a
 user likes. The extension's own interrupt checks are what keep it short. With them, a
-statement_timeout cancel arrives as fast on one 4,000,000-row group as on many small ones;
+statement_timeout cancel arrives as fast on one 2,000,000-row group as on many small ones;
 without the group load's per-chunk check it waits for the whole group (the shell's header
 has the measurements). The property is that ratio, read back to back in the same run, plus
 an absolute ceiling.
@@ -32,7 +32,10 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_cancel_decode"
-ROWS = 4000000
+# 2,000,000 rows keep the "one" table in a single group: the writer closes a row group
+# before its values pass 256 MiB (#2071), and these rows measure 201,333,376 bytes by its
+# count. 4,000,000 measured 409,333,376 and split in two. The shell's header says more.
+ROWS = 2000000
 DDL = "a int, b int, c text, d text, e text, f text, h text, i text"
 SEL = "g, g % 1000, 'r'||g, 'r'||g, 'r'||g, 'r'||g, 'r'||g, 'r'||g"
 PRED = ("(a % 7) = 999 AND (b % 7) = 999 AND length(c) < 0 AND length(d) < 0 "

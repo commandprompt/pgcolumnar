@@ -18,6 +18,7 @@
 #include "columnar_storage.h"
 #include "columnar_write_state.h"
 #include "columnar_compat.h"
+#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -62,6 +63,21 @@ StaticAssertDecl(COLUMNAR_NATIVE_ENCDESC_HEADER_LEN == 2 + (int) sizeof(uint32),
 #ifndef DSM_HANDLE_INVALID
 #define DSM_HANDLE_INVALID 0
 #endif
+
+/*
+ * The most value bytes one row group buffers, summed over its columns (#2071).
+ *
+ * Every buffer the writer builds is a StringInfo, and a StringInfo cannot pass
+ * MaxAllocSize (1 GB). A chunk group's value stream holds one column's values,
+ * the flush copies a column's streams into one region and encodes it, and the
+ * row group's data is every column's chunk in one buffer. Row counts alone
+ * bound none of these: 150000 rows of 8 KB put 1.2 GB into one column. So the
+ * writer also closes a row group before a row would take it past this many
+ * bytes. Every chunk group is part of its row group, so this bounds each value
+ * stream too. 256 MB leaves room for an encoding or a block codec that makes
+ * data larger, and matches the export cap, PGC_EXPORT_GROUP_BYTES_MAX (#1811).
+ */
+#define PGC_WRITE_GROUP_BYTES_MAX	((uint64) 256 * 1024 * 1024)
 
 /* -------------------------------------------------------------------------
  * #445 slice 3: dispatch the per-column flush across background workers.
@@ -355,6 +371,7 @@ struct PgColumnarWriteState
 	List	   *chunkGroups;		/* list of ChunkGroupBuffer* */
 	ChunkGroupBuffer *currentGroup;
 	uint64		stripeRowCount;
+	uint64		stripeValueBytes;	/* bytes the buffered rows add, #2071 */
 
 	/*
 	 * Reservation for the stripe currently being buffered (spec 2.2, 6). The
@@ -863,6 +880,7 @@ PgColumnarGetWriteState(Relation rel)
 	writeState->chunkGroups = NIL;
 	writeState->currentGroup = NULL;
 	writeState->stripeRowCount = 0;
+	writeState->stripeValueBytes = 0;
 	writeState->haveReservation = false;
 	writeState->stripeId = 0;
 	writeState->stripeFirstRowNumber = 0;
@@ -1008,6 +1026,32 @@ pgcolumnar_start_chunk_group(PgColumnarWriteState *writeState)
 }
 
 /*
+ * row_value_bytes
+ *		An upper bound on the bytes one row adds to its value streams. A varlena
+ *		is measured without detoasting it: toast_raw_datum_size reads only the
+ *		header, and the encoder stores the value with a full 4-byte header.
+ */
+static uint64
+row_value_bytes(PgColumnarWriteState *writeState, Datum *values, bool *nulls)
+{
+	uint64		bytes = 0;
+	int			c;
+
+	for (c = 0; c < writeState->natts; c++)
+	{
+		Form_pg_attribute att = TupleDescAttr(writeState->tupdesc, c);
+
+		if (nulls[c])
+			continue;
+		if (att->attlen == -1)
+			bytes += (uint64) toast_raw_datum_size(values[c]) + VARHDRSZ;
+		else if (att->attlen > 0)
+			bytes += (uint64) att->attlen;
+	}
+	return bytes;
+}
+
+/*
  * PgColumnarWriteRow
  *		Append one row to the current stripe, opening a new chunk group when
  *		the current one is full and flushing the stripe when it reaches the
@@ -1018,9 +1062,22 @@ uint64
 PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 				 Datum *values, bool *nulls)
 {
-	ChunkGroupBuffer *group = writeState->currentGroup;
+	ChunkGroupBuffer *group;
 	uint64		rowNumber;
+	uint64		rowBytes;
 	int			c;
+
+	/*
+	 * Close the row group first if this row would take its buffered values past
+	 * PGC_WRITE_GROUP_BYTES_MAX (#2071). A row alone in its row group is always
+	 * buffered, so a row larger than the cap still gets a row group of its own.
+	 * The flush ends the reservation, so the row reserves a fresh one below.
+	 */
+	rowBytes = row_value_bytes(writeState, values, nulls);
+	if (writeState->stripeRowCount > 0 &&
+		writeState->stripeValueBytes + rowBytes > PGC_WRITE_GROUP_BYTES_MAX)
+		pgcolumnar_flush_row_group(writeState);
+	group = writeState->currentGroup;
 
 	/*
 	 * Reserve this stripe's id and row-number range when its first row is
@@ -1252,6 +1309,7 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 
 	group->rowCount++;
 	writeState->stripeRowCount++;
+	writeState->stripeValueBytes += rowBytes;
 
 	if (writeState->stripeRowCount >= (uint64) writeState->stripeRowLimit)
 		pgcolumnar_flush_row_group(writeState);
@@ -3192,6 +3250,7 @@ reset_stripe(PgColumnarWriteState *writeState)
 	writeState->chunkGroups = NIL;
 	writeState->currentGroup = NULL;
 	writeState->stripeRowCount = 0;
+	writeState->stripeValueBytes = 0;
 	writeState->haveReservation = false;
 
 	/*

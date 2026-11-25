@@ -7563,14 +7563,17 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. Rows whose column passes 1 GB in one row group, or in one chunk group, load and are stored exactly (#2071), also when they are copied from heap, which stores them compressed: before the fix the writer built one buffer past 1 GB and the INSERT failed. The 8 KB rows must make row groups just under 256 MiB. An opt-in arm loads about 1.1 GB of incompressible text with compression off; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
-| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
+| `test_rows_past_1gb_per_row_group_load` | under the default row limits, 150000 rows of 8 KB load, with the right count, id sum, total length and every value intact, in 5 row groups of 15984 to 33504 rows, which pins the 256 MiB cap and its reset after each flush (#2071) |
+| `test_rows_past_1gb_per_chunk_group_load` | under the default row limits, 10000 rows of 120 KB load, with the right count, id sum, total length and every value intact (#2071) |
+| `test_compressed_heap_rows_past_1gb_load` | 150000 rows of 8 KB that heap stores compressed, under 20 MB in all, copy to a columnar table with the right count, id sum, total length and every value intact, so the cap counts each value at its raw size (#2071) |
+| `test_incompressible_text_past_1gb_loads` | opt-in: about 1.1 GB of incompressible text in one chunk group's rows, compression off, commits all 1100 rows at full length with the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
@@ -13785,7 +13788,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
 
-The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+The twin of `test/cancel_decode.sh`. On a private database, two 2,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
 
 ### Every test
 
