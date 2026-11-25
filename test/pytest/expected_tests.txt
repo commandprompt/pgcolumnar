@@ -2009,20 +2009,27 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5493 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+# cluster_tests 5495 -> 5501 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
 # the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
 # loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
-# cluster_tests 5493 -> 5495 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# cluster_tests 5501 -> 5503 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
 # refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
 # 98 on main, 106 on this branch.
-# cluster_tests 5495 -> 5497 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# cluster_tests 5503 -> 5505 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
 # exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
 # by collection over the cluster files: 5488 tests collected (108 for that file).
-# cluster_tests 5497 -> 5500 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# cluster_tests 5505 -> 5508 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
 # unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
 # one of 4 loaders, which a row trigger's sequence shows; by collection over the cluster files: 5491 tests
 # collected (111 for that file).
-# cluster_tests 5500 -> 5503 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# cluster_tests 5508 -> 5511 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
 # unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
 # default worker count; by collection over the cluster files: 5503 tests collected (114 for that file).
-cluster_tests 5503
+cluster_tests 5511
