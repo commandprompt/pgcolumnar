@@ -100,13 +100,15 @@ def _debris(d):
     return query_error(f"listing {d} failed: {errors[0]}") if errors else found
 
 
-def _fatal_session(dsn, statements, want=("53100", "export write failed (injected fault)")):
+def _fatal_session(dsn, statements, want=("53100", "export write failed (injected fault)"),
+                   on_pid=None):
     """Runs statements in one session; the last one must end it with FATAL.
     -> (seen, results). seen is "fatal gone" when the session ended with a FATAL of
     want's SQLSTATE whose message holds want's text (by default the injected fault's,
     53100), and its backend has left pg_stat_activity; otherwise what was seen instead.
     results holds, for each earlier statement, its first value, its SQLSTATE if it
-    raised, or None (no row, or no result)."""
+    raised, or None (no row, or no result). on_pid, if given, is called with the
+    backend pid before the first statement runs."""
     try:
         conn = psycopg.connect(dsn, autocommit=True)
     except psycopg.Error as exc:
@@ -114,6 +116,8 @@ def _fatal_session(dsn, statements, want=("53100", "export write failed (injecte
     seen, pid, results = "no fatal (the export returned)", None, []
     try:
         pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+        if on_pid is not None:
+            on_pid(pid)
         for sql in statements[:-1]:
             try:
                 cur = conn.execute(sql)
@@ -276,6 +280,16 @@ def es(pgc_cluster, server_dir):
                   f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_isdir'}')"],
             want=("42809", str(d / "es_isdir")))
         r["rename fatal tmp"] = _tmp_of(d, "es_isdir")
+        # Finish's flush must leave the sink listed too. A temp name symlinked to
+        # /dev/full fails the flush with ENOSPC (53100); the table is empty, so every
+        # byte stays in the stdio buffer until that flush.
+        _run(dsn, "CREATE TABLE es_empty (id int) USING pgcolumnar")
+        r["flush fatal"], _ = _fatal_session(
+            dsn, ["SET exit_on_error = on",
+                  f"SELECT pgcolumnar.export_parquet('es_empty', '{d / 'es_full.parquet'}')"],
+            want=("53100", "could not flush"),
+            on_pid=lambda pid: os.symlink("/dev/full", d / f"es_full.parquet.tmp.{pid}"))
+        r["flush fatal tmp"] = _tmp_of(d, "es_full.parquet")
         # Abort must unlist a sink whose file Finish already closed; the repeat()
         # query allocates after ROLLBACK TO frees it, as the review's repro did
         seen, res = _fatal_session(dsn, [
@@ -286,6 +300,8 @@ def es(pgc_cluster, server_dir):
             *FATAL_PRE,
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp3.parquet'}')"])
         r["sp rename fatal"] = f"{res.count('42809')}:{seen}"
+        # the plain ERROR at that rename went through Abort, after Finish closed the file
+        r["sp rename isdir tmp"] = _tmp_of(d, "es_isdir")
         r["sp rename tmp"] = _tmp_of(d, "es_sp3.parquet")
         # A failed open must leave nothing listed: no Abort would unlist it. The walk
         # of a freed sink faults on an assert build (signal) and an ASan build (an
@@ -427,6 +443,15 @@ def test_fatal_no_temp_file_after_a_fatal_at_the_rename(es, expect):
     expect.text(str(es["rename fatal tmp"]), "0", "fatal: no temp file after a FATAL at the rename")
 
 
+def test_fatal_an_export_whose_flush_fails_ends_its_backend_with_fatal(es, expect):
+    expect.text(es["flush fatal"], "fatal gone",
+                "fatal: an export whose flush fails ends its backend with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_fatal_at_the_flush(es, expect):
+    expect.text(str(es["flush fatal tmp"]), "0", "fatal: no temp file after a FATAL at the flush")
+
+
 def test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):
     expect.text(es["sp rename fatal"], "1:fatal gone",
                 "fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL")
@@ -435,6 +460,11 @@ def test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal(
 def test_fatal_no_temp_file_after_a_failed_rename(es, expect):
     expect.text(str(es["sp rename tmp"]), "0",
                 "fatal: no temp file after a FATAL export that followed a failed rename")
+
+
+def test_fatal_no_temp_file_after_a_failed_rename_rolled_back_to_a_savepoint(es, expect):
+    expect.text(str(es["sp rename isdir tmp"]), "0",
+                "fatal: no temp file after a failed rename rolled back to a savepoint")
 
 
 def test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):

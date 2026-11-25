@@ -614,9 +614,10 @@ true until the next version shipped.
   exit (#1722). Local exports now use the same exit callback, which removes the
   temp file. A FATAL re-export keeps the previous file at the final name, and a
   FATAL export after other exports in the same transaction does not crash the
-  backend. A FATAL at the final rename also leaves no temp file, and an export
-  whose rename or open failed inside a rolled-back savepoint does not crash a
-  later FATAL export. `test/export_sink.sh` and `test_export_sink.py`.
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. `test/export_sink.sh` and
+  `test_export_sink.py`.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves
   `stripe_row_limit` row numbers, and a row number maps to an item pointer, so

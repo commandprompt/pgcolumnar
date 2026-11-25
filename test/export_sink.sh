@@ -242,6 +242,18 @@ fatal_session "SET exit_on_error = on;
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_isdir');" "FATAL:  42809: "
 check "fatal: an export whose rename fails ends its backend with FATAL" "$FS" "fatal gone"
 check_num "fatal: no temp file after a FATAL at the rename" "$(debris_of es_isdir)" "0"
+# Finish's flush must leave the sink listed too: a disk full at close, under
+# FATAL, is the same leak as a failed rename. A temp name symlinked to
+# /dev/full makes the flush fail with ENOSPC (53100). The table is empty, so
+# every byte stays in the stdio buffer until that flush.
+psql_run "CREATE TABLE es_empty (id int) USING pgcolumnar;"
+fatal_session "SELECT pg_backend_pid() AS bpid \gset
+\setenv BPID :bpid
+\! ln -s /dev/full '$PGC_WORKDIR/es_full.parquet.tmp.'\$BPID
+SET exit_on_error = on;
+SELECT pgcolumnar.export_parquet('es_empty', '$PGC_WORKDIR/es_full.parquet');" "FATAL:  53100: could not flush"
+check "fatal: an export whose flush fails ends its backend with FATAL" "$FS" "fatal gone"
+check_num "fatal: no temp file after a FATAL at the flush" "$(debris_of es_full.parquet)" "0"
 # Finish closes the file before the rename, so Abort must unlist a sink whose
 # file is already closed. A sink left listed is freed by ROLLBACK TO, and the
 # next FATAL in the transaction walks it. The query between them allocates
@@ -255,6 +267,10 @@ $FATAL_PRE
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_sp3.parquet');"
 check "fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL" \
 	"$(grep -c '^ERROR:  42809: ' <<<"$FS_OUT"):$FS" "1:fatal gone"
+# The plain ERROR at that rename went through Abort, which must remove the
+# temp file even though Finish had already closed it.
+check_num "fatal: no temp file after a failed rename rolled back to a savepoint" \
+	"$(debris_of es_isdir)" "0"
 check_num "fatal: no temp file after a FATAL export that followed a failed rename" \
 	"$(debris_of es_sp3.parquet)" "0"
 # A failed open must leave nothing listed: the caller's PG_TRY has not begun, so
