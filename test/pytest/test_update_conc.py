@@ -285,7 +285,7 @@ def test_a_covering_unique_index(race, expect):
 
 
 @pytest.mark.parametrize("x", ["xb", "xg"])
-def test_an_exclusion_constraint(race, expect, x):
+def test_an_update_on_an_exclusion_constrained_table(race, expect, x):
     """The loser gets 40001 on a table with an exclusion constraint, btree (id WITH =)
     or gist &&, as with a unique index (#2063). PgColumnarHasUniqueIndex answers yes
     for it, so the update serializes the old row before the new version's key lock

@@ -7844,7 +7844,7 @@ Each concurrent case runs one interleaving on a heap table, the oracle, and on a
 | `test_overlapping_multi_row_updates` | 41 overlapping rows: 200 rows remain, and the loser gets 40001 |
 | `test_serial_updates_control` | the same two updates without overlap leave one row with the last writer's value |
 | `test_a_covering_unique_index` | with a unique index the loser still gets 40001, not 23505; the heap composes |
-| `test_an_exclusion_constraint` | parametrized btree `(id WITH =)` and gist `&&`: with an exclusion constraint the loser still gets 40001, not 23P01 (#2063) |
+| `test_an_update_on_an_exclusion_constrained_table` | parametrized btree `(id WITH =)` and gist `&&`: with an exclusion constraint the loser still gets 40001, not 23P01 (#2063) |
 | `test_a_savepoint_rolled_back` | an UPDATE rolled back to a savepoint leaves the pre-savepoint value, as on the heap |
 | `test_a_statement_failing_inside_a_savepoint` | an UPDATE that fails partway inside a savepoint leaves nothing behind: its buffered mark and row are discarded |
 
