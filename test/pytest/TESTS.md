@@ -8214,13 +8214,15 @@ The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every ch
 
 ## 158. test_native_writer.py: the native writer by its catalog rows
 
-The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id.
+The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id. The second test is #2073: the writer refuses row numbers past the item-pointer range instead of wrapping the block number, and `pgcolumnar.row_tid` refuses them too. Unlike the first test it reads the table back, to show that no item pointer wrapped. The third test reserves a run that ends exactly at the largest row number, and one row number more, so a refusal that is off by one is caught.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_the_native_writer_by_its_catalog_rows` | the writer's storage, row-group and column-chunk rows match the fixture, and DROP deletes all three |
+| `test_row_numbers_past_the_item_pointer_range_are_refused` | at stripe_row_limit 2147483647 the 583rd single-row transaction is refused with 54000 instead of wrapping its item pointer (#2073); the 582 rows before it keep ordered item pointers and an index scan finds them all; `pgcolumnar.vacuum` renumbers the rows so inserts work again; `pgcolumnar.row_tid` maps the largest row number to `(4294967294,291)` and refuses the next one and the largest bigint with 22003 |
+| `test_a_reservation_that_ends_exactly_at_the_last_row_number_fits` | with exactly 1000 row numbers left, a reservation of 1001 is refused with 54000 and uses up nothing; a reservation of 1000 fits and its last row gets item pointer `(4294967294,291)`, which an index scan finds; the next insert is refused with 54000 (#2073) |
 
 ## 159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table
 
@@ -8981,6 +8983,13 @@ A module fixture on a private database runs every conversion in the shell's orde
 | `test_the_nullable_column_really_is_bigint_now` | the nullable column is `bigint` after its ALTER |
 | `test_nulls_stay_on_the_same_rows_through_a_conversion` | no row differs from heap, and the columnar table still holds all 20000 rows |
 | `test_text_to_int_the_crash` | the varlena-to-fixed conversion that dereferenced an integer as a pointer, run last |
+| `test_rows_inserted_after_a_type_change_in_the_same_transaction_survive_commit` | one transaction inserts 100 rows, changes `int8` to `numeric` and inserts 100 more; after COMMIT all 200 are there (#2067) |
+| `test_rows_inserted_after_a_same_type_rewrite_in_the_same_transaction_survive_commit` | the same with `int8 USING v + 0`, a rewrite that changes no type (#2067) |
+| `test_rows_inserted_after_a_rewrite_released_from_a_savepoint_survive_commit` | the same with the type change inside a savepoint that is released (#2067) |
+| `test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit` | control: the same with the savepoint rolled back, so the first write state is still the right one (#2067) |
+| `test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept` | one transaction inserts a row, changes `text` to `int8` and inserts another; both rows are there, and the backend does not crash (#2067). Runs after the other crash |
+| `test_a_filtered_read_finds_a_row_inserted_after_int4_becomes_oid_in_the_same_transaction` | one transaction inserts a row, changes the first column from `int4` to `oid` (no rewrite: the relfilenode stays the same) and inserts `4294967295`; a filtered read finds it, as heap does (#2067) |
+| `test_a_filtered_read_finds_a_row_inserted_after_a_collation_change_in_the_same_transaction` | the same with the last column changed from `text COLLATE "C"` to `"und-x-icu"`; a range filter finds `B`, as heap does. Unrunnable, not passed, on a server without that ICU collation (#2067) |
 
 ## 200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory
 
@@ -13205,7 +13214,7 @@ Every test makes one check under the shell's name, on a private database. The wo
 
 ## 326. test_objstore_addressing.py: gs:// and S3 virtual-host addressing, checked by the request path the server received
 
-The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name.
+The twin of `test/objstore_addressing.sh`. A private cluster reads parquet objects through the local SigV4 fixture server, started with `--virtual-host-base s3.local`: s3:// path-style and virtual-host, gs:// read, write and read-back, a key with a space, '+' and '=' under both addressings, and prefix and pattern reads, whose LIST must go to the bucket root under virtual-host (#1783), as must the upload cleanup listing of a parallel export whose worker fails, and that cleanup must abort an upload a terminated worker left open. With no endpoint, s3:// must be refused naming AWS_ENDPOINT_URL and gs:// must go to storage.googleapis.com, which this cluster's allow-list refuses by name. The last six tests need no fixture (#2091): `pgcolumnar.objstore_s3_addressing` takes only `path` or `virtual`, in any case, and refuses anything else at SET and at ALTER SYSTEM. A role that is not a superuser can still set it. ALTER SYSTEM still writes `virtual`, and each ALTER SYSTEM test resets the setting afterwards, because the cluster is shared. A typo in `postgresql.conf` draws a WARNING and the server uses `path`; that test starts a private cluster of its own, because the shared one cannot restart.
 
 ### Every test
 
@@ -13239,6 +13248,12 @@ Every test makes one check under the shell's name. Each addressing check reads t
 | `test_the_request_path_carries_the_bucket_again` | and the request path carried the bucket again |
 | `test_s3_with_no_endpoint_demands_one` | s3:// with no endpoint demands one (names AWS_ENDPOINT_URL) |
 | `test_gs_with_no_endpoint_goes_to_storage_googleapis_com` | gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name) |
+| `test_the_addressing_setting_refuses_a_value_other_than_path_or_virtual` | the addressing setting refuses the typo 'virtaul', 'VIRTUAL ' with a trailing space, and the empty string, each by SQLSTATE 22023 "invalid value for parameter" (#2091); three parameters |
+| `test_the_addressing_setting_still_takes_path_and_virtual` | the addressing setting still takes path, virtual and VIRTUAL |
+| `test_a_role_that_is_not_a_superuser_can_still_set_the_addressing_setting` | a role that is not a superuser can still set the addressing setting (#2091) |
+| `test_alter_system_refuses_the_typo` | ALTER SYSTEM refuses the typo 'virtaul', by SQLSTATE 22023 "invalid value for parameter" (#2091) |
+| `test_alter_system_still_takes_virtual` | ALTER SYSTEM still takes virtual: pg_file_settings holds `virtual` with no error (#2091) |
+| `test_a_typo_in_postgresql_conf_draws_a_warning_and_the_server_uses_path` | a typo in postgresql.conf draws a WARNING and the server uses path (#2091) |
 
 ## 327. test_objstore_stash_recovery.py: recovery from a stash an interrupted objstore_module run left
 
