@@ -740,7 +740,8 @@ def test_every_parallel_copy_section_names_both_settings(expect):
     missing = []
     for name, heading in (("how-to.md", "## Load data efficiently"),
                           ("user-guide.md", "### Parallel bulk load"),
-                          ("sql-reference.md", "### pgcolumnar.parallel_copy(")):
+                          ("sql-reference.md", "### pgcolumnar.parallel_copy("),
+                          ("limitations.md", "## Parallel bulk ingest")):
         sec = _doc_section(name, heading) or ""
         missing += [f"{name}:{g}" for g in ("max_prepared_transactions", "max_worker_processes")
                     if g not in sec]

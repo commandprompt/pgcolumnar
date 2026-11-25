@@ -622,7 +622,13 @@ true until the next version shipped.
   `test/parallel_copy.sh` now runs at the default `max_worker_processes`.
   `test/docs_style.sh`, `test/native_cluster.sh`, `test/parquet_import.sh`,
   `test/rollup.sh`, `test/parallel_copy.sh` and their pytest twins run the
-  examples from the pages.
+  examples from the pages. docs/limitations.md now asks for
+  `max_prepared_transactions` at least the worker count, names
+  `max_worker_processes` too, and the pages say that a parallel query's workers
+  take slots from the same pool. The shell suites judge an example by psql's
+  exit status, through the new `psql_block` helper in `test/lib.sh`: a grep
+  for ERROR or FATAL said "ok" when the example crashed the backend. Selftest
+  part 650 checks the helper. Reported by @OffgridwithJD.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

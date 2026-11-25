@@ -889,10 +889,11 @@ check "the how-to's parallel_copy example does not read the CSV file its COPY ex
 # prepares one transaction per worker, and it takes one background worker slot per
 # worker plus one for its coordinator. The pages named max_prepared_transactions but
 # not max_worker_processes, so 8 workers failed on a default server with "could not
-# register pgcolumnar parallel_copy loader 6 of 8".
+# register pgcolumnar parallel_copy loader 6 of 8". limitations.md lists the same
+# requirement, so it is read too (OffgridwithJD's follow-up on #2159).
 _pc_missing=""
 for _ps in "how-to.md|## Load data efficiently" "user-guide.md|### Parallel bulk load" \
-	"sql-reference.md|### pgcolumnar.parallel_copy("; do
+	"sql-reference.md|### pgcolumnar.parallel_copy(" "limitations.md|## Parallel bulk ingest"; do
 	_pf="${_ps%%|*}"; _ph="${_ps#*|}"
 	_pt="$(_section_of "$SRCDIR/docs/$_pf" "$_ph")"
 	for _g in max_prepared_transactions max_worker_processes; do

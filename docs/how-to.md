@@ -57,7 +57,8 @@ Set two server settings first. Both take effect only after a restart.
   prepares one transaction per worker.
 - `max_worker_processes` above the worker count. The load takes one background
   worker slot per worker, plus one for its coordinator, and the server's own
-  background workers hold slots too. At the default of 8, four workers fit.
+  background workers hold slots too. At the default of 8, four workers fit
+  while no parallel query runs. A parallel query's workers take slots too.
 
 **Tuning.** Many small commits produce many small row groups, which read less
 efficiently. Run `pgcolumnar.vacuum` after a trickle load to combine them.

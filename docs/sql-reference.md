@@ -1046,7 +1046,8 @@ commits on its own. It is not part of the calling transaction, and a caller
 worker count, because the load prepares one transaction per worker. Set
 `max_worker_processes` above the worker count. The load takes one background
 worker slot per worker, plus one for its coordinator, and the server's own
-background workers hold slots too. At the default of 8, four workers fit. Both
+background workers hold slots too. At the default of 8, four workers fit while
+no parallel query runs. A parallel query's workers take slots too. Both
 settings take effect only after a restart.
 
 When `workers` is omitted the function derives a value from the target. For a
