@@ -25,8 +25,8 @@ the tools under test in both, so both call them.
 NO DATABASE. This file is in NO_CLUSTER and runs in the guards job, which fetches the
 release tags so the four changelog arms run there. In a checkout without them those
 arms record UNMET_PRECONDITION by name. The shell prints a note for each instead,
-because the nightly coverage job runs it from a tagless checkout and counts any
-unrunnable suite as failed.
+because run_coverage.sh counts any unrunnable suite as failed. The nightly coverage
+job fetches the tags too (#2054).
 """
 import collections
 import json

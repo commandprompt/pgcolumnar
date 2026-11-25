@@ -28,6 +28,7 @@ lcov and genhtml, so they need no cluster, no driver and no lcov:
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -55,7 +56,9 @@ class Stand:
                 f.parent.mkdir(parents=True, exist_ok=True)
                 f.write_text("counters")
             # pgc_vacuity prints its unrunnable notes AFTER pytest's summary line.
-            return self.pytest_rc, ("..F.\n3 failed, 5349 passed in 1830.16s\n"
+            return self.pytest_rc, ("..F.\n"
+                                    "FAILED test_x.py::test_z - AssertionError: got 67 want 0\n"
+                                    "3 failed, 5349 passed in 1830.16s\n"
                                     "UNRUN  test_x.py::test_y: UNMET_PRECONDITION: no endpoint\n"
                                     "  -- edit test/pytest/expected_unrunnable.txt, with the reason.\n")
         if argv[:1] == ["find"]:
@@ -293,9 +296,13 @@ def test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report(tmp_path, exp
     expect.text("yes" if any("NO TEST RAN" in ln for ln in lines) else "no", "yes",
                 "and says it measured no coverage")
     stand = Stand(srcdir, pytest_rc=1, write=[srcdir / "src" / "columnar_reader.gcda"])
-    rc, _ = _main(tmp_path, stand, srcdir)
+    rc, lines = _main(tmp_path, stand, srcdir)
     expect.num(rc, 1, "a failing corpus exits nonzero")
     expect.num(len(stand.named("genhtml")), 1, "but still writes its report")
+    expect.text(" | ".join(ln.strip() for ln in lines if "FAILED " in ln),
+                "FAILED test_x.py::test_z - AssertionError: got 67 want 0",
+                "and names each failed test in its own output, so a red nightly says "
+                "which test without its log artifact being fetched (#2054)")
     stand = Stand(srcdir, pytest_rc=67, write=[srcdir / "src" / "columnar_reader.gcda"])
     rc, _ = _main(tmp_path, stand, srcdir)
     expect.num(rc, 0, "a corpus that declined a test is not a failure here, as run_coverage.sh "
@@ -329,6 +336,47 @@ def test_the_corpus_is_the_cluster_files_less_the_prefix_swappers(expect):
                "premise: the three prefix-swapping files are each named, so the loop below runs")
     for f, why in run_coverage.SWAPS_THE_PREFIX.items():
         expect.at_least(len(why), 20, f"{f}: the reason it is left out is stated")
+
+
+# Built, not written: the phrase a test records when the checkout has no release tags.
+TAGLESS = "no release tags" + " in this checkout"
+TAG_FETCH = re.compile(r"git fetch\b.*refs/tags/v1\.0-alpha")
+
+
+def _job_lines(text, runner):
+    """{job: its non-comment lines} for each job in a workflow that runs `runner`."""
+    jobs, job, in_jobs = {}, None, False
+    for line in text.splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        m = re.match(r"^  ([A-Za-z_-]+):\s*$", line) if in_jobs else None
+        if m:
+            job = m.group(1)
+            jobs[job] = []
+        elif job and not line.lstrip().startswith("#"):
+            jobs[job].append(line)
+    return {j: ls for j, ls in jobs.items() if any(runner in ln for ln in ls)}
+
+
+def test_the_coverage_job_fetches_the_release_tags_its_corpus_reads(expect):
+    """actions/checkout fetches no tags. The coverage job ran from a plain checkout, so
+    the arms that compare against a release tag recorded UNMET_PRECONDITION and the
+    unrunnable accounting failed the nightly every night (#2054). Derived: the corpus
+    holds a file that reads the tags, so every job that runs it fetches them first."""
+    readers = [f for f in run_coverage.corpus() if TAGLESS in (HERE / f).read_text()]
+    expect.at_least(len(readers), 1, "premise: a corpus file reads the release tags")
+    jobs = {}
+    for wf in sorted((HERE.parent.parent / ".github" / "workflows").glob("*.yml")):
+        for job, lines in _job_lines(wf.read_text(), "run_coverage.py").items():
+            jobs[f"{wf.name}:{job}"] = lines
+    expect.at_least(len(jobs), 1, "premise: a workflow job runs run_coverage.py")
+    for name, lines in sorted(jobs.items()):
+        # A job with no fetch counts it at its end, so the gap is never positive.
+        fetch = next((i for i, ln in enumerate(lines) if TAG_FETCH.search(ln)), len(lines))
+        run = next(i for i, ln in enumerate(lines) if "run_coverage.py" in ln)
+        expect.at_least(run - fetch, 1,
+                        f"{name} fetches the v1.0-alpha tags, lines before it runs run_coverage.py")
 
 
 def test_the_command_line_refuses_a_missing_tool_or_pg_config(tmp_path, expect):
