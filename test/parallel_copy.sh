@@ -688,7 +688,10 @@ check "control: parallel_copy still loads a local path that holds s3a:// past it
 want_unique() {	# TABLE -> the refusal #2080 promises
 	printf '0A000 pgcolumnar.parallel_copy cannot load "%s" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY.\n' "$1"
 }
+# t_uk gets a second, non-unique index after its primary key, so the refusal
+# must find the unique index even when it is not the last one in the list.
 psql_run "CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE INDEX t_uk_txt ON t_uk (txt);
           CREATE TABLE t_ui (id int, txt text) USING pgcolumnar;
           CREATE UNIQUE INDEX t_ui_id ON t_ui (id);
           CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar;
@@ -700,12 +703,30 @@ check "parallel_copy refuses a single table with a primary key and 2 workers wit
 check "parallel_copy refuses a single table with a unique index and 4 workers with 0A000, not a hang (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ui'::regclass, '$F', 4)")" \
 	"$(want_unique t_ui)"
+# An exclusion constraint has indisunique false and indisexclusion true. Its
+# keys are distinct, so a load that is not refused would succeed: the check reads
+# the refusal, not a hang.
+psql_run "CREATE TABLE t_ux (id int, txt text, EXCLUDE USING btree (id WITH =)) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses a single table with an exclusion constraint and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ux'::regclass, '$F', 2)")" \
+	"$(want_unique t_ux)"
 check "the unique-index refusal loads nothing (#2080)" \
 	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")" 0
 check "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '$F', 1)")" 5000
 check "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '$F', 2)")" 5000
+# A partitioned target keeps more than one worker even with a primary key: each
+# worker loads distinct partitions, so distinct indexes. Its parent's index is
+# unique, so a refusal that also covered partitioned targets would refuse this.
+psql_run "CREATE TABLE t_ppk (id int PRIMARY KEY, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_ppk_1 PARTITION OF t_ppk FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar;
+          CREATE TABLE t_ppk_2 PARTITION OF t_ppk FOR VALUES FROM (1251) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_ppk_3 PARTITION OF t_ppk FOR VALUES FROM (2501) TO (3751) USING pgcolumnar;
+          CREATE TABLE t_ppk_4 PARTITION OF t_ppk FOR VALUES FROM (3751) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+check "control: parallel_copy with 4 workers still loads a partitioned table with a primary key (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ppk'::regclass, '$F', 4)") | $(q "SELECT count(*) FROM t_ppk")" \
+	"no error (5000) | 5000"
 
 # A unique index created after the calling backend's check, but before the loaders
 # open the table, must be refused too: the check runs under AccessShareLock, which

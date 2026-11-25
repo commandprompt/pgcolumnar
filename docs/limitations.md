@@ -301,8 +301,8 @@ these constraints.
 - A single columnar table with a unique or exclusion index, including a primary
   key, loads with one worker only. The function refuses more workers with
   `0A000`. The workers would wait on each other's prepared transactions, so the
-  load would hang or fail with a deadlock error. A partitioned target with such an index is not limited: each worker
-  loads its own partitions.
+  load would hang or fail with a deadlock error. A partitioned target with such
+  an index is not limited: each worker loads its own partitions.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.

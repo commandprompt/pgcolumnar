@@ -1945,4 +1945,7 @@ guard_tests 895
 # cluster_tests 5398 -> 5404 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
 # the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
 # loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
-cluster_tests 5404
+# cluster_tests 5404 -> 5406 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
+# 98 on main, 106 on this branch.
+cluster_tests 5406

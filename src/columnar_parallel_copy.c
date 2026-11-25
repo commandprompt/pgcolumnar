@@ -937,6 +937,11 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		 * SHARE, which CREATE INDEX does not wait for, so one may have appeared
 		 * since (#2080). ROW EXCLUSIVE makes CREATE INDEX wait until this load
 		 * ends, so the index list read now holds for the whole load.
+		 *
+		 * This catches an index created before any loader opened the table. A
+		 * CREATE INDEX that queues for its SHARE lock after some loaders hold
+		 * ROW EXCLUSIVE makes the other loaders queue behind it, so they never
+		 * reach this check, and the load can still hang until cancelled.
 		 */
 		if (hdr->single_table && hdr->nworkers > 1 &&
 			pcopy_has_unique_or_exclusion_index(rel))

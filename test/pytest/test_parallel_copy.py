@@ -602,7 +602,10 @@ def pcopy(pgc_cluster, server_dir):
 
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
+        # t_uk's second, non-unique index comes after its primary key, so the
+        # refusal must find the unique index when it is not the last one.
         db.run("CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar; "
+               "CREATE INDEX t_uk_txt ON t_uk (txt); "
                "CREATE TABLE t_ui (id int, txt text) USING pgcolumnar; "
                "CREATE UNIQUE INDEX t_ui_id ON t_ui (id); "
                "CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar; "
@@ -612,11 +615,26 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2)", timeout="10s")
         r["unique index"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_ui'::regclass, '{f}', 4)", timeout="10s")
+        # An exclusion constraint: indisunique false, indisexclusion true. Its keys
+        # are distinct, so a load that is not refused would succeed.
+        db.run("CREATE TABLE t_ux (id int, txt text, EXCLUDE USING btree (id WITH =)) USING pgcolumnar")
+        r["exclusion"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_ux'::regclass, '{f}', 2)", timeout="10s")
         r["unique empty"] = db.value("SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")
         r["unique one worker"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
         r["non-unique index"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '{f}', 2)", timeout="30s")
+        # A partitioned target with a primary key keeps more than one worker: each
+        # worker loads distinct partitions. Its parent's index is unique, so a
+        # refusal that also covered partitioned targets would refuse this.
+        db.run("CREATE TABLE t_ppk (id int PRIMARY KEY, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_ppk_1 PARTITION OF t_ppk FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar; "
+               "CREATE TABLE t_ppk_2 PARTITION OF t_ppk FOR VALUES FROM (1251) TO (2501) USING pgcolumnar; "
+               "CREATE TABLE t_ppk_3 PARTITION OF t_ppk FOR VALUES FROM (2501) TO (3751) USING pgcolumnar; "
+               "CREATE TABLE t_ppk_4 PARTITION OF t_ppk FOR VALUES FROM (3751) TO (MAXVALUE) USING pgcolumnar")
+        loaded = db.remote_refusal(f"SELECT pgcolumnar.parallel_copy('t_ppk'::regclass, '{f}', 4)", timeout="30s")
+        r["partitioned pk"] = f"{loaded} | {db.value('SELECT count(*) FROM t_ppk')}"
 
         # A unique index created after the calling backend's check, before the
         # loaders open the table. A second session holds SHARE on t_ur: the check
@@ -937,6 +955,11 @@ def test_parallel_copy_refuses_a_unique_index_table_with_four_workers(pcopy, exp
                 "parallel_copy refuses a single table with a unique index and 4 workers with 0A000, not a hang (#2080)")
 
 
+def test_parallel_copy_refuses_an_exclusion_constraint_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["exclusion"], _want_unique("t_ux"),
+                "parallel_copy refuses a single table with an exclusion constraint and 2 workers with 0A000 (#2080)")
+
+
 def test_parallel_copy_unique_refusal_loads_nothing(pcopy, expect):
     expect.num(pcopy["unique empty"], 0, "the unique-index refusal loads nothing (#2080)")
 
@@ -951,11 +974,17 @@ def test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers(pco
                "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)")
 
 
+def test_parallel_copy_still_loads_a_partitioned_primary_key_table_with_four_workers(pcopy, expect):
+    expect.text(pcopy["partitioned pk"], "no error (5000) | 5000",
+                "control: parallel_copy with 4 workers still loads a partitioned table with a primary key (#2080)")
+
+
 def test_parallel_copy_refuses_a_unique_index_created_after_its_check(pcopy, expect):
     expect.text(pcopy["unique late"],
                 '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" '
                 'with more than one worker, because it has a unique or exclusion index | no hint',
                 "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)")
+
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

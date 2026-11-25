@@ -612,10 +612,11 @@ true until the next version shipped.
   keeps its unique-key locks in a prepared transaction until every worker has
   finished, so the workers waited on each other. The function now refuses that
   load up front with SQLSTATE 0A000 and the hint
-  `Load it with workers => 1, or with COPY.` Each worker checks again once it
-  holds its lock on the table, so a unique index created after the first check
-  is refused too. One worker still loads such a table, and a partitioned target
-  is not affected. docs/limitations.md and docs/sql-reference.md.
+  `Load it with workers => 1, or with COPY.` An exclusion constraint is refused
+  the same way. Each worker checks again once it holds its lock on the table, so
+  a unique index created after the first check, but before any worker has opened
+  the table, is refused too. One worker still loads such a table, and a
+  partitioned target with a primary key still loads with more than one worker. docs/limitations.md and docs/sql-reference.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
