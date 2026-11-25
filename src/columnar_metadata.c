@@ -2694,6 +2694,45 @@ PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
 }
 
 /*
+ * PgColumnarForgetSortKeyColumn
+ *		Clear the ordering mark when one of its key columns is dropped (#2069).
+ *
+ *		PostgreSQL renames a dropped column to "........pg.dropped.N........",
+ *		so its old name comes free. A later RENAME, which writes no rows, can
+ *		give that name to another column. The mark records its key by name, so
+ *		a mark left in place would then claim that other column is ordered: the
+ *		planner would leave out the Sort for ORDER BY on it, and vacuum_sorted's
+ *		gate would skip the rewrite.
+ *
+ *		The key and the kind are both cleared, which every reader takes as
+ *		"order unknown". The run extent is kept, as a type change keeps it
+ *		(#1341 item 19). Clearing the whole mark, not just the dropped name,
+ *		is deliberate: a Z-order or Hilbert run is not ordered on any subset of
+ *		its key, and a fail-safe clear costs only an optimisation until the next
+ *		ordering rewrite.
+ */
+void
+PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped)
+{
+	int64		sfrom,
+				sthrough;
+	List	   *skey;
+	char	   *skind;
+	ListCell   *lc;
+
+	PgColumnarGetSortedInfo(storageId, &sfrom, &sthrough, &skey, &skind);
+	foreach(lc, skey)
+	{
+		if (strcmp((char *) lfirst(lc), dropped) == 0)
+		{
+			PgColumnarSetSortedExtent(storageId, sfrom, sthrough, NIL, NULL);
+			return;
+		}
+	}
+	/* a drop that touches no sort-key column must not rewrite the row */
+}
+
+/*
  * PgColumnarSetSortedThrough
  *		Record the row group number the last ordering rewrite ended at, so a
  *		reader can tell how much of the layout is still ordered (issue #301).
@@ -3528,6 +3567,55 @@ PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot)
 	table_close(rel, AccessShareLock);
 
 	list_sort(result, row_group_cmp);
+	return result;
+}
+
+/*
+ * PgColumnarRowGroupXmin
+ *		The transaction that inserted the row group holding rowNumber, or
+ *		InvalidTransactionId when no row group holds it.
+ *
+ *		This is the row's xmin: a row group is written whole by one transaction,
+ *		and its catalog row is inserted by that transaction. Core reads xmin from
+ *		a conflicting row at REPEATABLE READ and SERIALIZABLE, to tell a row this
+ *		transaction inserted from one another transaction did (#2060).
+ *
+ *		Read under SnapshotSelf, so the answer covers committed groups and this
+ *		transaction's own, including groups flushed by the current command.
+ *		No tested path reaches it for an own group today: the snapshot check
+ *		finds this transaction's rows live first, and returns before asking.
+ */
+TransactionId
+PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber)
+{
+	Relation	rel = open_columnar_table("row_group", AccessShareLock);
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TransactionId result = InvalidTransactionId;
+	Oid			rgIdx = pgcolumnar_index_oid("row_group_pkey");
+
+	ScanKeyInit(&key[0], Anum_row_group_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	scan = systable_beginscan(rel, rgIdx, OidIsValid(rgIdx), SnapshotSelf, 1, key);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		isnull;
+		uint64		firstRow = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_first_row_number, tupdesc, &isnull));
+		uint64		rowCount = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_row_count, tupdesc, &isnull));
+
+		if (rowNumber >= firstRow && rowNumber - firstRow < rowCount)
+		{
+			result = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
 	return result;
 }
 
