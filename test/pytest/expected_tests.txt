@@ -2002,29 +2002,36 @@ guard_tests 895
 # finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
 # rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
 # tests collected after the merge of main f29bf592 (5391 before it).
-# cluster_tests 5485 -> 5490 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5492 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5490 -> 5493 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5492 -> 5495 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5493 -> 5497 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5495 -> 5499 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5497 -> 5499 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5499 -> 5501 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-# cluster_tests 5499 -> 5502 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# cluster_tests 5501 -> 5504 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-# cluster_tests 5502 -> 5508 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# cluster_tests 5504 -> 5510 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
 # test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
 # domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
 # pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
-cluster_tests 5508
+cluster_tests 5510
