@@ -222,6 +222,21 @@ check "a PL/pgSQL record field under a false one-time filter is not fetched at s
 	"$(psql_m "SET plan_cache_mode = force_generic_plan" "SELECT opt_eq(true)" "SELECT opt_eq(false)" \
 		| grep -vx 'SET' | tr '\n' ' ' | sed 's/ $//')" "1 0"
 
+# So a PL/pgSQL variable is frozen only when the scan first runs, and it must still
+# prune there. A plain EXPLAIN inside PL/pgSQL would not show it: it plans with the
+# value inlined ("ts >= 39000"). auto_explain logs the plan the function really ran,
+# a generic plan with "ts >= $1", and client_min_messages = log sends it to psql.
+q "CREATE FUNCTION lo_cnt(lo int) RETURNS bigint LANGUAGE plpgsql AS \$\$
+	DECLARE c bigint; BEGIN SELECT count(*) INTO c FROM t WHERE ts >= lo; RETURN c; END \$\$;" >/dev/null
+LO_OUT="$(psql_m "SET plan_cache_mode = force_generic_plan" "LOAD 'auto_explain'" \
+	"SET auto_explain.log_min_duration = 0" "SET auto_explain.log_analyze = on" \
+	"SET auto_explain.log_timing = off" "SET auto_explain.log_nested_statements = on" \
+	"SET client_min_messages = log" "SELECT lo_cnt(39000)")"
+check "auto_explain logs the plan a PL/pgSQL function ran, with its parameter (premise) (#2065)" \
+	"$(grep -c 'Filter: (ts >= \$1)' <<<"$LO_OUT")" "1"
+check "a PL/pgSQL variable on a generic plan prunes when the scan runs (19 of 20 removed) (#2065)" \
+	"$(sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$LO_OUT" | head -1)" "19"
+
 # A projection scan gets the frozen keys mapped onto its own columns. The projection
 # reads [row number, its columns...], so handing it the base table's keys would test
 # the wrong column and skip groups that match. Small stripes, so the planner picks

@@ -1303,6 +1303,13 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 	param = (Param *) bare;
 	if (params == NULL || param->paramid <= 0 || param->paramid > params->numParams)
 		return NULL;
+	/*
+	 * This guard is also what keeps the read below in bounds. PL/pgSQL builds
+	 * its list with makeParamList(0) and then sets numParams to its datum
+	 * count, so params[] has no storage behind it, and paramFetch is the only
+	 * way to read a value. No test can see an out-of-bounds read here: the
+	 * ptype check below usually rejects the garbage. Do not remove the guard.
+	 */
 	if (params->paramFetch != NULL)
 		return NULL;
 	prm = &params->params[param->paramid - 1];

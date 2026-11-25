@@ -616,14 +616,15 @@ true until the next version shipped.
   evaluates it once. A scan that never runs, such as an `Append` arm that
   `LIMIT` cuts off or a branch under a false one-time filter, calls nothing. That
   includes a PL/pgSQL variable: the scan no longer fetches it at set-up, where a
-  record field that was not assigned raised. One consequence: any scan that runs
-  now raises the operand's error, even when no row would pass the rest of the
-  `WHERE` clause or the table is empty. Heap, which calls the operand once per
-  row it tests, returns no rows there. This covers an operand made only of
-  parameters too, such as `x > 10 / $1` with `$1 = 0`. A plain `EXPLAIN` no
-  longer calls the operand; it still reports a bound parameter of a prepared
-  statement as pushed down. `test/native_param_pushdown.sh` and
-  `test_native_param_pushdown.py`.
+  record field that was not assigned raised. Such a variable still drives
+  chunk-group skipping: the scan freezes it when it first runs. One
+  consequence: any scan that runs now raises the operand's error, even when no
+  row would pass the rest of the `WHERE` clause or the table is empty. Heap,
+  which calls the operand once per row it tests, returns no rows there. This
+  covers an operand made only of parameters too, such as `x > 10 / $1` with
+  `$1 = 0`. A plain `EXPLAIN` no longer calls the operand; it still reports a
+  bound parameter of a prepared statement as pushed down.
+  `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

@@ -121,6 +121,13 @@ OPT_EQ = """CREATE FUNCTION opt_eq(use_filter bool) RETURNS bigint LANGUAGE plpg
       SELECT count(*) INTO c FROM t WHERE use_filter AND ts = r.id;
       RETURN c;
     END $$"""
+# A PL/pgSQL variable is frozen only when the scan first runs. A plain EXPLAIN inside
+# PL/pgSQL inlines the value, so auto_explain logs the generic plan the function ran.
+LO_CNT = """CREATE FUNCTION lo_cnt(lo int) RETURNS bigint LANGUAGE plpgsql AS $$
+    DECLARE c bigint; BEGIN SELECT count(*) INTO c FROM t WHERE ts >= lo; RETURN c; END $$"""
+AUTO_EXPLAIN = ["LOAD 'auto_explain'", "SET auto_explain.log_min_duration = 0",
+                "SET auto_explain.log_analyze = on", "SET auto_explain.log_timing = off",
+                "SET auto_explain.log_nested_statements = on", "SET client_min_messages = log"]
 PROJ_SET = ["SET pgcolumnar.enable_projection_scan = on", "SET max_parallel_workers_per_gather = 0",
             "SET pgcolumnar.enable_ungrouped_vector_agg = off",
             "SET pgcolumnar.enable_group_vectorization = off"]
@@ -276,6 +283,10 @@ def pp(pgc_cluster):
         _session(dsn, [OPT_EQ])
         opt = _transcript(dsn, [GENERIC, "SELECT opt_eq(true)", "SELECT opt_eq(false)"])
         r["plpgsql one-time off"] = opt if isinstance(opt, str) else " ".join(opt)
+        _session(dsn, [LO_CNT])
+        lo = _transcript(dsn, [GENERIC] + AUTO_EXPLAIN + ["SELECT lo_cnt(39000)"])
+        r["plpgsql premise"] = _count(lo, "Filter: (ts >= $1)")
+        r["plpgsql removed"] = _field(lo, "Chunk Groups Removed by Filter")
         _session(dsn, ["CREATE TABLE prsc (k int, payload text) USING pgcolumnar",
                        "SELECT pgcolumnar.set_options('prsc', chunk_group_row_limit => 1000, "
                        "stripe_row_limit => 1000)",
@@ -379,6 +390,16 @@ def test_param_pushdown_a_stable_operand_is_called_once_to_freeze_then_once_per_
 def test_param_pushdown_a_plpgsql_record_field_under_a_false_one_time_filter_is_not_fetched(pp, expect):
     expect.text(pp["plpgsql one-time off"], "1 0",
                 "a PL/pgSQL record field under a false one-time filter is not fetched at scan set-up (#2065)")
+
+
+def test_param_pushdown_auto_explain_logs_the_plan_a_plpgsql_function_ran(pp, expect):
+    expect.text(pp["plpgsql premise"], "1",
+                "auto_explain logs the plan a PL/pgSQL function ran, with its parameter (premise) (#2065)")
+
+
+def test_param_pushdown_a_plpgsql_variable_on_a_generic_plan_prunes_when_the_scan_runs(pp, expect):
+    expect.text(pp["plpgsql removed"], "19",
+                "a PL/pgSQL variable on a generic plan prunes when the scan runs (19 of 20 removed) (#2065)")
 
 
 def test_param_pushdown_the_projection_arm_uses_the_projection(pp, expect):

@@ -1954,4 +1954,8 @@ guard_tests 895
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-cluster_tests 5410
+# cluster_tests 5410 -> 5412 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
+# 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it): 5412 tests collected.
+cluster_tests 5412
