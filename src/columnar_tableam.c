@@ -409,6 +409,13 @@ typedef struct PgColumnarSlot
 	Relation	rel;
 	Snapshot	snapshot;
 	uint64		rowNumber;
+
+	/*
+	 * The row's xmin, set only by pgcolumnar_tuple_satisfies_snapshot when it
+	 * answers "not visible", and read back by core through getsysattr (#2060).
+	 * InvalidTransactionId otherwise.
+	 */
+	TransactionId xmin;
 } PgColumnarSlot;
 
 /*
@@ -536,6 +543,7 @@ pgcolumnar_slot_init(TupleTableSlot *slot)
 	cslot->rel = NULL;
 	cslot->snapshot = NULL;
 	cslot->rowNumber = 0;
+	cslot->xmin = InvalidTransactionId;
 }
 
 static void
@@ -548,7 +556,30 @@ pgcolumnar_slot_clear(TupleTableSlot *slot)
 	cslot->rel = NULL;
 	cslot->snapshot = NULL;
 	cslot->rowNumber = 0;
+	cslot->xmin = InvalidTransactionId;
 	TTSOpsVirtual.clear(slot);
+}
+
+/*
+ * xmin, and only xmin, and only once pgcolumnar_tuple_satisfies_snapshot has
+ * found it (#2060). Core's ExecCheckTupleVisible reads it straight after that
+ * callback answers "not visible", to decide whether the row is this
+ * transaction's own. Every other system column, and xmin at any other time,
+ * fails as the virtual slot does.
+ */
+static Datum
+pgcolumnar_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
+{
+	PgColumnarSlot *cslot = (PgColumnarSlot *) slot;
+
+	if (attnum == MinTransactionIdAttributeNumber &&
+		TransactionIdIsValid(cslot->xmin))
+	{
+		*isnull = false;
+		return TransactionIdGetDatum(cslot->xmin);
+	}
+
+	return TTSOpsVirtual.getsysattr(slot, attnum, isnull);
 }
 
 static void
@@ -2115,12 +2146,49 @@ pgcolumnar_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
 	COLUMNAR_UNSUPPORTED("get latest tid");
 }
 
+/*
+ * pgcolumnar_tuple_satisfies_snapshot
+ *		Can snapshot see the row the slot holds? (#2060)
+ *
+ *		This used to answer yes without looking. Core relies on the answer for
+ *		INSERT ... ON CONFLICT DO NOTHING at REPEATABLE READ and SERIALIZABLE:
+ *		when the snapshot cannot see the conflicting row, and another transaction
+ *		inserted it, core raises a serialization failure. Answering yes skipped
+ *		the row and committed instead.
+ *
+ *		The row is found by the slot's item pointer. A row still in this
+ *		transaction's write buffer is visible: the transaction wrote it.
+ *
+ *		On a "no", the row group's xmin is kept in the slot, because core reads
+ *		xmin next to decide whether the row is this transaction's own. When no
+ *		row group holds the row, xmin stays invalid and getsysattr fails.
+ */
 static bool
 pgcolumnar_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 								  Snapshot snapshot)
 {
-	/* stripes are visible per their metadata snapshot; slots are visible */
-	return true;
+	uint64		rowNumber = PgColumnarItemPointerToRowNumber(&slot->tts_tid);
+	int			natts = RelationGetDescr(rel)->natts;
+	Datum	   *values;
+	bool	   *nulls;
+	bool		buffered;
+
+	if (PgColumnarRowIsLive(rel, snapshot, rowNumber))
+		return true;
+
+	values = palloc(sizeof(Datum) * Max(natts, 1));
+	nulls = palloc(sizeof(bool) * Max(natts, 1));
+	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, values, nulls);
+	pfree(values);
+	pfree(nulls);
+	if (buffered)
+		return true;
+
+	if (slot->tts_ops == &PgColumnarSlotOps)
+		((PgColumnarSlot *) slot)->xmin =
+			PgColumnarRowGroupXmin(PgColumnarStorageId(rel), rowNumber);
+
+	return false;
 }
 
 /*
@@ -4296,6 +4364,7 @@ _PG_init(void)
 	PgColumnarSlotOps.materialize = pgcolumnar_slot_materialize;
 	PgColumnarSlotOps.copyslot = pgcolumnar_slot_copyslot;
 	PgColumnarSlotOps.copy_minimal_tuple = pgcolumnar_slot_copy_minimal_tuple;
+	PgColumnarSlotOps.getsysattr = pgcolumnar_slot_getsysattr;
 
 	DefineCustomIntVariable("pgcolumnar.stripe_row_limit",
 							"Maximum number of rows per stripe.",

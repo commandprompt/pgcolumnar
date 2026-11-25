@@ -605,6 +605,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
+  raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
+  when the conflicting row was committed by another transaction after the
+  snapshot was taken, as heap does (#2060). Before this fix the insert skipped
+  its row and committed: it gave way to a row its snapshot never saw, and the
+  application had no failure to retry. The access method's
+  snapshot check now looks at the row instead of always answering "visible",
+  and the slot reports the row's inserting transaction, which core reads to tell
+  the transaction's own rows from another's. A conflict with a row the snapshot
+  sees, or with a row the transaction inserted itself, still skips the row
+  without error. READ COMMITTED is unchanged. The same answer now reaches
+  deferred foreign keys on a pgcolumnar referencing table: a row inserted and
+  then deleted before commit is no longer checked at commit, as heap does.
+  Before this fix that commit failed with 23503 for a row that no longer
+  existed. Known limitation: the insert also
+  raises 40001, where heap does not, when an online `compact_rewrite` or
+  `recluster` (the autovacuum daemon runs both) moved the conflicting row after
+  the snapshot was taken. The moved copy has a new row number the snapshot cannot
+  see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
+  insert skipped the row and committed in that case. `test/am_contracts.sh`,
+  `test_am_contracts.py`, `test/fk_referencing.sh` and `test_fk_referencing.py`.
 - An ungrouped aggregate over a join onto a unique dimension no longer returns
   a wrong count when the join compares text under another collation than the
   fact column's (#2066). With `pgcolumnar.enable_ungrouped_vector_agg` on, the
