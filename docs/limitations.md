@@ -671,13 +671,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   the default equality of its key type. The second is an index whose key type has
   no hash support. The third is an exclusion constraint, because its operator,
   such as `&&`, need not be equality (#2063). The lock is held until the
-  transaction ends. So while one insert statement into a table with an exclusion
-  constraint is still running, a second insert into that table waits for the
-  first transaction, even when its row does not overlap. A row whose key holds a
-  NULL takes no lock and does not wait at that point. Once the first statement
-  has ended, any second insert into a pgcolumnar table waits while the first
-  transaction is open, whatever its key and whether or not the table has an
-  index. So two transactions that insert into two pgcolumnar tables in opposite
+  transaction ends. While one insert statement into a table with an exclusion
+  constraint runs, a second insert into that table waits for the first
+  transaction. It waits even when its row does not overlap. A row whose key holds
+  a NULL takes no lock and does not wait at that point. After the first statement
+  ends, any second insert into a pgcolumnar table waits while the first
+  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
   order can deadlock even when no rows conflict. One of them then gets
   `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
   on that error. A
