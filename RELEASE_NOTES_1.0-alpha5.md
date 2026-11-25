@@ -1,6 +1,6 @@
 # pgColumnar 1.0-alpha5 release notes
 
-Release date: 2026-11-06
+Release date: YYYY-MM-DD (set on the day the `v1.0-alpha5` tag is cut)
 Previous release: 1.0-alpha4 (2026-09-17)
 
 pgColumnar is a columnar table access method for PostgreSQL. This is the fifth
@@ -95,6 +95,16 @@ Check whether your application relies on the old behaviour.
   view. It now raises SQLSTATE `42809`.
 - **`pgcolumnar.column_extent` refuses a table whose row-level security policies
   apply to the caller.** It raises `row-level security is in force`.
+- **Run `pgcolumnar.vacuum_sorted` again on a table whose sort key lost a
+  column under alpha4** (#2069). Dropping a column of the sort key now clears
+  the table's ordering mark. A mark that alpha4 left after such a drop stays.
+  Until you run `vacuum_sorted` again, do not rename another column to the
+  dropped column's name: `ORDER BY ... LIMIT` on it can return rows in the
+  wrong order.
+- **A row group can hold fewer rows than `stripe_row_limit`** (#2071). The
+  writer now also ends a row group before its values pass 256 MiB, summed over
+  the columns. Wide rows, such as large `jsonb` documents, therefore make more,
+  smaller row groups.
 
 **Reading Parquet and Iceberg data**
 
@@ -129,6 +139,20 @@ Check whether your application relies on the old behaviour.
   (SQLSTATE `55000`). Before, the read could return rows from both versions.
   A server whose ETag changes on every request now fails every read. For such a
   server, set `pgcolumnar.objstore_pin_reads` to `off` (#1866).
+
+**Importing Arrow files**
+
+- **`pgcolumnar.import_arrow` refuses text that is not valid in the database
+  encoding** with `22021`. This covers `text`, `varchar`, `json` and `jsonb`
+  targets, and a value holding a NUL byte. Before, such a value was stored, and
+  later queries on the column failed. A `bytea` column still takes the bytes
+  unchanged.
+- **`import_arrow` refuses some Arrow types with `42804`.** It refuses
+  `decimal256`, `decimal32` and `decimal64` (#2081). It refuses large binary,
+  large string, string view and binary view (#2097). Before, `decimal256` and
+  the two large types imported wrong values with no error, and the others failed
+  as a damaged file (`XX001`). A plain binary or string column imports as
+  before.
 
 **Iceberg REST catalogs**
 
@@ -331,6 +355,15 @@ See [docs/configuration.md](docs/configuration.md) for how to size the cap.
 `INSERT ... ON CONFLICT DO NOTHING` now works on a columnar table with a unique
 index. In alpha4 it raised `0A000` on every such table. Eight sessions racing on
 the same keys left 0 duplicate keys.
+
+At `REPEATABLE READ` and `SERIALIZABLE`, it raises `40001` when another
+transaction committed the conflicting row after the snapshot was taken, as heap
+does (#2060). Retry the transaction. A conflict with a row the snapshot sees,
+or with the transaction's own row, still skips the row without an error. One
+case differs from heap: the insert also raises `40001` when `compact_rewrite`
+or `recluster` moved the conflicting row after the snapshot was taken. The
+maintenance daemon runs both. A retry succeeds. See
+[docs/limitations.md](docs/limitations.md).
 
 `ON CONFLICT DO UPDATE` still raises an error when a row conflicts, because
 updating that row needs a row lock. With no conflict it inserts.
@@ -545,9 +578,10 @@ removed.
 | `pgcolumnar.objstore_part_size` | integer | `0` (unchanged) | The range is now 0 to 512 MiB. It was 0 to `INT_MAX`. |
 
 `pgcolumnar.autovacuum_expire` is set in the server configuration and takes
-effect on reload. The others can be set per session. Two developer settings,
-`pgcolumnar.rollup_pause` and `pgcolumnar.tier_fault_after`, exist for the
-test suites; only a superuser can set them. See
+effect on reload. The others can be set per session. Three developer settings,
+`pgcolumnar.rollup_pause`, `pgcolumnar.tier_fault_after` and
+`pgcolumnar.vm_set_hold_ms`, exist for the test suites; only a superuser can
+set them. See
 [docs/configuration.md](docs/configuration.md).
 
 ## Fixed defects
@@ -578,6 +612,32 @@ test suites; only a superuser can set them. See
   with the default options.
 - **`pgcolumnar.analyze()` could skip columns without saying so** (#1276), on a
   table with a covering projection.
+- **Repeated values made a column unreadable** (#2061). This held for `uuid`,
+  `interval`, `timetz`, `name`, `macaddr`, `tid` and `point` columns. Three
+  equal values were enough. The `INSERT` succeeded, but every later read,
+  `DELETE`, `ANALYZE`, `pgcolumnar.vacuum` and `pg_dump` failed with `corrupt
+  encoded chunk`. The stored bytes were always correct, so such a table becomes
+  readable without a rewrite.
+- **A TID scan returned a row of another block** (#2058). `WHERE ctid =
+  '(0,292)'` returned the row at `(1,1)`, and an `UPDATE` or `DELETE` with that
+  condition changed or removed that row. A ctid that no row can have now
+  returns no row, as on heap.
+- **A join runtime filter under a correlated subquery or `LATERAL` join
+  returned the first run's rows** on every later run (#2062).
+- **An ungrouped aggregate over a join onto a unique key could return a wrong
+  count** (#2066). This happened when the join compared text under another
+  collation than the fact column's. A join with an equality operator other than the type's
+  default gave the same kind of wrong count. Such a join now runs as a plain
+  hash join.
+- **An index-only scan returned rows that a committed `DELETE` or `UPDATE`
+  removed** (#2059). This happened when a `VACUUM` ran while that statement
+  was still running. Autovacuum can probably cause it too.
+- **`ORDER BY ... LIMIT` returned rows in the wrong order** after the sort
+  column was dropped and another column was renamed to its name (#2069). See
+  "Before you upgrade" for tables that alpha4 left with such a mark.
+- **`import_arrow` stored wrong values** from a `decimal256` column (#2081),
+  and from a large binary or large string column (#2097). It now refuses them;
+  see "Before you upgrade".
 
 ### Crashes and errors that should not happen
 
@@ -601,6 +661,31 @@ test suites; only a superuser can set them. See
   the parallel flush** on PostgreSQL 15 and 16.
 - **A failed or twice-cancelled parallel flush leaked shared memory** until the
   server restarted (#1745, #1747).
+- **The join fold crashed the backend when a correlated subquery or `LATERAL`
+  join ran it again** (#2128). The fold is the ungrouped vectorized aggregate
+  over a unique-key join. It failed with signal 11 on the second rescan.
+- **`import_arrow` and `import_parquet` aborted the backend on a table with a
+  projection** (#2092). This happened on PostgreSQL 18 and 19 builds with
+  assertions, and PostgreSQL restarted every session.
+- **A TID scan of `'(0,0)'` aborted the backend** on a build with assertions
+  (#2058).
+- **An `INSERT` failed when one column's values passed 1 GiB in a row group**
+  (#2071). With the default limits, a column averaging more than about 7 KB per
+  row failed with `string buffer exceeds maximum allowed length`. A single row
+  whose values sum past about 1 GiB still fails (#2178).
+- **An `INSERT` or `COPY` with `pgcolumnar.parallel_flush` on could wait
+  forever** (#2072). This happened when its own transaction held `ACCESS
+  EXCLUSIVE` on the table, as after `TRUNCATE`, and when another session queued
+  an `ALTER TABLE` on the table. The deadlock detector could not see the wait.
+- **`avg()` over a `float8` or `real` column raised `value out of range:
+  overflow`** where heap returns `Infinity` (#2068). The returned average was
+  never wrong.
+- **A deferred foreign key on a columnar referencing table checked a deleted
+  row** (#2060). A row inserted and then deleted before commit failed the
+  commit with `23503`.
+- **A `pgcolumnar.parallel_copy` loader that failed closed its file twice**
+  (#2083). The second `close()` could hit a descriptor that by then belonged to
+  another file.
 
 ### Catalog and maintenance
 
@@ -619,6 +704,8 @@ test suites; only a superuser can set them. See
   names `ALTER EXTENSION pgcolumnar UPDATE`.
 - **A build with a `PG_CONFIG` that gives no PGXS now stops with an error**
   (#1344). Before, it could wait forever.
+- **The plan from `pgcolumnar.partition_drop_plan` failed on a partition whose
+  name contains `$pgcolumnar_drop$`** (#1334).
 
 ### Parquet, Arrow and Iceberg data
 
@@ -699,6 +786,18 @@ Each fix below replaced a wrong answer, or an error that named the wrong cause.
   #1855, #1910, #1921 and #1935. The Iceberg reader refuses malformed numbers and
   out-of-range values in metadata and manifests (#1823, #1824, #1853, #1878).
   Each could give a wrong result with no error.
+- **Chunked replies from a remote server.** A hostile chunk size made a remote
+  read write past its buffer. The backend died with a segmentation fault, and
+  PostgreSQL restarted every session. An allow-listed endpoint could send it,
+  or anyone who could change a plain `http://` reply. A ranged read now refuses
+  such a reply with `08P01`, and a REST reply or listing with `54000`.
+- **Iceberg locations.** A file path could escape an Iceberg table's location.
+  It spelled `..` in a form that only the server reads as `..`: `..;`, `..?`,
+  `..#`, or a backslash as a separator. Such a path is now refused with `22023` before
+  any request is sent.
+- **Paged REST lists.** An Iceberg REST catalog could make a backend hold
+  unbounded memory by sending page after page of a list. The pages of one list
+  now share the 64 MiB reply cap. A larger list is refused with `54000`.
 - **Request paths.** The Iceberg REST functions refuse names that would make an
   empty, `.` or `..` path segment (#1922, #1931, #1948). A proxy could have sent
   such a request to another resource.
@@ -723,9 +822,22 @@ These change no product behaviour.
   (#1798).
 - The check ledger records its census in a commit trailer, so two pull requests
   no longer conflict over it (#1431).
+- The tests follow PostgreSQL 19beta4, and the CI beta job builds against it
+  (#1337).
+- The nightly runs the pytest cluster tests on aarch64 too. Its coverage report
+  and sanitizer gate run the pytest corpus (#2038).
+- Smaller harness fixes: #1104, #1305, #1420, #1434, #1613 and #2033.
 
 ## Known issues
 
+- **Open defects found late in this cycle.** `parallel_copy` with 2 or more
+  workers can hang until cancelled (#2161). This happens on a table whose
+  projection holds no rows yet. Inside a `DELETE` or `UPDATE`, an index-only scan can still see rows
+  the statement deleted, after a concurrent `VACUUM` (#2169). A single
+  row whose values sum past about 1 GiB fails with a buffer error (#2178). With
+  `pgcolumnar.parallel_flush` on, an `INSERT` with a composite column still
+  hangs when its transaction holds `ACCESS EXCLUSIVE` on the composite's table
+  (#2182).
 - **A rollup refresh refuses some changes** (#1294). A refresh refuses when it
   would recompute a bucket that holds retained history. A delete from a row
   group that also reaches such a bucket is refused too, even if the deleted rows

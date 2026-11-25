@@ -48,7 +48,9 @@ so it leaves the alpha and is tracked on
 moves.
 
 Dates are a cadence, not a commitment. They follow the 14 days observed between
-`v1.0-alpha` and `v1.0-alpha2`, and each is the date a tag is cut.
+`v1.0-alpha` and `v1.0-alpha2`. Each is the target date for a tag, not the date
+the tag was cut. `v1.0-alpha5` is cut after its target; its heading in
+`CHANGELOG.md` gives the date it was cut.
 
 Beta 1 is a test rather than a date. It needs a frozen on-disk format and an
 upgrade path gated from every shipped version. It needs a green matrix on the tag
