@@ -2002,4 +2002,8 @@ guard_tests 895
 # cluster_tests 5486 -> 5488 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
 # exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
 # by collection over the cluster files: 5488 tests collected (108 for that file).
-cluster_tests 5488
+# cluster_tests 5488 -> 5491 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
+# one of 4 loaders, which a row trigger's sequence shows; by collection over the cluster files: 5491 tests
+# collected (111 for that file).
+cluster_tests 5491

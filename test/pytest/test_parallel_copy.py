@@ -185,24 +185,24 @@ class _Db:
             return f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
         return f"no error ({row[0] if row else None})"
 
-    def unique_index_after_check(self, path):
-        """-> remote_refusal() of a 2-worker parallel_copy into t_ur that gains a
-        unique index after the calling backend's check, with "worker N" for the
-        worker number, which varies."""
+    def unique_index_after_check(self, path, table="t_ur", workers=2):
+        """-> remote_refusal() of a `workers`-worker parallel_copy into `table`
+        (which must exist) that gains a unique index after the calling backend's
+        check, with "worker N" for the worker number, which varies."""
         out = {}
         try:
             with psycopg.connect(self.dsn, autocommit=True) as lk:
-                lk.execute("CREATE TABLE t_ur (id int, txt text) USING pgcolumnar")
                 lk.execute("BEGIN")
-                lk.execute("LOCK TABLE t_ur IN SHARE MODE")
+                lk.execute(f"LOCK TABLE {table} IN SHARE MODE")
                 load = threading.Thread(target=lambda: out.setdefault("got", self.remote_refusal(
-                    f"SELECT pgcolumnar.parallel_copy('t_ur'::regclass, '{path}', 2)", timeout="20s")))
+                    f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})",
+                    timeout="20s")))
                 load.start()
                 lk.execute("DO $$ BEGIN FOR i IN 1..200 LOOP "
                            "EXIT WHEN EXISTS (SELECT 1 FROM pg_locks "
-                           "WHERE relation = 't_ur'::regclass AND NOT granted); "
+                           f"WHERE relation = '{table}'::regclass AND NOT granted); "
                            "PERFORM pg_sleep(0.05); END LOOP; END $$")
-                lk.execute("CREATE UNIQUE INDEX t_ur_id ON t_ur (id)")
+                lk.execute(f"CREATE UNIQUE INDEX {table}_id ON {table} (id)")
                 lk.execute("COMMIT")
                 load.join()
         except psycopg.Error as exc:
@@ -603,10 +603,13 @@ def pcopy(pgc_cluster, server_dir):
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
-        # refusal must find the unique index when it is not the last one.
+        # refusal must find the unique index when it is not the last one. t_ui's
+        # non-unique index comes before its unique one, so the refusal must also
+        # find the unique index when it is not the first one.
         db.run("CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar; "
                "CREATE INDEX t_uk_txt ON t_uk (txt); "
                "CREATE TABLE t_ui (id int, txt text) USING pgcolumnar; "
+               "CREATE INDEX t_ui_txt ON t_ui (txt); "
                "CREATE UNIQUE INDEX t_ui_id ON t_ui (id); "
                "CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar; "
                "CREATE TABLE t_nu (id int, txt text) USING pgcolumnar; "
@@ -620,6 +623,16 @@ def pcopy(pgc_cluster, server_dir):
         db.run("CREATE TABLE t_ux (id int, txt text, EXCLUDE USING btree (id WITH =)) USING pgcolumnar")
         r["exclusion"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_ux'::regclass, '{f}', 2)", timeout="10s")
+        # A deferrable unique index and a partial unique index whose predicate
+        # every row matches are refused too. The keys are distinct, so a
+        # deferrable load that is not refused would succeed.
+        db.run("CREATE TABLE t_ud (id int UNIQUE DEFERRABLE INITIALLY DEFERRED, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_up (id int, txt text) USING pgcolumnar; "
+               "CREATE UNIQUE INDEX t_up_id ON t_up (id) WHERE id >= 0")
+        r["deferrable"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_ud'::regclass, '{f}', 2)", timeout="10s")
+        r["partial"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_up'::regclass, '{f}', 2)", timeout="10s")
         r["unique empty"] = db.value("SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")
         r["exclusion empty"] = db.value("SELECT count(*) FROM t_ux")
         r["unique one worker"] = db.value(
@@ -641,8 +654,21 @@ def pcopy(pgc_cluster, server_dir):
         # loaders open the table. A second session holds SHARE on t_ur: the check
         # passes, and the coordinator and the loaders stop at ROW EXCLUSIVE. Once
         # one waits, the session creates the unique index and commits.
+        db.run("CREATE TABLE t_ur (id int, txt text) USING pgcolumnar")
         r["unique late"] = db.unique_index_after_check(f)
         r["unique late empty"] = db.value("SELECT count(*) FROM t_ur")
+        # The same with 4 workers, where every loader must refuse. A row trigger
+        # that calls nextval records any insert, because a sequence does not roll
+        # back: no loader may insert a row.
+        db.run("CREATE TABLE t_ur4 (id int, txt text) USING pgcolumnar; "
+               "CREATE SEQUENCE t_ur4_rows; "
+               "CREATE FUNCTION t_ur4_row() RETURNS trigger LANGUAGE plpgsql "
+               "AS $$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END $$; "
+               "CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row()")
+        late4 = db.unique_index_after_check(f, "t_ur4", 4)
+        inserted = db.value("SELECT CASE WHEN is_called THEN 'a loader inserted a row' "
+                            "ELSE 'no row inserted' END FROM t_ur4_rows")
+        r["unique late 4"] = f"{late4} | {inserted}"
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -962,6 +988,16 @@ def test_parallel_copy_refuses_an_exclusion_constraint_table_with_two_workers(pc
                 "parallel_copy refuses a single table with an exclusion constraint and 2 workers with 0A000 (#2080)")
 
 
+def test_parallel_copy_refuses_a_deferrable_unique_index_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["deferrable"], _want_unique("t_ud"),
+                "parallel_copy refuses a single table with a deferrable unique index and 2 workers with 0A000 (#2080)")
+
+
+def test_parallel_copy_refuses_a_partial_unique_index_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["partial"], _want_unique("t_up"),
+                "parallel_copy refuses a single table with a partial unique index and 2 workers with 0A000, not a hang (#2080)")
+
+
 def test_parallel_copy_unique_refusal_loads_nothing(pcopy, expect):
     expect.num(pcopy["unique empty"], 0, "the unique-index refusal loads nothing (#2080)")
 
@@ -994,6 +1030,14 @@ def test_parallel_copy_refuses_a_unique_index_created_after_its_check(pcopy, exp
 
 def test_parallel_copy_late_unique_refusal_loads_nothing(pcopy, expect):
     expect.num(pcopy["unique late empty"], 0, "the late unique-index refusal loads nothing (#2080)")
+
+
+def test_parallel_copy_refuses_a_late_unique_index_in_every_loader(pcopy, expect):
+    expect.text(pcopy["unique late 4"],
+                '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" '
+                'with more than one worker, because it has a unique or exclusion index | no hint | no row inserted',
+                "parallel_copy refuses 4 workers when a unique index appears after its check, "
+                "before any loader inserts a row (#2080)")
 
 
 # ---- #2092: a load into a table with a projection --------------------------------

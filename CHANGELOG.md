@@ -620,7 +620,9 @@ true until the next version shipped.
   docs/limitations.md and docs/sql-reference.md.
   `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
   including the exclusion-constraint table and the table whose unique index
-  appeared late, is checked to stay empty.
+  appeared late, is checked to stay empty. The tests also cover a deferrable
+  unique index, a partial unique index, a unique index after a non-unique one,
+  and a late unique index with 4 workers, where no loader may insert a row.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
