@@ -51,6 +51,7 @@ extern void PgColumnarRenameDeclaredSortByColumn(Oid relid, const char *oldName,
 												 const char *newName);
 extern void PgColumnarRenameSortKeyColumn(uint64 storageId, const char *oldName,
 										  const char *newName);
+extern void PgColumnarForgetSortKeyColumn(uint64 storageId, const char *dropped);
 extern void PgColumnarGetSortedInfo(uint64 storageId, int64 *firstGroup,
 									int64 *lastGroup, List **sortByNames,
 									char **sortedKind);
