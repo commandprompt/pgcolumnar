@@ -3550,6 +3550,55 @@ PgColumnarReadRowGroupList(uint64 storageId, Snapshot snapshot)
 }
 
 /*
+ * PgColumnarRowGroupXmin
+ *		The transaction that inserted the row group holding rowNumber, or
+ *		InvalidTransactionId when no row group holds it.
+ *
+ *		This is the row's xmin: a row group is written whole by one transaction,
+ *		and its catalog row is inserted by that transaction. Core reads xmin from
+ *		a conflicting row at REPEATABLE READ and SERIALIZABLE, to tell a row this
+ *		transaction inserted from one another transaction did (#2060).
+ *
+ *		Read under SnapshotSelf, so the answer covers committed groups and this
+ *		transaction's own, including groups flushed by the current command.
+ *		No tested path reaches it for an own group today: the snapshot check
+ *		finds this transaction's rows live first, and returns before asking.
+ */
+TransactionId
+PgColumnarRowGroupXmin(uint64 storageId, uint64 rowNumber)
+{
+	Relation	rel = open_columnar_table("row_group", AccessShareLock);
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	ScanKeyData key[1];
+	SysScanDesc scan;
+	HeapTuple	tuple;
+	TransactionId result = InvalidTransactionId;
+	Oid			rgIdx = pgcolumnar_index_oid("row_group_pkey");
+
+	ScanKeyInit(&key[0], Anum_row_group_storage_id, BTEqualStrategyNumber,
+				F_INT8EQ, Int64GetDatum((int64) storageId));
+	scan = systable_beginscan(rel, rgIdx, OidIsValid(rgIdx), SnapshotSelf, 1, key);
+	while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+	{
+		bool		isnull;
+		uint64		firstRow = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_first_row_number, tupdesc, &isnull));
+		uint64		rowCount = (uint64) DatumGetInt64(
+			heap_getattr(tuple, Anum_row_group_row_count, tupdesc, &isnull));
+
+		if (rowNumber >= firstRow && rowNumber - firstRow < rowCount)
+		{
+			result = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		}
+	}
+	systable_endscan(scan);
+	table_close(rel, AccessShareLock);
+
+	return result;
+}
+
+/*
  * PgColumnarReadColumnChunkList
  *		The native column chunks of one row group. The caller indexes the result
  *		by column_index; the encoding descriptor bytes are copied into the
