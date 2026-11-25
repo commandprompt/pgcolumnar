@@ -621,7 +621,9 @@ true until the next version shipped.
   10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
   logs a skip. Writers no longer queue behind a rewrite, so under a steady
   stream of deletes the verb can reach that limit where it used to finish
-  (#2185). Two plain writers can still deadlock with each other (#2184). An `UPDATE` that
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
   meets a rewrite of its group still gets the documented retryable `row group
   was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
   from the start of its read, not only from the start of its write.
@@ -630,7 +632,9 @@ true until the next version shipped.
   `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
   that the verb gives back its locks before and after each wait, counts a lock
   its own transaction holds as taken, and stops within its limit under steady
-  deletes and behind a writer that stays open.
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

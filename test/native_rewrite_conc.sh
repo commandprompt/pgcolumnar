@@ -244,7 +244,15 @@ done
 #   - same transaction: a verb run after a DELETE in its own transaction already
 #     holds that group's lock, and must count it as taken.
 #   - bound: under steady deletes, and behind a writer that does not commit, the
-#     verb stops with the documented lock error within the limit.
+#     verb stops with the documented lock error within the limit. The writer
+#     that does not commit is a deleter (it holds a group lock, 101) and, from
+#     the review at 2fe1d31f, also an inserter (it holds the storage-row lock,
+#     102), so each of the two waits has its own deadline check.
+#   - lock_timeout: each wait lowers the session's lock_timeout to the time
+#     left (review at 2fe1d31f). After the verb, on success and after its 55P03,
+#     the session's lock_timeout must be what the user set. A user lock_timeout
+#     shorter than the time left must win, and end the verb with PostgreSQL's
+#     own lock-timeout error, not the rewrite_lock_timeout one.
 
 dlp() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" "$@"; }
 
@@ -405,29 +413,59 @@ SQL
 	[ "$rc" = 0 ] || echo "$out" >&2
 }
 
-# dl_stuck VERB-SQL -> "<elapsed ms> <SQLSTATE or ok> <names-limit|other>": a writer deletes,
-# flushes and keeps its transaction open for 8 s; the verb runs with a 1 s limit
-dl_stuck() {
+# dl_held VERB-SQL WRITER-SQL CLASS HOLD SETTINGS
+#   -> "<elapsed ms> <ok|SQLSTATE> <names-limit|stock|other> lock_timeout=<value>":
+# a writer runs WRITER-SQL, which takes the lock of CLASS (101 or 102), and keeps its
+# transaction open for HOLD seconds. Once it holds that lock, one session runs SETTINGS,
+# the verb, and then reads its own lock_timeout. "names-limit" means the error names
+# pgcolumnar.rewrite_lock_timeout; "stock" means it is PostgreSQL's own lock-timeout error.
+dl_held() {
 	dl_make
 	(
-		dlp -qAt -v ON_ERROR_STOP=1 -c "BEGIN; DELETE FROM dl WHERE id = 5;
-			SELECT count(*) FROM dl; SELECT pg_sleep(8); COMMIT;" >/dev/null 2>&1
+		dlp -qAt -v ON_ERROR_STOP=1 -c "BEGIN; $2; SELECT pg_sleep($4); COMMIT;" >/dev/null 2>&1
 	) &
-	local w_pid=$! t0 out rc
-	dlp -qAt -c "$(dl_wait_sql "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 101 AND granted)")" >/dev/null
+	local w_pid=$! t0 out ms
+	dlp -qAt -c "$(dl_wait_sql "EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = $3 AND granted)")" >/dev/null
 	t0=$(dl_ms)
-	out="$(dlp -qAt -v ON_ERROR_STOP=1 -v VERBOSITY=verbose 2>&1 <<SQL
+	out="$(dlp -qAt -v VERBOSITY=verbose 2>&1 <<SQL
 SET statement_timeout = '30s';
-SET pgcolumnar.rewrite_lock_timeout = '1s';
+$5
 SELECT $1;
+SELECT 'lock_timeout=' || current_setting('lock_timeout');
 SQL
 )"
-	rc=$?
-	echo "$(( $(dl_ms) - t0 ))" \
-		"$([ "$rc" = 0 ] && echo ok || grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9-)" \
-		"$(grep -q 'pgcolumnar.rewrite_lock_timeout' <<<"$out" && echo names-limit || echo other)"
+	ms=$(( $(dl_ms) - t0 ))
+	echo "$ms" \
+		"$(grep -q '^ERROR:' <<<"$out" && grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9- || echo ok)" \
+		"$(if grep -q 'pgcolumnar.rewrite_lock_timeout' <<<"$out"; then echo names-limit
+		   elif grep -q 'canceling statement due to lock timeout' <<<"$out"; then echo stock
+		   else echo other; fi)" \
+		"$(grep -o '^lock_timeout=.*' <<<"$out" || echo lock_timeout=none)"
 	wait "$w_pid"
-	[ "$rc" = 0 ] || echo "$out" >&2
+	grep -q '^ERROR:' <<<"$out" && echo "$out" >&2
+	return 0
+}
+
+# the writers dl_held runs: a deleter flushes its delete with a scan and so holds its group's
+# lock (101); an inserter flushes its row with a scan and so holds the storage-row lock (102)
+DL_DELETER="DELETE FROM dl WHERE id = 5; SELECT count(*) FROM dl"
+DL_INSERTER="INSERT INTO dl VALUES (0, 0); SELECT count(*) FROM dl"
+
+# dl_finished VERB-SQL -> "<ok|SQLSTATE> lock_timeout=<value>": with no writer, one session
+# runs the verb with a 10 s rewrite_lock_timeout and then reads its own lock_timeout
+dl_finished() {
+	dl_make
+	local out
+	out="$(dlp -qAt -v VERBOSITY=verbose 2>&1 <<SQL
+SET pgcolumnar.rewrite_lock_timeout = '10s';
+SELECT $1;
+SELECT 'lock_timeout=' || current_setting('lock_timeout');
+SQL
+)"
+	echo "$(grep -q '^ERROR:' <<<"$out" && grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9- || echo ok)" \
+		"$(grep -o '^lock_timeout=.*' <<<"$out" || echo lock_timeout=none)"
+	grep -q '^ERROR:' <<<"$out" && echo "$out" >&2
+	return 0
 }
 
 declare -A DL_SAMETXN_WANT=([recluster]=3 [compact_rewrite]=1)
@@ -458,11 +496,25 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(awk '{print ($2 == "ok" || $2 == "55P03") ? "ok-or-55P03" : $2}' <<<"$got")" "ok-or-55P03"
 	check "and no deleter beside the $name hit a deadlock" \
 		"$(cat "$PGC_WORKDIR"/dl.del.* 2>/dev/null | grep -c 'deadlock detected')" "0"
-	got="$(dl_stuck "$verb")"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 8 "SET pgcolumnar.rewrite_lock_timeout = '1s';")"
 	check "a $name behind a writer that stays open stops with 55P03 naming rewrite_lock_timeout" \
-		"$(cut -d' ' -f2- <<<"$got")" "55P03 names-limit"
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
 	check "and the $name stops within its 1 s rewrite_lock_timeout plus 3 s" \
 		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the session's lock_timeout after the $name's 55P03 is back to 0" \
+		"$(cut -d' ' -f4 <<<"$got")" "lock_timeout=0"
+	got="$(dl_held "$verb" "$DL_INSERTER" 102 8 "SET pgcolumnar.rewrite_lock_timeout = '1s';")"
+	check "a $name behind an inserter that stays open stops with 55P03 naming rewrite_lock_timeout" \
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
+	check "and the $name behind that inserter stops within its 1 s rewrite_lock_timeout plus 3 s" \
+		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "after a $name that finished, the session's lock_timeout is back to 0" \
+		"$(dl_finished "$verb")" "ok lock_timeout=0"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 6 "SET lock_timeout = '500ms'; SET pgcolumnar.rewrite_lock_timeout = '5s';")"
+	check "a $name under a shorter lock_timeout of 500 ms stops with the stock lock-timeout error" \
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 stock"
+	check "and the $name stops within that 500 ms lock_timeout plus 1.5 s" \
+		"$(awk '{print ($1 < 2000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
 done
 
 pgc_summary

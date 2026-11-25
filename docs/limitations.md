@@ -680,6 +680,11 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
   its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
   its row groups wait for it to commit.
+- Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
+  transaction. The first verb keeps the storage-row lock until commit. A second
+  verb in the same transaction then waits for a busy row group while it holds that
+  lock, and a writer can get 40P01. The maintenance daemon runs both verbs in one
+  transaction when both are due on a table, so it can meet this case (#2194).
 
 ## Row locking
 

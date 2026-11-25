@@ -408,7 +408,10 @@ wait_rewrite_lock(Relation rel, uint64 storageId, bool storageRow, uint64 group,
  * One exception remains: a lock this transaction held before the call (its
  * own earlier write to the table, in the same transaction as the rewrite)
  * stays held through the wait, since an unlock undoes only this call's
- * acquisition. The maintenance daemon runs each verb in its own transaction.
+ * acquisition. The maintenance daemon does not avoid this case: when both
+ * verbs are due it runs compact_rewrite and then recluster in one transaction,
+ * so the recluster can wait on a busy group while it holds the storage-row
+ * lock the compact_rewrite kept, and a writer can deadlock with it (#2194).
  *
  * The waiting has a bound, pgcolumnar.rewrite_lock_timeout. Writers never
  * queue behind the rewrite, so a steady stream of them can keep one group busy

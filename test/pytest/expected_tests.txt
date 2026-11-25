@@ -1954,4 +1954,9 @@ guard_tests 895
 # before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
 # with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
-cluster_tests 5436
+# cluster_tests 5436 -> 5448, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
+# pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
+# lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
+cluster_tests 5448

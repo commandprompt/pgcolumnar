@@ -18,7 +18,10 @@ a deadlock (#2074). Then each verb gives back the group locks it took before it 
 on a busy group, and the busy group's lock after that wait, counts a group lock its own
 transaction holds as taken, and stops with SQLSTATE 55P03 within
 pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open
-(review of #2139 at 630f63e3).
+(review of #2139 at 630f63e3). That open writer is a deleter, holding a group lock, and an
+inserter, holding the storage-row lock. After the verb, on success and after its 55P03, the
+session's lock_timeout is back to what the user set, and a shorter user lock_timeout ends
+the verb with PostgreSQL's own lock-timeout error (review of #2139 at 2fe1d31f).
 
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture.
 """
@@ -477,19 +480,23 @@ def _dl_sametxn(d, verb):
     return {"result": result, "after": d.q("SELECT count(*) FROM dl WHERE id = 7")}
 
 
-def _dl_timed(d, verb, limit):
-    """Run the verb with pgcolumnar.rewrite_lock_timeout = limit.
-    -> (elapsed ms, "ok" or the SQLSTATE, the error message or "")."""
-    t0 = time.monotonic()
-    try:
-        with psycopg.connect(d.dsn, autocommit=True) as c:
-            c.execute("SET statement_timeout = '30s'")
-            c.execute(f"SET pgcolumnar.rewrite_lock_timeout = '{limit}'")
+def _dl_timed(d, verb, settings):
+    """Run SETTINGS, then the verb, then read the session's own lock_timeout, all in one
+    session. -> (elapsed ms, "ok" or the SQLSTATE, the error message or "",
+    "lock_timeout=<value>")."""
+    with psycopg.connect(d.dsn, autocommit=True) as c:
+        c.execute("SET statement_timeout = '30s'")
+        for s in settings:
+            c.execute(s)
+        t0 = time.monotonic()
+        try:
             c.execute(f"SELECT {verb}")
-        state, msg = "ok", ""
-    except psycopg.Error as exc:
-        state, msg = exc.sqlstate or _err(exc), str(exc)
-    return int((time.monotonic() - t0) * 1000), state, msg
+            state, msg = "ok", ""
+        except psycopg.Error as exc:
+            state, msg = exc.sqlstate or _err(exc), str(exc)
+        ms = int((time.monotonic() - t0) * 1000)
+        lt = c.execute("SELECT current_setting('lock_timeout')").fetchone()[0]
+    return ms, state, msg, f"lock_timeout={lt}"
 
 
 def _dl_starve(d, verb):
@@ -521,7 +528,7 @@ def _dl_starve(d, verb):
         t.start()
     try:
         time.sleep(2)
-        ms, state, _ = _dl_timed(d, verb, "2s")
+        ms, state, _, _ = _dl_timed(d, verb, ("SET pgcolumnar.rewrite_lock_timeout = '2s'",))
     finally:
         stop.set()
         for t in ts:
@@ -530,19 +537,28 @@ def _dl_starve(d, verb):
             "deadlocks": sum("deadlock detected" in x for x in errors)}
 
 
-def _dl_stuck(d, verb):
-    """A writer deletes, flushes and keeps its transaction open for 8 s; the verb runs
-    with a 1 s limit. -> {"ms", "state", "names": whether the error names the setting}."""
+# the writers _dl_held runs: a deleter flushes its delete with a scan and so holds its
+# group's lock (101); an inserter flushes its row with a scan and so holds the storage-row
+# lock (102)
+DL_DELETER = ("DELETE FROM dl WHERE id = 5", "SELECT count(*) FROM dl")
+DL_INSERTER = ("INSERT INTO dl VALUES (0, 0)", "SELECT count(*) FROM dl")
+
+
+def _dl_held(d, verb, writer_sqls, cls, hold, settings):
+    """A writer runs writer_sqls, which take the lock of class cls (101 or 102), and keeps
+    its transaction open for hold seconds. Once it holds that lock, one session runs
+    settings, the verb, and reads its own lock_timeout.
+    -> {"ms", "state", "kind": names-limit | stock | other, "lock_timeout"}."""
     e = _dl_make(d)
     if e:
-        return {"ms": e, "state": e, "names": e}
+        return {"ms": e, "state": e, "kind": e, "lock_timeout": e}
 
     def writer():
         try:
             with psycopg.connect(d.dsn) as c:
-                c.execute("DELETE FROM dl WHERE id = 5")
-                c.execute("SELECT count(*) FROM dl").fetchone()
-                c.execute("SELECT pg_sleep(8)")
+                for sql in writer_sqls:
+                    c.execute(sql)
+                c.execute(f"SELECT pg_sleep({hold})")
                 c.commit()
         except psycopg.Error:
             pass
@@ -551,12 +567,23 @@ def _dl_stuck(d, verb):
     wt.start()
     try:
         _dl_wait(d, "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
-                    "AND objsubid = 101 AND granted)")
-        ms, state, msg = _dl_timed(d, verb, "1s")
+                    f"AND objsubid = {cls} AND granted)")
+        ms, state, msg, lt = _dl_timed(d, verb, settings)
     finally:
         wt.join()
-    return {"ms": ms, "state": state,
-            "names": "names-limit" if "pgcolumnar.rewrite_lock_timeout" in msg else "other"}
+    kind = ("names-limit" if "pgcolumnar.rewrite_lock_timeout" in msg
+            else "stock" if "canceling statement due to lock timeout" in msg else "other")
+    return {"ms": ms, "state": state, "kind": kind, "lock_timeout": lt}
+
+
+def _dl_finished(d, verb):
+    """With no writer, one session runs the verb with a 10 s rewrite_lock_timeout and then
+    reads its own lock_timeout. -> "<ok|SQLSTATE> lock_timeout=<value>"."""
+    e = _dl_make(d)
+    if e:
+        return e
+    _, state, _, lt = _dl_timed(d, verb, ("SET pgcolumnar.rewrite_lock_timeout = '10s'",))
+    return f"{state} {lt}"
 
 
 @pytest.fixture(scope="module")
@@ -568,7 +595,7 @@ def dl(pgc_cluster):
         d = _Db(pgc_cluster.dsn(dbname=DL_DB))
         d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
         # the shell's order: for each verb, the update shape, then the delete shape;
-        # then for each verb the arms of the 630f63e3 review
+        # then for each verb the arms of the 630f63e3 and 2fe1d31f reviews
         out = {(name, shape): _dl_race(d, verb, shape)
                for name, verb in DL_VERBS.items() for shape in DL_SHAPES}
         for name, verb in DL_VERBS.items():
@@ -576,7 +603,14 @@ def dl(pgc_cluster):
             out[name, "afterwait"] = _dl_afterwait(d, verb)
             out[name, "sametxn"] = _dl_sametxn(d, verb)
             out[name, "starve"] = _dl_starve(d, verb)
-            out[name, "stuck"] = _dl_stuck(d, verb)
+            out[name, "stuck"] = _dl_held(d, verb, DL_DELETER, 101, 8,
+                                          ("SET pgcolumnar.rewrite_lock_timeout = '1s'",))
+            out[name, "stuck102"] = _dl_held(d, verb, DL_INSERTER, 102, 8,
+                                             ("SET pgcolumnar.rewrite_lock_timeout = '1s'",))
+            out[name, "finished"] = _dl_finished(d, verb)
+            out[name, "shorter"] = _dl_held(d, verb, DL_DELETER, 101, 6,
+                                            ("SET lock_timeout = '500ms'",
+                                             "SET pgcolumnar.rewrite_lock_timeout = '5s'"))
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -700,7 +734,7 @@ def test_no_deleter_beside_the_rewrite_hit_a_deadlock(dl, name, expect):
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_behind_an_open_writer_stops_with_55p03(dl, name, expect):
     r = dl[name, "stuck"]
-    expect.text(f"{r['state']} {r['names']}", "55P03 names-limit",
+    expect.text(f"{r['state']} {r['kind']}", "55P03 names-limit",
                 f"a {name} behind a writer that stays open stops with 55P03 naming "
                 "rewrite_lock_timeout")
 
@@ -710,3 +744,46 @@ def test_the_rewrite_behind_an_open_writer_stops_within_its_limit(dl, name, expe
     ms = dl[name, "stuck"]["ms"]
     expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
                 f"and the {name} stops within its 1 s rewrite_lock_timeout plus 3 s")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_session_lock_timeout_after_the_rewrite_55p03_is_back_to_0(dl, name, expect):
+    expect.text(dl[name, "stuck"]["lock_timeout"], "lock_timeout=0",
+                f"and the session's lock_timeout after the {name}'s 55P03 is back to 0")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_behind_an_open_inserter_stops_with_55p03(dl, name, expect):
+    r = dl[name, "stuck102"]
+    expect.text(f"{r['state']} {r['kind']}", "55P03 names-limit",
+                f"a {name} behind an inserter that stays open stops with 55P03 naming "
+                "rewrite_lock_timeout")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_behind_an_open_inserter_stops_within_its_limit(dl, name, expect):
+    ms = dl[name, "stuck102"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
+                f"and the {name} behind that inserter stops within its 1 s "
+                "rewrite_lock_timeout plus 3 s")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_session_lock_timeout_after_the_rewrite_finished_is_back_to_0(dl, name, expect):
+    expect.text(dl[name, "finished"], "ok lock_timeout=0",
+                f"after a {name} that finished, the session's lock_timeout is back to 0")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_under_a_shorter_lock_timeout_stops_with_the_stock_error(dl, name, expect):
+    r = dl[name, "shorter"]
+    expect.text(f"{r['state']} {r['kind']}", "55P03 stock",
+                f"a {name} under a shorter lock_timeout of 500 ms stops with the stock "
+                "lock-timeout error")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_under_a_shorter_lock_timeout_stops_within_it(dl, name, expect):
+    ms = dl[name, "shorter"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and ms < 2000 else f"no ({ms} ms)", "yes",
+                f"and the {name} stops within that 500 ms lock_timeout plus 1.5 s")
