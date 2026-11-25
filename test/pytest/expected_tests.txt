@@ -1993,17 +1993,26 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5483 -> 5486 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5490 -> 5493 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
 # (test_the_field_type_lookup_matches_the_whole_field_name,
 # test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
 # test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too). The five earlier #2086 tests made
 # 5398 -> 5403 in the main merge. By collection of the cluster files (all test_*.py not in NO_CLUSTER):
 # 5406 tests collected.
-# cluster_tests 5486 -> 5491 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# cluster_tests 5493 -> 5498 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
 # review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
 # test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
 # test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
 # test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
 # test_bucket_pruning_works_on_an_iceberg_int_source). By collection of the cluster files (all test_*.py
-# not in NO_CLUSTER): 5491 tests collected.
-cluster_tests 5491
+# not in NO_CLUSTER): 5491 tests collected, and 5498 after the merge of main at f898249c (#2134 added 7).
+cluster_tests 5498
