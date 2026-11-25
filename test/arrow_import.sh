@@ -577,6 +577,41 @@ extra = {
     # the reader would take the first half of each value.
     'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
     'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+    # #2082 fixtures: a file whose type family differs from the column's
+    'tu_utf8': pa.array(['10']),
+    'tu_bin': pa.array([b'ab'], pa.binary()),
+    'tu_bool': pa.array([True], pa.bool_()),
+    'tu_lf64': pa.array([[1.5]], pa.list_(pa.float64())),
+    # Two rows each, so a reader that takes 64-bit offsets as 32-bit ones
+    # stores a wrong value rather than failing (#2082).
+    'tu_lstr': pa.array(['a', 'b'], pa.large_string()),
+    'tu_lbin': pa.array([b'a', b'b'], pa.large_binary()),
+    'tu_dur': pa.array([5, 6], pa.duration('s')),
+    'tu_null': pa.array([None, None], pa.null()),
+    # The tag-by-target matrix (#2082): one file per Arrow type, two rows each.
+    # Every kept pairing must import, so the values are ones each kept target
+    # accepts: '10' parses as numeric, and int64 rows are valid instants.
+    'mx_i16': pa.array([7, -3], pa.int16()),
+    'mx_i32': pa.array([7, -3], pa.int32()),
+    'mx_i64': pa.array([946684800 * 10**6, 1], pa.int64()),
+    'mx_u64': pa.array([7, 3], pa.uint64()),
+    'mx_f32': pa.array([1.5, -3], pa.float32()),
+    'mx_f64': pa.array([1.5, -3], pa.float64()),
+    'mx_bool': pa.array([True, False], pa.bool_()),
+    'mx_utf8': pa.array(['10', '-3'], pa.string()),
+    'mx_bin': pa.array([b'10', b'-3'], pa.binary()),
+    'mx_lutf8': pa.array(['10', '-3'], pa.large_string()),
+    'mx_lbin': pa.array([b'10', b'-3'], pa.large_binary()),
+    'mx_d32': pa.array([10957, 10958], pa.date32()),
+    'mx_t64': pa.array([43200 * 10**6, 1], pa.time64('us')),
+    'mx_ts': pa.array([946684800 * 10**6, 1], pa.timestamp('us')),
+    'mx_dur': pa.array([5, 6], pa.duration('us')),
+    'mx_dec': pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
+    'mx_fsb16': pa.array([b'0123456789abcdef', b'fedcba9876543210'], pa.binary(16)),
+    'mx_null': pa.array([None, None], pa.null()),
+    # An interval has no kept target. Main read it into bigint as raw bytes:
+    # (1 month, 2 days, 3000 ns) stored 8589934593.
+    'mx_iv': pa.array([(1, 2, 3000), (0, 5, 7000)], pa.month_day_nano_interval()),
     # #2081: the same three values in every Decimal bit width. The reader's
     # stride is 16 bytes, so a 32-byte decimal256 buffer is long enough and was
     # read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50.
@@ -673,6 +708,14 @@ PY
 	# store, and in C a signed overflow is undefined behaviour rather than a
 	# wraparound, so each of these has to be refused before the multiply lands.
 	# 22008 is datetime_field_overflow.
+	tu_values() {	# tu_values FIXTURE PGTYPE -> every stored value, sorted, comma-separated
+		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
+			>/dev/null 2>&1
+		psql_run "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/$1.arrows');" \
+			>/dev/null 2>&1 || { echo "IMPORT-FAILED"; return; }
+		q "SELECT string_agg(v::text, ',' ORDER BY v) FROM tu_t;"
+	}
+
 	tu_import_state() {	# tu_import_state FIXTURE PGTYPE -> SQLSTATE, 00000 on success
 		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
 			>/dev/null 2>&1
@@ -819,6 +862,125 @@ PY
 	check "control: a non-temporal tag is not caught by the temporal refusal" \
 		"$(tu_import_state tu_int64_ts timestamp)" "00000"
 
+	# ---- a file of another type family (#2082) -----------------------------
+	#
+	# The #881 checks run only when the file and the column share a family.
+	# Across families the reader copied the file's bytes as the column's type,
+	# so these imported bit patterns with no error on unpatched main:
+	#
+	#     float64 1.5      into bigint   -> 4609434218613702656
+	#     int64   7        into float8   -> 3.5e-323
+	#     decimal 1.25     into uuid     -> 7d000000-0000-...
+	#     list<float64>    into bigint[] -> {4609434218613702656}
+	#
+	# When the buffer layouts differed, the error was XX001 "malformed Arrow IPC
+	# file", which blames a valid file. Each is now refused by type, 42804.
+	check "a float64 file is refused for bigint (#2082)" \
+		"$(tu_import_state tu_f64 bigint)" "42804"
+	check "an int64 file is refused for float8 (#2082)" \
+		"$(tu_import_state tu_i64 float8)" "42804"
+	check "a float32 file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_f32 int)" "42804"
+	check "a decimal file is refused for uuid (#2082)" \
+		"$(tu_import_state tu_d102 uuid)" "42804"
+	check "a float64 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_f64 timestamp)" "42804"
+	check "an int32 file is refused for timestamp (#2082)" \
+		"$(tu_import_state tu_i32 timestamp)" "42804"
+	check "an int32 file is refused for bool (#2082)" \
+		"$(tu_import_state tu_i32 bool)" "42804"
+	check "a string file is refused for bigint, not called malformed (#2082)" \
+		"$(tu_import_state tu_utf8 bigint)" "42804"
+	check "a boolean file is refused for a 4-byte int (#2082)" \
+		"$(tu_import_state tu_bool int)" "42804"
+	check "a list of float64 is refused for a bigint[] column (#2082)" \
+		"$(tu_import_state tu_lf64 'bigint[]')" "42804"
+	tu_import_state tu_f64 bigint >/dev/null
+	check "and a cross-family refusal leaves the target empty (#2082)" \
+		"$(q "SELECT count(*) FROM tu_t;")" "0"
+	# The one cross-family pairing that is documented behaviour, and the two
+	# variable-width pairings that carry the same bytes, still import.
+	check "control: an int64 file still imports into timestamp as microseconds (#2082)" \
+		"$(tu_value tu_int64_ts timestamp)" "2000-01-01 00:00:00"
+	check "control: a string file still imports into bytea (#2082)" \
+		"$(tu_value tu_utf8 bytea)" '\x3130'
+	check "control: a binary file still imports into text (#2082)" \
+		"$(tu_value tu_bin text)" "ab"
+
+	# Tags outside the scalar families above. On unpatched main a large string
+	# ['a','b'] into text stored '' and 'a', and a large binary into bytea
+	# stored '\x' and '\x61': the reader took the 64-bit offsets as 32-bit
+	# ones. A duration into a 4-byte int stored 5 and 0, read at half width. A
+	# null-type column failed with XX001, and a binary into numeric(5,2), whose
+	# node is a decimal, did too. Each is now refused by type.
+	check "a large string file is refused for text, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lstr text)" "42804"
+	check "a large binary file is refused for bytea, not read with short offsets (#2082)" \
+		"$(tu_import_state tu_lbin bytea)" "42804"
+	check "a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+		"$(tu_import_state tu_dur int)" "42804"
+	check "a null-type file is refused for text, not called malformed (#2082)" \
+		"$(tu_import_state tu_null text)" "42804"
+	check "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+		"$(tu_import_state tu_bin 'numeric(5,2)')" "42804"
+	# The message names the declared type with its precision and scale. With
+	# format_type_be it said "type numeric", which hid why a binary that reads
+	# into a plain numeric is refused here.
+	check "the refusal names the target as numeric(5,2), with its typmod (#2082)" \
+		"$(ai_outcome "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/tu_bin.arrows')")" \
+		"42804 Arrow column \"v\" holds a binary, which pgcolumnar.import_arrow cannot read into type numeric(5,2)"
+	# A duration is a signed 64-bit count, so it reads into bigint as that count,
+	# as it did on main. The unit is not stored.
+	check "control: a duration file still imports into bigint as its count (#2082)" \
+		"$(tu_values tu_dur bigint)" "5,6"
+
+	# ---- every Arrow type against every target (#2082) ---------------------
+	#
+	# The checks above sample arrow_tag_fits_kind. These pin each of its rows.
+	# Each of the four below is a row that a one-line mutant could change with
+	# every sampled check still green: the decimal and fixed-size binary rows
+	# could accept bigint and store raw bytes, and the int16 and int64 rows
+	# could drop smallint or timestamptz and refuse a documented pairing.
+	check "a decimal128(10,0) file is refused for bigint (#2082)" \
+		"$(tu_import_state mx_dec bigint)" "42804"
+	check "a 16-byte fixed-size binary is refused for bigint (#2082)" \
+		"$(tu_import_state mx_fsb16 bigint)" "42804"
+	check "control: an int16 file still imports into smallint (#2082)" \
+		"$(tu_values mx_i16 smallint)" "-3,7"
+	check "control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+		"$(PGOPTIONS='-c timezone=UTC' tu_values mx_i64 timestamptz)" \
+		"1970-01-01 00:00:00.000001+00,2000-01-01 00:00:00+00"
+
+	# The whole table. A pair listed here must import; every other pair must be
+	# refused with 42804. The list is the documented one in docs/limitations.md
+	# and docs/sql-reference.md. A mismatch prints as FILE:TYPE=GOT.
+	mx_kept=" mx_i16:smallint mx_i32:int mx_i64:bigint mx_i64:timestamp
+		mx_i64:timestamptz mx_f32:float4 mx_f64:float8 mx_bool:bool
+		mx_utf8:text mx_utf8:bytea mx_utf8:numeric mx_utf8:numeric(50,2)
+		mx_utf8:varchar mx_utf8:json mx_utf8:jsonb
+		mx_bin:text mx_bin:bytea mx_bin:numeric mx_bin:numeric(50,2)
+		mx_bin:varchar mx_bin:json mx_bin:jsonb
+		mx_d32:date mx_t64:time mx_ts:timestamp mx_ts:timestamptz
+		mx_dur:bigint mx_dec:numeric(10,0) mx_fsb16:uuid "
+	mx_kept=" $(printf '%s ' $mx_kept)"
+	mx_bad=""
+	for mx_f in mx_i16 mx_i32 mx_i64 mx_u64 mx_f32 mx_f64 mx_bool mx_utf8 \
+			mx_bin mx_lutf8 mx_lbin mx_d32 mx_t64 mx_ts mx_dur mx_dec mx_fsb16 \
+			mx_null mx_iv; do
+		for mx_t in smallint int bigint float4 float8 bool text bytea date \
+				time timestamp timestamptz uuid 'numeric(10,0)' numeric \
+				'numeric(50,2)' varchar json jsonb; do
+			case "$mx_kept" in
+				*" $mx_f:$mx_t "*) mx_want=00000 ;;
+				*) mx_want=42804 ;;
+			esac
+			mx_got="$(tu_import_state "$mx_f" "$mx_t")"
+			[ "$mx_got" = "$mx_want" ] || mx_bad="${mx_bad:+$mx_bad }$mx_f:$mx_t=$mx_got"
+		done
+	done
+	check "every Arrow type imports into its documented targets and no other (#2082)" \
+		"${mx_bad:-none}" "none"
+
 	# ---- the unit on a nested field ---------------------------------------
 	check "a list element's nanosecond unit is honoured, not just the top level" \
 		"$(tu_value tu_list_ns 'timestamp[]')" "{\"2000-01-01 00:00:00\"}"
@@ -880,6 +1042,32 @@ else
 			"a decimal32 file is refused as a width mismatch (#2081)" \
 			"and a refused import leaves the target empty" \
 			"control: a non-temporal tag is not caught by the temporal refusal" \
+			"a float64 file is refused for bigint (#2082)" \
+			"an int64 file is refused for float8 (#2082)" \
+			"a float32 file is refused for a 4-byte int (#2082)" \
+			"a decimal file is refused for uuid (#2082)" \
+			"a float64 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for timestamp (#2082)" \
+			"an int32 file is refused for bool (#2082)" \
+			"a string file is refused for bigint, not called malformed (#2082)" \
+			"a boolean file is refused for a 4-byte int (#2082)" \
+			"a list of float64 is refused for a bigint[] column (#2082)" \
+			"and a cross-family refusal leaves the target empty (#2082)" \
+			"control: an int64 file still imports into timestamp as microseconds (#2082)" \
+			"control: a string file still imports into bytea (#2082)" \
+			"control: a binary file still imports into text (#2082)" \
+			"a large string file is refused for text, not read with short offsets (#2082)" \
+			"a large binary file is refused for bytea, not read with short offsets (#2082)" \
+			"a duration file is refused for a 4-byte int, not read at half width (#2082)" \
+			"a null-type file is refused for text, not called malformed (#2082)" \
+			"a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+			"the refusal names the target as numeric(5,2), with its typmod (#2082)" \
+			"control: a duration file still imports into bigint as its count (#2082)" \
+			"a decimal128(10,0) file is refused for bigint (#2082)" \
+			"a 16-byte fixed-size binary is refused for bigint (#2082)" \
+			"control: an int16 file still imports into smallint (#2082)" \
+			"control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+			"every Arrow type imports into its documented targets and no other (#2082)" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
 			"a struct field's nanosecond unit is honoured at child index 1"; do
 		check_skip "$_ai_types" \
