@@ -977,16 +977,21 @@ stores. Narrowing floors, so an instant before 1970 reports the microsecond it
 falls in. Sub-microsecond precision is lost; nothing else is.
 
 An Arrow type from another type family than the target column's is refused
-with `42804` rather than read, and the message names the column (#2082). A `time64` file does not
-import into a `date` column, and a `float64` file does not import into a
-`bigint` column. The reader does not convert values between type families.
-Four pairings across families are read. A signed `int64` reads into a
-`timestamp` or `timestamptz` column as microseconds since 1970-01-01. A
+with `42804` rather than read, and the message names the column (#2082). A
+`time64` file does not import into a `date` column, and a `float64` file does
+not import into a `bigint` column. The reader does not convert values between
+type families. Four pairings across families are read. A signed `int64` reads
+into a `timestamp` or `timestamptz` column as microseconds since 1970-01-01. A
 `Duration` reads into `bigint` as its count, without the unit. A `Utf8` column
 reads into `bytea`. A `Binary` column reads into `text`, `varchar`, `json`,
-`jsonb`, or a `numeric` declared without a precision or with one above 38, but
-not into `numeric(p,s)`. A `LargeUtf8`, `LargeBinary` or `Null` column is
-refused for every target.
+`jsonb`, or a `numeric` declared without a precision or with one above 38. It
+does not read into a `numeric(p,s)` with `p` up to 38. A `LargeUtf8`,
+`LargeBinary` or `Null` column is refused for every target.
+
+A `Decimal` column reads only into a `numeric(p,s)` with `p` up to 38. It is
+refused with `42804` for a `numeric` declared without a precision or with one
+above 38. Declare the target as `numeric(p,s)` with `p` up to 38, or cast the
+column to `Utf8` first.
 
 A nested Arrow type the target column cannot hold is refused with `42804`, and
 the message names the column (#1932). An array column reads one `List` level.

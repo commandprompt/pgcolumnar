@@ -2013,7 +2013,7 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 			(errcode(ERRCODE_DATATYPE_MISMATCH),
 			 errmsg("Arrow column \"%s\" holds %s, which pgcolumnar.import_arrow cannot read into type %s",
 					colname, arrow_type_tag_desc(typetag),
-					format_type_be(n->typid)),
+					format_type_with_typemod(n->typid, n->atttypmod)),
 			 errdetail("The mismatched file is \"%s\".", path)));
 }
 

@@ -334,12 +334,15 @@ def _matrix_fixtures(pa):
 _MX_FILES = ("mx_i16", "mx_i32", "mx_i64", "mx_u64", "mx_f32", "mx_f64", "mx_bool", "mx_utf8", "mx_bin",
              "mx_lutf8", "mx_lbin", "mx_d32", "mx_t64", "mx_ts", "mx_dur", "mx_dec", "mx_fsb16", "mx_null")
 _MX_TARGETS = ("smallint", "int", "bigint", "float4", "float8", "bool", "text", "bytea", "date", "time",
-               "timestamp", "timestamptz", "uuid", "numeric(10,0)", "numeric", "numeric(50,2)")
+               "timestamp", "timestamptz", "uuid", "numeric(10,0)", "numeric", "numeric(50,2)", "varchar",
+               "json", "jsonb")
 _MX_KEPT = {
     ("mx_i16", "smallint"), ("mx_i32", "int"), ("mx_i64", "bigint"), ("mx_i64", "timestamp"),
     ("mx_i64", "timestamptz"), ("mx_f32", "float4"), ("mx_f64", "float8"), ("mx_bool", "bool"),
     ("mx_utf8", "text"), ("mx_utf8", "bytea"), ("mx_utf8", "numeric"), ("mx_utf8", "numeric(50,2)"),
+    ("mx_utf8", "varchar"), ("mx_utf8", "json"), ("mx_utf8", "jsonb"),
     ("mx_bin", "text"), ("mx_bin", "bytea"), ("mx_bin", "numeric"), ("mx_bin", "numeric(50,2)"),
+    ("mx_bin", "varchar"), ("mx_bin", "json"), ("mx_bin", "jsonb"),
     ("mx_d32", "date"), ("mx_t64", "time"), ("mx_ts", "timestamp"), ("mx_ts", "timestamptz"),
     ("mx_dur", "bigint"), ("mx_dec", "numeric(10,0)"), ("mx_fsb16", "uuid"),
 }
@@ -577,6 +580,12 @@ def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, 
                 "a null-type file is refused for text, not called malformed (#2082)")
     expect.text(state("tu_bin", "numeric(5,2)"), "42804",
                 "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)")
+    # The message names the declared type with its typmod; format_type_be said
+    # "type numeric", which hid why a binary that reads into numeric is refused.
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('cf_t', '{server_dir / 'tu_bin.arrows'}')"),
+                '42804 Arrow column "v" holds a binary, which pgcolumnar.import_arrow cannot read into type '
+                'numeric(5,2)',
+                "the refusal names the target as numeric(5,2), with its typmod (#2082)")
     def values(fixture, pgtype):
         st = state(fixture, pgtype)
         return _one(conn, "SELECT string_agg(v::text, ',' ORDER BY v) FROM cf_t") if st == "00000" else st

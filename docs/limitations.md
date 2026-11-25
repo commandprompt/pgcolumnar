@@ -1044,8 +1044,12 @@ It reads four pairings across families. A signed int64 reads into `timestamp`
 or `timestamptz` as microseconds since 1970-01-01. A duration reads into
 `bigint` as its count; the unit is not stored. A string reads into `bytea`.
 A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
-`numeric` declared without a precision or with one above 38, but not into
-`numeric(p,s)`.
+`numeric` declared without a precision or with one above 38, but not into a
+`numeric(p,s)` with `p` up to 38.
+A decimal reads only into a `numeric(p,s)` with `p` up to 38. `import_arrow`
+refuses a decimal for a `numeric` declared without a precision or with one
+above 38, with SQLSTATE 42804. To import such a column, declare the target
+as `numeric(p,s)` with `p` up to 38, or cast the column to string first.
 `import_arrow` does not read a Null-type column into any column.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
@@ -1057,7 +1061,7 @@ A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
 | `bytea` | yes | yes | yes | yes |
 | `date`, `time`, `timestamp`, `timestamptz` | yes | yes | yes | yes |
 | `uuid` | yes | yes | yes | yes |
-| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL, or UINT_64) |
+| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes (decimal into `numeric(p,s)`, `p` <= 38) | yes (DECIMAL, or UINT_64) |
 | `json`, `jsonb` | yes | yes | yes | no |
 | one-dimensional array of the above | yes | yes | yes | yes |
 | composite of the above | yes | yes | yes | yes |

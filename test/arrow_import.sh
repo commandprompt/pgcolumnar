@@ -920,6 +920,12 @@ PY
 		"$(tu_import_state tu_null text)" "42804"
 	check "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
 		"$(tu_import_state tu_bin 'numeric(5,2)')" "42804"
+	# The message names the declared type with its precision and scale. With
+	# format_type_be it said "type numeric", which hid why a binary that reads
+	# into a plain numeric is refused here.
+	check "the refusal names the target as numeric(5,2), with its typmod (#2082)" \
+		"$(ai_outcome "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/tu_bin.arrows')")" \
+		"42804 Arrow column \"v\" holds a binary, which pgcolumnar.import_arrow cannot read into type numeric(5,2)"
 	# A duration is a signed 64-bit count, so it reads into bigint as that count,
 	# as it did on main. The unit is not stored.
 	check "control: a duration file still imports into bigint as its count (#2082)" \
@@ -948,7 +954,9 @@ PY
 	mx_kept=" mx_i16:smallint mx_i32:int mx_i64:bigint mx_i64:timestamp
 		mx_i64:timestamptz mx_f32:float4 mx_f64:float8 mx_bool:bool
 		mx_utf8:text mx_utf8:bytea mx_utf8:numeric mx_utf8:numeric(50,2)
+		mx_utf8:varchar mx_utf8:json mx_utf8:jsonb
 		mx_bin:text mx_bin:bytea mx_bin:numeric mx_bin:numeric(50,2)
+		mx_bin:varchar mx_bin:json mx_bin:jsonb
 		mx_d32:date mx_t64:time mx_ts:timestamp mx_ts:timestamptz
 		mx_dur:bigint mx_dec:numeric(10,0) mx_fsb16:uuid "
 	mx_kept=" $(printf '%s ' $mx_kept)"
@@ -958,7 +966,7 @@ PY
 			mx_null; do
 		for mx_t in smallint int bigint float4 float8 bool text bytea date \
 				time timestamp timestamptz uuid 'numeric(10,0)' numeric \
-				'numeric(50,2)'; do
+				'numeric(50,2)' varchar json jsonb; do
 			case "$mx_kept" in
 				*" $mx_f:$mx_t "*) mx_want=00000 ;;
 				*) mx_want=42804 ;;
@@ -1050,6 +1058,7 @@ else
 			"a duration file is refused for a 4-byte int, not read at half width (#2082)" \
 			"a null-type file is refused for text, not called malformed (#2082)" \
 			"a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
+			"the refusal names the target as numeric(5,2), with its typmod (#2082)" \
 			"control: a duration file still imports into bigint as its count (#2082)" \
 			"a decimal128(10,0) file is refused for bigint (#2082)" \
 			"a 16-byte fixed-size binary is refused for bigint (#2082)" \

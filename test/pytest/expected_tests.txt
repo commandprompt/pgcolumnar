@@ -1970,4 +1970,8 @@ guard_tests 895
 # family is refused by type (added earlier on this branch without its line), and every Arrow type meets
 # its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5400 tests collected.
+# cluster_tests stays 5445 for the #2082 re-check: the check that the refusal names numeric(5,2) joins
+# test_arrow_import.py::test_a_file_of_another_type_family_is_refused_by_type, and varchar, json and jsonb
+# join the matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5445 by
+# collection over the cluster files after the merge of 33f9bcd7.
 cluster_tests 5445

@@ -422,7 +422,7 @@ arrow_import	arrow_import	control: an int64 file still imports into timestamptz 
 arrow_import	arrow_import	control: an ns file on microsecond boundaries reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3:// past its start (#1886)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1886)
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)
-arrow_import	arrow_import	every Arrow type imports into its documented targets and no other (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Date arm also taking A_INT32 (src/columnar_arrow.c, #2082)
+arrow_import	arrow_import	every Arrow type imports into its documented targets and no other (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Date arm also taking A_INT32 (src/columnar_arrow.c, #2082);imp_check_shape refusing a Binary column for varchar, json and jsonb (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	export rows	15;16;17;18;19	never	-
 arrow_import	arrow_import	export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed
 arrow_import	arrow_import	finite row preserved	15;16;17;18;19	never	-
@@ -465,6 +465,7 @@ arrow_import	arrow_import	the failed second import left the row count alone	15;1
 arrow_import	arrow_import	the index-scan check really uses the index	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowed values are floored to the microsecond	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowing reports the number of VALUES that lost digits, not rows	15;16;17;18;19	never	-
+arrow_import	arrow_import	the refusal names the target as numeric(5,2), with its typmod (#2082)	15;16;17;18;19	2026-11-25	imp_check_shape's last refusal printing format_type_be(n->typid), without the typmod (src/columnar_arrow.c, #2082)
 arrow_nested	arrow_nested	empty nested readable	15;16;17;18;19	never	-
 arrow_nested	arrow_nested	empty nested rows	15;16;17;18;19	never	-
 arrow_nested	arrow_nested	nested export rows written	15;16;17;18;19	never	-
