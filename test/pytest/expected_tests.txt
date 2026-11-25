@@ -1966,20 +1966,47 @@ guard_tests 895
 # cluster_tests stays 5387 for the #2060 review's two new checks: the deferred foreign key check joins
 # test_fk_referencing.py::test_the_referencing_side_still_works and the partitioned-parent check joins
 # test_am_contracts.py::test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see, so no test is added.
-# cluster_tests 5443 -> 5447 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5443 -> 5457 for #2069's 14 new tests in test_sorted_mark_rename.py (DROP COLUMN of a
+# sort-key column clears the ordering mark, so ORDER BY plans a Sort and vacuum_sorted rewrites after
+# another column takes the dropped name; a partition and a Z-order run too; an unrelated drop keeps the
+# mark), by collection: 6284 tests collected, less guard_tests 894.
+# cluster_tests 5457 -> 5465 for the #2135 review's 8 new tests in test_sorted_mark_rename.py (a drop on an
+# inheritance parent clears the child's mark; a column of an empty and of a populated heap table drops, in the
+# suite's database and in one without the extension, so the drop hook leaves heap tables alone), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5465 -> 5466 for #2071's test_rows_past_1gb_per_row_group_or_chunk_group_load in
+# test_large_values.py (150000 rows of 8 KB and 10000 rows of 120 KB load under the default row limits);
+# the opt-in arm is renamed, not added, so it moves nothing. By collection: `cd test/pytest &&
+# PGC_PG_CONFIG=<PG 18.6 pg_config> python -m pytest --collect-only -q`: 6271 tests collected, less
+# guard_tests 894.
+# cluster_tests 5466 -> 5468 for #2071's review fix-up (#2138): test_large_values.py's row-group test
+# splits into test_rows_past_1gb_per_row_group_load (which also checks the row-group shape) and
+# test_rows_past_1gb_per_chunk_group_load, and test_compressed_heap_rows_past_1gb_load is new (heap's
+# compressed values copied to columnar), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5387 tests collected.
+# cluster_tests 5468 -> 5475 for #2072's arm 7 in test_parallel_flush_optin.py (a parallel flush after
+# TRUNCATE, LOCK TABLE or ALTER TABLE in the same transaction finishes in workers and writes the added
+# column; a parallel INSERT finishes while another session's ALTER TABLE waits, and the ALTER completes
+# after it; the premise that the ALTER waited), 7 tests, by collection: 6277 tests collected, less
+# guard_tests 894.
+# cluster_tests 5475 -> 5478 for the #2140 review's three tests in test_parallel_flush_optin.py (a parallel
+# flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
+# the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
+# in workers), by collection over the cluster files: 5394 tests collected.
+# cluster_tests 5478 -> 5482 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5447 -> 5451 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5482 -> 5486 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5451 -> 5457 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5486 -> 5492 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5457 -> 5458 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5492 -> 5493 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-cluster_tests 5458
+cluster_tests 5493
