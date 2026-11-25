@@ -10973,7 +10973,7 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
-The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, equality deletes applied through the mapping, also when the query lists the columns in another order, with an unbound delete column still refused, while the same delete under the full mapping applies (#2088), and the cap's opening allocation by a source read with comments blanked out.
+The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, equality deletes applied through the mapping, also when the query lists the columns in another order, for a delete keyed on two columns and for two delete files on different columns, with an unbound delete column still refused (alone or beside a bound one), while the same delete under the full mapping applies (#2088), and the cap's opening allocation by a source read with comments blanked out.
 
 ### Every test
 
@@ -11000,6 +11000,9 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_backend_up_after_null_fill` | backend still up after the null-fill reads |
 | `test_name_mapping_equality_delete_long` | an equality delete on a long column applies to an id-less file |
 | `test_name_mapping_equality_delete_reordered` | an equality delete applies when the query lists the columns in another order |
+| `test_name_mapping_equality_delete_two_columns` | an equality delete keyed on two columns applies to an id-less file |
+| `test_name_mapping_equality_delete_two_files` | two equality-delete files on different columns both apply to an id-less file |
+| `test_name_mapping_equality_two_column_unbound_is_refused` | a two-column equality delete with one column the mapping does not bind is refused, naming it |
 | `test_name_mapping_equality_delete_string` | an equality delete on a string column applies to an id-less file |
 | `test_name_mapping_equality_unbound_is_refused` | an equality column the mapping does not bind is still refused (22023) |
 | `test_name_mapping_equality_unbound_names_the_id` | ...and the refusal names the unbound field id |

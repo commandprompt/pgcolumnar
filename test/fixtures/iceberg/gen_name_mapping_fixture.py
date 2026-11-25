@@ -258,19 +258,42 @@ def write_eqdel(name, col, field_id, typ, values):
     return f"{LOC}/data/{name}"
 
 
-def emit_eq(tag, fields, mapping, del_path, eq_id, nrows):
+def write_eqdel_cols(name, cols):
+    """An equality-delete Parquet with several columns, each carrying
+    PARQUET:field_id. `cols` is a list of (name, field_id, type, values)."""
+    schema = pa.schema([pa.field(c, t, metadata={b"PARQUET:field_id": str(f).encode()})
+                        for c, f, t, _ in cols])
+    pq.write_table(pa.table({c: pa.array(v, t) for c, _, t, v in cols}, schema=schema),
+                   os.path.join(OUT, "db", "t", "data", name))
+    return f"{LOC}/data/{name}"
+
+
+def eq_entry(del_path, eq_ids, nrows):
+    """One manifest entry for an equality-delete file on the fields eq_ids."""
+    return zz(1) + (zz(1) + zz(DEL_SEQ)) + zz(2) + s(del_path.encode()) + \
+        s(b"PARQUET") + zz(nrows) + zz(1000) + zz(1) + \
+        zz(len(eq_ids)) + b"".join(zz(i) for i in eq_ids) + zz(0)
+
+
+def emit_eq(tag, fields, mapping, del_path, eq_id, nrows, more=()):
     """One arm: the id-less data.parquet (seq 1) plus one equality delete on
-    field eq_id (seq 2), under the given schema and name mapping."""
+    field eq_id (seq 2), under the given schema and name mapping. eq_id may be a
+    list for a delete keyed on several columns. `more` adds further delete
+    files to the same manifest, each a (del_path, eq_ids, nrows) tuple."""
     xm_name = f"eq-manifest-{tag}.avro"
-    rec = zz(1) + (zz(1) + zz(DEL_SEQ)) + zz(2) + s(del_path.encode()) + \
-        s(b"PARQUET") + zz(nrows) + zz(1000) + zz(1) + zz(1) + zz(eq_id) + zz(0)
-    open(os.path.join(md, xm_name), "wb").write(ocf(ENTRY_SCHEMA_EQ, rec))
-    ml_name = f"manifest-list-{tag}.avro"
+    dels = [(del_path, eq_id if isinstance(eq_id, list) else [eq_id], nrows), *more]
     sync = b"\x00" * 16
+    xm = b"Obj\x01" + zz(2) + s(b"avro.schema") + s(ENTRY_SCHEMA_EQ) + \
+        s(b"avro.codec") + s(b"null") + zz(0) + sync
+    recs = b"".join(eq_entry(*d) for d in dels)
+    xm += zz(len(dels)) + zz(len(recs)) + recs + sync
+    open(os.path.join(md, xm_name), "wb").write(xm)
+    ml_name = f"manifest-list-{tag}.avro"
     meta = zz(2) + s(b"avro.schema") + s(MFILE_SCHEMA) + s(b"avro.codec") + s(b"null") + zz(0)
     ml = b"Obj\x01" + meta + sync
     for r in (mfile(DM, 0, SEQ, SNAP, 1, 5),
-              mfile(f"{LOC}/metadata/{xm_name}", 1, DEL_SEQ, SNAP, 1, nrows)):
+              mfile(f"{LOC}/metadata/{xm_name}", 1, DEL_SEQ, SNAP, len(dels),
+                    sum(d[2] for d in dels))):
         ml += zz(1) + zz(len(r)) + r + sync
     open(os.path.join(md, ml_name), "wb").write(ml)
     metadata = {
@@ -308,6 +331,29 @@ emit_eq("nmequnbound", SCHEMA_STD,
 # the refusal there comes from the missing mapping entry, not from deletes on
 # amount (or on the last mapped column) being refused.
 emit_eq("nmeqamt", SCHEMA_STD, MAP_STD, EQ_AMOUNT, 3, 1)
+
+# Deletes on more than one column. Every arm above has one delete file with one
+# equality id, so the probe reads one column; a probe that drops the mapping
+# whenever it reads more than one passes them all. These arms read two.
+EQ_ID_REGION = write_eqdel_cols("eqdel-id-region.parquet",
+                                [("id", 1, pa.int64(), [2, 4]),
+                                 ("region", 2, pa.string(), ["eu", "eu"])])
+EQ_ID_AMOUNT = write_eqdel_cols("eqdel-id-amount.parquet",
+                                [("id", 1, pa.int64(), [3]),
+                                 ("amount", 3, pa.int32(), [30])])
+# nmeq2col: one delete keyed on (id, region), as a Flink upsert keyed on both
+# writes. It deletes (2,'eu') and (4,'eu'); row 4 is in 'us', so it stays.
+emit_eq("nmeq2col", SCHEMA_STD, MAP_STD, EQ_ID_REGION, [1, 2], 2)
+# nmeq2files: two one-column delete files on one data file, id IN (2, 4) and
+# amount = 30 -> rows 1 and 5.
+emit_eq("nmeq2files", SCHEMA_STD, MAP_STD, EQ_ID, 1, 2, more=[(EQ_AMOUNT, [3], 1)])
+# nmeq2unbound: a delete keyed on (id, amount) under a mapping with no name for
+# amount. As in nmequnbound the delete must be refused: reading amount as null
+# would match no delete row and keep row 3.
+emit_eq("nmeq2unbound", SCHEMA_STD,
+        [{"field-id": 1, "names": ["id"]},
+         {"field-id": 2, "names": ["region"]}],
+        EQ_ID_AMOUNT, [1, 3], 1)
 
 oracle = {"rows": [{"id": r[0], "region": r[1], "amount": r[2]} for r in ROWS]}
 open(os.path.join(OUT, "expected.json"), "w").write(json.dumps(oracle, indent=2))

@@ -617,7 +617,10 @@ true until the next version shipped.
   delete removes. The same delete applies once the mapping binds that column,
   so the refusal comes from the mapping alone. The delete also applies when the
   query lists the columns in another order than the mapping, so the pass binds
-  through the mapping's field ids, not the query's. docs/sql-reference.md.
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
   `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves

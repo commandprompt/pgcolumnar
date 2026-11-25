@@ -2026,4 +2026,9 @@ guard_tests 895
 # than the mapping), by collection on PG 18.6:
 # `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6380 tests collected,
 # less guard_tests 895.
-cluster_tests 5494
+# cluster_tests 5494 -> 5497 for test_name_mapping_equality_delete_two_columns,
+# test_name_mapping_equality_delete_two_files and test_name_mapping_equality_two_column_unbound_is_refused in
+# test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
+# an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5497 tests collected.
+cluster_tests 5497

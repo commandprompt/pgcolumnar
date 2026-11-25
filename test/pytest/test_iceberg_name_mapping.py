@@ -176,6 +176,11 @@ def nmap(pgc_cluster, server_dir):
                                  f"FROM {scan('nmeq')}")
         r["eq reordered"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
                                      f"FROM {scan('nmeq', cols='AS t(amount int, id bigint, region text)')}")
+        r["eq 2col"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                 f"FROM {scan('nmeq2col')}")
+        r["eq 2files"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeq2files')}")
+        r["eq 2unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmeq2unbound')}")
         r["eq string"] = _one(dsn, f"SELECT string_agg(id || '|' || region, ',' ORDER BY id) "
                                    f"FROM {scan('nmeqstr')}")
         r["eq unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmequnbound')}")
@@ -328,6 +333,35 @@ def test_name_mapping_equality_delete_reordered(nmap, expect):
         return
     expect.text(nmap["eq reordered"], "1|eu|10,3|us|30,5|us|50",
                 "an equality delete applies when the query lists the columns in another order")
+
+
+def test_name_mapping_equality_delete_two_columns(nmap, expect):
+    """A delete keyed on (id, region). Every other arm reads one delete column,
+    so a probe that drops the mapping whenever it reads more than one passes
+    them all."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq 2col"], "1|eu|10,3|us|30,4|us|40,5|us|50",
+                "an equality delete keyed on two columns applies to an id-less file")
+
+
+def test_name_mapping_equality_delete_two_files(nmap, expect):
+    """Two one-column delete files on one data file, id IN (2, 4) and
+    amount = 30: the probe reads both columns at once."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq 2files"], "1|eu|10,5|us|50",
+                "two equality-delete files on different columns both apply to an id-less file")
+
+
+def test_name_mapping_equality_two_column_unbound_is_refused(nmap, expect):
+    """A delete keyed on (id, amount) under a mapping with no name for amount is
+    refused, naming field id 3: reading amount as null would keep row 3."""
+    if _declined(nmap, expect):
+        return
+    text = nmap["eq 2unbound"][1]
+    expect.text("1" if "no Parquet column has field id 3" in text else f"0 ({text})", "1",
+                "a two-column equality delete with one column the mapping does not bind is refused, naming it")
 
 
 def test_name_mapping_equality_delete_string(nmap, expect):

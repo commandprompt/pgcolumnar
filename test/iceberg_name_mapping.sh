@@ -187,6 +187,25 @@ check "an equality delete applies when the query lists the columns in another or
 	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
 	        AS t(amount int, id bigint, region text)")" "1|eu|10,3|us|30,5|us|50"
+# Deletes on more than one column. Every arm above reads one delete column, so
+# a probe that drops the mapping whenever it reads more than one passes them
+# all. A delete keyed on (id, region) removes (2,'eu') and (4,'eu'); row 4 is
+# in 'us', so it stays.
+check "an equality delete keyed on two columns applies to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2col.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,3|us|30,4|us|40,5|us|50"
+# Two one-column delete files on one data file: id IN (2, 4) and amount = 30.
+check "two equality-delete files on different columns both apply to an id-less file" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2files.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,5|us|50"
+# A delete keyed on (id, amount) where the mapping has no name for amount. It is
+# refused as the one-column unbound delete below is: reading amount as null
+# would match no delete row and keep row 3.
+check "a two-column equality delete with one column the mapping does not bind is refused, naming it" \
+	"$(errmsg_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmeq2unbound.metadata.json')
+	              AS t(id bigint, region text, amount int)" | grep -c "no Parquet column has field id 3")" "1"
 check "an equality delete on a string column applies to an id-less file" \
 	"$(q "SELECT string_agg(id || '|' || region, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqstr.metadata.json')
