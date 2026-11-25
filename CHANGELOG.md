@@ -628,14 +628,18 @@ true until the next version shipped.
   `date`, which main read as days since 1970; a duration into `timestamp`, which
   main read as microseconds whatever its unit; and a uint64 into `timestamp` or
   `timestamptz`. A 16-byte fixed-size binary into `bytea` now fails with 42804
-  instead of XX001. A decimal into a `numeric` declared without a precision, or
-  with one above 38, now fails with 42804 instead of XX001. It imported nothing
-  on main either: a decimal128(38,10) into `numeric`, and a decimal128(10,2)
-  into `numeric(50,2)`, both failed with XX001 `too few buffers for the schema`.
+  instead of XX001. An interval column is now refused for every target with
+  42804. On main, a month_day_nano interval `(1 month, 2 days, 3000 ns)` into
+  `bigint` stored `8589934593`, and into `int` stored `1`, with no error; into
+  `text` it failed with XX001. A decimal into a `numeric` declared without a
+  precision, or with one above 38, now fails with 42804 instead of XX001. It
+  imported nothing on main either: a decimal128(38,10) into `numeric`, and a
+  decimal128(10,2) into `numeric(50,2)`, both failed with XX001 `too few
+  buffers for the schema`.
   A decimal still reads only into a `numeric(p,s)` with `p` up to 38. The
   refusal now names the target type with its precision and scale, for example
   `numeric(5,2)`, not `numeric`. A table-driven check imports one file of each
-  of 18 Arrow types into each of 19 target types and pins every pairing.
+  of 19 Arrow types into each of 19 target types and pins every pairing.
   docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as

@@ -2001,4 +2001,7 @@ guard_tests 895
 # test_arrow_import.py::test_a_file_of_another_type_family_is_refused_by_type, and varchar, json and jsonb
 # join the matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
 # collection over the cluster files after the merge of f07210bc.
+# cluster_tests does not change for the #2082 round-3 review: the month_day_nano interval file joins the
+# matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files.
 cluster_tests 5480

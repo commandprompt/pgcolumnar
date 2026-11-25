@@ -1909,21 +1909,24 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
  * so a file of another type family was copied bit for bit: float64 1.5 into
  * bigint stored 4609434218613702656, and int64 7 into float8 stored 3.5e-323.
  * When the layouts differed, the buffer-length check raised XX001 and called a
- * valid file malformed. Three pairings are kept on purpose:
+ * valid file malformed. Four pairings across families are kept on purpose,
+ * the same four that docs/limitations.md lists:
  *  - Int under timestamp or timestamptz reads raw microseconds. This is
  *    long-standing behaviour with its own control in test/arrow_import.sh, and
  *    #881 kept it. imp_apply_field still requires a signed 64-bit carrier.
- *  - Utf8 under bytea, and Binary under text, varchar, json, jsonb or a
- *    numeric with no precision (or one above 38), whose node is A_UTF8. Both
- *    tags have the same three-buffer layout, so the bytes arrive intact, and a
+ *  - Utf8 under bytea.
+ *  - Binary under text, varchar, json, jsonb or a numeric with no precision
+ *    (or one above 38), whose node is A_UTF8. Utf8 and Binary have the same
+ *    three-buffer layout, so the bytes arrive intact in both directions, and a
  *    Binary value read as text still passes imp_text_check and the type's
  *    input function.
  *  - Duration under bigint reads the signed 64-bit count, as main did. Arrow
  *    always writes a duration as 64 bits, so no other integer width can hold
  *    one: under int it was read at half width, storing 5,0 for 5,6.
- * Every other tag is refused, including Null (XX001 before) and LargeUtf8 and
- * LargeBinary, whose 64-bit offsets were read as 32-bit ones: a large string
- * ['a','b'] into text stored '' and 'a' with no error.
+ * Every other tag is refused, including Interval (raw bytes into bigint
+ * before), Null (XX001 before), and LargeUtf8 and LargeBinary, whose 64-bit
+ * offsets were read as 32-bit ones: a large string ['a','b'] into text stored
+ * '' and 'a' with no error.
  */
 static bool
 arrow_tag_fits_kind(uint8 typetag, ArrowKind kind)

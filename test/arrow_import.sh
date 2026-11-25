@@ -609,6 +609,9 @@ extra = {
     'mx_dec': pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
     'mx_fsb16': pa.array([b'0123456789abcdef', b'fedcba9876543210'], pa.binary(16)),
     'mx_null': pa.array([None, None], pa.null()),
+    # An interval has no kept target. Main read it into bigint as raw bytes:
+    # (1 month, 2 days, 3000 ns) stored 8589934593.
+    'mx_iv': pa.array([(1, 2, 3000), (0, 5, 7000)], pa.month_day_nano_interval()),
     # #2081: the same three values in every Decimal bit width. The reader's
     # stride is 16 bytes, so a 32-byte decimal256 buffer is long enough and was
     # read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50.
@@ -963,7 +966,7 @@ PY
 	mx_bad=""
 	for mx_f in mx_i16 mx_i32 mx_i64 mx_u64 mx_f32 mx_f64 mx_bool mx_utf8 \
 			mx_bin mx_lutf8 mx_lbin mx_d32 mx_t64 mx_ts mx_dur mx_dec mx_fsb16 \
-			mx_null; do
+			mx_null mx_iv; do
 		for mx_t in smallint int bigint float4 float8 bool text bytea date \
 				time timestamp timestamptz uuid 'numeric(10,0)' numeric \
 				'numeric(50,2)' varchar json jsonb; do

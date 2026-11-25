@@ -326,13 +326,16 @@ def _matrix_fixtures(pa):
         "mx_dec": pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
         "mx_fsb16": pa.array([b"0123456789abcdef", b"fedcba9876543210"], pa.binary(16)),
         "mx_null": pa.array([None, None], pa.null()),
+        # No kept target. Main read it into bigint as raw bytes: 8589934593.
+        "mx_iv": pa.array([(1, 2, 3000), (0, 5, 7000)], pa.month_day_nano_interval()),
     }
 
 
 # The documented pairings (docs/limitations.md, docs/sql-reference.md): each must
 # import, and every other file-by-target pair must be refused with 42804.
 _MX_FILES = ("mx_i16", "mx_i32", "mx_i64", "mx_u64", "mx_f32", "mx_f64", "mx_bool", "mx_utf8", "mx_bin",
-             "mx_lutf8", "mx_lbin", "mx_d32", "mx_t64", "mx_ts", "mx_dur", "mx_dec", "mx_fsb16", "mx_null")
+             "mx_lutf8", "mx_lbin", "mx_d32", "mx_t64", "mx_ts", "mx_dur", "mx_dec", "mx_fsb16", "mx_null",
+             "mx_iv")
 _MX_TARGETS = ("smallint", "int", "bigint", "float4", "float8", "bool", "text", "bytea", "date", "time",
                "timestamp", "timestamptz", "uuid", "numeric(10,0)", "numeric", "numeric(50,2)", "varchar",
                "json", "jsonb")
