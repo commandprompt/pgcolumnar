@@ -221,3 +221,54 @@ def test_a_join_clause_under_another_collation_refuses_the_fold(pgc_conn, expect
                 "byte join clause over a case-insensitive column answer equals heap")
     expect.num(_with(conn, "on", f"EXPLAIN (COSTS OFF) {sqlcb}").count(fold), 0,
                "byte join clause over a case-insensitive column refuses the join fold")
+
+def test_a_fold_rescan_drains_the_new_dimension_keys(pgc_conn, expect):
+    """Each rescan of the join fold joins against that rescan's dimension keys
+    (the sibling of #2062). The pytest twin of the shell's rescan arms, with its
+    own names, keys and outer values.
+
+    A correlated subquery or LATERAL join reruns the fold for each outer row. The
+    fold read the dimension inside its key context and reset that context on
+    rescan, which freed the dimension scan's state, so the second rescan crashed
+    the backend. The DISTINCT arm puts a HashAggregate under the fold; the fold
+    holds it in custom_ps, which ExecReScan does not tell about a changed
+    parameter, so it returned its first rows again. Each arm runs under default
+    join settings and with hash joins forced. The outer values grow, so a stale
+    or empty key table cannot match heap.
+    """
+    conn = pgc_conn
+    _exec(conn, "CREATE TABLE dim_rs(k int PRIMARY KEY)",
+          "INSERT INTO dim_rs SELECT g FROM generate_series(1,30) g",
+          "CREATE TABLE dimh_rs(k int)",
+          "INSERT INTO dimh_rs SELECT g FROM generate_series(1,30) g",
+          "CREATE TABLE fact_rs(k int, m float8) USING pgcolumnar",
+          "INSERT INTO fact_rs SELECT 1 + (g % 30), 1::float8 FROM generate_series(1,6000) g",
+          "CREATE TABLE heap_rs (k int, m float8) USING heap", "INSERT INTO heap_rs SELECT * FROM fact_rs",
+          "ANALYZE dim_rs", "ANALYZE dimh_rs", "ANALYZE fact_rs")
+    outer = "(VALUES (4), (10), (25)) v(lim)"
+    arms = {
+        "scalar": (f"SELECT v.lim, (SELECT count(*) FROM {{t}} JOIN dim_rs ON {{t}}.k = dim_rs.k "
+                   f"WHERE dim_rs.k < v.lim) FROM {outer} ORDER BY 1"),
+        "LATERAL": (f"SELECT v.lim, x.c FROM {outer}, LATERAL (SELECT count(*) c FROM {{t}} "
+                    f"JOIN dim_rs ON {{t}}.k = dim_rs.k WHERE dim_rs.k < v.lim) x ORDER BY 1"),
+        "distinct": (f"SELECT v.lim, (SELECT count(*) FROM {{t}} JOIN (SELECT DISTINCT k FROM dimh_rs "
+                     f"WHERE k < v.lim) d ON {{t}}.k = d.k) FROM {outer} ORDER BY 1"),
+    }
+    with conn.cursor() as cur:
+        cur.execute("SET max_parallel_workers_per_gather = 0")
+        cur.execute(f"SET {GUC} = on")
+        for name, sql in arms.items():
+            cur.execute(sql.format(t="heap_rs"))
+            heap = cur.fetchall()
+            expect.text(" ".join(f"{lim}:{c}" for lim, c in heap), "4:600 10:1800 25:4800",
+                        f"premise: heap's {name} rescan answer grows with each outer value")
+            for setting, allowed in (("default", "on"), ("hash-only", "off")):
+                cur.execute(f"SET enable_nestloop = {allowed}")
+                cur.execute(f"SET enable_mergejoin = {allowed}")
+                cur.execute("EXPLAIN (COSTS OFF) " + sql.format(t="fact_rs"))
+                plan = "\n".join(r[0] for r in cur.fetchall())
+                expect.num(plan.count("Columnar Join Fold: yes"), 1,
+                           f"premise: the {setting} {name} rescan uses the join fold")
+                cur.execute(sql.format(t="fact_rs"))
+                expect.rows(cur.fetchall(), heap,
+                            f"each {setting} {name} fold rescan drains its own dimension keys")

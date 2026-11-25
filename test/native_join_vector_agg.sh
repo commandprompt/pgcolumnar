@@ -134,6 +134,58 @@ check "inequality join filter answer equals heap" \
 	"$(pc "SET $GUC=on; $SQLXN" | tail -1)" \
 	"$(q "SELECT coalesce(sum(heap_xn.v)::text,'z') FROM heap_xn JOIN dim_xn ON heap_xn.k = dim_xn.k AND heap_xn.v <> dim_xn.t")"
 
+# A rescan of the fold re-drains the dimension for the new outer value (#2128,
+# the sibling of #2062). A correlated subquery or LATERAL join reruns the fold.
+# The fold read the dimension inside its own key context and then reset that
+# context on rescan, which freed the dimension scan's state: the second rescan
+# crashed the backend. The DISTINCT arm puts a HashAggregate under the fold. The
+# fold holds it in custom_ps, which ExecReScan does not tell about a changed
+# parameter, so it would return its first rows again. Each arm runs with
+# default join settings and with hash joins forced; the outer values grow, so a
+# stale or empty key table cannot match heap.
+q "$(cat <<'SQL'
+CREATE TABLE dim_rf(k int PRIMARY KEY);
+INSERT INTO dim_rf SELECT g FROM generate_series(1,40) g;
+CREATE TABLE dimh_rf(k int);
+INSERT INTO dimh_rf SELECT g FROM generate_series(1,40) g;
+CREATE TABLE fact_rf(k int, m float8) USING pgcolumnar;
+INSERT INTO fact_rf SELECT 1 + (g % 40), 1::float8 FROM generate_series(1,4000) g;
+CREATE TABLE heap_rf (k int, m float8) USING heap;
+INSERT INTO heap_rf SELECT * FROM fact_rf;
+ANALYZE dim_rf;
+ANALYZE dimh_rf;
+ANALYZE fact_rf;
+SQL
+)" >/dev/null
+
+DEFJ="RESET enable_nestloop; RESET enable_mergejoin;"
+# A crash (the defect above) restarts the server. Wait until it accepts
+# queries again, so the next check reports its own result and not the restart.
+rs_ready() {
+	local i
+	for i in $(seq 1 100); do
+		[ "$(q "SELECT 1")" = 1 ] && return 0
+		sleep 0.1
+	done
+}
+for arm in \
+	"scalar|SELECT v.lim||':'||(SELECT count(*) FROM @T JOIN dim_rf ON @T.k = dim_rf.k WHERE dim_rf.k < v.lim) FROM (VALUES (3), (12), (30)) v(lim) ORDER BY v.lim" \
+	"LATERAL|SELECT v.lim||':'||x.c FROM (VALUES (3), (12), (30)) v(lim), LATERAL (SELECT count(*) c FROM @T JOIN dim_rf ON @T.k = dim_rf.k WHERE dim_rf.k < v.lim) x ORDER BY v.lim" \
+	"distinct|SELECT v.lim||':'||(SELECT count(*) FROM @T JOIN (SELECT DISTINCT k FROM dimh_rf WHERE k < v.lim) d ON @T.k = d.k) FROM (VALUES (3), (12), (30)) v(lim) ORDER BY v.lim"; do
+	n=${arm%%|*}; s=${arm#*|}
+	heap_rs="$(q "${s//@T/heap_rf}" | tr '\n' ' ')"
+	check "premise: heap's $n rescan answer grows with each outer value" \
+		"$heap_rs" "3:200 12:1100 30:2900 "
+	for setting in "default|$DEFJ" "hash-only|"; do
+		sn=${setting%%|*}; ss=${setting#*|}
+		check "premise: the $sn $n rescan uses the join fold" \
+			"$(pc "SET $GUC=on; ${ss}EXPLAIN (COSTS OFF) ${s//@T/fact_rf}" | grep -c 'Columnar Join Fold: yes')" 1
+		check "each $sn $n fold rescan drains its own dimension keys" \
+			"$(pc "SET $GUC=on; ${ss}${s//@T/fact_rf}" | grep -v '^SET$\|^RESET$' | tr '\n' ' ')" \
+			"$heap_rs"
+		rs_ready
+	done
+done
 # The fold compares keys with the type's default equality (int4eq here). A join
 # clause with another equality operator must refuse the fold (#2066). ##= says
 # two ints are equal when their absolute values are, so fact keys 1,-1,2,-2,3
