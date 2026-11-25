@@ -1059,12 +1059,21 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 				sizeof(me->errmsg));
 		MemoryContextSwitchTo(ecxt);
 		FlushErrorState();
-		AbortOutOfAnyTransaction();
+
+		/*
+		 * Close the file before the abort, not after it (#2083). The abort's
+		 * AtEOXact_Files closes every transient file this transaction opened, so
+		 * a close after it named a descriptor fd.c no longer tracks: it logged
+		 * "fd passed to CloseTransientFile was not obtained from
+		 * OpenTransientFile" and called close() on a number that could by then
+		 * belong to another file.
+		 */
 		if (pcopy_src.fd >= 0)
 		{
 			CloseTransientFile(pcopy_src.fd);
 			pcopy_src.fd = -1;
 		}
+		AbortOutOfAnyTransaction();
 		pg_atomic_write_u32(&me->state, PCOPY_FAILED);
 	}
 	PG_END_TRY();
