@@ -4738,7 +4738,7 @@ psql as the same user.
 | `test_a_type_change_rewrite_drops_the_mark` | a rewriting ALTER TYPE changes the values, so the old mark cannot survive it |
 | `test_one_updated_row_is_a_row_outside_the_run` | a single UPDATE appends, and one row outside the run is enough |
 | `test_the_mark_follows_a_rename` | #778: the mark is stored by name, so a RENAME COLUMN must carry it |
-| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through |
+| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through; since #2069 the drop clears the mark, so the test writes back the mark an older build left |
 | `test_the_guc_turns_the_claim_off` | the GUC is a real off switch, checked with the Sort back |
 | `test_a_ctas_relation_claims_nothing` | CTAS writes rows in whatever order the query produced; nothing records an order |
 | `test_a_collatable_sort_column_is_not_claimed` | text order is collation-dependent, so a run sorted under one collation is not sorted under another |
@@ -7487,6 +7487,9 @@ THE WITHDRAWAL IS REACHED ONLY BY A RACE. When one session holds a key uncommitt
 | `test_insert_on_conflict` | `DO NOTHING` skips a duplicate and inserts the rest, with and without a conflict target; a key twice in one statement goes in once; `DO UPDATE` is refused (`0A000`) on a conflicting row and changes nothing, and inserts when nothing conflicts |
 | `test_insert_on_conflict_withdraws_a_row_a_concurrent_insert_beat` | a `DO NOTHING` racing another session's uncommitted insert of the same key waits, then skips it: one row, the holder's, by scan and by the unique index |
 | `test_insert_on_conflict_racing_sessions_leave_each_key_once` | eight sessions racing `DO NOTHING` on the same keys leave each key once, with no error; a premise requires that they contended |
+| `test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see` | at REPEATABLE READ and SERIALIZABLE, a `DO NOTHING` whose conflicting row was committed by another session after the snapshot was taken raises `40001`, as heap does (a premise checks heap); at READ COMMITTED it still skips the row and commits; through a partitioned parent onto a pgcolumnar partition it raises `40001` too. Before #2060's fix pgcolumnar skipped the row and committed at every level |
+| `test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip` | at REPEATABLE READ, `DO NOTHING` does not raise `40001` for a row the snapshot sees, for a key the transaction inserted in an earlier statement, for a key twice in one statement, or for a key its own statement wrote to a stripe it already flushed (#2060) |
+| `test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation` | known limitation (#2060): at REPEATABLE READ, a `DO NOTHING` conflict with a row that a concurrent `compact_rewrite` or `recluster` moved raises `40001`, because the moved copy has a new row number the snapshot cannot see; heap with a concurrent `VACUUM` commits (control). A fix that links a moved row to its source turns the two pgcolumnar checks red, and `docs/limitations.md` changes with them |
 | `test_a_truncate_that_rolls_back_restores_every_row` | a `TRUNCATE` rolled back at transaction level, and one rolled back to a savepoint, restore every row, with the primary key still answering and refusing; rows the parent buffered before the savepoint survive too |
 | `test_an_aborted_inner_block_keeps_the_outer_statements_rows` | an outer `INSERT` and an outer `DELETE` whose expression calls a function with an aborted EXCEPTION block keep heap's answer. Before #1341's fix the INSERT kept 1 row of 5000. The same loss through a read inside the block is #1360 |
 | `test_a_read_inside_an_aborted_inner_block_keeps_the_outer_statements_rows` | a read of the table inside an EXCEPTION block writes out the enclosing INSERT's or DELETE's buffered rows and marks, and keeps them until the block resolves (#1360). On abort the rows, the read's own count and the index's view all match heap; so do a read in a nested block that commits into an aborted one, and a block that deletes a row by index before its read. A block that commits keeps every outer row once. The cost is linear: at twice the rows, the file is under 2.5 times the size; and one read early in a 5000-row insert leaves at most 3 row groups |
@@ -7560,14 +7563,17 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. Rows whose column passes 1 GB in one row group, or in one chunk group, load and are stored exactly (#2071), also when they are copied from heap, which stores them compressed: before the fix the writer built one buffer past 1 GB and the INSERT failed. The 8 KB rows must make row groups just under 256 MiB. An opt-in arm loads about 1.1 GB of incompressible text with compression off; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
-| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
+| `test_rows_past_1gb_per_row_group_load` | under the default row limits, 150000 rows of 8 KB load, with the right count, id sum, total length and every value intact, in 5 row groups of 15984 to 33504 rows, which pins the 256 MiB cap and its reset after each flush (#2071) |
+| `test_rows_past_1gb_per_chunk_group_load` | under the default row limits, 10000 rows of 120 KB load, with the right count, id sum, total length and every value intact (#2071) |
+| `test_compressed_heap_rows_past_1gb_load` | 150000 rows of 8 KB that heap stores compressed, under 20 MB in all, copy to a columnar table with the right count, id sum, total length and every value intact, so the cap counts each value at its raw size (#2071) |
+| `test_incompressible_text_past_1gb_loads` | opt-in: about 1.1 GB of incompressible text in one chunk group's rows, compression off, commits all 1100 rows at full length with the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
@@ -8036,7 +8042,7 @@ The pytest twin of `test/fk_referencing.sh` (ported for #1341), every check by t
 | test | what it holds |
 | --- | --- |
 | `test_the_referenced_side_is_refused_at_ddl` | CREATE TABLE and ALTER TABLE ADD CONSTRAINT referencing a columnar table are refused, saying why, and nothing is left behind |
-| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one |
+| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one; a deferred foreign key does not check a referencing row deleted before commit, as heap (#2060 review: before the fix this commit failed with 23503) |
 | `test_constraints_that_need_no_row_lock_are_unaffected` | primary key, unique, check and not-null on a columnar table, and a heap-to-heap foreign key, are unaffected |
 | `test_converting_a_referenced_table_is_refused_and_nothing_else_is` | SET ACCESS METHOD pgcolumnar on a referenced table and the helper are refused, the table stays heap and its child writable; an unreferenced table, the referencing side, an unrelated ALTER, a conversion back to heap and the referenced table to a row store all still work |
 | `test_a_partitioned_referenced_parent` | a columnar partition and setting the parent's access method are refused, the parent does not become columnar, an ordinary partition still works; an unreferenced partitioned table converts from PG17, and before 17 core refuses it |
@@ -8194,13 +8200,14 @@ The alternative must reclaim, not only return. With `vacuum()` returning before 
 
 ## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
 
-The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell; the rescan test also reads each plan under default join settings.
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. So must a join clause under another collation than the fact column's, or with another equality operator than the type's default, because the fold compares with the column's own equality and collation (#2066). Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell; the rescan test also reads each plan under default join settings.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join, an extra join filter and a join clause with a non-default equality operator (`##=` on absolute values) each refuse it and answer as heap does |
+| `test_a_join_clause_under_another_collation_refuses_the_fold` | a text key under one collation, plain or case-insensitive on both sides, keeps the fold and answers as heap does; a case-insensitive join clause over a plain column, and a byte join clause over a case-insensitive column, each refuse it and answer as heap does (#2066). Declines with MISSING_DEPENDENCY on a server without ICU |
 | `test_a_fold_rescan_drains_the_new_dimension_keys` | a correlated scalar subquery, a LATERAL join and a DISTINCT dimension each rerun the fold for three growing outer values, under default join settings and with hash joins forced, and each run answers as heap does. Before the fix the second rescan crashed the backend: the fold ran the dimension plan in its key context and freed the scan's state when it reset that context. The DISTINCT arm also needs the fold to pass the changed parameter to its dimension plan, or the HashAggregate returns its first rows (#2128, the sibling of #2062) |
 
 ## 158. test_native_writer.py: the native writer by its catalog rows
@@ -9235,7 +9242,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child. The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review). On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9282,6 +9289,28 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_the_declared_key_follows_the_rename` | the DECLARED key follows the rename too |
 | `test_the_two_catalogs_still_agree` | so the two catalogs still agree after the rename |
 | `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
+| `test_vd_t_loaded_every_row` | premise: vd_t loaded every row |
+| `test_before_the_drop_the_mark_records_a` | premise: before the drop, the mark records key {a} |
+| `test_dropping_the_sort_key_column_clears_the_mark` | DROP COLUMN of the sort-key column clears the mark |
+| `test_the_column_that_took_the_name_is_not_ordered` | premise: the column that took the name a is NOT ordered |
+| `test_after_a_drop_and_rename_order_by_plans_a_sort` | after the drop and a rename onto the name, ORDER BY plans a Sort |
+| `test_after_a_drop_and_rename_order_by_limit_is_right` | THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values |
+| `test_vacuum_sorted_after_a_drop_does_the_work` | and vacuum_sorted on the new a does the work |
+| `test_vd_t_is_ordered_by_a_afterwards` | and vd_t really is ordered by a afterwards |
+| `test_an_unrelated_drop_keeps_the_mark` | dropping an unrelated column keeps the mark |
+| `test_the_gate_still_fires_after_an_unrelated_drop` | and the gate still fires after an unrelated drop |
+| `test_the_partitions_mark_records_k` | premise: the partition's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_partitions_mark` | the PARTITION's mark is cleared by a drop issued on the parent |
+| `test_vd_z_mark_records_a_zorder_run` | premise: vd_z's mark records {a,b} as zorder |
+| `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
+| `test_the_inheritance_childs_mark_records_k` | premise: the inheritance child's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_inheritance_childs_mark` | the inheritance CHILD's mark is cleared by a drop issued on the parent |
+| `test_the_extension_is_absent_in_the_second_database` | premise: the extension is absent in the second database |
+| `test_the_library_is_loaded_in_the_second_database` | premise: and the library is loaded there, so its drop hook runs |
+| `test_an_empty_heap_tables_column_drops` | a column of an EMPTY heap table drops, in this database |
+| `test_a_populated_heap_tables_column_drops` | a column of a POPULATED heap table drops, in this database |
+| `test_an_empty_heap_tables_column_drops_without_the_extension` | a column of an EMPTY heap table drops, in a database without the extension |
+| `test_a_populated_heap_tables_column_drops_without_the_extension` | a column of a POPULATED heap table drops, in a database without the extension |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |
@@ -9847,11 +9876,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan.
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set.
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit.
 
 | test | what it holds |
 | --- | --- |
@@ -9882,6 +9911,47 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
 | `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
 | `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
+| `test_concurrent_vacuum_during_delete_block_1_all_visible_before` | concurrent vacuum during delete: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_writer_deleted_101_rows` | concurrent vacuum during delete: the writer deleted 101 rows |
+| `test_concurrent_vacuum_during_delete_block_1_not_all_visible_after_commit` | concurrent vacuum during delete: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row` | concurrent vacuum during delete: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_update_block_1_all_visible_before` | concurrent vacuum during update: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused` | concurrent vacuum during update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_update_writer_updated_101_rows` | concurrent vacuum during update: the writer updated 101 rows |
+| `test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit` | concurrent vacuum during update: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row` | concurrent vacuum during update: index-only scan returns no deleted row (#2059) |
+| `test_delete_between_vacuum_steps_block_1_all_visible_before` | delete between vacuum's two steps: block 1 all-visible before the writer starts |
+| `test_delete_between_vacuum_steps_vacuum_paused_before_its_set` | delete between vacuum's two steps: vacuum paused before its set |
+| `test_delete_between_vacuum_steps_delete_committed_while_paused` | delete between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_between_vacuum_steps_block_1_not_all_visible_after` | delete between vacuum's two steps: block 1 not all-visible after vacuum (#2059) |
+| `test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_all_visible_before` | concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_delete_writer_deleted_301_rows` | concurrent vacuum during a two-block delete: the writer deleted 301 rows |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block delete: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_block_2_all_visible_before` | concurrent vacuum during a two-block update: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_update_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_update_writer_updated_301_rows` | concurrent vacuum during a two-block update: the writer updated 301 rows |
+| `test_concurrent_vacuum_during_two_block_update_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block update: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_every_target_block_all_visible_before` | concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_vacuum_ran_while_writer_paused` | concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_writer_deleted_79_rows` | concurrent vacuum during a delete over three row groups: the writer deleted 79 rows |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_no_target_block_all_visible_after_commit` | concurrent vacuum during a delete over three row groups: no target block all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_index_only_scan_returns_no_deleted_row` | concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_all_visible_before` | delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts |
+| `test_delete_in_second_row_group_between_vacuum_steps_vacuum_paused_before_its_set` | delete in the second row group between vacuum's two steps: vacuum paused before its set |
+| `test_delete_in_second_row_group_between_vacuum_steps_delete_committed_while_paused` | delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_not_all_visible_after` | delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_clean_block_514_still_all_visible` | delete in the second row group between vacuum's two steps: clean block 514 still all-visible |
+| `test_delete_in_second_row_group_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete in the second row group between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_every_target_block_all_visible_before` | delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts |
+| `test_delete_over_three_row_groups_between_vacuum_steps_vacuum_paused_before_its_set` | delete over three row groups between vacuum's two steps: vacuum paused before its set |
+| `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
@@ -10698,10 +10768,22 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
 | `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
 | `test_a_flush_worker_raises_nothing_after_its_pin` | a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block |
+| `test_lock_a_flush_after_truncate_finishes` | a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_lock_table_finishes` | a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_alter_table_finishes` | a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_writes_the_added_column` | a parallel flush writes the column ALTER TABLE added in the same transaction (#2072) |
+| `test_lock_a_flush_after_a_retype_finishes_in_workers` | a parallel flush after ALTER COLUMN TYPE in the same transaction finishes, every column in workers (#2140) |
+| `test_lock_a_flush_after_a_retype_stores_the_serial_paths_chunks` | a parallel flush after ALTER COLUMN TYPE in the same transaction stores the serial path's chunks and rows (#2140) |
+| `test_lock_the_alter_waited_for_the_insert` | premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran |
+| `test_lock_a_queued_alter_does_not_stall_the_insert` | a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072) |
+| `test_lock_the_queued_insert_flushes_in_workers` | a parallel INSERT that another session's ALTER TABLE waits behind flushes every column in workers (#2140) |
+| `test_lock_the_queued_alter_completes` | premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072) |
 
 Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
 
 Arm 6 (#1747) reads `pgcolumnar_parallel_flush_worker` with comments blanked: from `dsm_pin_segment` to the end of its PG_TRY block, only `dsm_detach` and the DONE write may run, because the collect loop unpins only a DONE slot and a worker that raised after its pin left the segment pinned to postmaster restart. The stretch runs past the DONE write because an ERROR there lands in PG_CATCH, which overwrites DONE with FAILED (#1748 review).
+
+Arm 7 (#2072) holds that a flush worker takes no lock that can wait on the table. On its own private database, three transactions run a 20000-row parallel INSERT after `TRUNCATE`, after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` and after `ALTER TABLE ... ADD COLUMN ... DEFAULT 5`, each under a 15s `statement_timeout`. Each must finish with every column encoded in workers and the right rows, and the added column must hold its default. "Every column in workers" means each split line reads `N of N columns` and no worker logged `failed, completing its columns serially`: a failed worker's columns are redone serially with the right attributes, so the rows alone cannot show it. A fourth transaction retypes two columns (`ALTER COLUMN b TYPE bigint, ALTER COLUMN h TYPE text`) after `TRUNCATE`, then loads in parallel; its chunks and rows must match a twin table given the same statements serially. This pins that workers encode with the inserting transaction's column attributes: a worker that read the committed descriptor fails here (#2140 review). Then a 600000-row parallel INSERT into a table with `stripe_row_limit = 1000` runs while another session's `ALTER TABLE` waits for its lock. The INSERT must finish inside its 60s timeout with every column in workers, and the ALTER must complete after it. On main's code every one of these INSERTs hit its timeout. The ALTER's completion is a premise: it holds on main too.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 
@@ -13725,7 +13807,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
 
-The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+The twin of `test/cancel_decode.sh`. On a private database, two 2,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
 
 ### Every test
 

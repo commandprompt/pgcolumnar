@@ -254,14 +254,14 @@
 16 test_audit.py::test_audit_nothing_was_recorded_for_the_partitioned_parent
 16 test_audit.py::test_audit_the_partition_itself_is_still_accepted
 
-# Every major: test_large_values.py's chunk-over-1-GB arm needs PGC_RUN_OVER_1GB=1 and
+# Every major: test_large_values.py's incompressible over-1-GB arm needs PGC_RUN_OVER_1GB=1 and
 # several GB of memory, so it is opt-in, as the shell's is, and declines without it (#432).
 # The condition lets an opted-in run expect it to RUN, not read it as a stale row.
-15 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
-16 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
-17 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
-18 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
-19 test_large_values.py::test_a_chunk_over_1gb_is_refused unless-env PGC_RUN_OVER_1GB=1
+15 test_large_values.py::test_incompressible_text_past_1gb_loads unless-env PGC_RUN_OVER_1GB=1
+16 test_large_values.py::test_incompressible_text_past_1gb_loads unless-env PGC_RUN_OVER_1GB=1
+17 test_large_values.py::test_incompressible_text_past_1gb_loads unless-env PGC_RUN_OVER_1GB=1
+18 test_large_values.py::test_incompressible_text_past_1gb_loads unless-env PGC_RUN_OVER_1GB=1
+19 test_large_values.py::test_incompressible_text_past_1gb_loads unless-env PGC_RUN_OVER_1GB=1
 
 # Every major: test_objstore_sink_write.py's two real-S3 arms need PGC_S3_INTEGRATION_ENDPOINT,
 # which no matrix run sets; the shell records nothing for them there either (#432).

@@ -42,8 +42,10 @@
 #include "access/visibilitymap.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/latch.h"
 #include "storage/procarray.h"
 #include "utils/rel.h"
 
@@ -224,42 +226,38 @@ rowrange_cmp(const void *a, const void *b)
 	return 0;
 }
 
-/*
- * PgColumnarVMSetVisibleForRelation
- *		Lazy vacuum step (gap 28 phase 3): mark all-visible chunk groups in the
- *		VM fork. Computes the all-visible groups (stripe committed past the
- *		oldest-xmin horizon, no committed-or-in-progress deletes), merges
- *		contiguous groups, and sets the VM bit for every synthetic block that
- *		lies *entirely* within a merged all-visible run -- a boundary block
- *		straddling a not-all-visible neighbour is left clear. Runs under whatever
- *		lock the caller holds; the table-AM relation_vacuum path holds only
- *		ShareUpdateExclusiveLock, so this is concurrent with readers and writers,
- *		and clear-on-write removes any bit for a row changed after this runs.
- *
- *		Returns how many ROWS the bits it set cover, which is what the caller
- *		needs to record the result in pg_class (#507). Rows and not blocks on
- *		purpose: these are *synthetic* blocks, rowNumber / K, and relpages counts
- *		stored pages -- on a 20,000,000-row table that is 68,730 against 45,994.
- *		Handing a synthetic block count to a field core divides by relpages
- *		produces an all-visible fraction above 1 from arithmetic alone.
- */
-uint64
-PgColumnarVMSetVisibleForRelation(Relation rel)
+/* a run of synthetic blocks [start, end) */
+typedef struct VMBlockRun
 {
-	uint64		visibleRows = 0;
-	uint64		storageId = PgColumnarStorageId(rel);
-	TransactionId oldestXmin = PgColumnarOldestXmin(rel);
+	BlockNumber start;
+	BlockNumber end;
+} VMBlockRun;
+
+/*
+ * vm_all_visible_runs
+ *		The synthetic blocks that lie *entirely* within a run of all-visible row
+ *		groups, as sorted, disjoint runs. Contiguous groups are merged first, so
+ *		a block that straddles two all-visible groups counts; a boundary block
+ *		that straddles a not-all-visible neighbour does not. Sets *nruns.
+ */
+static VMBlockRun *
+vm_all_visible_runs(uint64 storageId, TransactionId oldestXmin, int *nruns)
+{
 	List	   *groups = PgColumnarComputeAllVisibleGroups(storageId, oldestXmin);
 	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
 	int			n = list_length(groups);
 	PgColumnarRowRange *arr;
+	VMBlockRun *runs;
 	ListCell   *lc;
 	int			i;
+	int			r = 0;
 
+	*nruns = 0;
 	if (n == 0)
-		return 0;
+		return NULL;
 
 	arr = palloc(sizeof(PgColumnarRowRange) * n);
+	runs = palloc(sizeof(VMBlockRun) * n);
 	i = 0;
 	foreach(lc, groups)
 		arr[i++] = *(PgColumnarRowRange *) lfirst(lc);
@@ -288,14 +286,120 @@ PgColumnarVMSetVisibleForRelation(Relation rel)
 		b = (BlockNumber) ((lo + K - 1) / K);
 		bend = (BlockNumber) (hi / K);
 		if (bend > b)
-			visibleRows += (uint64) (bend - b) * K;
-		for (; b < bend; b++)
-			PgColumnarVMSetVisible(rel, b);
+		{
+			runs[r].start = b;
+			runs[r].end = bend;
+			r++;
+		}
 
 		i = m;
 	}
 
 	pfree(arr);
+	*nruns = r;
+	return runs;
+}
+
+/*
+ * PgColumnarVMSetVisibleForRelation
+ *		Lazy vacuum step (gap 28 phase 3): mark all-visible chunk groups in the
+ *		VM fork. Computes the all-visible groups (stripe committed past the
+ *		oldest-xmin horizon, no committed-or-in-progress deletes) and sets the
+ *		VM bit for every synthetic block that lies entirely within a merged
+ *		all-visible run. Runs under whatever lock the caller holds; the table-AM
+ *		relation_vacuum path holds only ShareUpdateExclusiveLock, so this is
+ *		concurrent with readers and writers.
+ *
+ *		Then it computes the groups again and clears every bit it set for a
+ *		block that is no longer all-visible (#2059). A writer clears the bits for
+ *		its rows after it writes their delete_vector row, and that row is what
+ *		the computation sees. A writer that wrote its row before the second
+ *		computation is caught by it; one that wrote it after clears the bit
+ *		itself, after this set it. Without the second pass, a writer whose row
+ *		landed between the first computation and the set lost its clear.
+ *		pgcolumnar.vm_set_hold_ms pauses between the first computation and
+ *		the set, so a test can commit a delete in that window.
+ *
+ *		Returns how many ROWS the surviving bits cover, which is what the caller
+ *		needs to record the result in pg_class (#507). Rows and not blocks on
+ *		purpose: these are *synthetic* blocks, rowNumber / K, and relpages counts
+ *		stored pages -- on a 20,000,000-row table that is 68,730 against 45,994.
+ *		Handing a synthetic block count to a field core divides by relpages
+ *		produces an all-visible fraction above 1 from arithmetic alone.
+ */
+/*
+ * vm_set_hold
+ *		Dev/test pause (#2059): wait pgcolumnar.vm_set_hold_ms, interruptibly,
+ *		between the first computation and the set, so a test can commit a
+ *		delete in that window. Zero (the default) returns at once.
+ */
+static void
+vm_set_hold(void)
+{
+	long		remaining = (long) pgcolumnar_vm_set_hold_ms;
+
+	while (remaining > 0)
+	{
+		long		slice = Min(remaining, 1000L);
+		int			rc;
+
+		rc = WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+					   slice, PG_WAIT_EXTENSION);
+		if (rc & WL_LATCH_SET)
+			ResetLatch(MyLatch);
+		CHECK_FOR_INTERRUPTS();
+		remaining -= slice;
+	}
+}
+
+uint64
+PgColumnarVMSetVisibleForRelation(Relation rel)
+{
+	uint64		visibleRows = 0;
+	uint64		storageId = PgColumnarStorageId(rel);
+	TransactionId oldestXmin = PgColumnarOldestXmin(rel);
+	uint64		K = COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
+	VMBlockRun *runs;
+	VMBlockRun *again;
+	int			n;
+	int			nagain;
+	int			i;
+	int			j = 0;
+
+	runs = vm_all_visible_runs(storageId, oldestXmin, &n);
+	if (n == 0)
+		return 0;
+
+	vm_set_hold();
+
+	for (i = 0; i < n; i++)
+	{
+		BlockNumber b;
+
+		for (b = runs[i].start; b < runs[i].end; b++)
+			PgColumnarVMSetVisible(rel, b);
+	}
+
+	/* both lists are sorted and disjoint, so one forward walk compares them */
+	again = vm_all_visible_runs(storageId, oldestXmin, &nagain);
+	for (i = 0; i < n; i++)
+	{
+		BlockNumber b;
+
+		for (b = runs[i].start; b < runs[i].end; b++)
+		{
+			while (j < nagain && again[j].end <= b)
+				j++;
+			if (j < nagain && again[j].start <= b)
+				visibleRows += K;
+			else
+				PgColumnarVMClearVisible(rel, b);
+		}
+	}
+
+	pfree(runs);
+	if (again != NULL)
+		pfree(again);
 	return visibleRows;
 }
 
