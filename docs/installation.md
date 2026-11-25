@@ -1,7 +1,7 @@
 # Installation
 
 pgColumnar builds with PGXS against an installed PostgreSQL server. The supported
-versions are 15 through 18. The project validates version 19 against 19beta2. Validation
+versions are 15 through 18. The project validates version 19 against 19beta4. Validation
 against the final 19 release is not done yet. PostgreSQL 13 and 14 build, but
 they are not in the tested matrix.
 
@@ -37,8 +37,9 @@ make PG_CONFIG=/path/to/pg_config
 make install PG_CONFIG=/path/to/pg_config
 ```
 
-`make install` copies `pgcolumnar.so`, the control file, and the SQL script. It
-puts them in the library directory and the extension directory of the server.
+`make install` copies `pgcolumnar.so`, the object-store module
+`pgcolumnar_objstore.so`, the control file, and the SQL script. It puts them in
+the library directory and the extension directory of the server.
 
 ### Servers built from source
 
@@ -116,6 +117,10 @@ To install a new build of the extension:
 Step 3 is not optional, and it is easy to miss because nothing prompts for it.
 The first two steps replace the shared library. The third updates the catalog to
 match it.
+
+Install `pgcolumnar.so` and `pgcolumnar_objstore.so` from the same build. A
+mismatched object-store module is ignored with the warning `columnar: ignoring
+object-store module with ABI version N`. Remote reads and writes then fail.
 
 ```sql
 -- in each database that ran CREATE EXTENSION pgcolumnar
@@ -196,14 +201,21 @@ table that a newer build has written to is refused by an older build. See
 
 ## Remove
 
-First drop the extension from a database. Then remove the files, but only if no
-database uses the extension:
+Remove the extension in this order:
+
+1. Drop each columnar table, or convert it to heap with
+   `ALTER TABLE ... SET ACCESS METHOD heap`. `DROP EXTENSION` fails while a
+   columnar table exists.
+2. Run `DROP EXTENSION pgcolumnar;` in each database that has the extension.
+3. If `pgcolumnar` is in `shared_preload_libraries`, remove it and start the
+   server again.
+4. Delete the installed files, but only when no database uses the extension.
 
 ```sql
-DROP EXTENSION pgcolumnar;   -- fails if columnar tables still exist; drop them first
+-- in each database, after its columnar tables are dropped or converted
+DROP EXTENSION pgcolumnar;
 ```
 
-To unload the library, remove `pgcolumnar` from `shared_preload_libraries` and
-start the server again. Do this only after you drop all columnar tables. A read
-of a columnar table needs the access method, and the access method is not
-available when the library is not loaded.
+A read of a columnar table needs the access method. The access method is not
+available when the library is not loaded. So do not unload the library while a
+columnar table exists.

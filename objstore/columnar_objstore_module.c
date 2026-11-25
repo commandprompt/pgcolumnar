@@ -1326,6 +1326,32 @@ os_read_line(PgColumnarObjHandle *h, char *buf, size_t cap)
 }
 
 /*
+ * Parse a chunk-size line (RFC 9112 section 7.1): hex digits, then an optional
+ * chunk extension, which is ignored. The line must start with a hex digit:
+ * strtoull would otherwise skip blanks and negate a leading minus sign. A size
+ * that does not fit int64 is refused here; each caller still bounds the size
+ * by the room it has left, by subtraction, because a sum can wrap.
+ */
+static int64
+os_chunk_size(PgColumnarObjHandle *h, const char *line)
+{
+	unsigned long long sz;
+	char	   *end;
+
+	errno = 0;
+	if (line[0] == '\0' || strchr("0123456789abcdefABCDEF", line[0]) == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("columnar: bad chunk size from \"%s\"", h->url)));
+	sz = strtoull(line, &end, 16);
+	if (end == line || errno == ERANGE || sz > (unsigned long long) PG_INT64_MAX)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("columnar: bad chunk size from \"%s\"", h->url)));
+	return (int64) sz;
+}
+
+/*
  * Consume a response body. dst != NULL requires the body to be exactly `want`
  * bytes; dst == NULL discards a body of any length (error pages, HEAD has
  * none and must not call this).
@@ -1344,11 +1370,7 @@ os_read_body(PgColumnarObjHandle *h, const OsResponse *resp,
 			int64		sz;
 
 			os_read_line(h, line, sizeof(line));
-			sz = strtoll(line, NULL, 16);
-			if (sz < 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("columnar: bad chunk size from \"%s\"", h->url)));
+			sz = os_chunk_size(h, line);
 			if (sz == 0)
 			{
 				/* trailers until the empty line */
@@ -1358,7 +1380,8 @@ os_read_body(PgColumnarObjHandle *h, const OsResponse *resp,
 				} while (line[0] != '\0');
 				break;
 			}
-			if (dst != NULL && total + sz > want)
+			/* total <= want here, so want - total cannot overflow (a sum could) */
+			if (dst != NULL && sz > want - total)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("columnar: \"%s\" sent more bytes than requested",
@@ -3543,11 +3566,7 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 			int64		sz;
 
 			os_read_line(h, line, sizeof(line));
-			sz = strtoll(line, NULL, 16);
-			if (sz < 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("columnar: bad chunk size from \"%s\"", h->url)));
+			sz = os_chunk_size(h, line);
 			if (sz == 0)
 			{
 				do
@@ -3556,7 +3575,8 @@ os_slurp_body(PgColumnarObjHandle *h, const OsResponse *resp, int64 cap,
 				} while (line[0] != '\0');
 				break;
 			}
-			if ((int64) s.len + sz > cap)
+			/* s.len <= cap here, so cap - s.len cannot overflow (a sum could) */
+			if (sz > cap - (int64) s.len)
 				ereport(ERROR,
 						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 						 errmsg("columnar: response from \"%s\" exceeded %lld bytes",

@@ -401,6 +401,14 @@ behaviour, the source of that number is named.
 - [353. test_objstore_error_advice.py: an object-store refusal's hint names what to fix, and a refused export keeps its status](#353-test_objstore_error_advicepy-an-object-store-refusals-hint-names-what-to-fix-and-a-refused-export-keeps-its-status)
 - [354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine](#354-test_harness_isolationpy-a-run-is-not-disturbed-by-other-sessions-on-a-shared-machine)
 - [355. test_native_scale.py: compaction, recluster and reclaim hold at half a million rows](#355-test_native_scalepy-compaction-recluster-and-reclaim-hold-at-half-a-million-rows)
+- [356. test_extension_upgrade.py: an old install keeps working under this library](#356-test_extension_upgradepy-an-old-install-keeps-working-under-this-library)
+- [357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs](#357-test_pytest_runs_where_the_suites_runpy-the-pytest-cluster-job-runs-every-leg-the-suites-job-runs)
+- [358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides](#358-test_sanitizer_gatepy-the-pytest-sanitizer-gate-decides-what-run_sansh-decides)
+- [359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals](#359-test_coverage_reportpy-the-coverage-report-over-the-pytest-corpus-keeps-run_coverageshs-refusals)
+- [360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading](#360-test_docs_links_resolvepy-every-internal-link-in-the-documentation-reaches-a-heading)
+- [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
+- [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
+- [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
 
 ## 1. How to read a test in here
 
@@ -3353,6 +3361,25 @@ that heap's answer holds the keys.
 
 The shell's fact-qual arms on the default path, late materialization on: a conjunction that also names a non-key column (`k > 100 AND n % 3 <> 0`) must still return heap's rows under the runtime filter coordinator. A premise first shows the qual removes matching rows on heap (100 of 150), so an answer that ignored it would not equal heap's. The late-mat-off test above covers the same shape with late materialization off. Added when this file was renamed to pair with `native_join_runtime_filter.sh` and aligned to the shell's names (#1341).
 
+### `test_a_rescan_rebuilds_the_hash_table_from_the_new_build`
+
+A correlated scalar subquery reruns the coordinator for three growing outer values
+(#2062). Each run must join against its own build rows. The coordinator did not pass
+the changed parameter to its Hash Join, so the join kept the first hash table and
+every later run gave the first run's count. Two arms: a plain subquery, and a
+DISTINCT whose HashAggregate under the Build Tap keeps its own table unless the tap
+passes the parameter down. Premises check the coordinator and that heap's counts
+grow, so a stale table cannot match heap.
+
+### `test_the_issue_shapes_equal_heap_with_and_without_hash_joins_forced`
+
+The LATERAL and scalar-subquery shapes from #2062, each under default planner
+settings and with nested-loop and merge joins off, must give heap's answer. With
+default settings the planner picks Nested Loop -> Aggregate -> Coordinator by
+itself, which is the issue's main repro. An uncorrelated control has a constant
+build, so every row gives the same count. Premises check the coordinator and
+heap's counts in every arm.
+
 
 ## 26. test_check_records.py: every counted assertion is a record
 
@@ -4465,11 +4492,14 @@ the tool grades THIS tree.
 | `test_the_refusal_names_exactly_the_suites_it_refuses` | the refused SET is pinned by name, not counted; both directions, so an entry cannot outlive its cause |
 | `test_a_bare_interpolation_is_not_published_as_a_name` | a forwarding wrapper's `{}` is dropped: it names nothing and can match a wholly-interpolated port name |
 | `test_the_grader_itself_refuses_the_suite_it_cannot_read` | `main` exits 2 and prints no verdict, with a readable suite as the control |
+| `test_a_suite_with_no_readable_name_is_refused_not_covered` | a suite the extractor reads no check name from is refused with exit 2 and never called covered, with the same suite plus one recorder call as the control (#2032). `extension_upgrade.sh` recorded through its own `echo`, and the grader reported `missing: 0` for it against any port |
 | `test_a_helper_reaching_only_the_primitive_is_found` | the closure is seeded from `pgc_record`, not the `check` family; four suites turn on it |
 | `test_a_longer_helper_name_is_not_shadowed_by_a_shorter_one` | `check_ratio` must not eat `check_ratio_needs_quiet_machine` |
 | `test_the_suite_local_helpers_are_known_and_excluded` | no suite defines its own check_ helper, which the grader would not read |
 | `test_every_pair_in_the_tree_is_declared` | the declaration is asserted BOTH ways, so a new pair cannot be silently ungraded |
 | `test_every_registered_suite_is_ported_or_declared_unported` | every registered suite with no twin is listed in `unported_suites.txt` or declared in `SHELL_HARNESS`, a ported one leaves it, and no listed stem is phantom (#1341); the parity goal (#432) is that file empty |
+| `test_every_shell_file_is_a_suite_a_paired_gate_or_declared` | every `test/*.sh` outside `SUITES` has a pytest twin or is declared in `NON_SUITE` (runners, libraries, `capability_sweep`), and a declared stem is not registered, has no twin, exists, and says why (#2032). The registered-suite arm could not see a standalone gate, so `extension_upgrade.sh` had no twin and nothing said so |
+| `test_the_non_suite_check_reddens_each_way` | the five directions of that sweep, each driven on fixtures with a clean control, so the sweep cannot pass by reading nothing |
 | `test_a_shell_harness_suite_is_declared_both_ways` | a `SHELL_HARNESS` stem (a suite that tests the shell harness itself, today `harness_selftest`) has no twin, is a registered suite, is not also listed unported, and says why: held both ways, so the declaration cannot become a one-way exemption (#1341) |
 | `test_the_ported_suites_in_this_tree_are_graded_one_for_one` | the standing arm: every pair in the tree, graded |
 
@@ -4708,7 +4738,7 @@ psql as the same user.
 | `test_a_type_change_rewrite_drops_the_mark` | a rewriting ALTER TYPE changes the values, so the old mark cannot survive it |
 | `test_one_updated_row_is_a_row_outside_the_run` | a single UPDATE appends, and one row outside the run is enough |
 | `test_the_mark_follows_a_rename` | #778: the mark is stored by name, so a RENAME COLUMN must carry it |
-| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through |
+| `test_a_recorded_name_that_no_longer_resolves_is_not_a_claim` | a name that resolves to nothing must retract rather than fall through; since #2069 the drop clears the mark, so the test writes back the mark an older build left |
 | `test_the_guc_turns_the_claim_off` | the GUC is a real off switch, checked with the Sort back |
 | `test_a_ctas_relation_claims_nothing` | CTAS writes rows in whatever order the query produced; nothing records an order |
 | `test_a_collatable_sort_column_is_not_claimed` | text order is collation-dependent, so a run sorted under one collation is not sorted under another |
@@ -6163,6 +6193,8 @@ every major for this pair, which is the designed third state and not a failure.
 | `test_merge_numeric_scales_across_runs` | runs of different numeric scales give core's scale for sum, and avg's scale comes from the merged total |
 | `test_merge_avg_int4_beside_numeric` | a query mixing avg over int4 with sum, min and max over numeric goes through the merge whole and answers as core does |
 | `test_merge_exact_float_sums` | float sums of exactly representable values merge to core's; non-dyadic sums could differ in the last bits, as core's parallel plans can |
+| `test_hand_off_avg_float_of_a_lone_infinity_run` | `avg` over float8 and real when a key's early runs each hold one Infinity and its later runs finite values: the cached plan is a Partial grouped node under a core Finalize, and past a cap of 1,000 it answers Infinity as heap does, where a run state of {1, Infinity, 0} made the combine raise `value out of range: overflow` (#2068) |
+| `test_merge_avg_float_of_a_lone_infinity_run` | the same rows beside `sum(bigint)`, so the serial node merges its own runs: it answers Infinity as heap does rather than raising overflow (#2068) |
 | `test_merge_a_key_equal_but_not_identical` | numeric keys 3 and 3.00 are one group, shown as core shows the first one seen, because runs merge in flush order |
 | `test_merge_a_key_with_no_btree_ordering_gets_no_serial_node` | an xid key, which hashes but does not order, gets no serial grouped node, so a release build never reaches a merge it cannot sort |
 | `test_a_null_key_counts_as_a_group_in_the_bucket_bound` | three minute buckets fill the bucket bound and NULL rows add a fourth group; under a cap of 3 the path is declined and all four groups answer, where a bound without the NULL group errors (#1330 review) |
@@ -6953,7 +6985,7 @@ Port of `format_downgrade.sh` (#1137). 1.0-alpha5 stops writing a validity bitma
 
 THE CLAIM IS ABOUT TWO BINARIES, so this test uses both, and it runs only when it is alone: see the second test below. It builds `v1.0-alpha4` from the tag, which it fetches when the checkout is shallow, as CI's is. It writes two tables with the old build, upgrades to this tree, reads one, appends to the other and creates a third. Then it puts the old library back under the upgraded catalog, which is what a package rollback does. `native_format.sh`'s arms stand in for alpha4 with a catalog `UPDATE`; this one does not.
 
-ON A CLUSTER OF ITS OWN, AND THE PREFIX IS PUT BACK EXACTLY. The session cluster shares the install prefix. So before anything is installed, every `pgcolumnar*` file in the library and extension directories is saved, bytes and mtime, and restored in a `finally` by atomic rename. Anything the old install added is removed. The mtime matters because the harness compares the library's mtime with the postmaster's start. Nothing is written into a library in place, because a copy over a library a running postmaster has mapped corrupts it. Measured: the prefix's library afterwards is byte-identical to the one this tree built.
+ON A CLUSTER OF ITS OWN, AND THE PREFIX IS PUT BACK EXACTLY. The session cluster shares the install prefix. So before anything is installed, every `pgcolumnar*` file in the library, bitcode and extension directories, a `pgcolumnar*` directory whole, is saved (`pgc_cluster.snapshot_prefix`, which `test_extension_upgrade.py` holds on an LLVM layout), bytes and mtime, and restored in a `finally` by atomic rename. Anything the old install added is removed. The mtime matters because the harness compares the library's mtime with the postmaster's start. Nothing is written into a library in place, because a copy over a library a running postmaster has mapped corrupts it. Measured: the prefix's library afterwards is byte-identical to the one this tree built.
 
 Refusal is asserted by SQLSTATE `0A000`, on a scan and on an index fetch with the custom scan off. The index fetch is the path that returned the silent NULLs.
 
@@ -7088,6 +7120,8 @@ CURSORS. PostgreSQL counts a TID range scan as able to scan backward, so it puts
 
 Also held: rows inserted earlier in the same transaction are in the range; a rescan with new bounds per outer row (the plan premise is taken on the very query compared, because a draft whose lateral output went unreferenced planned no scan at all); deletes inside the range; and compaction, which gives a thinned group's surviving rows new, higher row numbers. On PostgreSQL 19, a parallel TID range scan with two workers is held too. Below 19 that test is `UNSUPPORTED_MAJOR` and listed in `expected_unrunnable.txt`.
 
+A SINGLE CTID NO ROW HAS (#2058). A TID scan asks the access method whether each ctid it was given is valid, and the access method said yes to all of them. On `'(0,0)'` the fetch then failed an assertion, which on an assert build ends every session. On an offset past 291 it read a row of a later block: `'(0,295)'` was the row at `(1,4)`, and an UPDATE or DELETE on that ctid changed or removed it. The oracle is the same table copied into heap. Each statement runs in a transaction that is rolled back, so a row one statement wrongly reached is still there for the next. Two arms keep a fix honest that refuses every ctid: `(0,291)` must still return its row, and `(1,4)` and `(0,5)` theirs beside `(0,295)`. The check names use the shell twin's names as templates, with this test's own ctids: the loop runs `(0,0)`, `(2,0)`, `(0,295)` and `(2,600)`, where the shell twin runs `(0,292)`, `(1,400)`, `(0,0)` and `(1,0)`. So only the four `(0,0)` names, the two premises and the two fixed-ctid arms match a shell name exactly. Red on PostgreSQL 18 on main d52f6e8c: the array of three returned `4,294,294`.
+
 On a private database, because `pg_stat_reset()` resets the whole database's counters.
 
 Removal proofs, each red on PostgreSQL 19 on the arm named:
@@ -7108,6 +7142,7 @@ THE MATERIAL'S NODE ID. `set_plan_references` numbers the main tree and then the
 | --- | --- |
 | `test_a_ctid_range_reads_only_its_row_groups` | the table has its rows and many groups; a ctid range plans a TID range scan; eleven ranges, including offsets 0, 291, 500 and 65535, return what the per-row filter returns; a rescanned scan does too; a SCROLL cursor and a plain cursor fetch backward correctly, and so does a SCROLL cursor whose query has a subplan; rows inserted earlier in the transaction are in the range; the tail range reads at least one block and under a fifth of the table; deleted rows stay deleted; after compaction moves rows, ranges over the old and new addresses return what the filter returns |
 | `test_a_parallel_tid_range_scan_returns_what_the_filter_returns` | PostgreSQL 19+: the range runs as a parallel TID range scan with two workers launched, and returns what the filter returns. Below 19, `UNSUPPORTED_MAJOR` |
+| `test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row` | the row after offset 291 sits at `(1,1)`; `(0,291)` returns its row, and `(1,4)` and `(0,5)` return theirs while `(0,295)` beside them adds none; for `(0,0)`, `(2,0)`, `(0,295)` and `(2,600)`, a SELECT, an `= ANY` array, an UPDATE and a DELETE reach the rows heap reaches (none) and leave the rows heap leaves (#2058) |
 
 ## 93. test_partition_lifecycle.py: partition_create_ahead keeps a time-partitioned parent ahead of now
 
@@ -7401,7 +7436,7 @@ The pytest twin of `test/fdw_plan_privilege.sh`. A planner estimate is visible t
 
 ## 108. test_arrow_import.py: import_arrow round trips, reads a foreign file, and refuses what it cannot decode
 
-The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886), and so are `s3a://` and `s3n://` URLs in any case (#1918). A nested Arrow type whose shape the target cannot hold is refused 42804, naming the column, before any buffer is bounds-checked (#1932): a list of lists, a list of structs, a list of maps, a large list and a plain int64 into `bigint[]`, and a large list into `bigint`. Before, the first four were refused as malformed (XX001) and the large list imported wrong arrays. The controls are a `list<int64>` into `bigint[]` and a map into an array of a composite, which still import, and a `list<int64>` whose last offset runs past its value buffer, which is still XX001. The ten pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
+The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the shell's name. A 16-column table survives export and import exactly (a set hash on both sides), non-finite dates and NaN numerics arrive as null, and a non-columnar target and a column-count mismatch are refused by SQLSTATE. A pyarrow-written file imports with its values, in the IPC stream format, the IPC file format (also without the optional end-of-stream marker before its footer) and Feather v2 (#1806); lengths larger than the file are refused before they are allocated, and a footer length that is negative or larger than the file is refused, not read as an empty file; nanosecond values are floored to the microsecond and the loss is reported once, counted in VALUES (two columns, so values and rows differ), never refused; a dictionary batch and a compressed body are refused by SQLSTATE and message; every Arrow date, time and timestamp carrier and unit decodes to the instant it holds or is refused 22008, a file whose declared type does not match its column is refused 42804, and nested units are honoured. An import maintains plain, unique (23505 on a second import) and partial indexes, and a FIFO is refused rather than hung. An import into a table with a projection keeps the server up and fills the projection, with and without set_options (#2092); before, the projection flush at the end of the statement read a catalog with no registered snapshot and an assert build aborted. An object-storage URL is refused 0A000, naming the function and the URL, after the INSERT check and before the target's kind is checked (#1886), and so are `s3a://` and `s3n://` URLs in any case (#1918). A nested Arrow type whose shape the target cannot hold is refused 42804, naming the column, before any buffer is bounds-checked (#1932): a list of lists, a list of structs, a list of maps, a large list and a plain int64 into `bigint[]`, and a large list into `bigint`. Before, the first four were refused as malformed (XX001) and the large list imported wrong arrays. The controls are a `list<int64>` into `bigint[]` and a map into an array of a composite, which still import, and a `list<int64>` whose last offset runs past its value buffer, which is still XX001. A binary or string column in a layout the decoders do not read is refused 42804, naming the column and the Arrow type (#2097): a large binary into `bytea`, a large string into `text` or inside a list into `text[]`, and a string view and a binary view. Before, a one-row large binary imported as an empty `bytea`, a large string imported wrong strings, and the views were refused as malformed (XX001). The control is a plain binary and a plain string file, which still import with their values. The thirteen pyarrow tests decline by name without pyarrow, and fail where `PGC_REQUIRE` names it.
 
 ### Every test
 
@@ -7410,7 +7445,7 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_round_trip_and_the_documented_lossy_mapping` | export and import counts, the identical round trip, the non-finite mapping, the two argument refusals, and (#1806) `export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)`, `a metadata length larger than the file is refused before it is allocated (#1806)`, `a body length larger than the rest of the file is refused before it is allocated (#1806)` and `an Arrow IPC file whose footer length is negative or larger than the file is refused as malformed (#1806)` |
 | `test_a_file_pyarrow_wrote` | a foreign file's row count and values, and (#1806) `an Arrow IPC file (ARROW1 magic) imports its rows (#1806)`, `an Arrow IPC file without its trailing magic is refused as malformed (#1806)`, `an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)` and `a Feather v2 file imports its rows too (#1806)` |
 | `test_nanosecond_narrowing_is_reported_never_refused` | every row kept, the loss counted in values (8, then 12 through time64 and a list), no report on the two controls, and the floor |
-| `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, an empty target after a refusal, and nested units |
+| `test_the_refusals_and_every_temporal_carrier` | the dictionary and compressed refusals, every carrier and unit, the 22008 guards, the 42804 type matches with their controls, the Decimal bit width (#2081), an empty target after a refusal, and nested units |
 | `test_an_import_maintains_the_tables_indexes` | the plan really uses the index, index and sequential scans agree, the unique violation and its row count, and the partial index |
 | `test_a_fifo_is_refused_not_a_hang` | XX001 within the wall clock, and the backend still up |
 | `test_a_remote_url_is_refused_up_front` | (#1886) `import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)`, the same for `http://`, then `https://`, `gs://`, `az://` and `S3://` in one check, each by SQLSTATE, message and hint; a heap target gets the refusal too, because it comes before the target's kind is checked; and the control: a local path that holds `s3://` past its start still imports its 300 rows |
@@ -7423,6 +7458,11 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_plain_int64_is_refused_by_type_for_an_array_column` | (#1932) `import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)` |
 | `test_a_list_or_map_the_target_can_hold_still_imports` | (#1932) the controls: `control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)` and `control: a map file still imports into an array of a composite (#1932)` |
 | `test_a_list_whose_offset_runs_past_its_values_is_still_malformed` | (#1932) `a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)`, led by the count of places the offsets were patched |
+| `test_an_arrow_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: a neighbour table gets an options row first, so the case without set_options can fail too; then four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
+| `test_a_large_binary_is_refused_by_type` | (#2097) `import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)`, a one-row and a three-row file; unpatched, the one-row file imported 1 row and the three-row file was XX001 |
+| `test_a_large_string_is_refused_by_type_at_any_depth` | (#2097) `import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)`; unpatched, both imported 2 rows |
+| `test_a_string_or_binary_view_is_refused_by_type_not_as_malformed` | (#2097) `import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)`; unpatched, both were XX001 |
+| `test_a_binary_or_string_file_still_imports_with_its_values` | (#2097) the control: `control: a binary and a string file still import into bytea and text, with their values (#2097)` |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 
@@ -7447,6 +7487,9 @@ THE WITHDRAWAL IS REACHED ONLY BY A RACE. When one session holds a key uncommitt
 | `test_insert_on_conflict` | `DO NOTHING` skips a duplicate and inserts the rest, with and without a conflict target; a key twice in one statement goes in once; `DO UPDATE` is refused (`0A000`) on a conflicting row and changes nothing, and inserts when nothing conflicts |
 | `test_insert_on_conflict_withdraws_a_row_a_concurrent_insert_beat` | a `DO NOTHING` racing another session's uncommitted insert of the same key waits, then skips it: one row, the holder's, by scan and by the unique index |
 | `test_insert_on_conflict_racing_sessions_leave_each_key_once` | eight sessions racing `DO NOTHING` on the same keys leave each key once, with no error; a premise requires that they contended |
+| `test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see` | at REPEATABLE READ and SERIALIZABLE, a `DO NOTHING` whose conflicting row was committed by another session after the snapshot was taken raises `40001`, as heap does (a premise checks heap); at READ COMMITTED it still skips the row and commits; through a partitioned parent onto a pgcolumnar partition it raises `40001` too. Before #2060's fix pgcolumnar skipped the row and committed at every level |
+| `test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip` | at REPEATABLE READ, `DO NOTHING` does not raise `40001` for a row the snapshot sees, for a key the transaction inserted in an earlier statement, for a key twice in one statement, or for a key its own statement wrote to a stripe it already flushed (#2060) |
+| `test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation` | known limitation (#2060): at REPEATABLE READ, a `DO NOTHING` conflict with a row that a concurrent `compact_rewrite` or `recluster` moved raises `40001`, because the moved copy has a new row number the snapshot cannot see; heap with a concurrent `VACUUM` commits (control). A fix that links a moved row to its source turns the two pgcolumnar checks red, and `docs/limitations.md` changes with them |
 | `test_a_truncate_that_rolls_back_restores_every_row` | a `TRUNCATE` rolled back at transaction level, and one rolled back to a savepoint, restore every row, with the primary key still answering and refusing; rows the parent buffered before the savepoint survive too |
 | `test_an_aborted_inner_block_keeps_the_outer_statements_rows` | an outer `INSERT` and an outer `DELETE` whose expression calls a function with an aborted EXCEPTION block keep heap's answer. Before #1341's fix the INSERT kept 1 row of 5000. The same loss through a read inside the block is #1360 |
 | `test_a_read_inside_an_aborted_inner_block_keeps_the_outer_statements_rows` | a read of the table inside an EXCEPTION block writes out the enclosing INSERT's or DELETE's buffered rows and marks, and keeps them until the block resolves (#1360). On abort the rows, the read's own count and the index's view all match heap; so do a read in a nested block that commits into an aborted one, and a block that deletes a row by index before its read. A block that commits keeps every outer row once. The cost is linear: at twice the rows, the file is under 2.5 times the size; and one read early in a 5000-row insert leaves at most 3 row groups |
@@ -7520,14 +7563,17 @@ The pytest twin of `test/settings_reference.sh` (#1341 items 42, 57 and 83), eve
 
 ## 117. test_large_values.py: megabyte-scale values are stored exactly
 
-The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. A chunk over 1 GB is refused with 54000, commits nothing, and leaves the server up; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
+The pytest twin of `test/large_values.sh` (#1341, #432), every check by the shell's name. A columnar table has no TOAST table: the writer detoasts each value and stores it inline. A 1 MB value, two 16 MB incompressible values and a 200 MB compressible one go into heap and are copied to a columnar table; then an UPDATE takes a value heap has TOASTed. Each must agree with heap by length and md5. Rows whose column passes 1 GB in one row group, or in one chunk group, load and are stored exactly (#2071), also when they are copied from heap, which stores them compressed: before the fix the writer built one buffer past 1 GB and the INSERT failed. The 8 KB rows must make row groups just under 256 MiB. An opt-in arm loads about 1.1 GB of incompressible text with compression off; that arm needs several GB of memory, so it is opt-in as the shell's is: it runs with `PGC_RUN_OVER_1GB=1` and otherwise declines as `UNMET_PRECONDITION`, which `expected_unrunnable.txt` lists for every major.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_megabyte_values_are_stored_exactly` | the four values and the TOASTed update against heap, and the rows the update left alone |
-| `test_a_chunk_over_1gb_is_refused` | opt-in: about 1.1 GB of incompressible text in one chunk group is refused with 54000, nothing committed, the server up, each read on a fresh connection |
+| `test_rows_past_1gb_per_row_group_load` | under the default row limits, 150000 rows of 8 KB load, with the right count, id sum, total length and every value intact, in 5 row groups of 15984 to 33504 rows, which pins the 256 MiB cap and its reset after each flush (#2071) |
+| `test_rows_past_1gb_per_chunk_group_load` | under the default row limits, 10000 rows of 120 KB load, with the right count, id sum, total length and every value intact (#2071) |
+| `test_compressed_heap_rows_past_1gb_load` | 150000 rows of 8 KB that heap stores compressed, under 20 MB in all, copy to a columnar table with the right count, id sum, total length and every value intact, so the cap counts each value at its raw size (#2071) |
+| `test_incompressible_text_past_1gb_loads` | opt-in: about 1.1 GB of incompressible text in one chunk group's rows, compression off, commits all 1100 rows at full length with the server up, each read on a fresh connection |
 
 ## 118. test_recovery_minimal_wal.py: tables that skip WAL survive a crash
 
@@ -7875,7 +7921,7 @@ The pytest twin of `test/inheritance.sh`, every check by the shell's name (#432;
 
 ## 140. test_parquet_import.py: import_parquet round-trips both page versions and keeps the indexes
 
-The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#432; the #1263 arms were ported for #1341). pyarrow writes the files from data this module generates, and the same data is loaded into a heap table by COPY FROM STDIN as the oracle: nine types with nulls in five, a snappy dictionary file per data-page version, and an uncompressed PLAIN one. A file that is not Parquet and a target with a column the file lacks are refused, each by its SQLSTATE and message; the shell read "psql failed", which passed on a crash. Imported rows must reach the indexes (#153): an index scan, asserted to be one, agrees with a sequential scan, a unique index refuses a second import and leaves the count alone, and a partial index holds its rows. The fixture is built once per module in a private database and each check is its own test. Without pyarrow every test but the last declines. Handed a partitioned parent, import_parquet used to SIGSEGV; it must be refused with 42809 and no backend may crash, read from the server log. That test declines on PostgreSQL 15 and 16.
+The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#432; the #1263 arms were ported for #1341). pyarrow writes the files from data this module generates, and the same data is loaded into a heap table by COPY FROM STDIN as the oracle: nine types with nulls in five, a snappy dictionary file per data-page version, and an uncompressed PLAIN one. A file that is not Parquet and a target with a column the file lacks are refused, each by its SQLSTATE and message; the shell read "psql failed", which passed on a crash. Imported rows must reach the indexes (#153): an index scan, asserted to be one, agrees with a sequential scan, a unique index refuses a second import and leaves the count alone, and a partial index holds its rows. The fixture is built once per module in a private database and each check is its own test. Without pyarrow every test but the last two declines. Handed a partitioned parent, import_parquet used to SIGSEGV; it must be refused with 42809 and no backend may crash, read from the server log. That test declines on PostgreSQL 15 and 16. An import into a table with a projection must keep the server up and fill the projection, with and without set_options (#2092).
 
 ### Every test
 
@@ -7900,6 +7946,7 @@ The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#4
 | `test_the_refused_import_left_the_row_count_alone` | the failed second import left the row count alone |
 | `test_a_partial_index_covers_its_rows` | partial index covers its rows after import |
 | `test_a_partitioned_parent_is_refused` | the file exists, a leaf and a heap target import 50 rows each, and the parent is refused with 42809 and no crash |
+| `test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: a neighbour table gets an options row first, so the case without set_options can fail too; then four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
 
 ## 141. test_phase5.py: the custom scan, pushdown, projection, options and vacuum
 
@@ -7995,7 +8042,7 @@ The pytest twin of `test/fk_referencing.sh` (ported for #1341), every check by t
 | test | what it holds |
 | --- | --- |
 | `test_the_referenced_side_is_refused_at_ddl` | CREATE TABLE and ALTER TABLE ADD CONSTRAINT referencing a columnar table are refused, saying why, and nothing is left behind |
-| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one |
+| `test_the_referencing_side_still_works` | a columnar table referencing a heap table is created, accepts satisfying rows and rejects a violating one; a deferred foreign key does not check a referencing row deleted before commit, as heap (#2060 review: before the fix this commit failed with 23503) |
 | `test_constraints_that_need_no_row_lock_are_unaffected` | primary key, unique, check and not-null on a columnar table, and a heap-to-heap foreign key, are unaffected |
 | `test_converting_a_referenced_table_is_refused_and_nothing_else_is` | SET ACCESS METHOD pgcolumnar on a referenced table and the helper are refused, the table stays heap and its child writable; an unreferenced table, the referencing side, an unrelated ALTER, a conversion back to heap and the referenced table to a row store all still work |
 | `test_a_partitioned_referenced_parent` | a columnar partition and setting the parent's access method are refused, the parent does not become columnar, an ordinary partition still works; an unreferenced partitioned table converts from PG17, and before 17 core refuses it |
@@ -8153,13 +8200,15 @@ The alternative must reclaim, not only return. With `vacuum()` returning before 
 
 ## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
 
-The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell.
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. So must a join clause under another collation than the fact column's, or with another equality operator than the type's default, because the fold compares with the column's own equality and collation (#2066). Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell; the rescan test also reads each plan under default join settings.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join, an extra join filter and a join clause with a non-default equality operator (`##=` on absolute values) each refuse it and answer as heap does |
+| `test_a_join_clause_under_another_collation_refuses_the_fold` | a text key under one collation, plain or case-insensitive on both sides, keeps the fold and answers as heap does; a case-insensitive join clause over a plain column, and a byte join clause over a case-insensitive column, each refuse it and answer as heap does (#2066). Declines with MISSING_DEPENDENCY on a server without ICU |
+| `test_a_fold_rescan_drains_the_new_dimension_keys` | a correlated scalar subquery, a LATERAL join and a DISTINCT dimension each rerun the fold for three growing outer values, under default join settings and with hash joins forced, and each run answers as heap does. Before the fix the second rescan crashed the backend: the fold ran the dimension plan in its key context and freed the scan's state when it reset that context. The DISTINCT arm also needs the fold to pass the changed parameter to its dimension plan, or the HashAggregate returns its first rows (#2128, the sibling of #2062) |
 
 ## 158. test_native_writer.py: the native writer by its catalog rows
 
@@ -9193,7 +9242,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child. The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review). On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9240,6 +9289,28 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_the_declared_key_follows_the_rename` | the DECLARED key follows the rename too |
 | `test_the_two_catalogs_still_agree` | so the two catalogs still agree after the rename |
 | `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
+| `test_vd_t_loaded_every_row` | premise: vd_t loaded every row |
+| `test_before_the_drop_the_mark_records_a` | premise: before the drop, the mark records key {a} |
+| `test_dropping_the_sort_key_column_clears_the_mark` | DROP COLUMN of the sort-key column clears the mark |
+| `test_the_column_that_took_the_name_is_not_ordered` | premise: the column that took the name a is NOT ordered |
+| `test_after_a_drop_and_rename_order_by_plans_a_sort` | after the drop and a rename onto the name, ORDER BY plans a Sort |
+| `test_after_a_drop_and_rename_order_by_limit_is_right` | THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values |
+| `test_vacuum_sorted_after_a_drop_does_the_work` | and vacuum_sorted on the new a does the work |
+| `test_vd_t_is_ordered_by_a_afterwards` | and vd_t really is ordered by a afterwards |
+| `test_an_unrelated_drop_keeps_the_mark` | dropping an unrelated column keeps the mark |
+| `test_the_gate_still_fires_after_an_unrelated_drop` | and the gate still fires after an unrelated drop |
+| `test_the_partitions_mark_records_k` | premise: the partition's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_partitions_mark` | the PARTITION's mark is cleared by a drop issued on the parent |
+| `test_vd_z_mark_records_a_zorder_run` | premise: vd_z's mark records {a,b} as zorder |
+| `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
+| `test_the_inheritance_childs_mark_records_k` | premise: the inheritance child's mark records key {k} |
+| `test_a_drop_on_the_parent_clears_the_inheritance_childs_mark` | the inheritance CHILD's mark is cleared by a drop issued on the parent |
+| `test_the_extension_is_absent_in_the_second_database` | premise: the extension is absent in the second database |
+| `test_the_library_is_loaded_in_the_second_database` | premise: and the library is loaded there, so its drop hook runs |
+| `test_an_empty_heap_tables_column_drops` | a column of an EMPTY heap table drops, in this database |
+| `test_a_populated_heap_tables_column_drops` | a column of a POPULATED heap table drops, in this database |
+| `test_an_empty_heap_tables_column_drops_without_the_extension` | a column of an EMPTY heap table drops, in a database without the extension |
+| `test_a_populated_heap_tables_column_drops_without_the_extension` | a column of a POPULATED heap table drops, in a database without the extension |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |
@@ -9805,11 +9876,11 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 228. test_index_only.py: index-only scans on a columnar table, served from the visibility map
 
-The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan.
+The twin of `test/index_only.sh` (gap 28). VM bits written for synthetic blocks round-trip; lazy VACUUM marks all-visible groups and a delete clears its block; the GUC gates the index-only plan; all-visible blocks are served with zero heap fetches and a deleted range falls back; and an old REPEATABLE READ snapshot never sees post-snapshot rows through an index-only scan. A VACUUM that runs while a DELETE or UPDATE is paused inside its statement does not leave the changed block all-visible after the writer commits (#2059). Nor does a VACUUM that a DELETE commits inside, between its computation of the all-visible blocks and its set.
 
 ### Every test
 
-Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open.
+Every test reads one value from a module fixture that builds a private database in the shell's order, with the planner settings set on that database as the shell sets them. Session A is a second connection holding its snapshot open. For #2059, a holder connection takes an advisory lock that the writer's statement waits on after it has marked every row, and the VACUUM runs during that wait. For the second #2059 case, `pgcolumnar.vm_set_hold_ms` pauses the VACUUM between its computation and its set, and the DELETE runs and commits during that pause. Each #2059 case runs inside one block, across two blocks (rows 300..600 reach block 2), and across three row groups (400,000 rows, every 5000th id below 400,000 deleted). The second case also deletes at the start of the second row group, inside block 515, and checks that clean block 514 keeps its bit. Each writer's row count is checked, so a failed writer shows as itself, not as a wrong VM bit.
 
 | test | what it holds |
 | --- | --- |
@@ -9840,6 +9911,47 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_old_snapshot_ios_does_not_see_post_snapshot_rows` | old snapshot IOS does not see post-snapshot rows |
 | `test_session_a_used_an_index_only_scan` | session A used an index-only scan |
 | `test_new_snapshot_sees_both_batches` | new snapshot sees both batches |
+| `test_concurrent_vacuum_during_delete_block_1_all_visible_before` | concurrent vacuum during delete: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_writer_deleted_101_rows` | concurrent vacuum during delete: the writer deleted 101 rows |
+| `test_concurrent_vacuum_during_delete_block_1_not_all_visible_after_commit` | concurrent vacuum during delete: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_index_only_scan_returns_no_deleted_row` | concurrent vacuum during delete: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_update_block_1_all_visible_before` | concurrent vacuum during update: block 1 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_update_vacuum_ran_while_writer_paused` | concurrent vacuum during update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_update_writer_updated_101_rows` | concurrent vacuum during update: the writer updated 101 rows |
+| `test_concurrent_vacuum_during_update_block_1_not_all_visible_after_commit` | concurrent vacuum during update: block 1 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_update_index_only_scan_returns_no_deleted_row` | concurrent vacuum during update: index-only scan returns no deleted row (#2059) |
+| `test_delete_between_vacuum_steps_block_1_all_visible_before` | delete between vacuum's two steps: block 1 all-visible before the writer starts |
+| `test_delete_between_vacuum_steps_vacuum_paused_before_its_set` | delete between vacuum's two steps: vacuum paused before its set |
+| `test_delete_between_vacuum_steps_delete_committed_while_paused` | delete between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_between_vacuum_steps_block_1_not_all_visible_after` | delete between vacuum's two steps: block 1 not all-visible after vacuum (#2059) |
+| `test_delete_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_all_visible_before` | concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_delete_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block delete: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_delete_writer_deleted_301_rows` | concurrent vacuum during a two-block delete: the writer deleted 301 rows |
+| `test_concurrent_vacuum_during_two_block_delete_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block delete: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_delete_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_block_2_all_visible_before` | concurrent vacuum during a two-block update: block 2 all-visible before the writer starts |
+| `test_concurrent_vacuum_during_two_block_update_vacuum_ran_while_writer_paused` | concurrent vacuum during a two-block update: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_two_block_update_writer_updated_301_rows` | concurrent vacuum during a two-block update: the writer updated 301 rows |
+| `test_concurrent_vacuum_during_two_block_update_block_2_not_all_visible_after_commit` | concurrent vacuum during a two-block update: block 2 not all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_two_block_update_index_only_scan_returns_no_deleted_row_of_block_2` | concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2 (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_every_target_block_all_visible_before` | concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_vacuum_ran_while_writer_paused` | concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_writer_deleted_79_rows` | concurrent vacuum during a delete over three row groups: the writer deleted 79 rows |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_no_target_block_all_visible_after_commit` | concurrent vacuum during a delete over three row groups: no target block all-visible after commit (#2059) |
+| `test_concurrent_vacuum_during_delete_over_three_row_groups_index_only_scan_returns_no_deleted_row` | concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_all_visible_before` | delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts |
+| `test_delete_in_second_row_group_between_vacuum_steps_vacuum_paused_before_its_set` | delete in the second row group between vacuum's two steps: vacuum paused before its set |
+| `test_delete_in_second_row_group_between_vacuum_steps_delete_committed_while_paused` | delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_in_second_row_group_between_vacuum_steps_block_515_not_all_visible_after` | delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum (#2059) |
+| `test_delete_in_second_row_group_between_vacuum_steps_clean_block_514_still_all_visible` | delete in the second row group between vacuum's two steps: clean block 514 still all-visible |
+| `test_delete_in_second_row_group_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete in the second row group between vacuum's two steps: index-only scan returns no deleted row (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_every_target_block_all_visible_before` | delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts |
+| `test_delete_over_three_row_groups_between_vacuum_steps_vacuum_paused_before_its_set` | delete over three row groups between vacuum's two steps: vacuum paused before its set |
+| `test_delete_over_three_row_groups_between_vacuum_steps_delete_committed_while_paused` | delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused |
+| `test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_visible_after` | delete over three row groups between vacuum's two steps: no target block all-visible after vacuum (#2059) |
+| `test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row` | delete over three row groups between vacuum's two steps: index-only scan returns no deleted row (#2059) |
 
 ## 229. test_isolation.py: deterministic isolation specs for the compaction and truncation races
 
@@ -10656,10 +10768,22 @@ The ON check reads the split line ("N of M columns by K worker(s)") as well as t
 | `test_double_cancel_leaves_no_segment_pinned` | a twice-cancelled parallel flush leaves no worker segment pinned |
 | `test_the_collect_loop_forgets_a_handle_after_its_unpin` | the collect loop forgets a worker's handle in the statement after it unpins the segment |
 | `test_a_flush_worker_raises_nothing_after_its_pin` | a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block |
+| `test_lock_a_flush_after_truncate_finishes` | a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_lock_table_finishes` | a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_after_alter_table_finishes` | a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072) |
+| `test_lock_a_flush_writes_the_added_column` | a parallel flush writes the column ALTER TABLE added in the same transaction (#2072) |
+| `test_lock_a_flush_after_a_retype_finishes_in_workers` | a parallel flush after ALTER COLUMN TYPE in the same transaction finishes, every column in workers (#2140) |
+| `test_lock_a_flush_after_a_retype_stores_the_serial_paths_chunks` | a parallel flush after ALTER COLUMN TYPE in the same transaction stores the serial path's chunks and rows (#2140) |
+| `test_lock_the_alter_waited_for_the_insert` | premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran |
+| `test_lock_a_queued_alter_does_not_stall_the_insert` | a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072) |
+| `test_lock_the_queued_insert_flushes_in_workers` | a parallel INSERT that another session's ALTER TABLE waits behind flushes every column in workers (#2140) |
+| `test_lock_the_queued_alter_completes` | premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072) |
 
 Arm 4 (#1745) runs on a private cluster with `dynamic_shared_memory_type = mmap`, so the workers' output segments are files in that cluster's own `pg_dynshmem` and can be counted from SQL. A 2s `statement_timeout` cancels a parallel flush while one worker still encodes a zstd-19 text column, and `pg_cancel_backend` cancels it again 1.5s later, inside the error cleanup's wait. No new segment may survive, and the error reported must be the first cancel's.
 
 Arm 6 (#1747) reads `pgcolumnar_parallel_flush_worker` with comments blanked: from `dsm_pin_segment` to the end of its PG_TRY block, only `dsm_detach` and the DONE write may run, because the collect loop unpins only a DONE slot and a worker that raised after its pin left the segment pinned to postmaster restart. The stretch runs past the DONE write because an ERROR there lands in PG_CATCH, which overwrites DONE with FAILED (#1748 review).
+
+Arm 7 (#2072) holds that a flush worker takes no lock that can wait on the table. On its own private database, three transactions run a 20000-row parallel INSERT after `TRUNCATE`, after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` and after `ALTER TABLE ... ADD COLUMN ... DEFAULT 5`, each under a 15s `statement_timeout`. Each must finish with every column encoded in workers and the right rows, and the added column must hold its default. "Every column in workers" means each split line reads `N of N columns` and no worker logged `failed, completing its columns serially`: a failed worker's columns are redone serially with the right attributes, so the rows alone cannot show it. A fourth transaction retypes two columns (`ALTER COLUMN b TYPE bigint, ALTER COLUMN h TYPE text`) after `TRUNCATE`, then loads in parallel; its chunks and rows must match a twin table given the same statements serially. This pins that workers encode with the inserting transaction's column attributes: a worker that read the committed descriptor fails here (#2140 review). Then a 600000-row parallel INSERT into a table with `stripe_row_limit = 1000` runs while another session's `ALTER TABLE` waits for its lock. The INSERT must finish inside its 60s timeout with every column in workers, and the ALTER must complete after it. On main's code every one of these INSERTs hit its timeout. The ALTER's completion is a premise: it holds on main too.
 
 ## 263. test_parquet_export_stats.py: the Parquet files we export carry correct per-row-group statistics
 
@@ -10897,6 +11021,15 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_a_dotdot_escaping_delete_path_is_refused_over_s3` | a dotdot-escaping delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_delete_path_is_refused_over_s3` | a percent-encoded dotdot delete path is refused over s3 (22023) |
 | `test_a_percent_encoded_dotdot_behind_an_encoded_nul_is_refused_over_s3` | a percent-encoded dotdot behind an encoded NUL is refused over s3 (22023) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_s3` | a delete path climbing out with `..;` segments, which a server that reads `;` as path parameters serves as `..`, is refused by the containment guard (22023) before any fetch |
+| `test_a_backslash_separated_dotdot_delete_path_is_refused_over_s3` | a delete path climbing out with backslash-separated `..` segments, which a server that reads a backslash as a separator serves as `../`, is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_s3` | a delete path climbing out with `..?` segments is refused by the containment guard (22023) before any fetch |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_s3` | the same with the `?` encoded as `%3F`, which a decoding server or proxy reads as `?`, is refused by the containment guard (22023) |
+| `test_an_iceberg_table_reads_over_plain_http` | the premise of the http arms: the table with position deletes reads over an unsigned plain `http://` server on the same files (3 rows) |
+| `test_a_dotdot_with_path_parameters_delete_path_is_refused_over_plain_http` | over plain `http://`, where the key is sent verbatim, a `..;` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_backslash_separated_delete_path_is_refused_over_plain_http` | over plain `http://`, a backslash-separated `..` climb is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_a_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..?` climb, which the server would read as the path `..` with a query, is refused by the containment guard (22023) |
+| `test_a_dotdot_ended_by_an_encoded_query_mark_delete_path_is_refused_over_plain_http` | over plain `http://`, a `..%3F` climb is refused by the containment guard (22023) |
 | `test_the_backend_is_still_up_after_the_s3_refusal` | backend still up after the s3 refusal |
 | `test_an_endpoint_not_on_the_allow_list_is_refused` | an endpoint not on objstore_allowed_endpoints is refused |
 | `test_the_backend_is_still_up_after_the_endpoint_refusal` | backend still up after the endpoint refusal |
@@ -11215,6 +11348,8 @@ Every test makes one check under the shell's name. The not-found reads as 42P01,
 | `test_namespace_depth_a_namespace_65_levels_deep_is_refused` | namespace depth: a namespace 65 levels deep is refused |
 | `test_paging_a_page_token_repeated_at_once_is_refused` | paging: a page token repeated at once is refused |
 | `test_paging_a_page_token_cycle_is_refused` | paging: a page token cycle A, B, A is refused |
+| `test_paging_pages_within_the_response_cap_together_still_list` | paging: 15 pages of 4 MiB (60 MiB in all) still list the namespace's table |
+| `test_paging_pages_over_the_response_cap_together_are_refused` | paging: 17 pages of 4 MiB (68 MiB in all) are refused with 54000, so a catalog that keeps sending new page tokens cannot make the backend hold every page |
 | `test_dotted_level_iceberg_rest_namespace_levels_lists_the_level_apart` | dotted level: iceberg_rest_namespace_levels lists the level db.x apart from db, x |
 | `test_dotted_level_iceberg_rest_namespaces_still_dot_joins_the_levels` | dotted level: iceberg_rest_namespaces still dot-joins the levels |
 | `test_dotted_level_iceberg_rest_tables_of_an_array_lists_its_tables` | dotted level: iceberg_rest_tables of ARRAY['db.x'] lists its tables |
@@ -11854,7 +11989,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 291. test_native_encoding.py: native cascade encoding engages, picks ALP and FSST, and round-trips on every codec
 
-The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; and a chunk too small to sample is still encoded.
+The twin of `test/native_encoding.sh`. Each block codec (none, pglz, lz4, zstd) round-trips rows, values, nulls, a filtered scan and an aggregate against a heap mirror built from the same generator, and its constant column's vectors are stored encoded, read from the descriptor's encoding type; ALP is chosen for a two-decimal float and FSST for shared-substring text, with one shared FSST table per FSST chunk; sampled selection returns what exhaustive selection returns and costs little ratio on a misleading head or short runs; a chunk too small to sample is still encoded; and repeated values of a fixed-width type that is not 1, 2, 4 or 8 bytes wide (uuid, interval, timetz, name, macaddr, tid, point) are stored as RLE and read back, survive ANALYZE, DELETE and a pg_dump round trip, on both the exhaustive and the sampled path (#2061).
 
 ### Every test
 
@@ -11913,6 +12048,14 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_a_sample_below_the_floor_still_encodes` | a sample setting below the floor still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_is_encoded` | a chunk smaller than the sample window still encodes |
 | `test_a_chunk_smaller_than_the_sample_window_reads_back` | a chunk smaller than the sample window reads back exactly |
+| `test_repeated_wide_fixed_width_values_are_stored_as_rle` | premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE |
+| `test_repeated_wide_fixed_width_values_read_back_exactly` | repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly (#2061) |
+| `test_repeated_wide_fixed_width_values_read_back_on_the_sampled_path` | repeated wide fixed-width values read back exactly on the sampled path |
+| `test_analyze_reads_repeated_wide_fixed_width_values` | ANALYZE reads a table of repeated wide fixed-width values |
+| `test_pg_dump_reads_repeated_wide_fixed_width_values` | pg_dump of a table of repeated wide fixed-width values succeeds |
+| `test_restore_of_repeated_wide_fixed_width_values_succeeds` | restore of a table of repeated wide fixed-width values succeeds |
+| `test_repeated_wide_fixed_width_values_survive_a_pg_dump_round_trip` | repeated wide fixed-width values read back exactly after a pg_dump round trip |
+| `test_delete_removes_repeated_wide_fixed_width_values` | DELETE removes every row of a table of repeated wide fixed-width values |
 
 ## 292. test_native_fastdecode.py: the inlined byval decode returns what the call path returns, through every encoding and a vector jump
 
@@ -12043,7 +12186,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A survival check reads the server log's count of killed backends as well as `SELECT 1`. On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A load into a table with a projection fills the projection (#2092). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database.
 
 ### Every test
 
@@ -12091,6 +12234,7 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_single_table_bad_row_fails_with_its_cause` | a bad row fails a single-table load with the loader's own message ("failed: invalid input syntax") |
 | `test_parallel_copy_single_table_failure_loads_nothing` | the failed load leaves the target empty |
 | `test_parallel_copy_single_table_failure_leaves_no_prepared_transaction` | the failed load leaves no prepared transaction |
+| `test_parallel_copy_failed_loaders_close_their_file_once` | the loads that failed in their loaders log no "CloseTransientFile was not obtained" WARNING, so no loader closed its file twice (#2083) |
 | `test_parallel_copy_fifo_is_refused_not_a_hang` | a FIFO given to a single-table load is refused with 42809 within 5 seconds (#686) |
 | `test_parallel_copy_fifo_refusal_leaves_the_backend_up` | the server answers and no backend was killed |
 | `test_parallel_copy_fifo_on_a_partitioned_target_is_refused_not_a_hang` | a FIFO given to a partitioned load is refused with 42809 within 5 seconds |
@@ -12110,6 +12254,7 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
 
@@ -13655,7 +13800,7 @@ Every test makes one check under the shell's name, from readings a module fixtur
 
 ## 338. test_cancel_decode.py: a cancel lands inside one large row group's decode, and the session it lands in survives it
 
-The twin of `test/cancel_decode.sh`. On a private database, two 4,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
+The twin of `test/cancel_decode.sh`. On a private database, two 2,000,000-row eight-column tables, one in many 20,000-row groups and one in a single group, are scanned with a predicate that matches nothing and is not pushed down, under a 100 ms statement_timeout. The best of three cancel latencies on the one-group table must stay within three times the many-group one plus 50 ms, and under 2 s.
 
 ### Every test
 
@@ -14187,3 +14332,209 @@ Each round's `compact_rewrite` must also rewrite at least one group. A group cou
 | `test_scale_parity_and_reclaim_steady_state` | reclaim round 4: compact_rewrite rewrote at least one group |
 | `test_scale_parity_and_reclaim_steady_state` | parity after reclaim round 4 |
 | `test_scale_parity_and_reclaim_steady_state` | reclaim reached steady state (round 4 <= round 2) |
+
+## 356. test_extension_upgrade.py: an old install keeps working under this library
+
+Port of `extension_upgrade.sh` (#382, #2032). Every SQL-callable function records its C link name in `pg_proc.prosrc` when the extension is created. If a link name is renamed in C, the rows a released install holds point at a symbol the new library no longer exports. Replacing only the library, which is what a package upgrade does, then leaves the extension inert, and a fresh install shows nothing wrong.
+
+THE CLAIM IS ABOUT TWO BUILDS, so this test uses both, and it runs only when it is alone, for `test_format_downgrade.py`'s reason. It builds `v1.0-alpha`, the release nightly.yml upgrades from, and fetches the tag when the checkout is shallow. It creates the extension and a table with that build, puts this tree's install in its place, and runs `ALTER EXTENSION UPDATE`. `test_native_upgrade_converge.py` proves the catalog convergence from every release's frozen install script, but under this tree's library. Only this file runs an old library's `CREATE EXTENSION` and reads rows an old build wrote.
+
+ON A CLUSTER OF ITS OWN, AND THE PREFIX IS PUT BACK EXACTLY, by `pgc_cluster.snapshot_prefix` and `restore_prefix`, which `test_format_downgrade.py` uses too. The bitcode is part of the install. On an LLVM build, the PGDG packages CI uses, `make install` also writes `bitcode/pgcolumnar.index.bc` and `bitcode/pgcolumnar/**/*.bc`. A snapshot of the top-level `pgcolumnar*` files alone left the old build's bitcode in the prefix for every later file (#2036 review). So the bitcode directory is a root, and a `pgcolumnar*` directory is taken whole. Measured: afterwards the prefix holds this tree's install and no temporary file.
+
+The shell gate recorded through its own `chk` and `echo`, so the parity tool read no name from it. It now records through `lib.sh`, as `format_downgrade.sh` does, and grades 11 of 11 by name against this file.
+
+Removal proof, PG18. Renaming `pgcolumnar_vacuum` in C and in the install script, with the upgrade scripts untouched, fails `ALTER EXTENSION UPDATE succeeds`. On the shell twin the same mutation fails seven arms, naming `could not find function "columnar_handler"`. Deleting the rollup tables' `GRANT` from the alpha4-to-alpha5 script fails `upgraded catalog is identical to a fresh install of the new default` on both. Moving `default_version` to a version with an install script but no update path fails `an update path leads from the old version to the new default`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_an_old_install_works_under_this_library` | the prefix holds this tree's install to put back; the old build compiles and stores its rows; an update path leads from the old version to the new default; `ALTER EXTENSION UPDATE` succeeds; the old table's rows read back and it takes an insert; a new columnar table can be created; the access method is still bound; `pgcolumnar.vacuum` runs; every C function's link name is in the `pgcolumnar` namespace; a fresh install of the new default stands up, and the upgraded catalog equals it object by object |
+| `test_the_install_swap_declines_beside_other_workers` | the decision that makes the swap decline beside other xdist workers, driven with the environments pytest-xdist sets: a serial run and a one-worker run proceed, a run beside three other workers declines, and a worker with no stated count is treated as not alone |
+| `test_the_prefix_is_put_back_exactly_with_its_bitcode` | the restore on a layout of an LLVM prefix: after an old install overwrites the tree's library, bitcode index and per-file bitcode, adds files and a directory, and loses one file, nothing it wrote is left, every file of the tree's install comes back with its bytes and mtime, no added directory is left, and another extension's files are untouched. Without the bitcode root, the old bitcode index and files are left |
+
+## 357. test_pytest_runs_where_the_suites_run.py: the pytest cluster job runs every leg the suites job runs
+
+The shell suites cannot be retired while some leg of the matrix runs only them (#2038). The nightly `suites` job runs PG 18 on aarch64 as well as x86_64. A missing barrier in concurrent code does not show under x86_64's stronger store ordering, but it is a defect on aarch64. The nightly `pytest-cluster` job ran on x86_64 only, so on aarch64 only the shell suites executed.
+
+The property is derived, not listed. In `ci.yml` and in `nightly.yml`, every (major, architecture) that the `suites` job runs must also be run by `pytest-cluster`. A matrix is read from its `include:` entries, or else from its `pg:` and `runner:` lists. When the matrix names no runner, its literal `runs-on:` is the runner. A runner label containing `arm` is aarch64, and any other label is x86_64. A workflow the reader cannot compare is named: unreadable, no suites legs, or no `pytest-cluster` job. So an empty answer can only mean every leg is covered.
+
+Removal proof: before `nightly.yml`'s `pytest-cluster` gained the `{ pg: '18', runner: ubuntu-24.04-arm }` leg, the property arm failed with `got 'nightly.yml:18/aarch64' want 'none'`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reader_names_a_leg_pytest_lacks_and_what_it_cannot_read` | on fixtures: an `include:` matrix, a `pg:` list under a literal `runs-on:`, and `pg:` and `runner:` lists are each read as their (major, architecture) legs. A suites leg missing from pytest-cluster is named, and adding it names nothing. A workflow with no pytest-cluster job, one with no suites legs, and one that cannot be read are each named, not read as covered |
+| `test_pytest_cluster_runs_every_leg_the_suites_job_runs` | the property on `ci.yml` and `nightly.yml` |
+
+## 358. test_sanitizer_gate.py: the pytest sanitizer gate decides what run_san.sh decides
+
+The nightly's sanitizer job ran 24 shell suites against the ASAN+UBSAN build, so it was one of the three gates that kept the shell suites from being retired (#2038). `test/pytest/run_san.py` runs the pytest twins of the same subset, and these tests hold its decisions on stand-ins.
+
+ASAN and UBSAN write every report to a file through `log_path`, one directory per suite, so a report from any instrumented process counts: a backend, initdb, pg_config, or a cluster a twin started itself. `run_san.sh` grepped each suite's output instead, so it saw a report only when the suite printed one.
+
+Removal proof on the module, each mutant failing at least one test here:
+
+- no `log_path` in the suite's environment;
+- exit 67 read as a pass;
+- an empty gate read as passed;
+- only the first sanitizer flag checked;
+- a report ignored when the run passed;
+- declined suites ignored.
+
+The encoding-selftest arm fails with `got 'encode_invariants'` when that suite is taken out of the subset.
+
+End to end on PG18.4, built by `build_san.sh` (the nightly's version):
+
+- **Clean tree:** `24 suites under sanitizers, 0 failed, 0 declined`, `SANITIZER GATE PASSED`. The installed `pgcolumnar.so` carries 21 `__asan_report`/`__ubsan_handle` symbols.
+- **#225 put back** (`VARSIZE_ANY` at the two encoder and three reader call sites): 22 of 24 fail, `SANITIZER GATE FAILED`, naming `columnar_encoding.c:1837:18: runtime error: member access within misaligned address`. `run_san.sh` on the same mutant fails the same 22 and passes the same two (`encode_effort`, `hardening`).
+- **The `fuzz_arrow` twin:** its tests passed (rc 0), while ASAN wrote three reports. The gate failed it on the reports.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_subset_is_the_shell_gates_subset` | `run_san.py` sanitizes the suites `run_san.sh --list-suites` names, in order |
+| `test_the_subset_runs_every_twin_that_drives_the_encoding_selftest` | selftest part 130's rule over the twins: a twin that drives `debug_encoding_selftest` is in the subset |
+| `test_every_sanitized_suite_has_a_complete_twin` | every suite in the subset has a twin graded complete, one file per suite |
+| `test_a_suite_without_a_complete_twin_is_refused` | on fixtures: a suite whose twin is absent, or not in `COMPLETE`, is refused by name |
+| `test_a_build_without_the_sanitizer_flags_is_refused` | `-fsanitize=address,undefined` and `-fno-sanitize=function` are both required, and each missing one is named |
+| `test_every_report_in_the_log_directory_is_found` | every file the sanitizers wrote is a report, an empty one too, named by its file and first sanitizer line; a directory never written holds none |
+| `test_a_suite_fails_on_a_failed_run_or_any_report` | PASS only on rc 0 with no report; any report fails; 67 is DECLINED; 1, 5 and 124 fail |
+| `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
+| `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
+| `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+
+## 359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
+
+The nightly's coverage job drove every shell suite against a `--coverage` build, so it was one of the three gates that kept the shell suites from being retired (#2038). `test/pytest/run_coverage.py` drives the pytest cluster files instead: the complement of `NO_CLUSTER`, less the three files that swap another build into the prefix (`SWAPS_THE_PREFIX`), as `run_coverage.sh` left out their shell twins. It is still a report, not a gate.
+
+It must not report coverage it did not measure. Selftest part 250 holds `run_coverage.sh` to that by the order of its lines (#740). This file holds `run_coverage.py` to it by behaviour, on a stand-in tree with stand-in make, pytest, lcov and genhtml, which record every command and the environment it got.
+
+Removal proof: each of these mutants of `run_coverage.py` fails at least one test here:
+
+- `GCOV_PREFIX` left unset;
+- the copy-back without its containment, or creating missing directories;
+- the zero-counter refusal removed, or counting the whole tree instead of `src/`;
+- the `GCOV_PREFIX` probe skipped;
+- a declined corpus treated as failed, or a corpus that collected nothing treated as clean;
+- no `make clean`, or no `COPT` in the corpus's environment;
+- the corpus given by bare names, or by full paths but not run in `test/pytest`;
+- no restore at the end, a restore that keeps `COPT`, or one without `make clean`;
+- a failed restore that keeps the run's exit code;
+- a counters directory that cannot be emptied reused, either unchecked or with `mkdir(exist_ok=True)`;
+- the genhtml check removed, or `GCOV_PREFIX` not made world-writable;
+- the filesystem walk naming another tree's counters.
+
+On PG18, against a private prefix, the whole corpus (312 files at the time, one of them this file before it was declared in `NO_CLUSTER`; 311 cluster files without it, 30 minutes serial) returned counters for 37 of 37 instrumented objects in `src/`. Line coverage was 94.5% (26433 of 27961), function coverage 98.2% and branch coverage 73.6%.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_build_and_the_corpus_are_instrumented_and_redirected` | the tree is cleaned first; every build and install before the corpus carries `COPT=--coverage`; `GCOV_PREFIX` is mode 1777 before the corpus runs; the corpus runs once, over the files given, with `GCOV_PREFIX`, `GCOV_PREFIX_STRIP=0` and `COPT=--coverage` in its environment |
+| `test_the_corpus_resolves_from_the_callers_directory` | called from another directory, as the nightly calls it from the repository root, each corpus file resolves from the directory pytest runs in, and that directory holds the corpus's `conftest.py`, so `--pg-config` is known |
+| `test_the_tree_and_the_install_are_left_uninstrumented` | a reported run, a run refused for zero counters and a run whose instrumented install failed each end with `make clean` and a `make install` with no `COPT` and no `GCOV_PREFIX`; in a reported run the clean comes after `lcov --capture`; a reported run whose uninstrumented reinstall fails exits 1 and says why |
+| `test_a_counters_directory_that_cannot_be_emptied_is_refused` | a `GCOV_PREFIX` that cannot be emptied, as one another user left, is refused with a `FAIL` line naming it, before the corpus runs, and the tree is still restored |
+| `test_counters_come_back_beside_their_objects_and_never_outside_the_tree` | a counter under `GCOV_PREFIX` is returned beside its object; one whose destination is outside the tree is not copied, and one whose object directory does not exist is not created; the count returned is reported |
+| `test_zero_counters_are_refused_before_lcov_runs` | with no counter in the tree the run exits 1, and neither `lcov --capture` nor genhtml is called. The refusal says no counter was written, and names counters it finds under `GCOV_PREFIX` as a path mismatch. With none there, the filesystem walk names counters for this tree's `src/` and not another tree's |
+| `test_the_refusal_counts_the_directory_lcov_captures` | a counter outside `src/` does not satisfy the guard, and `lcov --capture` reads the `src/` the guard counted |
+| `test_a_corpus_that_ran_nothing_or_failed_is_not_a_clean_report` | a corpus that collected nothing exits nonzero and says it measured nothing, even with counters present; a failing corpus writes its report, names each failed test in its own output (#2054) and exits nonzero; a corpus that declined a test exits 0 |
+| `test_the_table_is_computed_not_parsed_from_lcov_list` | no `lcov --list` call, one `lcov --summary` call, and the table from `pgc_coverage_table.py` over `coverage.info` with `--limit 20` (#974) |
+| `test_the_corpus_is_the_cluster_files_less_the_prefix_swappers` | no guard file is in the corpus; every cluster file is, except the ones in `SWAPS_THE_PREFIX`, and each of those states why |
+| `test_the_command_line_refuses_a_missing_tool_or_pg_config` | through the entry point: no lcov is refused, no genhtml with lcov present is refused, and so is a missing pg_config |
+| `test_the_coverage_job_fetches_the_release_tags_its_corpus_reads` | a corpus file reads the release tags, so every workflow job that runs `run_coverage.py` fetches the `v1.0-alpha` tags before it. The nightly's coverage job ran from a plain checkout, and the tag arms' UNMET_PRECONDITION failed the run every night (#2054) |
+
+## 360. test_docs_links_resolve.py: every internal link in the documentation reaches a heading
+
+A function's heading in `docs/sql-reference.md` is its full signature, so its anchor changes when an argument is added. Adding `dedup` to `parallel_copy`, and naming `compact_rewrite`'s defaults, left four links on three pages pointing at anchors no heading produced, and the documentation gates stayed green: the style gate reads sentences, not links. Found by the documentation audit after 1.0-alpha4.
+
+The links are resolved rather than listed. Each relative link in `docs/*.md` and `README.md` must name a file that exists and, for a docs page, an anchor one of its headings produces. The anchor rule is the site's (`mkdocs.yml`: `pymdownx.slugs.slugify`, lower case): drop every character that is not a letter, digit, underscore, hyphen or space, then each space becomes a hyphen. A heading inside a code fence is not a heading.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the anchor rule keeping punctuation, or dropping underscores;
+- a link inside a heading read as markdown rather than as its text;
+- headings inside code fences counted;
+- the anchor check or the file check removed;
+- external links (`https:`, `mailto:`) checked as files.
+
+Before the fixes in the same change, the arm over the real documentation failed naming exactly the four links.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_anchor_rule_is_the_sites` | a signature heading, a hyphenated heading, a heading with inline code and a heading holding a link each give the anchor the site gives |
+| `test_a_link_that_reaches_no_heading_or_no_file_is_named` | on fixture pages: links that resolve, external links and same-page links are not named; a stale signature anchor, a missing file, a heading inside a code fence and a missing same-page anchor are each named |
+| `test_every_internal_link_in_the_documentation_resolves` | over the repository's documentation pages, no relative link names a missing file or a heading the page lacks |
+
+## 361. test_architecture_map.py: the module map names every source file and every catalog
+
+`docs/ARCHITECTURE.md` is how a new developer finds the code, and nothing held it to the tree. By 1.0-alpha5 its module map named none of eleven source files in `src/`, nor the object-store module's own source, and seven catalogs in the install script were absent, rollups among them. Found by the documentation audit after 1.0-alpha4.
+
+The map is checked against the tree, not against a list. Every `.c` file in `src/` and `objstore/` must be named in a heading under `## Module map`. Every file a map heading names must exist. Every `CREATE TABLE pgcolumnar.<name>` in the default version's install script must be named in backticks somewhere in the document.
+
+Removal proof: each of these mutants fails at least one test here:
+
+- the stale-entry check removed;
+- the unmapped-file check removed;
+- the map read to the end of the document instead of to the next `## ` heading;
+- a file named only in prose counted as mapped;
+- the catalog check removed;
+- a catalog named without backticks counted.
+
+Before the new sections in the same change, the arm over the real document failed naming thirteen files and the seven catalogs. The files were the eleven, the object-store module's source, and `columnar_puffin.c`, which the map named only in prose.
+
+### Every test
+
+| Test | Checks |
+| --- | --- |
+| `test_each_kind_of_gap_is_named` | on a fixture tree: a control that passes (two files in one heading, a header not required, a catalog named with its schema, a heading after the map not read), then an unmapped file, a stale heading and unquoted catalogs, each reported |
+| `test_the_module_map_matches_the_tree` | the repository's own map, sources and install script: no gap |
+
+## 362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives
+
+A heap buffer overflow fix, test-first. The object-store reader bounded each chunk of a chunked HTTP reply by adding its size to the bytes read so far. The sum was signed: after a 1-byte chunk, the size `7fffffffffffffff` wrapped it negative, the bound passed, and the reader wrote the rest of the reply past its buffer. On main, the ranged-read check killed the backend (`server closed the connection unexpectedly`), and the REST check got `XX000` instead of the cap's `54000`.
+
+The file runs its own HTTP server on 127.0.0.1, on a port chosen at run time, and allows it by host and port. A ranged GET through `parquet_schema` reaches `os_read_body`; GET `/v1/config` through `iceberg_rest_table_location` reaches `os_slurp_body`. Each hostile reply must raise its guard's SQLSTATE, and the same connection must then answer `SELECT 1`. The control reads a pyarrow-written file through `read_parquet` and a REST reply, both sent in chunks of 1, 7 and 1000 bytes, and checks every row and the location.
+
+The second test passed on main too: `strtoll` clamps a size past 64 bits to `7fffffffffffffff`, and with no earlier chunk the sum does not wrap. It pins the new parser's refusal of that size.
+
+Removing the ranged-read bound fails the first test with the crash. The new unsigned parse with the old signed sums fails the first and third tests. Removing the REST cap fails the third test.
+
+### Every test
+
+| test | check |
+| --- | --- |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_after_a_first_chunk_is_refused_on_a_ranged_read` | a wrapping chunk size on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: an ordinary SQL error |
+| `test_a_chunk_size_past_64_bits_as_the_first_chunk_is_refused_on_a_ranged_read` | a first chunk size past 64 bits on a ranged GET: the same connection answers SELECT 1 after it |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: an ordinary SQL error |
+| `test_a_chunk_size_that_wraps_the_cap_is_refused_on_a_rest_catalog_reply` | a wrapping chunk size on a REST catalog reply: the same connection answers SELECT 1 after it |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns every row |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked ranged read returns the right values |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | the rows came through ranged GETs, each answered chunked |
+| `test_a_valid_chunked_reply_of_the_exact_length_still_reads` | a chunked REST catalog reply is read whole |
+
+## 363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding
+
+`import_arrow` passed each Arrow UTF8 value straight to the column type's input function. textin, varcharin, json_in and jsonb_in do not check the encoding, because core checks client text before they run, and a file the backend reads skips that step. On main before the fix, a stream holding `ok`, the bytes `ff fe` and a lone `c3` imported 3 rows into a `text` column, and `upper()` and `ORDER BY` on it then failed with "invalid byte sequence for encoding". `read_parquet` already refused the same bytes. `import_arrow` now checks each value before the input function runs, refuses a bad one with 22021, naming the column and the first bad bytes, and stores no row.
+
+### Every test
+
+Each refusal reads `<what import_arrow returned, or SQLSTATE message>|<rows stored>`, so a refusal that left rows behind fails. Each test needs pyarrow and declines by name without it. The checks on UTF-8 bytes first confirm that the database is UTF8.
+
+| test | what it holds |
+| --- | --- |
+| `test_invalid_utf8_into_text_is_refused_and_nothing_is_stored` | the audit's stream into a `text` column is refused with 22021, naming column `t` and byte `0xff`, and the table is empty |
+| `test_invalid_utf8_into_varchar_is_refused_and_nothing_is_stored` | the same stream into a `varchar(10)` column is refused the same way |
+| `test_a_truncated_sequence_alone_is_refused` | a value ending in a lone lead byte `c3`, after a valid value, is refused with 22021 naming `0xc3` |
+| `test_invalid_utf8_inside_a_text_array_is_refused` | a list of the same strings into a `text[]` column is refused, naming the column |
+| `test_valid_multibyte_utf8_imports_unchanged` | control: `é`, `日本`, an emoji and an empty string import into `text` and `varchar(10)`, read back unchanged, and work with `upper()` and `ORDER BY` |
+| `test_bytea_still_takes_the_raw_bytes` | control: the audit's stream into a `bytea` column still imports all 3 rows with every byte kept |
+| `test_json_targets_refuse_invalid_utf8_too` | parametrized by `json` and `jsonb`: invalid bytes inside a JSON string are refused with 22021. On main before the fix both imported 3 rows |
+| `test_valid_json_still_imports` | control, parametrized by `json` and `jsonb`: valid JSON holding multibyte UTF-8 imports and reads back |
+| `test_a_nul_byte_is_refused_not_cut` | a value holding a NUL byte is refused with 22021 naming `0x00`. On main before the fix both rows imported |

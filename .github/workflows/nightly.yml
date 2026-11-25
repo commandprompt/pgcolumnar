@@ -353,21 +353,36 @@ jobs:
             ' || { echo "instrumented server failed to start as postgres:"; sudo cat /tmp/san-smoke.log; exit 1; }
           echo "instrumented server starts cleanly as postgres"
 
+      # THE PYTEST TWINS, NOT THE SHELL SUITES (#2038). run_san.py runs the twins of
+      # run_san.sh's subset and decides the same way, so the shell suites no longer
+      # hold this gate. Its pins are requirements-test.txt's, as pytest-cluster's.
+      - name: install pytest and the driver for the postgres user, pinned
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/pgcvenv
+          /tmp/pgcvenv/bin/pip install --quiet -r test/pytest/requirements-test.txt
+          sudo -u postgres /tmp/pgcvenv/bin/python -c 'import pytest, psycopg, pyarrow; print("venv ok for postgres")'
+
       - name: Run the sanitizer gate (as the postgres user)
         run: |
           set -euo pipefail
           # As postgres, not root. PostgreSQL refuses to run as root, and dropping
           # from root via runuser strips ASAN_OPTIONS so the instrumented server
-          # aborts on the leak/stack traps -- the failure the first CI run hit. As
-          # postgres, pgc_setup's non-root path runs initdb/postmaster directly and
-          # run_san.sh's exported ASAN_OPTIONS is inherited. -E keeps PATH.
-          sudo -u postgres -E env "PATH=$PATH" bash test/run_san.sh "$SAN_PREFIX"
+          # aborts on the leak/stack traps -- the failure the first CI run hit.
+          # run_san.py sets ASAN_OPTIONS and UBSAN_OPTIONS for every suite, with
+          # log_path into PGC_SAN_LOGS, which the step below prints on failure.
+          sudo -u postgres -E env "PATH=$PATH" PGC_SAN_LOGS=/tmp/pgc-san-logs \
+            /tmp/pgcvenv/bin/python test/pytest/run_san.py "$SAN_PREFIX"
 
       - name: Collect logs on failure
         if: failure()
         run: |
           echo "===== ASAN start smoke log ====="; sudo cat /tmp/san-smoke.log 2>/dev/null || true
-          for f in $(sudo find /tmp -maxdepth 4 -name server.log -path '*pgcolumnar*' 2>/dev/null); do
+          # Every sanitizer report, whole: run_san.py names only each one's first line.
+          for f in $(sudo find /tmp/pgc-san-logs -type f 2>/dev/null); do
+            echo "===== $f ====="; sudo cat "$f"
+          done
+          for f in $(sudo find /tmp -maxdepth 4 -name server.log \( -path '*pgcolumnar*' -o -path '*pgc-pytest-*' \) 2>/dev/null); do
             echo "===== $f ====="; sudo tail -60 "$f"
           done
 
@@ -395,6 +410,13 @@ jobs:
       && github.event.inputs.fire_drill != 'true'
     steps:
       - uses: actions/checkout@v4
+
+      # THE RELEASE TAGS, as pytest-cluster fetches them. The corpus holds arms that
+      # compare against a release tag (native_upgrade_converge's fixtures, docs_style's
+      # changelog arms through test_harness_deps). From a tagless checkout they record
+      # UNMET_PRECONDITION, and the unrunnable accounting fails the run (#2054).
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
 
       # The packages are ~102 MB, of which ~91 MB is the LLVM toolchain that
       # postgresql-server-dev-N depends on. That download is what stalls: every
@@ -497,11 +519,35 @@ jobs:
       - name: Stop the packaged cluster
         run: sudo systemctl stop postgresql || true
 
-      - name: Build instrumented and run the suites
+      # THE PYTEST CORPUS, NOT THE SHELL SUITES (#2038). run_coverage.py drives the
+      # pytest cluster files with run_coverage.sh's refusals. The pytest harness is
+      # non-root throughout (initdb refuses root), so this job makes the install
+      # targets writable, as pytest-cluster does, instead of running under sudo. The
+      # server then runs as this user and can write its counters.
+      - name: make the extension's install targets writable by this user
         run: |
           set -euo pipefail
-          sudo -E env "PATH=$PATH" \
-            bash test/run_coverage.sh /usr/lib/postgresql/18/bin/pg_config
+          PGC=/usr/lib/postgresql/18/bin/pg_config
+          LIB="$("$PGC" --pkglibdir)"
+          SHARE="$("$PGC" --sharedir)"
+          sudo chown -R "$(id -un)" "$LIB" "$SHARE"
+          test -w "$LIB"
+          test -w "$SHARE/extension"
+          test "$(id -u)" -ne 0
+
+      - name: install pytest and the driver, pinned from requirements-test.txt
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/pgcvenv
+          /tmp/pgcvenv/bin/pip install --quiet -r test/pytest/requirements-test.txt
+          /tmp/pgcvenv/bin/pip show psycopg >/dev/null
+
+      - name: Build instrumented and run the pytest corpus
+        run: |
+          set -euo pipefail
+          # native_scale's twin at 200000 rows, as pytest-cluster runs it (#2018).
+          SCALE_N=200000 /tmp/pgcvenv/bin/python test/pytest/run_coverage.py \
+            /usr/lib/postgresql/18/bin/pg_config
 
       # The per-suite logs, which were never uploaded. Only coverage/html and
       # coverage.info were, so when a suite failed inside this job the detail
@@ -762,8 +808,8 @@ jobs:
             bash test/capability_sweep.sh /usr/lib/postgresql/18/bin/pg_config
 
   pytest-cluster:
-    name: pytest (cluster tests, PG ${{ matrix.pg }})
-    runs-on: ubuntu-latest
+    name: pytest (cluster tests, PG ${{ matrix.pg }}, ${{ matrix.runner == 'ubuntu-24.04-arm' && 'aarch64' || 'x86_64' }})
+    runs-on: ${{ matrix.runner }}
     # 40, not 20, as in ci.yml's job of the same name (#1740). The run is serial and
     # grows with every ported twin: on 2026-10-26 PG 16 finished its tests in 18m52s,
     # and PG 15, 17 and 18 were cancelled at the 20-minute limit, PG 15 after its
@@ -771,8 +817,19 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      # THE SAME LEGS AS THE SUITES JOB, aarch64 included (#2038). The suites job runs
+      # PG 18 on aarch64 for the reason it gives: a missing barrier in concurrent code
+      # is invisible under x86_64's stronger store ordering. With this job on x86_64
+      # only, that leg ran the shell suites and nothing else, so they could not be
+      # retired. test_pytest_runs_where_the_suites_run.py holds every (major,
+      # architecture) the suites job runs to this job too.
       matrix:
-        pg: ['15', '16', '17', '18']
+        include:
+          - { pg: '15', runner: ubuntu-latest }
+          - { pg: '16', runner: ubuntu-latest }
+          - { pg: '17', runner: ubuntu-latest }
+          - { pg: '18', runner: ubuntu-latest }
+          - { pg: '18', runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
 

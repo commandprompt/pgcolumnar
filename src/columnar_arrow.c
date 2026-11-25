@@ -42,6 +42,7 @@
 #include "common/int.h"
 #include "executor/tuptable.h"
 #include "lib/stringinfo.h"
+#include "mb/pg_wchar.h"
 #include "catalog/pg_authid_d.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
@@ -1520,6 +1521,7 @@ typedef struct ImpNode
 	int			srcUnit;		/* Arrow DateUnit/TimeUnit, -1 if the file said nothing */
 	int32		atttypmod;
 	bool		needsInput;
+	const char *colname;		/* the target column, for errors; see imp_set_colname */
 	FmgrInfo	inFinfo;
 	Oid			inTypioparam;
 	/* list element */
@@ -1610,6 +1612,68 @@ imp_build_node(ImpNode *n, Oid typid, int32 typmod, bool *ok)
 			fmgr_info(infunc, &n->inFinfo);
 		}
 	}
+}
+
+/*
+ * Name a node subtree after the target column it decodes, so an error raised
+ * while decoding a value, at any depth, can name the column.
+ */
+static void
+imp_set_colname(ImpNode *n, const char *colname)
+{
+	int			c;
+
+	n->colname = colname;
+	for (c = 0; c < n->nchildren; c++)
+		imp_set_colname(&n->children[c], colname);
+}
+
+/*
+ * Refuse a UTF8 value that is not valid in the database encoding, before any
+ * input function sees it.
+ *
+ * Core converts and verifies text from a client before an input function runs,
+ * and textin, varcharin, json_in and jsonb_in rely on that. A file read by the
+ * backend skips that step, so without this check import_arrow stored bytes such
+ * as ff fe into a text column, and upper() and ORDER BY on it then failed. This
+ * mirrors pq_text_cell_ok in columnar_parquet_reader.c, which refuses the same
+ * bytes from a Parquet file: an all-ASCII value is accepted without calling the
+ * verifier, and a bad one raises 22021, naming the column and the first bad
+ * bytes in core's format. A NUL byte is refused too, because an input function
+ * would silently cut the value there.
+ */
+static void
+imp_text_check(const ImpNode *n, const char *s, int len)
+{
+	int			i;
+	int			enc;
+	int			valid;
+	int			bad;
+	char		buf[8 * 5 + 1];
+	char	   *b = buf;
+
+	for (i = 0; i < len; i++)
+		if (s[i] == '\0' || IS_HIGHBIT_SET(s[i]))
+			break;
+	if (i == len)
+		return;
+
+	enc = GetDatabaseEncoding();
+	valid = pg_encoding_verifymbstr(enc, s, len);
+	if (valid == len)
+		return;
+
+	/* the bytes of the first bad character, at most 8, as report_invalid_encoding */
+	bad = Min(pg_encoding_mblen(enc, s + valid), len - valid);
+	bad = Min(bad, 8);
+	for (i = 0; i < bad; i++)
+		b += sprintf(b, i == 0 ? "0x%02x" : " 0x%02x", (unsigned char) s[valid + i]);
+
+	ereport(ERROR,
+			(errcode(ERRCODE_CHARACTER_NOT_IN_REPERTOIRE),
+			 errmsg("invalid byte sequence for encoding \"%s\" in Arrow column \"%s\": %s",
+					GetDatabaseEncodingName(),
+					n->colname != NULL ? n->colname : "?", buf)));
 }
 
 /* assign RecordBatch buffer indices to a node subtree, pre-order */
@@ -1851,6 +1915,12 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
  * target has the layout of (large and fixed-size lists, list views, unions,
  * run-end encoding) are refused under every node. The wording follows
  * import_parquet's for the same shape (#1917).
+ *
+ * Large binary and large string carry 64-bit offsets, and the binary and string
+ * views carry no offset buffer at all, but the bytea and text decoders read
+ * 32-bit offsets. So a large_binary b'x' imported as an empty bytea, a
+ * large_string ['hi','there'] as '' and 'hi', and the views were called
+ * malformed. No target reads those layouts yet, so they are refused too (#2097).
  */
 static void
 imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
@@ -1864,7 +1934,11 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 							 typetag == ARROW_TYPE_LargeList ||
 							 typetag == ARROW_TYPE_RunEndEncoded ||
 							 typetag == ARROW_TYPE_ListView ||
-							 typetag == ARROW_TYPE_LargeListView);
+							 typetag == ARROW_TYPE_LargeListView ||
+							 typetag == ARROW_TYPE_LargeBinary ||
+							 typetag == ARROW_TYPE_LargeUtf8 ||
+							 typetag == ARROW_TYPE_BinaryView ||
+							 typetag == ARROW_TYPE_Utf8View);
 
 	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
 		!fileOther)
@@ -2024,6 +2098,7 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		fprec;
 					int32		fscale;
+					int32		fbits;
 
 					if (n->kind != A_DECIMAL128)
 						break;		/* cross-family: see the Int case */
@@ -2031,6 +2106,18 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
 					fscale = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					pos = pgc_fb_field(meta, metaLen, tt, 2);	/* bitWidth */
+					fbits = pos ? fbr_i32(meta, metaLen, pos) : 128;
+
+					/*
+					 * The reader decodes 16-byte values only (#2081). A
+					 * decimal256 buffer is twice as long as that, so it passed
+					 * the length check and was read at the wrong offsets: 1.25,
+					 * 2.50, -3.75 stored 1.25, 0.00, 2.50. A decimal32 or
+					 * decimal64 buffer was refused, but as "malformed".
+					 */
+					if (fbits != 128)
+						imp_field_mismatch("a decimal of another width", n->typid);
 
 					/*
 					 * The unscaled integer is read as-is and the TARGET's scale
@@ -2105,6 +2192,8 @@ imp_scalar_at(ImpNode *n, const uint8 *body, const int64 *bufOff,
 		memcpy(&start, body + oOff + i * 4, 4);
 		memcpy(&end, body + oOff + (i + 1) * 4, 4);
 		vlen = end - start;
+		if (n->kind == A_UTF8)
+			imp_text_check(n, (const char *) body + dOff + start, vlen);
 		if (n->kind == A_BINARY)
 		{
 			bytea	   *out = (bytea *) palloc(vlen + VARHDRSZ);
@@ -2547,6 +2636,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 							NameStr(att->attname),
 							format_type_be(att->atttypid))));
 		}
+		imp_set_colname(&tops[i], NameStr(att->attname));
 		imp_assign_buffers(&tops[i], &totalBuffers);
 	}
 

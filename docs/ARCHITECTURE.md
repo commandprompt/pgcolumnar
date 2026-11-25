@@ -108,8 +108,10 @@ buffer manager.
 
 ### columnar_metadata.c
 Access to the `pgcolumnar` catalog tables and the storage-id sequence: the
-`storage`, `row_group`, `column_chunk`, `zone_map`, `bloom`, `delete_vector`,
-`projection`, `free_space`, and `options` tables. Metadata are ordinary heap tables keyed by storage id, read and
+`storage`, `row_group`, `column_chunk`, `zone_map`, `bloom`, `sketch`,
+`column_extent`, `delete_vector`, `retired_group`, `projection`,
+`projection_declaration`, `free_space`, `options`, `load_fingerprint`, `rollup`
+and `rollup_group` tables. Metadata are ordinary heap tables keyed by storage id, read and
 written with direct catalog access (heap opens, index scans, and inserts) rather
 than SPI, so metadata access does not depend on SPI reentrancy from inside a scan
 or write. Catalog reads use a snapshot whose command id is advanced so a
@@ -130,6 +132,17 @@ flush it encodes each column chunk with the per-vector encoding cascade, compute
 the zone maps and per-chunk bloom filters, and writes the `storage`, `row_group`,
 `column_chunk`, `zone_map`, and `bloom` rows. The projection fan-out shares this
 writer.
+
+### columnar_extent.c
+The per-column extent, kept in the `column_extent` catalog. It bounds every value
+of a column, and it is read in one index lookup instead of every zone map. Each
+committing transaction inserts one row, not complete, for what it flushed. A
+recompute folds every visible zone map and replaces the rows it saw with one
+complete row. Every path that retires a group recomputes its storage before
+commit, so a shrink is computed and never guessed. A reader trusts the rows only
+when a complete one is visible. The grouped aggregate in `columnar_vector.c` uses
+the extent for its bucket estimate, and reads the zone maps when no complete row
+is visible.
 
 ### columnar_compression.c
 The value-stream codecs: `none`, `pglz` (built into PostgreSQL), `lz4`, and
@@ -185,6 +198,18 @@ accumulate in a per-subtransaction in-memory buffer and are applied to the
 catalog in one upsert per row group at flush time. The reader loads a row group's
 delete vector and skips marked rows.
 
+### columnar_row_lock.c
+Serializes concurrent writers of the same row (issue #5). A columnar update is a
+delete plus an insert, and the table AM takes no row lock, so core never runs
+EvalPlanQual. Without this module, two transactions updating one row would each
+keep a new version. At delete-vector flush, the flushed rows are sorted by lock
+key, and each gets an advisory lock held to commit. The sort gives every
+transaction the same lock order, so no deadlock cycle forms. The flush then
+rereads the latest committed state. A row that a concurrent transaction already
+deleted raises a retryable `serialization_failure`. A hash-bucket collision only
+adds waiting, never a false failure. `pgcolumnar.enable_row_update_lock` turns it
+on, and `pgcolumnar.row_lock_buckets` sets the number of lock buckets.
+
 ### columnar_customscan.c
 Planner and executor integration. A `set_rel_pathlist_hook` replaces a columnar
 base relation's sequential-scan path with a custom scan path (and removes the
@@ -226,6 +251,16 @@ answered from the zone-map metadata, falling back to a scan-and-fold when the
 group has deletes. It is chosen only when every aggregate, column type, and
 clause is supported; anything else falls back to the scalar plan.
 
+### columnar_sketch.c
+The aggregate `pgcolumnar.approx_count_distinct`, a HyperLogLog count of distinct
+values. The writer stores a sketch per row group in the `sketch` catalog, for each
+column the table's `sketch_columns` option names. This aggregate uses the same
+2048 registers and the same hash, so it can merge a group's stored sketch instead
+of reading the group's rows. Parallel workers combine their registers by a
+register-wise maximum, so a parallel plan returns the serial answer exactly.
+NULLs are not counted. A type with no extended hash, or a value under a
+nondeterministic collation, is refused with `0A000`.
+
 ### columnar_vacuum.c
 Compaction, statistics, and storage-id lookup. `pgcolumnar.vacuum` materializes a
 relation's live rows (the reader skips row-mask-deleted rows), swaps the
@@ -248,6 +283,14 @@ that step when the table is busy. `pgcolumnar.stats` and `pgcolumnar.sort_status
 per-stripe layout and the remaining sort order. `pgcolumnar.maintenance_due`
 reports the compact-rewrite and recluster thresholds. A storage-id lookup resolves
 a relation to its storage id.
+
+### columnar_curve.c
+The space-filling curve keys for clustering, Z-order and Hilbert. Each curve
+yields a fixed-width byte string whose byte order is the curve's order. The
+rewrites in `columnar_vacuum.c` and `columnar_autovacuum.c` therefore sort on it
+with the ordinary `bytea` comparison, without knowing which curve produced it.
+`test/hilbert_curve.sh` compiles this file alone. It checks the properties that
+define a Hilbert curve, with Z-order and a zigzag order as wrong controls.
 
 ### columnar_autovacuum.c
 The maintenance daemon (`pgcolumnar.autovacuum`). A background-worker launcher
@@ -281,6 +324,17 @@ the type default, or whose key type has no hash proc, falls back to one coarse
 per-index lock. A relcache-invalidated backend-local cache holds the per-relation
 unique-index metadata so the per-row cost is a hash plus a lock acquire.
 
+### columnar_index.c
+Index maintenance for callers that insert rows without the executor. PostgreSQL
+maintains indexes in the executor, so a direct `table_tuple_insert` leaves them
+stale. Two callers are in that position, and they take different routes. The
+Arrow and Parquet importers insert new rows, so they go through the executor's
+own index maintenance and after triggers. Unique, exclusion and deferrable
+constraints then behave as they do for `INSERT`. The online rewrite in
+`columnar_vacuum.c` moves rows that already met every constraint. It calls
+`index_insert` with no unique check, because a check would find each row against
+its own old copy.
+
 ### columnar_arrow.c
 Arrow IPC stream export (`pgcolumnar.export_arrow`, gap 27). A self-contained
 FlatBuffers builder emits the Schema and RecordBatch messages (MetadataVersion
@@ -292,6 +346,11 @@ The row is counted as written: a numeric or jsonb by its text.
 No libarrow dependency. Supported types are int2/int4/int8, float4/float8, bool,
 text/varchar, bytea, date/time/timestamp/timestamptz, uuid, numeric, and
 json/jsonb; other types are rejected. Little-endian hosts only.
+
+### columnar_flatbuffers.c
+A minimal FlatBuffers builder, written from the public format description. The
+Arrow writer in `columnar_arrow.c` uses it for the Arrow IPC schema and record
+batch messages.
 
 ### columnar_parquet.c
 Parquet export (`pgcolumnar.export_parquet`, gap 27). A self-contained Thrift
@@ -305,6 +364,25 @@ group starts before a row that would take the buffered bytes past
 its values in one allocation and PostgreSQL caps one allocation at 1 GiB. The row
 is counted as written, with its level bytes and value lengths. No libparquet
 dependency; same scalar type coverage as the Arrow writer.
+
+### columnar_sink.c
+The byte sink that the Arrow and Parquet export writers write through. Every
+write is checked where it is made, so a full disk fails the export at once. A
+local target is written to a temporary file beside it, and the final name appears
+only through a durable rename. A remote target is a multipart upload through the
+object-store module, and the object appears only when the upload completes.
+Either way, a reader never sees a partial file under the name it trusts.
+
+### columnar_thrift.c
+The Thrift compact-protocol reader and writer, which Parquet uses for its file
+and page metadata. `columnar_parquet_reader.c` reads with it and
+`columnar_parquet.c` writes with it. Nothing in this file knows about Parquet.
+
+### columnar_parquet_codec.c
+Parquet data-page decompression, behind one entry point that dispatches on the
+file's codec. Snappy is decoded here from its format description. Gzip, zstd and
+`lz4_raw` go to the system libraries when the build has them, and are refused
+cleanly when it does not.
 
 ### columnar_parquet_reader.c
 Parquet import and the external-Parquet read surface (gap 27 and Phase G). A
@@ -389,6 +467,27 @@ an implementation like any other, not a case the dispatcher tests for. Every
 Parquet test in the suite therefore exercises the dispatch, rather than only the
 first remote source to arrive.
 
+### columnar_parallel_copy.c
+`pgcolumnar.parallel_copy`, the parallel bulk load. Background workers each run
+core `COPY` over a line-aligned byte range of the file, so parsing is exactly
+core's. For a partitioned target, one pass over the key-sorted file splits it so
+that no two workers write the same partition. A coordinator worker then commits
+every loader's prepared transaction, or rolls all of them back. A failure in any
+range therefore leaves no partial load. For a single columnar table, the loaders
+write one shared storage. The coordinator creates and commits its storage row
+first, so the loaders skip the creation lock. With `dedup`, a load records its
+file's SHA-256 in `load_fingerprint` after the data commits, and a repeat of the
+same bytes is refused.
+
+### columnar_parallel_export.c
+`pgcolumnar.parallel_export_parquet`. Read-only background workers each write a
+disjoint slice of the source to its own Parquet file under one output directory.
+The SQL function is itself the dispatcher, with no coordinator and no two-phase
+commit. The dispatcher exports its snapshot and each worker imports it, the
+mechanism `pg_dump` uses for a parallel dump. Every worker therefore sees the
+same committed image. A partitioned table is split by leaf partition, and a single
+table by ranges of row groups.
+
 ### columnar_objstore.c
 The loader for the object-store module, and the only file in the main library
 that knows the module exists. Object storage lives in a **separate, non-preloaded
@@ -438,7 +537,17 @@ never pattern syntax. A pattern that names an existing object exactly reads
 that object alone, because those characters are legal in an S3 key. A
 bracketed IPv6 literal host is refused by `pq_resolve_paths` before any request.
 
-### columnar_iceberg.c and columnar_avro.c
+### objstore/columnar_objstore_module.c
+The object-store module itself, built as `pgcolumnar_objstore`. It implements the
+ABI in `columnar_objstore.h`: ranged reads over HTTP and HTTPS, `s3://` with
+SigV4 signing, `gs://`, and the multipart writes the exporters use. No blocking
+call ever waits on its socket. Every wait goes through the latch and checks for
+interrupts, so `statement_timeout` and a cancel can stop a transfer. One read sees
+one version of an object. The ranged reads send the first reply's ETag as
+`If-Match`, and an overwritten object fails the read instead of mixing two
+versions.
+
+### columnar_iceberg.c, columnar_avro.c and columnar_puffin.c
 The Apache Iceberg read path (#388). `columnar_avro.c` reads the Avro manifest and
 manifest-list files. `columnar_iceberg.c` walks a table's current snapshot, reads
 each Parquet data file through the same reader as the Parquet FDW, and applies the
@@ -493,6 +602,17 @@ key. A clause that only names the column does not prune. For example, an `OR` of
 a sort-key range with a condition on another column names the sort key and prunes
 nothing, so it earns no discount (#1126). `pgcolumnar.vacuum` rebuilds
 projections aligned to the compacted base.
+
+### Rollups
+Rollups have no C file. `create_rollup`, `refresh_rollup` and `rebase_rollup` are
+PL/pgSQL functions in the install script. A rollup is a view over a partials
+table, which holds the parts each aggregate combines from, per bucket and group.
+The `rollup` catalog records each rollup's definition, and `rollup_group` records
+each row group a refresh has folded. A refresh folds the groups that are new, and
+recomputes the buckets of groups that were deleted from or rewritten. It does
+both in one statement, from one snapshot. `pgcolumnar.expire` records each group
+it retires in `retired_group`. The refresh keeps those buckets as history rather
+than recomputing them from rows that are gone.
 
 ## Data flow summaries
 

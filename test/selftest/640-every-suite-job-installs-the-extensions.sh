@@ -8,7 +8,7 @@
 #
 # So the list is derived, not trusted: every job that runs the suites must
 # install every extension package any such job installs. A job runs the suites
-# when it calls run_all_versions.sh or run_coverage.sh, or runs pytest against a
+# when it calls run_all_versions.sh or run_coverage.sh or run_coverage.py (#2038), or runs pytest against a
 # cluster (a job whose key names a cluster). Comment lines are skipped: two jobs
 # that run no suite mention run_all_versions.sh in their comments.
 
@@ -19,7 +19,7 @@ _ej_scan() {
 	/^jobs:/ { inj = 1; next }
 	inj && /^  [a-zA-Z_-]+:[[:space:]]*$/ { flush(); job = $1; sub(/:$/, "", job); runs = 0; delete pk; next }
 	inj && job != "" && $0 !~ /^[[:space:]]*#/ {
-		if ($0 ~ /run_all_versions\.sh|run_coverage\.sh/ || ($0 ~ /\/pytest -q/ && job ~ /cluster/)) runs = 1
+		if ($0 ~ /run_all_versions\.sh|run_coverage\.(sh|py)/ || ($0 ~ /\/pytest -q/ && job ~ /cluster/)) runs = 1
 		line = $0
 		while (match(line, /postgresql-(\$\{\{ matrix\.pg \}\}|[0-9]+)-[a-z0-9]+/)) {
 			p = substr(line, RSTART, RLENGTH); sub(/.*-/, "", p); pk[p] = 1

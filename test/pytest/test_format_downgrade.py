@@ -13,9 +13,10 @@ asserted by SQLSTATE (0A000) on a scan and on an index fetch with the custom sca
 off, the path that returned the silent NULLs.
 
 ON A CLUSTER OF ITS OWN, and the prefix is put back exactly. The session cluster
-shares the install prefix, so every `pgcolumnar*` file in the library and extension
-directories is saved first -- bytes and mtime -- and restored in a `finally` by
-atomic rename, with anything the old install added removed. The mtime matters: the
+shares the install prefix, so every `pgcolumnar*` file in the library, bitcode and
+extension directories -- a `pgcolumnar*` directory whole, as an LLVM build installs
+its bitcode -- is saved first, bytes and mtime, and restored in a `finally` by atomic
+rename, with anything the old install added removed (`pgc_cluster.snapshot_prefix`). The mtime matters: the
 harness compares the library's mtime against the postmaster's start, and a newer
 library would make later files refuse to run. A copy written over a library a
 running postmaster has mapped corrupts it, so nothing is written in place.
@@ -61,30 +62,6 @@ def _run(argv, **kw):
     return subprocess.run(argv, check=True, capture_output=True, text=True, **kw)
 
 
-def _snapshot(dirs):
-    """{path: (bytes, (atime, mtime))} for every pgcolumnar* file in `dirs`."""
-    snap = {}
-    for d in dirs:
-        for p in pathlib.Path(d).glob("pgcolumnar*"):
-            if p.is_file():
-                st = p.stat()
-                snap[p] = (p.read_bytes(), (st.st_atime, st.st_mtime))
-    return snap
-
-
-def _restore(snap, dirs):
-    """Put the prefix back exactly: same files, same bytes, same mtimes."""
-    for d in dirs:
-        for p in pathlib.Path(d).glob("pgcolumnar*"):
-            if p.is_file() and p not in snap:
-                p.unlink()
-    for p, (data, times) in snap.items():
-        tmp = p.with_name(p.name + ".pgc-restore")
-        tmp.write_bytes(data)
-        os.utime(tmp, times)
-        os.replace(tmp, p)
-
-
 def _place(src, dst):
     """Install one file by atomic rename, never by writing into a mapped one."""
     tmp = pathlib.Path(str(dst) + ".pgc-place")
@@ -103,7 +80,7 @@ def _sqlstate(dsn, statements):
 
 
 def test_an_alpha4_binary_refuses_what_this_build_wrote(pgc_cluster, expect):
-    from pgc_cluster import Cluster, pick_port
+    from pgc_cluster import Cluster, pick_port, restore_prefix, snapshot_prefix
 
     if _beside_other_workers(os.environ):
         expect.cannot_run("UNMET_PRECONDITION",
@@ -130,8 +107,8 @@ def test_an_alpha4_binary_refuses_what_this_build_wrote(pgc_cluster, expect):
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-downgrade-"))
     os.chmod(work, 0o777)
-    snap = _snapshot([libdir, extdir])
-    expect.at_least(len(snap), 2, "premise: the prefix holds the tree's own install to put back")
+    snap = snapshot_prefix(libdir, extdir)
+    expect.at_least(len(snap["files"]), 2, "premise: the prefix holds the tree's own install to put back")
     cluster = None
     try:
         old = work / "old"
@@ -170,7 +147,7 @@ def test_an_alpha4_binary_refuses_what_this_build_wrote(pgc_cluster, expect):
 
         # This tree: put the session's own install back, upgrade, and write.
         cluster.stop()
-        _restore(snap, [libdir, extdir])
+        restore_prefix(snap)
         cluster.start()
         with psycopg.connect(dsn, autocommit=True) as c:
             try:
@@ -231,7 +208,7 @@ def test_an_alpha4_binary_refuses_what_this_build_wrote(pgc_cluster, expect):
     finally:
         if cluster is not None:
             cluster.stop()
-        _restore(snap, [libdir, extdir])
+        restore_prefix(snap)
         shutil.rmtree(work, ignore_errors=True)
 
 

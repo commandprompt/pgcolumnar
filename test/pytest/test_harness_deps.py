@@ -90,6 +90,21 @@ NO_CLUSTER = [
     # #1382: reads the two workflow files as text, with its own Python reader. Needs
     # no cluster and no driver, and never runs the shell harness.
     "test_every_suite_job_installs_the_extensions.py",
+    # #2038: reads the two workflow files as text, with its own Python reader. Needs
+    # no cluster and no driver.
+    "test_pytest_runs_where_the_suites_run.py",
+    # #2038: drives run_coverage.py on a stand-in tree with stand-in make, pytest,
+    # lcov and genhtml. Needs no cluster and no driver.
+    "test_coverage_report.py",
+    # #2038: drives run_san.py on stand-ins (a fake prefix, a fake pytest), and reads
+    # run_san.sh's --list-suites. Needs no cluster, no driver and no sanitizer build.
+    "test_sanitizer_gate.py",
+    # Resolves the relative links in docs/*.md and README.md against the pages'
+    # headings, as text. Needs no cluster and no driver.
+    "test_docs_links_resolve.py",
+    # Checks docs/ARCHITECTURE.md's module map against src/, objstore/ and the install
+    # script, as text. Needs no cluster and no driver.
+    "test_architecture_map.py",
     # The classifier's own controls, split out of this file so the job whose file
     # list IS this list actually runs them. This file cannot be in the list: it
     # hands cluster-bound file names to pytest, so it needs what they need.

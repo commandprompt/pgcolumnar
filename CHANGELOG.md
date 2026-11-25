@@ -282,6 +282,77 @@ true until the next version shipped.
 
 ### Changed
 
+- The user documentation is brought up to date with the changes since 1.0-alpha4,
+  after an audit of every `[Unreleased]` entry against the docs and the code.
+  Stale statements corrected: the release and PGXN versions and the native format
+  version in limitations.md; going over `groupagg_max_groups` no longer errors;
+  a downgrade to 1.0-alpha4 after 1.0-alpha5 wrote is refused, not misread; the
+  post-codec choice covers every encoding, not only FSST; PostgreSQL 19 is
+  validated against 19beta4; `alter_table_set_access_method` no longer describes
+  PostgreSQL 13 and 14; the cluster and recluster examples name their columns.
+  Newly documented: the `pgcolumnar_objstore.so` module and its same-build rule;
+  restoring a rollup from `pg_dump` and `rebase_rollup`; TID range scans; parallel
+  projection scans; `import_parquet` refusing a partitioned table; how
+  `export_parquet` writes `timestamp` and `timestamptz`; a collation change
+  dropping a column's zone maps; `timestamp` against `timestamptz` not skipping;
+  `vacuum_full` skipping materialized views; the REST reply cap; the one-part
+  upload edge; the two internal test settings; which settings need a restart or
+  a reload. `test/pytest/test_docs_links_resolve.py` resolves every internal link
+  in the docs against the pages' headings: four had broken when function
+  signatures gained arguments, and no gate read links.
+- `docs/ARCHITECTURE.md`'s module map names every source file and catalog
+  again. It gains sections for parallel copy and export, the row lock, the column
+  extent, the sketch aggregate, the curve keys, index maintenance for imports and
+  rewrites, the export sink, the Thrift, FlatBuffers and Parquet-codec readers, the
+  object-store module and rollups. `test_architecture_map.py` holds the map to the
+  tree.
+
+- The nightly's ledger gate compares the ceiling against the commit's parent
+  (#1104). On the `v1.0-alpha4` tag push every major went red with no suite
+  failing: the gate found no prior ceiling, because a tag checkout has no
+  upstream. On a scheduled run, `auto` compared main with itself, so the gate
+  could not catch a raised ceiling. `PGC_LEDGER_AGAINST` now selects `auto` or
+  `parent`, and nothing else. `parent` is `HEAD~1`, and fails rather than falls
+  back when it does not resolve. The nightly sets `parent` and fetches two
+  commits. Self-test part 500.
+- The pytest summary counts a refused comparison (#1613). Each refusal that
+  failed its test prints `REFUSED  <name>: <reason>`, in the shape of the shell
+  suites' FAIL line, and the accounting line adds `N refused` to its total. A
+  run with no refusals prints the same line as before. A refusal that a test
+  catches on purpose is not counted. `test_check_records.py`.
+- The tests follow PostgreSQL 19beta4 (#1337). 19beta4 removed
+  `UPDATE ... FOR PORTION OF`, so `test/temporal.sh` and `test_temporal.py` look
+  for the clause in the grammar, not the major version. Where it is absent, its
+  three arms are recorded as named skips; before, the shell suite dropped them
+  silently on 18. 19beta4's `REPACK (CONCURRENTLY)` refuses every access method
+  but heap, so `test/native_repack.sh` accepts that refusal or pgcolumnar's own,
+  and nothing else. The CI beta job builds against 19beta4. `extension_upgrade`
+  and `format_downgrade` now run from `/`, and `test_build_refusal.py` no longer
+  fails when the checkout is under a home directory other users cannot read.
+- The nightly pytest cluster job runs on aarch64 too, for PG 18 (#2038). The
+  suites job runs that leg because a missing barrier in concurrent code shows on
+  aarch64 and not under x86_64's stronger store ordering. Until now only the
+  shell suites ran there. `test_pytest_runs_where_the_suites_run.py` requires
+  that `pytest-cluster` runs every (major, architecture) the suites job runs, in
+  both workflows.
+- The nightly coverage report runs the pytest corpus, not the shell suites
+  (#2038). `test/pytest/run_coverage.py` builds with `COPT=--coverage`, sends
+  the counters to `GCOV_PREFIX`, and runs every pytest cluster file except the
+  three that install another build into the prefix. It then copies each counter
+  back beside its object, only inside the tree. It keeps `run_coverage.sh`'s
+  refusals: zero counters are refused before lcov runs, and a run that collected
+  no test is not a clean report. `test_coverage_report.py` holds each refusal on
+  stand-in tools. The job now runs as an ordinary user, as pytest-cluster does.
+- The nightly sanitizer gate runs the pytest twins, not the shell suites
+  (#2038). `test/pytest/run_san.py` runs the twins of `run_san.sh`'s 24 suites
+  against the ASAN+UBSAN build and decides the same way. It refuses a build
+  without the sanitizer flags. A failed suite fails the gate, and a suite with
+  a declined test makes it incomplete. Each sanitizer report now goes to a file
+  through `log_path`, so a report from any process fails its suite, even when
+  every test passed. With #225's unaligned read put back, the twins of
+  `fuzz_arrow` passed while ASAN reported three misaligned loads, and the gate
+  failed them. `test_sanitizer_gate.py` holds the subset, the refusals and the
+  verdicts.
 - `test/iceberg_deletes.sh` and `test_iceberg_deletes.py` now check that a delete
   file in a format other than Parquet is refused with SQLSTATE 0A000 (#1873). One
   snapshot records its position-delete file as ORC and another records its
@@ -533,6 +604,341 @@ true until the next version shipped.
   Reported by @OffgridwithJD.
 
 ### Fixed
+
+- An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
+  forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
+  after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
+  also no longer waits when another session queues `ALTER TABLE` on the table
+  during the INSERT. Each flush worker opened the table with ACCESS SHARE. The
+  workers are not in the inserting backend's lock group, and the backend waits
+  for them on a latch, so PostgreSQL's deadlock detector could not see the
+  wait. Only `statement_timeout`, `lock_timeout` or a cancel ended it. The
+  workers now take each column's attributes from the inserting backend, through
+  the shared memory segment, and do not open the table. The flush still runs
+  in workers, and the setting is still off by default (#2072). Two cases
+  remain, in #2182: a composite column still hangs when the transaction holds
+  ACCESS EXCLUSIVE on the composite's table, and a column whose type was
+  created in the same transaction is flushed serially after a WARNING.
+  `parallel_flush_optin.sh` arm 7 and `test_parallel_flush_optin.py`. Arm 7
+  also retypes two columns in the same transaction and requires every column
+  encoded in workers, with the serial path's chunks and rows, so a worker that
+  reads the committed column attributes fails it (#2140 review).
+- An `INSERT` of rows whose one column holds more than 1 GiB per row group no
+  longer fails (#2071). The writer closed row groups and chunk groups by row
+  count only, and put each column's values for a row group into one buffer, which
+  PostgreSQL caps at 1 GiB. With the default limits, a column averaging more than
+  about 7 KB per row, such as a `jsonb` document, failed with `string buffer
+  exceeds maximum allowed length (1073741823 bytes)`, even when the values
+  compressed to almost nothing. The writer now also writes a row group before a
+  row would take its values past 256 MiB, summed over its columns, so wide rows
+  make row groups with fewer than `stripe_row_limit` rows. It counts each value
+  at its raw size, so rows copied from heap, which stores them compressed, are
+  bounded too. A single row whose values sum past about 1 GiB still fails
+  (#2178). docs/limitations.md ("Write size limits"). `test/large_values.sh` and
+  `test_large_values.py`, which also check the row-group shape of an 8 KB load.
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
+  sort column is dropped and another column takes its name (#2069). The
+  ordering mark that `vacuum_sorted` and `recluster` record names its key
+  columns by name, and DROP COLUMN left it in place. PostgreSQL frees a
+  dropped column's name, so after `ALTER TABLE ... RENAME COLUMN` onto that
+  name the planner left out the Sort for the new column, and
+  `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
+  column in the key now clears the mark, on the table and on every
+  partition or inheritance child the drop reaches. A drop of any other
+  column keeps it. A column drop on a heap table never reaches this code,
+  in a database with or without the extension; the tests drop a column of
+  an empty and a populated heap table in both. A table whose key column
+  was dropped on an older build keeps its stale mark: run `vacuum_sorted`
+  on it again before renaming another column to the dropped name.
+  `test/sorted_mark_rename.sh` and `test_sorted_mark_rename.py`.
+- `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
+  raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
+  when the conflicting row was committed by another transaction after the
+  snapshot was taken, as heap does (#2060). Before this fix the insert skipped
+  its row and committed: it gave way to a row its snapshot never saw, and the
+  application had no failure to retry. The access method's
+  snapshot check now looks at the row instead of always answering "visible",
+  and the slot reports the row's inserting transaction, which core reads to tell
+  the transaction's own rows from another's. A conflict with a row the snapshot
+  sees, or with a row the transaction inserted itself, still skips the row
+  without error. READ COMMITTED is unchanged. The same answer now reaches
+  deferred foreign keys on a pgcolumnar referencing table: a row inserted and
+  then deleted before commit is no longer checked at commit, as heap does.
+  Before this fix that commit failed with 23503 for a row that no longer
+  existed. Known limitation: the insert also
+  raises 40001, where heap does not, when an online `compact_rewrite` or
+  `recluster` (the autovacuum daemon runs both) moved the conflicting row after
+  the snapshot was taken. The moved copy has a new row number the snapshot cannot
+  see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
+  insert skipped the row and committed in that case. `test/am_contracts.sh`,
+  `test_am_contracts.py`, `test/fk_referencing.sh` and `test_fk_referencing.py`.
+- An ungrouped aggregate over a join onto a unique dimension no longer returns
+  a wrong count when the join compares text under another collation than the
+  fact column's (#2066). With `pgcolumnar.enable_ungrouped_vector_agg` on, the
+  join fold compared keys under the fact column's own collation. A join onto a
+  case-insensitive key therefore dropped the fact rows that differed only in
+  case, and a byte-wise join over a case-insensitive column counted rows it
+  should not. The fold now runs only when the join's operator and collation are
+  the ones it compares with. Otherwise the plan is a plain hash join, which
+  answers correctly. A join with another equality operator than the type's
+  default, such as one on absolute values, gave the same kind of wrong count
+  and is refused the same way. `test/native_join_vector_agg.sh` and
+  `test_native_join_vector_agg.py` test both refusals, and test that a
+  case-insensitive key joined under one collation still folds.
+- An index-only scan no longer returns rows that a committed DELETE or UPDATE
+  removed, after a VACUUM ran while that statement was still running (#2059).
+  The writer clears a block's all-visible bit when it marks a row, but keeps the
+  mark in memory until the statement ends. A VACUUM in between could not see the
+  mark, so it set the bit again, and nothing cleared it at commit. An index-only
+  scan then skipped the row check and counted the deleted rows until a later
+  write touched the block. Only a manual VACUUM was tested. Autovacuum takes
+  the same lock, which does not block a DELETE or UPDATE, so it can probably hit
+  this too. The writer now clears the bits again after it writes the marks to
+  the catalog, and VACUUM checks the row groups again after it sets bits and
+  clears any that are no longer all-visible. A new test-only setting,
+  `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
+  prove the second check. The tests delete inside one block, across two blocks,
+  and across three row groups, for both steps. Inside the writing statement
+  itself, an AFTER trigger can still see the bit set until the statement ends
+  (#2169). `test/index_only.sh` and `test_index_only.py`.
+- `avg()` over a `float8` or `real` column no longer fails with `value out of
+  range: overflow` where heap returns `Infinity`. It failed when one group's
+  values were split into partial results and one of them held a single
+  `Infinity`: past `pgcolumnar.groupagg_max_groups` under a cached plan, with
+  `pgcolumnar.enable_parallel_vector_agg = on`, or in the serial node's merge
+  of its runs. The grouped aggregate kept the sum of squared differences at 0
+  after an infinite first value, where core's `float8_accum` keeps it NaN, so
+  combining that result with a finite one looked like an overflow from finite
+  inputs. It now keeps NaN where core does. The returned average was never
+  affected. `test_native_groupagg.py`, `test/native_groupagg.sh` (#2068).
+- `pgcolumnar.import_arrow` no longer stores wrong values from a large binary or
+  large string column (#2097). It read their 64-bit offsets as 32-bit ones, so a
+  one-row large binary `b'x'` imported into `bytea` as an empty value, and a
+  large string `['hi','there']` imported into `text` as `''` and `'hi'`, with no
+  error. A string view or binary view was refused as a damaged file (XX001). It
+  now refuses all four types with SQLSTATE 42804, naming the column and the
+  Arrow type, at any depth. A plain binary or string column imports as before.
+  Reading these types is a separate feature. docs/limitations.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`.
+- `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the
+  backend on a table that has a projection (#2092). The import writes the
+  projection's rows when its statement ends. An import is a `SELECT`, so its
+  statement ends in portal cleanup, where no snapshot is active. The projection
+  write then read the options catalog with a snapshot nobody had registered. On
+  a PostgreSQL 18 or 19 build with assertions, the backend aborted once that
+  catalog held a row for any table, and PostgreSQL restarted every session. The
+  import rolled back. The projection write now sets an active snapshot first, as
+  the base table's write already did. `docs/how-to.md` runs into this once its
+  projection example works (#2093): it adds a projection and later imports an
+  Arrow file. New checks in `test/arrow_import.sh` and `test/parquet_import.sh`,
+  and their pytest twins, cover both functions. A new check in
+  `test/parallel_copy.sh`, and its twin, shows that `parallel_copy` into a table
+  with a projection fills the projection. With 2 or more workers into a
+  projection that holds no rows yet, `parallel_copy` hangs, for another reason
+  (#2161).
+- A `pgcolumnar.parallel_copy` loader that fails now closes its file once
+  (#2083). It closed the file after aborting its transaction, but the abort
+  had already closed it. Each failed loader logged `fd passed to
+  CloseTransientFile was not obtained from OpenTransientFile` and called
+  `close()` on a descriptor number that could by then belong to another file.
+  The loader now closes the file before the abort. `test/parallel_copy.sh`
+  and `test_parallel_copy.py`.
+- `pgcolumnar.import_arrow` now refuses a `decimal256` column for a `numeric`
+  target, instead of storing wrong values (#2081). The reader decodes 16-byte
+  `decimal128` values only, and never read the file's Decimal bit width. A
+  `decimal256` buffer is twice as long, so it passed the length check and was
+  read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50, with
+  no error. Such a file now fails with SQLSTATE 42804, `Arrow field is a
+  decimal of another width`, and no row is stored. A `decimal32` or
+  `decimal64` file gets the same refusal; before, it failed as a malformed
+  file (XX001). pyarrow writes `decimal256` for any precision above 38, and
+  when asked to. `test/arrow_import.sh` and `test_arrow_import.py`.
+- A TID scan of a ctid that no row can have now returns no row, as on heap
+  (#2058). The access method told the executor that every ctid was valid. On
+  `'(0,0)'` the fetch then failed an assertion, and on an assert build
+  PostgreSQL restarted every session. On an offset past the 291 a block holds,
+  the fetch read a row of a later block: `WHERE ctid = '(0,292)'` returned the
+  row at `(1,1)`, and an UPDATE or DELETE with that condition changed or
+  removed it. The access method now refuses offset 0 and any offset past 291,
+  as PostgreSQL's `heapam_tuple_tid_valid` refuses an invalid ctid. A ctid
+  range (`ctid >= ...`) was not affected. `test/tid_range_scan.sh` and
+  `test_tid_range_scan.py`.
+- A join runtime filter under a correlated subquery or a LATERAL join now
+  gives each run its own answer (#2062). Every later run returned the first
+  run's rows, with no error, whenever the outer value changed the build side.
+  The coordinator did not tell its Hash Join, or the Build Tap's source, that a
+  parameter had changed, so the join kept the first hash table. The coordinator
+  and the tap now pass the changed parameters down, and a rescan from the Hash
+  replays the tap's rows instead of discarding them. Before this fix, turning
+  off `pgcolumnar.enable_join_runtime_filter` avoided the fault.
+  `test/native_join_runtime_filter.sh` and `test_native_join_runtime_filter.py`.
+- The ungrouped vectorized aggregate over a unique-key join (the join fold) no
+  longer crashes the backend when a correlated subquery or a LATERAL join reruns
+  it (#2128, found while fixing #2062). The fold ran the dimension plan inside
+  its key memory context. A rescan reset that context, which freed the
+  dimension scan's state, so the second rescan crashed with signal 11. The fold
+  now runs the dimension plan outside that context. It also passes changed
+  parameters to the dimension plan, so a DISTINCT dimension returns the new
+  outer row's keys instead of its first rows. Before this fix, turning off
+  `pgcolumnar.enable_ungrouped_vector_agg` avoided the fault.
+  `test/native_join_vector_agg.sh` and `test_native_join_vector_agg.py`.
+- Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
+  column can be read again (#2061). The encoder stores a run of equal values
+  of any fixed-width type as RLE, but the decoder accepted RLE only for types
+  1, 2, 4 or 8 bytes wide. So the INSERT succeeded, and every later read of
+  the column, `DELETE`, `ANALYZE`, `pgcolumnar.vacuum` and `pg_dump` failed
+  with `corrupt encoded chunk (fixed-width encoding on a non-fixed-width
+  column)`. Three equal uuids were enough. The decoder now accepts RLE at any
+  fixed width. The stored bytes were always correct, so tables written before
+  this fix become readable without a rewrite. `test_native_encoding.py`.
+- CI: the suite matrix passes `GITHUB_BASE_REF` to `run_all_versions.sh` by name.
+  `ubuntu-latest` moved to ubuntu-26.04, where `sudo -E` no longer carried it, so
+  the ledger gate could not find the PR's base and every PR failed
+  `suites (PG 17)` and `suites (PG 18)` with "GITHUB_BASE_REF is unset", while
+  every suite passed. `.github/workflows/ci.yml`.
+- `pgcolumnar.import_arrow` now refuses a text value that is not valid in the
+  database encoding, as `read_parquet` does. It stored Arrow UTF8 values into
+  `text`, `varchar`, `json` and `jsonb` columns without checking them, so a
+  file holding the bytes `ff fe` imported, and `upper()` and `ORDER BY` on the
+  column then failed with `invalid byte sequence for encoding`. Such a value now
+  fails the import with SQLSTATE 22021, naming the column and the bad bytes,
+  and no row is stored. A value holding a NUL byte is refused the same way. A
+  `bytea` column still takes the bytes unchanged.
+- A remote read no longer writes past its buffer when a server sends a
+  hostile chunk size. Before this fix, an allow-listed endpoint, or anyone who
+  could change a plain `http://` reply, could send a 1-byte chunk and then the
+  chunk size `7fffffffffffffff`. The reader's bound added the two sizes as
+  signed numbers, the sum wrapped negative, and the reader wrote the rest of
+  the reply past the end of its buffer. The backend died with a segmentation
+  fault, and PostgreSQL restarted every session. The Iceberg REST client and S3
+  listing had the same sum and raised an internal error instead. The reader now
+  refuses a chunk size that is not hex or does not fit 64 bits signed, and
+  compares each size with the room left rather than adding. A ranged read
+  raises a protocol-violation error (08P01), and a REST reply or listing
+  raises `exceeded N bytes` (54000). `https://` replies cannot be changed in
+  transit. `test_objstore_chunked_framing.py`.
+- An Iceberg table on object storage can no longer name a file outside its
+  location by spelling `..` in a form that only the server reads as `..`. The
+  remote containment guard already refused a literal `..` and a percent-encoded
+  one. It now also refuses a segment that starts with `..;`, which servers that
+  read `;` as the start of path parameters (Tomcat, Spring) serve as `..`; a
+  segment that starts with `..?` or `..#`, which reaches an `http(s)://`
+  server as the path `..`, because such a key is sent without percent-encoding;
+  and it treats a backslash as a separator, as some servers do. Such a path is
+  refused with `escapes the table location` (22023) before any request is
+  sent.
+- An Iceberg REST catalog can no longer make a backend hold an unbounded
+  amount of memory by paging a list. `iceberg_rest_namespaces`,
+  `iceberg_rest_tables` and the namespace walk keep every page of a list in
+  memory until the list is built. Each response was capped at 64 MiB, but a
+  catalog that kept sending new page tokens could send up to 100000 pages, and
+  the backend held them all. The pages of one list now share the one-response
+  cap: a list larger than 64 MiB across its pages is refused with
+  `the REST catalog ... is larger than 64 MiB across its pages` (54000).
+
+- A read of a columnar table inside a plpgsql EXCEPTION block that rolls back no
+  longer loses the enclosing statement's rows (#1360). To see the rows the
+  enclosing `INSERT` has buffered, as on heap, the read writes them out.
+  Their catalog rows went under the block's subtransaction, and the block's
+  rollback took them. An `INSERT` of 3000 rows through such a function kept 1
+  row; heap keeps 3000. A `DELETE`'s buffered marks were lost the same way. The
+  enclosing statement now keeps its buffer until the block ends. If the block
+  aborts, the rows are written again under the enclosing statement, with the
+  same row numbers, so index entries still point at the right rows.
+  `test/am_contracts.sh` and `test_am_contracts.py`.
+- A `DELETE` whose qual calls a function that deletes another row of the same
+  table no longer fails with `attempted to update invisible tuple` (#1394). Two
+  delete marks reached the same row group in one command, and the second update
+  of its `delete_vector` row found the version the first had written. When the
+  version it finds is the current command's own, the update now advances the
+  command counter first. `test/native_delete_visibility_paths.sh` and
+  `test_native_delete_visibility_paths.py`.
+- `REINDEX` reclaims the index entries of deleted rows again (#1407). The fix
+  for #1341 earlier in this release indexes deleted rows as not alive, so an
+  older snapshot still finds them. But the build indexed every deleted row, so
+  `REINDEX` reclaimed nothing. An index over 100,000 rows, 9 in 10 deleted,
+  stayed 2,260,992 bytes; on heap it fell to under half. The build now leaves
+  out a row whose delete every running snapshot can see, as heap leaves out a
+  dead tuple. A row deleted after the oldest running snapshot began is still
+  indexed as not alive. docs/limitations.md. `test/am_contracts.sh` and
+  `test_am_contracts.py`.
+- `pgcolumnar.truncate()` checks that the caller owns the table before it locks
+  the table or checks its type (#1384). A non-owner used to queue behind the
+  owner's lock, and every later request queued behind it. A non-owner also
+  learned whether a table it has no rights on is columnar. The other
+  maintenance functions have checked in this order since #749.
+  `test/vacuum_lock_privilege.sh` and `test_vacuum_lock_privilege.py`.
+- A rollup now depends on its source table, and dropping a rollup drops its
+  partials table and catalog rows (#1376). Before, `DROP TABLE` of the source
+  succeeded, and the rollup could never be refreshed again: `42P01`, or, if the
+  OID was reused, another table's rows folded in with no error. `DROP VIEW` of a
+  rollup left its partials table and its `pgcolumnar.rollup` and `rollup_group`
+  rows behind. Now `DROP TABLE` of the source is refused with `2BP01`, and
+  `DROP TABLE ... CASCADE` drops the rollup too. A trigger on
+  `pgcolumnar.rollup` records the dependencies, so a restore that writes the
+  rows back records them again. The trigger requires SELECT on the source, as
+  creating a view over it would. Without that, a role could block the
+  `DROP TABLE` of a table it cannot read. docs/how-to.md. `test/rollup.sh` and
+  `test_rollup.py`.
+- `pg_dump` now carries a rollup's definition, and `refresh_rollup` refuses a
+  rollup whose source was restored (#1377). `pgcolumnar.rollup` is now dumped.
+  `rollup_group` is not, because it names row groups of storage that a restore
+  replaces. A new column, `source_oid`, records the source's OID. After a
+  restore it no longer matches the source, so `refresh_rollup` refuses with
+  `55000`, and the hint names `rebase_rollup`. The storage id cannot tell: it
+  restarts with the extension, so a restored source can get the same one.
+  Without the OID check, a refresh folded the restored rows a second time.
+  `pg_upgrade` keeps OIDs, so a rollup needs no rebase after an upgrade.
+  `test/rollup.sh` and `test_rollup.py`.
+- `make` stops with an error that names `PG_CONFIG` when `PG_CONFIG` gives no
+  PGXS, before any probe runs (#1344). The compiler probe's `sed` then got no
+  file and read make's standard input. With standard input open, the build
+  hung: one `make clean` waited 65 minutes. With it closed, `make clean` exited
+  0 having cleaned nothing. The probe's `sed` now also reads `/dev/null`.
+  Self-test part 630 and `test_build_needs_pg_config.py`.
+- `pgcolumnar.refresh_rollup` reads the source's storage id once (#1614). Two of
+  its catalog queries filtered on `pgcolumnar.get_storage_id(source)`. Once
+  `pgcolumnar.row_group` had statistics, which autovacuum gathers on its own,
+  the planner could choose a sequential scan and call the function once per row
+  group of every table. Each call reads the source's first page. A refresh after
+  a small append then read about 95 blocks instead of about 20. `stats()` and
+  `sort_status()` had the same defect (#1637). `test/rollup.sh` and
+  `test_rollup.py`.
+- The plan `pgcolumnar.partition_drop_plan` returns now drops a partition whose
+  name contains `$pgcolumnar_drop$` (#1334, from the review of #1331). The drop
+  block was dollar-quoted with that tag, so such a name ended the quote early,
+  and the planned statement failed to parse. The block's body is now a string
+  literal. `test/partition_lifecycle.sh` and `test_partition_lifecycle.py`.
+- `import_parquet` into a partitioned table no longer crashes the backend
+  (#1263). From PostgreSQL 17 a partitioned table can use the pgcolumnar access
+  method, but it has no storage of its own. The import reached the insert path
+  on it and failed with signal 11, on release builds too. It now refuses with
+  `42809`, "cannot import into relation", and the detail "It has no storage of
+  its own." Import into each partition instead. `test/parquet_import.sh`.
+- Under `pytest -n`, a test file that imports a declinable capability such as
+  pyarrow without a guard is now refused, as in a serial run (#1305). The check
+  ran in the xdist workers, so the controller, which prints the summary and sets
+  the exit status, never saw it. A serial run gave `REFUSED` and exit 1, and
+  `-n 2` gave `2 passed` and exit 0. Each worker now sends what it found to the
+  controller. `test_capability_decline.py`.
+- Setting an attribute on the pytest fixture `pgc_conn`, or on a cursor it
+  returns, now raises `AttributeError` (#1420). The two proxies had no
+  `__setattr__`, so `pgc_conn.autocommit = False` set an attribute on the proxy
+  and left the real connection in autocommit. Every statement committed, and
+  `rollback()` undid nothing. The message says to use `BEGIN` and `ROLLBACK`,
+  or a connection of the test's own. `test_connection.py` and
+  `test_writes_wrote_rows.py`.
+- `pgc_ledger.py merge` refuses a `--mutation` that contains `;`, and the ledger
+  reader refuses a mutation with a blank at either end (#1434). The mutation
+  column is a `;`-separated set, so such a text was stored as two mutations, one
+  of them a sentence fragment, and every later merge re-sorted the pieces. The
+  12 such rows in `test/check_ledger.tsv` are reworded without `;`.
+  `test_mutation_ledger.py`.
+- `test/docs_style.sh` no longer prints `command not found` on every run
+  (#2033). Two lines after the block that records the changelog checks
+  repeated the tail of a heredoc, so the shell ran the list of changelog
+  versions as a command, then ran `CLEOF`. No check failed because of it,
+  but every log carried the two errors. The two lines are removed.
 
 - Self-test part 540 now reads a `[[ ]]` test whose unquoted regex after `=~`
   holds a bracket class, as in `[[ "$a" -le "$b" && "$a" =~ ^[0-9]+$ ]]`
@@ -2249,7 +2655,7 @@ true until the next version shipped.
   rollback then took them away. `INSERT INTO t SELECT f(g) FROM generate_series(1,
   5000) g`, where `f`'s block wrote a columnar table and raised, kept 1 row. Now a
   statement's end flushes only its own subtransaction's buffers. The same loss through a
-  READ of that table inside the block is #1360, not yet fixed.
+  READ of that table inside the block was #1360, since fixed by #1403 (7b893df3).
 - **A unique index is no longer violated by an insert racing an uncommitted delete of
   its key (#1341).** The index fetch answered a row whose delete was still in progress
   as gone, so the uniqueness check did not wait; when the delete rolled back, the key had

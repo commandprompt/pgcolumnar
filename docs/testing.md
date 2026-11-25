@@ -95,8 +95,8 @@ resolved one of two ways, and writing it down is neither:
   slower.
 
 `docs/limitations.md` is for the items that are out of scope, or that an external
-constraint blocks. An extension cannot change WAL behaviour. PostgreSQL 13 and
-14 lack an API. It is not a parking space. Anything in it that is unfixed only
+constraint blocks. An extension cannot change WAL behaviour. A supported
+PostgreSQL major lacks an API. It is not a parking space. Anything in it that is unfixed only
 because nobody has fixed it does not belong there.
 
 When a fix lands, sweep the docs in the same change. `ANALYZE` collecting no
@@ -461,7 +461,7 @@ test/run_all_versions.sh /usr/local/pg15/bin/pg_config ... /usr/local/pg19/bin/p
 ```
 
 All suites pass on PostgreSQL 15 through 19. PostgreSQL 19 is validated against
-19beta2; revalidation against the final PostgreSQL 19 release is pending that
+19beta4; revalidation against the final PostgreSQL 19 release is pending that
 release.
 
 **A suite has three outcomes, and two of them are not failures.** Read which one
@@ -637,13 +637,18 @@ which converts a defect into a new baseline.
 ## Coverage
 
 ```sh
-test/run_coverage.sh /path/to/pg_config
+test/pytest/run_coverage.py /path/to/pg_config
 ```
 
-Builds instrumented, runs the suites against that build, and writes an HTML
-report to `coverage/html`. It runs nightly and uploads the report as an
-artifact. The per-suite logs are uploaded with it, so a suite that fails inside
-the coverage job can be read rather than only counted.
+Builds instrumented, runs the pytest cluster files against that build, and
+writes an HTML report to `coverage/html`. It runs nightly and uploads the report
+as an artifact. The pytest log (`coverage/pytest.log`) is uploaded with it, so a
+test that fails inside the coverage job can be read rather than only counted.
+It runs as an ordinary user, because the pytest harness does. The three files
+that install another build into the prefix are left out, and
+`SWAPS_THE_PREFIX` in the runner says why for each.
+
+`test/run_coverage.sh` does the same over the shell suites (#2038).
 
 There is no threshold and nothing fails on the number, deliberately. A coverage
 threshold creates pressure to write tests that execute lines rather than tests
@@ -685,7 +690,10 @@ at most 120 MB of memory and its data directory 301 MB of disk.
 **Nightly at 06:00 UTC** (`.github/workflows/nightly.yml`): the full packaged
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an
-instrumented PostgreSQL, and the coverage report. It also runs the
+instrumented PostgreSQL, and the coverage report. The sanitizer gate,
+`test/pytest/run_san.py`, runs the pytest twins of 24 suites with every
+violation fatal. Each instrumented process writes its report to a file
+(`log_path`), and a report fails its suite even when every test passed (#2038). It also runs the
 extension-upgrade guard. That guard builds the previous release on PostgreSQL
 18, loads data into it, and upgrades it in place. A capability-sweep job runs every suite
 that uses pyarrow twice on PostgreSQL 18. One run has the package installed and

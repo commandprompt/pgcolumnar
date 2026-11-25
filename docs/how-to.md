@@ -667,6 +667,12 @@ If the source is rewritten, for example by `pgcolumnar.vacuum`, `refresh_rollup`
 refuses with `55000`. If the rollup was current before the rewrite, run
 `pgcolumnar.rebase_rollup` to record the rewritten table and continue.
 
+A logical restore from `pg_dump` does not carry the row groups that a rollup
+folded. After the restore, `refresh_rollup` refuses with `55000`. If the rollup
+was current when you dumped it, run
+[`pgcolumnar.rebase_rollup`](sql-reference.md#pgcolumnarrebase_rolluprollup-regclass-returns-bigint)
+once to record the source's row groups.
+
 **A rollup depends on its source.** `DROP TABLE` of the source is refused while
 a rollup reads from it, as it is for a view. `DROP TABLE ... CASCADE` drops the
 rollup too. To remove only the rollup, run `DROP VIEW` on it, which also drops
@@ -676,8 +682,6 @@ Run `refresh_rollup` at READ COMMITTED. A role that is not a superuser needs
 `USAGE` on schema `pgcolumnar`, which a superuser grants. Each role then sees
 and refreshes only the rollups that it owns.
 
-`test/rollup.sh` checks each of these statements.
-
 ## Move cold partitions to Parquet
 
 `pgcolumnar.tier_partition` moves one columnar partition into a Parquet file.
@@ -686,7 +690,10 @@ grants and comment. Queries on the parent return the same rows before and after
 the move.
 
 ```sql
-CREATE SERVER cold FOREIGN DATA WRAPPER pgcolumnar_parquet;
+CREATE SERVER cold FOREIGN DATA WRAPPER pgcolumnar_parquet
+  OPTIONS (endpoint 'https://s3.example.com', region 'us-east-1');
+CREATE USER MAPPING FOR CURRENT_USER SERVER cold
+  OPTIONS (access_key_id '...', secret_access_key '...');
 
 SELECT pgcolumnar.tier_partition('metrics_2026_01', 'cold',
                                  's3://archive/metrics/2026_01.parquet');
@@ -697,7 +704,9 @@ its endpoint and region, and your user mapping on it. These are the settings
 the foreign partition reads with. If the object store rejects your mapping, the
 move fails and the rows stay where they were. Before it commits, the function
 also reads the rows back through the foreign partition, as you. If that read
-fails, the move rolls back.
+fails, the move rolls back. See
+[Endpoints and credentials](sql-reference.md#endpoints-and-credentials) for the
+server and mapping options.
 
 You need both `pg_write_server_files` and `pg_read_server_files`, or superuser.
 Every role that queries the parent after the move needs `pg_read_server_files`
@@ -851,9 +860,6 @@ After the move:
   read-only.
 - Partition pruning works as before. A query that touches only the local
   partitions does not read the Parquet file.
-
-`test/tier_partition.sh` checks each of these statements. It uses a local path,
-not object storage.
 
 ## Keep tables optimized automatically
 

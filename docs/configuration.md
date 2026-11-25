@@ -7,8 +7,12 @@ pgColumnar has two kinds of settings:
   them in `postgresql.conf`, for one session with `SET`, for one role, or for one
   database. A few need a special privilege or a specific time. Setting
   `pgcolumnar.enable_end_truncation` or `pgcolumnar.objstore_allowed_endpoints`
-  needs superuser. You can set `pgcolumnar.unique_lock_buckets` only at server
-  start. The row for each of these gives the condition again.
+  needs superuser. So do two internal settings for tests. You can set
+  `pgcolumnar.unique_lock_buckets` and `pgcolumnar.row_lock_buckets` only at
+  server start. You set `pgcolumnar.autovacuum` and the four
+  `pgcolumnar.autovacuum_*` settings in `postgresql.conf`, then reload the
+  server configuration. You cannot set them with `SET`, or for one role or one
+  database. The row for each of these gives the condition again.
 - Per-table storage options. You set these options with
   `pgcolumnar.set_options`. They apply to one table. That table uses them when it
   writes new data.
@@ -19,7 +23,7 @@ pgColumnar has two kinds of settings:
 
 | Setting | Type | Default | Description |
 | --- | --- | --- | --- |
-| `pgcolumnar.stripe_row_limit` | integer | `150000` | Maximum rows per row group. The row group is the unit of write and the granularity at which whole segments are appended. Range 1000 to INT_MAX, but see the note below: a value under 1024 costs text compression. |
+| `pgcolumnar.stripe_row_limit` | integer | `150000` | Maximum rows per row group. The row group is the unit of write and the granularity at which whole segments are appended. A row group also closes early, before its values pass 256 MiB; see [Write size limits](limitations.md#write-size-limits). Range 1000 to INT_MAX, but see the note below: a value under 1024 costs text compression. |
 | `pgcolumnar.chunk_group_row_limit` | integer | `10000` | Maximum rows per chunk group. The chunk group is the band a scan skips as a unit when a filter cannot match its minimum and maximum. Within a chunk group each column is encoded in fixed 1024-value vectors. Range 100 to INT_MAX. |
 | `pgcolumnar.encoding_sample_rows` | integer | `2048` | The number of rows that the writer samples to select the value encoding of a vector. The writer estimates each candidate on a sample of windows. The windows contain consecutive values and have an equal distance between them. Thus the sample shows the global shape and also the local runs. The writer then applies only the two best candidates to the full vector. A value of `0` applies each candidate to each vector. This is the behaviour of earlier versions. The writer changes a value below 128 to `0`, because a smaller sample cannot put the candidates in order. This setting changes the write speed. It can also change the compression ratio. It does not change correctness. |
 
@@ -60,7 +64,7 @@ disk. It never changes the values that a table returns.
 | `pgcolumnar.enable_qual_pushdown` | boolean | `on` | Push scan qualifiers down so per-chunk min and max values can skip chunk groups. |
 | `pgcolumnar.enable_vectorization` | boolean | `on` | Use the vectorized aggregate path for supported ungrouped aggregates. |
 | `pgcolumnar.enable_group_vectorization` | boolean | `on` | Use the vectorized aggregate path for `GROUP BY` queries on a columnar table. The planner takes it only when the group count cannot exceed `pgcolumnar.groupagg_max_groups`; see [how the grouped path stays safe on by default](#how-the-grouped-path-stays-safe-on-by-default). |
-| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate holds in its table at once. At the cap the node hands its groups to a core `Finalize` and carries on, when every aggregate has a partial state; otherwise the query errors. The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
+| `pgcolumnar.groupagg_max_groups` | integer | `1000000` | Cap on the group count the grouped vectorized aggregate holds in its table at once. At the cap the node hands its groups to a core `Finalize` and carries on, when every aggregate has a partial state. Otherwise it writes its groups to a sort, which spills within `work_mem`, and merges them at the end. See [how the grouped path stays safe on by default](#how-the-grouped-path-stays-safe-on-by-default). The planner takes the grouped path only when the group count cannot exceed this. Range 1 to INT_MAX. |
 | `pgcolumnar.enable_bloom_filter` | boolean | `on` | Skip chunk groups on equality filters using per-chunk bloom filters. |
 | `pgcolumnar.enable_join_runtime_filter` | boolean | `on` | Wrap a serial inner Hash Join so the build keys can skip fact-table groups and reject non-matching rows. Direct columnar scan only. Group skip needs the fact table clustered on the join key. On by default. |
 | `pgcolumnar.enable_read_stream` | boolean | `on` | Prefetch block reads with the read stream API. Effective on PostgreSQL 17 and later. |
@@ -127,7 +131,10 @@ answer.
 | --- | --- | --- | --- |
 | `pgcolumnar.bulk_parallel_writer` | boolean | `off` | Internal. Set by `pgcolumnar.parallel_copy` loader workers so they skip the storage-row creation lock when the row already exists committed, which is what lets several atomic writers load one table at once. Marked `GUC_NOT_IN_SAMPLE`; leave it alone. Setting it by hand is safe but pointless: the skip only fires when the storage row is already committed, which is exactly when the lock guards nothing. |
 | `pgcolumnar.maintenance_hold_ms` | integer | `0` | Internal, for tests. A maintenance verb holds `ShareUpdateExclusiveLock` this many milliseconds, interruptibly, so a test can observe the daemon yield to a stronger lock. `recluster` also waits, after it has listed the groups it will rewrite and before it locks them, so a test can write while it runs. `0` disables it. Range 0 to 600000. Leave it at `0`. |
+| `pgcolumnar.vm_set_hold_ms` | integer | `0` | Internal, for tests. Lazy `VACUUM` waits this many milliseconds, interruptibly, after it finds the all-visible blocks and before it marks them, so a test can commit a delete in that gap. Marked `GUC_NOT_IN_SAMPLE`. Requires superuser to set. `0` disables it. Range 0 to 600000. Leave it at `0`. |
 | `pgcolumnar.sink_fail_after` | integer | `-1` | Internal, for tests. A fault-injection point that fails an export write after this many bytes, by the path a full disk takes. `-1` disables it. Range -1 to INT_MAX. Leave it at `-1`. |
+| `pgcolumnar.rollup_pause` | boolean | `off` | Internal, for tests. A developer pause: `pgcolumnar.refresh_rollup` sleeps two seconds inside its statement, after it takes its snapshot. Marked `GUC_NOT_IN_SAMPLE`. Requires superuser to set. Leave it `off`. |
+| `pgcolumnar.tier_fault_after` | string | `''` (empty) | Internal, for tests. A developer fault: `pgcolumnar.tier_partition` raises an error right after the named step. The steps are `export`, `detach`, `drop`, `create` and `attach`. `pause` sleeps two seconds after `export`. Any other value is refused. Empty disables it. Marked `GUC_NOT_IN_SAMPLE`. Requires superuser to set. Leave it empty. |
 
 ## Per-table storage options
 
@@ -356,8 +363,8 @@ deliberate. If it were a session setting, two sessions with different values
 would store the same data in two different forms.
 
 `pgcolumnar.reset_options` returns options to the server defaults. It accepts
-exactly what `pgcolumnar.set_options` accepts, and refuses exactly what it
-refuses:
+the same relations as `pgcolumnar.set_options`, and refuses the same relations.
+It has no `ttl_column` or `ttl_interval` argument:
 
 ```sql
 SELECT pgcolumnar.reset_options(

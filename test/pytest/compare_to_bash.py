@@ -802,6 +802,15 @@ def main(bash_file, py_file):
 
     py_src = open(py_file).read()
     bash_names = _names_in(bash_src)
+    # NOTHING READ IS NOT NOTHING MISSING (#2032). A suite that records through its own
+    # echo rather than a recorder yields no names, and an empty set has no member the
+    # port lacks: `missing: 0`, "covered", against any port at all.
+    if not bash_names:
+        print(f"REFUSED: no check name could be read from {bash_file}.")
+        print()
+        print("A verdict over zero names says nothing about the suite. Record its checks "
+              "through a lib.sh recorder so the extractor can see them.")
+        return 2
     py_names = _py_names(py_src)
     # WHAT THE PORT ASSERTS is `py_names`, and that is what the header reports and
     # what `extra` lists. What a bash literal may be MATCHED against is wider, because
