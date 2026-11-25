@@ -104,6 +104,10 @@ am_contracts	am_contracts	ALTER TABLE ... SET TABLESPACE is refused (0A000), and
 am_contracts	am_contracts	ALTER TABLE ... SET UNLOGGED is refused (0A000), and the table stays logged with its rows	15;16;17;18;19	2026-10-15	the storage hook accepting an unlogged columnar table
 am_contracts	am_contracts	CREATE INDEX CONCURRENTLY is refused (0A000), and the index it leaves is marked invalid	15;16;17;18;19	2026-10-15	the concurrent index validate scan doing nothing
 am_contracts	am_contracts	CREATE UNLOGGED TABLE ... USING pgcolumnar is refused (0A000) and leaves no table	15;16;17;18;19	2026-10-15	the storage hook accepting an unlogged columnar table
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began	15;16;17;18;19	never	-
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 through a partitioned parent onto a pgcolumnar partition	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 am_contracts	am_contracts	ON CONFLICT DO NOTHING skips the duplicate and inserts the new row	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
 am_contracts	am_contracts	ON CONFLICT DO UPDATE is refused as unsupported (0A000), and changes nothing	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
 am_contracts	am_contracts	ON CONFLICT DO UPDATE with no conflicting row inserts it	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
@@ -134,6 +138,14 @@ am_contracts	am_contracts	and the primary key finds every outer row by index	15;
 am_contracts	am_contracts	and the primary key still finds them by index	15;16;17;18;19	2026-10-14	TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	and the primary key still refuses a duplicate of a restored row	15;16;17;18;19	2026-10-14	TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	and the unique index answers the key with that one row	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a conflicting row the snapshot sees, without error	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an already flushed stripe	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a key this transaction inserted in an earlier statement	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, a key twice in one DO NOTHING statement is inserted once, without error	15;16;17;18;19	never	-
+am_contracts	am_contracts	heap control: a concurrent VACUUM does not make DO NOTHING at REPEATABLE READ fail	15;16;17;18;19	never	-
+am_contracts	am_contracts	known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent compact_rewrite moved	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent recluster moved	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	premise: heap raises 40001 for a DO NOTHING conflict its REPEATABLE READ snapshot cannot see	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the conflict table holds ten rows	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the index exists and is valid	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the older snapshot was taken before the delete	15;16;17;18;19	never	-
@@ -1512,6 +1524,7 @@ fdw_plan_privilege	fdw_plan_privilege	the unprivileged Iceberg scan is still ref
 fk_referencing	fk_referencing	ALTER TABLE ADD CONSTRAINT is refused by the same rule	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar partition of an FK-referenced parent is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar table may reference a heap table	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a deferred foreign key does not check a referencing row deleted before commit, as heap	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 fk_referencing	fk_referencing	a foreign key between two heap tables is unaffected	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	a foreign key referencing a columnar table is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a partitioned table with no foreign key still converts	17;18;19	never	-
@@ -3878,6 +3891,47 @@ index_only	index_only	after vacuum: block 120 all-visible	15;16;17;18;19	2026-10
 index_only	index_only	after vacuum: block 50 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	before vacuum: block 50 not all-visible	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: no target block all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: the writer deleted 79 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: the writer deleted 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: the writer updated 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: the writer deleted 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: the writer updated 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 not all-visible after vacuum	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: clean block 514 still all-visible	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: no target block all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
 index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
@@ -4996,6 +5050,12 @@ native_join_runtime_filter	native_join_runtime_filter	the hash-only uncorrelated
 native_join_runtime_filter	native_join_runtime_filter	with matching collations the same fixture's interval removes row groups	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join refuses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation keeps the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars also refusing a non-default or a nondeterministic fact-column collation
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys answer equals heap	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys refuse the join fold	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	each default LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
@@ -5009,6 +5069,8 @@ native_join_vector_agg	native_join_vector_agg	extra join filter answer equals he
 native_join_vector_agg	native_join_vector_agg	extra join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
+native_join_vector_agg	native_join_vector_agg	non-default equality operator answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	non-default equality operator refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
 native_join_vector_agg	native_join_vector_agg	premise: heap's LATERAL rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's distinct rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's scalar rescan answer grows with each outer value	15;16;17;18;19	never	-
@@ -5018,6 +5080,8 @@ native_join_vector_agg	native_join_vector_agg	premise: the default scalar rescan
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only LATERAL rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only distinct rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only scalar rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation keeps the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-

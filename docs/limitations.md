@@ -643,6 +643,16 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `test/serializable.sh` covers two shapes. In one, each transaction updates a row,
   in the same row group or in different ones. In the other, each inserts a row after
   a scan of the whole table or an index scan.
+- At `REPEATABLE READ` and `SERIALIZABLE`, `INSERT ... ON CONFLICT DO NOTHING` can
+  fail with `serialization_failure` (40001) on a conflicting row that did not
+  change. This happens when `pgcolumnar.compact_rewrite` or `pgcolumnar.recluster`
+  moved that row and committed after the transaction took its snapshot. The
+  autovacuum daemon runs both. Each copies the rows it moves to new row numbers, in
+  a row group its own transaction writes. The older snapshot cannot see that copy,
+  so PostgreSQL treats the row as changed by another transaction. A heap table does
+  not fail here, because `VACUUM` moves no row. Retry the transaction: the retry
+  takes a new snapshot, sees the moved row, and skips the insert.
+  `test/am_contracts.sh` checks this behavior (#2060).
 - Concurrent inserts of the same unique key go in sequence. The server therefore
   always finds the conflict. Before a new row reaches the uniqueness check, the
   access method takes an advisory lock with the scope of the transaction. The key
