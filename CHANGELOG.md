@@ -617,11 +617,14 @@ true until the next version shipped.
   the name and `expire` refuses with 42703. If another column later takes
   the dropped name, `expire` cuts on it and can still delete rows inside the
   retention; #2070 stays open for that half. `test/ttl_expire.sh` and
-  `test_ttl_expire.py`. Five more checks pin the name test: a rename leaves a
+  `test_ttl_expire.py`. More checks pin the name test: a rename leaves a
   NULL `ttl_column` NULL, and renaming a column whose name is a prefix of the
-  retention column, starts with its name, or differs only in case leaves
-  `ttl_column` alone. Each went red under a mutant from @OffgridwithJD's
-  reviews of #2136.
+  retention column, starts or ends with its name, has its first letter and
+  length, or differs only in case leaves `ttl_column` alone. The rename
+  fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
+  only there leaves `ttl_column` alone, and renaming the retention column moves
+  `sort_by` and `ttl_column` together. Each went red under a mutant from
+  @OffgridwithJD's reviews of #2136.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
