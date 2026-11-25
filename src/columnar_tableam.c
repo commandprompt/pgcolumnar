@@ -103,6 +103,7 @@ double		pgcolumnar_autovacuum_compact_threshold = 0.2;
 double		pgcolumnar_autovacuum_recluster_threshold = 0.05;
 bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
+int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
 static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
@@ -415,6 +416,13 @@ typedef struct PgColumnarSlot
 	Relation	rel;
 	Snapshot	snapshot;
 	uint64		rowNumber;
+
+	/*
+	 * The row's xmin, set only by pgcolumnar_tuple_satisfies_snapshot when it
+	 * answers "not visible", and read back by core through getsysattr (#2060).
+	 * InvalidTransactionId otherwise.
+	 */
+	TransactionId xmin;
 } PgColumnarSlot;
 
 /*
@@ -542,6 +550,7 @@ pgcolumnar_slot_init(TupleTableSlot *slot)
 	cslot->rel = NULL;
 	cslot->snapshot = NULL;
 	cslot->rowNumber = 0;
+	cslot->xmin = InvalidTransactionId;
 }
 
 static void
@@ -554,7 +563,30 @@ pgcolumnar_slot_clear(TupleTableSlot *slot)
 	cslot->rel = NULL;
 	cslot->snapshot = NULL;
 	cslot->rowNumber = 0;
+	cslot->xmin = InvalidTransactionId;
 	TTSOpsVirtual.clear(slot);
+}
+
+/*
+ * xmin, and only xmin, and only once pgcolumnar_tuple_satisfies_snapshot has
+ * found it (#2060). Core's ExecCheckTupleVisible reads it straight after that
+ * callback answers "not visible", to decide whether the row is this
+ * transaction's own. Every other system column, and xmin at any other time,
+ * fails as the virtual slot does.
+ */
+static Datum
+pgcolumnar_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
+{
+	PgColumnarSlot *cslot = (PgColumnarSlot *) slot;
+
+	if (attnum == MinTransactionIdAttributeNumber &&
+		TransactionIdIsValid(cslot->xmin))
+	{
+		*isnull = false;
+		return TransactionIdGetDatum(cslot->xmin);
+	}
+
+	return TTSOpsVirtual.getsysattr(slot, attnum, isnull);
 }
 
 static void
@@ -2121,12 +2153,49 @@ pgcolumnar_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
 	COLUMNAR_UNSUPPORTED("get latest tid");
 }
 
+/*
+ * pgcolumnar_tuple_satisfies_snapshot
+ *		Can snapshot see the row the slot holds? (#2060)
+ *
+ *		This used to answer yes without looking. Core relies on the answer for
+ *		INSERT ... ON CONFLICT DO NOTHING at REPEATABLE READ and SERIALIZABLE:
+ *		when the snapshot cannot see the conflicting row, and another transaction
+ *		inserted it, core raises a serialization failure. Answering yes skipped
+ *		the row and committed instead.
+ *
+ *		The row is found by the slot's item pointer. A row still in this
+ *		transaction's write buffer is visible: the transaction wrote it.
+ *
+ *		On a "no", the row group's xmin is kept in the slot, because core reads
+ *		xmin next to decide whether the row is this transaction's own. When no
+ *		row group holds the row, xmin stays invalid and getsysattr fails.
+ */
 static bool
 pgcolumnar_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 								  Snapshot snapshot)
 {
-	/* stripes are visible per their metadata snapshot; slots are visible */
-	return true;
+	uint64		rowNumber = PgColumnarItemPointerToRowNumber(&slot->tts_tid);
+	int			natts = RelationGetDescr(rel)->natts;
+	Datum	   *values;
+	bool	   *nulls;
+	bool		buffered;
+
+	if (PgColumnarRowIsLive(rel, snapshot, rowNumber))
+		return true;
+
+	values = palloc(sizeof(Datum) * Max(natts, 1));
+	nulls = palloc(sizeof(bool) * Max(natts, 1));
+	buffered = PgColumnarBufferedRowByNumber(rel, rowNumber, values, nulls);
+	pfree(values);
+	pfree(nulls);
+	if (buffered)
+		return true;
+
+	if (slot->tts_ops == &PgColumnarSlotOps)
+		((PgColumnarSlot *) slot)->xmin =
+			PgColumnarRowGroupXmin(PgColumnarStorageId(rel), rowNumber);
+
+	return false;
 }
 
 /*
@@ -4060,6 +4129,34 @@ pgcolumnar_object_access(ObjectAccessType access, Oid classId, Oid objectId,
 	if (access == OAT_POST_CREATE && classId == ConstraintRelationId)
 		pgcolumnar_reject_fk_to_columnar(objectId);
 
+	/*
+	 * A dropped column frees its name, so the ordering mark must stop naming
+	 * it (#2069). See PgColumnarForgetSortKeyColumn. The object-access hook
+	 * sees every column drop: ALTER TABLE ... DROP COLUMN, its recursion into
+	 * inheritance children and partitions, and a drop that cascades from
+	 * another object. The column still has its name here, because the hook
+	 * runs before the deletion, and the drop already holds AccessExclusiveLock
+	 * on the relation.
+	 */
+	if (access == OAT_DROP && classId == RelationRelationId && subId > 0)
+	{
+		char		relkind = get_rel_relkind(objectId);
+		char	   *attname;
+
+		if ((relkind != RELKIND_RELATION && relkind != RELKIND_MATVIEW) ||
+			!PgColumnarIsColumnarRelation(objectId))
+			return;
+		attname = get_attname(objectId, (AttrNumber) subId, true);
+		if (attname != NULL)
+		{
+			Relation	rel = relation_open(objectId, NoLock);
+
+			PgColumnarForgetSortKeyColumn(PgColumnarStorageId(rel), attname);
+			relation_close(rel, NoLock);
+		}
+		return;
+	}
+
 	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
 	{
 		Relation	rel;
@@ -4302,6 +4399,7 @@ _PG_init(void)
 	PgColumnarSlotOps.materialize = pgcolumnar_slot_materialize;
 	PgColumnarSlotOps.copyslot = pgcolumnar_slot_copyslot;
 	PgColumnarSlotOps.copy_minimal_tuple = pgcolumnar_slot_copy_minimal_tuple;
+	PgColumnarSlotOps.getsysattr = pgcolumnar_slot_getsysattr;
 
 	DefineCustomIntVariable("pgcolumnar.stripe_row_limit",
 							"Maximum number of rows per stripe.",
@@ -4961,6 +5059,22 @@ _PG_init(void)
 							0, 0, 600000,
 							PGC_USERSET,
 							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	/*
+	 * A developer pause for lazy VACUUM (#2059): PgColumnarVMSetVisibleForRelation
+	 * waits this long after it first computes the all-visible blocks and before
+	 * it sets them, so a test can commit a delete in that window and show the
+	 * second computation clears the bit. Superuser-only and off by default.
+	 */
+	DefineCustomIntVariable("pgcolumnar.vm_set_hold_ms",
+							"Dev/test: wait this many ms in lazy VACUUM between computing "
+							"the all-visible blocks and setting them.",
+							NULL,
+							&pgcolumnar_vm_set_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
 							NULL, NULL, NULL);
 
 	pgcolumnar_prev_planner_hook = planner_hook;
