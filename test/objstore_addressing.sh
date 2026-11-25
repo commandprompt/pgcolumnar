@@ -74,15 +74,16 @@ check "ALTER SYSTEM still takes virtual" "$(alter_system virtual)" "virtual"
 # A typo in postgresql.conf cannot be refused, because the server reads it at start.
 # The server warns and uses path, which is what the module did with any such value.
 conf_typo() {  # -> what SHOW says after a restart with the typo, and whether the log warned
-	local conf="$PGC_PGDATA/postgresql.conf" show warned=silent before
+	local conf="$PGC_PGDATA/postgresql.conf" show warned=silent before newlog
 	pgc_pg "cp '$conf' '$conf.addr' && echo \"pgcolumnar.objstore_s3_addressing = 'virtaul'\" >> '$conf'"
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	before="$(wc -l < "$PGC_LOGFILE")"
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
 	show="$(q 'SHOW pgcolumnar.objstore_s3_addressing')"
-	tail -n +"$((before + 1))" "$PGC_LOGFILE" | grep -qF \
-		'WARNING:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": "virtaul"' && warned=warned
+	newlog="$(tail -n +"$((before + 1))" "$PGC_LOGFILE")"
+	grep -qF 'WARNING:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": "virtaul"' \
+		<<<"$newlog" && warned=warned
 	pgc_pg "mv '$conf.addr' '$conf' && pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
 	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
