@@ -605,6 +605,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- A join runtime filter under a correlated subquery or a LATERAL join now
+  gives each run its own answer (#2062). Every later run returned the first
+  run's rows, with no error, whenever the outer value changed the build side.
+  The coordinator did not tell its Hash Join, or the Build Tap's source, that a
+  parameter had changed, so the join kept the first hash table. The coordinator
+  and the tap now pass the changed parameters down, and a rescan from the Hash
+  replays the tap's rows instead of discarding them. Before this fix, turning
+  off `pgcolumnar.enable_join_runtime_filter` avoided the fault.
+  `test/native_join_runtime_filter.sh` and `test_native_join_runtime_filter.py`.
+- The ungrouped vectorized aggregate over a unique-key join (the join fold) no
+  longer crashes the backend when a correlated subquery or a LATERAL join reruns
+  it (#2128, found while fixing #2062). The fold ran the dimension plan inside
+  its key memory context. A rescan reset that context, which freed the
+  dimension scan's state, so the second rescan crashed with signal 11. The fold
+  now runs the dimension plan outside that context. It also passes changed
+  parameters to the dimension plan, so a DISTINCT dimension returns the new
+  outer row's keys instead of its first rows. Before this fix, turning off
+  `pgcolumnar.enable_ungrouped_vector_agg` avoided the fault.
+  `test/native_join_vector_agg.sh` and `test_native_join_vector_agg.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types

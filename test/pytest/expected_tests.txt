@@ -1921,4 +1921,7 @@ guard_tests 895
 # cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
 # tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
-cluster_tests 5384
+# cluster_tests 5385 -> 5387 for the rescan fix's two tests (#2128, #2062): the join fold rescan test in
+# test_native_join_vector_agg.py and the issue-shapes test in test_native_join_runtime_filter.py, by
+# collection over every file not in NO_CLUSTER: 5379 tests collected.
+cluster_tests 5387
