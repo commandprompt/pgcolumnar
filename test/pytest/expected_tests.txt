@@ -1921,4 +1921,8 @@ guard_tests 895
 # cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
 # tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
-cluster_tests 5385
+# cluster_tests 5384 -> 5386 for #2082's two tests in test_arrow_import.py: a file of another type
+# family is refused by type (added earlier on this branch without its line), and every Arrow type meets
+# its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5386 tests collected.
+cluster_tests 5386

@@ -319,6 +319,7 @@ arrow_export	arrow_export	the byte cut counts a numeric's text form: 10 rows of 
 arrow_export	arrow_export	the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make batches of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	arrowcol_value_bytes: a text or bytea list's elements counted as 0 (#1843 review)
 arrow_export	arrow_export	the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make batches of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	arrowcol_value_bytes: a fixed-width list's elements counted as 0 (#1843 review)
 arrow_export	arrow_export	the byte cut counts an int4's validity byte: 1000 int4 rows under a 1024-byte cap make batches of 204,204,204,204,184	15;16;17;18;19	2026-10-31	each row counted at its stored size, not as written (#1811)
+arrow_import	arrow_import	a 16-byte fixed-size binary is refused for bigint (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's FixedSizeBinary arm returning true for every kind (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	a Feather v2 file imports its rows too (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	a binary file is refused for a numeric(5,2) column, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a body length larger than the rest of the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed;import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
@@ -337,6 +338,7 @@ arrow_import	arrow_import	a date64 instant mid-day reports the day it falls in	1
 arrow_import	arrow_import	a date64 past PostgreSQL's last date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a decimal at another scale is refused (#881)	15;16;17;18;19	never	-
 arrow_import	arrow_import	a decimal file is refused for uuid (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a decimal128(10,0) file is refused for bigint (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Decimal arm returning true for every kind (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	a duration file is refused for a 4-byte int, not read at half width (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a float32 file is refused for a 4-byte int (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a float32 file is refused for float8 (#881)	15;16;17;18;19	never	-
@@ -397,10 +399,13 @@ arrow_import	arrow_import	control: a matching int64 file imports into bigint	15;
 arrow_import	arrow_import	control: a microsecond file reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a non-temporal tag is not caught by the temporal refusal	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a string file still imports into bytea (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: an int16 file still imports into smallint (#2082)	15;16;17;18;19	2026-11-25	A_INT16 dropped from arrow_tag_fits_kind's Int arm (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	control: an int64 file still imports into timestamp as microseconds (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: an int64 file still imports into timestamptz as microseconds (#2082)	15;16;17;18;19	2026-11-25	A_TIMESTAMPTZ dropped from arrow_tag_fits_kind's Int arm (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	control: an ns file on microsecond boundaries reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3:// past its start (#1886)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1886)
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)
+arrow_import	arrow_import	every Arrow type imports into its documented targets and no other (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Date arm also taking A_INT32 (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	export rows	15;16;17;18;19	never	-
 arrow_import	arrow_import	export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed
 arrow_import	arrow_import	finite row preserved	15;16;17;18;19	never	-

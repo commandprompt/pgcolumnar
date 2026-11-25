@@ -588,6 +588,27 @@ extra = {
     'tu_lbin': pa.array([b'a', b'b'], pa.large_binary()),
     'tu_dur': pa.array([5, 6], pa.duration('s')),
     'tu_null': pa.array([None, None], pa.null()),
+    # The tag-by-target matrix (#2082): one file per Arrow type, two rows each.
+    # Every kept pairing must import, so the values are ones each kept target
+    # accepts: '10' parses as numeric, and int64 rows are valid instants.
+    'mx_i16': pa.array([7, -3], pa.int16()),
+    'mx_i32': pa.array([7, -3], pa.int32()),
+    'mx_i64': pa.array([946684800 * 10**6, 1], pa.int64()),
+    'mx_u64': pa.array([7, 3], pa.uint64()),
+    'mx_f32': pa.array([1.5, -3], pa.float32()),
+    'mx_f64': pa.array([1.5, -3], pa.float64()),
+    'mx_bool': pa.array([True, False], pa.bool_()),
+    'mx_utf8': pa.array(['10', '-3'], pa.string()),
+    'mx_bin': pa.array([b'10', b'-3'], pa.binary()),
+    'mx_lutf8': pa.array(['10', '-3'], pa.large_string()),
+    'mx_lbin': pa.array([b'10', b'-3'], pa.large_binary()),
+    'mx_d32': pa.array([10957, 10958], pa.date32()),
+    'mx_t64': pa.array([43200 * 10**6, 1], pa.time64('us')),
+    'mx_ts': pa.array([946684800 * 10**6, 1], pa.timestamp('us')),
+    'mx_dur': pa.array([5, 6], pa.duration('us')),
+    'mx_dec': pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
+    'mx_fsb16': pa.array([b'0123456789abcdef', b'fedcba9876543210'], pa.binary(16)),
+    'mx_null': pa.array([None, None], pa.null()),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -677,6 +698,14 @@ PY
 	# store, and in C a signed overflow is undefined behaviour rather than a
 	# wraparound, so each of these has to be refused before the multiply lands.
 	# 22008 is datetime_field_overflow.
+	tu_values() {	# tu_values FIXTURE PGTYPE -> every stored value, sorted, comma-separated
+		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
+			>/dev/null 2>&1
+		psql_run "SELECT pgcolumnar.import_arrow('tu_t', '$PGC_WORKDIR/$1.arrows');" \
+			>/dev/null 2>&1 || { echo "IMPORT-FAILED"; return; }
+		q "SELECT string_agg(v::text, ',' ORDER BY v) FROM tu_t;"
+	}
+
 	tu_import_state() {	# tu_import_state FIXTURE PGTYPE -> SQLSTATE, 00000 on success
 		psql_run "DROP TABLE IF EXISTS tu_t; CREATE TABLE tu_t (v $2) USING pgcolumnar;" \
 			>/dev/null 2>&1
@@ -870,7 +899,52 @@ PY
 	# A duration is a signed 64-bit count, so it reads into bigint as that count,
 	# as it did on main. The unit is not stored.
 	check "control: a duration file still imports into bigint as its count (#2082)" \
-		"$(tu_value tu_dur bigint)" "5"
+		"$(tu_values tu_dur bigint)" "5,6"
+
+	# ---- every Arrow type against every target (#2082) ---------------------
+	#
+	# The checks above sample arrow_tag_fits_kind. These pin each of its rows.
+	# Each of the four below is a row that a one-line mutant could change with
+	# every sampled check still green: the decimal and fixed-size binary rows
+	# could accept bigint and store raw bytes, and the int16 and int64 rows
+	# could drop smallint or timestamptz and refuse a documented pairing.
+	check "a decimal128(10,0) file is refused for bigint (#2082)" \
+		"$(tu_import_state mx_dec bigint)" "42804"
+	check "a 16-byte fixed-size binary is refused for bigint (#2082)" \
+		"$(tu_import_state mx_fsb16 bigint)" "42804"
+	check "control: an int16 file still imports into smallint (#2082)" \
+		"$(tu_values mx_i16 smallint)" "-3,7"
+	check "control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+		"$(PGOPTIONS='-c timezone=UTC' tu_values mx_i64 timestamptz)" \
+		"1970-01-01 00:00:00.000001+00,2000-01-01 00:00:00+00"
+
+	# The whole table. A pair listed here must import; every other pair must be
+	# refused with 42804. The list is the documented one in docs/limitations.md
+	# and docs/sql-reference.md. A mismatch prints as FILE:TYPE=GOT.
+	mx_kept=" mx_i16:smallint mx_i32:int mx_i64:bigint mx_i64:timestamp
+		mx_i64:timestamptz mx_f32:float4 mx_f64:float8 mx_bool:bool
+		mx_utf8:text mx_utf8:bytea mx_utf8:numeric mx_utf8:numeric(50,2)
+		mx_bin:text mx_bin:bytea mx_bin:numeric mx_bin:numeric(50,2)
+		mx_d32:date mx_t64:time mx_ts:timestamp mx_ts:timestamptz
+		mx_dur:bigint mx_dec:numeric(10,0) mx_fsb16:uuid "
+	mx_kept=" $(printf '%s ' $mx_kept)"
+	mx_bad=""
+	for mx_f in mx_i16 mx_i32 mx_i64 mx_u64 mx_f32 mx_f64 mx_bool mx_utf8 \
+			mx_bin mx_lutf8 mx_lbin mx_d32 mx_t64 mx_ts mx_dur mx_dec mx_fsb16 \
+			mx_null; do
+		for mx_t in smallint int bigint float4 float8 bool text bytea date \
+				time timestamp timestamptz uuid 'numeric(10,0)' numeric \
+				'numeric(50,2)'; do
+			case "$mx_kept" in
+				*" $mx_f:$mx_t "*) mx_want=00000 ;;
+				*) mx_want=42804 ;;
+			esac
+			mx_got="$(tu_import_state "$mx_f" "$mx_t")"
+			[ "$mx_got" = "$mx_want" ] || mx_bad="${mx_bad:+$mx_bad }$mx_f:$mx_t=$mx_got"
+		done
+	done
+	check "every Arrow type imports into its documented targets and no other (#2082)" \
+		"${mx_bad:-none}" "none"
 
 	# ---- the unit on a nested field ---------------------------------------
 	check "a list element's nanosecond unit is honoured, not just the top level" \
@@ -949,6 +1023,11 @@ else
 			"a null-type file is refused for text, not called malformed (#2082)" \
 			"a binary file is refused for a numeric(5,2) column, not called malformed (#2082)" \
 			"control: a duration file still imports into bigint as its count (#2082)" \
+			"a decimal128(10,0) file is refused for bigint (#2082)" \
+			"a 16-byte fixed-size binary is refused for bigint (#2082)" \
+			"control: an int16 file still imports into smallint (#2082)" \
+			"control: an int64 file still imports into timestamptz as microseconds (#2082)" \
+			"every Arrow type imports into its documented targets and no other (#2082)" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
 			"a struct field's nanosecond unit is honoured at child index 1"; do
 		check_skip "$_ai_types" \

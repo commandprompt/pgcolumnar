@@ -307,6 +307,44 @@ def test_nanosecond_narrowing_is_reported_never_refused(pgc_conn, server_dir, ex
                 "the narrowed values are floored to the microsecond")
 
 
+def _matrix_fixtures(pa):
+    """#2082: one file per Arrow type, two rows each, as the shell writes them.
+    Every kept pairing must import, so the values suit each kept target: '10'
+    parses as numeric, and the int64 rows are valid instants."""
+    s2000us = 946684800 * 10**6
+    return {
+        "mx_i16": pa.array([7, -3], pa.int16()), "mx_i32": pa.array([7, -3], pa.int32()),
+        "mx_i64": pa.array([s2000us, 1], pa.int64()), "mx_u64": pa.array([7, 3], pa.uint64()),
+        "mx_f32": pa.array([1.5, -3], pa.float32()), "mx_f64": pa.array([1.5, -3], pa.float64()),
+        "mx_bool": pa.array([True, False], pa.bool_()),
+        "mx_utf8": pa.array(["10", "-3"], pa.string()), "mx_bin": pa.array([b"10", b"-3"], pa.binary()),
+        "mx_lutf8": pa.array(["10", "-3"], pa.large_string()),
+        "mx_lbin": pa.array([b"10", b"-3"], pa.large_binary()),
+        "mx_d32": pa.array([10957, 10958], pa.date32()),
+        "mx_t64": pa.array([43200 * 10**6, 1], pa.time64("us")),
+        "mx_ts": pa.array([s2000us, 1], pa.timestamp("us")), "mx_dur": pa.array([5, 6], pa.duration("us")),
+        "mx_dec": pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
+        "mx_fsb16": pa.array([b"0123456789abcdef", b"fedcba9876543210"], pa.binary(16)),
+        "mx_null": pa.array([None, None], pa.null()),
+    }
+
+
+# The documented pairings (docs/limitations.md, docs/sql-reference.md): each must
+# import, and every other file-by-target pair must be refused with 42804.
+_MX_FILES = ("mx_i16", "mx_i32", "mx_i64", "mx_u64", "mx_f32", "mx_f64", "mx_bool", "mx_utf8", "mx_bin",
+             "mx_lutf8", "mx_lbin", "mx_d32", "mx_t64", "mx_ts", "mx_dur", "mx_dec", "mx_fsb16", "mx_null")
+_MX_TARGETS = ("smallint", "int", "bigint", "float4", "float8", "bool", "text", "bytea", "date", "time",
+               "timestamp", "timestamptz", "uuid", "numeric(10,0)", "numeric", "numeric(50,2)")
+_MX_KEPT = {
+    ("mx_i16", "smallint"), ("mx_i32", "int"), ("mx_i64", "bigint"), ("mx_i64", "timestamp"),
+    ("mx_i64", "timestamptz"), ("mx_f32", "float4"), ("mx_f64", "float8"), ("mx_bool", "bool"),
+    ("mx_utf8", "text"), ("mx_utf8", "bytea"), ("mx_utf8", "numeric"), ("mx_utf8", "numeric(50,2)"),
+    ("mx_bin", "text"), ("mx_bin", "bytea"), ("mx_bin", "numeric"), ("mx_bin", "numeric(50,2)"),
+    ("mx_d32", "date"), ("mx_t64", "time"), ("mx_ts", "timestamp"), ("mx_ts", "timestamptz"),
+    ("mx_dur", "bigint"), ("mx_dec", "numeric(10,0)"), ("mx_fsb16", "uuid"),
+}
+
+
 def _temporal_fixtures(pa, out):
     """The shell's fixture files, written the same ways: raw-byte packing for the
     temporal carriers and pa.array for the #881 parameter cases."""
@@ -349,6 +387,7 @@ def _temporal_fixtures(pa, out):
         "tu_lbin": pa.array([b"a", b"b"], pa.large_binary()),
         "tu_dur": pa.array([5, 6], pa.duration("s")), "tu_null": pa.array([None, None], pa.null()),
     }
+    extra.update(_matrix_fixtures(pa))
     for name, arr in extra.items():
         _write_stream(pa, out / f"{name}.arrows", pa.table({"v": arr}))
     ns = s2000 * 10**9
@@ -523,8 +562,50 @@ def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, 
                 "a null-type file is refused for text, not called malformed (#2082)")
     expect.text(state("tu_bin", "numeric(5,2)"), "42804",
                 "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)")
-    expect.text(value("tu_dur", "bigint"), "5",
+    def values(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT string_agg(v::text, ',' ORDER BY v) FROM cf_t") if st == "00000" else st
+
+    expect.text(values("tu_dur", "bigint"), "5,6",
                 "control: a duration file still imports into bigint as its count (#2082)")
+
+
+def test_every_arrow_type_meets_its_documented_targets(pgc_conn, server_dir, expect):
+    """#2082: the checks above sample arrow_tag_fits_kind. These pin each of its
+    rows. Each of the first four is a row a one-line mutant could change with
+    every sampled check green: the decimal and fixed-size binary rows could
+    accept bigint and store raw bytes, and the int16 and int64 rows could drop
+    smallint or timestamptz and refuse a documented pairing."""
+    pa = expect.require_module("pyarrow", name="a decimal128(10,0) file is refused for bigint (#2082)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _temporal_fixtures(pa, server_dir)
+
+    def state(fixture, pgtype):
+        _run(conn, "DROP TABLE IF EXISTS mx_t", f"CREATE TABLE mx_t (v {pgtype}) USING pgcolumnar")
+        return _state(conn, f"SELECT pgcolumnar.import_arrow('mx_t', '{server_dir / (fixture + '.arrows')}')")
+
+    def values(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT string_agg(v::text, ',' ORDER BY v) FROM mx_t") if st == "00000" else st
+
+    expect.text(state("mx_dec", "bigint"), "42804", "a decimal128(10,0) file is refused for bigint (#2082)")
+    expect.text(state("mx_fsb16", "bigint"), "42804", "a 16-byte fixed-size binary is refused for bigint (#2082)")
+    expect.text(values("mx_i16", "smallint"), "-3,7", "control: an int16 file still imports into smallint (#2082)")
+    _run(conn, "SET timezone = 'UTC'")
+    expect.text(values("mx_i64", "timestamptz"), "1970-01-01 00:00:00.000001+00,2000-01-01 00:00:00+00",
+                "control: an int64 file still imports into timestamptz as microseconds (#2082)")
+
+    bad = []
+    for f in _MX_FILES:
+        for t in _MX_TARGETS:
+            want = "00000" if (f, t) in _MX_KEPT else "42804"
+            got = state(f, t)
+            if got != want:
+                bad.append(f"{f}:{t}={got}")
+    expect.text(" ".join(bad) or "none", "none",
+                "every Arrow type imports into its documented targets and no other (#2082)")
 
 
 def test_an_import_maintains_the_tables_indexes(pgc_conn, server_dir, expect):

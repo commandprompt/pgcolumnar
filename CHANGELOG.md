@@ -624,7 +624,13 @@ true until the next version shipped.
   These pairings also change: a duration into `smallint` or `int`, which
   stored half-width values (`5,6` became `5,0`), is now refused; a Null-type
   column, and a binary into `numeric(p,s)`, now fail with 42804 instead of
-  XX001. docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
+  XX001. Three more pairings that imported on main are now refused with
+  42804: an int32 into `date`, which main read as days since 1970; a duration
+  into `timestamp`, which main read as microseconds whatever its unit; and a
+  uint64 into `timestamp` or `timestamptz`. A 16-byte fixed-size binary into
+  `bytea` now fails with 42804 instead of XX001. A table-driven check imports one file of each of
+  18 Arrow types into each of 16 target types and pins every pairing.
+  docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values
   of any fixed-width type as RLE, but the decoder accepted RLE only for types
