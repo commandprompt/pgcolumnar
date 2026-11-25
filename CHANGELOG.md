@@ -631,6 +631,56 @@ true until the next version shipped.
   `bytea` now fails with 42804 instead of XX001. A table-driven check imports one file of each of
   18 Arrow types into each of 16 target types and pins every pairing.
   docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
+- `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
+  raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
+  when the conflicting row was committed by another transaction after the
+  snapshot was taken, as heap does (#2060). Before this fix the insert skipped
+  its row and committed: it gave way to a row its snapshot never saw, and the
+  application had no failure to retry. The access method's
+  snapshot check now looks at the row instead of always answering "visible",
+  and the slot reports the row's inserting transaction, which core reads to tell
+  the transaction's own rows from another's. A conflict with a row the snapshot
+  sees, or with a row the transaction inserted itself, still skips the row
+  without error. READ COMMITTED is unchanged. The same answer now reaches
+  deferred foreign keys on a pgcolumnar referencing table: a row inserted and
+  then deleted before commit is no longer checked at commit, as heap does.
+  Before this fix that commit failed with 23503 for a row that no longer
+  existed. Known limitation: the insert also
+  raises 40001, where heap does not, when an online `compact_rewrite` or
+  `recluster` (the autovacuum daemon runs both) moved the conflicting row after
+  the snapshot was taken. The moved copy has a new row number the snapshot cannot
+  see. A retry succeeds. `docs/limitations.md` describes it. Before this fix the
+  insert skipped the row and committed in that case. `test/am_contracts.sh`,
+  `test_am_contracts.py`, `test/fk_referencing.sh` and `test_fk_referencing.py`.
+- An ungrouped aggregate over a join onto a unique dimension no longer returns
+  a wrong count when the join compares text under another collation than the
+  fact column's (#2066). With `pgcolumnar.enable_ungrouped_vector_agg` on, the
+  join fold compared keys under the fact column's own collation. A join onto a
+  case-insensitive key therefore dropped the fact rows that differed only in
+  case, and a byte-wise join over a case-insensitive column counted rows it
+  should not. The fold now runs only when the join's operator and collation are
+  the ones it compares with. Otherwise the plan is a plain hash join, which
+  answers correctly. A join with another equality operator than the type's
+  default, such as one on absolute values, gave the same kind of wrong count
+  and is refused the same way. `test/native_join_vector_agg.sh` and
+  `test_native_join_vector_agg.py` test both refusals, and test that a
+  case-insensitive key joined under one collation still folds.
+- An index-only scan no longer returns rows that a committed DELETE or UPDATE
+  removed, after a VACUUM ran while that statement was still running (#2059).
+  The writer clears a block's all-visible bit when it marks a row, but keeps the
+  mark in memory until the statement ends. A VACUUM in between could not see the
+  mark, so it set the bit again, and nothing cleared it at commit. An index-only
+  scan then skipped the row check and counted the deleted rows until a later
+  write touched the block. Only a manual VACUUM was tested. Autovacuum takes
+  the same lock, which does not block a DELETE or UPDATE, so it can probably hit
+  this too. The writer now clears the bits again after it writes the marks to
+  the catalog, and VACUUM checks the row groups again after it sets bits and
+  clears any that are no longer all-visible. A new test-only setting,
+  `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
+  prove the second check. The tests delete inside one block, across two blocks,
+  and across three row groups, for both steps. Inside the writing statement
+  itself, an AFTER trigger can still see the bit set until the statement ends
+  (#2169). `test/index_only.sh` and `test_index_only.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

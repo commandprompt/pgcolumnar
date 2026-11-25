@@ -1942,8 +1942,32 @@ guard_tests 895
 # (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
 # `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
 # collected, less guard_tests 894.
-# cluster_tests 5398 -> 5400 for #2082's two tests in test_arrow_import.py: a file of another type
+# cluster_tests 5398 -> 5411 for #2059 in test_index_only.py. Eight tests for a VACUUM that runs while a
+# DELETE or UPDATE is paused inside its statement (test_concurrent_vacuum_during_{delete,update}_*), and
+# five for a DELETE that commits while pgcolumnar.vm_set_hold_ms pauses VACUUM between its computation and
+# its set (test_delete_between_vacuum_steps_*), by collection: `cd test/pytest &&
+# PGC_PG_CONFIG=<pg_config> /root/pyenv/bin/python -m pytest --collect-only -q`: 6283 tests collected,
+# less guard_tests 894.
+# cluster_tests 5411 -> 5439 for #2059's review fix-up in test_index_only.py (#2129). Twenty-eight tests: a
+# writer row count for the two single-block races; the race during a delete and an update across two blocks
+# (test_concurrent_vacuum_during_two_block_{delete,update}_*) and a delete over three row groups
+# (test_concurrent_vacuum_during_delete_over_three_row_groups_*); and a delete during vacuum's hold in the
+# second row group (test_delete_in_second_row_group_between_vacuum_steps_*) and over three row groups
+# (test_delete_over_three_row_groups_between_vacuum_steps_*), by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 5425 tests collected.
+# cluster_tests 5439 -> 5440 for #2066's test_a_join_clause_under_another_collation_refuses_the_fold in
+# test_native_join_vector_agg.py, by collection over the cluster files (the complement of NO_CLUSTER): 5385 tests collected.
+# cluster_tests 5440 -> 5442 for #2060's two tests in test_am_contracts.py
+# (test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see and
+# test_on_conflict_do_nothing_does_not_fail_on_rows_its_snapshot_may_skip), by collection over the files
+# NO_CLUSTER does not name: 5386 tests collected after the merge of main.
+# cluster_tests 5442 -> 5443 for test_on_conflict_do_nothing_after_an_online_rewrite_known_limitation
+# in test_am_contracts.py (#2060 review), by collection over the files NO_CLUSTER does not name.
+# cluster_tests stays 5387 for the #2060 review's two new checks: the deferred foreign key check joins
+# test_fk_referencing.py::test_the_referencing_side_still_works and the partitioned-parent check joins
+# test_am_contracts.py::test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see, so no test is added.
+# cluster_tests 5443 -> 5445 for #2082's two tests in test_arrow_import.py: a file of another type
 # family is refused by type (added earlier on this branch without its line), and every Arrow type meets
 # its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5400 tests collected.
-cluster_tests 5400
+cluster_tests 5445
