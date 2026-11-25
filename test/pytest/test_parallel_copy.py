@@ -649,16 +649,17 @@ def pcopy(pgc_cluster, server_dir):
                 r["2084 eod single leak"] = db.value(LEAK)
 
         # Only an odd backslash run escapes the newline after it (review of #2148,
-        # mutants c1 and c2). even.txt alternates runs of 2 and 4. evenp.txt puts an
-        # unsorted row (id 5) right after row 1500, which ends in an even run and sits
-        # in a later partition: the partitioned splitter must refuse it.
+        # mutants c1 and c2). even.txt and evenp.txt alternate runs of 2 and 4 (a6).
+        # evenp.txt puts an unsorted row (id 5) right after row 1500, which ends in a
+        # run of 4 and sits in a later partition: the partitioned splitter must refuse it.
         #
         # eodjunk.txt holds rows after \. that COPY would reject: COPY never
         # reads them, so they must not fail the load (mutant c4, the stop at \.).
         even = d / "even.txt"
         even.write_bytes(b"".join((b"v%d\\\\\n" if i % 2 else b"v%d\\\\\\\\\n") % i for i in range(1, 2001)))
         evenp = d / "evenp.txt"
-        evenp.write_bytes(b"".join(b"%d\tv%d\\\\\n" % (i, i) + (b"5\tback\n" if i == 1500 else b"")
+        evenp.write_bytes(b"".join(b"%d\tv%d%s\n" % (i, i, b"\\\\" if i % 2 else b"\\\\\\\\")
+                                   + (b"5\tback\n" if i == 1500 else b"")
                                    for i in range(1, 2001)))
         eodj = d / "eodjunk.txt"
         eodj.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.\n" + b"notanint\tz\n" * 1000)
@@ -700,8 +701,10 @@ def pcopy(pgc_cluster, server_dir):
         long_.write_bytes(b"".join(_long_rec(i) for i in range(1, 3751)) + b"x" * 5533 + b"\\\\\\\ntail\n"
                           + b"".join(_long_rec(i) for i in range(3751, 7501)))
         multi = d / "multi.txt"
-        multi.write_bytes(b"".join((b"m%d_a\\\nm%d_b\\\\\\\nm%d_c\t%d\n" % (i, i, i, i)) if i % 2 else
-                                   (b"m%d_a\\\nm%d_b\\\nm%d_c\\\\\\\nm%d_d\t%d\n" % (i, i, i, i, i))
+        # Odd records start with a line that is only \ and even records have a middle
+        # line that is only \\\, so a run starts at byte 0 of a line (a2).
+        multi.write_bytes(b"".join((b"\\\nm%d_b\\\\\\\nm%d_c\t%d\n" % (i, i, i)) if i % 2 else
+                                   (b"m%d_a\\\n\\\\\\\nm%d_c\\\\\\\nm%d_d\t%d\n" % (i, i, i, i))
                                    for i in range(1, 2001)))
         contp = d / "contp.txt"
         contp.write_bytes(b"".join(b"%d\tline1_%d%s\nline2_%d\n" % (i, i, _odd_run(i), i)
@@ -752,6 +755,33 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
             r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
         r["2084 twobad"] = db.bad_names(f"SELECT pgcolumnar.parallel_copy('c_twobad'::regclass, '{twobad}', 4)")
+
+        # Three more gaps, from the review of #2148 at 29b71633. esc.txt has an escape
+        # of a byte that is not a newline (\t) before an escaped newline (a1). In
+        # eodstart.txt the \. line sits exactly on the first interior split offset for
+        # 4 workers, with valid rows after it (a8). The shell gives the byte layout.
+        esc = d / "esc.txt"
+        esc.write_bytes(b"".join(b"x%d\\tq\\\ny%d\n" % (i, i) for i in range(1, 2001)))
+        eodstart = d / "eodstart.txt"
+        eodstart.write_bytes(b"".join(b"%04d\tx\n" % i for i in range(1, 501)) + b"\\.\n" + b"9999\ty\n" * 1499)
+        for f_ in (esc, eodstart):
+            os.chmod(f_, 0o644)
+        db.run(f"CREATE TABLE h_esc (t text); COPY h_esc FROM '{esc}'; "
+               f"CREATE TABLE h_eodstart (id int, txt text); COPY h_eodstart FROM '{eodstart}'; "
+               "CREATE TABLE c_esc (t text) USING pgcolumnar; "
+               "CREATE TABLE c_eodstart (id int, txt text) USING pgcolumnar")
+        data = _read(eodstart)
+        counts = db.value("SELECT concat_ws(' ', (SELECT count(*) FROM h_esc), (SELECT count(*) FROM h_eodstart))")
+        r["2084 premise 2"] = f"{counts} {len(data)} {data[3500:3503].hex()}" if isinstance(data, bytes) else data
+        for key, path in (("esc", esc), ("eodstart", eodstart)):
+            offs = db.offsets(path, 4)
+            r[f"2084 {key} offsets 4"] = " ".join(map(str, offs)) if isinstance(offs, list) else offs
+        for key, tgt, src, heap in (("esc single", "c_esc", esc, "h_esc"),
+                                    ("eodstart single", "c_eodstart", eodstart, "h_eodstart")):
+            r[f"2084 {key} rows"] = db.value(f"SELECT pgcolumnar.parallel_copy('{tgt}'::regclass, '{src}', 4)")
+            r[f"2084 {key} rows want"] = db.value(f"SELECT count(*) FROM {heap}")
+            r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
+            r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -1082,6 +1112,10 @@ SYNTAX_ROWS = (
      "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: rows returned = heap COPY's 1000"),
     ("eodcrlf single",
      "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: rows returned = heap COPY's 1000"),
+    ("esc single",
+     "#2084 escape of a byte that is not a newline / single table, 4 workers: rows returned = heap COPY's 2000"),
+    ("eodstart single",
+     "#2084 end-of-data marker on a range start / single table, 4 workers: rows returned = heap COPY's 500"),
 )
 SYNTAX_VALUES = (
     ("bsnl single", "#2084 escaped newline / single table, 4 workers: result == heap COPY"),
@@ -1096,6 +1130,8 @@ SYNTAX_VALUES = (
     ("eodcrlf part", "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: result == heap COPY"),
     ("eodcrlf single",
      "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: result == heap COPY"),
+    ("esc single", "#2084 escape of a byte that is not a newline / single table, 4 workers: result == heap COPY"),
+    ("eodstart single", "#2084 end-of-data marker on a range start / single table, 4 workers: result == heap COPY"),
 )
 
 
@@ -1173,6 +1209,27 @@ def test_parallel_copy_names_the_first_bad_row(pcopy, expect):
     expect.text(pcopy["2084 twobad"], "bad_early",
                 "#2084 two bad rows in different ranges / single table, 4 workers: the error names the first one,"
                 " bad_early, as heap COPY's does")
+
+
+def test_parallel_copy_fixture_premise_esc_and_eodstart(pcopy, expect):
+    """Pins N for the two fixtures below, and the eodstart.txt byte layout its pinned
+    offsets rely on: the \\. line at byte 3500."""
+    expect.text(pcopy["2084 premise 2"], "2000 500 13996 5c2e0a",
+                "#2084 premise: heap COPY loads esc 2000 and eodstart 500 rows; eodstart.txt is 13996 bytes"
+                " with 5c 2e 0a at bytes 3500-3502")
+
+
+def test_parallel_copy_split_clears_the_escape_after_a_non_newline_byte(pcopy, expect):
+    """In x1 \\ t q \\ LF the \\t escape ends at the t, so the next \\ escapes the newline
+    and no cut follows it (mutant a1)."""
+    expect.text(pcopy["2084 esc offsets 4"], "0 7456 14906 22346 29786",
+                "#2084 escape of a byte that is not a newline / 4 workers: offsets are 0 7456 14906 22346 29786")
+
+
+def test_parallel_copy_split_puts_the_end_of_data_marker_on_a_range_start(pcopy, expect):
+    """The fixture premise for mutant a8: the second range starts at the \\. line."""
+    expect.text(pcopy["2084 eodstart offsets 4"], "0 3500 7003 10503 13996",
+                "#2084 end-of-data marker on a range start / 4 workers: offsets are 0 3500 7003 10503 13996")
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

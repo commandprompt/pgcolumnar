@@ -2019,4 +2019,9 @@ guard_tests 895
 # lines with the key after them, an unsorted row after continued records, a file that ends inside a
 # record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
 # NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
-cluster_tests 5520
+# cluster_tests 5520 -> 5527 for the 7 tests the review of #2148 at 29b71633 asked for in
+# test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
+# rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
+# offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
+# ci.yml selects them: 5527 tests collected.
+cluster_tests 5527

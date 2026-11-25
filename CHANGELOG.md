@@ -618,12 +618,14 @@ true until the next version shipped.
   line. A loader whose COPY stops at a `\.` line reports it, and the
   coordinator rolls back every range after it. `file_split_offsets` uses the
   same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
-  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 33
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 40
   checks, including files whose values end in a backslash (an even run before
   the newline) and a file whose rows after `\.` are invalid. They also cover
   runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
   and 4 lines with the key after them, a file that ends inside a continued
-  record, a `\.\r\n` marker, and which failing row the error names.
+  record, a `\.\r\n` marker, and which failing row the error names. And they
+  cover an escape of a byte that is not a newline (`\t`), a line made only of
+  backslashes, and a `\.` line that falls exactly on a range start.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves
   `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
