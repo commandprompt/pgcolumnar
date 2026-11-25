@@ -1993,22 +1993,38 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5483 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5492 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
 # test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
 # test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
 # test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
 # test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
 # test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
 # collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
-# cluster_tests 5483 -> 5488 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5492 -> 5497 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
 # test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
 # test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
 # test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
 # test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
-# cluster_tests 5488 -> 5490 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5497 -> 5499 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
 # and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
 # files not in NO_CLUSTER: 5490 tests collected.
-cluster_tests 5490
+cluster_tests 5499
