@@ -31,6 +31,7 @@ redden this one.
 """
 import os
 import random
+import re
 import threading
 
 import psycopg
@@ -156,6 +157,18 @@ class _Db:
             said = str(exc).lower()
             hit = any(p.lower() in said for p in (phrase,) + alternatives)
             return f"refused: {phrase}" if hit else str(exc)
+        return "noerror"
+
+    def bad_names(self, sql):
+        """-> the distinct bad_* words in the error `sql` raised, sorted and space-joined;
+        "noerror" when it did not raise; a query_error() when the server never answered."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                conn.execute(sql).fetchall()
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            return " ".join(sorted(set(re.findall(r"bad_[a-z]+", str(exc)))))
         return "noerror"
 
     def remote_refusal(self, sql):
@@ -314,6 +327,16 @@ def _even_run_cuts(data, offs):
         if run and run % 2 == 0:
             n += 1
     return n
+
+
+def _odd_run(i):
+    """A run of 3 backslashes for odd i, of 1 for even i: both escape a newline."""
+    return b"\\\\\\" if i % 2 else b"\\"
+
+
+def _long_rec(i):
+    """One bsnl64k.txt record of two lines: 17 bytes for odd i, 15 for even i."""
+    return b"a%05d%s\nb%05d\n" % (i, _odd_run(i), i)
 
 
 def _read(path):
@@ -589,7 +612,8 @@ def pcopy(pgc_cluster, server_dir):
         bsnl = d / "bsnl.txt"
         bsnl.write_bytes(b"".join(b"first%d\\\nsecond%d\n" % (i, i) for i in range(2000)))
         bsnl2 = d / "bsnl2.txt"
-        bsnl2.write_bytes(b"".join(b"%d\tline1_%d\\\nline2_%d\n" % (i, i, i) for i in range(1, 2001)))
+        # odd rows end line1 in a run of 3, even rows in a run of 1: both escape the newline
+        bsnl2.write_bytes(b"".join(b"%d\tline1_%d%s\nline2_%d\n" % (i, i, _odd_run(i), i) for i in range(1, 2001)))
         eod = d / "eod.txt"
         eod.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.\n"
                         + b"".join(b"%d\ty\n" % i for i in range(1001, 2001)))
@@ -662,6 +686,72 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
             if key == "eodjunk single":
                 r["2084 eodjunk single leak"] = db.value(LEAK)
+
+        # Three fixture gaps the review of #2148 at 7a40d479 found; each let a mutant
+        # of the new splitter code pass. bsnl64k.txt (single table) mixes runs of 1
+        # and 3 and spans two 64 KiB reads: its middle record's run of 3 ends at byte
+        # 65535 and the newline it escapes is byte 65536 (e1, e2, n35). multi.txt has
+        # records of 3 and 4 lines with the key after them (n27, n45, n08). contp.txt
+        # has an unsorted row after continued records (n44). eofrec.txt ends inside a
+        # continued record with an unsorted key (n31). eodcrlf.txt is eodjunk.txt with
+        # CRLF line ends (n36). twobad.txt has bad rows in two ranges; the load must
+        # name the first, as heap COPY does (n04). The shell gives the byte layout.
+        long_ = d / "bsnl64k.txt"
+        long_.write_bytes(b"".join(_long_rec(i) for i in range(1, 3751)) + b"x" * 5533 + b"\\\\\\\ntail\n"
+                          + b"".join(_long_rec(i) for i in range(3751, 7501)))
+        multi = d / "multi.txt"
+        multi.write_bytes(b"".join((b"m%d_a\\\nm%d_b\\\\\\\nm%d_c\t%d\n" % (i, i, i, i)) if i % 2 else
+                                   (b"m%d_a\\\nm%d_b\\\nm%d_c\\\\\\\nm%d_d\t%d\n" % (i, i, i, i, i))
+                                   for i in range(1, 2001)))
+        contp = d / "contp.txt"
+        contp.write_bytes(b"".join(b"%d\tline1_%d%s\nline2_%d\n" % (i, i, _odd_run(i), i)
+                                   + (b"5\tback\n" if i == 1500 else b"") for i in range(1, 2001)))
+        eofrec = d / "eofrec.txt"
+        eofrec.write_bytes(b"".join(b"%d\tx%d\n" % (i, i) for i in range(1, 2001)) + b"5\tlast\\\\\\\n")
+        eodcrlf = d / "eodcrlf.txt"
+        eodcrlf.write_bytes(b"".join(b"%d\tx\r\n" % i for i in range(1, 1001)) + b"\\.\r\n"
+                            + b"notanint\tz\r\n" * 1000)
+        twobad = d / "twobad.txt"
+        twobad.write_bytes(b"".join(b"bad_early\tz\n" if i == 1501 else b"bad_late\tz\n" if i == 3501
+                                    else b"%d\tx%d\n" % (i, i) for i in range(1, 5001)))
+        for f_ in (long_, multi, contp, eofrec, eodcrlf, twobad):
+            os.chmod(f_, 0o644)
+        db.run(f"CREATE TABLE h_long (t text); COPY h_long FROM '{long_}'; "
+               f"CREATE TABLE h_multi (txt text, id int); COPY h_multi FROM '{multi}'; "
+               f"CREATE TABLE h_eodcrlf (id int, txt text); COPY h_eodcrlf FROM '{eodcrlf}'; "
+               "CREATE TABLE c_long (t text) USING pgcolumnar; "
+               "CREATE TABLE c_eodcrlf (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE c_twobad (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_multip (txt text, id int) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_multip_a PARTITION OF t_multip FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+               "CREATE TABLE t_multip_b PARTITION OF t_multip FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+               "CREATE TABLE t_multip_c PARTITION OF t_multip FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+               "CREATE TABLE t_multip_d PARTITION OF t_multip FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+        _mkpart(db, "t_contp", 4)
+        _mkpart(db, "t_eofrecp", 4)
+        _mkpart(db, "t_eodcrlfp", 4)
+        data = _read(long_)
+        counts = db.value("SELECT concat_ws(' ', (SELECT count(*) FROM h_bsnl), (SELECT count(*) FROM h_bsnl2), "
+                          "(SELECT count(*) FROM h_eod), (SELECT count(*) FROM h_even), (SELECT count(*) FROM h_eodj), "
+                          "(SELECT count(*) FROM h_long), (SELECT count(*) FROM h_multi), "
+                          "(SELECT count(*) FROM h_eodcrlf))")
+        r["2084 premise"] = (f"{counts} {len(data)} {data[65535:65537].hex()}" if isinstance(data, bytes)
+                             else data)
+        for w in (2, 4):
+            offs = db.offsets(long_, w)
+            r[f"2084 long offsets {w}"] = " ".join(map(str, offs)) if isinstance(offs, list) else offs
+        r["2084 contp unsorted"] = db.sqlstate(f"SELECT pgcolumnar.parallel_copy('t_contp'::regclass, '{contp}', 4)")
+        r["2084 eofrec unsorted"] = db.sqlstate(
+            f"SELECT pgcolumnar.parallel_copy('t_eofrecp'::regclass, '{eofrec}', 4)")
+        for key, tgt, src, heap in (("long single", "c_long", long_, "h_long"),
+                                    ("multi part", "t_multip", multi, "h_multi"),
+                                    ("eodcrlf part", "t_eodcrlfp", eodcrlf, "h_eodcrlf"),
+                                    ("eodcrlf single", "c_eodcrlf", eodcrlf, "h_eodcrlf")):
+            r[f"2084 {key} rows"] = db.value(f"SELECT pgcolumnar.parallel_copy('{tgt}'::regclass, '{src}', 4)")
+            r[f"2084 {key} rows want"] = db.value(f"SELECT count(*) FROM {heap}")
+            r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
+            r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
+        r["2084 twobad"] = db.bad_names(f"SELECT pgcolumnar.parallel_copy('c_twobad'::regclass, '{twobad}', 4)")
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -984,6 +1074,14 @@ SYNTAX_ROWS = (
      "#2084 bad rows after the end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000"),
     ("eodjunk part",
      "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000"),
+    ("long single",
+     "#2084 odd backslash run across a 64 KiB read / single table, 4 workers: rows returned = heap COPY's 7501"),
+    ("multi part",
+     "#2084 records of 3 and 4 lines, key after them / partitioned, 4 workers: rows returned = heap COPY's 2000"),
+    ("eodcrlf part",
+     "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: rows returned = heap COPY's 1000"),
+    ("eodcrlf single",
+     "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: rows returned = heap COPY's 1000"),
 )
 SYNTAX_VALUES = (
     ("bsnl single", "#2084 escaped newline / single table, 4 workers: result == heap COPY"),
@@ -993,6 +1091,11 @@ SYNTAX_VALUES = (
     ("even single", "#2084 even backslash run / single table, 4 workers: result == heap COPY"),
     ("eodjunk single", "#2084 bad rows after the end-of-data marker / single table, 4 workers: result == heap COPY"),
     ("eodjunk part", "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: result == heap COPY"),
+    ("long single", "#2084 odd backslash run across a 64 KiB read / single table, 4 workers: result == heap COPY"),
+    ("multi part", "#2084 records of 3 and 4 lines, key after them / partitioned, 4 workers: result == heap COPY"),
+    ("eodcrlf part", "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: result == heap COPY"),
+    ("eodcrlf single",
+     "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: result == heap COPY"),
 )
 
 
@@ -1027,6 +1130,49 @@ def test_parallel_copy_unsorted_row_after_an_even_backslash_run_is_refused(pcopy
 def test_parallel_copy_bad_rows_after_the_end_of_data_marker_leave_no_prepared_transaction(pcopy, expect):
     expect.num(pcopy["2084 eodjunk single leak"], 0,
                "#2084 bad rows after the end-of-data marker / single table: no prepared-transaction leak")
+
+
+def test_parallel_copy_fixture_premise(pcopy, expect):
+    """The "rows returned = heap COPY's N" checks compare with the heap table, so this
+    pins N, and the bsnl64k.txt byte layout the pinned offsets rely on."""
+    expect.text(pcopy["2084 premise"], "2000 2000 1000 2000 1000 7501 2000 1000 125542 5c0a",
+                "#2084 premise: heap COPY loads bsnl 2000, bsnl2 2000, eod 1000, even 2000, eodjunk 1000, bsnl64k 7501,"
+                " multi 2000, eodcrlf 1000 rows; bsnl64k.txt is 125542 bytes with 5c 0a at bytes 65535-65536")
+
+
+def test_parallel_copy_split_keeps_backslash_parity_across_a_read_two_workers(pcopy, expect):
+    """The run of 3 that ends at byte 65535 escapes the newline at byte 65536, the first
+    byte of the next read (mutants e2 and n35)."""
+    expect.text(pcopy["2084 long offsets 2"], "0 65542 125542",
+                "#2084 odd backslash run across a 64 KiB read / 2 workers: offsets are 0 65542 125542"
+                " (the newline at byte 65536 is escaped)")
+
+
+def test_parallel_copy_split_keeps_backslash_parity_across_a_read_four_workers(pcopy, expect):
+    expect.text(pcopy["2084 long offsets 4"], "0 31392 65542 94167 125542",
+                "#2084 odd backslash run across a 64 KiB read / 4 workers: offsets are 0 31392 65542 94167 125542")
+
+
+def test_parallel_copy_unsorted_row_after_continued_records_is_refused(pcopy, expect):
+    """The splitter starts a new record after each continued one, so the sort guard sees
+    the unsorted row (mutant n44)."""
+    expect.text(pcopy["2084 contp unsorted"], "22000",
+                "#2084 unsorted row after continued records / partitioned: refused (22000)")
+
+
+def test_parallel_copy_record_the_file_ends_inside_is_keyed(pcopy, expect):
+    """A file that ends inside a continued record: that record is the last row, and
+    its unsorted key is refused (mutant n31)."""
+    expect.text(pcopy["2084 eofrec unsorted"], "22000",
+                "#2084 file ends inside a continued record with an unsorted key / partitioned: refused (22000)")
+
+
+def test_parallel_copy_names_the_first_bad_row(pcopy, expect):
+    """Two ranges fail; the load reports the first in file order, as heap COPY does
+    (mutant n04)."""
+    expect.text(pcopy["2084 twobad"], "bad_early",
+                "#2084 two bad rows in different ranges / single table, 4 workers: the error names the first one,"
+                " bad_early, as heap COPY's does")
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

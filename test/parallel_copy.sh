@@ -689,7 +689,8 @@ check "control: parallel_copy still loads a local path that holds s3a:// past it
 F_BSNL="$DATADIR/bsnl.txt"
 awk 'BEGIN { for (i = 0; i < 2000; i++) printf "first%d\\\nsecond%d\n", i, i }' >"$F_BSNL"
 F_BSNL2="$DATADIR/bsnl2.txt"
-awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tline1_%d\\\nline2_%d\n", i, i, i }' >"$F_BSNL2"
+# odd rows end line1 in a run of 3, even rows in a run of 1: both escape the newline
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tline1_%d%s\nline2_%d\n", i, i, (i % 2 ? "\\\\\\" : "\\"), i }' >"$F_BSNL2"
 F_EOD="$DATADIR/eod.txt"
 awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\n", i; printf "\\.\n";
              for (i = 1001; i <= 2000; i++) printf "%d\ty\n", i }' >"$F_EOD"
@@ -811,6 +812,97 @@ check "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: row
 	"$(q "SELECT pgcolumnar.parallel_copy('t_eodjp'::regclass, '$F_EODJ', 4)")" "$(q "SELECT count(*) FROM h_eodj")"
 check "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: result == heap COPY" \
 	"$(pgc_set_hash "SELECT * FROM t_eodjp")" "$(pgc_set_hash "SELECT * FROM h_eodj")"
+
+# Three fixture gaps the review of #2148 at 7a40d479 found; each let a mutant of
+# the new splitter code pass every check above.
+#
+# bsnl64k.txt (single table) mixes runs of 1 and 3 and is longer than one 64 KiB
+# read. Its middle record ends in a run of 3 whose last backslash is byte 65535,
+# the last byte of the first read; the newline it escapes is byte 65536, the
+# first byte of the second read. The pinned offsets come from that layout: 3750
+# records of 17 and 15 bytes (60000 bytes), the long record (60000..65541), then
+# 3750 more. Mutants e1, e2 and n35.
+#
+# multi.txt (partitioned) has records of 3 and 4 lines with the key after them.
+# contp.txt puts an unsorted row (id 5) after continued records, past row 1500.
+# eofrec.txt ends inside a continued record, whose key 5 is unsorted. Mutants
+# n27, n45, n08 (multi), n44 (contp) and n31 (eofrec).
+#
+# eodcrlf.txt is eodjunk.txt with CRLF line ends, so the marker is \.\r\n.
+# Mutant n36.
+#
+# twobad.txt has a bad row at 1501 and another at 3501, in different ranges. The
+# load must name the first one, as heap COPY does. Mutant n04.
+F_LONG="$DATADIR/bsnl64k.txt"
+awk 'BEGIN { for (i = 1; i <= 3750; i++) printf "a%05d%s\nb%05d\n", i, (i % 2 ? "\\\\\\" : "\\"), i;
+             x = ""; for (k = 0; k < 5533; k++) x = x "x"; printf "%s\\\\\\\ntail\n", x;
+             for (i = 3751; i <= 7500; i++) printf "a%05d%s\nb%05d\n", i, (i % 2 ? "\\\\\\" : "\\"), i }' >"$F_LONG"
+F_MULTI="$DATADIR/multi.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++)
+               if (i % 2) printf "m%d_a\\\nm%d_b\\\\\\\nm%d_c\t%d\n", i, i, i, i;
+               else       printf "m%d_a\\\nm%d_b\\\nm%d_c\\\\\\\nm%d_d\t%d\n", i, i, i, i, i }' >"$F_MULTI"
+F_CONTP="$DATADIR/contp.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) { printf "%d\tline1_%d%s\nline2_%d\n", i, i, (i % 2 ? "\\\\\\" : "\\"), i;
+                                           if (i == 1500) printf "5\tback\n" } }' >"$F_CONTP"
+F_EOFREC="$DATADIR/eofrec.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tx%d\n", i, i; printf "5\tlast\\\\\\\n" }' >"$F_EOFREC"
+F_EODCRLF="$DATADIR/eodcrlf.txt"
+awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\r\n", i; printf "\\.\r\n";
+             for (i = 1; i <= 1000; i++) printf "notanint\tz\r\n" }' >"$F_EODCRLF"
+F_TWOBAD="$DATADIR/twobad.txt"
+awk 'BEGIN { for (i = 1; i <= 5000; i++)
+               if (i == 1501) printf "bad_early\tz\n"; else if (i == 3501) printf "bad_late\tz\n"; else printf "%d\tx%d\n", i, i }' >"$F_TWOBAD"
+chmod 644 "$F_LONG" "$F_MULTI" "$F_CONTP" "$F_EOFREC" "$F_EODCRLF" "$F_TWOBAD"
+psql_run "DROP TABLE IF EXISTS h_long, h_multi, h_eodcrlf, c_long, c_eodcrlf, c_twobad, t_multip CASCADE;
+          CREATE TABLE h_long (t text);              COPY h_long FROM '$F_LONG';
+          CREATE TABLE h_multi (txt text, id int);   COPY h_multi FROM '$F_MULTI';
+          CREATE TABLE h_eodcrlf (id int, txt text); COPY h_eodcrlf FROM '$F_EODCRLF';
+          CREATE TABLE c_long (t text) USING pgcolumnar;
+          CREATE TABLE c_eodcrlf (id int, txt text) USING pgcolumnar;
+          CREATE TABLE c_twobad (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_multip (txt text, id int) PARTITION BY RANGE (id);
+          CREATE TABLE t_multip_a PARTITION OF t_multip FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar;
+          CREATE TABLE t_multip_b PARTITION OF t_multip FOR VALUES FROM (500) TO (1000) USING pgcolumnar;
+          CREATE TABLE t_multip_c PARTITION OF t_multip FOR VALUES FROM (1000) TO (1500) USING pgcolumnar;
+          CREATE TABLE t_multip_d PARTITION OF t_multip FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+mkpart t_contp 4
+mkpart t_eofrecp 4
+mkpart t_eodcrlfp 4
+
+# The "rows returned = heap COPY's N" checks compare with the heap table, so this
+# premise pins N, and the byte layout the offsets below rely on.
+check "#2084 premise: heap COPY loads bsnl 2000, bsnl2 2000, eod 1000, even 2000, eodjunk 1000, bsnl64k 7501, multi 2000, eodcrlf 1000 rows; bsnl64k.txt is 125542 bytes with 5c 0a at bytes 65535-65536" \
+	"$(q "SELECT concat_ws(' ', (SELECT count(*) FROM h_bsnl), (SELECT count(*) FROM h_bsnl2), (SELECT count(*) FROM h_eod),
+	                          (SELECT count(*) FROM h_even), (SELECT count(*) FROM h_eodj), (SELECT count(*) FROM h_long),
+	                          (SELECT count(*) FROM h_multi), (SELECT count(*) FROM h_eodcrlf))") $(stat -c %s "$F_LONG") $(od -An -tx1 -j 65535 -N 2 "$F_LONG" | tr -d ' ')" \
+	"2000 2000 1000 2000 1000 7501 2000 1000 125542 5c0a"
+check "#2084 odd backslash run across a 64 KiB read / 2 workers: offsets are 0 65542 125542 (the newline at byte 65536 is escaped)" \
+	"$(offsets_of "$F_LONG" 2)" "0 65542 125542"
+check "#2084 odd backslash run across a 64 KiB read / 4 workers: offsets are 0 31392 65542 94167 125542" \
+	"$(offsets_of "$F_LONG" 4)" "0 31392 65542 94167 125542"
+check "#2084 odd backslash run across a 64 KiB read / single table, 4 workers: rows returned = heap COPY's 7501" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_long'::regclass, '$F_LONG', 4)")" "$(q "SELECT count(*) FROM h_long")"
+check "#2084 odd backslash run across a 64 KiB read / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_long")" "$(pgc_set_hash "SELECT * FROM h_long")"
+check "#2084 records of 3 and 4 lines, key after them / partitioned, 4 workers: rows returned = heap COPY's 2000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_multip'::regclass, '$F_MULTI', 4)")" "$(q "SELECT count(*) FROM h_multi")"
+check "#2084 records of 3 and 4 lines, key after them / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_multip")" "$(pgc_set_hash "SELECT * FROM h_multi")"
+check "#2084 unsorted row after continued records / partitioned: refused (22000)" \
+	"$(sqlstate_of "SELECT pgcolumnar.parallel_copy('t_contp'::regclass, '$F_CONTP', 4)")" 22000
+check "#2084 file ends inside a continued record with an unsorted key / partitioned: refused (22000)" \
+	"$(sqlstate_of "SELECT pgcolumnar.parallel_copy('t_eofrecp'::regclass, '$F_EOFREC', 4)")" 22000
+check "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_eodcrlfp'::regclass, '$F_EODCRLF', 4)")" "$(q "SELECT count(*) FROM h_eodcrlf")"
+check "#2084 CRLF end-of-data marker, bad rows after it / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_eodcrlfp")" "$(pgc_set_hash "SELECT * FROM h_eodcrlf")"
+check "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_eodcrlf'::regclass, '$F_EODCRLF', 4)")" "$(q "SELECT count(*) FROM h_eodcrlf")"
+check "#2084 CRLF end-of-data marker, bad rows after it / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_eodcrlf")" "$(pgc_set_hash "SELECT * FROM h_eodcrlf")"
+_twobad="$(err_of "SELECT pgcolumnar.parallel_copy('c_twobad'::regclass, '$F_TWOBAD', 4)")"
+check "#2084 two bad rows in different ranges / single table, 4 workers: the error names the first one, bad_early, as heap COPY's does" \
+	"$(grep -o 'bad_[a-z]*' <<<"$_twobad" | sort -u | tr '\n' ' ' | sed 's/ $//')" "bad_early"
 
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote

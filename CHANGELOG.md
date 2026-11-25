@@ -618,9 +618,12 @@ true until the next version shipped.
   line. A loader whose COPY stops at a `\.` line reports it, and the
   coordinator rolls back every range after it. `file_split_offsets` uses the
   same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
-  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 19
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 33
   checks, including files whose values end in a backslash (an even run before
-  the newline) and a file whose rows after `\.` are invalid.
+  the newline) and a file whose rows after `\.` are invalid. They also cover
+  runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
+  and 4 lines with the key after them, a file that ends inside a continued
+  record, a `\.\r\n` marker, and which failing row the error names.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It

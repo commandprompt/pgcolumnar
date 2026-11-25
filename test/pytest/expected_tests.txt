@@ -1998,4 +1998,9 @@ guard_tests 895
 # as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
 # #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
 # files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
-cluster_tests 5497
+# cluster_tests 5497 -> 5511 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
+# lines with the key after them, an unsorted row after continued records, a file that ends inside a
+# record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
+# NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
+cluster_tests 5511
