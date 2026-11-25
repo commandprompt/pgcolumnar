@@ -272,6 +272,9 @@ def pp(pgc_cluster):
         fn = _transcript(dsn, [GENERIC, "PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)"])
         r["fn removed"] = _field(fn, "Chunk Groups Removed by Filter")
+        # The frozen keys are also the scan's own keys, which EXPLAIN counts: a freeze
+        # that gave them to the reader alone pruned 19 groups and reported 0.
+        r["fn pushed"] = _field(fn, "Columnar Pushed-Down Filters")
         # One call to freeze the operand, then one per row the Filter tests.
         once = _transcript(dsn, [GENERIC, "PREPARE n(int) AS SELECT count(*) FROM t WHERE ts >= cntc($1)",
                                  "SET t.n = '0'",
@@ -312,10 +315,11 @@ def pp(pgc_cluster):
                                  "PREPARE q(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
                                  "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE q(39000)"])
         r["qual pushdown off removed"] = _field(qoff, "Chunk Groups Removed by Filter")
-        # ts >= 1 excludes no group, so only the second key removes the other 19.
+        # Each key removes groups the other keeps: ts >= 2001 removes group 1 and ts <= 4000
+        # removes groups 3 to 20. Testing only the first key removes 1, only the last 18.
         two = _transcript(dsn, [GENERIC, "PREPARE k(int, int) AS SELECT count(*) FROM t "
                                 "WHERE ts >= same($1) AND ts <= same($2)",
-                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(1, 2000)"])
+                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(2001, 4000)"])
         r["two keys removed"] = _field(two, "Chunk Groups Removed by Filter")
         _session(dsn, ["SET pgcolumnar.stripe_row_limit = 2000",
                        "CREATE TABLE tx (s text) USING pgcolumnar",
@@ -324,6 +328,25 @@ def pp(pgc_cluster):
         # 1655 rows of tx are >= '038345' followed by 'x's.
         rescan = _transcript(dsn, [GENERIC, TEXT_RESCAN, "EXECUTE r('038345' || repeat('x', 300000))"])
         r["text rescan"] = rescan if isinstance(rescan, str) else " ".join(rescan)
+        # A varchar parameter on a text column reaches the scan inside a RelabelType;
+        # Begin sees through it, so a plain EXPLAIN EXECUTE reports it pushed down.
+        bv = _transcript(dsn, [GENERIC, "PREPARE bv(varchar) AS SELECT count(*) FROM tx WHERE s >= $1",
+                               "EXPLAIN (COSTS off) EXECUTE bv('039000')"])
+        r["explain bound varchar"] = _field(bv, "Columnar Pushed-Down Filters")
+        # A domain parameter on an int column is wrapped in a RelabelType too.
+        _session(dsn, ["CREATE DOMAIN dint AS int"])
+        bd = _transcript(dsn, [GENERIC, "PREPARE d(dint) AS SELECT count(*) FROM t WHERE ts >= $1",
+                               "EXPLAIN (COSTS off) EXECUTE d(39000)"])
+        r["explain bound domain"] = _field(bd, "Columnar Pushed-Down Filters")
+        # A NULL bound parameter is frozen as NULL and builds no key. Frozen as a
+        # non-null Const, an int NULL became "ts >= 0" and a text NULL crashed the backend.
+        ni = _transcript(dsn, [GENERIC, "PREPARE ni(int) AS SELECT count(*) FROM t WHERE ts >= $1",
+                               "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE ni(NULL)"])
+        r["null int pushed"] = _field(ni, "Columnar Pushed-Down Filters")
+        nt = _transcript(dsn, [GENERIC, "PREPARE nt(text) AS SELECT count(*) FROM tx WHERE s >= $1",
+                               "EXECUTE nt(NULL)"])
+        r["null text count"] = nt if isinstance(nt, str) else (nt[-1] if nt else query_error("no row"))
+        r["null text survived"] = _survived(dsn, pgc_cluster, before)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -407,6 +430,11 @@ def test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_run
                 "a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065)")
 
 
+def test_param_pushdown_the_frozen_key_counts_as_pushed_down(pp, expect):
+    expect.text(pp["fn pushed"], "1",
+                "and the same EXPLAIN ANALYZE counts the frozen key as pushed down (#2065)")
+
+
 def test_param_pushdown_a_stable_operand_is_called_once_to_freeze_then_once_per_row(pp, expect):
     expect.text(pp["once calls"], pp["once want"],
                 "the scan calls a stable operand once to freeze it, then once per row the Filter tests (#2065)")
@@ -449,6 +477,31 @@ def test_param_pushdown_two_first_run_keys_both_prune(pp, expect):
 def test_param_pushdown_a_long_text_first_run_key_survives_each_rescan(pp, expect):
     expect.text(pp["text rescan"], "1|1655 2|1655 3|1655",
                 "a long text key frozen at the first run survives each rescan (#2065)")
+
+
+def test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_varchar_param(pp, expect):
+    expect.text(pp["explain bound varchar"], "1",
+                "a plain EXPLAIN EXECUTE still pushes down a bound varchar parameter (#2065)")
+
+
+def test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_domain_param(pp, expect):
+    expect.text(pp["explain bound domain"], "1",
+                "a plain EXPLAIN EXECUTE still pushes down a bound domain parameter (#2065)")
+
+
+def test_param_pushdown_a_null_bound_int_param_builds_no_pushed_down_filter(pp, expect):
+    expect.text(pp["null int pushed"], "0",
+                "a NULL bound int parameter on a generic plan builds no pushed-down filter (#2065)")
+
+
+def test_param_pushdown_a_null_bound_text_param_counts_zero(pp, expect):
+    expect.text(pp["null text count"], "0",
+                "a NULL bound text parameter on a generic plan counts 0 (#2065)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_null_text_param(pp, expect):
+    expect.text(pp["null text survived"], "1",
+                "the backend is alive after the NULL text parameter (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

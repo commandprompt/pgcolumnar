@@ -185,11 +185,16 @@ check "a columnar scan under a false one-time filter never calls its stable oper
 # planner cannot inline it into a bare parameter.
 q "CREATE FUNCTION same(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
 	BEGIN RETURN \$1; END \$\$;" >/dev/null
+FN_PLAN="$(psql_m "SET plan_cache_mode = force_generic_plan" \
+	"PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
+	"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)")"
 check "a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065)" \
-	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
-		"PREPARE g(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
-		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE g(39000)" \
-		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "19"
+	"$(sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$FN_PLAN" | head -1)" "19"
+# The keys frozen at the first run are also the scan's own keys, which EXPLAIN counts.
+# A freeze that handed the keys to the reader alone pruned the same 19 groups and
+# reported 0 pushed-down filters.
+check "and the same EXPLAIN ANALYZE counts the frozen key as pushed down (#2065)" \
+	"$(sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' <<<"$FN_PLAN" | head -1)" "1"
 
 # The scan freezes such an operand once, on its first run, and not again on each
 # later call for a row. cntc() counts its calls: one for the freeze, then one per row
@@ -266,12 +271,13 @@ check "with pgcolumnar.enable_qual_pushdown off, a key frozen at the first run p
 		"PREPARE q(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
 		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE q(39000)" \
 		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "0"
-# Two keys frozen at the first run must both be tested. ts >= 1 excludes no group, so
-# only ts <= 2000 removes the other 19: a scan that tests the first key alone removes 0.
+# Two keys frozen at the first run must both be tested. Each key removes groups the
+# other keeps: ts >= 2001 removes group 1, and ts <= 4000 removes groups 3 to 20. A scan
+# that tests only the first key removes 1, and one that tests only the last removes 18.
 check "two keys frozen at the first run both prune (19 of 20 removed) (#2065)" \
 	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
 		"PREPARE k(int, int) AS SELECT count(*) FROM t WHERE ts >= same(\$1) AND ts <= same(\$2)" \
-		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(1, 2000)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(2001, 4000)" \
 		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "19"
 # The frozen operand must be copied out of the memory it was evaluated in. A correlated
 # subquery rescans the scan once per outer row, and each rescan reuses the frozen key.
@@ -287,6 +293,32 @@ check "a long text key frozen at the first run survives each rescan (#2065)" \
 		"PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t(\$1) AND s <= g::text || 'z') FROM generate_series(1, 3) g" \
 		"EXECUTE r('038345' || repeat('x', 300000))" | grep -vxE 'SET|PREPARE' | tr '\n' ' ' | sed 's/ $//')" \
 	"1|1655 2|1655 3|1655"
+
+# A varchar parameter compared with a text column reaches the scan wrapped in a
+# RelabelType to text. Begin must see through it and freeze the bound value, so a plain
+# EXPLAIN EXECUTE reports it as pushed down, as it does for the int parameter above.
+check "a plain EXPLAIN EXECUTE still pushes down a bound varchar parameter (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE bv(varchar) AS SELECT count(*) FROM tx WHERE s >= \$1" \
+		"EXPLAIN (COSTS off) EXECUTE bv('039000')" \
+		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "1"
+# The same holds for a domain parameter on an int column, which also arrives wrapped in a
+# RelabelType.
+q "CREATE DOMAIN dint AS int;" >/dev/null
+check "a plain EXPLAIN EXECUTE still pushes down a bound domain parameter (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE d(dint) AS SELECT count(*) FROM t WHERE ts >= \$1" \
+		"EXPLAIN (COSTS off) EXECUTE d(39000)" \
+		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "1"
+# A bound parameter that is NULL must be frozen as NULL. "col >= NULL" matches nothing
+# and builds no scan key. Frozen as a non-null Const, an int NULL became the key
+# "ts >= 0", and a text NULL a key that pointed at address 0, which crashed the backend.
+check "a NULL bound int parameter on a generic plan builds no pushed-down filter (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE ni(int) AS SELECT count(*) FROM t WHERE ts >= \$1" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE ni(NULL)" \
+		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "0"
+check "a NULL bound text parameter on a generic plan counts 0 (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE nt(text) AS SELECT count(*) FROM tx WHERE s >= \$1" \
+		"EXECUTE nt(NULL)" | tail -1)" "0"
+check "the backend is alive after the NULL text parameter (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
 
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 

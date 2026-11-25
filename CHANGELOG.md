@@ -626,6 +626,9 @@ true until the next version shipped.
   bound parameter of a prepared statement as pushed down. Keys frozen at the
   first run obey `pgcolumnar.enable_qual_pushdown = off`, all of them are
   tested when there are several, and a long text key survives a rescan.
+  A bound parameter that is NULL builds no key, a varchar or domain parameter
+  is pushed down like any other bound parameter, and `EXPLAIN ANALYZE`
+  counts a key frozen at the first run as pushed down.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - An INSERT into a columnar table after a rewrite in the same transaction now
   keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that

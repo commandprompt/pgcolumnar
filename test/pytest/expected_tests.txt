@@ -2022,4 +2022,9 @@ guard_tests 895
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-cluster_tests 5502
+# cluster_tests 5502 -> 5508 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
+# domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
+# pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
+cluster_tests 5508
