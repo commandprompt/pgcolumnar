@@ -605,6 +605,13 @@ true until the next version shipped.
 
 ### Fixed
 
+- A `pgcolumnar.parallel_copy` loader that fails now closes its file once
+  (#2083). It closed the file after aborting its transaction, but the abort
+  had already closed it. Each failed loader logged `fd passed to
+  CloseTransientFile was not obtained from OpenTransientFile` and called
+  `close()` on a descriptor number that could by then belong to another file.
+  The loader now closes the file before the abort. `test/parallel_copy.sh`
+  and `test_parallel_copy.py`.
 - `pgcolumnar.import_arrow` now refuses a `decimal256` column for a `numeric`
   target, instead of storing wrong values (#2081). The reader decodes 16-byte
   `decimal128` values only, and never read the file's Decimal bit width. A

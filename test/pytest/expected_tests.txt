@@ -1927,4 +1927,7 @@ guard_tests 895
 # cluster_tests 5387 -> 5388 for test_tid_range_scan.py's test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row
 # (#2058: a TID scan of ctid (0,0), or of an offset past a block's last, reaches no row), by collection of
 # every file NO_CLUSTER does not name: 5377 tests collected.
-cluster_tests 5388
+# cluster_tests 5388 -> 5389 for #2083's test_parallel_copy_failed_loaders_close_their_file_once in
+# test_parallel_copy.py (a failed parallel_copy loader closes its file once, so the server log holds no
+# CloseTransientFile WARNING), by collection of the cluster files: 5377 tests collected.
+cluster_tests 5389
