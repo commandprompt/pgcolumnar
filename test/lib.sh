@@ -1346,6 +1346,27 @@ q() {
 		-d "$PGC_DB" -At -c "$1" 2>/dev/null || true
 }
 
+# psql_block SQL -- run SQL as psql runs a script, stop at the first error, and
+# print "ok" or why psql stopped: "psql rc=N: <first error line>" (#2093).
+#
+# The verdict is psql's exit status. The suites that run docs/ examples used to
+# grep psql's stderr for ERROR or FATAL instead, and said "ok" when grep found
+# nothing. A backend crash ("server closed the connection unexpectedly"), a port
+# with no server, and a failed meta-command all print neither word, so each one
+# passed as "ok" (measured by OffgridwithJD on #2159). Selftest part 650 checks
+# this helper. The SQL goes in on a herestring, not a pipe, so no printf writer
+# can take a broken pipe (selftest part 080).
+psql_block() {
+	local out rc msg
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null <<<"$1")"
+	rc=$?
+	[ "$rc" = 0 ] && { echo ok; return; }
+	msg="$(grep -m1 -E 'ERROR|FATAL|error|connection' <<<"$out")"
+	[ -n "$msg" ] || msg="$(grep -m1 . <<<"$out")"
+	echo "psql rc=$rc: $msg"
+}
+
 # pgc_xact_blocks CATLIST SQL -- buffers the listed pgcolumnar catalogs, heap and
 # index, served while SQL ran, as "TOTAL|cat=N cat=N ...", counted by this
 # backend for this transaction alone (#1298).

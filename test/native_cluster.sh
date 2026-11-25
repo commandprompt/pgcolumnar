@@ -178,15 +178,15 @@ doc_sql() {
 		!c && /^#/ {exit}
 		t {print}' "$HOWTO"
 }
-# run_doc HEADING N...: run those blocks in order; the first error, "no block", or "ok".
+# run_doc HEADING N...: run those blocks in order; "ok", "no block", or why psql
+# stopped (psql_block in lib.sh, which reads psql's exit status: #2093).
 run_doc() {
 	local h="$1" n b out; shift
 	for n in "$@"; do
 		b="$(doc_sql "$h" "$n")"
 		[ -n "$b" ] || { echo "no block $n under '$h'"; return; }
-		out="$(printf '%s\n' "$b" | env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" \
-			-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null | grep -m1 -E 'ERROR|FATAL')"
-		[ -z "$out" ] || { echo "$out"; return; }
+		out="$(psql_block "$b")"
+		[ "$out" = ok ] || { echo "$out"; return; }
 	done
 	echo ok
 }

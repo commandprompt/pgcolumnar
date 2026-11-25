@@ -689,13 +689,11 @@ doc_sql() {
 		!c && /^#/ {exit}
 		t {print}' "$HOWTO"
 }
-run_doc() {	# run_doc HEADING N -> the block's first error, "no block", or "ok"
-	local b out
+run_doc() {	# run_doc HEADING N -> "ok", "no block", or why psql stopped (psql_block, #2093)
+	local b
 	b="$(doc_sql "$1" "$2")"
 	[ -n "$b" ] || { echo "no block $2 under '$1'"; return; }
-	out="$(printf '%s\n' "$b" | env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" \
-		-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null | grep -m1 -E 'ERROR|FATAL')"
-	echo "${out:-ok}"
+	psql_block "$b"
 }
 check "the how-to's partitions example runs" "$(run_doc '## Create time partitions ahead' 1)" "ok"
 check "the how-to's rollup example runs after it" "$(run_doc '## Keep a rollup up to date' 1)" "ok"

@@ -35,14 +35,13 @@ doc_sql() {
 		!c && /^#/ {exit}
 		t {print}' "$PGC_SRCDIR/docs/$1"
 }
-# run_doc FILE HEADING N: run that block; its first error, "no block", or "ok".
+# run_doc FILE HEADING N: run that block; "ok", "no block", or why psql stopped
+# (psql_block in lib.sh, which reads psql's exit status: #2093).
 run_doc() {
-	local b out
+	local b
 	b="$(doc_sql "$1" "$2" "$3" | sed -E "s#'/(data|tmp)/#'$PQ_DOCDIR/#g")"
 	[ -n "$b" ] || { echo "no block $3 under '$2' in $1"; return; }
-	out="$(printf '%s\n' "$b" | env PATH="$PGC_BINDIR:$PATH" psql -X -q -h 127.0.0.1 -p "$PGC_PORT" \
-		-U postgres -d "$PGC_DB" -v ON_ERROR_STOP=1 2>&1 >/dev/null | grep -m1 -E 'ERROR|FATAL')"
-	echo "${out:-ok}"
+	psql_block "$b"
 }
 check "the how-to's first example creates its events table" \
 	"$(run_doc how-to.md '## Create a columnar table' 1)" "ok"

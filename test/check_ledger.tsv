@@ -2967,6 +2967,12 @@ harness_selftest	640-every-suite-job-installs-the-extensions	the detector names 
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow in which it finds no suite job	15;16;17;18;19	2026-10-14	640's _ej_missing without its no-suite-job guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the detector names a workflow it cannot read	15;16;17;18;19	2026-10-14	640's _ej_missing without its unreadable-file guard
 harness_selftest	640-every-suite-job-installs-the-extensions	the suite-running jobs are exactly the five this part knows	15;16;17;18;19	2026-10-14	640's job scan no longer counts a cluster job that runs pytest
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	control: psql_block says ok for a block that runs	15;16;17;18;19	never	-
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	every suite's run_doc runs its block through psql_block	15;16;17;18;19	2026-11-25	parquet_import.sh run_doc pipes psql into grep -m1 -E 'ERROR|FATAL' instead of calling psql_block
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	premise: a port with no server on it was found	15;16;17;18;19	never	-
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	psql_block does not say ok when a meta-command fails	15;16;17;18;19	2026-11-25	lib.sh psql_block greps stderr for ERROR|FATAL and ignores psql's exit status (the run_doc logic before #2159's fix-up)
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	psql_block does not say ok when no server answers	15;16;17;18;19	2026-11-25	lib.sh psql_block greps stderr for ERROR|FATAL and ignores psql's exit status (the run_doc logic before #2159's fix-up)
+harness_selftest	650-a-doc-block-fails-on-psql-s-exit-status	psql_block names the error of a block whose statement fails	15;16;17;18;19	2026-11-25	lib.sh psql_block greps stderr for ERROR|FATAL and ignores psql's exit status (the run_doc logic before #2159's fix-up)
 hilbert_curve	hilbert_curve	C0 premise: the battery encoded every case and every point	15;16;17;18;19	never	-
 hilbert_curve	hilbert_curve	C0 premise: the encoder was called once per point	15;16;17;18;19	never	-
 hilbert_curve	hilbert_curve	C1 the Hilbert index set is exactly the contiguous range	15;16;17;18;19	2026-10-21	columnar_curve.c: the transpose clears the top bit of X[0], so curve indices collide
