@@ -766,6 +766,15 @@ PgColumnarResetRuntimeTap(PgColumnarRuntimeTapState *state)
     state->hasValues = false;
     state->buildRows = 0;
     state->replay = false;
+
+    /*
+     * The source is in custom_ps, so ExecReScan does not forward chgParam to it
+     * either (#2062). A source that caches its output, such as a HashAggregate,
+     * would otherwise return the first execution's rows.
+     */
+    if (state->customScanState.ss.ps.chgParam != NULL)
+        UpdateChangedParamSet(state->sourceState,
+                              state->customScanState.ss.ps.chgParam);
     ExecReScan(state->sourceState);
 }
 
@@ -784,7 +793,23 @@ PgColumnarEndRuntimeTap(CustomScanState *node)
 static void
 PgColumnarReScanRuntimeTap(CustomScanState *node)
 {
-    PgColumnarResetRuntimeTap((PgColumnarRuntimeTapState *) node);
+    PgColumnarRuntimeTapState *state = (PgColumnarRuntimeTapState *) node;
+
+    /*
+     * A RESCAN FROM BELOW REPLAYS, ONE FROM THE COORDINATOR REBUILDS (#2062).
+     * Once the coordinator has drained the source in this cycle, the spool holds
+     * this cycle's build rows. The Hash above rescans the tap when the Hash Join
+     * rebuilds its table, and that must read the same rows again: resetting here
+     * would empty the spool and the next read would fail "read before drain".
+     * The coordinator resets the tap itself, through PgColumnarResetRuntimeTap,
+     * whenever a new cycle needs new build rows.
+     */
+    if (state->replay)
+    {
+        tuplestore_rescan(state->store);
+        return;
+    }
+    PgColumnarResetRuntimeTap(state);
 }
 
 static void
@@ -933,6 +958,19 @@ PgColumnarReScanRuntimeFilter(CustomScanState *node)
                                  NULL,
                                  InvalidAttrNumber);
     PgColumnarDetachRuntimeRange(outerPlanState(state->joinState));
+
+    /*
+     * PASS THE CHANGED PARAMETERS DOWN (#2062). The Hash Join is in custom_ps,
+     * and ExecReScan forwards chgParam only to lefttree and righttree. Without
+     * this the Hash Join saw no change, kept the hash table from the first
+     * execution, and every later execution of a correlated subquery joined
+     * against the first build rows.
+     */
+    if (node->ss.ps.chgParam != NULL)
+    {
+        UpdateChangedParamSet(state->joinState, node->ss.ps.chgParam);
+        UpdateChangedParamSet(&state->tapState->ss.ps, node->ss.ps.chgParam);
+    }
     ExecReScan(state->joinState);
     PgColumnarResetRuntimeTap((PgColumnarRuntimeTapState *) state->tapState);
     MemoryContextReset(state->filterContext);
