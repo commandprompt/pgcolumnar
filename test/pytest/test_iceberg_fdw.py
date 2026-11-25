@@ -76,6 +76,11 @@ WAREHOUSES = {
     "dpfx":   ("warehouse_decimal", "pfx",         "id bigint, d_x bigint, d int"),
     "boolt":  ("warehouse_decimal", "boolt",       "id bigint, b bool"),
     "booli":  ("warehouse_decimal", "booli",       "id bigint, b bool"),
+    "dpfx2":  ("warehouse_decimal", "pfx2",        "id bigint, d bigint, d_x int"),
+    "booll":  ("warehouse_decimal", "booll",       "id bigint, b bool"),
+    "booli2": ("warehouse_decimal", "booli",       "id bigint, b smallint"),
+    "boolti": ("warehouse_decimal", "boolt",       "id bigint, b int"),
+    "byint":  ("warehouse_decimal", "byint",       "k int"),
 }
 
 
@@ -957,6 +962,16 @@ def test_the_field_type_lookup_matches_the_whole_field_name(ice, expect):
                 "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2")
 
 
+def test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column(ice, expect):
+    """pfx2 puts the long field d before the decimal d_x. A lookup that compared only
+    the field name's length would take d_x for a long and prune on its bounds."""
+    conn, meta = ice
+    if not _need(expect, meta, "dpfx2"):
+        return
+    expect.text(_ids(conn, "dpfx2", "d_x = 20000000") or "none", "2",
+                "decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2")
+
+
 # ---------------------------------- a bool column prunes on bounds only over an Iceberg boolean
 #
 # boolt is an Iceberg boolean: ids 1, 2 with b false in one file, ids 3, 4 with b true
@@ -984,6 +999,56 @@ def test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, exp
                 "bool: a full scan of an Iceberg int declared bool is refused (42804)")
     expect.text(_sqlstate(conn, "SELECT * FROM booli WHERE b < true"), "42804",
                 "bool: b < true on an Iceberg int declared bool is refused the same way, not empty")
+
+
+def test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "booll"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM booll WHERE b < true"), "42804",
+                "bool: b < true on an Iceberg long declared bool is refused (42804), not empty")
+
+
+# ------------------------------- an integer column prunes on bounds only over an Iceberg int or long
+#
+# booli2 reads the Iceberg int of booli as smallint. boolti reads the Iceberg boolean of
+# boolt as int, which the reader refuses.
+
+def test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "booli2"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM booli2 WHERE b > 8"), 1,
+               "int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)")
+    expect.text(_ids(conn, "booli2", "b = 8") or "none", "8",
+                "int: b = 8 on a smallint over an Iceberg int returns id 8")
+
+
+def test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolti"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM boolti"), "42804",
+                "int: a full scan of an Iceberg boolean declared int is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM boolti WHERE b = 5"), "42804",
+                "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty")
+
+
+# ------------------------------------------------------- bucket pruning on an Iceberg int source
+#
+# byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files. Iceberg
+# hashes an int as an 8-byte long. k = 5 is in bucket 7 with k = 8. Bounds alone prune
+# only 3 files: the bucket 3 file holds k = 3 and 7, so its bounds contain 5.
+
+def test_bucket_pruning_works_on_an_iceberg_int_source(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byint"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM byint WHERE k = 5"), 4,
+               "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)")
+    expect.text(_one(conn, "SELECT string_agg(k::text, ',' ORDER BY k) FROM byint WHERE k = 5")
+                or "none", "5",
+                "bucket: k = 5 on bucket[8] of an Iceberg int returns 5")
 
 
 # ------------------------------------------------------------------- option validation

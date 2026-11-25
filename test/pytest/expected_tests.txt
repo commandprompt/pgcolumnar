@@ -1999,4 +1999,11 @@ guard_tests 895
 # test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too). The five earlier #2086 tests made
 # 5398 -> 5403 in the main merge. By collection of the cluster files (all test_*.py not in NO_CLUSTER):
 # 5406 tests collected.
-cluster_tests 5486
+# cluster_tests 5486 -> 5491 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
+# test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
+# test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
+# test_bucket_pruning_works_on_an_iceberg_int_source). By collection of the cluster files (all test_*.py
+# not in NO_CLUSTER): 5491 tests collected.
+cluster_tests 5491

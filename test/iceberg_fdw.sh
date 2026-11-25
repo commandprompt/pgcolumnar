@@ -545,6 +545,14 @@ q "CREATE FOREIGN TABLE dpfx (id bigint, d_x bigint, d int)
    SERVER ice OPTIONS (metadata_path '$MD_PFX')" >/dev/null
 check "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2" \
 	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dpfx WHERE d = 20000000")" "2"
+# pfx2 tests the other direction: the long d comes before the decimal d_x, and
+# its name is a prefix of d_x. A lookup that compared only the field name's
+# length would take d_x for a long.
+MD_PFX2="$(ls "$DCWH"/db/pfx2/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dpfx2 (id bigint, d bigint, d_x int)
+   SERVER ice OPTIONS (metadata_path '$MD_PFX2')" >/dev/null
+check "decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dpfx2 WHERE d_x = 20000000")" "2"
 
 # ---- a bool column prunes on bounds only over an Iceberg boolean (#2086) -----
 # boolt: an Iceberg boolean, one file with b false (ids 1, 2) and one with b
@@ -565,6 +573,42 @@ check "bool: a full scan of an Iceberg int declared bool is refused (42804)" \
 	"$(tm_state "SELECT * FROM booli")" "42804"
 check "bool: b < true on an Iceberg int declared bool is refused the same way, not empty" \
 	"$(tm_state "SELECT * FROM booli WHERE b < true")" "42804"
+# booll: an Iceberg long (values 5 to 8) declared bool, refused the same way.
+MD_BL="$(ls "$DCWH"/db/booll/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE booll (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BL')" >/dev/null
+check "bool: b < true on an Iceberg long declared bool is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM booll WHERE b < true")" "42804"
+
+# ---- an integer column prunes on bounds only over an Iceberg int or long -----
+# booli read as smallint: the int2 arm prunes on the Iceberg int's bounds. boolt
+# read as int: the reader refuses an int over an Iceberg boolean, and a filter
+# must not turn that into an empty answer.
+q "CREATE FOREIGN TABLE booli2 (id bigint, b smallint)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+q "CREATE FOREIGN TABLE boolti (id bigint, b int)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+check "int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM booli2 WHERE b > 8")" "1"
+check "int: b = 8 on a smallint over an Iceberg int returns id 8" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM booli2 WHERE b = 8")" "8"
+check "int: a full scan of an Iceberg boolean declared int is refused (42804)" \
+	"$(tm_state "SELECT * FROM boolti")" "42804"
+check "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM boolti WHERE b = 5")" "42804"
+
+# ---- bucket pruning on an Iceberg int source (#2086) -------------------------
+# byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files.
+# Iceberg hashes an int as an 8-byte long. k = 5 is in bucket 7 with k = 8.
+# Bounds alone prune only 3 files: the bucket 3 file holds k = 3 and 7, so its
+# bounds contain 5.
+MD_BY="$(ls "$DCWH"/db/byint/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE byint (k int)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)" \
+	"$(fp "SELECT * FROM byint WHERE k = 5")" "4"
+check "bucket: k = 5 on bucket[8] of an Iceberg int returns 5" \
+	"$(q "SELECT coalesce(string_agg(k::text, ',' ORDER BY k), 'none') FROM byint WHERE k = 5")" "5"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \

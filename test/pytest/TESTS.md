@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-109 literal matches and 0 missing (#1818's twelve and #2086's fifteen included).
+117 literal matches and 0 missing (#1818's twelve and #2086's twenty-three included).
 
 | test | asserts |
 | --- | --- |
@@ -4553,6 +4553,11 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_the_field_type_lookup_matches_the_whole_field_name` | #2086: in `pfx` the `long` field `d_x` comes before the decimal `d`; `d = 20000000` returns id 2. A lookup that matched the name `d` as a prefix would read `d` as a long and prune its file |
 | `test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds` | #2086: a `bool` column over an Iceberg `boolean`: `b > false` prunes the all-false file (Files Pruned: 1) and returns ids 3 and 4 |
 | `test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `int` is refused (42804) by a full scan, and by `b < true`, which must not prune on the int's bounds and return nothing |
+| `test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column` | #2086: in `pfx2` the `long` field `d` comes before the decimal `d_x`; `d_x = 20000000` returns id 2. A lookup that compared only the field name's length would read `d_x` as a long and prune its file |
+| `test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `long` is refused (42804) by `b < true`, which must not prune on the long's bounds and return nothing |
+| `test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `smallint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1), and `b = 8` returns id 8 |
+| `test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: an `int` column over an Iceberg `boolean` is refused (42804) by a full scan, and by `b = 5`, which must not prune on the boolean's bounds and return nothing |
+| `test_bucket_pruning_works_on_an_iceberg_int_source` | #2086: `bucket[8]` of an Iceberg `int` declared `int`: `k = 5` prunes 4 of 5 files (Files Pruned: 4; bounds alone prune 3) and returns 5 |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 

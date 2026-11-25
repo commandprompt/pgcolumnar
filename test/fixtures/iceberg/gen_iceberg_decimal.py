@@ -22,15 +22,25 @@
 #              (1, 5, 100000.00) and (2, 6, 200000.00), one data file. The long
 #              field d_x comes before d and its name starts with "d", so a
 #              field-type lookup that matches names by prefix reads d as a long.
+#   db.pfx2  : id long, d long, d_x decimal(9,2) as Parquet INT32, the same
+#              rows. Here the long d comes first and its name is a prefix of
+#              d_x, so a lookup that compares only the field name's length
+#              reads d_x as a long. pfx tests the other direction.
 #   db.boolt : id long, b boolean. Two data files: ids 1, 2 with b false, and
 #              ids 3, 4 with b true. Iceberg writes a boolean bound as one byte.
 #   db.booli : id long, b int, values 5 to 8, one data file. A foreign table
 #              that declares b bool is one the reader refuses (42804), so the
 #              FDW must not read b's int bounds as boolean bounds and prune.
+#   db.booll : id long, b long, values 5 to 8, one data file. The same refusal
+#              for a bool column over an Iceberg long.
+#   db.byint : k int, partitioned by bucket[8](k), k = 1 to 8, one file per
+#              bucket. Iceberg hashes an int as an 8-byte long, so the FDW may
+#              prune by bucket on an Iceberg int. Writing it needs
+#              pyiceberg-core for the bucket transform.
 #
 # Run: ~/icevenv/bin/python gen_iceberg_decimal.py <out warehouse> <scratch root>
 #      [table ...]
-# with pyiceberg 0.12.0 and pyarrow. Name tables to write only those; with no
+# with pyiceberg 0.12.0, pyiceberg-core 0.10.1 and pyarrow. Name tables to write only those; with no
 # names it writes all of them.
 import decimal
 import os
@@ -107,6 +117,21 @@ def make_plain(name, fields, files):
     publish(name, t, loc, len(fields))
 
 
+def make_bucket_int(name):
+    """An Iceberg int k = 1 to 8, partitioned by bucket[8](k), appended by
+    pyiceberg so that pyiceberg computes the buckets."""
+    if ONLY and name not in ONLY:
+        return
+    schema = Schema(NestedField(1, "k", IntegerType(), required=False))
+    spec = PartitionSpec(PartitionField(source_id=1, field_id=1000,
+                                        transform=BucketTransform(8),
+                                        name="k_bucket"))
+    t = cat.create_table(f"db.{name}", schema=schema, partition_spec=spec)
+    loc = t.metadata.location.replace("file://", "")
+    t.append(pa.table({"k": pa.array(range(1, 9), pa.int32())}))
+    publish(name, t, loc, 1)
+
+
 def publish(name, t, loc, fid):
     """Copy the table's metadata and data into the output warehouse, and print
     each data file's partition and its bounds for field `fid`."""
@@ -133,9 +158,17 @@ make_plain("pfx",
            [("id", LongType(), pa.int64()), ("d_x", LongType(), pa.int64()),
             ("d", DecimalType(9, 2), pa.decimal128(9, 2))],
            [[(1, 5, D("100000.00")), (2, 6, D("200000.00"))]])
+make_plain("pfx2",
+           [("id", LongType(), pa.int64()), ("d", LongType(), pa.int64()),
+            ("d_x", DecimalType(9, 2), pa.decimal128(9, 2))],
+           [[(1, 5, D("100000.00")), (2, 6, D("200000.00"))]])
 make_plain("boolt",
            [("id", LongType(), pa.int64()), ("b", BooleanType(), pa.bool_())],
            [[(1, False), (2, False)], [(3, True), (4, True)]])
 make_plain("booli",
            [("id", LongType(), pa.int64()), ("b", IntegerType(), pa.int32())],
            [[(5, 5), (6, 6), (7, 7), (8, 8)]])
+make_plain("booll",
+           [("id", LongType(), pa.int64()), ("b", LongType(), pa.int64())],
+           [[(5, 5), (6, 6), (7, 7), (8, 8)]])
+make_bucket_int("byint")

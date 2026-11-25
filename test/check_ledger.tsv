@@ -3335,8 +3335,11 @@ iceberg_fdw	iceberg_fdw	amount >= 200 truncate-prunes 2 files	15;16;17;18;19	nev
 iceberg_fdw	iceberg_fdw	an unknown table option is refused (FDW_INVALID_OPTION_NAME)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	bool: a full scan of an Iceberg int declared bool is refused (42804)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg int declared bool is refused the same way, not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm returns !forBucket, so any Iceberg type prunes on bool bounds (#2152 review, c4)
+iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg long declared bool is refused (42804), not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm also accepts an Iceberg long (#2152 review, note b)
 iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm of ice_field_prunes_as_column_type returns false, so bool pruning is off (#2152 review, c3)
 iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean returns ids 3 and 4	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm takes an Iceberg int only when not bucketing (!forBucket &&) (#2152 review, M9)
+iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int returns 5	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
@@ -3349,6 +3352,7 @@ iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as int 
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(9,2) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2	15;16;17;18;19	2026-11-25	columnar_iceberg.c: ice_field_type_is drops the name-length compare, so a field d stands in for d_x (#2152 review, d2)
 iceberg_fdw	iceberg_fdw	decimal: dec9 read as int returns both unscaled values (premise)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt < 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
@@ -3373,6 +3377,10 @@ iceberg_fdw	iceberg_fdw	id > 4 prunes by metrics not bucket, correctly (Files Pr
 iceberg_fdw	iceberg_fdw	id > 4 still returns the right rows	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci returns the eu rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: a full scan of an Iceberg boolean declared int is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm also accepts an Iceberg boolean (#2152 review, note a)
+iceberg_fdw	iceberg_fdw	int: b = 8 on a smallint over an Iceberg int returns id 8	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: case INT2OID dropped from the gate (#2152 review, note c)
 iceberg_fdw	iceberg_fdw	month()-on-date prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	month()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	month()-on-timestamptz prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
