@@ -977,6 +977,41 @@ def test_the_retention_column_follows_a_rename(pgc_conn, expect):
     expect.num(_one(pgc_conn, "SELECT count(*) FROM ttl_ren"), 4 * GROUP,
                "NO row inside the retention is dropped after the retention column is renamed")
 
+def test_the_retention_column_follows_a_rename_on_a_retention_only_table(pgc_conn, expect):
+    """RENAME COLUMN moves `ttl_column` on a table that declares only retention (#2070).
+
+    `ttl_rnp` has no `sort_by` and no `sketch_columns`, as most tables with
+    retention do. On `ttl_ren`, renaming `ts` also hits `sort_by`, and the
+    `sort_by` loop then writes the catalog row on its own. A `ttl_column` update
+    that forgot to ask for the write would still pass there. Here only the
+    `ttl_column` update asks for it. As on `ttl_ren`, `loaded` holds old values and
+    takes the old name, so a stale `ttl_column` would retire every group.
+    """
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TABLE ttl_rnp (id int, ts timestamptz, loaded timestamptz) USING pgcolumnar")
+        cur.execute(f"SELECT pgcolumnar.set_options('ttl_rnp', stripe_row_limit => {GROUP},"
+                    " ttl_column => 'ts', ttl_interval => '7 days')")
+        cur.execute("INSERT INTO ttl_rnp SELECT g, now(), now() - interval '1 year'"
+                    f" FROM generate_series(1, {3 * GROUP}) g")
+    expect.num(_groups(pgc_conn, "ttl_rnp"), 3,
+               "premise: the retention-only rename fixture has several row groups")
+    expect.text(_one(pgc_conn, "SELECT coalesce(sort_by::text, 'NULL') || '|' || coalesce(sketch_columns::text, 'NULL')"
+                               " FROM pgcolumnar.options WHERE regclass = 'ttl_rnp'::regclass"),
+                "NULL|NULL", "premise: the retention-only rename fixture declares no sort_by and no sketch_columns")
+    with pgc_conn.cursor() as cur:
+        cur.execute("ALTER TABLE ttl_rnp RENAME COLUMN ts TO event_at")
+    expect.text(_one(pgc_conn, "SELECT ttl_column::text FROM pgcolumnar.options WHERE regclass = 'ttl_rnp'::regclass"),
+                "event_at",
+                "on a table that declares only retention, the retention column follows RENAME COLUMN (#2070)")
+    expect.num(_one(pgc_conn, "SELECT pgcolumnar.expire('ttl_rnp')"), 0,
+               "on a table that declares only retention, expire still runs after the retention column is renamed (#2070)")
+    with pgc_conn.cursor() as cur:
+        cur.execute("ALTER TABLE ttl_rnp RENAME COLUMN loaded TO ts")
+    expect.num(_one(pgc_conn, "SELECT pgcolumnar.expire('ttl_rnp')"), 0,
+               "on a table that declares only retention, a column that takes the old name is not used for retention (#2070)")
+    expect.num(_one(pgc_conn, "SELECT count(*) FROM ttl_rnp"), 3 * GROUP,
+               "on a table that declares only retention, NO row inside the retention is dropped after a rename (#2070)")
+
 
 def test_a_rename_leaves_a_null_retention_column_null(pgc_conn, expect):
     """A rename on a table that names no retention column leaves `ttl_column` NULL (#2070).

@@ -2010,4 +2010,8 @@ guard_tests 895
 # (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
 # still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-cluster_tests 5487
+# cluster_tests 5487 -> 5488 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
+# test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
+# rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 5488

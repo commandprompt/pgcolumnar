@@ -623,8 +623,10 @@ true until the next version shipped.
   length, or differs only in case leaves `ttl_column` alone. The rename
   fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
   only there leaves `ttl_column` alone, and renaming the retention column moves
-  `sort_by` and `ttl_column` together. Each went red under a mutant from
-  @OffgridwithJD's reviews of #2136.
+  `sort_by` and `ttl_column` together. A third table declares only
+  retention, as most do: renaming its retention column moves `ttl_column`
+  even though no `sort_by` update writes the row. Each went red under a
+  mutant from @OffgridwithJD's reviews of #2136.
 - An INSERT into a columnar table after a rewrite in the same transaction now
   keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
   rewrites the table and keeps its column count. Before this fix, a transaction
