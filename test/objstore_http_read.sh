@@ -39,8 +39,10 @@
 #      or 103 Early Hints ahead of each final answer is read as if it sent none,
 #      on the HEAD and ranged GETs of a read, on the ListObjectsV2 of an s3 glob,
 #      and on the Iceberg REST catalog's requests. A small raw-socket server
-#      written here sends them, since the stdlib server cannot. 101 Switching
-#      Protocols is refused, not passed over: the client never asks to switch.
+#      written here sends them, since the stdlib server cannot. So is 199, a
+#      1xx no RFC registers. 101 Switching Protocols is refused, not passed
+#      over: the client never asks to switch. That holds for an export too,
+#      both on its final answer and on the early answer to its Expect headers.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -740,11 +742,11 @@ check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 # answer and failed with "unexpected HTTP status 100". The first path segment
 # picks what the server sends ahead of every answer: inone sends nothing (the
 # control), i100 sends 100 Continue, i103 sends 103 Early Hints with a Link
-# header, iboth sends both. i101 sends 101 Switching Protocols and then the
+# header, iboth sends both, i199 sends an unregistered 199. i101 sends 101 Switching Protocols and then the
 # normal answer, so a client that passed over the 101 would read every row: the
 # client never sends Upgrade, so a 101 is refused, as issue #2090 asks. Under it the server serves a ranged object, an s3
-# ListObjectsV2 of its bucket (the segment is the bucket), and the three REST
-# catalog paths iceberg_rest_namespaces asks for.
+# ListObjectsV2 of its bucket (the segment is the bucket), the three REST
+# catalog paths iceberg_rest_namespaces asks for, and an export's PUT.
 mkdir -p "$PGC_WORKDIR/interim"
 cp "$PGC_WORKDIR/fixture.parquet" "$PGC_WORKDIR/interim/fixture.parquet"
 cat > "$PGC_WORKDIR/interim_server.py" <<'PYEOF'
@@ -753,8 +755,9 @@ root, port = sys.argv[1], int(sys.argv[2])
 EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
 CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
 SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+ODD = b"HTTP/1.1 199 Whatever\r\n\r\n"
 INTERIM = {"inone": b"", "i100": CONT, "i103": EARLY, "iboth": CONT + EARLY,
-           "i101": SWITCH}
+           "i101": SWITCH, "i199": ODD}
 
 def reply(c, mode, status, body, extra=b"", head=False):
     c.sendall(INTERIM[mode] + b"HTTP/1.1 " + status + b"\r\nContent-Length: "
@@ -798,6 +801,26 @@ def handle(c):
                     % (len(keys), items)).encode()
             reply(c, mode, b"200 OK", body, b"Content-Type: application/xml\r\n")
             continue
+        if meth == "PUT":
+            # An export. With Expect, the interim answer is the early answer to
+            # the headers, and the final 200 follows the body with nothing ahead.
+            early = hdr.get("expect", "").lower() == "100-continue"
+            print("PUT /%s/%s expect=%d" % (mode, rest, early), flush=True)
+            if early:
+                c.sendall(INTERIM[mode])
+            n = int(hdr.get("content-length", "0"))
+            while n > 0:
+                got = f.read(min(n, 65536))
+                if not got:
+                    break
+                n -= len(got)
+            if n > 0:
+                break
+            if early:
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+            else:
+                reply(c, mode, b"200 OK", b"")
+            continue
         data = open(os.path.join(root, os.path.basename(rest)), "rb").read()
         if meth == "HEAD":
             reply(c, mode, b"200 OK", data, head=True)
@@ -831,7 +854,7 @@ psql_run "CREATE SERVER isrv FOREIGN DATA WRAPPER pgcolumnar_parquet
           OPTIONS (endpoint '$IBASE', region 'pgc-test-1');
           CREATE USER MAPPING FOR postgres SERVER isrv
           OPTIONS (access_key_id 'PGCTESTKEYID', secret_access_key 'pgctest-secret');"
-for m in inone i100 i103 iboth i101; do
+for m in inone i100 i103 iboth i101 i199; do
 	psql_run "CREATE FOREIGN TABLE glob_$m ($COLDEFS) SERVER isrv OPTIONS (path 's3://$m/*.parquet');"
 done
 # A bounded statement: a 1xx read as a final answer with Connection: close
@@ -865,6 +888,30 @@ check "F: an s3 glob whose LIST is answered 101 Switching Protocols first is ref
 	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_i101" "$F_101")" "08P01: $F_101"
 check "F: a REST catalog whose answer follows 101 Switching Protocols is refused" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i101')" "$F_101")" "08P01: $F_101"
+# 199 is a 1xx that no RFC registers. RFC 9110 section 15.2 still asks the
+# client to pass over it, and it pins the top of the range: a loop that stops
+# at 103 or 104 reads it as the final answer (#2156 review).
+check "F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row" \
+	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i199/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
+# An export over 1 MiB sends Expect: 100-continue and reads an early answer to
+# its headers before the body. The server sends the mode's interim answer
+# there, then 200 after the body. A 101 there is refused as on every other
+# path; before, the body went and the 200 was taken (#2156 review). A small
+# export has no Expect, so its 101 comes ahead of the final answer.
+psql_run "CREATE TABLE f_big (id int8, pad text) USING pgcolumnar;
+          INSERT INTO f_big SELECT g, md5(g::text)||md5((g+1)::text) FROM generate_series(1,40000) g;
+          CREATE TABLE f_small (id int) USING pgcolumnar;
+          INSERT INTO f_small SELECT generate_series(1,10);"
+check "F: control: a large export whose Expect is answered 100 Continue is written" \
+	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i100/big.parquet')" "@@")" "no error: 40000"
+check "premise: the large export was sent with Expect: 100-continue" \
+	"$(grep -c '^PUT /i100/big.parquet expect=1$' "$PGC_WORKDIR/interim_server.out")" "1"
+check "F: a large export whose Expect is answered 103 Early Hints is written" \
+	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i103/big.parquet')" "@@")" "no error: 40000"
+check "F: a large export whose Expect is answered 101 Switching Protocols is refused" \
+	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i101/big.parquet')" "$F_101")" "08P01: $F_101"
+check "F: a small export answered 101 Switching Protocols first is refused" \
+	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_small', '$IBASE/i101/small.parquet')" "$F_101")" "08P01: $F_101"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:

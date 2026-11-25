@@ -614,9 +614,13 @@ true until the next version shipped.
   they waited until the statement timed out. RFC 9110
   section 15.2 says a client must accept such answers even when it did not ask
   for them, and CDNs send 103 unasked. The reader now passes over every 1xx
-  answer and reads the final one, as the export path already did.
+  answer and reads the final one, as the export path already did. That
+  includes a 1xx no RFC registers, such as 199.
   `101 Switching Protocols` is now refused with `switched protocols with HTTP
   101`, on reads and exports alike, because the client never asks to switch.
+  An export over 1 MiB, which sends `Expect: 100-continue`, also refuses a 101
+  that answers its headers before the body; before, it sent the body and took
+  the next answer.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's

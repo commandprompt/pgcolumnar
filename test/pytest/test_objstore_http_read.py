@@ -1128,25 +1128,29 @@ def test_the_server_survives(ohr, expect):
 # RFC 9110 section 15.2: a client must accept one or more 1xx answers before the
 # final answer, even unasked. The read path took the first 1xx as the final answer.
 # The first path segment picks what goes ahead of every answer: inone nothing (the
-# control), i100 100 Continue, i103 103 Early Hints with a Link header, iboth both.
+# control), i100 100 Continue, i103 103 Early Hints with a Link header, iboth both,
+# i199 an unregistered 199.
 # i101 sends 101 Switching Protocols and then the normal answer, so a client that
 # passed over the 101 would read every row: the client never sends Upgrade, so a 101
 # is refused, as issue #2090 asks.
 # Under it the server answers a ranged object, an s3 ListObjectsV2 of its bucket
-# (the segment is the bucket) and the REST catalog paths iceberg_rest_namespaces asks.
+# (the segment is the bucket), the REST catalog paths iceberg_rest_namespaces asks,
+# and an export's PUT. With Expect, the PUT gets the interim answer as the early
+# answer to its headers; 101 there is refused too (#2156 review).
 INTERIM_SCHEMA = "pgc_objstore_http_interim"
 _CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
 _EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
 _SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+_ODD = b"HTTP/1.1 199 Whatever\r\n\r\n"
 INTERIM_AHEAD = {"inone": b"", "i100": _CONT, "i103": _EARLY, "iboth": _CONT + _EARLY,
-                 "i101": _SWITCH}
+                 "i101": _SWITCH, "i199": _ODD}
 # A 1xx read as a final answer with Connection: close waited for a body that never
 # ended, so every reading is bounded.
 INTERIM_TIMEOUT = "SET statement_timeout = '20s'"
 SWITCH_REFUSAL = "switched protocols with HTTP 101"
 
 
-def _interim_serve(conn, root):
+def _interim_serve(conn, root, puts, puts_lock):
     def reply(mode, status, body, extra=b"", head=False):
         conn.sendall(INTERIM_AHEAD[mode] + b"HTTP/1.1 " + status + b"\r\nContent-Length: "
                      + str(len(body)).encode() + b"\r\n" + extra + b"\r\n"
@@ -1185,6 +1189,26 @@ def _interim_serve(conn, root):
                 body = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>'
                         f"<KeyCount>{len(keys)}</KeyCount>{items}</ListBucketResult>").encode()
                 reply(mode, b"200 OK", body, b"Content-Type: application/xml\r\n")
+            elif meth == "PUT":
+                # An export. With Expect, the interim answer is the early answer to
+                # the headers, and the final 200 follows the body with nothing ahead.
+                early = hdr.get("expect", "").lower() == "100-continue"
+                with puts_lock:
+                    puts.append(f"PUT /{mode}/{rest} expect={int(early)}")
+                if early:
+                    conn.sendall(INTERIM_AHEAD[mode])
+                n = int(hdr.get("content-length", "0"))
+                while n > 0:
+                    got = rf.read(min(n, 65536))
+                    if not got:
+                        break
+                    n -= len(got)
+                if n > 0:
+                    break
+                if early:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                else:
+                    reply(mode, b"200 OK", b"")
             else:
                 data = (root / pathlib.PurePosixPath(rest).name).read_bytes()
                 if meth == "HEAD":
@@ -1230,6 +1254,7 @@ def interim(pgc_cluster):
     lsock.bind(("127.0.0.1", 0))
     lsock.listen(16)
     stop = threading.Event()
+    puts, puts_lock = [], threading.Lock()
 
     def accept_loop():
         while not stop.is_set():
@@ -1237,7 +1262,8 @@ def interim(pgc_cluster):
                 conn, _ = lsock.accept()
             except OSError:
                 return
-            threading.Thread(target=_interim_serve, args=(conn, work), daemon=True).start()
+            threading.Thread(target=_interim_serve, args=(conn, work, puts, puts_lock),
+                             daemon=True).start()
 
     threading.Thread(target=accept_loop, daemon=True).start()
     base = f"http://127.0.0.1:{lsock.getsockname()[1]}"
@@ -1271,6 +1297,23 @@ def interim(pgc_cluster):
         r[("read", "i101")] = _interim_read(dsn, rows % "i101", SWITCH_REFUSAL)
         r[("glob", "i101")] = _interim_read(dsn, glob % "i101", SWITCH_REFUSAL)
         r[("rest", "i101")] = _interim_read(dsn, rest % "i101", SWITCH_REFUSAL)
+        r[("read", "i199")] = _interim_read(dsn, rows % "i199")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE TABLE {INTERIM_SCHEMA}.f_big (id int8, pad text) USING pgcolumnar")
+            c.execute(f"INSERT INTO {INTERIM_SCHEMA}.f_big SELECT g, md5(g::text)||md5((g+1)::text) "
+                      "FROM generate_series(1,40000) g")
+            c.execute(f"CREATE TABLE {INTERIM_SCHEMA}.f_small (id int) USING pgcolumnar")
+            c.execute(f"INSERT INTO {INTERIM_SCHEMA}.f_small SELECT generate_series(1,10)")
+        export = ("SELECT pgcolumnar.export_parquet('" + INTERIM_SCHEMA + ".%s', '"
+                  + base + "/%s/%s.parquet')")
+        r[("export big", "i100")] = _interim_read(dsn, export % ("f_big", "i100", "big"))
+        with puts_lock:
+            r["big expect"] = puts.count("PUT /i100/big.parquet expect=1")
+        r[("export big", "i103")] = _interim_read(dsn, export % ("f_big", "i103", "big"))
+        r[("export big", "i101")] = _interim_read(dsn, export % ("f_big", "i101", "big"),
+                                                  SWITCH_REFUSAL)
+        r[("export small", "i101")] = _interim_read(dsn, export % ("f_small", "i101", "small"),
+                                                    SWITCH_REFUSAL)
         yield r
     finally:
         try:
@@ -1382,3 +1425,47 @@ def test_a_rest_catalog_answering_after_101_switching_protocols_is_refused(inter
         return
     expect.text(interim[("rest", "i101")], f"08P01: {SWITCH_REFUSAL}",
                 "F: a REST catalog whose answer follows 101 Switching Protocols is refused")
+
+
+def test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row(interim, expect):
+    # 199 pins the top of the 1xx range: a loop that stops at 104 reads it as final.
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i199")], INTERIM_ROWS,
+                "F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row")
+
+
+def test_a_large_export_whose_expect_is_answered_100_continue_is_written(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i100")], "no error: 40000",
+                "F: control: a large export whose Expect is answered 100 Continue is written")
+
+
+def test_the_large_export_was_sent_with_expect(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.num(interim["big expect"], 1,
+               "premise: the large export was sent with Expect: 100-continue")
+
+
+def test_a_large_export_whose_expect_is_answered_103_early_hints_is_written(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i103")], "no error: 40000",
+                "F: a large export whose Expect is answered 103 Early Hints is written")
+
+
+def test_a_large_export_whose_expect_is_answered_101_is_refused(interim, expect):
+    # The early answer during the Expect wait refuses 101 too (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a large export whose Expect is answered 101 Switching Protocols is refused")
+
+
+def test_a_small_export_answered_101_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export small", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a small export answered 101 Switching Protocols first is refused")

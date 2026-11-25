@@ -1259,17 +1259,34 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 }
 
 /*
+ * Refuse 101 Switching Protocols. It answers only a request that sent Upgrade
+ * (RFC 9110 section 15.2.2), and this client never sends one, so what follows
+ * it on the connection is not this request's answer. Both places that read a
+ * response head call this: os_read_final_head, and the early answer an export
+ * reads during its Expect wait (#2156 review).
+ */
+static void
+os_refuse_switch(PgColumnarObjHandle *h, const OsResponse *resp)
+{
+	if (resp->status == 101)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("columnar: \"%s\" switched protocols with HTTP 101",
+						h->url),
+				 errdetail("This client never asks to switch protocols.")));
+}
+
+/*
  * Read the final response head, passing over interim (1xx) ones. RFC 9110
  * section 15.2 says a client must accept one or more 1xx answers before the
  * final one, even when it did not ask for them: a store that answered 100
  * Continue after the Expect wait ran out, or a server or proxy that sends 103
  * Early Hints. An interim answer has no body, so only its head is read. Every
- * request reads its answer here, not with os_read_head (#2090). Returns false
- * on the same stale-connection condition as os_read_head.
+ * request reads its final answer here (#2090); only an export's early answer
+ * during its Expect wait is read with os_read_head, and it refuses 101 too.
+ * Returns false on the same stale-connection condition as os_read_head.
  *
- * 101 Switching Protocols is refused, not passed over. It answers only a
- * request that sent Upgrade (RFC 9110 section 15.2.2), and this client never
- * sends one, so what follows it on the connection is not this request's answer.
+ * 101 Switching Protocols is refused, not passed over (os_refuse_switch).
  */
 static bool
 os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
@@ -1278,12 +1295,7 @@ os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
 	{
 		if (!os_read_head(h, resp))
 			return false;
-		if (resp->status == 101)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("columnar: \"%s\" switched protocols with HTTP 101",
-							h->url),
-					 errdetail("This client never asks to switch protocols.")));
+		os_refuse_switch(h, resp);
 	} while (resp->status >= 100 && resp->status < 200);
 	return true;
 }
@@ -2788,7 +2800,9 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		 * "failed before a response"). A 2xx whose own body ends at
 		 * connection close closes it too (#1880), so it goes the same way.
 		 * A 100 Continue read here is not an answer: the body goes, and
-		 * os_read_final_head reads the final answer after it.
+		 * os_read_final_head reads the final answer after it. Another 1xx
+		 * goes the same way, except 101, which is refused here as it is
+		 * everywhere (#2156 review).
 		 */
 		if (sent && expect)
 		{
@@ -2796,6 +2810,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 			{
 				/* bytes are staged, so this reads a head or raises */
 				(void) os_read_head(h, resp);
+				os_refuse_switch(h, resp);
 				if (resp->status == 417)
 				{
 					pfree(req.data);
