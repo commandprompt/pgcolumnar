@@ -180,6 +180,49 @@ def _v3_default_copies(md, eq_md):
     return v3md, v3opt, v3eq
 
 
+def _v3_more_copies(v3md, eq_md):
+    """Write five more format-version 3 copies (#2087), each pinning one part of
+    the refusal's condition, and return their paths in this order.
+    v3strdefault / v3booldefault: qty optional, a string with initial-default ""
+    and a boolean with initial-default false, so a refusal narrowed to numbers,
+    or one that takes a falsy default for none, reads null again.
+    v3nulldefault: qty optional with initial-default null, which means none.
+    v3firstdefault: v3default with qty, initial-default 7, first in the field list,
+    so a refusal above the name match would refuse the other columns.
+    eq_v3otherdefault: the eq table with a new field "extra", initial-default 7,
+    first in the field list; the equality deletes compare k, not extra."""
+    def variant(name, field, first=False):
+        m = json.loads(v3md.read_text())
+        cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+        cur["fields"] = [f for f in cur["fields"] if f["id"] != 4]
+        cur["fields"].insert(0 if first else len(cur["fields"]), field)
+        p = v3md.parent / f"{name}.metadata.json"
+        p.write_text(json.dumps(m))
+        return p
+    out = [
+        variant("v3strdefault", {"id": 4, "name": "qty", "required": False, "type": "string",
+                                 "initial-default": "", "write-default": ""}),
+        variant("v3booldefault", {"id": 4, "name": "qty", "required": False, "type": "boolean",
+                                  "initial-default": False, "write-default": False}),
+        variant("v3nulldefault", {"id": 4, "name": "qty", "required": False, "type": "int",
+                                  "initial-default": None}),
+        variant("v3firstdefault", {"id": 4, "name": "qty", "required": True, "type": "int",
+                                   "initial-default": 7, "write-default": 7}, first=True),
+    ]
+    e = json.loads(eq_md.read_text())
+    e["format-version"] = 3
+    cur = next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])
+    cur["fields"].insert(0, {"id": 6, "name": "extra", "required": False, "type": "int",
+                             "initial-default": 7, "write-default": 7})
+    e["last-column-id"] = 6
+    eq_out = eq_md.parent / "eq_v3otherdefault.metadata.json"
+    eq_out.write_text(json.dumps(e))
+    out.append(eq_out)
+    for p in out:
+        p.chmod(0o666)
+    return out
+
+
 @pytest.fixture(scope="module")
 def isc(pgc_cluster, server_dir):
     if not list(WH.glob("db/events/data/*/*.parquet")):
@@ -361,6 +404,21 @@ def isc(pgc_cluster, server_dir):
                                       r"initial-default", "initial-default refusal"),
             "v3 fdw default": _refusal(dsn, "SELECT id, qty FROM icescan_v3default ORDER BY id",
                                        r"initial-default", "initial-default refusal"),
+        })
+        v3str, v3bool, v3null, v3first, v3eqother = _v3_more_copies(v3md, eq_md)
+        r.update({
+            "v3 string default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3str)} "
+                                               "AS t(id bigint, qty text) ORDER BY id",
+                                          r"initial-default", "initial-default refusal"),
+            "v3 boolean default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3bool)} "
+                                                "AS t(id bigint, qty boolean) ORDER BY id",
+                                           r"initial-default", "initial-default refusal"),
+            "v3 null default": _rows(dsn, "SELECT id || '|' || coalesce(qty::text, 'null') "
+                                          f"FROM {scan.format(v3null)} AS t(id bigint, qty int) ORDER BY id"),
+            "v3 default first": _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM {scan.format(v3first)} "
+                                           "AS t(id bigint, region text, amount int) ORDER BY id"),
+            "v3 eq other default": _rows(dsn, "SELECT string_agg(id::text, ',' ORDER BY id) "
+                                              f"FROM {scan.format(v3eqother)} AS t(id bigint)"),
         })
         yield r
     finally:
@@ -739,3 +797,38 @@ def test_a_foreign_table_refuses_a_v3_column_with_an_initial_default(isc, expect
         return
     expect.text(str(isc["v3 fdw default"]), "0A000 (initial-default refusal)",
                 "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000)")
+
+
+def test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 string default"]), "0A000 (initial-default refusal)",
+                "iceberg_scan refuses an optional v3 string column whose initial-default is empty (0A000)")
+
+
+def test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 boolean default"]), "0A000 (initial-default refusal)",
+                "iceberg_scan refuses an optional v3 boolean column whose initial-default is false (0A000)")
+
+
+def test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["v3 null default"]), "1|null\n2|null\n3|null\n4|null\n5|null",
+                "iceberg_scan reads an optional v3 column whose initial-default is null as null")
+
+
+def test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["v3 default first"]), ROWS5,
+                "iceberg_scan still reads the other columns when the v3 field with an initial-default comes first")
+
+
+def test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(_lines(isc["v3 eq other default"]), "1,2,5,6,8",
+                "iceberg_scan still applies equality deletes when an earlier, uncompared v3 field has an initial-default")

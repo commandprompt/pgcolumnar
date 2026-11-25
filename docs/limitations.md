@@ -1357,7 +1357,9 @@ table at its current snapshot. It has these limits:
   refusal applies when the field is an output column, or the column an
   equality delete compares. A query that leaves the field out still reads. A
   `pgcolumnar_iceberg` foreign table refuses any scan when one of its columns
-  has an `initial-default`. A null `initial-default` counts as none.
+  has an `initial-default`. A null `initial-default` counts as none. The
+  reader refuses the field even when every data file carries it, and also in a
+  metadata file whose `format-version` is lower than 3.
 - The table metadata file may be plain JSON or gzip-compressed. Writers produce a
   gzip file when the table property `write.metadata.compression-codec` is `gzip`,
   and name it `*.gz.metadata.json` or `*.metadata.json.gz`. The reader detects

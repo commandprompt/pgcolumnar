@@ -611,6 +611,7 @@ true until the next version shipped.
   files must read for it. The reader ignored that value, so every row written
   before the column existed read as null, even in a required column, with no
   error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
+  A default of any JSON type is refused, including `""`, `false` and `0`.
   The refusal covers an output column and the column an equality delete
   compares. A query that leaves the field out still reads, and a null
   `initial-default` counts as none. Reading the default is not supported yet.

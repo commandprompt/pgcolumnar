@@ -473,6 +473,68 @@ check "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-de
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null') FROM v3_default ORDER BY id" \
 	   'initial-default' "initial-default refusal")" \
 	"0A000 (initial-default refusal)"
+# More v3 copies, so each part of the refusal's condition is pinned (#2087):
+# v3strdefault / v3booldefault: qty optional, a string with initial-default ""
+# and a boolean with initial-default false, so a refusal narrowed to numbers,
+# or one that takes a falsy default for none, reads null again.
+# v3nulldefault: qty optional with initial-default null, which means none.
+# v3firstdefault: v3default with qty, initial-default 7, first in the field
+# list, so a refusal above the name match would refuse the other columns.
+# eq_v3otherdefault: the eq table with a new field "extra", initial-default 7,
+# first in the field list; the equality deletes compare k, not extra.
+python3 - "$MDDIR/v3default.metadata.json" "$PMD/eq.metadata.json" \
+	"$MDDIR" "$PMD/eq_v3otherdefault.metadata.json" <<'PYEOF'
+import json, sys
+src, eq_src, mddir, eq_out = sys.argv[1:]
+def variant(name, field, first=False):
+    m = json.load(open(src))
+    cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+    cur["fields"] = [f for f in cur["fields"] if f["id"] != 4]
+    if first:
+        cur["fields"].insert(0, field)
+    else:
+        cur["fields"].append(field)
+    json.dump(m, open(f"{mddir}/{name}.metadata.json", "w"))
+variant("v3strdefault", {"id": 4, "name": "qty", "required": False, "type": "string",
+                         "initial-default": "", "write-default": ""})
+variant("v3booldefault", {"id": 4, "name": "qty", "required": False, "type": "boolean",
+                          "initial-default": False, "write-default": False})
+variant("v3nulldefault", {"id": 4, "name": "qty", "required": False, "type": "int",
+                          "initial-default": None})
+variant("v3firstdefault", {"id": 4, "name": "qty", "required": True, "type": "int",
+                           "initial-default": 7, "write-default": 7}, first=True)
+e = json.load(open(eq_src))
+e["format-version"] = 3
+cur = next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])
+cur["fields"].insert(0, {"id": 6, "name": "extra", "required": False, "type": "int",
+                         "initial-default": 7, "write-default": 7})
+e["last-column-id"] = 6
+json.dump(e, open(eq_out, "w"))
+PYEOF
+check "iceberg_scan refuses an optional v3 string column whose initial-default is empty (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty, 'null')
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3strdefault.metadata.json') AS t(id bigint, qty text)
+	            ORDER BY id" 'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+check "iceberg_scan refuses an optional v3 boolean column whose initial-default is false (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3booldefault.metadata.json') AS t(id bigint, qty boolean)
+	            ORDER BY id" 'initial-default' "initial-default refusal")" \
+	"0A000 (initial-default refusal)"
+check "iceberg_scan reads an optional v3 column whose initial-default is null as null" \
+	"$(q "SELECT id || '|' || coalesce(qty::text, 'null')
+	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3nulldefault.metadata.json') AS t(id bigint, qty int)
+	      ORDER BY id")" \
+	"$(printf '1|null\n2|null\n3|null\n4|null\n5|null')"
+check "iceberg_scan still reads the other columns when the v3 field with an initial-default comes first" \
+	"$(q "SELECT id || '|' || region || '|' || amount
+	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3firstdefault.metadata.json') AS t(id bigint, region text, amount int)
+	      ORDER BY id")" \
+	"$(printf '1|eu|10\n2|eu|20\n3|us|30\n4|us|40\n5|us|50')"
+check "iceberg_scan still applies equality deletes when an earlier, uncompared v3 field has an initial-default" \
+	"$(q "SELECT string_agg(id::text, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$PMD/eq_v3otherdefault.metadata.json') AS t(id bigint)")" \
+	"1,2,5,6,8"
 
 # ---- privilege -------------------------------------------------------------
 # USAGE on the schema, so the refusal is the FILE gate's: without it the role was
