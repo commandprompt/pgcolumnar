@@ -1993,17 +1993,33 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5484 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5493 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
 # the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
 # loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
-# cluster_tests 5484 -> 5486 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# cluster_tests 5493 -> 5495 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
 # refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
 # 98 on main, 106 on this branch.
-# cluster_tests 5486 -> 5488 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# cluster_tests 5495 -> 5497 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
 # exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
 # by collection over the cluster files: 5488 tests collected (108 for that file).
-# cluster_tests 5488 -> 5491 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# cluster_tests 5497 -> 5500 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
 # unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
 # one of 4 loaders, which a row trigger's sequence shows; by collection over the cluster files: 5491 tests
 # collected (111 for that file).
-cluster_tests 5491
+cluster_tests 5500
