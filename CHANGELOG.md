@@ -624,6 +624,20 @@ true until the next version shipped.
   that answers its headers before the body; before, it sent the body and took
   the next answer.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- An INSERT into a columnar table after a rewrite in the same transaction now
+  keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
+  rewrites the table and keeps its column count. Before this fix, a transaction
+  that inserted, rewrote and inserted again reused the write state from before
+  the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
+  an error. When the type changed from a by-reference type to a by-value type,
+  such as `text` to `int8`, the backend died with a segmentation fault and
+  PostgreSQL restarted every session. A type or collation change that needs no
+  rewrite, such as `int4` to `oid`, also reused the old state: the rows inserted
+  after it got chunk min and max under the old type or collation, and a filtered
+  read could miss them. The write state now notices the rewrite and starts over
+  for the new storage, and flushes and starts over when a column's type, typmod
+  or collation changed. `test/alter_column_type.sh` and
+  `test_alter_column_type.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It

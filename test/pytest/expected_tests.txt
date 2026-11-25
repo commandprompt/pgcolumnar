@@ -1993,7 +1993,16 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5492 for #2090 in test_objstore_http_read.py: 11 tests for interim 1xx answers
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5499 for #2090 in test_objstore_http_read.py: 11 tests for interim 1xx answers
 # (a premise, three controls, seven reads past 100 and 103) and 3 that refuse 101 Switching Protocols:
 #   test_the_interim_answer_server_is_up
 #   test_a_read_from_the_interim_answer_server_that_sends_none_reads_every_row
@@ -2010,7 +2019,7 @@ guard_tests 895
 #   test_an_s3_glob_answered_101_switching_protocols_first_is_refused
 #   test_a_rest_catalog_answering_after_101_switching_protocols_is_refused
 # by collection before the merge of origin/main f29bf592: the cluster files alone collected 5390.
-# cluster_tests 5492 -> 5498 for the #2156 review in test_objstore_http_read.py: a read past an
+# cluster_tests 5499 -> 5505 for the #2156 review in test_objstore_http_read.py: a read past an
 # unregistered 199, two large exports past an early 100 and 103, a premise that the large export
 # sent Expect, and two exports that refuse 101 (one on the early answer, one on the final answer):
 #   test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row
@@ -2020,7 +2029,7 @@ guard_tests 895
 #   test_a_large_export_whose_expect_is_answered_101_is_refused
 #   test_a_small_export_answered_101_first_is_refused
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5418 tests collected.
-# cluster_tests 5498 -> 5502 for the second #2156 review in test_objstore_http_read.py: a read and a
+# cluster_tests 5505 -> 5509 for the second #2156 review in test_objstore_http_read.py: a read and a
 # REST catalog that refuse 101 after 103, a read past 102, and a read whose server sends 103 and
 # closes after each answer, so the stale keep-alive retry passes over the 1xx too:
 #   test_a_read_answered_103_and_then_101_is_refused
@@ -2028,4 +2037,4 @@ guard_tests 895
 #   test_a_read_answered_102_processing_first_reads_every_row
 #   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
-cluster_tests 5502
+cluster_tests 5509
