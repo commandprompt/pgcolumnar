@@ -346,8 +346,11 @@ arrow_export	arrow_export	the byte cut counts a numeric's text form: 10 rows of 
 arrow_export	arrow_export	the byte cut counts a text list's elements as written: 40 rows of two 5000-byte texts under a 65536-byte cap make batches of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	arrowcol_value_bytes: a text or bytea list's elements counted as 0 (#1843 review)
 arrow_export	arrow_export	the byte cut counts an int list's elements as written: 40 rows of 2000 int4 under a 65536-byte cap make batches of 6,6,6,6,6,6,4	15;16;17;18;19	2026-10-31	arrowcol_value_bytes: a fixed-width list's elements counted as 0 (#1843 review)
 arrow_export	arrow_export	the byte cut counts an int4's validity byte: 1000 int4 rows under a 1024-byte cap make batches of 204,204,204,204,184	15;16;17;18;19	2026-10-31	each row counted at its stored size, not as written (#1811)
+arrow_import	arrow_import	a 16-byte fixed-size binary is refused for bigint (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's FixedSizeBinary arm returning true for every kind (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	a Feather v2 file imports its rows too (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
+arrow_import	arrow_import	a binary file is refused for a numeric(5,2) column, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a body length larger than the rest of the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed;import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
+arrow_import	arrow_import	a boolean file is refused for a 4-byte int (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a date32 before PostgreSQL's first date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a date32 file is refused for a bigint column, not read past its buffer	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date32 file is refused for a numeric(20,4) column, not read past its buffer	15;16;17;18;19	never	-
@@ -361,18 +364,29 @@ arrow_import	arrow_import	a date64 instant before the epoch floors rather than t
 arrow_import	arrow_import	a date64 instant mid-day reports the day it falls in	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date64 past PostgreSQL's last date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a decimal at another scale is refused (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	a decimal file is refused for uuid (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a decimal128(10,0) file is refused for bigint (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Decimal arm returning true for every kind (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	a decimal256 file is refused, not read at a 16-byte stride (#2081)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a decimal32 file is refused as a width mismatch (#2081)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a decimal64 file is refused as a width mismatch (#2081)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a duration file is refused for a 4-byte int, not read at half width (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a float32 file is refused for a 4-byte int (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a float32 file is refused for float8 (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	a float64 file is refused for bigint (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a float64 file is refused for timestamp (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a large binary file is refused for bytea, not read with short offsets (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a large string file is refused for text, not read with short offsets (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a list element's nanosecond unit is honoured, not just the top level	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	a list of float64 is refused for a bigint[] column (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)	15;16;17;18;19	2026-11-01	imp_check_bounds without its value-buffer row-count check (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a lossy nanosecond file imports every row	15;16;17;18;19	never	-
 arrow_import	arrow_import	a metadata length larger than the file is refused before it is allocated (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	a nanosecond timestamp before the epoch floors rather than truncating	15;16;17;18;19	never	-
 arrow_import	arrow_import	a nanosecond timestamp truncates to microseconds	15;16;17;18;19	never	-
 arrow_import	arrow_import	a negative nanosecond time is refused, not narrowed into midnight	15;16;17;18;19	never	-
+arrow_import	arrow_import	a null-type file is refused for text, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a second count that overflows on scaling is refused, not wrapped	15;16;17;18;19	never	-
+arrow_import	arrow_import	a string file is refused for bigint, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a struct field's nanosecond unit is honoured at child index 1	15;16;17;18;19	2026-11-01	imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a time past midnight is refused	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time32 in milliseconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
@@ -392,7 +406,11 @@ arrow_import	arrow_import	an Arrow IPC file whose footer length is negative or l
 arrow_import	arrow_import	an Arrow IPC file without an end-of-stream marker before its footer imports its rows (#1806)	15;16;17;18;19	2026-10-31	import_arrow: body-length bound > flipped to >=;import_arrow: streamPos += bodyLength removed;import_arrow: streamPos >= streamEnd removed from the message loop head
 arrow_import	arrow_import	an Arrow IPC file without its trailing magic is refused as malformed (#1806)	15;16;17;18;19	2026-10-31	import_arrow fix reverted: no ARROW1 handling, no length bounds before palloc (src/columnar_arrow.c, #1806)
 arrow_import	arrow_import	an int32 file is refused for bigint (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	an int32 file is refused for bool (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	an int32 file is refused for timestamp (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	an int64 file is refused for a 4-byte int (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	an int64 file is refused for float8 (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	and a cross-family refusal leaves the target empty (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	and a microsecond file	15;16;17;18;19	never	-
 arrow_import	arrow_import	and a refused import leaves the target empty	15;16;17;18;19	never	-
 arrow_import	arrow_import	and does not report the row count instead	15;16;17;18;19	never	-
@@ -401,6 +419,8 @@ arrow_import	arrow_import	backend still up after the import_arrow FIFO refusal	1
 arrow_import	arrow_import	control: a 16-byte fixed-size binary imports into uuid	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a 3-row decimal128 file imports every value (#2081)	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a binary and a string file still import into bytea and text, with their values (#2097)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a binary file still imports into text (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a duration file still imports into bigint as its count (#2082)	15;16;17;18;19	2026-11-24	arrow_tag_fits_kind without its Duration arm (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a map file still imports into an array of a composite (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a matching decimal imports	15;16;17;18;19	never	-
@@ -410,9 +430,14 @@ arrow_import	arrow_import	control: a matching int32 file imports into int	15;16;
 arrow_import	arrow_import	control: a matching int64 file imports into bigint	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a microsecond file reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a non-temporal tag is not caught by the temporal refusal	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a string file still imports into bytea (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: an int16 file still imports into smallint (#2082)	15;16;17;18;19	2026-11-25	A_INT16 dropped from arrow_tag_fits_kind's Int arm (src/columnar_arrow.c, #2082)
+arrow_import	arrow_import	control: an int64 file still imports into timestamp as microseconds (#2082)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: an int64 file still imports into timestamptz as microseconds (#2082)	15;16;17;18;19	2026-11-25	A_TIMESTAMPTZ dropped from arrow_tag_fits_kind's Int arm (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	control: an ns file on microsecond boundaries reports nothing	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3:// past its start (#1886)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1886)
 arrow_import	arrow_import	control: import_arrow still reads a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)
+arrow_import	arrow_import	every Arrow type imports into its documented targets and no other (#2082)	15;16;17;18;19	2026-11-25	arrow_tag_fits_kind's Date arm also taking A_INT32 (src/columnar_arrow.c, #2082);imp_check_shape refusing a Binary column for varchar, json and jsonb (src/columnar_arrow.c, #2082);arrow_tag_fits_kind's Duration arm also taking ARROW_TYPE_Interval (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	export rows	15;16;17;18;19	never	-
 arrow_import	arrow_import	export_arrow writes the IPC stream format, not the ARROW1 file format (#1806)	15;16;17;18;19	2026-10-31	export_arrow: Schema message continuation marker write removed
 arrow_import	arrow_import	finite row preserved	15;16;17;18;19	never	-
@@ -455,6 +480,7 @@ arrow_import	arrow_import	the failed second import left the row count alone	15;1
 arrow_import	arrow_import	the index-scan check really uses the index	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowed values are floored to the microsecond	15;16;17;18;19	never	-
 arrow_import	arrow_import	the narrowing reports the number of VALUES that lost digits, not rows	15;16;17;18;19	never	-
+arrow_import	arrow_import	the refusal names the target as numeric(5,2), with its typmod (#2082)	15;16;17;18;19	2026-11-25	imp_check_shape's last refusal printing format_type_be(n->typid), without the typmod (src/columnar_arrow.c, #2082)
 arrow_nested	arrow_nested	empty nested readable	15;16;17;18;19	never	-
 arrow_nested	arrow_nested	empty nested rows	15;16;17;18;19	never	-
 arrow_nested	arrow_nested	nested export rows written	15;16;17;18;19	never	-
@@ -6115,6 +6141,9 @@ native_vecskip	native_vecskip	the plan under test is a columnar custom scan	15;1
 native_vecskip	native_vecskip	the seven vectors outside the range are skipped	15;16;17;18;19	2026-10-16	columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
 native_vecskip	native_vecskip	the vectorized aggregate reports Columnar Vectors Skipped	15;16;17;18;19	never	-
 native_vecskip	native_vecskip	the zone maps ruled them out without decoding them: one vector decoded, none ruled out by value	15;16;17;18;19	2026-10-16	columnar_reader.c: build_skipvec never excludes a vector by its zone map;columnar_reader.c: build_skipvec's zone-map loop stops before the last vector;columnar_reader.c: no vector skip at all (zone-map rule off, refine_skipvec and qual_skipvec return at once)
+native_writer	native_writer	a reservation past the largest row number is refused (54000)	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers without the #2073 row-number limit (origin/main d52f6e8c)
+native_writer	native_writer	an index scan finds every committed row	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers without the #2073 row-number limit (origin/main d52f6e8c)
+native_writer	native_writer	an index scan finds the row at the largest row number	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers refuses at rowCount > COLUMNAR_ROW_NUMBER_LIMIT + 1 - reservedRowNumber (one row number too many accepted)
 native_writer	native_writer	drop clears native column chunks	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the column_chunk rows
 native_writer	native_writer	drop clears native row groups	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the row_group rows
 native_writer	native_writer	drop clears native storage row	15;16;17;18;19	2026-10-16	columnar_metadata.c: PgColumnarDeleteMetadata leaves the storage row
@@ -6125,6 +6154,11 @@ native_writer	native_writer	native row groups (5000 rows / 1000 limit)	15;16;17;
 native_writer	native_writer	native row-group row total	15;16;17;18;19	never	-
 native_writer	native_writer	native storage row written	15;16;17;18;19	never	-
 native_writer	native_writer	native vector length recorded	15;16;17;18;19	2026-10-16	columnar.h: COLUMNAR_NATIVE_VECTOR_LENGTH 2048
+native_writer	native_writer	no committed row's item pointer wraps below the row before it	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers without the #2073 row-number limit (origin/main d52f6e8c)
+native_writer	native_writer	one row number too many is refused (54000), an exact fit ends at the largest row number, and then none are left	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers refuses at rowCount > COLUMNAR_ROW_NUMBER_LIMIT + 1 - reservedRowNumber (one row number too many accepted)
+native_writer	native_writer	pgcolumnar.vacuum renumbers the rows, so inserts work again	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers without the #2073 row-number limit (origin/main d52f6e8c)
+native_writer	native_writer	row_tid maps the largest row number and refuses the ones past it (22003)	15;16;17;18;19	2026-11-24	columnar_storage.c: pgcolumnar_row_tid without the #2073 upper bound (Assert removed, so the item pointer wraps)
+native_writer	native_writer	the rows committed before the refusal are kept	15;16;17;18;19	2026-11-24	columnar_storage.c: PgColumnarReserveRowNumbers without the #2073 row-number limit (origin/main d52f6e8c)
 native_zonemap	native_zonemap	every vector's maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
 native_zonemap	native_zonemap	every vector's minimum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
 native_zonemap	native_zonemap	every whole-chunk maximum of id, k and v is the heap's	15;16;17;18;19	2026-10-22	columnar_write_state.c: no vector carries a minimum or maximum, and so no chunk does either
@@ -6182,16 +6216,20 @@ nologin_workers	nologin_workers	premise: SET ROLE to the NOLOGIN role takes	15;1
 nologin_workers	nologin_workers	premise: the NOLOGIN role cannot open a session	15;16;17;18;19	never	-
 nologin_workers	nologin_workers	premise: the server log records the NOLOGIN role's refused login	15;16;17;18;19	never	-
 nologin_workers	nologin_workers	the flush is dispatched to workers	15;16;17;18;19	never	-
+objstore_addressing	objstore_addressing	ALTER SYSTEM refuses the typo 'virtaul'	15;16;17;18;19	2026-11-25	columnar_tableam.c: objstore_s3_addressing as a string GUC whose check hook accepts any value from a file (PGC_S_FILE);columnar_tableam.c: objstore_s3_addressing defined with GUC_DISALLOW_IN_AUTO_FILE (ALTER SYSTEM refuses every value)
+objstore_addressing	objstore_addressing	ALTER SYSTEM still takes virtual	15;16;17;18;19	2026-11-25	columnar_tableam.c: objstore_s3_addressing defined with GUC_DISALLOW_IN_AUTO_FILE (ALTER SYSTEM refuses every value)
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (path-style)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
 objstore_addressing	objstore_addressing	a key with a space, '+' and '=' reads back (virtual-host)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: os_uriencode_path encodes a space as '+'
+objstore_addressing	objstore_addressing	a role that is not a superuser can still set the addressing setting	15;16;17;18;19	2026-11-25	columnar_tableam.c: objstore_s3_addressing context PGC_SUSET instead of PGC_USERSET;columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH
+objstore_addressing	objstore_addressing	a typo in postgresql.conf draws a WARNING and the server uses path	15;16;17;18;19	2026-11-25	columnar_tableam.c: objstore_s3_addressing as a string GUC whose check hook accepts any value from a file (PGC_S_FILE)
 objstore_addressing	objstore_addressing	and its path-style LIST put the bucket in the request path	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	and its path-style request path is the key URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
-objstore_addressing	objstore_addressing	and its virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
-objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
-objstore_addressing	objstore_addressing	and its virtual-host upload cleanup listed the uploads at the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
-objstore_addressing	objstore_addressing	and the pattern read's virtual-host LIST went to the bucket root	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and its virtual-host LIST went to the bucket root	15;16;17;18;19	2026-11-25	columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH;os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and its virtual-host request path is the key alone, URI-encoded once	15;16;17;18;19	2026-11-25	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored);columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH
+objstore_addressing	objstore_addressing	and its virtual-host upload cleanup listed the uploads at the bucket root	15;16;17;18;19	2026-11-25	columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH;os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
+objstore_addressing	objstore_addressing	and the pattern read's virtual-host LIST went to the bucket root	15;16;17;18;19	2026-11-25	columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH;os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	and the request path carried the bucket again	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: virtual-host addressing always (objstore_s3_addressing='path' ignored)
-objstore_addressing	objstore_addressing	and the virtual-host upload cleanup aborted the upload the worker left open	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783)
+objstore_addressing	objstore_addressing	and the virtual-host upload cleanup aborted the upload the worker left open	15;16;17;18;19	2026-11-25	columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH;os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783)
 objstore_addressing	objstore_addressing	gs:// read round-trips (scheme handled, HMAC creds reused)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// read-back of the written object	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: the AWS_ENDPOINT_URL override is dropped (ep = NULL)
 objstore_addressing	objstore_addressing	gs:// with no endpoint goes to storage.googleapis.com (the allow-list refuses that host by name)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: gs:// demands AWS_ENDPOINT_URL like s3:// instead of defaulting to storage.googleapis.com
@@ -6206,7 +6244,11 @@ objstore_addressing	objstore_addressing	s3:// pattern read, virtual-host	15;16;1
 objstore_addressing	objstore_addressing	s3:// prefix read, path-style	15;16;17;18;19	never	-
 objstore_addressing	objstore_addressing	s3:// prefix read, virtual-host	15;16;17;18;19	2026-10-30	os_target_bucket_root reverted to always put the bucket in the LIST path under virtual-host addressing (#1783);the #1783 defect: objstore_list_objects and objstore_list_uploads put the bucket in the LIST path under virtual-host addressing (unfixed main d0747e07)
 objstore_addressing	objstore_addressing	s3:// with no endpoint demands one (names AWS_ENDPOINT_URL)	15;16;17;18;19	never	-
-objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-10-22	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored)
+objstore_addressing	objstore_addressing	the addressing setting refuses 'VIRTUAL ' with a trailing space	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting refuses the empty string	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting refuses the typo 'virtaul'	15;16;17;18;19	2026-11-24	-
+objstore_addressing	objstore_addressing	the addressing setting still takes path, virtual and VIRTUAL	15;16;17;18;19	2026-11-25	columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH
+objstore_addressing	objstore_addressing	virtual-host put the KEY ALONE in the path (no bucket segment)	15;16;17;18;19	2026-11-25	columnar_objstore_module.c: path-style addressing always (objstore_s3_addressing='virtual' ignored);columnar_tableam.c: the enum entry virtual maps to COLUMNAR_S3_ADDRESSING_PATH
 objstore_addressing	objstore_addressing	virtual-host read == path-style read (same object, different addressing)	15;16;17;18;19	never	-
 objstore_allowlist	objstore_allowlist	100.100.100.201 (next to Alibaba metadata): not refused, a connect is tried	15;16;17;18;19	2026-10-31	os_v4_is_metadata() refusing all of 100.64.0.0/10 instead of the single address 100.100.100.200 (#1848)
 objstore_allowlist	objstore_allowlist	64:ff9b:2::a9fe:a9fe (outside 64:ff9b:1::/48): not refused, a connect is tried	15;16;17;18;19	2026-10-31	os_addr_is_linklocal() refusing every IPv6 address (the fe80::/10 test made if (1)) (#1808);the 64:ff9b:1::/48 test without bytes 4 and 5, so 64:ff9b::/32 (#1808);the 64:ff9b::/96 test widened to 64:ff9b::/32 (#1808)
