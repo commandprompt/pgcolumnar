@@ -615,11 +615,12 @@ true until the next version shipped.
   deferrable, with one lock for the whole index because the operator need not
   be equality. The second
   insert now waits for the first and fails with 23P01 or 23505, as on heap.
-  Concurrent inserts into a table with an exclusion constraint now go in
-  sequence even when their rows do not conflict. The lock is held to the end of
-  the transaction, so two transactions that insert into two such tables in
-  opposite order can fail with `deadlock_detected` (40P01) even when no rows
-  conflict; on heap both commit. Retry on 40P01. An `UPDATE` on a table with a
+  While one insert statement into a table with an exclusion constraint runs, a
+  second insert into that table now waits for it even when the rows do not
+  conflict, unless the second row's key holds a NULL. As before, two
+  transactions that insert into two pgcolumnar tables in opposite order can fail
+  with `deadlock_detected` (40P01) even when no rows conflict; on heap both
+  commit. Retry on 40P01. An `UPDATE` on a table with a
   deferrable unique index or an exclusion constraint now also serializes each row
   as it reaches it (#1421), as it already did with an immediate unique index. The
   loser of two concurrent updates of one row on an exclusion-constrained table
