@@ -627,7 +627,9 @@ def pcopy(pgc_cluster, server_dir):
         # Only an odd backslash run escapes the newline after it (review of #2148,
         # mutants c1 and c2). even.txt alternates runs of 2 and 4. evenp.txt puts an
         # unsorted row (id 5) right after row 1500, which ends in an even run and sits
-        # in a later partition: the partitioned splitter must refuse it. eodjunk.txt holds rows after \. that COPY would reject: COPY never
+        # in a later partition: the partitioned splitter must refuse it.
+        #
+        # eodjunk.txt holds rows after \. that COPY would reject: COPY never
         # reads them, so they must not fail the load (mutant c4, the stop at \.).
         even = d / "even.txt"
         even.write_bytes(b"".join((b"v%d\\\\\n" if i % 2 else b"v%d\\\\\\\\\n") % i for i in range(1, 2001)))
