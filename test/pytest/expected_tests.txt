@@ -1999,4 +1999,7 @@ guard_tests 895
 # cluster_tests 5484 -> 5486 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
 # refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
 # 98 on main, 106 on this branch.
-cluster_tests 5486
+# cluster_tests 5486 -> 5488 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
+# by collection over the cluster files: 5488 tests collected (108 for that file).
+cluster_tests 5488

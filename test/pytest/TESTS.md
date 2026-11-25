@@ -12258,10 +12258,12 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_a_unique_index_table_with_four_workers` | the same with 4 workers and a `CREATE UNIQUE INDEX` |
 | `test_parallel_copy_refuses_an_exclusion_constraint_table_with_two_workers` | the same with 2 workers and `EXCLUDE USING btree (id WITH =)`, an index with `indisunique` false and `indisexclusion` true (#2080) |
 | `test_parallel_copy_unique_refusal_loads_nothing` | both refused tables stay empty |
+| `test_parallel_copy_exclusion_refusal_loads_nothing` | the table with the exclusion constraint stays empty after its refusal (#2080) |
 | `test_parallel_copy_still_loads_a_primary_key_table_with_one_worker` | control: 1 worker still loads the 5000 rows into a table with a primary key |
 | `test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers` | control: 2 workers still load the 5000 rows into a table with a non-unique index |
 | `test_parallel_copy_still_loads_a_partitioned_primary_key_table_with_four_workers` | control: 4 workers still load the 5000 rows into a RANGE-partitioned table with a primary key, within a 30 s statement_timeout, and the table holds 5000 rows (#2080) |
 | `test_parallel_copy_refuses_a_unique_index_created_after_its_check` | a unique index created after the first check, while a second session holds SHARE on the table, is refused by the loaders with 0A000 rather than a hang or 40P01 (#2080) |
+| `test_parallel_copy_late_unique_refusal_loads_nothing` | the table whose unique index appeared after the first check stays empty after the loaders refuse it (#2080) |
 | `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns

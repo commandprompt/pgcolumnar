@@ -618,7 +618,9 @@ true until the next version shipped.
   the table, is refused too. One worker still loads such a table, and a
   partitioned target with a primary key still loads with more than one worker.
   docs/limitations.md and docs/sql-reference.md.
-  `test/parallel_copy.sh` and `test_parallel_copy.py`.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
+  including the exclusion-constraint table and the table whose unique index
+  appeared late, is checked to stay empty.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It

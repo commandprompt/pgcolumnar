@@ -621,6 +621,7 @@ def pcopy(pgc_cluster, server_dir):
         r["exclusion"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_ux'::regclass, '{f}', 2)", timeout="10s")
         r["unique empty"] = db.value("SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")
+        r["exclusion empty"] = db.value("SELECT count(*) FROM t_ux")
         r["unique one worker"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
         r["non-unique index"] = db.value(
@@ -641,6 +642,7 @@ def pcopy(pgc_cluster, server_dir):
         # passes, and the coordinator and the loaders stop at ROW EXCLUSIVE. Once
         # one waits, the session creates the unique index and commits.
         r["unique late"] = db.unique_index_after_check(f)
+        r["unique late empty"] = db.value("SELECT count(*) FROM t_ur")
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -964,6 +966,10 @@ def test_parallel_copy_unique_refusal_loads_nothing(pcopy, expect):
     expect.num(pcopy["unique empty"], 0, "the unique-index refusal loads nothing (#2080)")
 
 
+def test_parallel_copy_exclusion_refusal_loads_nothing(pcopy, expect):
+    expect.num(pcopy["exclusion empty"], 0, "the exclusion-constraint refusal loads nothing (#2080)")
+
+
 def test_parallel_copy_still_loads_a_primary_key_table_with_one_worker(pcopy, expect):
     expect.num(pcopy["unique one worker"], 5000,
                "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)")
@@ -984,6 +990,10 @@ def test_parallel_copy_refuses_a_unique_index_created_after_its_check(pcopy, exp
                 '0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" '
                 'with more than one worker, because it has a unique or exclusion index | no hint',
                 "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)")
+
+
+def test_parallel_copy_late_unique_refusal_loads_nothing(pcopy, expect):
+    expect.num(pcopy["unique late empty"], 0, "the late unique-index refusal loads nothing (#2080)")
 
 
 # ---- #2092: a load into a table with a projection --------------------------------

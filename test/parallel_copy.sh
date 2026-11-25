@@ -712,6 +712,8 @@ check "parallel_copy refuses a single table with an exclusion constraint and 2 w
 	"$(want_unique t_ux)"
 check "the unique-index refusal loads nothing (#2080)" \
 	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")" 0
+check "the exclusion-constraint refusal loads nothing (#2080)" \
+	"$(q "SELECT count(*) FROM t_ux")" 0
 check "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '$F', 1)")" 5000
 check "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)" \
@@ -756,6 +758,8 @@ wait "$ur_pid"
 check "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)" \
 	"$ur_got" \
 	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" with more than one worker, because it has a unique or exclusion index | no hint'
+check "the late unique-index refusal loads nothing (#2080)" \
+	"$(q "SELECT count(*) FROM t_ur")" 0
 
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
