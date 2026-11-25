@@ -1993,27 +1993,43 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5484 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5493 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
 # take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
 # rewrite both commit (three tests, each parametrized over the two verbs), by collection:
 # `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5484 -> 5490, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# cluster_tests 5493 -> 5499, still #2074: three more tests, each parametrized over the two verbs. A writer that
 # deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
 # "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
-# cluster_tests 5490 -> 5516, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# cluster_tests 5499 -> 5525, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
 # before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
 # with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
-# cluster_tests 5516 -> 5528, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# cluster_tests 5525 -> 5537, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
 # pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
 # lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
-# cluster_tests 5528 -> 5546, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# cluster_tests 5537 -> 5555, still #2074, for the review of #2139 at 686aed4e: eight more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
 # lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
 # inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
 # max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
-# derives it): 5546 tests collected.
-cluster_tests 5546
+# derives it): 5555 tests collected.
+cluster_tests 5555

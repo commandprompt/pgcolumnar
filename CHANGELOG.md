@@ -639,6 +639,37 @@ true until the next version shipped.
   storage-row lock while it holds its group locks, so a writer that inserts
   and then deletes beside it commits. A limit of `0` waits without a limit,
   and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+- A columnar table no longer gives a row the item pointer of a different row
+  once its row numbers run out (#2073). Every transaction that writes reserves
+  `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
+  the space ends after about 8.3 million writing transactions at the default
+  setting, or 582 at the largest. Past the end the block number wrapped: index
+  scans missed the new rows, UPDATE and DELETE through an index changed
+  nothing, and a primary key accepted duplicates. The writer now refuses the
+  reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
+  nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
+  `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
+  22003, as it already refused one below 1; it returned a wrapped item pointer.
+  A table that already holds wrapped rows stays readable by a sequential scan
+  until `pgcolumnar.vacuum` renumbers it. The writer refuses to add rows to such
+  a table: it checks only where the new run would end, so a table that an older
+  version pushed past the end is refused too. The tests also reserve a run that
+  ends exactly at the last row number, and one row number more.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
+- An INSERT into a columnar table after a rewrite in the same transaction now
+  keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
+  rewrites the table and keeps its column count. Before this fix, a transaction
+  that inserted, rewrote and inserted again reused the write state from before
+  the rewrite. COMMIT succeeded, and the second INSERT's rows were lost without
+  an error. When the type changed from a by-reference type to a by-value type,
+  such as `text` to `int8`, the backend died with a segmentation fault and
+  PostgreSQL restarted every session. A type or collation change that needs no
+  rewrite, such as `int4` to `oid`, also reused the old state: the rows inserted
+  after it got chunk min and max under the old type or collation, and a filtered
+  read could miss them. The write state now notices the rewrite and starts over
+  for the new storage, and flushes and starts over when a column's type, typmod
+  or collation changed. `test/alter_column_type.sh` and
+  `test_alter_column_type.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
