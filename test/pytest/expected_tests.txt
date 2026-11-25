@@ -2002,17 +2002,24 @@ guard_tests 895
 # finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
 # rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
 # tests collected after the merge of main f29bf592 (5391 before it).
-# cluster_tests 5490 -> 5493 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5492 -> 5495 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
 # (test_the_field_type_lookup_matches_the_whole_field_name,
 # test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
 # test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too). The five earlier #2086 tests made
 # 5398 -> 5403 in the main merge. By collection of the cluster files (all test_*.py not in NO_CLUSTER):
 # 5406 tests collected.
-# cluster_tests 5493 -> 5498 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# cluster_tests 5495 -> 5500 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
 # review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
 # test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
 # test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
 # test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
 # test_bucket_pruning_works_on_an_iceberg_int_source). By collection of the cluster files (all test_*.py
 # not in NO_CLUSTER): 5491 tests collected, and 5498 after the merge of main at f898249c (#2134 added 7).
-cluster_tests 5498
+cluster_tests 5500
