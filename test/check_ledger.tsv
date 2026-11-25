@@ -4030,11 +4030,17 @@ isolation	isolation	isolation spec recluster_vs_delete	15;16;17;18;19	2026-10-21
 isolation	isolation	isolation spec truncate_vs_reader	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
 isolation	isolation	isolation spec truncate_vs_truncate	15;16;17;18;19	never	-
 isolation	isolation	isolation spec truncate_vs_writer	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
-large_values	large_values	a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	1.1 GB of incompressible text in one chunk group's rows loads, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
+large_values	large_values	150000 rows of 8 KB text that heap stores compressed, copied to columnar, load and are stored exactly	15;16;17;18;19	2026-11-24	row_value_bytes counts a varlena at VARSIZE_ANY, its stored size, not toast_raw_datum_size, so a compressed value is undercounted (#2071, src/columnar_write_state.c)
+large_values	large_values	150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
 large_values	large_values	an UPDATE that takes a TOASTed heap value stores it exactly in the columnar row	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	and the other rows are unchanged	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	premise: heap holds a 1 MB, two 16 MB and a 200 MB value	15;16;17;18;19	never	-
+large_values	large_values	premise: heap stores the 150000 values of 8 KB compressed, under 20 MB in all	15;16;17;18;19	never	-
 large_values	large_values	premise: heap stores the new 16 MB value TOASTed, not inline	15;16;17;18;19	never	-
+large_values	large_values	premise: the row limits are the defaults, 150000 per row group and 10000 per chunk group	15;16;17;18;19	never	-
+large_values	large_values	the 8 KB rows make 5 row groups of 15984 to 33504 rows: the cap closes each one just under 256 MiB	15;16;17;18;19	2026-11-24	reset_stripe does not set stripeValueBytes back to 0, so every row group after the first cap flush holds one row (#2071, src/columnar_write_state.c)
 large_values	large_values	the values copied into a columnar table are stored exactly, by length and md5	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 latest_reading	latest_reading	premise: the document's index exists	15;16;17;18;19	never	-
 latest_reading	latest_reading	premise: the document's three recipe blocks were found	15;16;17;18;19	never	-
@@ -6989,12 +6995,22 @@ parallel_export_parquet	parallel_export_parquet	the retry writes a fresh _SUCCES
 parallel_export_parquet	parallel_export_parquet	the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group	15;16;17;18;19	2026-10-31	parallel workers not passed the caller's export_group_bytes (#1811)
 parallel_flush_optin	parallel_flush_optin	a default flush dispatches serial	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
 parallel_flush_optin	parallel_flush_optin	a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block	15;16;17;18;19	2026-10-22	columnar_write_state.c: the flush worker commits after pinning its output (table_close, PopActiveSnapshot, CommitTransactionCommand moved after dsm_pin_segment)
+parallel_flush_optin	parallel_flush_optin	a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel INSERT that another session's ALTER TABLE waits behind flushes every column in workers (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: a flush worker raises on a float8 column, so the backend redoes that column serially and the INSERT still succeeds
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER COLUMN TYPE in the same transaction finishes, every column in workers (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER COLUMN TYPE in the same transaction stores the serial path's chunks and rows (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS;main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush writes the column ALTER TABLE added in the same transaction (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
 parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush leaves no worker segment pinned	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
 parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush reports the first cancel	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
 parallel_flush_optin	parallel_flush_optin	opting in stores byte-identical chunks to the serial path	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel stores each worker column under the next index (colResults[(col + 1) % natts])
 parallel_flush_optin	parallel_flush_optin	parallel_flush is off by default	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
+parallel_flush_optin	parallel_flush_optin	premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	premise: a flush worker is still encoding when the second cancel lands	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	premise: the cheap workers published their segments before the second cancel	15;16;17;18;19	never	-
+parallel_flush_optin	parallel_flush_optin	premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	the collect loop forgets a worker's handle in the statement after it unpins the segment	15;16;17;18;19	2026-10-23	columnar_write_state.c: the collect loop invalidates slots[i].outHandle after dsm_detach, not right after dsm_unpin_segment
 parallel_flush_optin	parallel_flush_optin	the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes)	15;16;17;18;19	2026-10-21	columnar_write_state.c: pflush_metrics adds each value stream's first byte to valbytes, a content term
 parallel_flush_optin	parallel_flush_optin	with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back)	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel never registers a worker (if (false && RegisterDynamicBackgroundWorker(...))), so every column falls back to serial
@@ -8742,33 +8758,53 @@ sort_status_privilege	sort_status_privilege	the OWNER of the table can read its 
 sort_status_privilege	sort_status_privilege	the owner sees its sorted run, not a false empty	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status reports no group in the sorted run
 sorted_mark_rename	sorted_mark_rename	CONTROL: a repeat recluster on the same key is a no-op, so the gate fires	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	CONTROL: a second identical call is a no-op, so the gate does fire	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	DROP COLUMN of the sort-key column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE POINT: vacuum_sorted('a') after the swap does the work	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: and the rows really do come back ordered	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	a column of a POPULATED heap table drops, in a database without the extension	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of a POPULATED heap table drops, in this database	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of an EMPTY heap table drops, in a database without the extension	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of an EMPTY heap table drops, in this database	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	after the drop and a rename onto the name, ORDER BY plans a Sort	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	after the swap, ORDER BY on the now-unordered column plans a Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and ORDER BY on the column that IS ordered still needs no Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and a bare vacuum_sorted() is a no-op, not a rewrite on a different key	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778);vacuum_sorted's skip raises instead of skipping (#760)
 sorted_mark_rename	sorted_mark_rename	and does not rewrite the storage row at all (xmin unchanged)	15;16;17;18;19	2026-10-20	a rename that touches no sort-key column still rewrites the storage row
 sorted_mark_rename	sorted_mark_rename	and the gate still fires	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	and the gate still fires after an unrelated drop	15;16;17;18;19	2026-11-24	the #2135 drop hook clears the ordering mark on every column drop, not only a sort-key column's
 sorted_mark_rename	sorted_mark_rename	and the partition really is ordered by k afterwards	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and the table really is ordered by a afterwards	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	and vacuum_sorted on the new a does the work	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	and vd_t really is ordered by a afterwards	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	dropping an unrelated column keeps the mark	15;16;17;18;19	2026-11-24	the #2135 drop hook clears the ordering mark on every column drop, not only a sort-key column's
+sorted_mark_rename	sorted_mark_rename	dropping one Z-order column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	premise: a bare vacuum_sorted() used the declared key	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the ordered column is the one now named b	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the partition's ordered column is named j	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and NOT by b	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named a is NOT ordered	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named k is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: and the library is loaded there, so its drop hook runs	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: before sorting, a is not in order	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: before the drop, the mark records key {a}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_ctl loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_t loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the column that took the name a is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the extension is absent in the second database	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the first recluster does real work	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the inheritance child is ordered by k	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the inheritance child's mark records key {k}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the mark records key {a}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the mark records {a,b} as zorder	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the parent is NOT itself columnar, so gating on it would skip the child	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition holds every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition is ordered by k and its mark says so	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the partition's mark records key {k}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vacuum_sorted really ordered it by a	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_t loaded every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_z's mark records {a,b} as zorder	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_t is ordered by a	15;16;17;18;19	never	-
@@ -8783,7 +8819,9 @@ sorted_mark_rename	sorted_mark_rename	so vacuum_sorted on the partition does the
 sorted_mark_rename	sorted_mark_rename	the CHILD's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	the DECLARED key follows the rename too	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778)
 sorted_mark_rename	sorted_mark_rename	the PARTITION's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the PARTITION's mark is cleared by a drop issued on the parent	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	the gate still fires for the right key after all that	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	the inheritance CHILD's mark is cleared by a drop issued on the parent	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
 sorted_mark_rename	sorted_mark_rename	the mark FOLLOWS the rename, so it still names the ordered column	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	the mark follows both renames	15;16;17;18;19	never	-
 sorted_projection	sorted_projection	control: the set oracle is order-blind by design	15;16;17;18;19	never	-
