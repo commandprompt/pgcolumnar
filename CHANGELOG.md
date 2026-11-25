@@ -617,6 +617,23 @@ true until the next version shipped.
   backend. A FATAL at the final rename also leaves no temp file, and an export
   whose rename or open failed inside a rolled-back savepoint does not crash a
   later FATAL export. `test/export_sink.sh` and `test_export_sink.py`.
+- A columnar table no longer gives a row the item pointer of a different row
+  once its row numbers run out (#2073). Every transaction that writes reserves
+  `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
+  the space ends after about 8.3 million writing transactions at the default
+  setting, or 582 at the largest. Past the end the block number wrapped: index
+  scans missed the new rows, UPDATE and DELETE through an index changed
+  nothing, and a primary key accepted duplicates. The writer now refuses the
+  reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
+  nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
+  `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
+  22003, as it already refused one below 1; it returned a wrapped item pointer.
+  A table that already holds wrapped rows stays readable by a sequential scan
+  until `pgcolumnar.vacuum` renumbers it. The writer refuses to add rows to such
+  a table: it checks only where the new run would end, so a table that an older
+  version pushed past the end is refused too. The tests also reserve a run that
+  ends exactly at the last row number, and one row number more.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - An INSERT into a columnar table after a rewrite in the same transaction now
   keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
   rewrites the table and keeps its column count. Before this fix, a transaction
