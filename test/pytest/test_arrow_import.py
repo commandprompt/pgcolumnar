@@ -337,6 +337,10 @@ def _temporal_fixtures(pa, out):
         "tu_d204": pa.array([decimal.Decimal("1.25")], pa.decimal128(20, 4)),
         "tu_fsb32": pa.array([b"0123456789abcdef0123456789abcdef"], pa.binary(32)),
         "tu_fsb16": pa.array([b"0123456789abcdef"], pa.binary(16)),
+        # #2081: the same three values in every Decimal bit width
+        **{f"tu_dw{bits}": pa.array([decimal.Decimal(x) for x in ("1.25", "2.50", "-3.75")], ty)
+           for bits, ty in ((128, pa.decimal128(10, 2)), (256, pa.decimal256(10, 2)),
+                            (64, pa.decimal64(10, 2)), (32, pa.decimal32(9, 2)))},
         "tu_int64_ts": pa.array([946684800 * 10**6], pa.int64()),
         # three date32 rows: a 12-byte buffer a stride-8 decoder runs off the end of
         "tu_d32_3": pa.array([10957, 10958, 10959], pa.date32()),
@@ -448,6 +452,17 @@ def test_the_refusals_and_every_temporal_carrier(pgc_conn, server_dir, expect):
     expect.text(tu_state("tu_fsb16", "uuid"), "00000", "control: a 16-byte fixed-size binary imports into uuid")
     expect.text(tu_state("tu_d102", "numeric(20,4)"), "42804", "a decimal at another scale is refused (#881)")
     expect.text(tu_state("tu_d204", "numeric(20,4)"), "00000", "control: a matching decimal imports")
+    # the Decimal bit width (#2081): the reader decodes 16-byte decimal128 only, and a
+    # 32-byte decimal256 buffer is long enough to be read at the wrong offsets
+    st = tu_state("tu_dw128", "numeric(10,2)")
+    vals = _one(conn, "SELECT string_agg(v::text, ',') FROM tu_t")
+    expect.text(f"{st}|{vals}", "00000|1.25,2.50,-3.75",
+                "control: a 3-row decimal128 file imports every value (#2081)")
+    st = tu_state("tu_dw256", "numeric(10,2)")
+    expect.text(f"{st}|{_one(conn, 'SELECT count(*) FROM tu_t')}", "42804|0",
+                "a decimal256 file is refused, not read at a 16-byte stride (#2081)")
+    expect.text(tu_state("tu_dw64", "numeric(10,2)"), "42804", "a decimal64 file is refused as a width mismatch (#2081)")
+    expect.text(tu_state("tu_dw32", "numeric(10,2)"), "42804", "a decimal32 file is refused as a width mismatch (#2081)")
     tu_state("tu_u64", "bigint")
     expect.num(_one(conn, "SELECT count(*) FROM tu_t"), 0, "and a refused import leaves the target empty")
     expect.text(tu_state("tu_int64_ts", "timestamp"), "00000",
