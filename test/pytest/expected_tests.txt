@@ -2009,20 +2009,27 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5492 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+# cluster_tests 5495 -> 5500 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
 # 5487 at 862fe6e3; #2152 adds 14 tests in all, listed here and below.
-# cluster_tests 5492 -> 5495 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# cluster_tests 5500 -> 5503 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
 # (test_the_field_type_lookup_matches_the_whole_field_name,
 # test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
 # test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too).
-# cluster_tests 5495 -> 5500 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# cluster_tests 5503 -> 5508 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
 # review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
 # test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
 # test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
 # test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
 # test_bucket_pruning_works_on_an_iceberg_int_source). By collection after the merge of main at
 # 862fe6e3: 5500 tests collected.
-# cluster_tests 5500 -> 5501 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
+# cluster_tests 5508 -> 5509 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
 # in test_iceberg_fdw.py, from the third #2152 review. By collection of the cluster files (all test_*.py
 # not in NO_CLUSTER): 5501 tests collected.
-cluster_tests 5501
+cluster_tests 5509
