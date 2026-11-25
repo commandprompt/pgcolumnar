@@ -2022,4 +2022,7 @@ guard_tests 895
 # unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
 # one of 4 loaders, which a row trigger's sequence shows; by collection over the cluster files: 5491 tests
 # collected (111 for that file).
-cluster_tests 5500
+# cluster_tests 5500 -> 5503 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
+# default worker count; by collection over the cluster files: 5503 tests collected (114 for that file).
+cluster_tests 5503

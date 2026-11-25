@@ -623,6 +623,9 @@ true until the next version shipped.
   appeared late, is checked to stay empty. The tests also cover a deferrable
   unique index, a partial unique index, a unique index after a non-unique one,
   and a late unique index with 4 workers, where no loader may insert a row.
+  They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
+  default.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves
   `stripe_row_limit` row numbers, and a row number maps to an item pointer, so

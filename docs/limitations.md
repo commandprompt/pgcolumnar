@@ -302,7 +302,9 @@ these constraints.
   key, loads with one worker only. The function refuses more workers with
   `0A000`. The workers would wait on each other's prepared transactions, so the
   load would hang or fail with a deadlock error. Deferrable and partial unique
-  indexes count too, even a partial index that no loaded row matches. A
+  indexes count too, even a partial index that no loaded row matches. So do
+  invalid unique indexes, such as the one a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind: such an index still checks every insert. A
   partitioned target with such an index is not limited: each worker loads its
   own partitions.
 - For a partitioned target the file must be sorted ascending by the partition

@@ -12268,7 +12268,10 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_an_exclusion_constraint_table_with_two_workers` | the same with 2 workers and `EXCLUDE USING btree (id WITH =)`, an index with `indisunique` false and `indisexclusion` true (#2080) |
 | `test_parallel_copy_refuses_a_deferrable_unique_index_table_with_two_workers` | the same with 2 workers and `UNIQUE DEFERRABLE INITIALLY DEFERRED` (#2080) |
 | `test_parallel_copy_refuses_a_partial_unique_index_table_with_two_workers` | the same with 2 workers and a partial unique index, `WHERE id >= 0`, that every row matches (#2080) |
-| `test_parallel_copy_unique_refusal_loads_nothing` | both refused tables stay empty |
+| `test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index` | premise: `CREATE UNIQUE INDEX CONCURRENTLY` fails on a columnar table and leaves the index with `indisunique` t, `indisvalid` f and `indisready` t (#2080) |
+| `test_parallel_copy_refuses_an_invalid_unique_index_table_with_two_workers` | `parallel_copy` with 2 workers into that table is refused with 0A000 and the hint: an invalid but ready unique index still checks every insert (#2080) |
+| `test_parallel_copy_refuses_a_primary_key_table_with_the_default_worker_count` | `parallel_copy` with no worker count, under `max_parallel_workers=4` (so 2 workers), into a table with a primary key is refused by the calling backend with 0A000 and the hint (#2080) |
+| `test_parallel_copy_unique_refusal_loads_nothing` | every table refused for a unique index stays empty: the primary key, unique, deferrable, partial, invalid and default-worker-count tables (#2080) |
 | `test_parallel_copy_exclusion_refusal_loads_nothing` | the table with the exclusion constraint stays empty after its refusal (#2080) |
 | `test_parallel_copy_still_loads_a_primary_key_table_with_one_worker` | control: 1 worker still loads the 5000 rows into a table with a primary key |
 | `test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers` | control: 2 workers still load the 5000 rows into a table with a non-unique index |

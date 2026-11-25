@@ -173,11 +173,15 @@ class _Db:
             return f"refused: {phrase}" if hit else str(exc)
         return "noerror"
 
-    def remote_refusal(self, sql, timeout=None):
+    def remote_refusal(self, sql, timeout=None, options=""):
         """-> "SQLSTATE message | hint" of the error `sql` raised, or "no error (...)".
-        `timeout` is a statement_timeout, so a hang ends as an error."""
+        `timeout` is a statement_timeout, so a hang ends as an error. `options`
+        adds more "-c name=value" settings."""
+        kw = _timeout(timeout)
+        if options:
+            kw["options"] = f"{kw.get('options', '')} {options}".strip()
         try:
-            with psycopg.connect(self.dsn, autocommit=True, **_timeout(timeout)) as conn:
+            with psycopg.connect(self.dsn, autocommit=True, **kw) as conn:
                 row = conn.execute(sql).fetchone()
         except psycopg.Error as exc:
             if not exc.sqlstate:
@@ -633,7 +637,26 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_ud'::regclass, '{f}', 2)", timeout="10s")
         r["partial"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_up'::regclass, '{f}', 2)", timeout="10s")
-        r["unique empty"] = db.value("SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")
+        # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY
+        # fails on a columnar table and leaves the index invalid but ready, and a
+        # ready unique index still checks every insert. The keys are distinct, so
+        # a load that is not refused would succeed.
+        db.run("CREATE TABLE t_uv (id int, txt text) USING pgcolumnar")
+        db.run("CREATE UNIQUE INDEX CONCURRENTLY t_uv_id ON t_uv (id)")
+        r["invalid premise"] = db.value(
+            "SELECT concat_ws('|', indisunique, indisvalid, indisready) FROM pg_index "
+            "WHERE indrelid = 't_uv'::regclass")
+        r["invalid"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uv'::regclass, '{f}', 2)", timeout="10s")
+        # The default worker count is more than one here: max_parallel_workers=4
+        # gives 2. The calling backend must refuse it with its hint.
+        db.run("CREATE TABLE t_ukd (id int PRIMARY KEY, txt text) USING pgcolumnar")
+        r["default workers"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_ukd'::regclass, '{f}')",
+            timeout="10s", options="-c max_parallel_workers=4")
+        r["unique empty"] = db.value(
+            "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui) + (SELECT count(*) FROM t_ud) "
+            "+ (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd)")
         r["exclusion empty"] = db.value("SELECT count(*) FROM t_ux")
         r["unique one worker"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
@@ -996,6 +1019,21 @@ def test_parallel_copy_refuses_a_deferrable_unique_index_table_with_two_workers(
 def test_parallel_copy_refuses_a_partial_unique_index_table_with_two_workers(pcopy, expect):
     expect.text(pcopy["partial"], _want_unique("t_up"),
                 "parallel_copy refuses a single table with a partial unique index and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index(pcopy, expect):
+    expect.text(pcopy["invalid premise"], "t|f|t",
+                "premise: CREATE UNIQUE INDEX CONCURRENTLY leaves a columnar table an invalid, ready unique index (#2080)")
+
+
+def test_parallel_copy_refuses_an_invalid_unique_index_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["invalid"], _want_unique("t_uv"),
+                "parallel_copy refuses a single table with an invalid unique index and 2 workers with 0A000 (#2080)")
+
+
+def test_parallel_copy_refuses_a_primary_key_table_with_the_default_worker_count(pcopy, expect):
+    expect.text(pcopy["default workers"], _want_unique("t_ukd"),
+                "parallel_copy refuses a single table with a primary key and the default worker count with 0A000 (#2080)")
 
 
 def test_parallel_copy_unique_refusal_loads_nothing(pcopy, expect):

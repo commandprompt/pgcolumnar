@@ -727,8 +727,27 @@ check "parallel_copy refuses a single table with a deferrable unique index and 2
 check "parallel_copy refuses a single table with a partial unique index and 2 workers with 0A000, not a hang (#2080)" \
 	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_up'::regclass, '$F', 2)")" \
 	"$(want_unique t_up)"
+# An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY fails on
+# a columnar table and leaves the index invalid but ready, and a ready unique
+# index still checks every insert, so two loaders would wait on each other. The
+# keys are distinct, so a load that is not refused would succeed. CONCURRENTLY
+# cannot run in a transaction block, so it runs as a statement of its own.
+psql_run "CREATE TABLE t_uv (id int, txt text) USING pgcolumnar;" >/dev/null
+q "CREATE UNIQUE INDEX CONCURRENTLY t_uv_id ON t_uv (id)" >/dev/null
+check "premise: CREATE UNIQUE INDEX CONCURRENTLY leaves a columnar table an invalid, ready unique index (#2080)" \
+	"$(q "SELECT concat_ws('|', indisunique, indisvalid, indisready) FROM pg_index WHERE indrelid = 't_uv'::regclass")" "t|f|t"
+check "parallel_copy refuses a single table with an invalid unique index and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uv'::regclass, '$F', 2)")" \
+	"$(want_unique t_uv)"
+# The default worker count is more than one here: max_parallel_workers=4 gives
+# 2. The calling backend must refuse it with its hint, not leave it to a loader.
+psql_run "CREATE TABLE t_ukd (id int PRIMARY KEY, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses a single table with a primary key and the default worker count with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s -c max_parallel_workers=4' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ukd'::regclass, '$F')")" \
+	"$(want_unique t_ukd)"
 check "the unique-index refusal loads nothing (#2080)" \
-	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui)")" 0
+	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui) + (SELECT count(*) FROM t_ud)
+	         + (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd)")" 0
 check "the exclusion-constraint refusal loads nothing (#2080)" \
 	"$(q "SELECT count(*) FROM t_ux")" 0
 check "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)" \
