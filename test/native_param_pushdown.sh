@@ -257,6 +257,37 @@ check "a projection scan with a key frozen at the first run counts what heap cou
 		"SELECT count(*), sum(k) FROM prsc WHERE k >= 19990 AND k <= same(20000)" | grep -vx 'SET' | tr '\n' ' ' | sed 's/ $//')" \
 	"801|400500 11|219945"
 
+# The keys frozen at the first run replace the reader's predicates, and that step must
+# obey pgcolumnar.enable_qual_pushdown = off as Begin does. Otherwise EXPLAIN reports
+# no pushed-down filter while the scan prunes 19 groups (#191). The same query with
+# pushdown on removes 19 (the stable-function check above).
+check "with pgcolumnar.enable_qual_pushdown off, a key frozen at the first run prunes nothing (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "SET pgcolumnar.enable_qual_pushdown = off" \
+		"PREPARE q(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE q(39000)" \
+		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "0"
+# Two keys frozen at the first run must both be tested. ts >= 1 excludes no group, so
+# only ts <= 2000 removes the other 19: a scan that tests the first key alone removes 0.
+check "two keys frozen at the first run both prune (19 of 20 removed) (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
+		"PREPARE k(int, int) AS SELECT count(*) FROM t WHERE ts >= same(\$1) AND ts <= same(\$2)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(1, 2000)" \
+		| sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' | head -1)" "19"
+# The frozen operand must be copied out of the memory it was evaluated in. A correlated
+# subquery rescans the scan once per outer row, and each rescan reuses the frozen key.
+# A 300 kB text value gets its own allocation, so a key that still points at the freed
+# result crashes the backend. 1655 rows of tx are >= '038345' followed by 'x's.
+q "SET pgcolumnar.stripe_row_limit=2000;
+   CREATE TABLE tx (s text) USING pgcolumnar;
+   INSERT INTO tx SELECT lpad(g::text, 6, '0') FROM generate_series(1, 40000) g;
+   CREATE FUNCTION same_t(text) RETURNS text LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN RETURN \$1; END \$\$;" >/dev/null
+check "a long text key frozen at the first run survives each rescan (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" \
+		"PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t(\$1) AND s <= g::text || 'z') FROM generate_series(1, 3) g" \
+		"EXECUTE r('038345' || repeat('x', 300000))" | grep -vxE 'SET|PREPARE' | tr '\n' ' ' | sed 's/ $//')" \
+	"1|1655 2|1655 3|1655"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

@@ -133,6 +133,13 @@ PROJ_SET = ["SET pgcolumnar.enable_projection_scan = on", "SET max_parallel_work
             "SET pgcolumnar.enable_group_vectorization = off"]
 PROJ_LOW = "SELECT count(*), sum(k) FROM prsc WHERE k >= 100 AND k <= same(900)"
 PROJ_HIGH = "SELECT count(*), sum(k) FROM prsc WHERE k >= 19990 AND k <= same(20000)"
+# A correlated subquery rescans the columnar scan once per outer row, and each rescan
+# reuses the key frozen at the first run. A 300 kB text value gets its own allocation, so
+# a key that still points at the freed result crashes the backend.
+SAME_T = """CREATE FUNCTION same_t(text) RETURNS text LANGUAGE plpgsql STABLE AS $$
+    BEGIN RETURN $1; END $$"""
+TEXT_RESCAN = ("PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t($1) "
+               "AND s <= g::text || 'z') FROM generate_series(1, 3) g")
 
 
 def _transcript(dsn, statements):
@@ -299,6 +306,24 @@ def pp(pgc_cluster):
                              else str(sum(1 for l in pplan[-1] if "Columnar Projection: byk" in l)))
         # Heap answers 801|400500 (k 100..900) and 11|219945 (k 19990..20000).
         r["proj answers"] = _proj_answers(dsn)
+        # The keys frozen at the first run obey pgcolumnar.enable_qual_pushdown = off, as
+        # Begin's keys do; with pushdown on the same query removes 19 ("fn removed").
+        qoff = _transcript(dsn, [GENERIC, "SET pgcolumnar.enable_qual_pushdown = off",
+                                 "PREPARE q(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
+                                 "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE q(39000)"])
+        r["qual pushdown off removed"] = _field(qoff, "Chunk Groups Removed by Filter")
+        # ts >= 1 excludes no group, so only the second key removes the other 19.
+        two = _transcript(dsn, [GENERIC, "PREPARE k(int, int) AS SELECT count(*) FROM t "
+                                "WHERE ts >= same($1) AND ts <= same($2)",
+                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE k(1, 2000)"])
+        r["two keys removed"] = _field(two, "Chunk Groups Removed by Filter")
+        _session(dsn, ["SET pgcolumnar.stripe_row_limit = 2000",
+                       "CREATE TABLE tx (s text) USING pgcolumnar",
+                       "INSERT INTO tx SELECT lpad(g::text, 6, '0') FROM generate_series(1, 40000) g",
+                       SAME_T])
+        # 1655 rows of tx are >= '038345' followed by 'x's.
+        rescan = _transcript(dsn, [GENERIC, TEXT_RESCAN, "EXECUTE r('038345' || repeat('x', 300000))"])
+        r["text rescan"] = rescan if isinstance(rescan, str) else " ".join(rescan)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -409,6 +434,21 @@ def test_param_pushdown_the_projection_arm_uses_the_projection(pp, expect):
 def test_param_pushdown_a_projection_scan_with_a_first_run_key_counts_what_heap_counts(pp, expect):
     expect.text(pp["proj answers"], "801|400500 11|219945",
                 "a projection scan with a key frozen at the first run counts what heap counts (#2065)")
+
+
+def test_param_pushdown_a_first_run_key_obeys_qual_pushdown_off(pp, expect):
+    expect.text(pp["qual pushdown off removed"], "0",
+                "with pgcolumnar.enable_qual_pushdown off, a key frozen at the first run prunes nothing (#2065)")
+
+
+def test_param_pushdown_two_first_run_keys_both_prune(pp, expect):
+    expect.text(pp["two keys removed"], "19",
+                "two keys frozen at the first run both prune (19 of 20 removed) (#2065)")
+
+
+def test_param_pushdown_a_long_text_first_run_key_survives_each_rescan(pp, expect):
+    expect.text(pp["text rescan"], "1|1655 2|1655 3|1655",
+                "a long text key frozen at the first run survives each rescan (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

@@ -623,7 +623,9 @@ true until the next version shipped.
   which calls the operand once per row it tests, returns no rows there. This
   covers an operand made only of parameters too, such as `x > 10 / $1` with
   `$1 = 0`. A plain `EXPLAIN` no longer calls the operand; it still reports a
-  bound parameter of a prepared statement as pushed down.
+  bound parameter of a prepared statement as pushed down. Keys frozen at the
+  first run obey `pgcolumnar.enable_qual_pushdown = off`, all of them are
+  tested when there are several, and a long text key survives a rescan.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
