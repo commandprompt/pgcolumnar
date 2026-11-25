@@ -295,6 +295,7 @@ extern double pgcolumnar_autovacuum_recluster_threshold;
 extern bool pgcolumnar_autovacuum_expire;
 extern void PgColumnarAutovacuumRegister(void);
 extern int	pgcolumnar_maintenance_hold_ms;	/* dev/test: hold SUEL this long in a maintenance verb */
+extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 
 /* Phase 6 GUCs (spec 8.3) */
 extern bool pgcolumnar_enable_vectorization;	/* vectorized aggregate path */
