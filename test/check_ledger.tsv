@@ -334,6 +334,9 @@ arrow_import	arrow_import	a date64 instant before the epoch floors rather than t
 arrow_import	arrow_import	a date64 instant mid-day reports the day it falls in	15;16;17;18;19	never	-
 arrow_import	arrow_import	a date64 past PostgreSQL's last date is refused	15;16;17;18;19	2026-10-14	the Arrow date decode without its range check
 arrow_import	arrow_import	a decimal at another scale is refused (#881)	15;16;17;18;19	never	-
+arrow_import	arrow_import	a decimal256 file is refused, not read at a 16-byte stride (#2081)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a decimal32 file is refused as a width mismatch (#2081)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a decimal64 file is refused as a width mismatch (#2081)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a float32 file is refused for float8 (#881)	15;16;17;18;19	never	-
 arrow_import	arrow_import	a list element's nanosecond unit is honoured, not just the top level	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)	15;16;17;18;19	2026-11-01	imp_check_bounds without its value-buffer row-count check (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
@@ -369,6 +372,8 @@ arrow_import	arrow_import	and does not report the row count instead	15;16;17;18;
 arrow_import	arrow_import	and that file imports every row as well	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	backend still up after the import_arrow FIFO refusal	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a 16-byte fixed-size binary imports into uuid	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a 3-row decimal128 file imports every value (#2081)	15;16;17;18;19	never	-
+arrow_import	arrow_import	control: a binary and a string file still import into bytea and text, with their values (#2097)	15;16;17;18;19	never	-
 arrow_import	arrow_import	control: a list<int64> file still imports into a bigint[] column, with its count and sum (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a map file still imports into an array of a composite (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	control: a matching decimal imports	15;16;17;18;19	never	-
@@ -388,13 +393,17 @@ arrow_import	arrow_import	import into an indexed table: a point lookup finds its
 arrow_import	arrow_import	import into an indexed table: both scans agree	15;16;17;18;19	never	-
 arrow_import	arrow_import	import into an indexed table: the rows are there	15;16;17;18;19	never	-
 arrow_import	arrow_import	import rows	15;16;17;18;19	never	-
+arrow_import	arrow_import	import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)	15;16;17;18;19	2026-11-24	main's code before the #2092 fix: flush_ws_projections_ext set no active snapshot (src/columnar_write_state.c)
 arrow_import	arrow_import	import_arrow on a FIFO is refused, not a hang (XX001)	15;16;17;18;19	never	-
 arrow_import	arrow_import	import_arrow refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath matches s3a:// and s3n:// case-sensitively (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3a:// match (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3n:// match (#1918)
+arrow_import	arrow_import	import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)	15;16;17;18;19	2026-11-24	import_arrow without #2097's refusal of large binary, large string, binary view and string view (src/columnar_arrow.c, imp_check_shape)
 arrow_import	arrow_import	import_arrow refuses a large list for a bigint[] or a bigint column with 42804, not read as wrong arrays (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: large and fixed-size lists, list views, unions and run-end encoding accepted (src/columnar_arrow.c, #1932)
+arrow_import	arrow_import	import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)	15;16;17;18;19	2026-11-24	import_arrow without #2097's refusal of large binary, large string, binary view and string view (src/columnar_arrow.c, imp_check_shape)
 arrow_import	arrow_import	import_arrow refuses a list of lists for a bigint[] column with 42804, naming the column (#1932)	15;16;17;18;19	2026-11-01	imp_apply_field: list depth not carried into a list's child (src/columnar_arrow.c, #1932);imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932);imp_check_shape: the lists-deep message dropped for the generic one (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	import_arrow refuses a list of structs and a list of maps for a bigint[] column with 42804 (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: a Map tag no longer taken as list-shaped (src/columnar_arrow.c, #1932);imp_check_shape: every List tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	import_arrow refuses a plain int64 column for a bigint[] column with 42804 (#1932)	15;16;17;18;19	2026-11-01	imp_check_shape reverted: nested Arrow tags never compared with the target's node (src/columnar_arrow.c, #1932);imp_check_shape: a scalar tag accepted under an array or composite node (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	import_arrow refuses a remote URL before it looks at the target: a heap target gets 0A000 (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow refuses a remote URL only after the target checks, just before the open (#1886);columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
+arrow_import	arrow_import	import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)	15;16;17;18;19	2026-11-24	import_arrow without #2097's refusal of large binary, large string, binary view and string view (src/columnar_arrow.c, imp_check_shape)
 arrow_import	arrow_import	import_arrow refuses an http:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
 arrow_import	arrow_import	import_arrow refuses an s3:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
 arrow_import	arrow_import	import_arrow refuses https://, gs://, az:// and S3:// URLs with 0A000 too (#1886)	15;16;17;18;19	2026-11-01	columnar_arrow.c: import_arrow without the PgColumnarRefuseRemotePath call (#1886)
@@ -4402,6 +4411,8 @@ native_encdesc_golden	native_encdesc_golden	int column a rawLen parses as 1200 (
 native_encdesc_golden	native_encdesc_golden	the table reads back all rows	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	trailing sharedTableLen is 0 (u32 at offset 6+13=19)	15;16;17;18;19	never	-
 native_encdesc_golden	native_encdesc_golden	vectorCount parses as 1 (at offset 2)	15;16;17;18;19	never	-
+native_encoding	native_encoding	ANALYZE reads a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	DELETE removes every row of a table of repeated wide fixed-width values	15;16;17;18;19	2026-11-24	-
 native_encoding	native_encoding	[lz4] aggregate over encoded column	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] all columns round-trip	15;16;17;18;19	never	-
 native_encoding	native_encoding	[lz4] constant column encoded small	15;16;17;18;19	never	-
@@ -4449,6 +4460,12 @@ native_encoding	native_encoding	fsst filtered scan round-trips	15;16;17;18;19	ne
 native_encoding	native_encoding	fsst shrinks the url column	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	fsst stores one shared table per chunk (E3b)	15;16;17;18;19	2026-10-22	columnar_encoding.c: the selector stores every vector raw (encoding NONE)
 native_encoding	native_encoding	misleading-head column still reads back exactly	15;16;17;18;19	never	-
+native_encoding	native_encoding	pg_dump of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	premise: repeated uuid, interval, timetz, name, macaddr, tid and point values are stored as RLE	15;16;17;18;19	never	-
+native_encoding	native_encoding	repeated uuid, interval, timetz, name, macaddr, tid and point values read back exactly	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly after a pg_dump round trip	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	repeated wide fixed-width values read back exactly on the sampled path	15;16;17;18;19	2026-11-24	-
+native_encoding	native_encoding	restore of a table of repeated wide fixed-width values succeeds	15;16;17;18;19	never	-
 native_encoding	native_encoding	run-length column reads back exactly	15;16;17;18;19	2026-10-22	columnar_encoding.c: RLE decode flips one bit of each vector's last value
 native_encoding	native_encoding	sampling changes nothing a query can see	15;16;17;18;19	never	-
 native_encoding	native_encoding	sampling off == heap oracle	15;16;17;18;19	never	-
@@ -4649,10 +4666,12 @@ native_groupagg	native_groupagg	avg(float8) overflow errors like core	15;16;17;1
 native_groupagg	native_groupagg	avg(float8) overflow: node fires	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	by default a five-minute bucket query takes the grouped path	15;16;17;18;19	never	-
 native_groupagg	native_groupagg	empty table: grouped scan yields 0 rows	15;16;17;18;19	never	-
+native_groupagg	native_groupagg	hand-off: a run whose only avg(float8) and avg(real) value is Infinity combines to Infinity under a core Finalize, as heap does (#2068)	15;16;17;18;19	2026-11-24	columnar_vector.c at main d52f6e8c: pgcolumnar_apply_one keeps the avg(float8) Sxx at 0 after an infinite first value, so the combine raises overflow (#2068)
 native_groupagg	native_groupagg	merge: NaN in one run and Infinity in another is NaN, and +Infinity with -Infinity is NaN, for sum and avg	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: pgcolumnar_spec_merge counts one per run for int8 and numeric sum and avg, not the run's count (#1300 D', jdatcmd's average-of-averages shape);columnar_vector.c: pgcolumnar_spec_merge keeps the first run's numeric sum instead of adding the later one (#1300 D');columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
 native_groupagg	native_groupagg	merge: a group NULL in its early runs sums its later ones, and an all-NULL group is NULL, not a division by zero	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: pgcolumnar_spec_merge counts one per run for int8 and numeric sum and avg, not the run's count (#1300 D', jdatcmd's average-of-averages shape);columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
 native_groupagg	native_groupagg	merge: a key seen as 3 and later as 3.00 is one group, shown as core shows it	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: the merge sort leaves out the flush sequence, so equal keys merge in no set order (#1300 D');columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
 native_groupagg	native_groupagg	merge: a key with no btree ordering gets no serial grouped node	15;16;17;18;19	2026-10-26	columnar_vector.c: the planner offers the bare grouped node for a key with no btree ordering (#1300 D')
+native_groupagg	native_groupagg	merge: a run whose only avg(float8) and avg(real) value is Infinity merges to Infinity, as heap does (#2068)	15;16;17;18;19	2026-11-24	columnar_vector.c at main d52f6e8c: pgcolumnar_apply_one keeps the avg(float8) Sxx at 0 after an infinite first value, so the combine raises overflow (#2068)
 native_groupagg	native_groupagg	merge: avg over int4 beside sum and min over numeric answers as core does	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: pgcolumnar_spec_merge keeps the first run's numeric sum instead of adding the later one (#1300 D');columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
 native_groupagg	native_groupagg	merge: float sums of exactly representable values merge to core's	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: pgcolumnar_spec_merge keeps the later run's float sum instead of adding it (#1300 D');columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
 native_groupagg	native_groupagg	merge: int8 runs whose total passes 2^63 sum exactly, as core's numeric sum does	15;16;17;18;19	2026-10-26	columnar_vector.c: a serial grouped node never merges past the cap, so it stops at groupagg_max_groups (#1300 D');columnar_vector.c: pgcolumnar_spec_merge counts one per run for int8 and numeric sum and avg, not the run's count (#1300 D', jdatcmd's average-of-averages shape);columnar_vector.c: pgcolumnar_spec_merge truncates the int128 int8 sum to int64 (#1300 D');columnar_vector.c: the merge sort orders by the flush sequence alone, so a key that reappears after another is not merged (#1300 D')
@@ -4902,6 +4921,8 @@ native_join_runtime_filter	native_join_runtime_filter	collation-mismatch bloom r
 native_join_runtime_filter	native_join_runtime_filter	collation-mismatch interval stays off	15;16;17;18;19	2026-10-13	the runtime filter's interval allowed whatever the operator's collation
 native_join_runtime_filter	native_join_runtime_filter	collation-mismatch plan has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	default plan has runtime coordinator	15;16;17;18;19	2026-09-18	pgcolumnar.enable_join_runtime_filter boot value true -> false
+native_join_runtime_filter	native_join_runtime_filter	each distinct rescan joins against its own build	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	each subquery rescan joins against its own build	15;16;17;18;19	2026-11-24	-
 native_join_runtime_filter	native_join_runtime_filter	early limit equals heap	15;16;17;18;19	2026-09-23	the runtime bloom probe's verdict inverted, so the filter rejects what matches
 native_join_runtime_filter	native_join_runtime_filter	early limit has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	empty-build answer equals heap	15;16;17;18;19	never	-
@@ -4920,10 +4941,26 @@ native_join_runtime_filter	native_join_runtime_filter	plan retains core Hash Joi
 native_join_runtime_filter	native_join_runtime_filter	premise: and its build is empty	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a columnar dimension holds every joined row	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's answer under a true gate over a heap dimension holds every joined row	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default LATERAL answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default scalar answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's default uncorrelated answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's distinct answer grows with each outer value	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: heap's empty-then-full rescan answer holds every dimension key	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only LATERAL answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only scalar answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's hash-only uncorrelated answer	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: heap's subquery answer grows with each outer value	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default LATERAL query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default scalar query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the default uncorrelated query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the distinct rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the empty-then-full rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the fact qual removes matching rows on heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only LATERAL query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only scalar query runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the hash-only uncorrelated query runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: the large-dimension empty build runs under the coordinator	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	premise: the subquery rescan runs under the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the columnar-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	premise: with no gate, the heap-dimension join has the coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	projection join equals heap	15;16;17;18;19	never	-
@@ -4940,16 +4977,37 @@ native_join_runtime_filter	native_join_runtime_filter	scattered bloom rejects mo
 native_join_runtime_filter	native_join_runtime_filter	scattered interval cannot drop groups	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	scattered plan has coordinator	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	scattered still reads every group	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	the default LATERAL query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the default scalar query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the default uncorrelated query equals heap	15;16;17;18;19	never	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only LATERAL query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only scalar query equals heap	15;16;17;18;19	2026-11-24	-
+native_join_runtime_filter	native_join_runtime_filter	the hash-only uncorrelated query equals heap	15;16;17;18;19	never	-
 native_join_runtime_filter	native_join_runtime_filter	with matching collations the same fixture's interval removes row groups	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join refuses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys answer equals heap	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys refuse the join fold	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
+native_join_vector_agg	native_join_vector_agg	each default LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each default distinct fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each default scalar fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only distinct fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
+native_join_vector_agg	native_join_vector_agg	each hash-only scalar fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
 native_join_vector_agg	native_join_vector_agg	extra join filter answer equals GUC off	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	extra join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	extra join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's LATERAL rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's distinct rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: heap's scalar rescan answer grows with each outer value	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default LATERAL rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default distinct rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the default scalar rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only LATERAL rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only distinct rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	premise: the hash-only scalar rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
@@ -6703,6 +6761,7 @@ parallel_copy	parallel_copy	control: file_split_offsets still splits a local pat
 parallel_copy	parallel_copy	control: file_split_offsets still splits a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)
 parallel_copy	parallel_copy	control: parallel_copy still loads a local path that holds s3:// past its start (#1886)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// rather than PgColumnarPathIsRemote's schemes (#1886)
 parallel_copy	parallel_copy	control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath refuses any path holding :// besides PgColumnarPathIsRemote's schemes (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath refuses s3a:// or s3n:// anywhere in the path, not only at its start (#1918)
+parallel_copy	parallel_copy	failed loaders close their file once: no CloseTransientFile WARNING in the server log (#2083)	15;16;17;18;19	2026-11-24	-
 parallel_copy	parallel_copy	file_split_offsets refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath matches s3a:// and s3n:// case-sensitively (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3a:// match (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3n:// match (#1918)
 parallel_copy	parallel_copy	file_split_offsets refuses an http:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_parallel_copy.c: file_split_offsets without the PgColumnarRefuseRemotePath call (#1886)
 parallel_copy	parallel_copy	file_split_offsets refuses an s3:// URL with 0A000, naming itself and the URL (#1886)	15;16;17;18;19	2026-11-01	columnar_parallel_copy.c: file_split_offsets without the PgColumnarRefuseRemotePath call (#1886)
@@ -6722,6 +6781,7 @@ parallel_copy	parallel_copy	missing file: server still up (no worker crash)	15;1
 parallel_copy	parallel_copy	no trailing newline / 4 workers: offsets well-formed and newline-aligned	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it
 parallel_copy	parallel_copy	no trailing newline / 4 workers: per-range loads reconstruct the whole file	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: an interior split offset lands on the newline, not after it;columnar_tableam.c: multi_insert drops the row whose first int4 column is 1
 parallel_copy	parallel_copy	non-columnar target is rejected	15;16;17;18;19	never	-
+parallel_copy	parallel_copy	parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)	15;16;17;18;19	2026-11-24	flush_ws_projections_ext returns before it writes any projection row (src/columnar_write_state.c)
 parallel_copy	parallel_copy	parallel_copy on a FIFO is refused, not a hang (42809)	15;16;17;18;19	2026-10-22	columnar_parallel_copy.c: the single-file opener drops O_NONBLOCK, so a FIFO blocks open(2) (#686);columnar_parallel_copy.c: the single-file opener's S_ISREG refusal removed
 parallel_copy	parallel_copy	parallel_copy on a FIFO via the partitioned coordinator is refused, not a hang (42809)	15;16;17;18;19	never	-
 parallel_copy	parallel_copy	parallel_copy refuses S3A:// and S3n:// URLs too: the scheme match ignores case (#1918)	15;16;17;18;19	2026-11-01	columnar_objstore.c: PgColumnarRefuseRemotePath matches s3a:// and s3n:// case-sensitively (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3a:// match (#1918);columnar_objstore.c: PgColumnarRefuseRemotePath without its s3n:// match (#1918)
@@ -7116,6 +7176,7 @@ parquet_import	parquet_import	control: importing that file into the LEAF still w
 parquet_import	parquet_import	import into an indexed table: a point lookup finds its row	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
 parquet_import	parquet_import	import into an indexed table: both scans agree	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
 parquet_import	parquet_import	import into an indexed table: the rows are there	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: a DATA_PAGE v1 page does not step over its definition levels (the off += llen after them dropped)
+parquet_import	parquet_import	import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)	15;16;17;18;19	2026-11-24	main's code before the #2092 fix: flush_ws_projections_ext set no active snapshot (src/columnar_write_state.c)
 parquet_import	parquet_import	importing into the partitioned parent is refused	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: the RELKIND_HAS_STORAGE guard is skipped, the #1263 fix reverted, so a partitioned parent is imported into (signal 11)
 parquet_import	parquet_import	importing the same keys twice raises unique_violation	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
 parquet_import	parquet_import	partial index covers its rows after import	15;16;17;18;19	2026-10-26	columnar_parquet_reader.c: import_parquet opens no index state (sinkarg.indexes = false && PgColumnarRelationHasIndexes(rel)), so imported rows reach no index
@@ -8715,9 +8776,27 @@ tablesample	tablesample	count(*) TABLESAMPLE raises 0A000 rather than answering 
 tablesample	tablesample	grouped TABLESAMPLE raises 0A000 rather than grouping every row	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
 tablesample	tablesample	premise: the table holds 10000 rows	15;16;17;18;19	never	-
 tablesample	tablesample	sum() TABLESAMPLE raises 0A000 rather than folding the whole table	15;16;17;18;19	2026-10-20	the custom scan replaces a sampled scan again (columnar_customscan.c);the vectorized aggregate paths take a sampled scan again (columnar_vector.c, both hooks)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(0,0)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(0,292)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(1,0)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	DELETE ... WHERE ctid = '(1,400)' deletes no row, and every row is still there	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(0,0)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(0,292)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(1,0)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	UPDATE ... WHERE ctid = '(1,400)' changes no row, and every row is unchanged	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
 tid_range_scan	tid_range_scan	a SCROLL cursor over a ctid range fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	no planner hook: a cursor over a TID range scan gets no Material
 tid_range_scan	tid_range_scan	a SCROLL cursor whose query has a subplan fetches backward as the filter's plan does	15;16;17;18;19	2026-10-12	the Material's node id from the main tree's largest, not above the subplans'
 tid_range_scan	tid_range_scan	a TID range scan rescanned with new bounds returns what the filter returns	15;16;17;18;19	2026-10-12	getnextslot_tidrange without the boundary-row filter;scan_set_tidrange keeping the reader of the previous range
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,0)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,0)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,292)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(0,292)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,0)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,0)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,400)' in an array returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of ctid '(1,400)', which no row has, returns no row, as on heap	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
+tid_range_scan	tid_range_scan	a TID scan of the last offset a block holds, '(0,291)', still returns its row	15;16;17;18;19	never	-
+tid_range_scan	tid_range_scan	a TID scan of two ctids rows have and one past a block's last offset returns those two rows	15;16;17;18;19	2026-11-24	tid_range_scan at main d52f6e8c: pgcolumnar_tuple_tid_valid accepts every ctid (#2058)
 tid_range_scan	tid_range_scan	a ctid range over the last row groups reads under a fifth of the table	15;16;17;18;19	2026-10-12	scan_set_tidrange without the group restriction
 tid_range_scan	tid_range_scan	a ctid range returns what the per-row filter returns: ctid < '(515,0)'	15;16;17;18;19	2026-10-12	a lower bound at offset 0 read unclamped;an upper bound's offset past 291 read unclamped;getnextslot_tidrange without the boundary-row filter
 tid_range_scan	tid_range_scan	a ctid range returns what the per-row filter returns: ctid < '(515,1)'	15;16;17;18;19	2026-10-12	a lower bound at offset 0 read unclamped;getnextslot_tidrange without the boundary-row filter
@@ -8741,6 +8820,7 @@ tid_range_scan	tid_range_scan	after compaction a ctid range returns what the fil
 tid_range_scan	tid_range_scan	after compaction a ctid range returns what the filter returns: ctid >= 'LAST'	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	and rows deleted inside the range stay deleted	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: a ctid range plans a TID range scan, so the arms below exercise it	15;16;17;18;19	never	-
+tid_range_scan	tid_range_scan	premise: a single ctid plans a TID scan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: compaction gave the surviving rows new addresses	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: compaction rewrote the group the delete thinned	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: inside a transaction the range still plans a TID range scan	15;16;17;18;19	never	-
@@ -8749,6 +8829,7 @@ tid_range_scan	tid_range_scan	premise: the cursor's query plans a TID range scan
 tid_range_scan	tid_range_scan	premise: the delete removed rows from the range	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the per-range join rescans a TID range scan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the range runs as a parallel TID range scan with two workers	19	never	-
+tid_range_scan	tid_range_scan	premise: the row after offset 291 of block 0 sits at (1,1)	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the subquery cursor plans a TID range scan and a subplan	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the table has many row groups, so skipping can show	15;16;17;18;19	never	-
 tid_range_scan	tid_range_scan	premise: the table holds every row	15;16;17;18;19	never	-

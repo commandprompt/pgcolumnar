@@ -22,6 +22,9 @@ with "failed" in it. And a backend that died does not pass as one that survived:
 fresh connection answers after crash recovery, so survival also reads the server log's
 count of killed backends.
 
+A LOADER THAT FAILS CLOSES ITS FILE ONCE (#2083). The server log must carry no
+"CloseTransientFile was not obtained" WARNING from the failed loads.
+
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture. Prepared
 transactions are counted in that database only, so another file's leftover cannot
 redden this one.
@@ -211,6 +214,15 @@ def _crashes(cluster):
         return query_error(f"crash count unreadable: {exc}")
 
 
+def _double_closes(cluster):
+    """-> how many times the server log says a file was closed twice (#2083)."""
+    try:
+        return (cluster.datadir / "server.log").read_text(errors="replace").count(
+            "CloseTransientFile was not obtained")
+    except OSError as exc:
+        return query_error(f"server log unreadable: {exc}")
+
+
 def _survived(db, cluster, before):
     up, now = db.value("SELECT 1"), _crashes(cluster)
     if not isinstance(before, int) or not isinstance(now, int):
@@ -298,6 +310,29 @@ def _split_readings(r, db, key, path, w, gen, *, real=False):
         r["split real " + key] = _split_real(data, offs, w)
 
 
+def _projection_load(db, path, workers, preload):
+    """-> 'wWORKERS:returned/rows/projection rows' for a parallel_copy into a fresh table
+    with an options row and a projection, which holds `preload` rows first.
+
+    The load runs under a statement_timeout: 2 or more workers into a projection that
+    holds no rows yet hang until cancelled (#2161), so a regression must not hang the
+    module."""
+    t = f"t_proj_w{workers}"
+    db.run(f"CREATE TABLE {t} (id int, txt text) USING pgcolumnar")
+    db.run(f"SELECT pgcolumnar.set_options('{t}', compression => 'zstd')")
+    if preload:
+        db.run(f"INSERT INTO {t} SELECT g, 'pre'||g FROM generate_series(1, {preload}) g")
+    db.run(f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id'])")
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=60s") as conn:
+            got = conn.execute(f"SELECT pgcolumnar.parallel_copy('{t}'::regclass, '{path}', {workers})").fetchone()[0]
+    except psycopg.Error as exc:
+        got = _message(exc)
+    rows = db.value(f"SELECT count(*) FROM {t}")
+    prows = db.value(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')")
+    return f"w{workers}:{got}/{rows}/{prows}"
+
+
 @pytest.fixture(scope="module")
 def pcopy(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -309,6 +344,7 @@ def pcopy(pgc_cluster, server_dir):
         db.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
         r = {}
         before = _crashes(pgc_cluster)
+        closes_before = _double_closes(pgc_cluster)
 
         # ---- the splitter -------------------------------------------------------
         db.run("CREATE TABLE t_heap (id int, txt text) USING heap; "
@@ -455,6 +491,10 @@ def pcopy(pgc_cluster, server_dir):
                                      "failed: invalid input syntax")
         r["single bad empty"] = db.value("SELECT count(*) FROM t_single")
         r["single bad leak"] = db.value(LEAK)
+        closes_now = _double_closes(pgc_cluster)
+        r["double close"] = (closes_now - closes_before
+                             if isinstance(closes_before, int) and isinstance(closes_now, int)
+                             else query_error(f"server log unreadable: {closes_before} / {closes_now}"))
 
         # ---- #686: a FIFO is refused, not a hang --------------------------------
         db.run("CREATE TABLE t_fifo (id int, txt text) USING pgcolumnar")
@@ -558,6 +598,11 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
             if key == "eod single":
                 r["2084 eod single leak"] = db.value(LEAK)
+
+        # ---- #2092: a load into a table with a projection fills the projection ----
+        r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
+        r["projection leak"] = db.value(LEAK)
+        r["projection up"] = _survived(db, pgc_cluster, before)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -748,6 +793,14 @@ def test_parallel_copy_single_table_failure_leaves_no_prepared_transaction(pcopy
     expect.num(pcopy["single bad leak"], 0, "single table: no prepared-transaction leak after failure")
 
 
+def test_parallel_copy_failed_loaders_close_their_file_once(pcopy, expect):
+    """#2083: the loads that failed in their loaders (the gapped target and the bad
+    row) must not log "fd passed to CloseTransientFile was not obtained from
+    OpenTransientFile", the sign of a file closed twice."""
+    expect.num(pcopy["double close"], 0,
+               "failed loaders close their file once: no CloseTransientFile WARNING in the server log (#2083)")
+
+
 # ---- #686: a FIFO is refused, not a hang --------------------------------------------
 
 def test_parallel_copy_fifo_is_refused_not_a_hang(pcopy, expect):
@@ -883,3 +936,18 @@ def test_parallel_copy_loads_the_values_heap_copy_loads(pcopy, expect, key, name
 
 def test_parallel_copy_end_of_data_marker_leaves_no_prepared_transaction(pcopy, expect):
     expect.num(pcopy["2084 eod single leak"], 0, "#2084 end-of-data marker / single table: no prepared-transaction leak")
+
+# ---- #2092: a load into a table with a projection --------------------------------
+
+def test_parallel_copy_into_a_table_with_a_projection_fills_the_projection(pcopy, expect):
+    """#2092 asked whether parallel_copy shares the import functions' crash: they wrote
+    a projection at statement end with no active snapshot. It does not: on main's code,
+    too, both loads fill the projection and no backend dies. The test keeps that true.
+
+    Not covered: 2 or more workers into a projection that holds no rows yet. That load
+    hangs until cancelled, on another cause (#2161), so the 2-worker case fills its
+    projection first."""
+    expect.text(f"{pcopy['projection']} | leak {pcopy['projection leak']} | survived {pcopy['projection up']}",
+                "w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1",
+                "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction"
+                " and keeps the server up (#2092)")
