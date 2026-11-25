@@ -1938,4 +1938,4 @@ guard_tests 895
 # cluster_tests 5391 -> 5392 for #2092's parallel_copy case,
 # test_parallel_copy_into_a_table_with_a_projection_fills_the_projection in test_parallel_copy.py, by the same
 # collection: 5379 tests collected.
-cluster_tests 5392
+cluster_tests 5396

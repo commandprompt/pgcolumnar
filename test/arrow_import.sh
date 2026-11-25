@@ -1192,4 +1192,62 @@ check "import_arrow into a table with a projection, with or without set_options,
 	"$_aip_got" \
 	"o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000 | 0 backend crashes"
 
+# --- #2097: 64-bit-offset and view layouts of binary and string -------------
+# A large_binary column holding b'x' IMPORTED into bytea as an empty value, with
+# no error, and a three-row one failed as a malformed file. A large_string file
+# ['hi','there'] imported into text as '' and 'hi'. The reader takes every Binary
+# and Utf8 offset buffer as 32-bit, so the 64-bit offsets [0, 1] read as 0 and 0.
+# The string and binary views have no offset buffer at all and were called
+# malformed (XX001). Until import_arrow reads these layouts it refuses each one
+# with 42804, naming the column and the Arrow type, at any depth. The control is
+# a binary and a string file, which must still import with their values.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #2097: large and view layouts of binary and string"
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+def write(name, arr):
+    t = pa.table({'v': arr, 'n': pa.array(range(len(arr)), pa.int32())})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), t.schema) as w:
+        w.write_table(t)
+write('lv_lb1', pa.array([b'x'], pa.large_binary()))
+write('lv_lb3', pa.array([b'hello', b'world!', None], pa.large_binary()))
+write('lv_ls', pa.array(['hi', 'there'], pa.large_string()))
+write('lv_lls', pa.array([['hi'], ['there']], pa.list_(pa.large_string())))
+write('lv_sv', pa.array(['hi', 'there'], pa.string_view()))
+write('lv_bv', pa.array([b'hi'], pa.binary_view()))
+write('lv_bin', pa.array([b'x'], pa.binary()))
+write('lv_str', pa.array(['hi', 'there'], pa.string()))
+PY
+	chmod 644 "$PGC_WORKDIR"/lv_*.arrows
+	lv_import() {	# lv_import FIXTURE PGTYPE -> "<import result or SQLSTATE message>|<rows stored>"
+		local t="lv_t_$1"
+		psql_run "CREATE TABLE $t (v $2, n int) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	check "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+		"$(lv_import lv_lb1 bytea) / $(lv_import lv_lb3 bytea)" \
+		'42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0 / 42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+		"$(lv_import lv_ls text) / $(lv_import lv_lls 'text[]')" \
+		'42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0'
+	check "import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+		"$(lv_import lv_sv text) / $(lv_import lv_bv bytea)" \
+		'42804 Arrow column "v" holds a string view, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a binary view, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "control: a binary and a string file still import into bytea and text, with their values (#2097)" \
+		"$(lv_import lv_bin bytea)|$(q "SELECT v FROM lv_t_lv_bin;") / $(lv_import lv_str text)|$(q "SELECT string_agg(v, ',' ORDER BY n) FROM lv_t_lv_str;")" \
+		'1|1|\x78 / 2|2|hi,there'
+else
+	for _ai_lv in \
+			"import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+			"import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+			"import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+			"control: a binary and a string file still import into bytea and text, with their values (#2097)"; do
+		check_skip "$_ai_lv" \
+			"SKIP  $_ai_lv (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
+
 pgc_summary
