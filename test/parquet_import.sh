@@ -374,4 +374,53 @@ else
 		"$(q "SELECT 1;")|$(pq_crashes_since "$pq_crashes0")" "1|0 backend crashes"
 fi
 
+# ---- an import into a table with a projection keeps the server up (#2092) ----
+# The import writes the projection's rows when the statement ends. The import is
+# a SELECT, so its statement ends in portal cleanup, where no snapshot is active.
+# The flush then read the options catalog with a snapshot nobody had registered.
+# An assert build aborted on the first catalog row the read examined, and the
+# postmaster restarted every backend. Any table's options row is enough, so the
+# check gives one to a neighbour table first. Without it, the case without
+# set_options passed on main's code, because it ran before any case had called
+# set_options. The matrix crosses projection with set_options, one table per
+# case. The crash count comes from the server log, not from timing.
+pqp_crashes() {	# a number, or nothing when the log can't be read
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+pqp_case() {	# pqp_case OPT PROJ -> "oOPTpPROJ:imported/rows/projection rows"
+	local t="pqp_o$1p$2" f out got i
+	f="$PGC_WORKDIR/$t.parquet"
+	psql_run "CREATE TABLE $t (id bigint, c int) USING pgcolumnar;
+		INSERT INTO $t SELECT g, g % 10 FROM generate_series(1, 1000) g;"
+	[ "$1" = 1 ] && psql_run "SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" = 1 ] && psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['c','id'], sort_key => ARRAY['c']);" >/dev/null
+	q "SELECT pgcolumnar.export_parquet('$t', '$f');" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_parquet('$t', '$f');" 2>&1)"
+	case "$out" in
+		*ERROR:*) got="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)" ;;
+		*[!0-9]*|'') got="lost connection" ;;
+		*) got="$out" ;;
+	esac
+	# after a crash the server needs a moment of recovery before it answers
+	for i in $(seq 1 60); do [ "$(q 'SELECT 1;')" = 1 ] && break; sleep 1; done
+	printf 'o%sp%s:%s/%s/%s' "$1" "$2" "$got" "$(q "SELECT count(*) FROM $t;")" \
+		"$([ "$2" = 1 ] && q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p');" || echo -)"
+}
+psql_run "CREATE TABLE pqp_neighbour (id int) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('pqp_neighbour', compression => 'zstd');" >/dev/null
+_pqp_c0="$(pqp_crashes)"
+_pqp_got="$(pqp_case 0 0) $(pqp_case 0 1) $(pqp_case 1 0) $(pqp_case 1 1)"
+_pqp_now="$(pqp_crashes)"
+if [[ "$_pqp_c0" =~ ^[0-9]+$ && "$_pqp_now" =~ ^[0-9]+$ ]]; then
+	_pqp_got="$_pqp_got | $(( _pqp_now - _pqp_c0 )) backend crashes"
+else
+	_pqp_got="$_pqp_got | crash count unreadable"
+fi
+check "import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)" \
+	"$_pqp_got" \
+	"o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000 | 0 backend crashes"
+
 pgc_summary

@@ -516,3 +516,78 @@ def test_the_user_guide_creates_its_events_table(pq_docs, expect):
 def test_the_sql_reference_round_trip_runs(pq_docs, expect):
     expect.text(pq_docs["sr round trip"], "ok",
                 "the SQL reference's Parquet round trip runs on the user guide's events table")
+
+
+def _projection_import_case(pgc_cluster, server_dir, schema, opt, proj):
+    """-> 'oOPTpPROJ:imported/rows/projection rows' for one case of #2092's matrix.
+
+    Every statement runs on a fresh connection, because a crash ends every backend,
+    the fixture's own included. Each case has its own table."""
+    import time
+    import psycopg
+
+    def connect():
+        c = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
+        c.execute(f'SET search_path TO "{schema}", public')
+        return c
+
+    t = f"pqp_o{opt}p{proj}"
+    path = server_dir / f"{t}.parquet"
+    with connect() as c:
+        c.execute(f"CREATE TABLE {t} (id bigint, c int) USING pgcolumnar")
+        c.execute(f"INSERT INTO {t} SELECT g, g % 10 FROM generate_series(1, 1000) g")
+        if opt:
+            c.execute(f"SELECT pgcolumnar.set_options('{t}', compression => 'zstd')")
+        if proj:
+            c.execute(f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['c','id'],"
+                      " sort_key => ARRAY['c'])")
+        c.execute(f"SELECT pgcolumnar.export_parquet('{t}', '{path}')")
+    try:
+        with connect() as c:
+            got = str(c.execute(f"SELECT pgcolumnar.import_parquet('{t}', '{path}')").fetchone()[0])
+    except psycopg.Error as e:
+        got = e.sqlstate or "lost connection"
+    # after a crash the server needs a moment of recovery before it answers
+    for _ in range(60):
+        try:
+            with connect() as c:
+                rows = c.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                prows = (c.execute(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')").fetchone()[0]
+                         if proj else "-")
+            break
+        except psycopg.OperationalError:
+            time.sleep(1)
+    else:
+        rows = prows = "server down"
+    return f"o{opt}p{proj}:{got}/{rows}/{prows}"
+
+
+def test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up(pgc_conn, pgc_cluster, server_dir,
+                                                                      expect):
+    """#2092: the import writes the projection's rows when the statement ends. The
+    import is a SELECT, so its statement ends in portal cleanup, where no snapshot is
+    active. The flush then read the options catalog with a snapshot nobody had
+    registered. An assert build aborted on the first catalog row the read examined, and
+    the postmaster restarted every backend.
+
+    Any table's options row is enough, so the test gives one to a neighbour table first.
+    Without it, the case without set_options passed or failed on main's code depending
+    on what earlier tests had left in the catalog. The matrix crosses projection with
+    set_options; the crash count comes from the server log, not from timing."""
+    import psycopg
+
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute(f'SET search_path TO "{schema}", public')
+        c.execute("CREATE TABLE pqp_neighbour (id int) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('pqp_neighbour', compression => 'zstd')")
+    before = _crashes(pgc_cluster)
+    got = " ".join(_projection_import_case(pgc_cluster, server_dir, schema, opt, proj)
+                   for opt in (0, 1) for proj in (0, 1))
+    now = _crashes(pgc_cluster)
+    got += (f" | {now - before} backend crashes" if isinstance(before, int) and isinstance(now, int)
+            else " | crash count unreadable")
+    expect.text(got, "o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000"
+                     " | 0 backend crashes",
+                "import_parquet into a table with a projection, with or without set_options, keeps the server up"
+                " and fills the projection (#2092)")
