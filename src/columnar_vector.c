@@ -84,6 +84,7 @@
 #include "utils/snapmgr.h"
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
+#include "utils/float.h"
 #include "utils/lsyscache.h"
 #include "access/stratnum.h"
 #include "access/tupmacs.h"
@@ -3751,6 +3752,14 @@ pgcolumnar_apply_one(MemoryContext resultContext, PgColumnarAggSpec *spec,
 				 * goes finite+finite -> inf. Track Sxx only to reproduce that error
 				 * exactly (Sxx can overflow on finite inputs while Sx stays finite);
 				 * the returned average is Sx/N and is unaffected by it.
+				 *
+				 * Sxx also has to be NaN wherever core's is (#2068): at an infinite
+				 * or NaN first value, and once an infinite input makes Sx or Sxx
+				 * infinite. The state leaves this node for float8_combine (hand-off,
+				 * parallel partial) or pgcolumnar_spec_merge (sort-merge), and those
+				 * raise overflow when Sxx goes infinite from two finite inputs. A
+				 * run of {1, Infinity, 0} combined with a finite run did exactly
+				 * that, where core carries NaN and returns Infinity.
 				 */
 				float8		v = (spec->inputType == FLOAT4OID)
 					? (float8) DatumGetFloat4(val)
@@ -3764,13 +3773,18 @@ pgcolumnar_apply_one(MemoryContext resultContext, PgColumnarAggSpec *spec,
 					float8		tmp = v * newN - newSx;
 					float8		newSxx = spec->fsxx + tmp * tmp / (n * newN);
 
-					if ((isinf(newSx) || isinf(newSxx)) &&
-						!isinf(spec->fsum) && !isinf(v))
-						ereport(ERROR,
-								(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-								 errmsg("value out of range: overflow")));
+					if (isinf(newSx) || isinf(newSxx))
+					{
+						if (!isinf(spec->fsum) && !isinf(v))
+							ereport(ERROR,
+									(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+									 errmsg("value out of range: overflow")));
+						newSxx = get_float8_nan();
+					}
 					spec->fsxx = newSxx;
 				}
+				else if (isnan(v) || isinf(v))
+					spec->fsxx = get_float8_nan();
 				spec->fsum = newSx;
 				spec->count++;
 				spec->sawValue = true;
