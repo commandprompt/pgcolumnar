@@ -1946,7 +1946,7 @@ guard_tests 895
 # int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
 # test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
 # (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
-# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5380 cluster tests collected.
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5402 cluster tests collected.
 # cluster_tests 5402 -> 5405 for the #2085 review in test_arrow_export.py: the last timestamp Arrow holds
 # imports back unchanged (test_the_last_timestamp_arrow_holds_imports_back_unchanged), and a timestamp[]
 # element and a composite field past the range are refused with the table column named
