@@ -1993,24 +1993,33 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5483 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5490 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5483 -> 5486 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5490 -> 5493 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5486 -> 5490 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5493 -> 5497 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5490 -> 5492 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5497 -> 5499 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-# cluster_tests 5492 -> 5495 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# cluster_tests 5499 -> 5502 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-cluster_tests 5495
+cluster_tests 5502
