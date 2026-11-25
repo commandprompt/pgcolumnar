@@ -628,7 +628,13 @@ true until the next version shipped.
   take slots from the same pool. The shell suites judge an example by psql's
   exit status, through the new `psql_block` helper in `test/lib.sh`: a grep
   for ERROR or FATAL said "ok" when the example crashed the backend. Selftest
-  part 650 checks the helper. Reported by @OffgridwithJD.
+  part 650 checks the helper. It also checks that each suite's `run_doc` calls
+  `psql_block`, with comments ignored, makes no psql call of its own, and
+  prints the helper's verdict unchanged. The pages now say how many
+  `max_worker_processes` slots a load needs: the worker count plus one, plus
+  the server's own workers (two on PostgreSQL 18 with pgcolumnar preloaded).
+  The check for a postgresql.conf line in a `sql` block now also matches a
+  setting name with a digit. Reported by @OffgridwithJD.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It

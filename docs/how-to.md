@@ -55,10 +55,12 @@ Set two server settings first. Both take effect only after a restart.
 
 - `max_prepared_transactions` at least the worker count, because the load
   prepares one transaction per worker.
-- `max_worker_processes` above the worker count. The load takes one background
-  worker slot per worker, plus one for its coordinator, and the server's own
-  background workers hold slots too. At the default of 8, four workers fit
-  while no parallel query runs. A parallel query's workers take slots too.
+- `max_worker_processes` at least the worker count plus one, plus the slots
+  the server's own background workers hold. The load takes one background
+  worker slot per worker and one for its coordinator. On PostgreSQL 18 with
+  pgcolumnar preloaded, the server's own workers hold two slots, so four
+  workers need 7. At the default of 8, four workers fit while no parallel
+  query runs. A parallel query's workers take slots too.
 
 **Tuning.** Many small commits produce many small row groups, which read less
 efficiently. Run `pgcolumnar.vacuum` after a trickle load to combine them.

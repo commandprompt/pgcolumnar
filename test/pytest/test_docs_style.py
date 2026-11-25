@@ -703,7 +703,7 @@ def _doc_section(name, heading):
     return "\n".join(out) if found else None
 
 
-_CONF_LINE = re.compile(r"^(?:[a-z_]+(?:\.[a-z_]+)?\s*=|--\s*postgresql\.conf)")
+_CONF_LINE = re.compile(r"^(?:[a-z0-9_]+(?:\.[a-z0-9_]+)?\s*=|--\s*postgresql\.conf)")
 
 
 def test_no_sql_block_holds_a_postgresql_conf_line(expect):

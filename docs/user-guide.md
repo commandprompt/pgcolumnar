@@ -86,10 +86,12 @@ numeric or a date/time type. Set two server settings first, then restart:
 
 - `max_prepared_transactions` at least the worker count, because the load
   prepares one transaction per worker.
-- `max_worker_processes` above the worker count. The load takes one background
-  worker slot per worker, plus one for its coordinator, and the server's own
-  background workers hold slots too. At the default of 8, four workers fit
-  while no parallel query runs. A parallel query's workers take slots too.
+- `max_worker_processes` at least the worker count plus one, plus the slots
+  the server's own background workers hold. The load takes one background
+  worker slot per worker and one for its coordinator. On PostgreSQL 18 with
+  pgcolumnar preloaded, the server's own workers hold two slots, so four
+  workers need 7. At the default of 8, four workers fit while no parallel
+  query runs. A parallel query's workers take slots too.
 
 On a machine
 with many cores this loads several times faster than one `COPY`. See

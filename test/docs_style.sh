@@ -865,7 +865,7 @@ check "no documented query tests pg_extension while listing databases" \
 # `=`; no SQL statement in these pages starts that way. Configuration goes in ```conf.
 _conf_in_sql="$(for f in $docs; do
 	awk -v f="$(basename "$f")" '/^```/ {if (b) {b=0} else if (/^```sql[[:space:]]*$/) {b=1}; next}
-		b && (/^[a-z_]+(\.[a-z_]+)?[[:space:]]*=/ || /^--[[:space:]]*postgresql\.conf/) {print f ":" FNR}' "$f"
+		b && (/^[a-z0-9_]+(\.[a-z0-9_]+)?[[:space:]]*=/ || /^--[[:space:]]*postgresql\.conf/) {print f ":" FNR}' "$f"
 done | tr '\n' ' ' | sed 's/ $//')"
 check "no sql block in the documents holds a postgresql.conf line" "${_conf_in_sql:-none}" "none"
 
