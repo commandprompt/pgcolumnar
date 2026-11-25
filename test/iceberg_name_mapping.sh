@@ -193,6 +193,13 @@ check "an equality column the mapping does not bind is still refused (22023)" \
 check "...and the refusal names the unbound field id" \
 	"$(errmsg_of "SELECT * FROM pgcolumnar.iceberg_scan('$MDIR/nmequnbound.metadata.json')
 	              AS t(id bigint, region text, amount int)" | grep -c "no Parquet column has field id 3")" "1"
+# The positive control for the refusal above: the same amount = 30 delete under
+# the full mapping applies. So the refusal comes from the missing mapping entry,
+# not from a delete on amount, the last mapped column, being refused.
+check "an equality delete on the column the unbound arm uses applies once the mapping binds it" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqamt.metadata.json')
+	        AS t(id bigint, region text, amount int)")" "1|eu|10,2|eu|20,4|us|40,5|us|50"
 check "backend still up after the equality-delete reads" "$(survived "$BEFORE")" "1"
 
 # ---- the name cap, and the allocation that opens for it (#711) --------------

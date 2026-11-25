@@ -177,6 +177,8 @@ def nmap(pgc_cluster, server_dir):
         r["eq string"] = _one(dsn, f"SELECT string_agg(id || '|' || region, ',' ORDER BY id) "
                                    f"FROM {scan('nmeqstr')}")
         r["eq unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmequnbound')}")
+        r["eq amount"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                   f"FROM {scan('nmeqamt')}")
         r["up eq"] = _survived(dsn, pgc_cluster, before)
 
         before = _crashes(pgc_cluster)
@@ -337,6 +339,17 @@ def test_name_mapping_equality_unbound_names_the_id(nmap, expect):
     text = nmap["eq unbound"][1]
     expect.text("1" if "no Parquet column has field id 3" in text else f"0 ({text})", "1",
                 "...and the refusal names the unbound field id")
+
+
+def test_name_mapping_equality_mapped_amount_applies(nmap, expect):
+    """The positive control for the unbound arm: the same amount = 30 delete
+    under the full mapping applies. So that refusal comes from the missing
+    mapping entry, not from a delete on amount, the last mapped column, being
+    refused (a probe passed nm_count - 1 refuses both)."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq amount"], "1|eu|10,2|eu|20,4|us|40,5|us|50",
+                "an equality delete on the column the unbound arm uses applies once the mapping binds it")
 
 
 def test_name_mapping_backend_up_after_equality_deletes(nmap, expect):

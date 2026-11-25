@@ -3482,9 +3482,10 @@ iceberg_name_mapping	iceberg_name_mapping	a mapping with exactly the cap in name
 iceberg_name_mapping	iceberg_name_mapping	a projected column absent from the mapping reads null, not an error	15;16;17;18;19	2026-10-21	columnar_parquet_reader.c: build_imp_targets_by_field_id refuses a projected field id the file lacks instead of reading it as null
 iceberg_name_mapping	iceberg_name_mapping	a renamed schema column still reads via the mapping name	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	an alias name in the mapping resolves the file column	15;16;17;18;19	2026-10-21	columnar_iceberg.c: ice_name_mapping keeps only the first name of each mapping entry
-iceberg_name_mapping	iceberg_name_mapping	an equality column the mapping does not bind is still refused (22023)	15;16;17;18;19	never	-
+iceberg_name_mapping	iceberg_name_mapping	an equality column the mapping does not bind is still refused (22023)	15;16;17;18;19	2026-11-25	PgColumnarReadParquetByFieldIdNMStrict passes missing_as_null = true (src/columnar_parquet_reader.c), so an unbound delete column reads as null
 iceberg_name_mapping	iceberg_name_mapping	an equality delete on a long column applies to an id-less file	15;16;17;18;19	2026-11-24	-
 iceberg_name_mapping	iceberg_name_mapping	an equality delete on a string column applies to an id-less file	15;16;17;18;19	2026-11-24	-
+iceberg_name_mapping	iceberg_name_mapping	an equality delete on the column the unbound arm uses applies once the mapping binds it	15;16;17;18;19	2026-11-25	ice_eq_probe passes c->nm_count - 1 (src/columnar_iceberg.c), dropping the last mapping entry
 iceberg_name_mapping	iceberg_name_mapping	an id-less data file reads by name mapping (all 5 rows)	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	an id-less file with no name mapping is refused (22023)	15;16;17;18;19	never	-
 iceberg_name_mapping	iceberg_name_mapping	backend still up after the cap reads	15;16;17;18;19	never	-

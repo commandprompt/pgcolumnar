@@ -303,6 +303,11 @@ emit_eq("nmequnbound", SCHEMA_STD,
         [{"field-id": 1, "names": ["id"]},
          {"field-id": 2, "names": ["region"]}],
         EQ_AMOUNT, 3, 1)
+# nmeqamt: the same amount = 30 delete under the full mapping, which binds
+# amount -> row 3 goes. This is the positive control for nmequnbound: it shows
+# the refusal there comes from the missing mapping entry, not from deletes on
+# amount (or on the last mapped column) being refused.
+emit_eq("nmeqamt", SCHEMA_STD, MAP_STD, EQ_AMOUNT, 3, 1)
 
 oracle = {"rows": [{"id": r[0], "region": r[1], "amount": r[2]} for r in ROWS]}
 open(os.path.join(OUT, "expected.json"), "w").write(json.dumps(oracle, indent=2))

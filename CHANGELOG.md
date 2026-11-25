@@ -614,7 +614,8 @@ true until the next version shipped.
   mapping the table already had. That pass now binds the delete columns through
   the mapping, as the data read does. A delete column the mapping does not bind
   is still refused (22023), because reading it as null would keep rows the
-  delete removes. docs/sql-reference.md. `test/iceberg_name_mapping.sh` and
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. docs/sql-reference.md. `test/iceberg_name_mapping.sh` and
   `test_iceberg_name_mapping.py`.
 
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
