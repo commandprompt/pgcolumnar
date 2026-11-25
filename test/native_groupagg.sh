@@ -794,6 +794,26 @@ dp_check "merge: avg over int4 beside sum and min over numeric answers as core d
 dp_table dpf "k int, f float8, b bigint" "(g / 5) % 3000, (g % 64) / 8.0, g"
 dp_check "merge: float sums of exactly representable values merge to core's" dpf \
 	"SELECT k, sum(f), avg(f), sum(b) FROM %T GROUP BY k"
+# avg(float8) and avg(real) when a run's only value is Infinity (#2068). Core's
+# float8_accum sets Sxx to NaN at an infinite first value, so a later combine with a
+# finite run carries NaN and returns Infinity. A run state of {1, Infinity, 0}
+# instead makes the combine see Sxx go infinite from two finite inputs, and raise
+# "value out of range: overflow". Each key's first-half runs hold one Infinity and
+# four NULLs; its second-half runs hold finite values. avg alone is a Partial node
+# under a core Finalize (the hand-off); beside sum(bigint) it is the serial node,
+# which merges its own runs.
+dp_table dpv "k int, f float8, r real, b bigint" "(g / 5) % 3000,
+	CASE WHEN g <= 15000 AND g % 5 = 0 THEN 'Infinity'::float8 WHEN g <= 15000 THEN NULL ELSE (g % 64) / 8.0 END,
+	CASE WHEN g <= 15000 AND g % 5 = 0 THEN 'Infinity'::real WHEN g <= 15000 THEN NULL ELSE (g % 64) / 8.0 END,
+	g"
+DPV_HO="SELECT k, avg(f), avg(r) FROM %T GROUP BY k"
+check "hand-off: a run whose only avg(float8) and avg(real) value is Infinity combines to Infinity under a core Finalize, as heap does (#2068)" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -q \
+		-c "PREPARE p_dpv_f AS ${DPV_HO//%T/dpv}" -c "EXPLAIN (COSTS OFF) EXECUTE p_dpv_f" 2>&1 \
+		| grep -c '^Finalize HashAggregate')|$(planned_md5 p_dpv_ho "${DPV_HO//%T/dpv}")" \
+	"1|1|$(srt_md5 -c "${DPV_HO//%T/dpv_h}")"
+dp_check "merge: a run whose only avg(float8) and avg(real) value is Infinity merges to Infinity, as heap does (#2068)" dpv \
+	"SELECT k, avg(f), avg(r), sum(b) FROM %T GROUP BY k"
 # A key that is equal under its btree but not identical: numeric 3 and 3.00. Core's
 # hash aggregation shows the first one it saw, and runs merge in flush order, so the
 # first run's key, the earlier one, is the one shown.

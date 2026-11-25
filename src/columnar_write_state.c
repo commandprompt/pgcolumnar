@@ -4053,6 +4053,7 @@ flush_ws_projections_ext(PgColumnarWriteState *ws, bool keep)
 	ListCell   *lc;
 	Relation	rel;
 	bool		any = false;
+	bool		pushedSnapshot = false;
 
 	foreach(lc, ws->projWriters)
 		if (((PgColumnarProjWriter *) lfirst(lc))->nrows > 0)
@@ -4060,10 +4061,28 @@ flush_ws_projections_ext(PgColumnarWriteState *ws, bool keep)
 	if (!any)
 		return;
 
+	/*
+	 * AN ACTIVE SNAPSHOT FOR THE CATALOG READS (#2092). The flush reads the
+	 * options catalog and others with the active snapshot, or else with
+	 * GetTransactionSnapshot(), which nobody has registered. A SELECT such as
+	 * import_arrow() ends in portal cleanup, where no snapshot is active, and an
+	 * assert build aborted on the first catalog tuple it examined. The base
+	 * flush pushes one for the same reason; this path needs its own, because
+	 * the base flush pops its snapshot before the projections are written.
+	 */
+	if (!ActiveSnapshotSet())
+	{
+		PushActiveSnapshot(GetTransactionSnapshot());
+		pushedSnapshot = true;
+	}
+
 	rel = table_open(ws->relid, RowExclusiveLock);
 	foreach(lc, ws->projWriters)
 		flush_proj_writer((PgColumnarProjWriter *) lfirst(lc), rel, keep);
 	table_close(rel, RowExclusiveLock);
+
+	if (pushedSnapshot)
+		PopActiveSnapshot();
 }
 
 /*

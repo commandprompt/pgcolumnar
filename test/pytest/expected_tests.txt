@@ -1921,11 +1921,32 @@ guard_tests 895
 # cluster_tests 5381 -> 5384 for #2061's three pg_dump tests in test_native_encoding.py (pg_dump of the two
 # tables succeeds, the restore succeeds, and the restored rows match the heap mirror), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5384 tests collected.
-# cluster_tests 5384 -> 5385 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# cluster_tests 5385 -> 5387 for the rescan fix's two tests (#2128, #2062): the join fold rescan test in
+# test_native_join_vector_agg.py and the issue-shapes test in test_native_join_runtime_filter.py, by
+# collection over every file not in NO_CLUSTER: 5379 tests collected.
+# cluster_tests 5387 -> 5388 for test_tid_range_scan.py's test_a_tid_scan_of_a_ctid_no_row_has_reaches_no_row
+# (#2058: a TID scan of ctid (0,0), or of an offset past a block's last, reaches no row), by collection of
+# every file NO_CLUSTER does not name: 5377 tests collected.
+# cluster_tests 5388 -> 5389 for #2083's test_parallel_copy_failed_loaders_close_their_file_once in
+# test_parallel_copy.py (a failed parallel_copy loader closes its file once, so the server log holds no
+# CloseTransientFile WARNING), by collection of the cluster files: 5377 tests collected.
+# cluster_tests 5389 -> 5391 for #2092's two tests, test_an_arrow_import_into_a_table_with_a_projection_
+# keeps_the_server_up in test_arrow_import.py and test_a_parquet_import_into_a_table_with_a_projection_keeps_
+# the_server_up in test_parquet_import.py (an import into a table with a projection keeps the server up and
+# fills the projection), by collection over the files NO_CLUSTER does not name, as ci.yml selects them:
+# 5378 tests collected.
+# cluster_tests 5391 -> 5392 for #2092's parallel_copy case,
+# test_parallel_copy_into_a_table_with_a_projection_fills_the_projection in test_parallel_copy.py, by the same
+# collection: 5379 tests collected.
+# cluster_tests 5396 -> 5398 for the avg(float8/real) Infinity fix's two tests in test_native_groupagg.py
+# (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
+# `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
+# collected, less guard_tests 894.
+# cluster_tests 5398 -> 5399 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
 # test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
 # collection: 6271 tests collected, less guard_tests 894.
-# cluster_tests 5385 -> 5386 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# cluster_tests 5399 -> 5400 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-cluster_tests 5386
+cluster_tests 5400
