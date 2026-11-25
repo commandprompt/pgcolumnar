@@ -248,8 +248,11 @@ pgcolumnar_unique_build(Relation rel)
 		uidx->nullsNotDistinct = false;
 #endif
 		/*
-		 * An exclusion operator need not be equality (&& on ranges), so two
-		 * conflicting keys can hash apart. Lock the whole index instead.
+		 * Lock the whole index for every exclusion constraint. A non-btree one,
+		 * such as gist &&, would fail the hash family test below and go coarse
+		 * anyway. A btree one can only use =, so per-key hashing would be
+		 * correct for it; it is coarse only to keep one rule for exclusion
+		 * constraints, at the cost of serializing inserts of different keys.
 		 */
 		uidx->coarse = idxForm->indisexclusion;
 		uidx->cols = (UniqueKeyCol *)

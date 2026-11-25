@@ -669,7 +669,10 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   transaction on that error. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
-  `pgcolumnar.enable_unique_insert_lock = off`.
+  `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
+  table. One statement that inserts into many partitions, each with a unique
+  index, immediate or deferrable, can fail with `out of shared memory`. Raise
+  `max_locks_per_transaction` if it does.
 
 ## Row locking
 

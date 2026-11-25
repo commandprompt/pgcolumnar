@@ -617,12 +617,18 @@ true until the next version shipped.
   Concurrent inserts into a table with an exclusion constraint now go in
   sequence even when their rows do not conflict. The lock is held to the end of
   the transaction, so two transactions that insert into two such tables in
-  opposite order can now fail with `deadlock_detected` (40P01) even when no rows
+  opposite order can fail with `deadlock_detected` (40P01) even when no rows
   conflict; on heap both commit. Retry on 40P01. An `UPDATE` on a table with a
   deferrable unique index or an exclusion constraint now also serializes each row
-  as it reaches it (#1421), as it already did with an immediate unique index.
+  as it reaches it (#1421), as it already did with an immediate unique index. The
+  loser of two concurrent updates of one row on an exclusion-constrained table
+  now gets `serialization_failure` (40001), not `exclusion_violation` (23P01).
+  Each row inserted into a table with a deferrable unique index now takes a lock,
+  as with an immediate one, so a bulk insert into many such partitions may need a
+  higher `max_locks_per_transaction`.
   docs/limitations.md.
-  `test/unique_conc.sh` and `test_unique_conc.py`.
+  `test/unique_conc.sh` and `test_unique_conc.py`; the exclusion-constraint arm
+  of `test/update_conc.sh` and `test_update_conc.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

@@ -33,7 +33,7 @@ LOCK_TIMEOUT = "30s"
 
 @pytest.fixture(scope="module")
 def upconc(pgc_cluster):
-    """-> the dsn of a private database holding the four tables the scenarios use."""
+    """-> the dsn of a private database holding the tables the scenarios use."""
     name = "pgc_upconc"
 
     def admin(sql):
@@ -52,6 +52,9 @@ def upconc(pgc_cluster):
             c.execute("CREATE UNIQUE INDEX t_heapu_uidx ON t_heapu (id)")
             c.execute("CREATE TABLE t_colu (id int, v int) USING pgcolumnar")
             c.execute("CREATE UNIQUE INDEX t_colu_uidx ON t_colu (id)")
+            c.execute("CREATE TABLE t_colxb (id int, v int, EXCLUDE USING btree (id WITH =)) USING pgcolumnar")
+            c.execute("CREATE TABLE t_colxg (id int, v int, "
+                      "EXCLUDE USING gist (int4range(id, id, '[]') WITH &&)) USING pgcolumnar")
         yield dsn
     finally:
         admin(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
@@ -279,6 +282,17 @@ def test_a_covering_unique_index(race, expect):
     expect.text(h_ss, "00000", "unique/RC heap composes with no error (sqlstate 00000)")
     expect.text(f"{c_ss}|{c_cnt}", "40001|1",
                 "unique/RC columnar loser gets serialization_failure (40001), as without a unique index")
+
+
+@pytest.mark.parametrize("x", ["xb", "xg"])
+def test_an_exclusion_constraint(race, expect, x):
+    """The loser gets 40001 on a table with an exclusion constraint, btree (id WITH =)
+    or gist &&, as with a unique index (#2063). PgColumnarHasUniqueIndex answers yes
+    for it, so the update serializes the old row before the new version's key lock
+    (#1421). If it answered no, the loser got 23P01 for a row it only updated."""
+    c_cnt, _, c_ss = race.uu(f"t_col{x}", "READ COMMITTED")
+    expect.text(f"{c_ss}|{c_cnt}", "40001|1",
+                f"exclusion {x}/RC columnar loser gets serialization_failure (40001)")
 
 
 def _id1(race, table):

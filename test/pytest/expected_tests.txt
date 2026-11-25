@@ -1947,4 +1947,7 @@ guard_tests 895
 # collection: 6273 tests collected, less guard_tests 894.
 # cluster_tests 5401 -> 5402 for #2063 in test_unique_conc.py: test_a_btree_exclusion_constraint, by
 # collection: 6274 tests collected, less guard_tests 894.
-cluster_tests 5402
+# cluster_tests 5402 -> 5404 for #2063 in test_update_conc.py: test_an_exclusion_constraint, parametrized
+# xb (btree (id WITH =)) and xg (gist &&), by collection over the files NO_CLUSTER does not name, as ci.yml
+# selects them: 5404 tests collected.
+cluster_tests 5404
