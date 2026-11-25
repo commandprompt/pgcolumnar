@@ -24,8 +24,9 @@ E  only an s3:// key is a pattern (#1785): a query string on an http URL reaches
    server, and a bracketed IPv6 host is refused by name.
 F  a read error caught in a subtransaction frees its handle when the subtransaction
    aborts (#2089): no "leaked to commit" WARNING, and a loop of 1200 caught 404s does
-   not run out of external FDs. A scan's own handle, and a cursor's, survive a
-   subtransaction abort inside them.
+   not run out of external FDs. The same for a caught REST request and a caught
+   s3:// export (#2158 review). A scan's own handle, also inside an outer
+   EXCEPTION block, and a cursor's survive a subtransaction abort inside them.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
 
@@ -488,6 +489,26 @@ def ohr(pgc_cluster):
                       "EXCEPTION WHEN division_by_zero THEN NULL; END; "
                       "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
                       "CLOSE c; RETURN s; END $f$")
+            # pgc_catch_state(stmt, state, n), as the shell's (#2158 review):
+            # run stmt n times, each in its own EXCEPTION block, and count the
+            # errors whose SQLSTATE is state
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_catch_state(stmt text, state text, n int) "
+                      "RETURNS int LANGUAGE plpgsql AS $f$ "
+                      "DECLARE caught int := 0; BEGIN FOR i IN 1..n LOOP "
+                      "BEGIN EXECUTE stmt; EXCEPTION WHEN OTHERS THEN "
+                      "IF SQLSTATE = state THEN caught := caught + 1; END IF; END; "
+                      "END LOOP; RETURN caught; END $f$")
+            # pgc_nested_scan(), as the shell's: the scan of fhttp inside an
+            # outer EXCEPTION block, so its handle belongs to the parent of each
+            # subtransaction pgc_try404() aborts
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS $f$ "
+                      "DECLARE r text; BEGIN BEGIN "
+                      f"SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
+                      f"THEN 1 - {SCHEMA}.pgc_try404() ELSE 0 END) INTO r FROM {SCHEMA}.fhttp; "
+                      "EXCEPTION WHEN OTHERS THEN r := 'outer caught ' || SQLSTATE || ': ' || SQLERRM; "
+                      "END; RETURN r; END $f$")
+            c.execute(f"CREATE TABLE {SCHEMA}.pgc_pe (id int8) USING pgcolumnar")
+            c.execute(f"INSERT INTO {SCHEMA}.pgc_pe SELECT generate_series(1, 10)")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -661,8 +682,13 @@ def ohr(pgc_cluster):
         r["F loop"] = _leaks(dsn, ["SELECT pgc_catch404(1200)"])
         r["F local"] = _value(dsn, "SELECT sum(c0) FROM flocal")
         r["F scan"] = _leaks(dsn, [f"SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
-                                   "THEN pgc_try404() ELSE 0 END) FROM fhttp"])
+                                   "THEN 1 - pgc_try404() ELSE 0 END) FROM fhttp"])
         r["F cursor"] = _leaks(dsn, ["SELECT pgc_cursor_sum()"])
+        r["F nested scan"] = _leaks(dsn, ["SELECT pgc_nested_scan()"])
+        r["F rest"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT * FROM pgcolumnar.iceberg_rest_namespaces("
+                                   f"''http://127.0.0.1:{dead}/v1'')', '08006', 3)"])
+        r["F export"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT pgcolumnar.parallel_export_parquet("
+                                     f"''{SCHEMA}.pgc_pe''::regclass, ''s3://bkt/pre/'', 2)', '28000', 3)"])
 
         r["up"] = _await_server(dsn)
         r["crashes1"] = _crashes(plog)
@@ -1194,7 +1220,7 @@ def test_a_subtransaction_abort_inside_a_scan_leaves_the_scans_handle_open(ohr, 
         return
     scan = ohr["F scan"]
     got = scan.split(" leaked=")[0] if isinstance(scan, str) else scan
-    expect.text(got, f"rows={ohr['F local']} 0",
+    expect.text(got, f"rows={ohr['F local']} {G}",
                 "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)")
 
 
@@ -1205,6 +1231,34 @@ def test_a_cursor_first_fetched_in_an_aborted_subtransaction_reads_on(ohr, expec
         return
     expect.text(ohr["F cursor"], f"rows={ohr['F local']} leaked=0",
                 "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)")
+
+
+def test_a_scan_inside_an_outer_exception_block_reads_on_after_each_inner_abort(ohr, expect):
+    """Control (#2158 review): the scan's handle belongs to the outer block's
+    subtransaction, the parent of each one that aborts. Freeing the parent's
+    handles too would make the next row group read freed memory."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F nested scan"], f"rows={ohr['F local']} aborts={G} leaked=0",
+                "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)")
+
+
+def test_caught_rest_requests_to_a_closed_port_leak_no_handle_to_commit(ohr, expect):
+    """#2158 review: a handle opened by objstore_http_request belongs to its
+    subtransaction too."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F rest"], "rows=3 leaked=0",
+                "F: three caught REST requests to a closed port (08006) leak no handle to commit")
+
+
+def test_caught_s3_exports_with_no_endpoint_leak_no_handle_to_commit(ohr, expect):
+    """#2158 review: a handle opened by os_write_handle_as belongs to its
+    subtransaction too."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F export"], "rows=3 leaked=0",
+                "F: three caught s3:// exports with no endpoint (28000) leak no handle to commit")
 
 
 def test_the_server_survives(ohr, expect):

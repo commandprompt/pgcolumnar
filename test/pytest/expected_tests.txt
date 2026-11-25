@@ -1947,4 +1947,8 @@ guard_tests 895
 # finishes; a scan and a cursor keep reading after a subtransaction abort), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest
 # --collect-only -q`: 6275 tests collected, less guard_tests 894.
-cluster_tests 5403
+# cluster_tests 5403 -> 5406 for three more arm-F tests in test_objstore_http_read.py (#2158 review: caught
+# REST requests and caught s3:// exports leak no handle; a scan inside an outer EXCEPTION block reads on), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6301 tests
+# collected, less guard_tests 895.
+cluster_tests 5406

@@ -615,6 +615,8 @@ true until the next version shipped.
   logged one `leaked to commit` WARNING per handle. Each handle now belongs to
   the resource owner that opened it, so a subtransaction abort closes only its
   own handles; a scan or cursor of the outer statement keeps reading.
+  This covers all three places a handle opens: a read, an Iceberg REST
+  request and an `s3://` write or listing.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's

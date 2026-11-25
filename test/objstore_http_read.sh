@@ -37,8 +37,10 @@
 #      reaches the server, and a bracketed IPv6 host is refused by name.
 #   F  a read error caught in a subtransaction frees its handle when the
 #      subtransaction aborts (#2089): no "leaked to commit" WARNING, and a loop
-#      of 1200 caught 404s does not run out of external FDs. A scan's own
-#      handle, and a cursor's, survive a subtransaction abort inside them.
+#      of 1200 caught 404s does not run out of external FDs. The same for a
+#      caught REST request and a caught s3:// export (#2158 review). A scan's
+#      own handle, also inside an outer EXCEPTION block, and a cursor's survive
+#      a subtransaction abort inside them.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -766,6 +768,38 @@ BEGIN
 	END LOOP;
 	RETURN caught;
 END \$f\$;"
+# pgc_catch_state(stmt, state, n) runs stmt n times, each in its own EXCEPTION
+# block, and counts the errors whose SQLSTATE is state. Counting one SQLSTATE,
+# not any error, keeps a different failure from passing as a caught one.
+psql_run "CREATE FUNCTION pgc_catch_state(stmt text, state text, n int) RETURNS int LANGUAGE plpgsql AS \$f\$
+DECLARE caught int := 0;
+BEGIN
+	FOR i IN 1..n LOOP
+		BEGIN
+			EXECUTE stmt;
+		EXCEPTION WHEN OTHERS THEN
+			IF SQLSTATE = state THEN
+				caught := caught + 1;
+			END IF;
+		END;
+	END LOOP;
+	RETURN caught;
+END \$f\$;"
+# pgc_nested_scan() scans fhttp inside an outer EXCEPTION block, so the scan's
+# handle belongs to that block's subtransaction, the parent of each inner
+# subtransaction pgc_try404() aborts (#2158 review).
+psql_run "CREATE FUNCTION pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE r text;
+BEGIN
+	BEGIN
+		SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN 1 - pgc_try404() ELSE 0 END)
+			INTO r FROM fhttp;
+	EXCEPTION WHEN OTHERS THEN
+		r := 'outer caught ' || SQLSTATE || ': ' || SQLERRM;
+	END;
+	RETURN r;
+END \$f\$;"
+psql_run "CREATE TABLE pgc_pe (id int8) USING pgcolumnar; INSERT INTO pgc_pe SELECT generate_series(1, 10);"
 # pgc_cursor_sum() opens a cursor, fetches its first row inside an EXCEPTION
 # block that then aborts, and reads the rest after it (the last control below).
 psql_run "CREATE FUNCTION pgc_cursor_sum() RETURNS int8 LANGUAGE plpgsql AS \$f\$
@@ -806,15 +840,32 @@ check "F: a loop that catches 1200 404s finishes" \
 # (#620); the function aborts a subtransaction at the first row of each row
 # group, and the scan then reads the next group through its own handle.
 F_LOCAL="$(q "SELECT sum(c0) FROM flocal")"
-F_SCAN="$(leaks_of "SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN pgc_try404() ELSE 0 END) FROM fhttp;")"
+# The second field counts the aborts: one per row group, so G when every call
+# of pgc_try404() caught its 404.
+F_SCAN="$(leaks_of "SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN 1 - pgc_try404() ELSE 0 END) FROM fhttp;")"
 check "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)" \
-	"${F_SCAN%% leaked=*}" "rows=$F_LOCAL 0"
+	"${F_SCAN%% leaked=*}" "rows=$F_LOCAL $G"
 # Control: a cursor opened before a subtransaction, and first fetched inside
 # it, stays usable after that subtransaction aborts. Its handle belongs to the
 # cursor, not to the subtransaction, so the abort must not close it.
 F_CURSOR="$(leaks_of "SELECT pgc_cursor_sum();")"
 check "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)" \
 	"$F_CURSOR" "rows=$F_LOCAL leaked=0"
+# Control: the same scan inside an outer EXCEPTION block. Its handle belongs to
+# the outer subtransaction, the parent of each one that aborts, so freeing the
+# parent's handles too would make the next row group read freed memory.
+check "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)" \
+	"$(leaks_of "SELECT pgc_nested_scan();")" "rows=$F_LOCAL aborts=$G leaked=0"
+# The other two places a handle opens (#2158 review): objstore_http_request,
+# here an Iceberg REST call to a closed port (08006), and os_write_handle_as,
+# here an s3:// export with no AWS_ENDPOINT_URL in the server environment
+# (28000). Each error is caught three times; none may leak to commit.
+check "F: three caught REST requests to a closed port (08006) leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch_state('SELECT * FROM pgcolumnar.iceberg_rest_namespaces(''http://127.0.0.1:$DEADPORT/v1'')', '08006', 3);")" \
+	"rows=3 leaked=0"
+check "F: three caught s3:// exports with no endpoint (28000) leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch_state('SELECT pgcolumnar.parallel_export_parquet(''pgc_pe''::regclass, ''s3://bkt/pre/'', 2)', '28000', 3);")" \
+	"rows=3 leaked=0"
 
 # ---- survival ----------------------------------------------------------------
 # A crash is restarted from, so a bare SELECT 1 alone passes once recovery ends:
