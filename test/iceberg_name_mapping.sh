@@ -180,6 +180,13 @@ check "an equality delete on a long column applies to an id-less file" \
 	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
 	        AS t(id bigint, region text, amount int)")" "1|eu|10,3|us|30,5|us|50"
+# The same delete with the query's columns in another order. The probe must bind
+# the delete columns through the mapping's field ids, not the query's: every
+# other arm lists the columns in mapping order, so the two id lists agree there.
+check "an equality delete applies when the query lists the columns in another order" \
+	"$(q "SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id)
+	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeq.metadata.json')
+	        AS t(amount int, id bigint, region text)")" "1|eu|10,3|us|30,5|us|50"
 check "an equality delete on a string column applies to an id-less file" \
 	"$(q "SELECT string_agg(id || '|' || region, ',' ORDER BY id)
 	      FROM pgcolumnar.iceberg_scan('$MDIR/nmeqstr.metadata.json')

@@ -174,6 +174,8 @@ def nmap(pgc_cluster, server_dir):
         before = _crashes(pgc_cluster)
         r["eq long"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
                                  f"FROM {scan('nmeq')}")
+        r["eq reordered"] = _one(dsn, f"SELECT string_agg(id || '|' || region || '|' || amount, ',' ORDER BY id) "
+                                     f"FROM {scan('nmeq', cols='AS t(amount int, id bigint, region text)')}")
         r["eq string"] = _one(dsn, f"SELECT string_agg(id || '|' || region, ',' ORDER BY id) "
                                    f"FROM {scan('nmeqstr')}")
         r["eq unbound"] = _refusal(dsn, f"SELECT * FROM {scan('nmequnbound')}")
@@ -315,6 +317,17 @@ def test_name_mapping_equality_delete_long(nmap, expect):
         return
     expect.text(nmap["eq long"], "1|eu|10,3|us|30,5|us|50",
                 "an equality delete on a long column applies to an id-less file")
+
+
+def test_name_mapping_equality_delete_reordered(nmap, expect):
+    """The same delete with the query's columns in another order. The probe binds
+    the delete columns through the mapping's field ids, not the query's: every
+    other arm lists the columns in mapping order, so the two id lists agree there
+    (a probe passed c->field_ids passes them all)."""
+    if _declined(nmap, expect):
+        return
+    expect.text(nmap["eq reordered"], "1|eu|10,3|us|30,5|us|50",
+                "an equality delete applies when the query lists the columns in another order")
 
 
 def test_name_mapping_equality_delete_string(nmap, expect):

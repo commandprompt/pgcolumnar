@@ -615,7 +615,9 @@ true until the next version shipped.
   the mapping, as the data read does. A delete column the mapping does not bind
   is still refused (22023), because reading it as null would keep rows the
   delete removes. The same delete applies once the mapping binds that column,
-  so the refusal comes from the mapping alone. docs/sql-reference.md.
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. docs/sql-reference.md.
   `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
