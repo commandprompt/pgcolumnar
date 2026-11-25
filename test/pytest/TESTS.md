@@ -8194,13 +8194,14 @@ The alternative must reclaim, not only return. With `vacuum()` returning before 
 
 ## 157. test_native_join_vector_agg.py: the vectorized aggregate over a unique-key inner join
 
-The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell; the rescan test also reads each plan under default join settings.
+The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every check by the shell's name. A star-schema inner Hash Join onto a unique dimension only filters the fact table, so the ungrouped vectorized aggregate can survive it and still answer exactly (#752). A dimension with duplicate keys, a LEFT join, and a Join Filter besides the hash clause must each refuse the fold, and every answer must equal the heap mirror's. So must a join clause under another collation than the fact column's, or with another equality operator than the type's default, because the fold compares with the column's own equality and collation (#2066). Plans are read with parallel workers off and nested-loop and merge joins disabled, as in the shell; the rescan test also reads each plan under default join settings.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join and an extra join filter each refuse it and answer as heap does |
+| `test_the_join_fold` | the fold takes a unique-key inner join and answers as core does and as heap does; duplicate keys, a LEFT join, an extra join filter and a join clause with a non-default equality operator (`##=` on absolute values) each refuse it and answer as heap does |
+| `test_a_join_clause_under_another_collation_refuses_the_fold` | a text key under one collation, plain or case-insensitive on both sides, keeps the fold and answers as heap does; a case-insensitive join clause over a plain column, and a byte join clause over a case-insensitive column, each refuse it and answer as heap does (#2066). Declines with MISSING_DEPENDENCY on a server without ICU |
 | `test_a_fold_rescan_drains_the_new_dimension_keys` | a correlated scalar subquery, a LATERAL join and a DISTINCT dimension each rerun the fold for three growing outer values, under default join settings and with hash joins forced, and each run answers as heap does. Before the fix the second rescan crashed the backend: the fold ran the dimension plan in its key context and freed the scan's state when it reset that context. The DISTINCT arm also needs the fold to pass the changed parameter to its dimension plan, or the HashAggregate returns its first rows (#2128, the sibling of #2062) |
 
 ## 158. test_native_writer.py: the native writer by its catalog rows

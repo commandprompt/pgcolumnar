@@ -5027,6 +5027,12 @@ native_join_runtime_filter	native_join_runtime_filter	the hash-only uncorrelated
 native_join_runtime_filter	native_join_runtime_filter	with matching collations the same fixture's interval removes row groups	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join refuses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation keeps the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars also refusing a non-default or a nondeterministic fact-column collation
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys answer equals heap	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys refuse the join fold	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	each default LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
@@ -5040,6 +5046,8 @@ native_join_vector_agg	native_join_vector_agg	extra join filter answer equals he
 native_join_vector_agg	native_join_vector_agg	extra join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
+native_join_vector_agg	native_join_vector_agg	non-default equality operator answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	non-default equality operator refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
 native_join_vector_agg	native_join_vector_agg	premise: heap's LATERAL rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's distinct rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's scalar rescan answer grows with each outer value	15;16;17;18;19	never	-
@@ -5049,6 +5057,8 @@ native_join_vector_agg	native_join_vector_agg	premise: the default scalar rescan
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only LATERAL rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only distinct rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only scalar rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation keeps the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-

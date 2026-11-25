@@ -1955,4 +1955,6 @@ guard_tests 895
 # second row group (test_delete_in_second_row_group_between_vacuum_steps_*) and over three row groups
 # (test_delete_over_three_row_groups_between_vacuum_steps_*), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5425 tests collected.
-cluster_tests 5439
+# cluster_tests 5439 -> 5440 for #2066's test_a_join_clause_under_another_collation_refuses_the_fold in
+# test_native_join_vector_agg.py, by collection over the cluster files (the complement of NO_CLUSTER): 5385 tests collected.
+cluster_tests 5440
