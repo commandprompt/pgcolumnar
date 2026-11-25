@@ -1993,21 +1993,37 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5483 for #2088's five tests in test_iceberg_name_mapping.py (an equality delete on a
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5492 for #2088's five tests in test_iceberg_name_mapping.py (an equality delete on a
 # long and on a string column applies to a name-mapped data file with no field ids, an equality column the
 # mapping does not bind is refused and the refusal names the field id, and the backend survives:
 # test_name_mapping_equality_* and test_name_mapping_backend_up_after_equality_deletes), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6275 tests collected,
 # less guard_tests 894, is 5381. That count was taken on the PR's first base, where this line read
 # 5376 -> 5381; restates since have shifted the line's numbers but not its collection.
-# cluster_tests 5483 -> 5484 for test_name_mapping_equality_mapped_amount_applies in
+# cluster_tests 5492 -> 5493 for test_name_mapping_equality_mapped_amount_applies in
 # test_iceberg_name_mapping.py (#2088 review on b14589eb: the amount = 30 equality delete under the full
 # mapping applies, the positive control for the unbound refusal), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6299 tests collected,
 # less guard_tests 895.
-# cluster_tests 5484 -> 5485 for test_name_mapping_equality_delete_reordered in test_iceberg_name_mapping.py
+# cluster_tests 5493 -> 5494 for test_name_mapping_equality_delete_reordered in test_iceberg_name_mapping.py
 # (#2088 review on c47ee97a: the equality delete applies when the query lists the columns in another order
 # than the mapping), by collection on PG 18.6:
 # `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6380 tests collected,
 # less guard_tests 895.
-cluster_tests 5485
+cluster_tests 5494
