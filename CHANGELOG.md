@@ -605,6 +605,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- An index-only scan no longer returns rows that a committed DELETE or UPDATE
+  removed, after a VACUUM ran while that statement was still running (#2059).
+  The writer clears a block's all-visible bit when it marks a row, but keeps the
+  mark in memory until the statement ends. A VACUUM in between could not see the
+  mark, so it set the bit again, and nothing cleared it at commit. An index-only
+  scan then skipped the row check and counted the deleted rows until a later
+  write touched the block. Only a manual VACUUM was tested. Autovacuum takes
+  the same lock, which does not block a DELETE or UPDATE, so it can probably hit
+  this too. The writer now clears the bits again after it writes the marks to
+  the catalog, and VACUUM checks the row groups again after it sets bits and
+  clears any that are no longer all-visible. A new test-only setting,
+  `pgcolumnar.vm_set_hold_ms`, pauses VACUUM between those steps so a test can
+  prove the second check. The tests delete inside one block, across two blocks,
+  and across three row groups, for both steps. Inside the writing statement
+  itself, an AFTER trigger can still see the bit set until the statement ends
+  (#2169). `test/index_only.sh` and `test_index_only.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single

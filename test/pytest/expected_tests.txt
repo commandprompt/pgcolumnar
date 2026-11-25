@@ -1942,4 +1942,17 @@ guard_tests 895
 # (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
 # `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
 # collected, less guard_tests 894.
-cluster_tests 5398
+# cluster_tests 5398 -> 5411 for #2059 in test_index_only.py. Eight tests for a VACUUM that runs while a
+# DELETE or UPDATE is paused inside its statement (test_concurrent_vacuum_during_{delete,update}_*), and
+# five for a DELETE that commits while pgcolumnar.vm_set_hold_ms pauses VACUUM between its computation and
+# its set (test_delete_between_vacuum_steps_*), by collection: `cd test/pytest &&
+# PGC_PG_CONFIG=<pg_config> /root/pyenv/bin/python -m pytest --collect-only -q`: 6283 tests collected,
+# less guard_tests 894.
+# cluster_tests 5411 -> 5439 for #2059's review fix-up in test_index_only.py (#2129). Twenty-eight tests: a
+# writer row count for the two single-block races; the race during a delete and an update across two blocks
+# (test_concurrent_vacuum_during_two_block_{delete,update}_*) and a delete over three row groups
+# (test_concurrent_vacuum_during_delete_over_three_row_groups_*); and a delete during vacuum's hold in the
+# second row group (test_delete_in_second_row_group_between_vacuum_steps_*) and over three row groups
+# (test_delete_over_three_row_groups_between_vacuum_steps_*), by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 5425 tests collected.
+cluster_tests 5439

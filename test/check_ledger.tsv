@@ -3868,6 +3868,47 @@ index_only	index_only	after vacuum: block 120 all-visible	15;16;17;18;19	2026-10
 index_only	index_only	after vacuum: block 50 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	before vacuum: block 50 not all-visible	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: no target block all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: the writer deleted 79 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: the writer deleted 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: the writer updated 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: the writer deleted 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: the writer updated 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 not all-visible after vacuum	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: clean block 514 still all-visible	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: no target block all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
 index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
