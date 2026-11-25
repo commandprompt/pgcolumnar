@@ -634,7 +634,11 @@ true until the next version shipped.
   its own transaction holds as taken, and stops within its limit under steady
   deletes and behind a deleter or an inserter that stays open. They also check
   that the verb gives the session's `lock_timeout` back on success and after
-  55P03, and that a shorter user `lock_timeout` still wins.
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It

@@ -2010,4 +2010,10 @@ guard_tests 895
 # pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
 # lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
-cluster_tests 5528
+# cluster_tests 5528 -> 5546, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
+# lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
+# inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
+# max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5546 tests collected.
+cluster_tests 5546

@@ -517,4 +517,157 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(awk '{print ($1 < 2000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
 done
 
+
+# ---- a longer user lock_timeout, the storage-row lock kept, a limit of 0, max_groups ----
+#
+# Review of #2139 at 686aed4e. Each arm reddens one way of getting that wrong:
+#
+#   - longer lock_timeout: a user lock_timeout longer than the time left must not
+#     replace the limit. With lock_timeout = 20 s and a 1 s limit, behind a deleter
+#     held for 8 s, the verb stops with 55P03 naming the setting within 4 s, and the
+#     session gets its 20 s back.
+#   - storage-row lock kept: the rewrite keeps the storage-row lock (102) from
+#     lock_rewrite_groups to commit. A rewrite that gave it back would take it again,
+#     waiting, to flush its new group while it holds its group locks. A writer that
+#     inserts and then deletes in one of those groups closes the #2074 cycle. To place
+#     the writer in that window, an expression index calls dl_pause(), which sleeps
+#     8 s on the rewrite's first row when the session sets pgc.pause. At that point
+#     the rewrite holds its group locks and has not flushed.
+#   - limit 0: pgcolumnar.rewrite_lock_timeout = 0 means wait without a limit. With no
+#     writer the verb finishes. Behind a deleter held for 3 s it waits and finishes.
+#   - max_groups: compact_rewrite cuts its candidates to max_groups before it locks
+#     them. With deletes in groups 0 and 1, compact_rewrite('dl', 0.0, 1) in an open
+#     transaction holds one group lock, and a delete in group 1 commits within a 1 s
+#     lock_timeout.
+
+# dl_wait_activity_sql CONDITION: dl_wait_sql for a CONDITION on pg_stat_activity. A DO block
+# is one transaction, and pg_stat_activity keeps the snapshot it took first for the whole
+# transaction, so each try clears it
+dl_wait_activity_sql() {
+	printf 'DO $$ BEGIN FOR i IN 1..300 LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN %s; PERFORM pg_sleep(0.1); END LOOP; END $$;\n' "$1"
+}
+
+# dl_paused VERB-SQL -> "groups=<yes|no> storage=<n> writer=<ok|error> rewrite=<ok|error>":
+# the verb pauses on its first row with its group locks taken; pg_locks shows whether it
+# also holds the storage-row lock; then a writer inserts, scans, deletes in group 0, scans
+# and commits
+dl_paused() {
+	dl_make
+	q "CREATE OR REPLACE FUNCTION dl_pause(i int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS \$\$
+	   BEGIN
+	       IF i = 1 AND current_setting('pgc.pause', true) = 'on' THEN PERFORM pg_sleep(8); END IF;
+	       RETURN i;
+	   END \$\$;
+	   CREATE INDEX dl_pause_idx ON dl (dl_pause(id));" >/dev/null
+	rm -f "$PGC_WORKDIR/dl.rw"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 -c "SET pgc.pause = 'on';" \
+			-c "SET pgcolumnar.rewrite_lock_timeout = '20s';" \
+			-c "SELECT $1;" >"$PGC_WORKDIR/dl.rw" 2>&1
+		echo "rc=$?" >>"$PGC_WORKDIR/dl.rw"
+	) &
+	DL_RW_PID=$!
+	local paused="a.wait_event = 'PgSleep' AND a.query LIKE 'SELECT pgcolumnar.%'"
+	# one session waits for the pause and reads pg_locks, so a slow connect cannot miss it
+	local locks
+	locks="$(dlp -qAt 2>&1 <<SQL
+$(dl_wait_activity_sql "EXISTS (SELECT 1 FROM pg_stat_activity a WHERE $paused AND a.pid <> pg_backend_pid())")
+SELECT 'groups=' || CASE WHEN count(*) FILTER (WHERE l.objsubid = 101) > 0 THEN 'yes' ELSE 'no' END
+       || ' storage=' || count(*) FILTER (WHERE l.objsubid = 102)
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.locktype = 'advisory' AND l.granted AND $paused;
+SQL
+)"
+	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.w" 2>&1 <<SQL
+BEGIN;
+INSERT INTO dl VALUES (-1, 0);
+SELECT count(*) FROM dl WHERE id = -1;
+DELETE FROM dl WHERE id = 2;
+SELECT count(*) FROM dl WHERE id = -1;
+COMMIT;
+SQL
+	local w_rc=$?
+	dl_rw_wait
+	echo "$locks writer=$([ "$w_rc" = 0 ] && echo ok || echo error) rewrite=$DL_RW"
+	grep -h 'ERROR' "$PGC_WORKDIR/dl.w" "$PGC_WORKDIR/dl.rw" >&2
+	return 0
+}
+
+# dl_unlimited VERB-SQL -> "<ok|SQLSTATE>": with no writer, the verb with a limit of 0
+dl_unlimited() {
+	dl_make
+	local out
+	out="$(dlp -qAt -v VERBOSITY=verbose 2>&1 <<SQL
+SET statement_timeout = '30s';
+SET pgcolumnar.rewrite_lock_timeout = 0;
+SELECT $1;
+SQL
+)"
+	grep -q '^ERROR:' <<<"$out" && { grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9-; echo "$out" >&2; return 0; }
+	echo ok
+}
+
+# dl_capped -> "verb=<value> locks=<n> delete=<ok|error>": compact_rewrite('dl', 0.0, 1) in
+# an open transaction on a table with deletes in groups 0 and 1; the transaction counts its
+# own group locks and stays open while a second session deletes a row of group 1, which the
+# cut left out
+dl_capped() {
+	dl_make extra
+	rm -f "$PGC_WORKDIR/dl.cap"
+	(
+		dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.cap" 2>&1 <<SQL
+BEGIN;
+SELECT 'verb=' || pgcolumnar.compact_rewrite('dl', 0.0, 1);
+SELECT 'locks=' || count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory' AND objsubid = 101 AND granted;
+SELECT pg_sleep(10);
+COMMIT;
+SQL
+	) &
+	local cap_pid=$! d_rc
+	dlp -qAt -c "$(dl_wait_activity_sql "EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND query LIKE 'SELECT pg_sleep(10)%' AND pid <> pg_backend_pid())")" >/dev/null
+	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.del" 2>&1 <<SQL
+SET lock_timeout = '1s';
+BEGIN;
+DELETE FROM dl WHERE id = 1502;
+SELECT count(*) FROM dl;
+COMMIT;
+SQL
+	d_rc=$?
+	wait "$cap_pid"
+	echo "$(grep -o '^verb=.*' "$PGC_WORKDIR/dl.cap" || echo verb=none)" \
+		"$(grep -o '^locks=.*' "$PGC_WORKDIR/dl.cap" || echo locks=none)" \
+		"delete=$([ "$d_rc" = 0 ] && echo ok || echo error)"
+	grep -h 'ERROR' "$PGC_WORKDIR/dl.cap" "$PGC_WORKDIR/dl.del" >&2
+	return 0
+}
+
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 8 "SET lock_timeout = '20s'; SET pgcolumnar.rewrite_lock_timeout = '1s';")"
+	check "a $name under a longer lock_timeout of 20 s stops with 55P03 naming rewrite_lock_timeout" \
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
+	check "and the $name under that 20 s lock_timeout stops within its 1 s rewrite_lock_timeout plus 3 s" \
+		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the session's lock_timeout after that $name's 55P03 is back to 20s" \
+		"$(cut -d' ' -f4 <<<"$got")" "lock_timeout=20s"
+	got="$(dl_paused "$verb")"
+	check "a $name paused after it took its group locks also holds the storage-row lock" \
+		"$(cut -d' ' -f1-2 <<<"$got")" "groups=yes storage=1"
+	check "a writer that inserts and then deletes in a group the paused $name holds and the $name both commit" \
+		"$(cut -d' ' -f3-4 <<<"$got")" "writer=ok rewrite=ok"
+	check "and the insert and the delete beside the paused $name took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id = 2) || ' ' || count(*) FILTER (WHERE id = -1) FROM dl;")" "0 1"
+	check "a $name with rewrite_lock_timeout 0 and no writer finishes" \
+		"$(dl_unlimited "$verb")" "ok"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 3 "SET pgcolumnar.rewrite_lock_timeout = 0;")"
+	check "a $name with rewrite_lock_timeout 0 behind a deleter held for 3 s waits for it and finishes" \
+		"$(awk '{print ($2 == "ok" && $1 >= 1500) ? "ok-after-wait" : $2 " " $3 " (" $1 " ms)"}' <<<"$got")" "ok-after-wait"
+done
+
+got="$(dl_capped)"
+check "a compact_rewrite with max_groups 1 in an open transaction rewrites one group and holds one group lock" \
+	"$(cut -d' ' -f1-2 <<<"$got")" "verb=1 locks=1"
+check "and a delete in the group that max_groups left out, with a 1 s lock_timeout, commits while that transaction is open" \
+	"$(cut -d' ' -f3 <<<"$got")" "delete=ok"
+
 pgc_summary
