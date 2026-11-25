@@ -615,7 +615,10 @@ true until the next version shipped.
   The refusal covers an output column and the column an equality delete
   compares. A query that leaves the field out still reads, and a null
   `initial-default` counts as none. Reading the default is not supported yet.
-  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`.
+  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
+  each refusal check matches the message that names the field (`field "qty"`,
+  or `field "k"` for the equality delete), so a message that names the wrong
+  field fails it.
 - `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
   raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
   when the conflicting row was committed by another transaction after the

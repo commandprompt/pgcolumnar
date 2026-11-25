@@ -393,26 +393,26 @@ def isc(pgc_cluster, server_dir):
                       f"SERVER ice_promo OPTIONS (metadata_path '{v3md}')")
         r.update({
             "v3 default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3md)} AS t(id bigint, qty int) "
-                                        "ORDER BY id", r"initial-default", "initial-default refusal"),
+                                        "ORDER BY id", r'field "qty" has an initial-default', "refusal naming qty"),
             "v3 optional default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3opt)} "
                                                  "AS t(id bigint, qty int) ORDER BY id",
-                                            r"initial-default", "initial-default refusal"),
+                                            r'field "qty" has an initial-default', "refusal naming qty"),
             "v3 other columns": _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM {scan.format(v3md)} "
                                            "AS t(id bigint, region text, amount int) ORDER BY id"),
             "v3 eq default": _refusal(dsn, "SELECT string_agg(id::text, ',' ORDER BY id) "
                                            f"FROM {scan.format(v3eq)} AS t(id bigint)",
-                                      r"initial-default", "initial-default refusal"),
+                                      r'field "k" has an initial-default', "refusal naming k"),
             "v3 fdw default": _refusal(dsn, "SELECT id, qty FROM icescan_v3default ORDER BY id",
-                                       r"initial-default", "initial-default refusal"),
+                                       r'field "qty" has an initial-default', "refusal naming qty"),
         })
         v3str, v3bool, v3null, v3first, v3eqother = _v3_more_copies(v3md, eq_md)
         r.update({
             "v3 string default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3str)} "
                                                "AS t(id bigint, qty text) ORDER BY id",
-                                          r"initial-default", "initial-default refusal"),
+                                          r'field "qty" has an initial-default', "refusal naming qty"),
             "v3 boolean default": _refusal(dsn, f"SELECT id, qty FROM {scan.format(v3bool)} "
                                                 "AS t(id bigint, qty boolean) ORDER BY id",
-                                           r"initial-default", "initial-default refusal"),
+                                           r'field "qty" has an initial-default', "refusal naming qty"),
             "v3 null default": _rows(dsn, "SELECT id || '|' || coalesce(qty::text, 'null') "
                                           f"FROM {scan.format(v3null)} AS t(id bigint, qty int) ORDER BY id"),
             "v3 default first": _rows(dsn, f"SELECT id || '|' || region || '|' || amount FROM {scan.format(v3first)} "
@@ -767,14 +767,14 @@ def test_positional_read_parquet_keeps_its_exact_type_map(isc, expect):
 def test_iceberg_scan_refuses_a_v3_column_with_an_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 default"]), "0A000 (refusal naming qty)",
                 "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)")
 
 
 def test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 optional default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 optional default"]), "0A000 (refusal naming qty)",
                 "iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000)")
 
 
@@ -788,28 +788,28 @@ def test_iceberg_scan_reads_the_v3_columns_without_an_initial_default(isc, expec
 def test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 eq default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 eq default"]), "0A000 (refusal naming k)",
                 "iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000)")
 
 
 def test_a_foreign_table_refuses_a_v3_column_with_an_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 fdw default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 fdw default"]), "0A000 (refusal naming qty)",
                 "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000)")
 
 
 def test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 string default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 string default"]), "0A000 (refusal naming qty)",
                 "iceberg_scan refuses an optional v3 string column whose initial-default is empty (0A000)")
 
 
 def test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default(isc, expect):
     if _declined(isc, expect):
         return
-    expect.text(str(isc["v3 boolean default"]), "0A000 (initial-default refusal)",
+    expect.text(str(isc["v3 boolean default"]), "0A000 (refusal naming qty)",
                 "iceberg_scan refuses an optional v3 boolean column whose initial-default is false (0A000)")
 
 

@@ -416,6 +416,8 @@ check "positional read_parquet still refuses bigint over an INT32 column (42804)
 # A v3 field may carry an initial-default: the value a reader must return for
 # the field in a data file written before the field existed. The reader does
 # not apply it yet, so it must refuse such a field (0A000), not read it as null.
+# Each refusal check matches the message's field name, so a message that names
+# the wrong field fails it.
 # v3default: the events table as format-version 3, whose current schema adds
 # field 4, qty, required, initial-default 7; no data file carries field 4.
 # v3optdefault: the same, but qty is optional with initial-default 42.
@@ -450,13 +452,13 @@ PYEOF
 check "iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, qty int)
-	            ORDER BY id" 'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 check "iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3optdefault.metadata.json') AS t(id bigint, qty int)
-	            ORDER BY id" 'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 check "iceberg_scan still reads the v3 table's columns that have no initial-default" \
 	"$(q "SELECT id || '|' || region || '|' || amount
 	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3default.metadata.json') AS t(id bigint, region text, amount int)
@@ -465,14 +467,14 @@ check "iceberg_scan still reads the v3 table's columns that have no initial-defa
 check "iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000)" \
 	"$(refusal "SELECT string_agg(id::text, ',' ORDER BY id)
 	            FROM pgcolumnar.iceberg_scan('$PMD/eq_v3default.metadata.json') AS t(id bigint)" \
-	   'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	   'field "k" has an initial-default' "refusal naming k")" \
+	"0A000 (refusal naming k)"
 q "CREATE FOREIGN TABLE v3_default (id bigint, qty int)
    SERVER ice_promo OPTIONS (metadata_path '$MDDIR/v3default.metadata.json')" >/dev/null
 check "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null') FROM v3_default ORDER BY id" \
-	   'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	   'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 # More v3 copies, so each part of the refusal's condition is pinned (#2087):
 # v3strdefault / v3booldefault: qty optional, a string with initial-default ""
 # and a boolean with initial-default false, so a refusal narrowed to numbers,
@@ -514,13 +516,13 @@ PYEOF
 check "iceberg_scan refuses an optional v3 string column whose initial-default is empty (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty, 'null')
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3strdefault.metadata.json') AS t(id bigint, qty text)
-	            ORDER BY id" 'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 check "iceberg_scan refuses an optional v3 boolean column whose initial-default is false (0A000)" \
 	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
 	            FROM pgcolumnar.iceberg_scan('$MDDIR/v3booldefault.metadata.json') AS t(id bigint, qty boolean)
-	            ORDER BY id" 'initial-default' "initial-default refusal")" \
-	"0A000 (initial-default refusal)"
+	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 check "iceberg_scan reads an optional v3 column whose initial-default is null as null" \
 	"$(q "SELECT id || '|' || coalesce(qty::text, 'null')
 	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3nulldefault.metadata.json') AS t(id bigint, qty int)
