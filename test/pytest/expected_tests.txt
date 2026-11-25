@@ -1997,9 +1997,9 @@ guard_tests 895
 # long and on a string column applies to a name-mapped data file with no field ids, an equality column the
 # mapping does not bind is refused and the refusal names the field id, and the backend survives:
 # test_name_mapping_equality_* and test_name_mapping_backend_up_after_equality_deletes), by collection:
-# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`. This line first gave
-# 6275 tests collected, less guard_tests 894: a mis-copy, since that is 5381. The next line's collection
-# (6299 less guard_tests 895 is 5404, before the restate shift) holds these five tests and its one.
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6275 tests collected,
+# less guard_tests 894, is 5381. That count was taken on the PR's first base, where this line read
+# 5376 -> 5381; restates since have shifted the line's numbers but not its collection.
 # cluster_tests 5483 -> 5484 for test_name_mapping_equality_mapped_amount_applies in
 # test_iceberg_name_mapping.py (#2088 review on b14589eb: the amount = 30 equality delete under the full
 # mapping applies, the positive control for the unbound refusal), by collection:
