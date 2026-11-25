@@ -188,7 +188,10 @@ def pqs(pgc_cluster, server_dir):
         for key, name in (("one empty", "one_empty_page"), ("run16", "empty_run16"),
                           ("runs 10 10", "empty_runs_10_10"), ("nobody v1 req", "nobody_v1_req"),
                           ("nobody v2", "nobody_v2"), ("index page", "index_page"),
-                          ("index run16", "index_run16"), ("unknown type", "unknown_type_page")):
+                          ("index run16", "index_run16"), ("unknown type", "unknown_type_page"),
+                          ("mix dict0 200", "mix_dict0_200"), ("mix v2full 200", "mix_v2full_200"),
+                          ("v2 ok req", "v2_ok_req"), ("mix dictnv0", "mix_dictnv0"),
+                          ("mix v2zero", "mix_v2zero")):
             r[key] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
                                 f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)", sep=" ")
         for key, name in (("empty run", "empty_page_run"), ("run17", "empty_run17"),
@@ -196,8 +199,11 @@ def pqs(pgc_cluster, server_dir):
                           ("index run17", "index_run17"), ("nohdr loss", "nohdr_loss"),
                           ("nv missing", "nv_missing"), ("hdr5 empty", "hdr5empty_loss"),
                           ("hdr8 empty", "hdr8empty_loss"), ("nohdr v2", "nohdr_v2_loss_req"),
-                          ("negnv", "negnv")):
+                          ("negnv", "negnv"), ("nv2 missing", "nv2_missing_req"), ("dicthdr only", "dicthdr_only"),
+                          ("dicthdr zero", "dicthdr_zero_loss"), ("idx negcsz", "idx_negcsz")):
             r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
+        r["alt20"] = _rows(dsn, f"SELECT count(*), count(ls), sum(cardinality(ls)) FROM "
+                                f"pgcolumnar.read_parquet('{w}/alt20.parquet') AS t(ls text[])", sep=" ")
         r["survived crafted"] = _survived(dsn, pgc_cluster, mid)
         r["plain"] = _rows(dsn, f"SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('{w}/plain.parquet') "
                                 f"AS t(id int)", sep=" ")
@@ -481,6 +487,86 @@ def test_parquet_streaming_unknown_page_type_is_stepped_over(request, expect):
     r = _readings(request, expect)
     if r is not None:
         expect.text(r.get("unknown type", r["crafted"]), "200 19900", "a page of an unknown type is stepped over")
+
+
+def test_parquet_streaming_dictionary_header_does_not_overwrite_data_page_count(request, expect):
+    """page 2 keeps its count of 50: 150 rows are ids 0..149; a count of 0 drops ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("mix dictnv0", r["crafted"]), "150 11175",
+                    "a DictionaryPageHeader after a DataPageHeader does not overwrite its count")
+
+
+def test_parquet_streaming_data_page_v2_header_does_not_overwrite_data_page_count(request, expect):
+    """page 2 keeps its count of 50: 150 rows are ids 0..149; a count of 0 drops ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("mix v2zero", r["crafted"]), "150 11175",
+                    "a DataPageHeaderV2 after a DataPageHeader does not overwrite its count")
+
+
+def test_parquet_streaming_data_page_count_ignores_a_dictionary_header(request, expect):
+    """pyarrow uses the struct of the page's own type and reads 200 rows"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("mix dict0 200", r["crafted"]), "200 19900",
+                    "a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader")
+
+
+def test_parquet_streaming_data_page_count_ignores_a_data_page_v2_header(request, expect):
+    """pyarrow uses the struct of the page's own type and reads 200 rows"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("mix v2full 200", r["crafted"]), "200 19900",
+                    "a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2")
+
+
+def test_parquet_streaming_data_page_v2_with_values_reads(request, expect):
+    """the control for the DataPageHeaderV2 refusal below"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("v2 ok req", r["crafted"]), "200 19900",
+                    "a DATA_PAGE_V2 with values reads")
+
+
+def test_parquet_streaming_data_page_v2_header_without_num_values_is_rejected(request, expect):
+    """decoding it as an empty page would drop ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("nv2 missing", r["crafted"]), REFUSED,
+                    "a DataPageHeaderV2 without num_values is rejected")
+
+
+def test_parquet_streaming_data_page_with_only_a_dictionary_header_is_rejected(request, expect):
+    """a dictionary page's count is not a data page's"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("dicthdr only", r["crafted"]), REFUSED,
+                    "a DATA_PAGE with only a DictionaryPageHeader is rejected")
+
+
+def test_parquet_streaming_data_page_with_only_an_empty_dictionary_header_is_rejected(request, expect):
+    """taking the dictionary count would drop ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("dicthdr zero", r["crafted"]), REFUSED,
+                    "a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected")
+
+
+def test_parquet_streaming_index_page_with_negative_compressed_size_is_rejected(request, expect):
+    """stepping over it first would re-read page 1: ids 0..49 four times"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("idx negcsz", r["crafted"]), REFUSED,
+                    "an INDEX_PAGE with a negative compressed_size is rejected")
+
+
+def test_parquet_streaming_run_of_one_value_pages_reads(request, expect):
+    """a page with one value resets the run of empty pages"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(r.get("alt20", r["crafted"]), "40 20 20",
+                    "a run of one-value pages reads (pyarrow list column, 41 pages)")
 
 
 def test_parquet_streaming_backend_survived_the_crafted_page_areas(request, expect):

@@ -2008,4 +2008,10 @@ guard_tests 895
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-cluster_tests 5499
+# cluster_tests 5499 -> 5509 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
+# with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
+# DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
+# run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
+# 5509 tests collected.
+cluster_tests 5509

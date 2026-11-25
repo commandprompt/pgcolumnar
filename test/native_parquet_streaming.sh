@@ -208,6 +208,19 @@ check "an empty DataPageHeaderV2 struct is rejected" "$(ce hdr8empty_loss)" "$RE
 check "a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected" "$(ce nohdr_v2_loss_req)" "$REFUSED"
 check "a data page with a negative num_values is rejected" "$(ce negnv)" "$REFUSED"
 check "a page of an unknown type is stepped over" "$(cs unknown_type_page)" "200 19900"
+# a data page's count comes only from its own page type's header struct
+check "a DictionaryPageHeader after a DataPageHeader does not overwrite its count" "$(cs mix_dictnv0)" "150 11175"
+check "a DataPageHeaderV2 after a DataPageHeader does not overwrite its count" "$(cs mix_v2zero)" "150 11175"
+check "a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader" "$(cs mix_dict0_200)" "200 19900"
+check "a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2" "$(cs mix_v2full_200)" "200 19900"
+check "a DATA_PAGE_V2 with values reads" "$(cs v2_ok_req)" "200 19900"
+check "a DataPageHeaderV2 without num_values is rejected" "$(ce nv2_missing_req)" "$REFUSED"
+check "a DATA_PAGE with only a DictionaryPageHeader is rejected" "$(ce dicthdr_only)" "$REFUSED"
+check "a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected" "$(ce dicthdr_zero_loss)" "$REFUSED"
+check "an INDEX_PAGE with a negative compressed_size is rejected" "$(ce idx_negcsz)" "$REFUSED"
+check "a run of one-value pages reads (pyarrow list column, 41 pages)" \
+	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)) FROM pgcolumnar.read_parquet('$W/alt20.parquet') AS t(ls text[]);" | tr '|' ' ')" \
+	"40 20 20"
 check "backend survived the crafted page areas" "$(survived "$CRASHES_MID")" "1"
 
 # the legitimate file the crafted ones were built from must still read

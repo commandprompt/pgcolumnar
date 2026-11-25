@@ -13014,6 +13014,16 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_data_page_v2_without_header_is_rejected` | a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected |
 | `test_parquet_streaming_negative_num_values_is_rejected` | a data page with a negative num_values is rejected |
 | `test_parquet_streaming_unknown_page_type_is_stepped_over` | a page of an unknown type is stepped over |
+| `test_parquet_streaming_dictionary_header_does_not_overwrite_data_page_count` | a DictionaryPageHeader after a DataPageHeader does not overwrite its count |
+| `test_parquet_streaming_data_page_v2_header_does_not_overwrite_data_page_count` | a DataPageHeaderV2 after a DataPageHeader does not overwrite its count |
+| `test_parquet_streaming_data_page_count_ignores_a_dictionary_header` | a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader |
+| `test_parquet_streaming_data_page_count_ignores_a_data_page_v2_header` | a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2 |
+| `test_parquet_streaming_data_page_v2_with_values_reads` | a DATA_PAGE_V2 with values reads |
+| `test_parquet_streaming_data_page_v2_header_without_num_values_is_rejected` | a DataPageHeaderV2 without num_values is rejected |
+| `test_parquet_streaming_data_page_with_only_a_dictionary_header_is_rejected` | a DATA_PAGE with only a DictionaryPageHeader is rejected |
+| `test_parquet_streaming_data_page_with_only_an_empty_dictionary_header_is_rejected` | a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected |
+| `test_parquet_streaming_index_page_with_negative_compressed_size_is_rejected` | an INDEX_PAGE with a negative compressed_size is rejected |
+| `test_parquet_streaming_run_of_one_value_pages_reads` | a run of one-value pages reads (pyarrow list column, 41 pages) |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |

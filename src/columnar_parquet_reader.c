@@ -1754,9 +1754,26 @@ typedef struct PqPageHeader
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
 	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
-	bool		has_data_hdr;	/* a DataPageHeader (v1 or v2) with its
-								 * required num_values was parsed (#2077) */
+	bool		has_data_hdr;	/* a data page's own header struct (field 5 for
+								 * DATA_PAGE, 8 for DATA_PAGE_V2) carried its
+								 * required num_values (#2077) */
 } PqPageHeader;
+
+/*
+ * One DataPageHeader (field 5) or DataPageHeaderV2 (field 8) as parsed. A page
+ * header may carry several header structs. Each is parsed into its own PqDataHdr,
+ * and parse_page_header copies only the one that matches the page's type into
+ * the PqPageHeader, so a struct of another type cannot set the page's count.
+ */
+typedef struct PqDataHdr
+{
+	bool		has_num_values; /* its required num_values (field 1) was parsed */
+	int			num_values;
+	int			encoding;
+	int			def_levels_len; /* v2 only */
+	int			rep_levels_len; /* v2 only */
+	bool		is_compressed;	/* v2 only; default true */
+} PqDataHdr;
 
 /*
  * Read a required i32 page header field of compact type ft, whether or not the
@@ -1801,12 +1818,10 @@ pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
 }
 
 static void
-parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
+parse_data_page_header(TCReader *r, PqPageHeader *h, PqDataHdr *d, bool v2)
 {
 	int			lastId = 0;
 
-	h->is_v2 = v2;
-	h->is_compressed = true;
 	for (;;)
 	{
 		int			ft,
@@ -1820,11 +1835,11 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = pq_page_i32(r, h, ft);
-					h->has_data_hdr = true;
+					d->num_values = pq_page_i32(r, h, ft);
+					d->has_num_values = true;
 					break;
 				case 2:
-					h->encoding = pq_page_i32(r, h, ft);
+					d->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 3:			/* definition_level_encoding: not stored */
 				case 4:			/* repetition_level_encoding: not stored */
@@ -1840,21 +1855,21 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = pq_page_i32(r, h, ft);
-					h->has_data_hdr = true;
+					d->num_values = pq_page_i32(r, h, ft);
+					d->has_num_values = true;
 					break;
 				case 2:			/* num_nulls: not stored */
 				case 3:			/* num_rows: not stored */
 					(void) pq_page_i32(r, h, ft);
 					break;
 				case 4:
-					h->encoding = pq_page_i32(r, h, ft);
+					d->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 5:
-					h->def_levels_len = pq_page_i32(r, h, ft);
+					d->def_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 6:
-					h->rep_levels_len = pq_page_i32(r, h, ft);
+					d->rep_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 7:
 
@@ -1863,7 +1878,7 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 					 * field of another type and keeps the default, true.
 					 */
 					if (ft == TC_BOOL_TRUE || ft == TC_BOOL_FALSE)
-						h->is_compressed = (ft == TC_BOOL_TRUE);
+						d->is_compressed = (ft == TC_BOOL_TRUE);
 					else
 						PgColumnarThriftSkip(r, ft);
 					break;
@@ -1880,9 +1895,15 @@ static void
 parse_page_header(TCReader *r, PqPageHeader *h)
 {
 	int			lastId = 0;
+	PqDataHdr	v1 = {0},
+				v2 = {0};
+	PqDataHdr  *d = NULL;
+	int			dict_num_values = 0;
 
 	memset(h, 0, sizeof(*h));
 	h->is_compressed = true;
+	v1.is_compressed = true;
+	v2.is_compressed = true;
 	for (;;)
 	{
 		int			ft,
@@ -1904,7 +1925,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				break;
 			case 5:				/* DataPageHeader (v1) */
 				if (pq_page_struct(r, h, ft))
-					parse_data_page_header(r, h, false);
+					parse_data_page_header(r, h, &v1, false);
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
@@ -1921,7 +1942,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 						if (dft == TC_STOP || r->error)
 							break;
 						if (dfid == 1)
-							h->num_values = pq_page_i32(r, h, dft);
+							dict_num_values = pq_page_i32(r, h, dft);
 						else if (dfid == 2)	/* encoding: not stored */
 							(void) pq_page_i32(r, h, dft);
 						else
@@ -1931,12 +1952,38 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				}
 			case 8:				/* DataPageHeaderV2 */
 				if (pq_page_struct(r, h, ft))
-					parse_data_page_header(r, h, true);
+					parse_data_page_header(r, h, &v2, true);
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
 				break;
 		}
+	}
+
+	/*
+	 * Take the page's count from the header struct of its own type only (#2077):
+	 * field 5 for a DATA_PAGE, field 8 for a DATA_PAGE_V2, field 7 for a
+	 * DICTIONARY_PAGE, as pyarrow does. Another struct in the same header is
+	 * ignored. Otherwise a second struct with num_values 0 after a valid
+	 * DataPageHeader made the page read as empty and dropped its values.
+	 */
+	if (h->type == PQ_PAGE_DATA)
+		d = &v1;
+	else if (h->type == PQ_PAGE_DATA_V2)
+	{
+		d = &v2;
+		h->is_v2 = true;
+	}
+	else if (h->type == PQ_PAGE_DICTIONARY)
+		h->num_values = dict_num_values;
+	if (d != NULL)
+	{
+		h->has_data_hdr = d->has_num_values;
+		h->num_values = d->num_values;
+		h->encoding = d->encoding;
+		h->def_levels_len = d->def_levels_len;
+		h->rep_levels_len = d->rep_levels_len;
+		h->is_compressed = d->is_compressed;
 	}
 }
 
@@ -2449,10 +2496,12 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		 *
 		 * A data page must carry its DataPageHeader with num_values (field 1,
 		 * required), the only source of the page's value count. has_data_hdr
-		 * is set where num_values is parsed, not where the struct starts: a
-		 * page with no header, an empty header struct, or a header without
-		 * num_values would otherwise parse as an empty page, and decoding it
-		 * as one would drop its values silently. pyarrow refuses each of these
+		 * is set where num_values is parsed, not where the struct starts, and
+		 * only from the struct of the page's own type (parse_page_header): a
+		 * page with no header, an empty header struct, a header without
+		 * num_values, or only a struct of another type would otherwise parse
+		 * as an empty page, and decoding it as one would drop its values
+		 * silently. pyarrow refuses each of these
 		 * on a DATA_PAGE. On a DATA_PAGE_V2 with no header at all, pyarrow
 		 * 23.0.1 reads the page as empty and drops its values; this reader
 		 * refuses it, which is stricter. A run of zero bytes, each a header

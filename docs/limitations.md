@@ -1245,7 +1245,12 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   refuses a data page whose DataPageHeader is missing, empty, or has no
   `num_values`, and a data page with a negative `num_values`. For a DATA_PAGE_V2
   with no header at all, this is stricter than pyarrow 23, which reads the page
-  as empty and drops its values. It refuses more than 16 pages
+  as empty and drops its values. A page's count comes only from the header
+  struct of its own type. A DATA_PAGE uses its DataPageHeader, a DATA_PAGE_V2
+  its DataPageHeaderV2, and a dictionary page its DictionaryPageHeader. A struct
+  of another type in the same header is ignored. A data page that
+  carries only a struct of another type is refused, where pyarrow 23 reads it as
+  empty. It refuses more than 16 pages
   with no values in a row in one column chunk. An INDEX_PAGE, or a page type the reader
   does not know, counts as a page with no values and is stepped over. These
   refusals raise SQLSTATE XX001. The run limit stops a crafted file from making

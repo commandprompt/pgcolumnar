@@ -372,15 +372,90 @@ replace_page2_header("hdr8empty_loss.parquet", popt, lambda n: sizes(3, n) + fh(
 # it. pyarrow 23.0.1 does not: it reads 150 rows and drops the page's values, so the
 # reader is stricter than pyarrow here.
 replace_page2_header("nohdr_v2_loss_req.parquet", preq, lambda n: sizes(3, n) + STOP)
-# page 2's num_values is -5, the header otherwise as pyarrow writes it; pyarrow
+# page 2's num_values is -1, the largest negative count, the header otherwise as pyarrow writes it; pyarrow
 # refuses it ("Invalid page header (negative number of values)")
 replace_page2_header("negnv.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
-                     + fh(1, I32) + zz(-5) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3)
+                     + fh(1, I32) + zz(-1) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3)
                      + fh(1, I32) + zz(3) + STOP + STOP, rows=200)
 # a page of type 7, which no Parquet version defines, with a 4-byte 0xff body:
 # pyarrow steps over it and reads 200 rows
 with_pages("unknown_type_page.parquet", popt,
            {1: fh(1, I32) + zz(7) + fh(1, I32) + zz(4) + fh(1, I32) + zz(4) + STOP + b"\xff" * 4})
+
+# Round 3 of the review.
+#
+# page 2's own DataPageHeader as pyarrow writes it, 5:{num_values 50, encoding PLAIN,
+# both level encodings RLE}. It follows field 3 (compressed_size), so its field
+# header has delta 2; a struct after it is numbered from 5.
+V1HDR = (fh(2, STRUCT) + fh(1, I32) + zz(50) + fh(1, I32) + zz(0)
+         + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP)
+
+# A data page's count comes only from the header struct of its own page type: field
+# 5 for a DATA_PAGE, field 8 for a DATA_PAGE_V2, field 7 for a DICTIONARY_PAGE. A
+# second struct after page 2's DataPageHeader must not overwrite its count. With the
+# footer at 150 rows, page 2 keeps its 50 values and the chunk ends after page 3:
+# ids 0..149, sum 11175, as pyarrow reads mix_dict0. A count of 0 from the second
+# struct would give ids 0..49 and 100..199, sum 16175, with no error. (pyarrow refuses
+# mix_dictnv0 and mix_v2zero for another reason: their second struct lacks fields
+# parquet.thrift requires, which this reader does not check.) With the footer at 200,
+# the page's own count is used: read.
+replace_page2_header("mix_dictnv0.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(2, STRUCT) + fh(1, I32) + zz(0) + STOP + STOP)
+replace_page2_header("mix_v2zero.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(3, STRUCT) + fh(1, I32) + zz(0) + STOP + STOP)
+replace_page2_header("mix_dict0_200.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(2, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + STOP + STOP,
+                     rows=200)
+replace_page2_header("mix_v2full_200.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(3, STRUCT) + (fh(1, I32) + zz(0)) * 6 + STOP + STOP, rows=200)
+
+
+# page 2 of the REQUIRED column as a DATA_PAGE_V2 (its body is 50 PLAIN values and no
+# levels, which a v2 page with zero level lengths reads the same). v2_ok_req has the
+# full DataPageHeaderV2 and reads 200 rows. nv2_missing_req has fields 2-6 and no
+# num_values (field 1, required): pyarrow refuses it ("Couldn't deserialize thrift").
+def v2hdr(n, nv=True):
+    fields = (fh(1, I32) + zz(50) + fh(1, I32) if nv else fh(2, I32))
+    return (sizes(3, n) + fh(5, STRUCT) + fields + zz(0) + fh(1, I32) + zz(50)
+            + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + STOP + STOP)
+
+
+replace_page2_header("v2_ok_req.parquet", preq, lambda n: v2hdr(n), rows=200)
+replace_page2_header("nv2_missing_req.parquet", preq, lambda n: v2hdr(n, nv=False))
+
+# a DATA_PAGE whose only header is a DictionaryPageHeader: a dictionary page's count
+# is not a data page's. pyarrow refuses both ("Unknown encoding type for levels" and
+# "Couldn't deserialize thrift"; a DictionaryPageHeader also requires its encoding).
+replace_page2_header("dicthdr_only.parquet", popt, lambda n: sizes(0, n) + fh(4, STRUCT)
+                     + fh(1, I32) + zz(50) + fh(1, I32) + zz(0) + STOP + STOP, rows=200)
+replace_page2_header("dicthdr_zero_loss.parquet", popt, lambda n: sizes(0, n) + fh(4, STRUCT)
+                     + fh(1, I32) + zz(0) + STOP + STOP)
+
+
+# an INDEX_PAGE after page 1 whose compressed_size is negative and points back to
+# page 1. Stepping over it before the compressed_size check would re-read page 1 until
+# the chunk's 200 values were reached: ids 0..49 four times. pyarrow refuses it
+# ("Invalid page header").
+def idx_negcsz():
+    m, b, offs, total = popt
+    back = offs[1] - offs[0]
+    hdr = b""
+    while True:
+        new = fh(1, I32) + zz(1) + fh(1, I32) + zz(0) + fh(1, I32) + zz(-(back + len(hdr))) + STOP
+        if len(new) == len(hdr):
+            return new
+        hdr = new
+
+
+with_pages("idx_negcsz.parquet", popt, {1: idx_negcsz()})
+
+# pyarrow 23.0.1 writes this file as 39 data pages with one value, one with none, and
+# one more with one value. A page with one value resets the run of empty pages, so
+# the file reads 40 rows, 20 of them NULL, as pyarrow reads it.
+pq.write_table(pa.table({"ls": pa.array([["yy"], None] * 20, pa.list_(pa.string()))}),
+               os.path.join(W, "alt20.parquet"),
+               use_dictionary=True, data_page_size=1, write_batch_size=1,
+               compression="none")
 
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
@@ -403,6 +478,9 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "nobody_v1_req", "nobody_v2", "nobody_v1_opt", "garbage_body", "index_page",
              "index_run16", "index_run17",
              "nohdr_loss", "nv_missing", "hdr5empty_loss", "hdr8empty_loss",
-             "nohdr_v2_loss_req", "negnv", "unknown_type_page", "empty_page_snappy", "stream_groups"):
+             "nohdr_v2_loss_req", "negnv", "unknown_type_page", "mix_dictnv0", "mix_v2zero",
+             "mix_dict0_200", "mix_v2full_200", "v2_ok_req", "nv2_missing_req",
+             "dicthdr_only", "dicthdr_zero_loss", "idx_negcsz", "alt20",
+             "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

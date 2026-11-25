@@ -615,6 +615,11 @@ true until the next version shipped.
   which would otherwise drop that page's values, so a zero-filled area stays a
   fast refusal. For a DATA_PAGE_V2 with no header at all this is stricter than
   pyarrow 23, which reads the page as empty. It refuses a negative `num_values`.
+  A page's count comes only from the header struct of its own type (DataPageHeader
+  for a DATA_PAGE, DataPageHeaderV2 for a DATA_PAGE_V2, DictionaryPageHeader for a
+  dictionary page), so a second struct in the same header cannot set it to 0 and
+  drop the page's values. A data page that carries only a struct of another type is
+  refused; pyarrow 23 reads it as empty, so this is stricter too.
   It refuses more than 16 pages with no values in a row, and steps over an
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
