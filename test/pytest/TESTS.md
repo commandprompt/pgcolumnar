@@ -8977,8 +8977,8 @@ A module fixture on a private database runs every conversion in the shell's orde
 | `test_rows_inserted_after_a_rewrite_released_from_a_savepoint_survive_commit` | the same with the type change inside a savepoint that is released (#2067) |
 | `test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit` | control: the same with the savepoint rolled back, so the first write state is still the right one (#2067) |
 | `test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept` | one transaction inserts a row, changes `text` to `int8` and inserts another; both rows are there, and the backend does not crash (#2067). Runs after the other crash |
-| `test_a_filtered_read_finds_a_row_inserted_after_int4_becomes_oid_in_the_same_transaction` | one transaction inserts a row, changes `int4` to `oid` (no rewrite: the relfilenode stays the same) and inserts `4294967295`; a filtered read finds it, as heap does (#2067) |
-| `test_a_filtered_read_finds_a_row_inserted_after_a_collation_change_in_the_same_transaction` | the same with `text COLLATE "C"` changed to `"und-x-icu"`; a range filter finds `B`, as heap does. Unrunnable, not passed, on a server without that ICU collation (#2067) |
+| `test_a_filtered_read_finds_a_row_inserted_after_int4_becomes_oid_in_the_same_transaction` | one transaction inserts a row, changes the first column from `int4` to `oid` (no rewrite: the relfilenode stays the same) and inserts `4294967295`; a filtered read finds it, as heap does (#2067) |
+| `test_a_filtered_read_finds_a_row_inserted_after_a_collation_change_in_the_same_transaction` | the same with the last column changed from `text COLLATE "C"` to `"und-x-icu"`; a range filter finds `B`, as heap does. Unrunnable, not passed, on a server without that ICU collation (#2067) |
 
 ## 200. test_vector_agg_rescan_memory.py: rescanning a columnar aggregate does not grow query memory
 

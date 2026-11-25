@@ -213,14 +213,19 @@ same_xact "rows inserted after a rewrite rolled back to a savepoint survive COMM
 # "<relfilenode unchanged>|<columnar>|<heap>": if the relfilenode changed, the
 # check no longer tests a change without a rewrite. The check names stay literal
 # at the call sites, so selftest 480 can match the unrunnable record (#1040).
-same_desc() {  # old type, first value, alter clause, new values, filter, read
+# The last argument puts v first or last. The oid case alters the first column
+# and the collation case the last, so the descriptor comparison is pinned at
+# both ends of its loop.
+same_desc() {  # old type, first value, alter clause, new values, filter, read, first|last
+	local cols="id int, v $1" row0="(0, $2)"
+	if [ "$7" = first ]; then cols="v $1, id int"; row0="($2, 0)"; fi
 	psql_run "DROP TABLE IF EXISTS at_d, at_dh;
-		CREATE TABLE at_d (id int, v $1) USING pgcolumnar;
-		CREATE TABLE at_dh (id int, v $1);" >/dev/null 2>&1
+		CREATE TABLE at_d ($cols) USING pgcolumnar;
+		CREATE TABLE at_dh ($cols);" >/dev/null 2>&1
 	local before
 	before="$(q "SELECT relfilenode FROM pg_class WHERE relname = 'at_d';" | tail -1)"
 	psql_run "BEGIN;
-		INSERT INTO at_d VALUES (0, $2);  INSERT INTO at_dh VALUES (0, $2);
+		INSERT INTO at_d VALUES $row0;  INSERT INTO at_dh VALUES $row0;
 		ALTER TABLE at_d ALTER COLUMN v TYPE $3;  ALTER TABLE at_dh ALTER COLUMN v TYPE $3;
 		INSERT INTO at_d VALUES $4;  INSERT INTO at_dh VALUES $4;
 		COMMIT;" >/dev/null 2>&1
@@ -231,11 +236,11 @@ same_desc() {  # old type, first value, alter clause, new values, filter, read
 }
 
 check "a filtered read finds a row inserted after int4 becomes oid in the same transaction" \
-	"$(same_desc int4 1 "oid" "(1, 4294967295), (2, 5)" "v = 4294967295" "count(*)::text")" "true|1|1"
+	"$(same_desc int4 1 "oid" "(4294967295, 1), (5, 2)" "v = 4294967295" "count(*)::text" first)" "true|1|1"
 if [ "$(q "SELECT count(*) FROM pg_collation WHERE collname = 'und-x-icu';" | tail -1)" = 1 ]; then
 	check "a filtered read finds a row inserted after a collation change in the same transaction" \
 		"$(same_desc "text COLLATE \"C\"" "'m'" "text COLLATE \"und-x-icu\"" "(1, 'a'), (2, 'B')" \
-			"v > 'A' AND v < 'Z' AND v <> 'm'" "string_agg(v, ',' ORDER BY v)")" "true|B|B"
+			"v > 'A' AND v < 'Z' AND v <> 'm'" "string_agg(v, ',' ORDER BY v)" last)" "true|B|B"
 else
 	check_unrunnable "a filtered read finds a row inserted after a collation change in the same transaction" \
 		MISSING_DEPENDENCY "this server has no ICU collation und-x-icu"
