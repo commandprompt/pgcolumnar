@@ -616,7 +616,9 @@ true until the next version shipped.
   FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
   and on a bucket only for an `int`, `long` or `string` field. A `bigint`
   declaration over an INT32 decimal now fails with a filter too (SQLSTATE
-  42804), as the full scan always did, instead of returning no rows.
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int`. The FDW matches the
+  Iceberg field by its whole name, so a field `d_x` does not stand in for `d`.
   `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's

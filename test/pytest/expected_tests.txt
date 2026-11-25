@@ -1942,4 +1942,10 @@ guard_tests 895
 # (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
 # `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
 # collected, less guard_tests 894.
-cluster_tests 5403
+# cluster_tests 5403 -> 5406 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# (test_the_field_type_lookup_matches_the_whole_field_name,
+# test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
+# test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too). The five earlier #2086 tests made
+# 5398 -> 5403 in the main merge. By collection of the cluster files (all test_*.py not in NO_CLUSTER):
+# 5406 tests collected.
+cluster_tests 5406

@@ -536,6 +536,36 @@ check "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2" \
 check "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)" \
 	"$(fp "SELECT * FROM dec9i WHERE id = 5")" "1"
 
+# The gate matches the Iceberg field by its whole name. In pfx the long field
+# d_x comes before the decimal d. A lookup that matched names by prefix would
+# take d for a long, read its big-endian bounds as an integer's, and prune the
+# file that holds d = 20000000.
+MD_PFX="$(ls "$DCWH"/db/pfx/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dpfx (id bigint, d_x bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_PFX')" >/dev/null
+check "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dpfx WHERE d = 20000000")" "2"
+
+# ---- a bool column prunes on bounds only over an Iceberg boolean (#2086) -----
+# boolt: an Iceberg boolean, one file with b false (ids 1, 2) and one with b
+# true (ids 3, 4). booli: an Iceberg int (values 5 to 8) declared bool, which
+# the reader refuses. b > false is used, not b = true, because the planner folds
+# b = true to a bare "Filter: b" that never reaches the bounds check.
+MD_BT="$(ls "$DCWH"/db/boolt/metadata/*.metadata.json | sort | tail -1)"
+MD_BI="$(ls "$DCWH"/db/booli/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE boolt (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+q "CREATE FOREIGN TABLE booli (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+check "bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM boolt WHERE b > false")" "1"
+check "bool: b > false on an Iceberg boolean returns ids 3 and 4" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM boolt WHERE b > false")" "3,4"
+check "bool: a full scan of an Iceberg int declared bool is refused (42804)" \
+	"$(tm_state "SELECT * FROM booli")" "42804"
+check "bool: b < true on an Iceberg int declared bool is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM booli WHERE b < true")" "42804"
+
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
 	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1

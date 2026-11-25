@@ -416,7 +416,10 @@ Read-only support for Apache Iceberg tables at their current snapshot.
   temporal transforms. It prunes `year`, `month`, `day`, and `hour` on a timestamp
   or timestamptz column, and `year`, `month`, and `day` on a date column. Metrics
   pruning covers integer and boolean columns by their stored minimum and maximum,
-  when the Iceberg field is an `int`, `long` or `boolean`. An Iceberg `decimal`
-  read as `int` or `bigint` is not pruned by metrics or by `bucket[N]` (#2086).
+  when the Iceberg field is an `int`, `long` or `boolean`. `bucket[N]` pruning on
+  an integer or text column needs an Iceberg `int`, `long` or `string` field. So
+  the wrapper does not prune by these two rules on an Iceberg `decimal` read as
+  `int` or `bigint` (#2086), a `date` read as an integer, or a `binary` read as
+  `text`. The filter then reads those files and returns the same rows.
 - Pruning is only an optimization. A predicate the wrapper cannot decide reads the
   file and returns the same rows. `EXPLAIN (ANALYZE)` reports `Files Pruned`.

@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-104 literal matches and 0 missing (#1818's twelve and #2086's ten included).
+109 literal matches and 0 missing (#1818's twelve and #2086's fifteen included).
 
 | test | asserts |
 | --- | --- |
@@ -4550,6 +4550,9 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_refused_decimal_declaration_is_refused_with_a_filter_too` | #2086: `bigint` over an INT32 decimal is refused (42804) by a full scan, and by a filtered scan, which must not prune every file and return nothing |
 | `test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned` | #2086: `bucket[8]` on a decimal declared `int` returns id 1 for `d = 10000000` and id 2 for `d = 20000000`; Iceberg hashes a decimal's bytes, not a long |
 | `test_the_long_column_beside_a_decimal_still_prunes` | #2086's control: `id = 5` on the `long` column of the same file still prunes it on min/max (Files Pruned: 1) |
+| `test_the_field_type_lookup_matches_the_whole_field_name` | #2086: in `pfx` the `long` field `d_x` comes before the decimal `d`; `d = 20000000` returns id 2. A lookup that matched the name `d` as a prefix would read `d` as a long and prune its file |
+| `test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds` | #2086: a `bool` column over an Iceberg `boolean`: `b > false` prunes the all-false file (Files Pruned: 1) and returns ids 3 and 4 |
+| `test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `int` is refused (42804) by a full scan, and by `b < true`, which must not prune on the int's bounds and return nothing |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 

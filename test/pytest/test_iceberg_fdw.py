@@ -73,6 +73,9 @@ WAREHOUSES = {
     "dec9b":  ("warehouse_decimal", "dec9",        "id bigint, d bigint"),
     "dec18b": ("warehouse_decimal", "dec18",       "id bigint, d bigint"),
     "dec9k":  ("warehouse_decimal", "dec9_bucket", "id bigint, d int"),
+    "dpfx":   ("warehouse_decimal", "pfx",         "id bigint, d_x bigint, d int"),
+    "boolt":  ("warehouse_decimal", "boolt",       "id bigint, b bool"),
+    "booli":  ("warehouse_decimal", "booli",       "id bigint, b bool"),
 }
 
 
@@ -942,6 +945,45 @@ def test_the_long_column_beside_a_decimal_still_prunes(ice, expect):
         return
     expect.num(_pruned(conn, "SELECT * FROM dec9i WHERE id = 5"), 1,
                "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)")
+
+
+def test_the_field_type_lookup_matches_the_whole_field_name(ice, expect):
+    """pfx puts the long field d_x before the decimal d. A lookup that matched the
+    column name as a prefix would take d for a long and prune on its bounds."""
+    conn, meta = ice
+    if not _need(expect, meta, "dpfx"):
+        return
+    expect.text(_ids(conn, "dpfx", "d = 20000000") or "none", "2",
+                "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2")
+
+
+# ---------------------------------- a bool column prunes on bounds only over an Iceberg boolean
+#
+# boolt is an Iceberg boolean: ids 1, 2 with b false in one file, ids 3, 4 with b true
+# in another. booli is an Iceberg int (5 to 8) declared bool, which the reader refuses.
+# The tests use b > false and b < true: the planner folds b = true to a bare
+# "Filter: b", which never reaches the bounds check.
+
+def test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolt"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM boolt WHERE b > false"), 1,
+               "bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)")
+    expect.text(_ids(conn, "boolt", "b > false") or "none", "3,4",
+                "bool: b > false on an Iceberg boolean returns ids 3 and 4")
+
+
+def test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, expect):
+    """The bounds of an Iceberg int are not a boolean's. Reading them as one prunes
+    the file, and the refused declaration returns an empty answer instead."""
+    conn, meta = ice
+    if not _need(expect, meta, "booli"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM booli"), "42804",
+                "bool: a full scan of an Iceberg int declared bool is refused (42804)")
+    expect.text(_sqlstate(conn, "SELECT * FROM booli WHERE b < true"), "42804",
+                "bool: b < true on an Iceberg int declared bool is refused the same way, not empty")
 
 
 # ------------------------------------------------------------------- option validation
