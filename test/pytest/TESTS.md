@@ -12923,8 +12923,15 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_empty_v1_page_without_body_is_rejected_when_nullable` | an empty v1 page with no body is rejected on a nullable column |
 | `test_parquet_streaming_empty_data_page_with_garbage_body_is_rejected` | an empty data page with a garbage body is rejected |
 | `test_parquet_streaming_index_page_is_stepped_over` | an INDEX_PAGE between data pages is stepped over |
+| `test_parquet_streaming_run_of_16_index_pages_reads` | a run of 16 INDEX_PAGEs reads |
 | `test_parquet_streaming_run_of_17_index_pages_is_rejected` | a run of 17 INDEX_PAGEs is rejected |
 | `test_parquet_streaming_data_page_without_header_is_rejected` | a DATA_PAGE with no DataPageHeader is rejected, not skipped |
+| `test_parquet_streaming_data_page_header_without_num_values_is_rejected` | a DataPageHeader without num_values is rejected |
+| `test_parquet_streaming_empty_data_page_header_struct_is_rejected` | an empty DataPageHeader struct is rejected |
+| `test_parquet_streaming_empty_data_page_header_v2_struct_is_rejected` | an empty DataPageHeaderV2 struct is rejected |
+| `test_parquet_streaming_data_page_v2_without_header_is_rejected` | a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_negative_num_values_is_rejected` | a data page with a negative num_values is rejected |
+| `test_parquet_streaming_unknown_page_type_is_stepped_over` | a page of an unknown type is stepped over |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |

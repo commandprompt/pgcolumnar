@@ -1754,7 +1754,8 @@ typedef struct PqPageHeader
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
 	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
-	bool		has_data_hdr;	/* a DataPageHeader (v1 or v2) was parsed (#2077) */
+	bool		has_data_hdr;	/* a DataPageHeader (v1 or v2) with its
+								 * required num_values was parsed (#2077) */
 } PqPageHeader;
 
 /*
@@ -1820,6 +1821,7 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			{
 				case 1:
 					h->num_values = pq_page_i32(r, h, ft);
+					h->has_data_hdr = true;
 					break;
 				case 2:
 					h->encoding = pq_page_i32(r, h, ft);
@@ -1839,6 +1841,7 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			{
 				case 1:
 					h->num_values = pq_page_i32(r, h, ft);
+					h->has_data_hdr = true;
 					break;
 				case 2:			/* num_nulls: not stored */
 				case 3:			/* num_rows: not stored */
@@ -1901,10 +1904,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				break;
 			case 5:				/* DataPageHeader (v1) */
 				if (pq_page_struct(r, h, ft))
-				{
-					h->has_data_hdr = true;
 					parse_data_page_header(r, h, false);
-				}
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
@@ -1931,10 +1931,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				}
 			case 8:				/* DataPageHeaderV2 */
 				if (pq_page_struct(r, h, ft))
-				{
-					h->has_data_hdr = true;
 					parse_data_page_header(r, h, true);
-				}
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
@@ -2450,11 +2447,17 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		 * time. A page with values resets the run, and those pages are bounded
 		 * by ch->num_values.
 		 *
-		 * A data page must carry its DataPageHeader, the only source of its
-		 * num_values. Without one it parses as an empty page, and decoding it
-		 * as one would drop its values silently. pyarrow refuses it too, and so
-		 * a run of zero bytes, each a header with no fields, is refused at its
-		 * first byte.
+		 * A data page must carry its DataPageHeader with num_values (field 1,
+		 * required), the only source of the page's value count. has_data_hdr
+		 * is set where num_values is parsed, not where the struct starts: a
+		 * page with no header, an empty header struct, or a header without
+		 * num_values would otherwise parse as an empty page, and decoding it
+		 * as one would drop its values silently. pyarrow refuses each of these
+		 * on a DATA_PAGE. On a DATA_PAGE_V2 with no header at all, pyarrow
+		 * 23.0.1 reads the page as empty and drops its values; this reader
+		 * refuses it, which is stricter. A run of zero bytes, each a header
+		 * with no fields, is refused at its first byte. A negative num_values
+		 * is refused too, as pyarrow refuses it.
 		 *
 		 * Any other page type (INDEX_PAGE, or one this reader does not know)
 		 * holds no values for the chunk. It counts toward the run and is

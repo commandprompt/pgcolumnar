@@ -1952,4 +1952,9 @@ guard_tests 895
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-cluster_tests 5412
+# cluster_tests 5412 -> 5419 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
+# DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
+# struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
+cluster_tests 5419

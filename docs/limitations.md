@@ -1206,7 +1206,10 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   like any other, so it reads such a page where pyarrow 23 reads it and refuses
   it where pyarrow refuses it. For example, a v1 page of a nullable column with
   no body is refused, because it has no definition-level length. The reader also
-  refuses a data page that has no DataPageHeader. It refuses more than 16 pages
+  refuses a data page whose DataPageHeader is missing, empty, or has no
+  `num_values`, and a data page with a negative `num_values`. For a DATA_PAGE_V2
+  with no header at all, this is stricter than pyarrow 23, which reads the page
+  as empty and drops its values. It refuses more than 16 pages
   with no values in a row in one column chunk. An INDEX_PAGE, or a page type the reader
   does not know, counts as a page with no values and is stepped over. These
   refusals raise SQLSTATE XX001. The run limit stops a crafted file from making

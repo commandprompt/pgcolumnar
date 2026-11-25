@@ -308,6 +308,7 @@ with_pages("garbage_body.parquet", popt, {1: empty_data_page(b"\xff\xff\xff\xff"
 # an INDEX_PAGE between data pages: pyarrow steps over it and reads 200 rows. Such a
 # page counts toward the run limit too, so 17 in a row are refused.
 with_pages("index_page.parquet", popt, {1: index_page()})
+with_pages("index_run16.parquet", popt, {1: index_page() * 16})
 with_pages("index_run17.parquet", popt, {1: index_page() * 17})
 
 
@@ -330,6 +331,57 @@ def nohdr_loss():
 
 nohdr_loss()
 
+
+# Round 2 of the review: header shapes that must not drop a page's values, and the
+# step-over and run rules for page types the reader does not decode.
+def replace_page2_header(name, src, hdr_for, rows=150):
+    """write src with page 2's header replaced by hdr_for(body length), its body kept.
+    The footer's sizes follow the header's new length. rows=150 also drops the
+    footer's value and row counts from 200 to 150, so the other three pages complete
+    the chunk: reading the file without an error then means ids 50..99 were dropped."""
+    m, b, offs, total = src
+    hend, pend = page_bounds(b, offs[1])
+    hdr = hdr_for(pend - hend)
+    out = b[:offs[1]] + hdr + b[hend:]
+    shrink = (hend - offs[1]) - len(hdr)
+    # the footer holds 200 four times for the nullable column and three times for
+    # the REQUIRED one; any other count means the layout is not the one expected
+    if m.count(zz(total)) < 1 or m.count(zz(200)) != (4 if src is popt else 3):
+        sys.exit(5)
+    m = m.replace(zz(total), zz(total - shrink))
+    if rows != 200:
+        m = m.replace(zz(200), zz(rows))
+    build(name, out, m, len(m))
+
+
+def sizes(t, n):
+    """type, uncompressed_size and compressed_size, the first three header fields"""
+    return fh(1, I32) + zz(t) + fh(1, I32) + zz(n) + fh(1, I32) + zz(n)
+
+
+# a DataPageHeader with no num_values (its required field 1): fields 2-4 only.
+# pyarrow refuses it ("Couldn't deserialize thrift"); decoding it as an empty page
+# would drop the page's 50 values.
+replace_page2_header("nv_missing.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + fh(2, I32) + zz(0) + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP)
+# an empty DataPageHeader struct (5:{}) and an empty DataPageHeaderV2 struct (8:{}):
+# pyarrow refuses both ("Couldn't deserialize thrift")
+replace_page2_header("hdr5empty_loss.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT) + STOP + STOP)
+replace_page2_header("hdr8empty_loss.parquet", popt, lambda n: sizes(3, n) + fh(5, STRUCT) + STOP + STOP)
+# a DATA_PAGE_V2 with no DataPageHeaderV2, on a REQUIRED column. The reader refuses
+# it. pyarrow 23.0.1 does not: it reads 150 rows and drops the page's values, so the
+# reader is stricter than pyarrow here.
+replace_page2_header("nohdr_v2_loss_req.parquet", preq, lambda n: sizes(3, n) + STOP)
+# page 2's num_values is -5, the header otherwise as pyarrow writes it; pyarrow
+# refuses it ("Invalid page header (negative number of values)")
+replace_page2_header("negnv.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + fh(1, I32) + zz(-5) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3)
+                     + fh(1, I32) + zz(3) + STOP + STOP, rows=200)
+# a page of type 7, which no Parquet version defines, with a 4-byte 0xff body:
+# pyarrow steps over it and reads 200 rows
+with_pages("unknown_type_page.parquet", popt,
+           {1: fh(1, I32) + zz(7) + fh(1, I32) + zz(4) + fh(1, I32) + zz(4) + STOP + b"\xff" * 4})
+
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
 pq.write_table(pa.table({"li": pa.array([[1, 2], None, [3], []], pa.list_(pa.int64()))}),
@@ -349,7 +401,8 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "v2_levels", "allnull", "empty_data_page", "one_empty_page",
              "empty_page_run", "empty_run16", "empty_run17", "empty_runs_10_10",
              "nobody_v1_req", "nobody_v2", "nobody_v1_opt", "garbage_body", "index_page",
-             "index_run17",
-             "nohdr_loss", "empty_page_snappy", "stream_groups"):
+             "index_run16", "index_run17",
+             "nohdr_loss", "nv_missing", "hdr5empty_loss", "hdr8empty_loss",
+             "nohdr_v2_loss_req", "negnv", "unknown_type_page", "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

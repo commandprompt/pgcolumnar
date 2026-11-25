@@ -611,9 +611,12 @@ true until the next version shipped.
   every data page with no values, so the whole read failed with `could not decode
   Parquet column 0 in row group 0`. The reader now decodes such a page like any
   other, so it reads and refuses the same empty pages pyarrow 23 does. It refuses
-  a data page with no DataPageHeader, which would otherwise drop that page's
-  values, so a zero-filled area stays a fast refusal. It refuses more than 16
-  pages with no values in a row, and steps over an INDEX_PAGE. In every file
+  a data page whose DataPageHeader is missing, empty, or has no `num_values`,
+  which would otherwise drop that page's values, so a zero-filled area stays a
+  fast refusal. For a DATA_PAGE_V2 with no header at all this is stricter than
+  pyarrow 23, which reads the page as empty. It refuses a negative `num_values`.
+  It refuses more than 16 pages with no values in a row, and steps over an
+  INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
