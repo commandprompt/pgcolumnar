@@ -429,6 +429,56 @@ refusal "a timestamp[] element past Arrow's range is refused, and the error name
 refusal "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)" \
 	"SELECT pgcolumnar.export_arrow('ar_tscomp', '$PGC_WORKDIR/tscomp.arrows')" \
 	'columnar: a value in column "tscomp" is out of range for an Arrow timestamp' 22008
+# Two levels deep, the parent of the timestamp is itself a child, so its own name
+# ("item" or a field name) differs from the table column. Each child must pass the table
+# column down, not its own name.
+psql_run "CREATE TYPE ar_tsrow AS (a int, ts timestamp);
+          CREATE TABLE ar_aoc (aoc ar_tsrow[]) USING pgcolumnar;
+          INSERT INTO ar_aoc VALUES (ARRAY[ROW(1, '294247-01-10 04:00:54.775808')::ar_tsrow]);
+          CREATE TYPE ar_tsarrrow AS (a int, tsa timestamp[]);
+          CREATE TABLE ar_coa (coa ar_tsarrrow) USING pgcolumnar;
+          INSERT INTO ar_coa VALUES (ROW(1, ARRAY['294247-01-10 04:00:54.775808'::timestamp]));" >/dev/null
+refusal "a timestamp field of an array-of-composites column past Arrow's range is refused, and the error names the table column, not the Arrow element or the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_aoc', '$PGC_WORKDIR/aoc.arrows')" \
+	'columnar: a value in column "aoc" is out of range for an Arrow timestamp' 22008
+refusal "a timestamp[] element inside a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_coa', '$PGC_WORKDIR/coa.arrows')" \
+	'columnar: a value in column "coa" is out of range for an Arrow timestamp' 22008
+# The range check must not refuse an in-range timestamp inside an array or a composite.
+# The first and last values here sit next to the two ends of the check: -1 and the
+# largest int64.
+TSNEST="$PGC_WORKDIR/tsnest.arrows"
+psql_run "CREATE TYPE ar_tspair AS (lo timestamp, hi timestamptz);
+          CREATE TABLE ar_tsnest (tsa timestamp[], tza timestamptz[], tsc ar_tspair) USING pgcolumnar;
+          INSERT INTO ar_tsnest VALUES (
+            ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[],
+            ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[],
+            ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::ar_tspair);" >/dev/null
+nest_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsnest', '$TSNEST')")"
+nest_read="$(python3 - "$TSNEST" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    print(" ".join(",".join(str(v) for v in vals) for vals in lists + [pair]))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review)" \
+	"$nest_rows|$nest_read" "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807"
+# The refusal's DETAIL tells the reader where Arrow's range ends.
+detail_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 2>&1)"
+case "$detail_out" in
+*"DETAIL:  Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807."*) detail_got="present" ;;
+*) detail_got="missing: $(printf '%s' "$detail_out" | tr '\n' ' ')" ;;
+esac
+check "and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review)" \
+	"$detail_got" "present"
 
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of

@@ -121,6 +121,16 @@ def _refusal(dsn, sql, msg, sqlstate=None):
     return "succeeded"
 
 
+def _detail(dsn, sql):
+    """-> the DETAIL of the error `sql` raises, "succeeded", or "no detail"."""
+    try:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(sql)
+    except psycopg.Error as exc:
+        return exc.diag.message_detail or "no detail"
+    return "succeeded"
+
+
 def _value_after(dsn, setup, sql):
     """-> `sql`'s first value after the `setup` statements on the same session, or the
     failure as a query_error(). A failed setup statement is passed over, as psql passes
@@ -243,6 +253,28 @@ def ae(pgc_cluster, server_dir):
                               TS_RANGE_MSG % "tsarr", "22008")
         r["tscomp"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_tscomp', '{server_dir / 'tscomp.arrows'}')",
                                TS_RANGE_MSG % "tscomp", "22008")
+        # two levels deep, the parent's own name differs from the table column
+        _run(dsn, "CREATE TYPE ar_tsrow AS (a int, ts timestamp)")
+        _run(dsn, "CREATE TABLE ar_aoc (aoc ar_tsrow[]) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_aoc VALUES (ARRAY[ROW(1, '294247-01-10 04:00:54.775808')::ar_tsrow])")
+        _run(dsn, "CREATE TYPE ar_tsarrrow AS (a int, tsa timestamp[])")
+        _run(dsn, "CREATE TABLE ar_coa (coa ar_tsarrrow) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_coa VALUES (ROW(1, ARRAY['294247-01-10 04:00:54.775808'::timestamp]))")
+        r["aoc"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_aoc', '{server_dir / 'aoc.arrows'}')",
+                            TS_RANGE_MSG % "aoc", "22008")
+        r["coa"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_coa', '{server_dir / 'coa.arrows'}')",
+                            TS_RANGE_MSG % "coa", "22008")
+        # an in-range timestamp inside an array or a composite still exports
+        f["tsnest"] = server_dir / "tsnest.arrows"
+        _run(dsn, "CREATE TYPE ar_tspair AS (lo timestamp, hi timestamptz)")
+        _run(dsn, "CREATE TABLE ar_tsnest (tsa timestamp[], tza timestamptz[], tsc ar_tspair) USING pgcolumnar")
+        _run(dsn, "INSERT INTO ar_tsnest VALUES ("
+                  "ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[], "
+                  "ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[], "
+                  "ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::ar_tspair)")
+        r["tsnest rows"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsnest', '{f['tsnest']}')")
+        # the refusal's DETAIL gives Arrow's last timestamp
+        r["tsover detail"] = _detail(dsn, f"SELECT pgcolumnar.export_arrow('ar_tsover', '{f['tsover']}')")
         r["dsn"] = dsn
         yield r
     finally:
@@ -648,3 +680,49 @@ def test_a_timestamp_composite_field_past_arrows_range_names_the_column(ae, expe
         return
     expect.text(ae["tscomp"], "refused",
                 "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)")
+
+
+def test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column(ae, expect):
+    """#2085 review: two levels deep, the struct inside the list is named "item", so a
+    field that took its parent's own name would report "item", not the table column."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["aoc"], "refused",
+                "a timestamp field of an array-of-composites column past Arrow's range is refused, and the error names the table column, not the Arrow element or the field (#2085 review)")
+
+
+def test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column(ae, expect):
+    """#2085 review: two levels deep, the list is a field named "tsa", so an element that
+    took its parent's own name would report "tsa", not the table column."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["coa"], "refused",
+                "a timestamp[] element inside a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085 review)")
+
+
+def _nested(pa, path):
+    t = _read(pa, path)
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    return " ".join(",".join(str(v) for v in vals) for vals in lists + [pair])
+
+
+def test_an_in_range_nested_timestamp_still_exports(ae, expect):
+    """#2085 review: the range check must not refuse an in-range timestamp inside an
+    array or a composite. The values sit next to both ends of the check."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification")
+    if pa is None or expect.require_module("pyarrow.ipc", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(f"{ae['tsnest rows']}|{_reading(_nested, pa, ae['files']['tsnest'])}",
+                "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807",
+                "an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review)")
+
+
+def test_the_out_of_range_timestamp_error_gives_arrows_last_value(ae, expect):
+    """#2085 review: the refusal's DETAIL tells the reader where Arrow's range ends."""
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Arrow export verification") is None:
+        return
+    expect.text(ae["tsover detail"],
+                "Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807.",
+                "and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review)")

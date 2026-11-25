@@ -613,9 +613,10 @@ true until the next version shipped.
   readers saw a date before year 0, and `import_arrow` refused the file. Such a
   value now fails the export with SQLSTATE 22008, naming the table column, and
   no file is written. For an element of an array column or a field of a
-  composite column, the error names that table column too. A timestamp
-  before 1970, down to 4714-11-24 BC, still exports. The tests check the
-  SQLSTATE as well as the message.
+  composite column, the error names that table column too, at any depth. A
+  timestamp before 1970, down to 4714-11-24 BC, still exports, and so does an
+  in-range timestamp inside an array or a composite. The tests check the
+  SQLSTATE and the DETAIL as well as the message.
   docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as

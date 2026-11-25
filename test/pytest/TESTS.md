@@ -8930,6 +8930,10 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_a_timestamp_before_1970_still_exports` | a timestamp before 1970 still exports: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz, so the range check refuses only past the top (#2085 review) |
 | `test_a_timestamp_array_element_past_arrows_range_names_the_column` | a timestamp[] element past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the Arrow element "item" (#2085) |
 | `test_a_timestamp_composite_field_past_arrows_range_names_the_column` | a timestamp field of a composite column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the field (#2085) |
+| `test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column` | a timestamp field of an array-of-composites column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the Arrow element "item" or the field: two levels deep, the parent's own name differs from the column (#2085 review) |
+| `test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column` | a timestamp[] element inside a composite column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the field (#2085 review) |
+| `test_an_in_range_nested_timestamp_still_exports` | an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review) |
+| `test_the_out_of_range_timestamp_error_gives_arrows_last_value` | and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review) |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 

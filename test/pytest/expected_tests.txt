@@ -2008,4 +2008,11 @@ guard_tests 895
 # (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
 # (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
-cluster_tests 5486
+# cluster_tests 5486 -> 5490 for the third #2085 review in test_arrow_export.py: a timestamp two levels
+# deep is refused with the table column named, in an array of composites and in a composite's array
+# (test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column,
+# test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column), an in-range nested timestamp
+# still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
+# (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
+cluster_tests 5490
