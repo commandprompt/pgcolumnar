@@ -1129,10 +1129,13 @@ def test_the_server_survives(ohr, expect):
 # final answer, even unasked. The read path took the first 1xx as the final answer.
 # The first path segment picks what goes ahead of every answer: inone nothing (the
 # control), i100 100 Continue, i103 103 Early Hints with a Link header, iboth both,
-# i199 an unregistered 199.
+# i199 an unregistered 199, i102 102 Processing. i103c sends 103 and closes the
+# connection after each answer, so every request after the first on a kept-alive
+# connection takes the stale retry.
 # i101 sends 101 Switching Protocols and then the normal answer, so a client that
 # passed over the 101 would read every row: the client never sends Upgrade, so a 101
-# is refused, as issue #2090 asks.
+# is refused, as issue #2090 asks. i103x101 sends 103 and then 101, so the 101 is
+# not the first head on the wire.
 # Under it the server answers a ranged object, an s3 ListObjectsV2 of its bucket
 # (the segment is the bucket), the REST catalog paths iceberg_rest_namespaces asks,
 # and an export's PUT. With Expect, the PUT gets the interim answer as the early
@@ -1142,8 +1145,11 @@ _CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
 _EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
 _SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
 _ODD = b"HTTP/1.1 199 Whatever\r\n\r\n"
+_PROC = b"HTTP/1.1 102 Processing\r\n\r\n"
 INTERIM_AHEAD = {"inone": b"", "i100": _CONT, "i103": _EARLY, "iboth": _CONT + _EARLY,
-                 "i101": _SWITCH, "i199": _ODD}
+                 "i101": _SWITCH, "i199": _ODD, "i102": _PROC, "i103x101": _EARLY + _SWITCH,
+                 "i103c": _EARLY}
+INTERIM_CLOSE = {"i103c"}
 # A 1xx read as a final answer with Connection: close waited for a body that never
 # ended, so every reading is bounded.
 INTERIM_TIMEOUT = "SET statement_timeout = '20s'"
@@ -1217,6 +1223,13 @@ def _interim_serve(conn, root, puts, puts_lock):
                     lo, hi = map(int, re.match(r"bytes=(\d+)-(\d+)", hdr["range"]).groups())
                     reply(mode, b"206 Partial Content", data[lo:hi + 1],
                           b"Content-Range: bytes %d-%d/%d\r\n" % (lo, hi, len(data)))
+                if mode in INTERIM_CLOSE:
+                    # Half-close, then take the next request before closing, so the
+                    # client reads a clean EOF, not a reset, and retries.
+                    conn.shutdown(socket.SHUT_WR)
+                    while rf.read(65536):
+                        pass
+                    break
     except OSError:
         pass
     finally:
@@ -1297,7 +1310,11 @@ def interim(pgc_cluster):
         r[("read", "i101")] = _interim_read(dsn, rows % "i101", SWITCH_REFUSAL)
         r[("glob", "i101")] = _interim_read(dsn, glob % "i101", SWITCH_REFUSAL)
         r[("rest", "i101")] = _interim_read(dsn, rest % "i101", SWITCH_REFUSAL)
+        r[("read", "i103x101")] = _interim_read(dsn, rows % "i103x101", SWITCH_REFUSAL)
+        r[("rest", "i103x101")] = _interim_read(dsn, rest % "i103x101", SWITCH_REFUSAL)
         r[("read", "i199")] = _interim_read(dsn, rows % "i199")
+        r[("read", "i102")] = _interim_read(dsn, rows % "i102")
+        r[("read", "i103c")] = _interim_read(dsn, rows % "i103c")
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute(f"CREATE TABLE {INTERIM_SCHEMA}.f_big (id int8, pad text) USING pgcolumnar")
             c.execute(f"INSERT INTO {INTERIM_SCHEMA}.f_big SELECT g, md5(g::text)||md5((g+1)::text) "
@@ -1427,12 +1444,44 @@ def test_a_rest_catalog_answering_after_101_switching_protocols_is_refused(inter
                 "F: a REST catalog whose answer follows 101 Switching Protocols is refused")
 
 
+def test_a_read_answered_103_and_then_101_is_refused(interim, expect):
+    # Each head is checked for 101, not only the first (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused")
+
+
+def test_a_rest_catalog_answering_after_103_and_then_101_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
+                "F: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused")
+
+
 def test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row(interim, expect):
     # 199 pins the top of the 1xx range: a loop that stops at 104 reads it as final.
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i199")], INTERIM_ROWS,
                 "F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row")
+
+
+def test_a_read_answered_102_processing_first_reads_every_row(interim, expect):
+    # 102 is passed over like any other 1xx but 101: only 101 is refused.
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i102")], INTERIM_ROWS,
+                "F: a read whose HEAD and GETs are each answered 102 Processing first reads every row")
+
+
+def test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row(interim, expect):
+    # Each request after the first takes the stale keep-alive retry, which passes
+    # over the 1xx as the first attempt does (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i103c")], INTERIM_ROWS,
+                "F: a read from a server that sends 103 Early Hints and closes after each answer reads every row")
 
 
 def test_a_large_export_whose_expect_is_answered_100_continue_is_written(interim, expect):

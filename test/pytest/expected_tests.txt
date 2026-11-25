@@ -2020,4 +2020,12 @@ guard_tests 895
 #   test_a_large_export_whose_expect_is_answered_101_is_refused
 #   test_a_small_export_answered_101_first_is_refused
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5418 tests collected.
-cluster_tests 5498
+# cluster_tests 5498 -> 5502 for the second #2156 review in test_objstore_http_read.py: a read and a
+# REST catalog that refuse 101 after 103, a read past 102, and a read whose server sends 103 and
+# closes after each answer, so the stale keep-alive retry passes over the 1xx too:
+#   test_a_read_answered_103_and_then_101_is_refused
+#   test_a_rest_catalog_answering_after_103_and_then_101_is_refused
+#   test_a_read_answered_102_processing_first_reads_every_row
+#   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
+# by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
+cluster_tests 5502

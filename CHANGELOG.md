@@ -618,6 +618,8 @@ true until the next version shipped.
   includes a 1xx no RFC registers, such as 199.
   `101 Switching Protocols` is now refused with `switched protocols with HTTP
   101`, on reads and exports alike, because the client never asks to switch.
+  A 101 that follows another 1xx, such as `103` and then `101`, is refused
+  the same way.
   An export over 1 MiB, which sends `Expect: 100-continue`, also refuses a 101
   that answers its headers before the body; before, it sent the body and took
   the next answer.

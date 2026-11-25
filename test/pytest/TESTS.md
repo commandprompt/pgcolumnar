@@ -13416,7 +13416,11 @@ Every test makes one check under the shell's name, from readings a module fixtur
 | `test_a_read_answered_101_switching_protocols_first_is_refused` | F: a read whose HEAD is answered 101 Switching Protocols first is refused |
 | `test_an_s3_glob_answered_101_switching_protocols_first_is_refused` | F: an s3 glob whose LIST is answered 101 Switching Protocols first is refused |
 | `test_a_rest_catalog_answering_after_101_switching_protocols_is_refused` | F: a REST catalog whose answer follows 101 Switching Protocols is refused |
+| `test_a_read_answered_103_and_then_101_is_refused` | F: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused |
+| `test_a_rest_catalog_answering_after_103_and_then_101_is_refused` | F: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused |
 | `test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row` | F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row |
+| `test_a_read_answered_102_processing_first_reads_every_row` | F: a read whose HEAD and GETs are each answered 102 Processing first reads every row |
+| `test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row` | F: a read from a server that sends 103 Early Hints and closes after each answer reads every row |
 | `test_a_large_export_whose_expect_is_answered_100_continue_is_written` | F: control: a large export whose Expect is answered 100 Continue is written |
 | `test_the_large_export_was_sent_with_expect` | premise: the large export was sent with Expect: 100-continue |
 | `test_a_large_export_whose_expect_is_answered_103_early_hints_is_written` | F: a large export whose Expect is answered 103 Early Hints is written |
