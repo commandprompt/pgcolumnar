@@ -609,6 +609,13 @@ check "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files P
 	"$(fp "SELECT * FROM byint WHERE k = 5")" "4"
 check "bucket: k = 5 on bucket[8] of an Iceberg int returns 5" \
 	"$(q "SELECT coalesce(string_agg(k::text, ',' ORDER BY k), 'none') FROM byint WHERE k = 5")" "5"
+# byintt reads the same Iceberg int as text. The reader refuses a full scan
+# (42804). The bucket map must not hash 'a' as an int's bucket and prune every
+# file, which returned 0 rows and no error.
+q "CREATE FOREIGN TABLE byintt (k text)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM byintt WHERE k = 'a'")" "42804"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \

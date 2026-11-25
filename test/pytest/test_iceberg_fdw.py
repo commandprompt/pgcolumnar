@@ -81,6 +81,7 @@ WAREHOUSES = {
     "booli2": ("warehouse_decimal", "booli",       "id bigint, b smallint"),
     "boolti": ("warehouse_decimal", "boolt",       "id bigint, b int"),
     "byint":  ("warehouse_decimal", "byint",       "k int"),
+    "byintt": ("warehouse_decimal", "byint",       "k text"),
 }
 
 
@@ -1049,6 +1050,18 @@ def test_bucket_pruning_works_on_an_iceberg_int_source(ice, expect):
     expect.text(_one(conn, "SELECT string_agg(k::text, ',' ORDER BY k) FROM byint WHERE k = 5")
                 or "none", "5",
                 "bucket: k = 5 on bucket[8] of an Iceberg int returns 5")
+
+
+# byintt reads the same Iceberg int as text. The reader refuses a full scan (42804). The
+# bucket map must not hash 'a' as an int's bucket and prune every file, which returned 0
+# rows and no error.
+
+def test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byintt"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM byintt WHERE k = 'a'"), "42804",
+                "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty")
 
 
 # ------------------------------------------------------------------- option validation

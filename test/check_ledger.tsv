@@ -3345,6 +3345,7 @@ iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg int declared bool is refuse
 iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg long declared bool is refused (42804), not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm also accepts an Iceberg long (#2152 review, note b)
 iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm of ice_field_prunes_as_column_type returns false, so bool pruning is off (#2152 review, c3)
 iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean returns ids 3 and 4	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the text arm drops its Iceberg string check (returns forBucket alone) (#2152 review, A18)
 iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm takes an Iceberg int only when not bucketing (!forBucket &&) (#2152 review, M9)
 iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int returns 5	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-

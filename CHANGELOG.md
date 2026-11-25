@@ -617,8 +617,9 @@ true until the next version shipped.
   and on a bucket only for an `int`, `long` or `string` field. A `bigint`
   declaration over an INT32 decimal now fails with a filter too (SQLSTATE
   42804), as the full scan always did, instead of returning no rows. The
-  same holds for a `bool` column over an Iceberg `int` or `long`, and an
-  `int` column over an Iceberg `boolean`. The FDW matches the Iceberg field by
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  column over an Iceberg `boolean`, and a `text` column over an Iceberg
+  `int` partitioned by bucket. The FDW matches the Iceberg field by
   its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
   `d_x`. Bucket pruning on an Iceberg `int` source still works.
   `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.

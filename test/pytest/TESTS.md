@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-117 literal matches and 0 missing (#1818's twelve and #2086's twenty-three included).
+118 literal matches and 0 missing (#1818's twelve and #2086's twenty-four included).
 
 | test | asserts |
 | --- | --- |
@@ -4558,6 +4558,7 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `smallint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1), and `b = 8` returns id 8 |
 | `test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: an `int` column over an Iceberg `boolean` is refused (42804) by a full scan, and by `b = 5`, which must not prune on the boolean's bounds and return nothing |
 | `test_bucket_pruning_works_on_an_iceberg_int_source` | #2086: `bucket[8]` of an Iceberg `int` declared `int`: `k = 5` prunes 4 of 5 files (Files Pruned: 4; bounds alone prune 3) and returns 5 |
+| `test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `text` column over the same Iceberg `int` is refused (42804) by `k = 'a'`, which must not be bucket-pruned with an int's hash and return nothing |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
