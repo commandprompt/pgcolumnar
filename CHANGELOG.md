@@ -617,6 +617,9 @@ true until the next version shipped.
   own handles; a scan or cursor of the outer statement keeps reading.
   This covers all three places a handle opens: a read, an Iceberg REST
   request and an `s3://` write or listing.
+  A subtransaction commit, such as `RELEASE SAVEPOINT`, hands only its own
+  handles to the enclosing subtransaction, so a cursor opened before it still
+  reads after an enclosing abort.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as

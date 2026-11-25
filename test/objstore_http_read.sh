@@ -40,7 +40,8 @@
 #      of 1200 caught 404s does not run out of external FDs. The same for a
 #      caught REST request and a caught s3:// export (#2158 review). A scan's
 #      own handle, also inside an outer EXCEPTION block, and a cursor's survive
-#      a subtransaction abort inside them.
+#      a subtransaction abort inside them, and a cursor's survives a
+#      subtransaction commit (RELEASE) followed by an enclosing abort.
 #   Survival: the server still answers and no backend died across the arms (the
 #      server log's "terminated by signal" count, read after waiting for it).
 #
@@ -788,6 +789,9 @@ END \$f\$;"
 # pgc_nested_scan() scans fhttp inside an outer EXCEPTION block, so the scan's
 # handle belongs to that block's subtransaction, the parent of each inner
 # subtransaction pgc_try404() aborts (#2158 review).
+# It returns only the SQLSTATE of an error it catches: a read of freed memory
+# puts arbitrary bytes into SQLERRM, which the pytest twin cannot decode
+# (#2158 second review).
 psql_run "CREATE FUNCTION pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS \$f\$
 DECLARE r text;
 BEGIN
@@ -795,7 +799,7 @@ BEGIN
 		SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN 1 - pgc_try404() ELSE 0 END)
 			INTO r FROM fhttp;
 	EXCEPTION WHEN OTHERS THEN
-		r := 'outer caught ' || SQLSTATE || ': ' || SQLERRM;
+		r := 'outer caught ' || SQLSTATE;
 	END;
 	RETURN r;
 END \$f\$;"
@@ -809,6 +813,48 @@ BEGIN
 	BEGIN
 		FETCH c INTO x;
 		s := s + x;
+		PERFORM 1 / 0;
+	EXCEPTION WHEN division_by_zero THEN
+		NULL;
+	END;
+	LOOP
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+	END LOOP;
+	CLOSE c;
+	RETURN s;
+END \$f\$;"
+# pgc_fetch_sum(c, n) fetches up to n rows from cursor c (all of them when n is
+# NULL) and returns their sum; the commit-side controls below read a cursor
+# declared in SQL with it (#2158 second review).
+psql_run "CREATE FUNCTION pgc_fetch_sum(c refcursor, n int) RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE x int8; s int8 := 0; i int := 0;
+BEGIN
+	LOOP
+		EXIT WHEN n IS NOT NULL AND i >= n;
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+		i := i + 1;
+	END LOOP;
+	RETURN s;
+END \$f\$;"
+# pgc_cursor_commit_sum() fetches a cursor's first row, then runs an outer
+# EXCEPTION block in which an inner block commits and the outer block aborts,
+# and reads the rest after it (#2158 second review).
+psql_run "CREATE FUNCTION pgc_cursor_commit_sum() RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE c refcursor; x int8; s int8 := 0;
+BEGIN
+	OPEN c FOR SELECT c0 FROM fhttp;
+	FETCH c INTO x;
+	s := x;
+	BEGIN
+		BEGIN
+			NULL;
+		EXCEPTION WHEN OTHERS THEN
+			NULL;
+		END;
 		PERFORM 1 / 0;
 	EXCEPTION WHEN division_by_zero THEN
 		NULL;
@@ -856,6 +902,28 @@ check "F: a cursor first fetched in a subtransaction that aborts reads on to the
 # parent's handles too would make the next row group read freed memory.
 check "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)" \
 	"$(leaks_of "SELECT pgc_nested_scan();")" "rows=$F_LOCAL aborts=$G leaked=0"
+# Controls for the commit side (#2158 second review). A subtransaction commit
+# hands only its own handles to its parent, so the cursor's handle, which
+# belongs to the cursor, is still open when an enclosing subtransaction later
+# aborts. Handing every handle to the parent, or freeing every handle at a
+# commit below the top level, made the cursor's next FETCH read freed memory.
+check "F: a cursor reads on after an inner block commits and its outer block aborts (http == local)" \
+	"$(leaks_of "SELECT pgc_cursor_commit_sum();")" "rows=$F_LOCAL leaked=0"
+check "F: a cursor reads on after RELEASE of an inner SAVEPOINT and ROLLBACK TO the outer one (http == local)" \
+	"$(leaks_of "BEGIN;
+DECLARE c CURSOR FOR SELECT c0 FROM fhttp;
+SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true);
+SAVEPOINT s1; SAVEPOINT s2; RELEASE s2; ROLLBACK TO s1;
+SELECT count(*) FROM (SELECT 1) z;
+SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL);
+COMMIT;")" "rows=$F_LOCAL leaked=0"
+check "F: a cursor reads on after SAVEPOINT and RELEASE (http == local)" \
+	"$(leaks_of "BEGIN;
+DECLARE c CURSOR FOR SELECT c0 FROM fhttp;
+SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true);
+SAVEPOINT s; RELEASE s;
+SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL);
+COMMIT;")" "rows=$F_LOCAL leaked=0"
 # The other two places a handle opens (#2158 review): objstore_http_request,
 # here an Iceberg REST call to a closed port (08006), and os_write_handle_as,
 # here an s3:// export with no AWS_ENDPOINT_URL in the server environment

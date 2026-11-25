@@ -2002,4 +2002,9 @@ guard_tests 895
 # REST requests and caught s3:// exports leak no handle; a scan inside an outer EXCEPTION block reads on), by
 # collection: `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6301 tests
 # collected, less guard_tests 895.
-cluster_tests 5486
+# cluster_tests 5486 -> 5489 for three arm-F commit-side controls in test_objstore_http_read.py (#2158
+# second review: a cursor reads on after an inner block commits and its outer block aborts, after RELEASE of
+# an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
+# less guard_tests 895.
+cluster_tests 5489

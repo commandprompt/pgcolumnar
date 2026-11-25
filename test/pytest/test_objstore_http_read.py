@@ -500,13 +500,30 @@ def ohr(pgc_cluster):
                       "END LOOP; RETURN caught; END $f$")
             # pgc_nested_scan(), as the shell's: the scan of fhttp inside an
             # outer EXCEPTION block, so its handle belongs to the parent of each
-            # subtransaction pgc_try404() aborts
+            # subtransaction pgc_try404() aborts. It returns only the SQLSTATE
+            # it catches: a read of freed memory puts arbitrary bytes into
+            # SQLERRM, which psycopg cannot decode (#2158 second review)
             c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS $f$ "
                       "DECLARE r text; BEGIN BEGIN "
                       f"SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
                       f"THEN 1 - {SCHEMA}.pgc_try404() ELSE 0 END) INTO r FROM {SCHEMA}.fhttp; "
-                      "EXCEPTION WHEN OTHERS THEN r := 'outer caught ' || SQLSTATE || ': ' || SQLERRM; "
+                      "EXCEPTION WHEN OTHERS THEN r := 'outer caught ' || SQLSTATE; "
                       "END; RETURN r; END $f$")
+            # pgc_fetch_sum(c, n) and pgc_cursor_commit_sum(), as the shell's
+            # (#2158 second review): sum up to n rows of cursor c (all when n is
+            # NULL); and a cursor read on after an inner block commits and its
+            # outer block aborts
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_fetch_sum(c refcursor, n int) RETURNS int8 "
+                      "LANGUAGE plpgsql AS $f$ DECLARE x int8; s int8 := 0; i int := 0; BEGIN "
+                      "LOOP EXIT WHEN n IS NOT NULL AND i >= n; FETCH c INTO x; EXIT WHEN NOT FOUND; "
+                      "s := s + x; i := i + 1; END LOOP; RETURN s; END $f$")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_cursor_commit_sum() RETURNS int8 LANGUAGE plpgsql AS $f$ "
+                      "DECLARE c refcursor; x int8; s int8 := 0; BEGIN "
+                      f"OPEN c FOR SELECT c0 FROM {SCHEMA}.fhttp; FETCH c INTO x; s := x; "
+                      "BEGIN BEGIN NULL; EXCEPTION WHEN OTHERS THEN NULL; END; PERFORM 1 / 0; "
+                      "EXCEPTION WHEN division_by_zero THEN NULL; END; "
+                      "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
+                      "CLOSE c; RETURN s; END $f$")
             c.execute(f"CREATE TABLE {SCHEMA}.pgc_pe (id int8) USING pgcolumnar")
             c.execute(f"INSERT INTO {SCHEMA}.pgc_pe SELECT generate_series(1, 10)")
         r["crashes0"] = _crashes(plog)
@@ -685,6 +702,14 @@ def ohr(pgc_cluster):
                                    "THEN 1 - pgc_try404() ELSE 0 END) FROM fhttp"])
         r["F cursor"] = _leaks(dsn, ["SELECT pgc_cursor_sum()"])
         r["F nested scan"] = _leaks(dsn, ["SELECT pgc_nested_scan()"])
+        first = "SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true)"
+        rest = "SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL)"
+        declare = ["BEGIN", "DECLARE c CURSOR FOR SELECT c0 FROM fhttp", first]
+        r["F commit fn"] = _leaks(dsn, ["SELECT pgc_cursor_commit_sum()"])
+        r["F release rollback"] = _leaks(dsn, declare + ["SAVEPOINT s1", "SAVEPOINT s2", "RELEASE s2",
+                                                         "ROLLBACK TO s1", "SELECT count(*) FROM (SELECT 1) z",
+                                                         rest, "COMMIT"])
+        r["F release"] = _leaks(dsn, declare + ["SAVEPOINT s", "RELEASE s", rest, "COMMIT"])
         r["F rest"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT * FROM pgcolumnar.iceberg_rest_namespaces("
                                    f"''http://127.0.0.1:{dead}/v1'')', '08006', 3)"])
         r["F export"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT pgcolumnar.parallel_export_parquet("
@@ -1241,6 +1266,35 @@ def test_a_scan_inside_an_outer_exception_block_reads_on_after_each_inner_abort(
         return
     expect.text(ohr["F nested scan"], f"rows={ohr['F local']} aborts={G} leaked=0",
                 "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)")
+
+
+def test_a_cursor_reads_on_after_an_inner_commit_and_an_outer_abort(ohr, expect):
+    """Control (#2158 second review): a subtransaction commit hands only its
+    own handles to its parent, so the cursor's handle is still open when the
+    enclosing block aborts."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F commit fn"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after an inner block commits and its outer block aborts (http == local)")
+
+
+def test_a_cursor_reads_on_after_release_and_rollback_to_an_outer_savepoint(ohr, expect):
+    """Control (#2158 second review): RELEASE of an inner SAVEPOINT, then
+    ROLLBACK TO the outer one, leaves the cursor's handle open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F release rollback"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after RELEASE of an inner SAVEPOINT and ROLLBACK TO the outer one "
+                "(http == local)")
+
+
+def test_a_cursor_reads_on_after_savepoint_and_release(ohr, expect):
+    """Control (#2158 second review): a commit below the top level frees no
+    handle, so a plain SAVEPOINT and RELEASE leave the cursor's handle open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F release"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after SAVEPOINT and RELEASE (http == local)")
 
 
 def test_caught_rest_requests_to_a_closed_port_leak_no_handle_to_commit(ohr, expect):
