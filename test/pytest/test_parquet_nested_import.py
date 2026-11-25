@@ -250,6 +250,23 @@ def _write_more_shape_files(paths, pa, pq):
                       {"p": {"q": {"a": None, "b": None}}}, {"p": {"q": {"a": 1, "b": 2}}}],
                      pa.struct([("p", pa.struct([("q", pa.struct([("a", i32), ("b", i32)]))]))]))
     pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3, 4], i32), "o": deep3}), str(paths["deep3"]))
+    # Two top-level structs and a top-level column: s1 struct<a>, s2 struct<b>, b.
+    # Leaves from two of them sit in no one struct (#2146 third review).
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32),
+                             "s1": pa.array([{"a": 1}, None, {"a": None}], pa.struct([("a", i32)])),
+                             "s2": pa.array([{"b": 2}, {"b": 5}, None], pa.struct([("b", i32)])),
+                             "b": pa.array([3, None, 6], i32)}), str(paths["two"]))
+    # A REQUIRED struct under a nullable parent: o struct<x, inner struct<a, b> not null>.
+    # A NULL o makes inner NULL too, though inner itself is REQUIRED.
+    reqin = pa.struct([pa.field("x", i32),
+                       pa.field("inner", pa.struct([("a", i32), ("b", pa.string())]), nullable=False)])
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32),
+                             "o": pa.array([None, {"x": 1, "inner": {"a": None, "b": None}},
+                                            {"x": 2, "inner": {"a": 5, "b": "q"}}], reqin)}),
+                   str(paths["reqin"]))
+    # s struct<a, b>, for a composite over b alone: part of the struct.
+    part = pa.array([{"a": 1, "b": 2}, None, {"a": 3, "b": None}], pa.struct([("a", i32), ("b", i32)]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32), "s": part}), str(paths["part"]))
     for path in paths.values():
         path.chmod(0o644)
 
@@ -307,7 +324,8 @@ def _level_arm(ni, pa, pq):
                  f"FROM pgcolumnar.read_parquet('{sub}') AS t(id int, s lvl_ii)")
         got["flat refusal"] = _refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
-        more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3")}
+        more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3",
+                                                                 "two", "reqin", "part")}
         _write_more_shape_files(more, pa, pq)
         rows = "string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
         _run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
@@ -334,6 +352,19 @@ def _level_arm(ni, pa, pq):
         got["deep3 read"] = _value(
             dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['deep3']}') AS t(id int, c lvl_ii)")
+        got["two refusal"] = _refusal(
+            dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['two']}') AS t(id int, c lvl_ii, b int)")
+        got["struct column refusal"] = _refusal(
+            dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['two']}') AS t(id int, a int, c lvl_ii)")
+        x_c_rows = ("string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || "
+                    "coalesce(c::text, 'NULL'), ' ' ORDER BY id)")
+        got["reqin read"] = _value(
+            dsn, f"SELECT {x_c_rows} "
+                 f"FROM pgcolumnar.read_parquet('{more['reqin']}') AS t(id int, x int, c lvl_ab)")
+        _run(dsn, "CREATE TYPE lvl_b AS (b int)")
+        got["part read"] = _value(
+            dsn, f"SELECT {x_c_rows} "
+                 f"FROM pgcolumnar.read_parquet('{more['part']}') AS t(id int, x int, c lvl_b)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -499,3 +530,47 @@ def test_a_composite_three_structs_deep_is_null_under_every_null_parent(ni, expe
     if got is not None:
         expect.text(got["deep3 read"], "0:NULL 1:NULL 2:NULL 3:(,) 4:(1,2)",
                     "a composite three structs deep is NULL under every NULL parent")
+
+
+def test_a_composite_over_two_top_level_structs_is_refused(ni, expect):
+    # Leaves from s1 and s2 sit in no one struct, though neither is top-level.
+    pa = expect.require_module("pyarrow", name="a composite over two top-level structs is refused")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite over two top-level structs is refused") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["two refusal"], "refused: not inside one struct",
+                    "a composite over two top-level structs is refused")
+
+
+def test_a_composite_over_a_struct_and_a_top_level_column_is_refused(ni, expect):
+    # Leaves from s2 and the top-level b sit in no one struct.
+    pa = expect.require_module("pyarrow", name="a composite over a struct and a top-level column is refused")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite over a struct and a top-level column is refused") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["struct column refusal"], "refused: not inside one struct",
+                    "a composite over a struct and a top-level column is refused")
+
+
+def test_a_required_struct_is_null_under_a_null_parent(ni, expect):
+    # inner is REQUIRED, but o is not: a NULL o makes inner NULL, as it makes x.
+    pa = expect.require_module("pyarrow", name="a REQUIRED struct is NULL under a NULL parent")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a REQUIRED struct is NULL under a NULL parent") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["reqin read"], "0:NULL:NULL 1:1:(,) 2:2:(5,q)",
+                    "a REQUIRED struct is NULL under a NULL parent")
+
+
+def test_a_composite_over_part_of_a_struct_is_null_only_when_that_struct_is(ni, expect):
+    # x binds s.a and the composite binds s.b alone. It still stands for s.
+    pa = expect.require_module("pyarrow", name="a composite over part of a struct is NULL only when that struct is")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite over part of a struct is NULL only when that struct is") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["part read"], "0:1:(2) 1:NULL:NULL 2:3:()",
+                    "a composite over part of a struct is NULL only when that struct is")

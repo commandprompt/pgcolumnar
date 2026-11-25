@@ -2009,4 +2009,8 @@ guard_tests 895
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-cluster_tests 5493
+# cluster_tests 5493 -> 5497 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
+# a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5497 tests collected.
+cluster_tests 5497

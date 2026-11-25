@@ -609,8 +609,9 @@ true until the next version shipped.
   REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
   pyarrow does (#2079, #1916). They returned wrong values with no error: an
   empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
-  values, a REQUIRED struct with a NULL field read as NULL, and a NULL list
-  inside a present struct read as `{}`. The reader assumed that definition level 0 always
+  values, a REQUIRED struct with a NULL field read as NULL, a NULL list
+  inside a present struct read as `{}`, and an empty list inside a present
+  struct read as `{NULL}`. The reader assumed that definition level 0 always
   meant a NULL list or struct and level 1 an empty list. That holds only for a
   nullable list or struct with no nullable parent. The reader now takes both
   levels from the file's schema. A composite is NULL only when the struct that

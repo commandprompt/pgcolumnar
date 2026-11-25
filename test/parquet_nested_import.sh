@@ -75,6 +75,11 @@ check "round-trips after delete" \
 #
 #     with pyarrow     22 passed + 0 skipped = 22
 #     without pyarrow   5 passed + 17 skipped = 22
+#
+# The third review of #2146 added four more, which decline the same way:
+#
+#     with pyarrow     26 passed + 0 skipped = 26
+#     without pyarrow   5 passed + 21 skipped = 26
 # pyarrow-written nested Parquet file: list<int32> and struct<x:int,y:string>.
 # This proves we read the Dremel levels the reference writer produces, not just
 # our own exporter's byte layout.
@@ -147,6 +152,9 @@ LVL_DEEP="$PGC_WORKDIR/lvl_deep.parquet"
 LVL_NEST="$PGC_WORKDIR/lvl_nest.parquet"
 LVL_SOS="$PGC_WORKDIR/lvl_sos.parquet"
 LVL_DEEP3="$PGC_WORKDIR/lvl_deep3.parquet"
+LVL_TWO="$PGC_WORKDIR/lvl_two.parquet"
+LVL_REQIN="$PGC_WORKDIR/lvl_reqin.parquet"
+LVL_PART="$PGC_WORKDIR/lvl_part.parquet"
 LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"required lists and struct read like pyarrow"
 	"required lists and struct import like pyarrow"
@@ -161,7 +169,11 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"a list two structs deep is NULL under a NULL outer struct"
 	"a composite over a nested struct is NULL only when that struct is"
 	"a composite over a struct inside a struct reads like pyarrow"
-	"a composite three structs deep is NULL under every NULL parent")
+	"a composite three structs deep is NULL under every NULL parent"
+	"a composite over two top-level structs is refused"
+	"a composite over a struct and a top-level column is refused"
+	"a REQUIRED struct is NULL under a NULL parent"
+	"a composite over part of a struct is NULL only when that struct is")
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
@@ -178,7 +190,8 @@ lvl_refusal() {
 	esac
 }
 if python3 - "$LVL_STL" "$LVL_REQ" "$LVL_SUB" "$LVL_FLAT" \
-	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" "$LVL_DEEP3" <<'PY'
+	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" "$LVL_DEEP3" \
+	"$LVL_TWO" "$LVL_REQIN" "$LVL_PART" <<'PY'
 import sys
 try:
     import pyarrow as pa
@@ -242,6 +255,22 @@ deep3 = pa.array([None, {"p": None}, {"p": {"q": None}},
                   {"p": {"q": {"a": None, "b": None}}}, {"p": {"q": {"a": 1, "b": 2}}}],
                  pa.struct([("p", pa.struct([("q", pa.struct([("a", I), ("b", I)]))]))]))
 pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3, 4], I), "o": deep3}), sys.argv[10])
+# Two top-level structs and a top-level column: s1 struct<a>, s2 struct<b>, b.
+# Leaves from two of them sit in no one struct (#2146 third review).
+pq.write_table(pa.table({"id": pa.array([0, 1, 2], I),
+                         "s1": pa.array([{"a": 1}, None, {"a": None}], pa.struct([("a", I)])),
+                         "s2": pa.array([{"b": 2}, {"b": 5}, None], pa.struct([("b", I)])),
+                         "b": pa.array([3, None, 6], I)}), sys.argv[11])
+# A REQUIRED struct under a nullable parent: o struct<x, inner struct<a, b> not null>.
+# A NULL o makes inner NULL too, though inner itself is REQUIRED.
+reqin = pa.struct([pa.field("x", I),
+                   pa.field("inner", pa.struct([("a", I), ("b", pa.string())]), nullable=False)])
+pq.write_table(pa.table({"id": pa.array([0, 1, 2], I),
+                         "o": pa.array([None, {"x": 1, "inner": {"a": None, "b": None}},
+                                        {"x": 2, "inner": {"a": 5, "b": "q"}}], reqin)}), sys.argv[12])
+# s struct<a, b>, for a composite over b alone: part of the struct.
+part = pa.array([{"a": 1, "b": 2}, None, {"a": 3, "b": None}], pa.struct([("a", I), ("b", I)]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2], I), "s": part}), sys.argv[13])
 PY
 then
 	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
@@ -327,6 +356,26 @@ then
 		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_DEEP3') AS t(id int, c lvl_ii);")" \
 		'0:NULL 1:NULL 2:NULL 3:(,) 4:(1,2)'
+	# Leaves from two top-level structs, or from a struct and a top-level
+	# column, sit in no one struct. Both must be refused, not only a composite
+	# whose first leaf is top-level.
+	check "a composite over two top-level structs is refused" \
+		"$(lvl_refusal "SELECT * FROM pgcolumnar.read_parquet('$LVL_TWO') AS t(id int, c lvl_ii, b int);")" \
+		"refused: not inside one struct"
+	check "a composite over a struct and a top-level column is refused" \
+		"$(lvl_refusal "SELECT * FROM pgcolumnar.read_parquet('$LVL_TWO') AS t(id int, a int, c lvl_ii);")" \
+		"refused: not inside one struct"
+	# inner is REQUIRED, but o is not. A NULL o makes inner NULL, as it makes x.
+	check "a REQUIRED struct is NULL under a NULL parent" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_REQIN') AS t(id int, x int, c lvl_ab);")" \
+		'0:NULL:NULL 1:1:(,) 2:2:(5,q)'
+	# x binds s.a and the composite binds s.b alone. It still stands for s.
+	psql_run "CREATE TYPE lvl_b AS (b int);"
+	check "a composite over part of a struct is NULL only when that struct is" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_PART') AS t(id int, x int, c lvl_b);")" \
+		'0:1:(2) 1:NULL:NULL 2:3:()'
 else
 	rc=$?
 	if [ "$rc" = 3 ]; then
