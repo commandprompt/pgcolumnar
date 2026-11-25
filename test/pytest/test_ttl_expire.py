@@ -893,17 +893,18 @@ def test_the_retention_column_follows_a_rename(pgc_conn, expect):
     all inside the retention. The fixture gives the second column old values on
     purpose, so that the wrong column would retire every group.
 
-    Columns `t` (a prefix of `ts`) and `"TS"` (`ts` in upper case) are near misses.
-    A name test that matched a prefix or ignored case would point retention at one
-    of them, and they hold old values too.
+    Columns `t` (a prefix of `ts`), `ts_old` (starts with `ts`) and `"TS"` (`ts` in
+    upper case) are near misses. A name test that matched a prefix either way or
+    ignored case would point retention at one of them, and they hold old values too.
     """
     with pgc_conn.cursor() as cur:
         cur.execute("CREATE TABLE ttl_ren (id int, ts timestamptz, loaded timestamptz,"
-                    ' t timestamptz, "TS" timestamptz) USING pgcolumnar')
+                    ' t timestamptz, "TS" timestamptz, ts_old timestamptz) USING pgcolumnar')
         cur.execute(f"SELECT pgcolumnar.set_options('ttl_ren', stripe_row_limit => {GROUP},"
                     " ttl_column => 'ts', ttl_interval => '10 days')")
         cur.execute("INSERT INTO ttl_ren SELECT g, now(), now() - interval '2 years',"
-                    " now() - interval '2 years', now() - interval '2 years'"
+                    " now() - interval '2 years', now() - interval '2 years',"
+                    " now() - interval '2 years'"
                     f" FROM generate_series(1, {4 * GROUP}) g")
     expect.num(_groups(pgc_conn, "ttl_ren"), 4,
                "premise: the rename fixture has several row groups")
@@ -922,6 +923,11 @@ def test_the_retention_column_follows_a_rename(pgc_conn, expect):
         cur.execute('ALTER TABLE ttl_ren RENAME COLUMN "TS" TO upper_ts')
     expect.text(ttl_column(), "ts",
                 "renaming a column whose name differs from the retention column only in case"
+                " leaves ttl_column alone (#2070)")
+    with pgc_conn.cursor() as cur:
+        cur.execute("ALTER TABLE ttl_ren RENAME COLUMN ts_old TO legacy")
+    expect.text(ttl_column(), "ts",
+                "renaming a column whose name starts with the retention column's name"
                 " leaves ttl_column alone (#2070)")
 
     with pgc_conn.cursor() as cur:

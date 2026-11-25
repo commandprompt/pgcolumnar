@@ -692,12 +692,12 @@ check "a later expire on a column of only NULLs reads no zone map" "$(_expire_sc
 # NAME, and expire resolves it on every run. A stale name made expire fail, and
 # once another timestamp column took the old name, expire cut on that column. The
 # second column holds old values on purpose: cutting on it would retire every group.
-# Columns t (a prefix of ts) and "TS" (ts in upper case) are near misses: a name
-# test that matched a prefix or ignored case would point retention at one of them,
-# and they hold old values too.
-psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz, t timestamptz, \"TS\" timestamptz) USING pgcolumnar;
+# Columns t (a prefix of ts), ts_old (starts with ts) and "TS" (ts in upper case)
+# are near misses: a name test that matched a prefix either way or ignored case
+# would point retention at one of them, and they hold old values too.
+psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz, t timestamptz, \"TS\" timestamptz, ts_old timestamptz) USING pgcolumnar;
 	SELECT pgcolumnar.set_options('ttl_rn', ttl_column => 'ts', ttl_interval => '7 days');
-	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year' FROM generate_series(1, 3000) g;"
+	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year', now() - interval '1 year' FROM generate_series(1, 3000) g;"
 check_num "premise: the rename fixture has several row groups" \
 	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_rn');")" "3"
 check_num "premise: expire retires nothing while every row is inside the retention" \
@@ -707,6 +707,9 @@ check "renaming a column whose name is a prefix of the retention column leaves t
 	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
 psql_run "ALTER TABLE ttl_rn RENAME COLUMN \"TS\" TO upper_ts;"
 check "renaming a column whose name differs from the retention column only in case leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts_old TO legacy;"
+check "renaming a column whose name starts with the retention column's name leaves ttl_column alone (#2070)" \
 	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
 psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts TO event_at;"
 check "the retention column follows RENAME COLUMN (#2070)" \
