@@ -310,6 +310,29 @@ def _split_readings(r, db, key, path, w, gen, *, real=False):
         r["split real " + key] = _split_real(data, offs, w)
 
 
+def _projection_load(db, path, workers, preload):
+    """-> 'wWORKERS:returned/rows/projection rows' for a parallel_copy into a fresh table
+    with an options row and a projection, which holds `preload` rows first.
+
+    The load runs under a statement_timeout: 2 or more workers into a projection that
+    holds no rows yet hang until cancelled (#2161), so a regression must not hang the
+    module."""
+    t = f"t_proj_w{workers}"
+    db.run(f"CREATE TABLE {t} (id int, txt text) USING pgcolumnar")
+    db.run(f"SELECT pgcolumnar.set_options('{t}', compression => 'zstd')")
+    if preload:
+        db.run(f"INSERT INTO {t} SELECT g, 'pre'||g FROM generate_series(1, {preload}) g")
+    db.run(f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id'])")
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=60s") as conn:
+            got = conn.execute(f"SELECT pgcolumnar.parallel_copy('{t}'::regclass, '{path}', {workers})").fetchone()[0]
+    except psycopg.Error as exc:
+        got = _message(exc)
+    rows = db.value(f"SELECT count(*) FROM {t}")
+    prows = db.value(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')")
+    return f"w{workers}:{got}/{rows}/{prows}"
+
+
 @pytest.fixture(scope="module")
 def pcopy(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -536,6 +559,11 @@ def pcopy(pgc_cluster, server_dir):
         except OSError as exc:
             r["split local s3a size"] = query_error(f"cannot stat the control file: {exc}")
         r["pcopy local s3a"] = db.value(f"SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '{local_a}', 2)")
+
+        # ---- #2092: a load into a table with a projection fills the projection ----
+        r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
+        r["projection leak"] = db.value(LEAK)
+        r["projection up"] = _survived(db, pgc_cluster, before)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -831,3 +859,19 @@ def test_parallel_copy_split_still_reads_a_local_path_holding_s3a(pcopy, expect)
 def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
     expect.num(pcopy["pcopy local s3a"], 5000,
                "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")
+
+
+# ---- #2092: a load into a table with a projection --------------------------------
+
+def test_parallel_copy_into_a_table_with_a_projection_fills_the_projection(pcopy, expect):
+    """#2092 asked whether parallel_copy shares the import functions' crash: they wrote
+    a projection at statement end with no active snapshot. It does not: on main's code,
+    too, both loads fill the projection and no backend dies. The test keeps that true.
+
+    Not covered: 2 or more workers into a projection that holds no rows yet. That load
+    hangs until cancelled, on another cause (#2161), so the 2-worker case fills its
+    projection first."""
+    expect.text(f"{pcopy['projection']} | leak {pcopy['projection leak']} | survived {pcopy['projection up']}",
+                "w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1",
+                "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction"
+                " and keeps the server up (#2092)")

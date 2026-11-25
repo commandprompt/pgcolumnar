@@ -605,6 +605,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the
+  backend on a table that has a projection (#2092). The import writes the
+  projection's rows when its statement ends. An import is a `SELECT`, so its
+  statement ends in portal cleanup, where no snapshot is active. The projection
+  write then read the options catalog with a snapshot nobody had registered. On
+  a PostgreSQL 18 or 19 build with assertions, the backend aborted once that
+  catalog held a row for any table, and PostgreSQL restarted every session. The
+  import rolled back. The projection write now sets an active snapshot first, as
+  the base table's write already did. `docs/how-to.md` runs into this once its
+  projection example works (#2093): it adds a projection and later imports an
+  Arrow file. New checks in `test/arrow_import.sh` and `test/parquet_import.sh`,
+  and their pytest twins, cover both functions. A new check in
+  `test/parallel_copy.sh`, and its twin, shows that `parallel_copy` into a table
+  with a projection fills the projection. With 2 or more workers into a
+  projection that holds no rows yet, `parallel_copy` hangs, for another reason
+  (#2161).
 - A `pgcolumnar.parallel_copy` loader that fails now closes its file once
   (#2083). It closed the file after aborting its transaction, but the abort
   had already closed it. Each failed loader logged `fd passed to
