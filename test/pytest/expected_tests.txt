@@ -1978,4 +1978,8 @@ guard_tests 895
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-cluster_tests 5457
+# cluster_tests 5457 -> 5458 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
+# parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
+# collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
+cluster_tests 5458

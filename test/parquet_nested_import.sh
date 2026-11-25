@@ -70,6 +70,11 @@ check "round-trips after delete" \
 #
 #     with pyarrow     21 passed + 0 skipped = 21
 #     without pyarrow   5 passed + 16 skipped = 21
+#
+# Our own re-check of #2146 added one more, which declines the same way:
+#
+#     with pyarrow     22 passed + 0 skipped = 22
+#     without pyarrow   5 passed + 17 skipped = 22
 # pyarrow-written nested Parquet file: list<int32> and struct<x:int,y:string>.
 # This proves we read the Dremel levels the reference writer produces, not just
 # our own exporter's byte layout.
@@ -141,6 +146,7 @@ LVL_ONE="$PGC_WORKDIR/lvl_one.parquet"
 LVL_DEEP="$PGC_WORKDIR/lvl_deep.parquet"
 LVL_NEST="$PGC_WORKDIR/lvl_nest.parquet"
 LVL_SOS="$PGC_WORKDIR/lvl_sos.parquet"
+LVL_DEEP3="$PGC_WORKDIR/lvl_deep3.parquet"
 LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"required lists and struct read like pyarrow"
 	"required lists and struct import like pyarrow"
@@ -154,7 +160,8 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"a one-field composite over a top-level column is refused"
 	"a list two structs deep is NULL under a NULL outer struct"
 	"a composite over a nested struct is NULL only when that struct is"
-	"a composite over a struct inside a struct reads like pyarrow")
+	"a composite over a struct inside a struct reads like pyarrow"
+	"a composite three structs deep is NULL under every NULL parent")
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
@@ -171,7 +178,7 @@ lvl_refusal() {
 	esac
 }
 if python3 - "$LVL_STL" "$LVL_REQ" "$LVL_SUB" "$LVL_FLAT" \
-	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" <<'PY'
+	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" "$LVL_DEEP3" <<'PY'
 import sys
 try:
     import pyarrow as pa
@@ -229,6 +236,12 @@ pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], I), "o": nest}), sys.argv[
 sos = pa.array([{"t": {"a": 1, "b": "x"}}, {"t": {"a": 2, "b": "y"}}],
                pa.struct([("t", pa.struct([("a", pa.int64()), ("b", pa.string())]))]))
 pq.write_table(pa.table({"s": sos, "n": pa.array([1, 2], I)}), sys.argv[9])
+# A composite three nullable structs deep: o struct<p struct<q struct<a, b>>>.
+# Rows 0 to 2 make o, p, then q NULL; q's own def is 3 (#2146 re-check).
+deep3 = pa.array([None, {"p": None}, {"p": {"q": None}},
+                  {"p": {"q": {"a": None, "b": None}}}, {"p": {"q": {"a": 1, "b": 2}}}],
+                 pa.struct([("p", pa.struct([("q", pa.struct([("a", I), ("b", I)]))]))]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3, 4], I), "o": deep3}), sys.argv[10])
 PY
 then
 	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
@@ -308,6 +321,12 @@ then
 		"$(q "SELECT string_agg(coalesce(c::text, 'NULL'), ' ' ORDER BY n)
 		      FROM pgcolumnar.read_parquet('$LVL_SOS') AS t(c lvl_lt, n int);")" \
 		'(1,x) (2,y)'
+	# A composite over q, three structs down. It is NULL when q, p or o is,
+	# so every def below q's own def 3 is a NULL row, not only 0 and 2.
+	check "a composite three structs deep is NULL under every NULL parent" \
+		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_DEEP3') AS t(id int, c lvl_ii);")" \
+		'0:NULL 1:NULL 2:NULL 3:(,) 4:(1,2)'
 else
 	rc=$?
 	if [ "$rc" = 3 ]; then

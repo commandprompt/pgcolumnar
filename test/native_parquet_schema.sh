@@ -274,11 +274,11 @@ if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WOR
 	check_text "parquet_schema reports a legacy two-level list by its name as an array (#1893)" \
 		"$(schema_rows twolevel)" "l:bigint[],n:integer"
 	# The rows are the column list: declare one column per row, under its quoted
-	# name, with its type, and read every file whose rows all have a type. Not
-	# twolevel: read_parquet reads its REQUIRED repeated leaf as empty arrays, an
-	# older defect of the reader, not of parquet_schema (#1916).
+	# name, with its type, and read every file whose rows all have a type.
+	# twolevel is a legacy two-level list, a REPEATED leaf with no LIST group.
+	# read_parquet used to read it as empty arrays (#1916); #2079 fixed that.
 	read_rows=""
-	for f in map los lofs shl sos smap; do
+	for f in map los lofs shl sos smap twolevel; do
 		cols=$(q "SELECT string_agg(quote_ident(column_name) || ' ' || data_type, ', ' ORDER BY ord)
 		          FROM (SELECT column_name, data_type, row_number() OVER () AS ord
 		                FROM pgcolumnar.parquet_schema('$PGC_WORKDIR/$f.parquet')) s;")
@@ -287,7 +287,7 @@ if python3 -I "$(dirname "${BASH_SOURCE[0]}")/craft_parquet_nested.py" "$PGC_WOR
 	done
 	check_text "read_parquet reads each nested file with the column list parquet_schema reports (#1893)" \
 		"${read_rows% }" \
-		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2)'
+		'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2) twolevel=("{1,2}",1);({3},2)'
 	# A leaf under two repeated levels read into a one-dimensional array used to
 	# flatten: [[1], [2, 3]] read as {1,2,3}, with no error (#1917). The bind now
 	# refuses it with 42804, as it refuses other mismatches. The reading is the

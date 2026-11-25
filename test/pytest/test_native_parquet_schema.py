@@ -307,9 +307,9 @@ def test_read_parquet_reads_each_nested_file_with_the_reported_column_list(pgc_c
         return
     got = []
     with pgc_conn.cursor() as cur:
-        # not twolevel: read_parquet reads its REQUIRED repeated leaf as empty arrays, an
-        # older defect of the reader, not of parquet_schema (#1916)
-        for f in ("map", "los", "lofs", "shl", "sos", "smap"):
+        # twolevel is a legacy two-level list, a REPEATED leaf with no LIST group.
+        # read_parquet used to read it as empty arrays (#1916); #2079 fixed that.
+        for f in ("map", "los", "lofs", "shl", "sos", "smap", "twolevel"):
             path = str(w / f"{f}.parquet")
             cols = _one(cur, "SELECT string_agg(quote_ident(column_name) || ' ' || data_type, ', ' ORDER BY ord) "
                              "FROM (SELECT column_name, data_type, row_number() OVER () AS ord "
@@ -321,7 +321,8 @@ def test_read_parquet_reads_each_nested_file_with_the_reported_column_list(pgc_c
                 got.append(f"{f}=" + (exc.diag.message_primary or str(exc)))
     expect.text(" ".join(got),
                 'map=("{k,j}","{1,2}",1);({z},{3},2) los=({1},{a},1);("{2,3}","{b,c}",2) lofs=("{1,2}",1);({3},2) '
-                'shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2)',
+                'shl=("{1,2}",1);({3},2) sos=(1,x,1);(2,y,2) smap=({k},{1},1);({z},{3},2) '
+                'twolevel=("{1,2}",1);({3},2)',
                 "read_parquet reads each nested file with the column list parquet_schema reports (#1893)")
 
 

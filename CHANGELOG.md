@@ -620,6 +620,11 @@ true until the next version shipped.
   was NULL. A one-field composite over one top-level column is now an error
   too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
   `test_parquet_nested_import.py`.
+- `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
+  LIST group such as `repeated int64 l`, as its values (#1916). It read every
+  row as an empty array, `{}`, with no error. The #2079 fix above corrected
+  this, and `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py` now read `twolevel.parquet` to pin it.
 - `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
   raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
   when the conflicting row was committed by another transaction after the

@@ -244,6 +244,12 @@ def _write_more_shape_files(paths, pa, pq):
     sos = pa.array([{"t": {"a": 1, "b": "x"}}, {"t": {"a": 2, "b": "y"}}],
                    pa.struct([("t", pa.struct([("a", pa.int64()), ("b", pa.string())]))]))
     pq.write_table(pa.table({"s": sos, "n": pa.array([1, 2], i32)}), str(paths["sos"]))
+    # A composite three nullable structs deep: o struct<p struct<q struct<a, b>>>.
+    # Rows 0 to 2 make o, p, then q NULL; q's own def is 3 (#2146 re-check).
+    deep3 = pa.array([None, {"p": None}, {"p": {"q": None}},
+                      {"p": {"q": {"a": None, "b": None}}}, {"p": {"q": {"a": 1, "b": 2}}}],
+                     pa.struct([("p", pa.struct([("q", pa.struct([("a", i32), ("b", i32)]))]))]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3, 4], i32), "o": deep3}), str(paths["deep3"]))
     for path in paths.values():
         path.chmod(0o644)
 
@@ -301,7 +307,7 @@ def _level_arm(ni, pa, pq):
                  f"FROM pgcolumnar.read_parquet('{sub}') AS t(id int, s lvl_ii)")
         got["flat refusal"] = _refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
-        more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos")}
+        more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3")}
         _write_more_shape_files(more, pa, pq)
         rows = "string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
         _run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
@@ -325,6 +331,9 @@ def _level_arm(ni, pa, pq):
         got["sos read"] = _value(
             dsn, "SELECT string_agg(coalesce(c::text, 'NULL'), ' ' ORDER BY n) "
                  f"FROM pgcolumnar.read_parquet('{more['sos']}') AS t(c lvl_lt, n int)")
+        got["deep3 read"] = _value(
+            dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id) "
+                 f"FROM pgcolumnar.read_parquet('{more['deep3']}') AS t(id int, c lvl_ii)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -478,3 +487,15 @@ def test_a_composite_over_a_struct_inside_a_struct_reads_like_pyarrow(ni, expect
     if got is not None:
         expect.text(got["sos read"], "(1,x) (2,y)",
                     "a composite over a struct inside a struct reads like pyarrow")
+
+
+def test_a_composite_three_structs_deep_is_null_under_every_null_parent(ni, expect):
+    # The composite stands for q; it is NULL when q, p or o is, so every def
+    # below q's own def 3 is a NULL row, not only 0 and 2.
+    pa = expect.require_module("pyarrow", name="a composite three structs deep is NULL under every NULL parent")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite three structs deep is NULL under every NULL parent") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["deep3 read"], "0:NULL 1:NULL 2:NULL 3:(,) 4:(1,2)",
+                    "a composite three structs deep is NULL under every NULL parent")
