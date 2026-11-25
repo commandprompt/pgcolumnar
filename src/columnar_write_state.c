@@ -1144,8 +1144,10 @@ PgColumnarWriteRow(PgColumnarWriteState *writeState, Relation rel,
 	 * buffered (spec 2.2, 6). A whole stripe_row_limit worth of row numbers is
 	 * reserved up front so the stripe's rows are numbered contiguously from
 	 * stripeFirstRowNumber; the writer flushes at stripe_row_limit, so the run
-	 * is never overrun. Any unused tail (a stripe flushed early) is a harmless
-	 * gap in the row-number space.
+	 * is never overrun. Any unused tail (a stripe flushed early) is a gap in
+	 * the row-number space, and the space is finite: once it runs out, the
+	 * reservation is refused until pgcolumnar.vacuum renumbers the rows
+	 * (#2073).
 	 */
 	if (!writeState->haveReservation)
 	{
