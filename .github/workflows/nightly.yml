@@ -411,6 +411,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # THE RELEASE TAGS, as pytest-cluster fetches them. The corpus holds arms that
+      # compare against a release tag (native_upgrade_converge's fixtures, docs_style's
+      # changelog arms through test_harness_deps). From a tagless checkout they record
+      # UNMET_PRECONDITION, and the unrunnable accounting fails the run (#2054).
+      - name: fetch the release tags, for the fixture-blob comparisons
+        run: git fetch --depth=1 origin '+refs/tags/v1.0-alpha*:refs/tags/v1.0-alpha*'
+
       # The packages are ~102 MB, of which ~91 MB is the LLVM toolchain that
       # postgresql-server-dev-N depends on. That download is what stalls: every
       # failure of this step sat at the 600s bound while every success finished
