@@ -2002,16 +2002,23 @@ guard_tests 895
 # finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
 # rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
 # tests collected after the merge of main f29bf592 (5391 before it).
-# cluster_tests 5485 -> 5486 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
+# cluster_tests 5485 -> 5486 for #2073's test_row_numbers_past_the_item_pointer_range_are_refused in
+# test_native_writer.py (the writer refuses row numbers past the item-pointer range with 54000), by
+# collection: 6271 tests collected, less guard_tests 894.
+# cluster_tests 5486 -> 5487 for #2073's test_a_reservation_that_ends_exactly_at_the_last_row_number_fits in
+# test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
+# (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5487 -> 5488 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
 # RENAME COLUMN carries the new name into ttl_column, and expire does not cut on a column that takes the old
 # name), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5385
 # tests collected.
-# cluster_tests 5486 -> 5487 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
+# cluster_tests 5488 -> 5489 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
 # (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
 # still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5488 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
+# cluster_tests 5489 -> 5490 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
 # test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
 # rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 5488
+cluster_tests 5490

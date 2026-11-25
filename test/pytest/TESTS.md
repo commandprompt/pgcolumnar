@@ -8215,13 +8215,15 @@ The pytest twin of `test/native_join_vector_agg.sh` (ported for #1341), every ch
 
 ## 158. test_native_writer.py: the native writer by its catalog rows
 
-The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id.
+The pytest twin of `test/native_writer.sh` (ported for #1341), every check by the shell's name. A columnar table writes the native format, judged by the catalog rows it produces. 5000 rows, a quarter of them NULL, under a 1000-row stripe limit give one storage row at format version 2 with 1024-value vectors, five row groups holding 5000 rows, and ten column chunks counting 10000 values. DROP clears the storage, row-group and column-chunk rows for its storage id. The second test is #2073: the writer refuses row numbers past the item-pointer range instead of wrapping the block number, and `pgcolumnar.row_tid` refuses them too. Unlike the first test it reads the table back, to show that no item pointer wrapped. The third test reserves a run that ends exactly at the largest row number, and one row number more, so a refusal that is off by one is caught.
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
 | `test_the_native_writer_by_its_catalog_rows` | the writer's storage, row-group and column-chunk rows match the fixture, and DROP deletes all three |
+| `test_row_numbers_past_the_item_pointer_range_are_refused` | at stripe_row_limit 2147483647 the 583rd single-row transaction is refused with 54000 instead of wrapping its item pointer (#2073); the 582 rows before it keep ordered item pointers and an index scan finds them all; `pgcolumnar.vacuum` renumbers the rows so inserts work again; `pgcolumnar.row_tid` maps the largest row number to `(4294967294,291)` and refuses the next one and the largest bigint with 22003 |
+| `test_a_reservation_that_ends_exactly_at_the_last_row_number_fits` | with exactly 1000 row numbers left, a reservation of 1001 is refused with 54000 and uses up nothing; a reservation of 1000 fits and its last row gets item pointer `(4294967294,291)`, which an index scan finds; the next insert is refused with 54000 (#2073) |
 
 ## 159. test_native_batch_fold_projection.py: the batch fold's column lists on a wide table
 
