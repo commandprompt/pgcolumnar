@@ -605,6 +605,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- `ORDER BY ... LIMIT` no longer returns rows in the wrong order after the
+  sort column is dropped and another column takes its name (#2069). The
+  ordering mark that `vacuum_sorted` and `recluster` record names its key
+  columns by name, and DROP COLUMN left it in place. PostgreSQL frees a
+  dropped column's name, so after `ALTER TABLE ... RENAME COLUMN` onto that
+  name the planner left out the Sort for the new column, and
+  `vacuum_sorted` skipped the rewrite as already done. DROP COLUMN of any
+  column in the key now clears the mark, on the table and on every
+  partition or inheritance child the drop reaches. A drop of any other
+  column keeps it. A column drop on a heap table never reaches this code,
+  in a database with or without the extension; the tests drop a column of
+  an empty and a populated heap table in both. A table whose key column
+  was dropped on an older build keeps its stale mark: run `vacuum_sorted`
+  on it again before renaming another column to the dropped name.
+  `test/sorted_mark_rename.sh` and `test_sorted_mark_rename.py`.
 - `INSERT ... ON CONFLICT DO NOTHING` at REPEATABLE READ and SERIALIZABLE now
   raises `could not serialize access due to concurrent update` (SQLSTATE 40001)
   when the conflicting row was committed by another transaction after the

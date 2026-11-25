@@ -1966,4 +1966,12 @@ guard_tests 895
 # cluster_tests stays 5387 for the #2060 review's two new checks: the deferred foreign key check joins
 # test_fk_referencing.py::test_the_referencing_side_still_works and the partitioned-parent check joins
 # test_am_contracts.py::test_on_conflict_do_nothing_against_a_row_its_snapshot_cannot_see, so no test is added.
-cluster_tests 5443
+# cluster_tests 5443 -> 5457 for #2069's 14 new tests in test_sorted_mark_rename.py (DROP COLUMN of a
+# sort-key column clears the ordering mark, so ORDER BY plans a Sort and vacuum_sorted rewrites after
+# another column takes the dropped name; a partition and a Z-order run too; an unrelated drop keeps the
+# mark), by collection: 6284 tests collected, less guard_tests 894.
+# cluster_tests 5457 -> 5465 for the #2135 review's 8 new tests in test_sorted_mark_rename.py (a drop on an
+# inheritance parent clears the child's mark; a column of an empty and of a populated heap table drops, in the
+# suite's database and in one without the extension, so the drop hook leaves heap tables alone), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+cluster_tests 5465
