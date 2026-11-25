@@ -45,6 +45,52 @@ check "the addressing setting still takes path, virtual and VIRTUAL" \
 	"$(echo "$(set_refusal path) $(set_refusal virtual) $(set_refusal VIRTUAL)" | tr A-Z a-z)" \
 	"path virtual virtual"
 
+# A role that is not a superuser may set it: the setting is per session (PGC_USERSET).
+check "a role that is not a superuser can still set the addressing setting" \
+	"$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtAX -c "SET client_min_messages = warning" \
+		-c "DROP ROLE IF EXISTS pgc_addr_plain" \
+		-c "CREATE ROLE pgc_addr_plain NOSUPERUSER" -c "SET ROLE pgc_addr_plain" \
+		-c "SET pgcolumnar.objstore_s3_addressing = 'virtual'" \
+		-c "SHOW pgcolumnar.objstore_s3_addressing" -c "RESET ROLE" \
+		-c "DROP ROLE pgc_addr_plain" 2>&1 | head -1)" \
+	"virtual"
+
+# ALTER SYSTEM writes postgresql.auto.conf, which the server reads at start. It must
+# refuse a bad value as SET does, and still write a good one.
+alter_system() {  # alter_system <value> -> the ERROR line with its SQLSTATE, or what
+	#                 pg_file_settings holds for the setting; the setting is RESET after.
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtAX -v VERBOSITY=verbose \
+		-c "ALTER SYSTEM SET pgcolumnar.objstore_s3_addressing = '$1'" \
+		-c "SELECT coalesce(string_agg(setting || coalesce(' ' || error, ''), ','), 'no row')
+		      FROM pg_file_settings WHERE name = 'pgcolumnar.objstore_s3_addressing'" \
+		-c "ALTER SYSTEM RESET pgcolumnar.objstore_s3_addressing" 2>&1 | head -1
+}
+check "ALTER SYSTEM refuses the typo 'virtaul'" "$(alter_system virtaul)" \
+	'ERROR:  22023: invalid value for parameter "pgcolumnar.objstore_s3_addressing": "virtaul"'
+check "ALTER SYSTEM still takes virtual" "$(alter_system virtual)" "virtual"
+
+# A typo in postgresql.conf cannot be refused, because the server reads it at start.
+# The server warns and uses path, which is what the module did with any such value.
+conf_typo() {  # -> what SHOW says after a restart with the typo, and whether the log warned
+	local conf="$PGC_PGDATA/postgresql.conf" show warned=silent before
+	pgc_pg "cp '$conf' '$conf.addr' && echo \"pgcolumnar.objstore_s3_addressing = 'virtaul'\" >> '$conf'"
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+	before="$(wc -l < "$PGC_LOGFILE")"
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
+	show="$(q 'SHOW pgcolumnar.objstore_s3_addressing')"
+	tail -n +"$((before + 1))" "$PGC_LOGFILE" | grep -qF \
+		'WARNING:  invalid value for parameter "pgcolumnar.objstore_s3_addressing": "virtaul"' && warned=warned
+	pgc_pg "mv '$conf.addr' '$conf' && pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' start -w" >/dev/null 2>&1
+	for _ in $(seq 1 30); do [ -n "$(q 'SELECT 1')" ] && break; sleep 0.5; done
+	echo "${show:-no answer} $warned"
+}
+check "a typo in postgresql.conf draws a WARNING and the server uses path" "$(conf_typo)" \
+	"path warned"
+
 python3 -c 'import pyarrow' 2>/dev/null || pgc_skip pyarrow "pyarrow is required to write the fixture"
 # Virtual-host needs bucket.endpoint to resolve; skip cleanly where it does not.
 getent hosts pgc-bucket.s3.local >/dev/null 2>&1 || \

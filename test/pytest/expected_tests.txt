@@ -1942,4 +1942,11 @@ guard_tests 895
 # (a run whose only value is Infinity hands off and merges to Infinity, as heap does, #2068), by collection:
 # `cd test/pytest && PYTHONPATH=. PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6272 tests
 # collected, less guard_tests 894.
-cluster_tests 5402
+# cluster_tests 5398 -> 5402 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5402 -> 5406 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+cluster_tests 5406

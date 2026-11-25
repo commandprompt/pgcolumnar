@@ -612,8 +612,20 @@ true until the next version shipped.
   it back, and every request went out path-style without a word. The setting is
   now an enum, like `pgcolumnar.compression`: such a value fails with
   `invalid value for parameter`, SQLSTATE 22023. Case still does not matter.
-  A bad value already in `postgresql.conf` now draws a warning and the server
-  uses `path`, which is what the module did with it before.
+  `ALTER SYSTEM SET` refuses such a value in the same way. A bad value already
+  in `postgresql.conf` now draws a warning and the server uses `path`, which is
+  what the module did with it before.
+  **Upgrade note.** Check stored values before you upgrade. A bad value stored
+  by `ALTER SYSTEM` or `ALTER ROLE ... SET` draws a warning, and the server or
+  session uses `path`. A bad value in a function's
+  `SET` clause makes every call of that function fail with
+  `invalid value for parameter`. Restoring a dump taken before this release
+  fails at each `ALTER ROLE ... SET` or `CREATE FUNCTION ... SET` line that
+  holds a bad value, and that function is then missing. To find the stored
+  values, run this once per cluster:
+  `SELECT * FROM pg_db_role_setting WHERE array_to_string(setconfig, ',') LIKE '%objstore_s3_addressing%'`
+  and this in each database:
+  `SELECT oid::regprocedure, proconfig FROM pg_proc WHERE array_to_string(proconfig, ',') LIKE '%objstore_s3_addressing%'`.
   docs/configuration.md. `test/objstore_addressing.sh` and
   `test_objstore_addressing.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
