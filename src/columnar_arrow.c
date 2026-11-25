@@ -1968,8 +1968,15 @@ arrow_tag_fits_kind(uint8 typetag, ArrowKind kind)
  * List layout, so it reads into an array of a two-field composite. Tags no
  * target has the layout of (large and fixed-size lists, list views, unions,
  * run-end encoding) are refused under every node. The wording follows
- * import_parquet's for the same shape (#1917). A scalar tag under a scalar node
- * must also be of a family that node can hold; see arrow_tag_fits_kind (#2082).
+ * import_parquet's for the same shape (#1917).
+ *
+ * Large binary and large string carry 64-bit offsets, and the binary and string
+ * views carry no offset buffer at all, but the bytea and text decoders read
+ * 32-bit offsets. So a large_binary b'x' imported as an empty bytea, a
+ * large_string ['hi','there'] as '' and 'hi', and the views were called
+ * malformed. No target reads those layouts yet, so they are refused too (#2097).
+ * A scalar tag under a scalar node must also be of a family that node can
+ * hold; see arrow_tag_fits_kind (#2082).
  */
 static void
 imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
@@ -1983,7 +1990,11 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 							 typetag == ARROW_TYPE_LargeList ||
 							 typetag == ARROW_TYPE_RunEndEncoded ||
 							 typetag == ARROW_TYPE_ListView ||
-							 typetag == ARROW_TYPE_LargeListView);
+							 typetag == ARROW_TYPE_LargeListView ||
+							 typetag == ARROW_TYPE_LargeBinary ||
+							 typetag == ARROW_TYPE_LargeUtf8 ||
+							 typetag == ARROW_TYPE_BinaryView ||
+							 typetag == ARROW_TYPE_Utf8View);
 
 	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
 		!fileOther &&
@@ -2125,11 +2136,24 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		fprec;
 					int32		fscale;
+					int32		fbits;
 
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
 					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
 					fscale = pos ? fbr_i32(meta, metaLen, pos) : 0;
+					pos = pgc_fb_field(meta, metaLen, tt, 2);	/* bitWidth */
+					fbits = pos ? fbr_i32(meta, metaLen, pos) : 128;
+
+					/*
+					 * The reader decodes 16-byte values only (#2081). A
+					 * decimal256 buffer is twice as long as that, so it passed
+					 * the length check and was read at the wrong offsets: 1.25,
+					 * 2.50, -3.75 stored 1.25, 0.00, 2.50. A decimal32 or
+					 * decimal64 buffer was refused, but as "malformed".
+					 */
+					if (fbits != 128)
+						imp_field_mismatch("a decimal of another width", n->typid);
 
 					/*
 					 * The unscaled integer is read as-is and the TARGET's scale

@@ -375,6 +375,10 @@ def _temporal_fixtures(pa, out):
         "tu_d204": pa.array([decimal.Decimal("1.25")], pa.decimal128(20, 4)),
         "tu_fsb32": pa.array([b"0123456789abcdef0123456789abcdef"], pa.binary(32)),
         "tu_fsb16": pa.array([b"0123456789abcdef"], pa.binary(16)),
+        # #2081: the same three values in every Decimal bit width
+        **{f"tu_dw{bits}": pa.array([decimal.Decimal(x) for x in ("1.25", "2.50", "-3.75")], ty)
+           for bits, ty in ((128, pa.decimal128(10, 2)), (256, pa.decimal256(10, 2)),
+                            (64, pa.decimal64(10, 2)), (32, pa.decimal32(9, 2)))},
         "tu_int64_ts": pa.array([946684800 * 10**6], pa.int64()),
         # three date32 rows: a 12-byte buffer a stride-8 decoder runs off the end of
         "tu_d32_3": pa.array([10957, 10958, 10959], pa.date32()),
@@ -495,6 +499,17 @@ def test_the_refusals_and_every_temporal_carrier(pgc_conn, server_dir, expect):
     expect.text(tu_state("tu_fsb16", "uuid"), "00000", "control: a 16-byte fixed-size binary imports into uuid")
     expect.text(tu_state("tu_d102", "numeric(20,4)"), "42804", "a decimal at another scale is refused (#881)")
     expect.text(tu_state("tu_d204", "numeric(20,4)"), "00000", "control: a matching decimal imports")
+    # the Decimal bit width (#2081): the reader decodes 16-byte decimal128 only, and a
+    # 32-byte decimal256 buffer is long enough to be read at the wrong offsets
+    st = tu_state("tu_dw128", "numeric(10,2)")
+    vals = _one(conn, "SELECT string_agg(v::text, ',') FROM tu_t")
+    expect.text(f"{st}|{vals}", "00000|1.25,2.50,-3.75",
+                "control: a 3-row decimal128 file imports every value (#2081)")
+    st = tu_state("tu_dw256", "numeric(10,2)")
+    expect.text(f"{st}|{_one(conn, 'SELECT count(*) FROM tu_t')}", "42804|0",
+                "a decimal256 file is refused, not read at a 16-byte stride (#2081)")
+    expect.text(tu_state("tu_dw64", "numeric(10,2)"), "42804", "a decimal64 file is refused as a width mismatch (#2081)")
+    expect.text(tu_state("tu_dw32", "numeric(10,2)"), "42804", "a decimal32 file is refused as a width mismatch (#2081)")
     tu_state("tu_u64", "bigint")
     expect.num(_one(conn, "SELECT count(*) FROM tu_t"), 0, "and a refused import leaves the target empty")
     expect.text(tu_state("tu_int64_ts", "timestamp"), "00000",
@@ -931,3 +946,186 @@ def test_a_list_whose_offset_runs_past_its_values_is_still_malformed(pgc_conn, s
                 "1|XX001 columnar: malformed Arrow IPC file: value buffer too small for the row count|0",
                 "a list<int64> file whose last offset runs past its value buffer is still refused as malformed"
                 " with XX001 (#1932)")
+
+
+def _server_crashes(pgc_cluster):
+    """-> how many backends the server log says died, or None when the log can't be
+    read: a blind count must not read as "no crashes"."""
+    try:
+        return (pgc_cluster.datadir / "server.log").read_text(errors="replace").count("terminated by signal")
+    except OSError:
+        return None
+
+def _projection_import_case(pgc_cluster, server_dir, schema, opt, proj):
+    """-> 'oOPTpPROJ:imported/rows/projection rows' for one case of #2092's matrix.
+
+    Every statement runs on a fresh connection, because a crash ends every backend,
+    the fixture's own included. Each case has its own table."""
+    import time
+    import psycopg
+
+    def connect():
+        c = psycopg.connect(pgc_cluster.dsn(), autocommit=True)
+        c.execute(f'SET search_path TO "{schema}", public')
+        return c
+
+    t = f"aip_o{opt}p{proj}"
+    path = server_dir / f"{t}.arrows"
+    with connect() as c:
+        c.execute(f"CREATE TABLE {t} (id bigint, c int) USING pgcolumnar")
+        c.execute(f"INSERT INTO {t} SELECT g, g % 10 FROM generate_series(1, 1000) g")
+        if opt:
+            c.execute(f"SELECT pgcolumnar.set_options('{t}', compression => 'zstd')")
+        if proj:
+            c.execute(f"SELECT pgcolumnar.add_projection('{t}', 'p', columns => ARRAY['c','id'],"
+                      " sort_key => ARRAY['c'])")
+        c.execute(f"SELECT pgcolumnar.export_arrow('{t}', '{path}')")
+    try:
+        with connect() as c:
+            got = str(c.execute(f"SELECT pgcolumnar.import_arrow('{t}', '{path}')").fetchone()[0])
+    except psycopg.Error as e:
+        got = e.sqlstate or "lost connection"
+    # after a crash the server needs a moment of recovery before it answers
+    for _ in range(60):
+        try:
+            with connect() as c:
+                rows = c.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+                prows = (c.execute(f"SELECT count(*) FROM pgcolumnar.read_projection('{t}', 'p')").fetchone()[0]
+                         if proj else "-")
+            break
+        except psycopg.OperationalError:
+            time.sleep(1)
+    else:
+        rows = prows = "server down"
+    return f"o{opt}p{proj}:{got}/{rows}/{prows}"
+
+
+def test_an_arrow_import_into_a_table_with_a_projection_keeps_the_server_up(pgc_conn, pgc_cluster, server_dir,
+                                                                      expect):
+    """#2092: the import writes the projection's rows when the statement ends. The
+    import is a SELECT, so its statement ends in portal cleanup, where no snapshot is
+    active. The flush then read the options catalog with a snapshot nobody had
+    registered. An assert build aborted on the first catalog row the read examined, and
+    the postmaster restarted every backend.
+
+    Any table's options row is enough, so the test gives one to a neighbour table first.
+    Without it, the case without set_options passed or failed on main's code depending
+    on what earlier tests had left in the catalog. The matrix crosses projection with
+    set_options; the crash count comes from the server log, not from timing."""
+    import psycopg
+
+    schema = _one(pgc_conn, "SELECT current_schema()")
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as c:
+        c.execute(f'SET search_path TO "{schema}", public')
+        c.execute("CREATE TABLE aip_neighbour (id int) USING pgcolumnar")
+        c.execute("SELECT pgcolumnar.set_options('aip_neighbour', compression => 'zstd')")
+    before = _server_crashes(pgc_cluster)
+    got = " ".join(_projection_import_case(pgc_cluster, server_dir, schema, opt, proj)
+                   for opt in (0, 1) for proj in (0, 1))
+    now = _server_crashes(pgc_cluster)
+    got += (f" | {now - before} backend crashes" if isinstance(before, int) and isinstance(now, int)
+            else " | crash count unreadable")
+    expect.text(got, "o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000"
+                     " | 0 backend crashes",
+                "import_arrow into a table with a projection, with or without set_options, keeps the server up"
+                " and fills the projection (#2092)")
+
+
+def _layout_fixtures(pa, out):
+    """#2097's files, as the shell writes them: a column `v` of each binary or string
+    layout beside an int32 `n` counting from 0."""
+    def write(name, arr):
+        t = pa.table({"v": arr, "n": pa.array(range(len(arr)), pa.int32())})
+        _write_stream(pa, out / f"{name}.arrows", t)
+
+    write("lv_lb1", pa.array([b"x"], pa.large_binary()))
+    write("lv_lb3", pa.array([b"hello", b"world!", None], pa.large_binary()))
+    write("lv_ls", pa.array(["hi", "there"], pa.large_string()))
+    write("lv_lls", pa.array([["hi"], ["there"]], pa.list_(pa.large_string())))
+    write("lv_sv", pa.array(["hi", "there"], pa.string_view()))
+    write("lv_bv", pa.array([b"hi"], pa.binary_view()))
+    write("lv_bin", pa.array([b"x"], pa.binary()))
+    write("lv_str", pa.array(["hi", "there"], pa.string()))
+    for f in out.glob("lv_*.arrows"):
+        f.chmod(0o644)
+
+
+def _lv_import(conn, out, fixture, pgtype):
+    """-> "<what import_arrow returned, or 'SQLSTATE message'>|<rows stored>", as the
+    shell's lv_import."""
+    t = f"lv_t_{fixture}"
+    _run(conn, f"CREATE TABLE {t} (v {pgtype}, n int) USING pgcolumnar")
+    got = _outcome(conn, f"SELECT pgcolumnar.import_arrow('{t}', '{out / (fixture + '.arrows')}')")
+    return f"{got}|{_one(conn, f'SELECT count(*) FROM {t}')}"
+
+
+def _layout_pa(expect, name, out):
+    """-> pyarrow, with #2097's fixtures written to `out`, or None after declining by
+    `name` because pyarrow is absent."""
+    pa = expect.require_module("pyarrow", name=name)
+    if pa is not None:
+        _layout_fixtures(pa, out)
+    return pa
+
+
+def _refused(column, arrow_desc, pgtype):
+    return (f'42804 Arrow column "{column}" holds {arrow_desc}, which pgcolumnar.import_arrow cannot'
+            f" read into type {pgtype}|0")
+
+
+# #2097: a large_binary column holding b'x' imported into bytea as an empty value,
+# with no error, and a three-row one failed as malformed. A large_string file
+# ['hi','there'] imported into text as '' and 'hi'. The reader takes every Binary
+# and Utf8 offset buffer as 32-bit, so the 64-bit offsets [0, 1] read as 0 and 0.
+# The views have no offset buffer and were called malformed (XX001). Each is now
+# refused with 42804, naming the column and the Arrow type. One test per check.
+
+def test_a_large_binary_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_lb1", "bytea") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_lb3", "bytea"),
+                _refused("v", "a large binary", "bytea") + " / " + _refused("v", "a large binary", "bytea"),
+                "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty"
+                " bytea (#2097)")
+
+
+def test_a_large_string_is_refused_by_type_at_any_depth(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong"
+            " strings (#2097)")
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_ls", "text") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_lls", "text[]"),
+                _refused("v", "a large string", "text") + " / " + _refused("v", "a large string", "text"),
+                "import_arrow refuses a large string for a text or a text[] column with 42804, not stored as"
+                " wrong strings (#2097)")
+
+
+def test_a_string_or_binary_view_is_refused_by_type_not_as_malformed(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    expect.text(_lv_import(pgc_conn, server_dir, "lv_sv", "text") + " / "
+                + _lv_import(pgc_conn, server_dir, "lv_bv", "bytea"),
+                _refused("v", "a string view", "text") + " / " + _refused("v", "a binary view", "bytea"),
+                "import_arrow refuses a string view and a binary view with 42804, not as a malformed file"
+                " (#2097)")
+
+
+def test_a_binary_or_string_file_still_imports_with_its_values(pgc_conn, server_dir, expect):
+    """#2097's control: the refusal is by type, so a plain binary and a plain string
+    file must still import, with their values."""
+    name = "control: a binary and a string file still import into bytea and text, with their values (#2097)"
+    if _layout_pa(expect, name, server_dir) is None:
+        return
+    conn = pgc_conn
+    got_bin = _lv_import(conn, server_dir, "lv_bin", "bytea")
+    hex_bin = _one(conn, "SELECT encode(v, 'hex') FROM lv_t_lv_bin")
+    got_str = _lv_import(conn, server_dir, "lv_str", "text")
+    joined = _one(conn, "SELECT string_agg(v, ',' ORDER BY n) FROM lv_t_lv_str")
+    expect.text(f"{got_bin}|{hex_bin} / {got_str}|{joined}",
+                "1|1|78 / 2|2|hi,there",
+                "control: a binary and a string file still import into bytea and text, with their values"
+                " (#2097)")

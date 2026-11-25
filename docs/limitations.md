@@ -1023,7 +1023,10 @@ so you cannot leave the column out, and declaring it as a scalar fails too
 example with pyarrow.
 `import_arrow` refuses a list of lists or a list of maps for an array column
 too. The error has SQLSTATE 42804 and names the column (#1932). It also refuses
-a large list, which it does not read.
+a large list, which it does not read. For the same reason it refuses a large
+binary, a large string, a binary view and a string view, at any depth (#2097).
+To import such a column, cast it to binary or string first, for example with
+pyarrow.
 `import_arrow` reads an Arrow column only into a column of the same type family.
 For example, it refuses a float64 for a `bigint` column and a string for a
 `bigint` column, with SQLSTATE 42804 (#2082). It does not convert the values.
@@ -1033,8 +1036,7 @@ or `timestamptz` as microseconds since 1970-01-01. A duration reads into
 A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
 `numeric` declared without a precision or with one above 38, but not into
 `numeric(p,s)`.
-`import_arrow` does not read a large string, a large binary or a Null-type
-column into any column.
+`import_arrow` does not read a Null-type column into any column.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |
