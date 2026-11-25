@@ -21,6 +21,7 @@
 #include "access/xlogrecord.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
+#include "common/int.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -181,14 +182,22 @@ PgColumnarReserveRowNumbers(Relation rel, uint64 rowCount,
 	Buffer		buffer;
 	Page		page;
 	PgColumnarMetapage *meta;
+	uint64		end;
 
 	buffer = ReadBuffer(rel, COLUMNAR_METAPAGE_BLOCKNO);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
 	meta = PgColumnarMetapagePointer(page);
 
-	if (meta->reservedRowNumber > COLUMNAR_ROW_NUMBER_LIMIT ||
-		rowCount > COLUMNAR_ROW_NUMBER_LIMIT - meta->reservedRowNumber)
+	/*
+	 * One comparison of where the run would end. It also refuses a table
+	 * whose metapage an older version already advanced past the limit, since
+	 * that run ends past the limit too. There is no separate clause for that
+	 * case, so no test has to reach it. The addition cannot overflow for any
+	 * metapage a writer produced, but a corrupt one could hold any value.
+	 */
+	if (pg_add_u64_overflow(meta->reservedRowNumber, rowCount, &end) ||
+		end > COLUMNAR_ROW_NUMBER_LIMIT)
 	{
 		uint64		next = meta->reservedRowNumber;
 

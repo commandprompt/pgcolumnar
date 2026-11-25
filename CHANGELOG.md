@@ -617,7 +617,9 @@ true until the next version shipped.
   `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
   22003, as it already refused one below 1; it returned a wrapped item pointer.
   A table that already holds wrapped rows stays readable by a sequential scan
-  until `pgcolumnar.vacuum` renumbers it. The tests also reserve a run that
+  until `pgcolumnar.vacuum` renumbers it. The writer refuses to add rows to such
+  a table: it checks only where the new run would end, so a table that an older
+  version pushed past the end is refused too. The tests also reserve a run that
   ends exactly at the last row number, and one row number more.
   docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
