@@ -306,7 +306,9 @@ arrow_export	arrow_export	arrow values match heap oracle	15;16;17;18;19	2026-10-
 arrow_export	arrow_export	empty arrow readable	15;16;17;18;19	never	-
 arrow_export	arrow_export	empty export rows written	15;16;17;18;19	never	-
 arrow_export	arrow_export	every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them	15;16;17;18;19	2026-10-31	kept numeric and jsonb texts popped last-first, without the value check (#1811)
+arrow_export	arrow_export	export_arrow refuses a table with 17 live columns	15;16;17;18;19	2026-11-25	export_arrow limit raised to 17 live columns (ncols > 17) (#2143 review)
 arrow_export	arrow_export	export_arrow rows written	15;16;17;18;19	never	-
+arrow_export	arrow_export	export_arrow writes a table with 16 live columns and 1 dropped column, every row	15;16;17;18;19	2026-11-25	export_arrow limit counts attributes (tupdesc->natts > 16), not live columns (#2143 review)
 arrow_export	arrow_export	export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row	15;16;17;18;19	2026-11-24	Arrow export and import at main d52f6e8c, refusing any dropped column (#2076)
 arrow_export	arrow_export	extended arrow schema	15;16;17;18;19	never	-
 arrow_export	arrow_export	extended export rows written	15;16;17;18;19	never	-

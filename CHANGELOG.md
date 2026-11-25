@@ -613,6 +613,9 @@ true until the next version shipped.
   attached. The writers now skip a dropped column and write the live columns
   in order. `import_arrow` now loads into a table with a dropped column, as
   `import_parquet` already did; the dropped column is stored as null.
+  `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
+  live columns and a dropped one exports. Tests pin that limit, the refusal of a
+  17th live column, and an import into a table whose dropped column is text.
   `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
 - Repeated values in a uuid, interval, timetz, name, macaddr, tid or point
   column can be read again (#2061). The encoder stores a run of equal values

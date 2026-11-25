@@ -535,7 +535,12 @@ def test_every_kept_text_reaches_its_own_value_in_the_stream(ae, expect):
 # column, with rows written before and after the drops. The stream must hold the live
 # columns a, c, d, in order, and every row. import_arrow loads a stream of a, c, d,
 # exported from a copy of the table with no dropped column, into a table that has one,
-# so the import is tested whatever export_arrow does. On its own database.
+# so the import is tested whatever export_arrow does. The dropped column in ar_drop_in
+# is text: import_arrow must set every slot to null before it fills the live ones, or
+# the dropped slot keeps a stale pointer and the server crashes (#2143 review).
+# export_arrow writes at most 16 columns, counted as live columns: a table with 16 live
+# columns and 1 dropped column exports, and a table with 17 live columns is refused.
+# On its own database.
 DROP_DB = "pgc_arrow_export_drop"
 DROP_SETUP = (
     "CREATE TABLE ar_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar",
@@ -545,8 +550,13 @@ DROP_SETUP = (
     "ALTER TABLE ar_drop DROP COLUMN tail",
     "INSERT INTO ar_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g",
     "CREATE TABLE ar_nodrop USING pgcolumnar AS SELECT a, c, d FROM ar_drop",
-    "CREATE TABLE ar_drop_in (a int, junk int, c text, d int8) USING pgcolumnar",
+    "CREATE TABLE ar_drop_in (a int, junk text, c text, d int8) USING pgcolumnar",
     "ALTER TABLE ar_drop_in DROP COLUMN junk",
+    "CREATE TABLE ar_w16 (junk text, " + ", ".join(f"c{i} int" for i in range(1, 17)) + ") USING pgcolumnar",
+    "ALTER TABLE ar_w16 DROP COLUMN junk",
+    "INSERT INTO ar_w16 SELECT g, " + ", ".join(f"g + {i}" for i in range(2, 17)) + " FROM generate_series(1, 5) g",
+    "CREATE TABLE ar_w17 (" + ", ".join(f"c{i} int" for i in range(1, 18)) + ") USING pgcolumnar",
+    "INSERT INTO ar_w17 SELECT g, " + ", ".join(f"g + {i}" for i in range(2, 18)) + " FROM generate_series(1, 5) g",
 )
 
 
@@ -566,6 +576,9 @@ def aed(pgc_cluster, server_dir):
         _run(dsn, f"SELECT pgcolumnar.export_arrow('ar_nodrop', '{f['nodrop']}')")
         r["import"] = _value(dsn, f"SELECT pgcolumnar.import_arrow('ar_drop_in', '{f['nodrop']}')")
         r["imported"] = _rows(dsn, "SELECT a, c, d FROM ar_drop_in ORDER BY a")
+        r["w16"] = _value(dsn, f"SELECT pgcolumnar.export_arrow('ar_w16', '{server_dir / 'w16.arrows'}')")
+        r["w17"] = _refusal(dsn, f"SELECT pgcolumnar.export_arrow('ar_w17', '{server_dir / 'w17.arrows'}')",
+                            "columnar.export_arrow supports at most 16 columns")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -605,3 +618,12 @@ def test_import_arrow_loads_into_a_table_with_a_dropped_column(aed, expect):
         reading = f"{len(got)}|{'MATCH' if got == oracle else 'MISMATCH'}"
     expect.text(f"{aed['import']}|{reading}", "200|200|MATCH",
                 "import_arrow loads a,c,d into a table with a dropped column, every row")
+
+
+def test_export_arrow_writes_16_live_columns_beside_a_dropped_one(aed, expect):
+    expect.text(aed["w16"], "5",
+                "export_arrow writes a table with 16 live columns and 1 dropped column, every row")
+
+
+def test_export_arrow_refuses_17_live_columns(aed, expect):
+    expect.text(aed["w17"], "refused", "export_arrow refuses a table with 17 live columns")

@@ -1924,4 +1924,7 @@ guard_tests 895
 # cluster_tests 5384 -> 5389 for #2076 (export_parquet, parallel_export_parquet, tier_partition, export_arrow
 # and import_arrow on a table with dropped columns): 3 tests in test_parquet_export.py and 2 in
 # test_arrow_export.py, by collection: 6275 tests collected, less guard_tests 894.
-cluster_tests 5389
+# cluster_tests 5389 -> 5391 for the #2143 review (#2076): test_export_arrow_writes_16_live_columns_beside_a_dropped_one
+# and test_export_arrow_refuses_17_live_columns in test_arrow_export.py, by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5391 tests collected.
+cluster_tests 5391

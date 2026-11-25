@@ -352,7 +352,9 @@ check "every numeric and jsonb text reaches its own value: 300 rows of numeric, 
 # after the drops. The stream must hold the live columns a, c, d, in order, and every
 # row. import_arrow must load a stream of a, c, d into a table that has a dropped
 # column. That stream comes from a copy of the table with no dropped column, so the
-# import is tested on its own, whatever export_arrow does.
+# import is tested on its own, whatever export_arrow does. The dropped column in
+# ar_drop_in is text: import_arrow must set every slot to null before it fills the live
+# ones, or the dropped slot keeps a stale pointer and the server crashes (#2143 review).
 # qerr SQL -> the value, or the ERROR line when the statement fails
 qerr() {
 	local out
@@ -384,7 +386,7 @@ psql_run "CREATE TABLE ar_drop (a int, junk int, c text, d int8, tail text) USIN
           ALTER TABLE ar_drop DROP COLUMN tail;
           INSERT INTO ar_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g;
           CREATE TABLE ar_nodrop USING pgcolumnar AS SELECT a, c, d FROM ar_drop;
-          CREATE TABLE ar_drop_in (a int, junk int, c text, d int8) USING pgcolumnar;
+          CREATE TABLE ar_drop_in (a int, junk text, c text, d int8) USING pgcolumnar;
           ALTER TABLE ar_drop_in DROP COLUMN junk;"
 ar_drop_want="$(q "$(drop_digest ar_drop)")"
 check "export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row" \
@@ -394,6 +396,22 @@ q "SELECT pgcolumnar.export_arrow('ar_nodrop', '$PGC_WORKDIR/nodrop.arrow')" >/d
 check "import_arrow loads a,c,d into a table with a dropped column, every row" \
 	"$(qerr "SELECT pgcolumnar.import_arrow('ar_drop_in', '$PGC_WORKDIR/nodrop.arrow')")|$(qerr "$(drop_digest ar_drop_in)")" \
 	"200|$ar_drop_want"
+
+# export_arrow writes at most 16 columns. The limit counts live columns, so a table with
+# 16 live columns and 1 dropped column exports, and a table with 17 live columns is
+# refused (#2143 review).
+wide_cols() { local n=$1 i out="c1 int"; for ((i = 2; i <= n; i++)); do out+=", c$i int"; done; echo "$out"; }
+wide_vals() { local n=$1 i out="g"; for ((i = 2; i <= n; i++)); do out+=", g + $i"; done; echo "$out"; }
+psql_run "CREATE TABLE ar_w16 (junk text, $(wide_cols 16)) USING pgcolumnar;
+          ALTER TABLE ar_w16 DROP COLUMN junk;
+          INSERT INTO ar_w16 SELECT $(wide_vals 16) FROM generate_series(1, 5) g;
+          CREATE TABLE ar_w17 ($(wide_cols 17)) USING pgcolumnar;
+          INSERT INTO ar_w17 SELECT $(wide_vals 17) FROM generate_series(1, 5) g;"
+check "export_arrow writes a table with 16 live columns and 1 dropped column, every row" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_w16', '$PGC_WORKDIR/w16.arrow')")" "5"
+check "export_arrow refuses a table with 17 live columns" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_w17', '$PGC_WORKDIR/w17.arrow')")" \
+	"ERROR:  columnar.export_arrow supports at most 16 columns"
 
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of

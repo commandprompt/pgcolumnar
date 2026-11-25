@@ -8885,7 +8885,9 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_export_arrow_writes_the_live_columns_of_a_table_with_dropped_columns` | export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row (#2076); a second module fixture on its own database, with rows written before and after the drops, read with pyarrow against the table's rows |
-| `test_import_arrow_loads_into_a_table_with_a_dropped_column` | import_arrow loads a,c,d into a table with a dropped column, every row (#2076); the stream comes from a copy of the table with no dropped column, so the import is tested whatever export_arrow does |
+| `test_import_arrow_loads_into_a_table_with_a_dropped_column` | import_arrow loads a,c,d into a table with a dropped column, every row (#2076); the stream comes from a copy of the table with no dropped column, so the import is tested whatever export_arrow does. The dropped column is text, so a slot left unset before the live ones are filled crashes the server (#2143 review) |
+| `test_export_arrow_writes_16_live_columns_beside_a_dropped_one` | export_arrow writes a table with 16 live columns and 1 dropped column, every row (#2143 review); the limit of 16 columns counts live columns, not attributes |
+| `test_export_arrow_refuses_17_live_columns` | export_arrow refuses a table with 17 live columns, with `supports at most 16 columns` (#2143 review) |
 
 ## 198. test_vector_agg_tlist_shape.py: the vectorized aggregate accepts a target list that contains aggregates
 
