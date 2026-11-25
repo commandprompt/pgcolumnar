@@ -98,6 +98,7 @@ StaticAssertDecl(COLUMNAR_NATIVE_ENCDESC_HEADER_LEN == 2 + (int) sizeof(uint32),
 #define PFLUSH_KEY_VERDICTS 3
 #define PFLUSH_KEY_SLOTS	4
 #define PFLUSH_KEY_CLAIM	5
+#define PFLUSH_KEY_ATTRS	6
 #define PFLUSH_MAX_WORKERS	8
 
 typedef enum PflushState
@@ -123,7 +124,6 @@ typedef struct PflushHeader
 	int			secContext;
 	Oid			authid;			/* the authenticated user, which workers connect as below 17 (#1585) */
 	bool		roleIsSuperuser;	/* roleid's superuser flag, for the worker's session user */
-	Oid			relid;
 	uint64		storageId;
 	uint64		groupNumber;
 	uint64		rowCount;
@@ -340,11 +340,12 @@ struct PgColumnarWriteState
 
 	/*
 	 * True when `tupdesc` is relid's on-disk descriptor, so a #445-slice-3
-	 * parallel-flush worker may rebuild each column's Form_pg_attribute from
-	 * table_open(relid). Set only by the base writer; false (fail-closed) for a
-	 * projection's inner writer, whose tupdesc is a synthetic {rownumber, proj
-	 * cols...} descriptor that does NOT match its base-table relid -- those flush
-	 * on the serial path, which is byte-identical.
+	 * parallel-flush worker may flush its columns, from the attributes the
+	 * backend copies into the shared segment (#2072). Set only by the base
+	 * writer; false (fail-closed) for a projection's inner writer, whose tupdesc
+	 * is a synthetic {rownumber, proj cols...} descriptor that does NOT match its
+	 * base-table relid -- those flush on the serial path, which is
+	 * byte-identical.
 	 */
 	bool		tupdescIsRel;
 	int			stripeRowLimit;
@@ -831,7 +832,7 @@ PgColumnarGetWriteState(Relation rel)
 	 * CreateTupleDescCopy would clear. */
 	writeState->tupdesc = CreateTupleDescCopyConstr(RelationGetDescr(rel));
 	writeState->natts = writeState->tupdesc->natts;
-	writeState->tupdescIsRel = true;	/* rebuildable by a parallel-flush worker */
+	writeState->tupdescIsRel = true;	/* matches relid, so workers may flush it */
 	writeState->stripeRowLimit = pgcolumnar_stripe_row_limit;
 	writeState->chunkGroupRowLimit = pgcolumnar_chunk_group_row_limit;
 	writeState->compressionType = pgcolumnar_compression;
@@ -2609,10 +2610,12 @@ pflush_auto_workers(void)
  *
  *		Modelled on pgcolumnar_parallel_export_worker. Unlike the export path
  *		this does NOT import the launcher's snapshot: the value data lives in the
- *		DSM, not the table, so the worker reads only committed catalog (the
- *		relation's tupdesc). StartTransactionCommand plus a pushed
- *		GetTransactionSnapshot is enough to open the relation; no
- *		ExportSnapshot/ImportSnapshot is needed (owner's default decision).
+ *		DSM, not the table, so the worker reads only committed catalog (the type
+ *		cache). It never opens the relation (#2072): the column attributes come
+ *		from the backend's tuple descriptor, copied into KEY_ATTRS.
+ *		StartTransactionCommand plus a pushed GetTransactionSnapshot is enough
+ *		for the type-cache reads; no ExportSnapshot/ImportSnapshot is needed
+ *		(owner's default decision).
  */
 PGDLLEXPORT void
 pgcolumnar_parallel_flush_worker(Datum main_arg)
@@ -2625,6 +2628,7 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	uint64	   *inoffs;
 	PflushVerdict *verds;
 	pg_atomic_uint32 *claim;
+	FormData_pg_attribute *attrs;
 	PflushWorkerSlot *me;
 	int			widx;
 
@@ -2649,24 +2653,30 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 	verds = (PflushVerdict *) shm_toc_lookup(toc, PFLUSH_KEY_VERDICTS, false);
 	slots = (PflushWorkerSlot *) shm_toc_lookup(toc, PFLUSH_KEY_SLOTS, false);
 	claim = (pg_atomic_uint32 *) shm_toc_lookup(toc, PFLUSH_KEY_CLAIM, false);
+	attrs = (FormData_pg_attribute *) shm_toc_lookup(toc, PFLUSH_KEY_ATTRS, false);
 	me = &slots[widx];
 
 	columnar_worker_connect_as(hdr->dbid, hdr->authid, hdr->roleid,
 							   hdr->roleIsSuperuser);
 
 	/*
-	 * A fresh snapshot for catalog/tupdesc reads only. A plain
-	 * GetTransactionSnapshot pushed onto the active stack lets table_open resolve
-	 * the relation; no ImportSnapshot, because the worker never reads the
-	 * backend's uncommitted rows -- the value bytes are all in the DSM.
+	 * A fresh snapshot for type-cache reads only; no ImportSnapshot, because the
+	 * worker never reads the backend's uncommitted rows -- the value bytes are
+	 * all in the DSM.
+	 *
+	 * The worker does NOT open the relation (#2072). The column attributes come
+	 * from the backend's own tuple descriptor, copied into KEY_ATTRS. Opening it
+	 * took ACCESS SHARE outside the backend's lock group, and the backend waits
+	 * for its workers on a latch the deadlock detector cannot see: an INSERT whose
+	 * transaction held ACCESS EXCLUSIVE (TRUNCATE, LOCK TABLE, ALTER TABLE), or
+	 * one with another session's ALTER TABLE queued behind it, waited forever.
+	 * The backend's ROW EXCLUSIVE keeps the table in place while the workers run.
 	 */
 	StartTransactionCommand();
 	PushActiveSnapshot(GetTransactionSnapshot());
 
 	PG_TRY();
 	{
-		Relation	rel = table_open(hdr->relid, AccessShareLock);
-		TupleDesc	tupdesc = RelationGetDescr(rel);
 		StringInfoData recbuf;
 		uint32		count = 0;
 		dsm_segment *outseg;
@@ -2706,7 +2716,7 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 			if (c >= (uint32) hdr->natts)
 				break;
 
-			att = TupleDescAttr(tupdesc, c);
+			att = &attrs[c];
 
 			/* reconstruct the column def with the SAME logic the backend uses */
 			build_column_def(att, hdr->bloomEnabled, CurrentMemoryContext, &def);
@@ -2752,7 +2762,6 @@ pgcolumnar_parallel_flush_worker(Datum main_arg)
 		 * after it there is only the detach and the DONE write. A segment created
 		 * and not yet pinned is freed when this worker exits.
 		 */
-		table_close(rel, AccessShareLock);
 		PopActiveSnapshot();
 		CommitTransactionCommand();
 
@@ -2923,6 +2932,7 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	PflushVerdict *verds;
 	PflushWorkerSlot *slots;
 	pg_atomic_uint32 *claim;
+	FormData_pg_attribute *attrs;
 	uint32		dsmh;
 	BackgroundWorker bw;
 	BackgroundWorkerHandle **handles;
@@ -2960,7 +2970,8 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PflushVerdict), natts));
 	shm_toc_estimate_chunk(&est, mul_size(sizeof(PflushWorkerSlot), nworkers));
 	shm_toc_estimate_chunk(&est, sizeof(pg_atomic_uint32));
-	shm_toc_estimate_keys(&est, 6);
+	shm_toc_estimate_chunk(&est, mul_size(sizeof(FormData_pg_attribute), natts));
+	shm_toc_estimate_keys(&est, 7);
 	segsize = shm_toc_estimate(&est);
 
 	seg = dsm_create(segsize, 0);
@@ -2979,6 +2990,9 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	shm_toc_insert(toc, PFLUSH_KEY_SLOTS, slots);
 	claim = (pg_atomic_uint32 *) shm_toc_allocate(toc, sizeof(pg_atomic_uint32));
 	shm_toc_insert(toc, PFLUSH_KEY_CLAIM, claim);
+	attrs = (FormData_pg_attribute *) shm_toc_allocate(toc,
+													   mul_size(sizeof(FormData_pg_attribute), natts));
+	shm_toc_insert(toc, PFLUSH_KEY_ATTRS, attrs);
 
 	if (inputs.len > 0)
 		memcpy(inbuf, inputs.data, inputs.len);
@@ -2987,6 +3001,8 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	{
 		verds[c].verdict = writeState->colDefs[c].fsstVerdict;
 		verds[c].age = (int32) writeState->colDefs[c].fsstVerdictAge;
+		memcpy(&attrs[c], TupleDescAttr(writeState->tupdesc, c),
+			   sizeof(FormData_pg_attribute));
 	}
 	pg_atomic_init_u32(claim, 0);
 
@@ -2994,7 +3010,6 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
 	hdr->authid = GetAuthenticatedUserId();
 	hdr->roleIsSuperuser = superuser_arg(hdr->roleid);
-	hdr->relid = writeState->relid;
 	hdr->storageId = writeState->storageId;
 	hdr->groupNumber = groupNumber;
 	hdr->rowCount = rowCount;
@@ -3203,13 +3218,20 @@ flush_columns_parallel(PgColumnarWriteState *writeState, uint64 groupNumber,
 /*
  * rel_new_in_current_xact
  *		True if the relation was created in the current transaction, so its
- *		pg_class row is not yet committed. A parallel-flush worker opens the
- *		relation on a fresh snapshot to read its tuple descriptor; for a table
- *		created and loaded in one transaction (CREATE TABLE ...; INSERT ..., or
- *		CREATE TABLE AS) that open fails, and the flush would register workers,
- *		have them all fail, log a WARNING, and redo the whole thing serially.
- *		Detect it up front and keep the flush serial -- silently, and without the
- *		wasted registration and double work. (#445 slice 4)
+ *		pg_class row is not yet committed. Such a flush stays serial, silently.
+ *		(#445 slice 4)
+ *
+ *		Why it was added: a parallel-flush worker used to open the relation on a
+ *		fresh snapshot to read its tuple descriptor. For a table created and
+ *		loaded in one transaction (CREATE TABLE ...; INSERT ..., or CREATE TABLE
+ *		AS) that open failed, so every worker failed, logged a WARNING, and the
+ *		backend redid the whole flush serially.
+ *
+ *		Since #2072 no worker opens the relation: workers take the column
+ *		attributes from the backend's copy. The check stays so that such a
+ *		flush keeps its old serial behaviour. A worker still reads the type
+ *		cache on its own snapshot, so a column whose type was created in the
+ *		same transaction would still fail in a worker.
  */
 static bool
 rel_new_in_current_xact(Oid relid)
@@ -3351,8 +3373,8 @@ flush_row_group(PgColumnarWriteState *writeState, bool keep)
 	 * to spread, dispatch flush_one_column across a worker pool, degrading to
 	 * serial completion of any column a worker did not produce (byte-identical to
 	 * the serial path either way). tupdescIsRel keeps a projection's inner writer
-	 * (synthetic tupdesc a worker could not rebuild from relid) on the serial
-	 * path. With the GUC off, keep slice 2's in-backend round-trip loop unchanged.
+	 * (synthetic tupdesc, not the base table's) on the serial path. With the GUC
+	 * off, keep slice 2's in-backend round-trip loop unchanged.
 	 *
 	 * The GUC stays OFF by default. A gate to turn it on by default was measured
 	 * and REFUTED (#445): no metric computable here -- natts, buffered bytes, or
