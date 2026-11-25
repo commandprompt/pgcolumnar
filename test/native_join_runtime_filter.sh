@@ -385,4 +385,72 @@ for dim in dim_gh dim_gc; do
 			"$(q "SELECT count(*),sum(heap_g.k),sum(length(heap_g.payload)) FROM heap_g JOIN $dim ON heap_g.k=$dim.k WHERE (SELECT $gate)")"
 	done
 done
+# A rescan joins against that rescan's build rows (#2062). A correlated
+# subquery reruns the coordinator with a new outer value, and the coordinator
+# did not pass the changed parameter to its Hash Join, so the join kept the
+# first hash table. The outer values grow, so each later build holds keys the
+# first lacks and the Bloom filter cannot hide a stale table. The DISTINCT arm
+# puts a HashAggregate under the Build Tap, which keeps its own table unless
+# the tap passes the parameter down. Independent of the pytest twin: different
+# names, keys and outer values.
+q "$(cat <<'SQL'
+CREATE TABLE fact_rs(k int, pad text) USING pgcolumnar;
+INSERT INTO fact_rs SELECT g % 8, 'q' FROM generate_series(1, 16000) g;
+CREATE TABLE heap_rs AS SELECT * FROM fact_rs;
+CREATE TABLE dim_rs(k int);
+INSERT INTO dim_rs SELECT generate_series(0, 7);
+ANALYZE fact_rs;
+ANALYZE heap_rs;
+ANALYZE dim_rs;
+SQL
+)" >/dev/null
+rs_set="${rf_on}SET max_parallel_workers_per_gather=0;SET enable_nestloop=off;SET enable_mergejoin=off;"
+for arm in "subquery|SELECT k FROM dim_rs WHERE k < v.lim OFFSET 0" \
+	"distinct|SELECT DISTINCT k FROM dim_rs WHERE k < v.lim"; do
+	n=${arm%%|*}; b=${arm#*|}
+	rs(){ echo "SELECT v.lim||':'||(SELECT count(*) FROM $1 JOIN ($b) b ON $1.k = b.k) FROM (VALUES (1), (3), (8)) v(lim) ORDER BY v.lim"; }
+	check "premise: the $n rescan runs under the coordinator" \
+		"$(pc "${rs_set}EXPLAIN (COSTS OFF) $(rs fact_rs)" | grep -c 'Columnar Runtime Filter Coordinator')" 1
+	check "premise: heap's $n answer grows with each outer value" \
+		"$(pc "${rs_set}$(rs heap_rs)" | grep -v '^SET$' | tr '\n' ' ')" "1:2000 3:6000 8:16000 "
+	check "each $n rescan joins against its own build" \
+		"$(pc "${rs_set}$(rs fact_rs)" | grep -v '^SET$' | tr '\n' ' ')" \
+		"$(pc "${rs_set}$(rs heap_rs)" | grep -v '^SET$' | tr '\n' ' ')"
+done
+# The issue's own shapes (#2062): a LATERAL join and a scalar subquery, each
+# under default planner settings and with nested-loop and merge joins off. With
+# default settings the planner picks Nested Loop -> Aggregate -> Coordinator by
+# itself; the dimension has no unique key, so the ungrouped join fold cannot
+# take the plan instead. The uncorrelated control has a constant build, so
+# every row must give the same count.
+q "$(cat <<'SQL'
+CREATE TABLE outer_ls(lim int);
+INSERT INTO outer_ls VALUES (2), (7), (15);
+CREATE TABLE dim_ls AS SELECT generate_series(0, 1499) k;
+CREATE TABLE fact_ls(k int) USING pgcolumnar;
+INSERT INTO fact_ls SELECT g % 1500 FROM generate_series(1, 30000) g;
+CREATE TABLE heap_ls AS SELECT * FROM fact_ls;
+ANALYZE outer_ls;
+ANALYZE dim_ls;
+ANALYZE fact_ls;
+ANALYZE heap_ls;
+SQL
+)" >/dev/null
+ls_hash="SET enable_nestloop=off;SET enable_mergejoin=off;"
+for setting in "default|" "hash-only|$ls_hash"; do
+	sn=${setting%%|*}; ss="${rf_on}${setting#*|}"
+	for shape in \
+		"LATERAL|SELECT o.lim||':'||x.c FROM outer_ls o, LATERAL (SELECT count(*) c FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < o.lim*100) x ORDER BY o.lim|2:4000 7:14000 15:30000 " \
+		"scalar|SELECT o.lim||':'||(SELECT count(*) FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < o.lim*100) FROM outer_ls o ORDER BY o.lim|2:4000 7:14000 15:30000 " \
+		"uncorrelated|SELECT o.lim||':'||(SELECT count(*) FROM @T f JOIN dim_ls d ON f.k = d.k WHERE d.k < 700) FROM outer_ls o ORDER BY o.lim|2:14000 7:14000 15:14000 "; do
+		n=${shape%%|*}; rest=${shape#*|}; s=${rest%|*}; want=${rest##*|}
+		check "premise: the $sn $n query runs under the coordinator" \
+			"$(pc "${ss}EXPLAIN (COSTS OFF) ${s//@T/fact_ls}" | grep -c 'Columnar Runtime Filter Coordinator')" 1
+		check "premise: heap's $sn $n answer" \
+			"$(pc "${ss}${s//@T/heap_ls}" | grep -v '^SET$' | tr '\n' ' ')" "$want"
+		check "the $sn $n query equals heap" \
+			"$(pc "${ss}${s//@T/fact_ls}" | grep -v '^SET$' | tr '\n' ' ')" \
+			"$(pc "${ss}${s//@T/heap_ls}" | grep -v '^SET$' | tr '\n' ' ')"
+	done
+done
 pgc_summary

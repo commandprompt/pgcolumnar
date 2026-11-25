@@ -70,6 +70,17 @@ survived() {	# survived BEFORE -> "1" when the server answers and no backend die
 }
 CRASHES_BEFORE="$(crashes)"
 
+# #2083: a failed loader closed its file twice. AbortOutOfAnyTransaction already
+# closes every transient file, so a second CloseTransientFile logged "fd passed
+# to CloseTransientFile was not obtained from OpenTransientFile" and called
+# close() on a descriptor number that might belong to something else by then.
+double_closes() {	# -> count of those WARNINGs in the server log, or nothing
+	local _n
+	_n="$(pgc_pg "grep -c 'CloseTransientFile was not obtained' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+DOUBLE_CLOSES_BEFORE="$(double_closes)"
+
 # ---- structural checks: boundaries land after a newline, cover the file -------
 # Each helper below echoes one reading; the check, with its literal name, is at the
 # call site.
@@ -501,6 +512,12 @@ check "single table: a bad row fails the whole load" \
 	"$(grep -qi 'failed: invalid input syntax' <<<"$st_bad" && echo ok || echo no)" ok
 check "single table: failed load leaves the target empty" "$(q "SELECT count(*) FROM t_single")" 0
 check "single table: no prepared-transaction leak after failure" "$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+# The loads above that failed in their loaders (the gapped target and the bad row)
+# must not have closed a loader's file twice (#2083).
+dc_now="$(double_closes)"
+check "failed loaders close their file once: no CloseTransientFile WARNING in the server log (#2083)" \
+	"$( [[ "$DOUBLE_CLOSES_BEFORE" =~ ^[0-9]+$ && "$dc_now" =~ ^[0-9]+$ ]] \
+		&& echo $(( dc_now - DOUBLE_CLOSES_BEFORE )) || echo "unreadable [$DOUBLE_CLOSES_BEFORE] [$dc_now]")" 0
 
 # --- #686: parallel_copy must refuse a FIFO, not hang the backend -------------
 # pcopy_open_regular_file opened O_RDONLY then fstat, so a FIFO blocked in open(2)
@@ -661,5 +678,28 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 	"$(q "SELECT (pgcolumnar.file_split_offsets('$LOCAL_S3A', 2))[3]")" "$(stat -c %s "$DATADIR/s3a:/ctl.txt")"
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
+
+# ---- #2092: a load into a table with a projection fills the projection ---------
+# #2092 asked whether parallel_copy shares the import functions' crash: they wrote
+# a projection at statement end with no active snapshot. It does not: on main's
+# code, too, both cases below load and no backend dies. The check keeps that true.
+# Each table gets an options row (set_options), because the crash needed one.
+# Not covered: 2 or more workers into a projection that holds no rows yet. That
+# load hangs until cancelled, on another cause (#2161). So the 2-worker case
+# fills its projection first, and every load runs under a statement_timeout.
+proj_load() {	# proj_load WORKERS PRELOAD -> "wWORKERS:returned/rows/projection rows"
+	local t="t_proj_w$1"
+	psql_run "CREATE TABLE $t (id int, txt text) USING pgcolumnar;
+		SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" -gt 0 ] && psql_run "INSERT INTO $t SELECT g, 'pre'||g FROM generate_series(1, $2) g;" >/dev/null
+	psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['txt','id'], sort_key => ARRAY['id']);" >/dev/null
+	printf 'w%s:%s/%s/%s' "$1" \
+		"$(PGOPTIONS='-c statement_timeout=60s' q "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $1)")" \
+		"$(q "SELECT count(*) FROM $t")" "$(q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p')")"
+}
+_proj_got="$(proj_load 1 0) $(proj_load 2 1000)"
+check "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)" \
+	"$_proj_got | leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
+	"w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1"
 
 pgc_summary
