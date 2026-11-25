@@ -577,6 +577,13 @@ extra = {
     # the reader would take the first half of each value.
     'tu_fsb32': pa.array([b'0123456789abcdef0123456789abcdef'], pa.binary(32)),
     'tu_fsb16': pa.array([b'0123456789abcdef'], pa.binary(16)),
+    # #2081: the same three values in every Decimal bit width. The reader's
+    # stride is 16 bytes, so a 32-byte decimal256 buffer is long enough and was
+    # read at the wrong offsets: 1.25, 2.50, -3.75 stored 1.25, 0.00, 2.50.
+    'tu_dw128': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal128(10, 2)),
+    'tu_dw256': pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal256(10, 2)),
+    'tu_dw64':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal64(10, 2)),
+    'tu_dw32':  pa.array([decimal.Decimal(x) for x in ('1.25', '2.50', '-3.75')], pa.decimal32(9, 2)),
 }
 for name, arr in extra.items():
     tab = pa.table({'v': arr})
@@ -784,6 +791,23 @@ PY
 	check "control: a matching decimal imports" \
 		"$(tu_import_state tu_d204 'numeric(20,4)')" "00000"
 
+	# The Decimal bit width (#2081). The reader decodes 16-byte decimal128
+	# values only. A decimal256 file stored every other row as the high half
+	# of the row before, with no error. A decimal64 or decimal32 file was
+	# refused only by the buffer-length check, as "malformed". All three now
+	# get the same 42804 refusal as the other width mismatches. The control
+	# is the same three values as decimal128, read back value by value.
+	check "control: a 3-row decimal128 file imports every value (#2081)" \
+		"$(tu_import_state tu_dw128 'numeric(10,2)')|$(q "SELECT string_agg(v::text, ',') FROM tu_t;")" \
+		"00000|1.25,2.50,-3.75"
+	check "a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+		"$(tu_import_state tu_dw256 'numeric(10,2)')|$(q "SELECT count(*) FROM tu_t;")" \
+		"42804|0"
+	check "a decimal64 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw64 'numeric(10,2)')" "42804"
+	check "a decimal32 file is refused as a width mismatch (#2081)" \
+		"$(tu_import_state tu_dw32 'numeric(10,2)')" "42804"
+
 	# A refusal must leave nothing behind: an arm that only reads the SQLSTATE
 	# would pass for a fix that errored after writing the row.
 	tu_import_state tu_u64 bigint >/dev/null
@@ -850,6 +874,10 @@ else
 			"control: a 16-byte fixed-size binary imports into uuid" \
 			"a decimal at another scale is refused (#881)" \
 			"control: a matching decimal imports" \
+			"control: a 3-row decimal128 file imports every value (#2081)" \
+			"a decimal256 file is refused, not read at a 16-byte stride (#2081)" \
+			"a decimal64 file is refused as a width mismatch (#2081)" \
+			"a decimal32 file is refused as a width mismatch (#2081)" \
 			"and a refused import leaves the target empty" \
 			"control: a non-temporal tag is not caught by the temporal refusal" \
 			"a list element's nanosecond unit is honoured, not just the top level" \
@@ -1111,6 +1139,113 @@ else
 			"a list<int64> file whose last offset runs past its value buffer is still refused as malformed with XX001 (#1932)"; do
 		check_skip "$_ai_nest" \
 			"SKIP  $_ai_nest (pyarrow not available)" \
+			"pyarrow not available"
+	done
+fi
+
+# ---- an import into a table with a projection keeps the server up (#2092) ----
+# The import writes the projection's rows when the statement ends. The import is
+# a SELECT, so its statement ends in portal cleanup, where no snapshot is active.
+# The flush then read the options catalog with a snapshot nobody had registered.
+# An assert build aborted on the first catalog row the read examined, and the
+# postmaster restarted every backend. Any table's options row is enough, so the
+# check gives one to a neighbour table first. Without it, the case without
+# set_options passed on main's code, because it ran before any case had called
+# set_options. The matrix crosses projection with set_options, one table per
+# case. The crash count comes from the server log, not from timing.
+aip_crashes() {	# a number, or nothing when the log can't be read
+	local _n
+	_n="$(pgc_pg "grep -c 'terminated by signal' '$PGC_LOGFILE'" 2>/dev/null)"
+	case "$_n" in '' | *[!0-9]*) ;; *) echo "$_n" ;; esac
+}
+aip_case() {	# aip_case OPT PROJ -> "oOPTpPROJ:imported/rows/projection rows"
+	local t="aip_o$1p$2" f out got i
+	f="$PGC_WORKDIR/$t.arrows"
+	psql_run "CREATE TABLE $t (id bigint, c int) USING pgcolumnar;
+		INSERT INTO $t SELECT g, g % 10 FROM generate_series(1, 1000) g;"
+	[ "$1" = 1 ] && psql_run "SELECT pgcolumnar.set_options('$t', compression => 'zstd');" >/dev/null
+	[ "$2" = 1 ] && psql_run "SELECT pgcolumnar.add_projection('$t', 'p', columns => ARRAY['c','id'], sort_key => ARRAY['c']);" >/dev/null
+	q "SELECT pgcolumnar.export_arrow('$t', '$f');" >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-qAtX -v VERBOSITY=verbose -c "SELECT pgcolumnar.import_arrow('$t', '$f');" 2>&1)"
+	case "$out" in
+		*ERROR:*) got="$(sed -nE 's/^ERROR:  ([0-9A-Z]{5}): .*/\1/p' <<<"$out" | head -1)" ;;
+		*[!0-9]*|'') got="lost connection" ;;
+		*) got="$out" ;;
+	esac
+	# after a crash the server needs a moment of recovery before it answers
+	for i in $(seq 1 60); do [ "$(q 'SELECT 1;')" = 1 ] && break; sleep 1; done
+	printf 'o%sp%s:%s/%s/%s' "$1" "$2" "$got" "$(q "SELECT count(*) FROM $t;")" \
+		"$([ "$2" = 1 ] && q "SELECT count(*) FROM pgcolumnar.read_projection('$t', 'p');" || echo -)"
+}
+psql_run "CREATE TABLE aip_neighbour (id int) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('aip_neighbour', compression => 'zstd');" >/dev/null
+_aip_c0="$(aip_crashes)"
+_aip_got="$(aip_case 0 0) $(aip_case 0 1) $(aip_case 1 0) $(aip_case 1 1)"
+_aip_now="$(aip_crashes)"
+if [[ "$_aip_c0" =~ ^[0-9]+$ && "$_aip_now" =~ ^[0-9]+$ ]]; then
+	_aip_got="$_aip_got | $(( _aip_now - _aip_c0 )) backend crashes"
+else
+	_aip_got="$_aip_got | crash count unreadable"
+fi
+check "import_arrow into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)" \
+	"$_aip_got" \
+	"o0p0:1000/2000/- o0p1:1000/2000/2000 o1p0:1000/2000/- o1p1:1000/2000/2000 | 0 backend crashes"
+
+# --- #2097: 64-bit-offset and view layouts of binary and string -------------
+# A large_binary column holding b'x' IMPORTED into bytea as an empty value, with
+# no error, and a three-row one failed as a malformed file. A large_string file
+# ['hi','there'] imported into text as '' and 'hi'. The reader takes every Binary
+# and Utf8 offset buffer as 32-bit, so the 64-bit offsets [0, 1] read as 0 and 0.
+# The string and binary views have no offset buffer at all and were called
+# malformed (XX001). Until import_arrow reads these layouts it refuses each one
+# with 42804, naming the column and the Arrow type, at any depth. The control is
+# a binary and a string file, which must still import with their values.
+if [ "$have_pyarrow" = 1 ]; then
+	echo "-- #2097: large and view layouts of binary and string"
+	python3 - "$PGC_WORKDIR" <<'PY'
+import os, sys, pyarrow as pa, pyarrow.ipc as ipc
+out = sys.argv[1]
+def write(name, arr):
+    t = pa.table({'v': arr, 'n': pa.array(range(len(arr)), pa.int32())})
+    with ipc.new_stream(pa.OSFile(os.path.join(out, name + '.arrows'), 'wb'), t.schema) as w:
+        w.write_table(t)
+write('lv_lb1', pa.array([b'x'], pa.large_binary()))
+write('lv_lb3', pa.array([b'hello', b'world!', None], pa.large_binary()))
+write('lv_ls', pa.array(['hi', 'there'], pa.large_string()))
+write('lv_lls', pa.array([['hi'], ['there']], pa.list_(pa.large_string())))
+write('lv_sv', pa.array(['hi', 'there'], pa.string_view()))
+write('lv_bv', pa.array([b'hi'], pa.binary_view()))
+write('lv_bin', pa.array([b'x'], pa.binary()))
+write('lv_str', pa.array(['hi', 'there'], pa.string()))
+PY
+	chmod 644 "$PGC_WORKDIR"/lv_*.arrows
+	lv_import() {	# lv_import FIXTURE PGTYPE -> "<import result or SQLSTATE message>|<rows stored>"
+		local t="lv_t_$1"
+		psql_run "CREATE TABLE $t (v $2, n int) USING pgcolumnar;"
+		printf '%s|%s\n' "$(ai_outcome "SELECT pgcolumnar.import_arrow('$t', '$PGC_WORKDIR/$1.arrows')")" \
+			"$(q "SELECT count(*) FROM $t;")"
+	}
+	check "import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+		"$(lv_import lv_lb1 bytea) / $(lv_import lv_lb3 bytea)" \
+		'42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0 / 42804 Arrow column "v" holds a large binary, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+		"$(lv_import lv_ls text) / $(lv_import lv_lls 'text[]')" \
+		'42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a large string, which pgcolumnar.import_arrow cannot read into type text|0'
+	check "import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+		"$(lv_import lv_sv text) / $(lv_import lv_bv bytea)" \
+		'42804 Arrow column "v" holds a string view, which pgcolumnar.import_arrow cannot read into type text|0 / 42804 Arrow column "v" holds a binary view, which pgcolumnar.import_arrow cannot read into type bytea|0'
+	check "control: a binary and a string file still import into bytea and text, with their values (#2097)" \
+		"$(lv_import lv_bin bytea)|$(q "SELECT v FROM lv_t_lv_bin;") / $(lv_import lv_str text)|$(q "SELECT string_agg(v, ',' ORDER BY n) FROM lv_t_lv_str;")" \
+		'1|1|\x78 / 2|2|hi,there'
+else
+	for _ai_lv in \
+			"import_arrow refuses a large binary for a bytea column with 42804, not stored as an empty bytea (#2097)" \
+			"import_arrow refuses a large string for a text or a text[] column with 42804, not stored as wrong strings (#2097)" \
+			"import_arrow refuses a string view and a binary view with 42804, not as a malformed file (#2097)" \
+			"control: a binary and a string file still import into bytea and text, with their values (#2097)"; do
+		check_skip "$_ai_lv" \
+			"SKIP  $_ai_lv (pyarrow not available)" \
 			"pyarrow not available"
 	done
 fi
