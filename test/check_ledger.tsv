@@ -1503,12 +1503,18 @@ export_sink	export_sink	arrow round-trip hash-matches the source	15;16;17;18;19	
 export_sink	export_sink	census: zero fwrite remain in columnar_arrow.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_arrow.c
 export_sink	export_sink	census: zero fwrite remain in columnar_parquet.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_parquet.c
 export_sink	export_sink	fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: a FATAL export after two finished exports in one transaction ends with FATAL	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: a FATAL re-export leaves the previous arrow file intact	15;16;17;18;19	2026-11-24	the exit callback also unlinks the final path, deleting a good file on a FATAL re-export (#2142 review, c2)
 export_sink	export_sink	fatal: a FATAL re-export leaves the previous parquet file intact	15;16;17;18;19	2026-11-24	the exit callback also unlinks the final path, deleting a good file on a FATAL re-export (#2142 review, c2)
+export_sink	export_sink	fatal: an export whose rename fails ends its backend with FATAL	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: no arrow temp file after a FATAL exit	15;16;17;18;19	2026-11-24	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
 export_sink	export_sink	fatal: no backend died by a signal during the FATAL arms	15;16;17;18;19	2026-11-24	PgColumnarSinkFinish leaves a finished local sink listed, so the exit callback walks its freed node (#2142 review, b2)
 export_sink	export_sink	fatal: no parquet temp file after a FATAL exit	15;16;17;18;19	2026-11-24	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL at the rename	15;16;17;18;19	2026-11-25	PgColumnarSinkFinish unlists the sink before durable_rename, so a FATAL at the rename leaves the temp file (#2142 review 3, m2)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a failed open	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a failed rename	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: no temp file after a FATAL export that followed a rolled-back export	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: no temp file after a FATAL export that followed finished exports	15;16;17;18;19	never	-
 export_sink	export_sink	fatal: the arrow export ends its backend with FATAL	15;16;17;18;19	never	-

@@ -33,8 +33,13 @@
 #             good file first, which the FATAL re-export must not delete. Two
 #             arms end a transaction with FATAL after a finished export and
 #             after a failed one rolled back to a savepoint, so the exit
-#             callback walks a list that once held other sinks. The server log
-#             must show no backend killed by a signal during these arms.
+#             callback walks a list that once held other sinks. Three more
+#             fail an export at the rename (a non-empty directory at the final
+#             name) and at the open (a missing parent directory): a FATAL at
+#             the rename leaves no temp file, and a failed rename or open
+#             rolled back to a savepoint leaves no freed sink on the list. The
+#             server log must show no backend killed by a signal, and no
+#             AddressSanitizer report, during these arms.
 #
 # Usage:  test/export_sink.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -134,10 +139,11 @@ check_num "after RESET, exports work again" \
 # then waits until that backend has left pg_stat_activity. It sets FS_OUT to
 # psql's output (VERBOSITY verbose, so each error line carries its SQLSTATE)
 # and FS to "<fatal|no fatal> <gone|still listed (n)>". "fatal" means the
-# session ended with the injected fault's FATAL, SQLSTATE 53100. It sets
-# globals, so call it directly, never inside $(...).
+# session ended with the FATAL that starts with WANT: by default the injected
+# fault's, SQLSTATE 53100. It sets globals, so call it directly, never inside
+# $(...).  Usage: fatal_session BODY [WANT]
 fatal_session() {
-	local pid n i
+	local pid n i want="${2:-FATAL:  53100: columnar: export write failed (injected fault)}"
 	FS_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
 \\set VERBOSITY verbose
@@ -157,7 +163,7 @@ SQLEOF
 	# reader can report a present match as absent (selftest 080, #486).
 	local fatal='no fatal'
 	case "$FS_OUT" in
-	*'FATAL:  53100: columnar: export write failed (injected fault)'*) fatal=fatal ;;
+	*"$want"*) fatal=fatal ;;
 	esac
 	FS="$fatal $([ "$n" = "0" ] && echo gone || echo "still listed ($n)")"
 }
@@ -176,7 +182,9 @@ debris_of() {
 # The client sees the FATAL line before the backend runs its exit callbacks,
 # so a callback that crashes after unlinking the temp file passes every other
 # check here. Only the server log shows it, and lib.sh reads the log only
-# after a check has failed. So count "terminated by signal" from here on.
+# after a check has failed. So count "terminated by signal" from here on. On
+# an ASan build a fault becomes an AddressSanitizer report and the backend
+# exits with code 1, not by a signal, so count "ERROR: AddressSanitizer" too.
 log_lines() {
 	local n
 	n="$(pgc_pg "wc -l < '$PGC_LOGFILE'" 2>/dev/null)" && [ -n "$n" ] && echo "$n" || echo "unreadable"
@@ -207,7 +215,7 @@ $FATAL_PRE
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_tx3.parquet');"
 check "fatal: a FATAL export after two finished exports in one transaction ends with FATAL" \
 	"$(lines_of "$FS_OUT" "$ROWS"):$FS" "2:fatal gone"
-check_num "fatal: no temp file after a FATAL export that followed finished exports" "$(no_debris)" "0"
+check_num "fatal: no temp file after a FATAL export that followed finished exports" "$(debris_of es_tx3.parquet)" "0"
 # The same for a failed export: its abort must take it off the list before
 # ROLLBACK TO releases its memory. exit_on_error is set only after the
 # rollback, so the first failure is an ERROR.
@@ -220,13 +228,57 @@ $FATAL_PRE
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_sp2.parquet');"
 check "fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL" \
 	"$(lines_of "$FS_OUT" "ERROR:  53100: columnar: export write failed (injected fault)"):$FS" "1:fatal gone"
-check_num "fatal: no temp file after a FATAL export that followed a rolled-back export" "$(no_debris)" "0"
+check_num "fatal: no temp file after a FATAL export that followed a rolled-back export" "$(debris_of es_sp2.parquet)" "0"
+# The arms above reach the list only through an export that fails in Write,
+# with its file still open. The next three fail an export at the rename and at
+# the open. A non-empty directory at the final name makes durable_rename fail
+# (42809: it opens the target to fsync it, then renames), after Finish has
+# closed the file. A missing parent directory makes the temp file's open fail
+# (58P01).
+mkdir -p "$PGC_WORKDIR/es_isdir/x"
+# A rename that raised must leave the sink listed. Under FATAL only the exit
+# callback can remove the temp file, and it removes only what is listed.
+fatal_session "SET exit_on_error = on;
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_isdir');" "FATAL:  42809: "
+check "fatal: an export whose rename fails ends its backend with FATAL" "$FS" "fatal gone"
+check_num "fatal: no temp file after a FATAL at the rename" "$(debris_of es_isdir)" "0"
+# Finish closes the file before the rename, so Abort must unlist a sink whose
+# file is already closed. A sink left listed is freed by ROLLBACK TO, and the
+# next FATAL in the transaction walks it. The query between them allocates
+# after the free, as the review's repro did.
+fatal_session "BEGIN;
+SAVEPOINT s;
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_isdir');
+ROLLBACK TO SAVEPOINT s;
+SELECT repeat('x', 4000) FROM generate_series(1, 50) LIMIT 0;
+$FATAL_PRE
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_sp3.parquet');"
+check "fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL" \
+	"$(grep -c '^ERROR:  42809: ' <<<"$FS_OUT"):$FS" "1:fatal gone"
+check_num "fatal: no temp file after a FATAL export that followed a failed rename" \
+	"$(debris_of es_sp3.parquet)" "0"
+# A failed open must leave nothing listed: the caller's PG_TRY has not begun, so
+# no Abort would unlist it. A sink left listed is freed by ROLLBACK TO, and the
+# next FATAL walks it. On an assert build the freed memory is overwritten, so
+# the walk faults and the signal check below counts it. On an ASan build the
+# fault is an AddressSanitizer report, which that check counts too. A release
+# build reads the freed memory without faulting, so no check here sees it there.
+fatal_session "BEGIN;
+SAVEPOINT s;
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_nodir/a.parquet');
+ROLLBACK TO SAVEPOINT s;
+$FATAL_PRE
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_sp4.parquet');"
+check "fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL" \
+	"$(grep -c '^ERROR:  58P01: could not open file' <<<"$FS_OUT"):$FS" "1:fatal gone"
+check_num "fatal: no temp file after a FATAL export that followed a failed open" \
+	"$(debris_of es_sp4.parquet)" "0"
 # A crash restarts the cluster. Wait for it to answer before reading the log.
 for i in $(seq 1 100); do [ "$(q "SELECT 1")" = "1" ] && break; sleep 0.1; done
 SIGS="unread"
 if [ "$LOG_AT" != "unreadable" ]; then
 	SIGS="$(pgc_pg "tail -n +$((LOG_AT + 1)) '$PGC_LOGFILE'" 2>/dev/null)" &&
-		SIGS="$(lines_of "$(printf '%s\n' "$SIGS" | sed -n 's/.*\(terminated by signal\).*/\1/p')" "terminated by signal")" ||
+		SIGS="$(lines_of "$(printf '%s\n' "$SIGS" | sed -n 's/.*\(terminated by signal\|ERROR: AddressSanitizer\).*/died/p')" "died")" ||
 		SIGS="log unreadable"
 fi
 check_num "fatal: no backend died by a signal during the FATAL arms" "$SIGS" "0"

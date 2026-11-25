@@ -2001,4 +2001,8 @@ guard_tests 895
 # FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
 # file, and no backend killed by a signal), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
-cluster_tests 5489
+# cluster_tests 5489 -> 5495 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
+# after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
+cluster_tests 5495

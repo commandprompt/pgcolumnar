@@ -17,8 +17,11 @@ read only after the backend has left pg_stat_activity, because the client sees t
 FATAL message before the backend runs its exit callbacks. Each target holds a good file
 first, which the FATAL re-export must not delete. Two arms end a transaction with FATAL
 after a finished export and after a failed one rolled back to a savepoint, so the exit
-callback walks a list that once held other sinks. The server log must show no backend
-killed by a signal during these arms.
+callback walks a list that once held other sinks. Three more fail an export at the
+rename (a non-empty directory at the final name) and at the open (a missing parent
+directory): a FATAL at the rename leaves no temp file, and a failed rename or open rolled
+back to a savepoint leaves no freed sink on the list. The server log must show no backend
+killed by a signal, and no AddressSanitizer report, during these arms.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The files live in `server_dir`, because the backend writes
@@ -97,12 +100,13 @@ def _debris(d):
     return query_error(f"listing {d} failed: {errors[0]}") if errors else found
 
 
-def _fatal_session(dsn, statements):
+def _fatal_session(dsn, statements, want=("53100", "export write failed (injected fault)")):
     """Runs statements in one session; the last one must end it with FATAL.
-    -> (seen, results). seen is "fatal gone" when the session ended with the injected
-    fault's FATAL, SQLSTATE 53100, and its backend has left pg_stat_activity; otherwise
-    what was seen instead. results holds, for each earlier statement, its first value,
-    its SQLSTATE if it raised, or None."""
+    -> (seen, results). seen is "fatal gone" when the session ended with a FATAL of
+    want's SQLSTATE whose message holds want's text (by default the injected fault's,
+    53100), and its backend has left pg_stat_activity; otherwise what was seen instead.
+    results holds, for each earlier statement, its first value, its SQLSTATE if it
+    raised, or None (no row, or no result)."""
     try:
         conn = psycopg.connect(dsn, autocommit=True)
     except psycopg.Error as exc:
@@ -113,13 +117,14 @@ def _fatal_session(dsn, statements):
         for sql in statements[:-1]:
             try:
                 cur = conn.execute(sql)
-                results.append(cur.fetchone()[0] if cur.description else None)
+                row = cur.fetchone() if cur.description else None
+                results.append(row[0] if row else None)
             except psycopg.Error as exc:
                 results.append(exc.sqlstate or _message(exc))
         conn.execute(statements[-1])
     except psycopg.Error as exc:
-        seen = "fatal" if exc.sqlstate == "53100" and conn.closed \
-            and "export write failed (injected fault)" in str(exc) \
+        seen = "fatal" if exc.sqlstate == want[0] and conn.closed \
+            and want[1] in str(exc) \
             else f"no fatal ({exc.sqlstate} {_message(exc)})"
     finally:
         conn.close()
@@ -145,11 +150,14 @@ def _log_size(log):
 
 
 def _signals_since(log, offset):
-    """-> how many backends the server log says a signal killed after byte offset."""
+    """-> how many backends the server log says a signal killed after byte offset. On an
+    ASan build a fault is an AddressSanitizer report and an exit code of 1, so those
+    reports count too."""
     if not isinstance(offset, int):
         return query_error(f"no log offset: {offset}")
     try:
-        return log.read_bytes()[offset:].decode(errors="replace").count("terminated by signal")
+        text = log.read_bytes()[offset:].decode(errors="replace")
+        return text.count("terminated by signal") + text.count("ERROR: AddressSanitizer")
     except OSError as exc:
         return query_error(f"server log unreadable: {exc}")
 
@@ -248,7 +256,7 @@ def es(pgc_cluster, server_dir):
             *FATAL_PRE,
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_tx3.parquet'}')"])
         r["tx fatal"] = f"{res.count(ROWS)}:{seen}"
-        r["tx debris"] = _debris(d)
+        r["tx debris"] = _tmp_of(d, "es_tx3.parquet")
         # a failed export, rolled back to a savepoint, only if Abort forgets
         seen, res = _fatal_session(dsn, [
             "BEGIN", "SAVEPOINT s", "SET pgcolumnar.sink_fail_after = 8192",
@@ -257,7 +265,40 @@ def es(pgc_cluster, server_dir):
             *FATAL_PRE,
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp2.parquet'}')"])
         r["sp fatal"] = f"{res.count('53100')}:{seen}"
-        r["sp debris"] = _debris(d)
+        r["sp debris"] = _tmp_of(d, "es_sp2.parquet")
+        # The arms above fail only in Write, with the file open. A non-empty directory
+        # at the final name fails durable_rename (42809), after Finish closed the file;
+        # a missing parent directory fails the temp file's open (58P01).
+        (d / "es_isdir" / "x").mkdir(parents=True, exist_ok=True)
+        # a rename that raised must stay listed, or a FATAL there leaves its temp file
+        r["rename fatal"], _ = _fatal_session(
+            dsn, ["SET exit_on_error = on",
+                  f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_isdir'}')"],
+            want=("42809", str(d / "es_isdir")))
+        r["rename fatal tmp"] = _tmp_of(d, "es_isdir")
+        # Abort must unlist a sink whose file Finish already closed; the repeat()
+        # query allocates after ROLLBACK TO frees it, as the review's repro did
+        seen, res = _fatal_session(dsn, [
+            "BEGIN", "SAVEPOINT s",
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_isdir'}')",
+            "ROLLBACK TO SAVEPOINT s",
+            "SELECT repeat('x', 4000) FROM generate_series(1, 50) LIMIT 0",
+            *FATAL_PRE,
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp3.parquet'}')"])
+        r["sp rename fatal"] = f"{res.count('42809')}:{seen}"
+        r["sp rename tmp"] = _tmp_of(d, "es_sp3.parquet")
+        # A failed open must leave nothing listed: no Abort would unlist it. The walk
+        # of a freed sink faults on an assert build (signal) and an ASan build (an
+        # AddressSanitizer report); a release build reads it without faulting.
+        nodir = d / "es_nodir"
+        seen, res = _fatal_session(dsn, [
+            "BEGIN", "SAVEPOINT s",
+            f"SELECT pgcolumnar.export_parquet('es_src', '{nodir / 'a.parquet'}')",
+            "ROLLBACK TO SAVEPOINT s",
+            *FATAL_PRE,
+            f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp4.parquet'}')"])
+        r["sp open fatal"] = f"{res.count('58P01')}:{seen}"
+        r["sp open tmp"] = _tmp_of(d, "es_sp4.parquet")
         # a crash restarts the cluster: wait for it to answer before reading the log
         for _ in range(100):
             if _value(dsn, "SELECT 1") == 1:
@@ -375,3 +416,32 @@ def test_fatal_no_temp_file_after_a_rolled_back_export(es, expect):
 
 def test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms(es, expect):
     expect.text(str(es["signals"]), "0", "fatal: no backend died by a signal during the FATAL arms")
+
+
+def test_fatal_an_export_whose_rename_fails_ends_its_backend_with_fatal(es, expect):
+    expect.text(es["rename fatal"], "fatal gone",
+                "fatal: an export whose rename fails ends its backend with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_fatal_at_the_rename(es, expect):
+    expect.text(str(es["rename fatal tmp"]), "0", "fatal: no temp file after a FATAL at the rename")
+
+
+def test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):
+    expect.text(es["sp rename fatal"], "1:fatal gone",
+                "fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_failed_rename(es, expect):
+    expect.text(str(es["sp rename tmp"]), "0",
+                "fatal: no temp file after a FATAL export that followed a failed rename")
+
+
+def test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):
+    expect.text(es["sp open fatal"], "1:fatal gone",
+                "fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_failed_open(es, expect):
+    expect.text(str(es["sp open tmp"]), "0",
+                "fatal: no temp file after a FATAL export that followed a failed open")

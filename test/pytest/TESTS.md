@@ -10167,7 +10167,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
 
-The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`. Each target holds a good file first, and the FATAL re-export must leave it intact. Two more exports end a transaction with FATAL: one after two finished exports, one after a failed export rolled back to a savepoint. Neither leaves a temp file, and the server log shows no backend killed by a signal during the FATAL arms.
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`. Each target holds a good file first, and the FATAL re-export must leave it intact. Two more exports end a transaction with FATAL: one after two finished exports, one after a failed export rolled back to a savepoint. Neither leaves a temp file. Three more exports fail away from Write: one whose rename fails (a non-empty directory at the final name) ends with FATAL and leaves no temp file; one whose rename fails and one whose temp file cannot be opened (a missing parent directory) are rolled back to a savepoint before a FATAL export, which leaves no temp file. The server log shows no backend killed by a signal, and no AddressSanitizer report, during the FATAL arms.
 
 ### Every test
 
@@ -10202,6 +10202,12 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_fatal_after_a_failed_export_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL |
 | `test_fatal_no_temp_file_after_a_rolled_back_export` | fatal: no temp file after a FATAL export that followed a rolled-back export |
 | `test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms` | fatal: no backend died by a signal during the FATAL arms |
+| `test_fatal_an_export_whose_rename_fails_ends_its_backend_with_fatal` | fatal: an export whose rename fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_rename` | fatal: no temp file after a FATAL at the rename |
+| `test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_rename` | fatal: no temp file after a FATAL export that followed a failed rename |
+| `test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_open` | fatal: no temp file after a FATAL export that followed a failed open |
 
 ## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
 

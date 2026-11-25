@@ -614,7 +614,9 @@ true until the next version shipped.
   exit (#1722). Local exports now use the same exit callback, which removes the
   temp file. A FATAL re-export keeps the previous file at the final name, and a
   FATAL export after other exports in the same transaction does not crash the
-  backend. `test/export_sink.sh` and `test_export_sink.py`.
+  backend. A FATAL at the final rename also leaves no temp file, and an export
+  whose rename or open failed inside a rolled-back savepoint does not crash a
+  later FATAL export. `test/export_sink.sh` and `test_export_sink.py`.
 - An INSERT or COPY with `pgcolumnar.parallel_flush` on no longer waits
   forever when its own transaction holds ACCESS EXCLUSIVE on the table, as
   after `TRUNCATE`, `LOCK TABLE` or `ALTER TABLE` in the same transaction. It
