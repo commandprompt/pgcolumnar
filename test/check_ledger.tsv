@@ -104,6 +104,10 @@ am_contracts	am_contracts	ALTER TABLE ... SET TABLESPACE is refused (0A000), and
 am_contracts	am_contracts	ALTER TABLE ... SET UNLOGGED is refused (0A000), and the table stays logged with its rows	15;16;17;18;19	2026-10-15	the storage hook accepting an unlogged columnar table
 am_contracts	am_contracts	CREATE INDEX CONCURRENTLY is refused (0A000), and the index it leaves is marked invalid	15;16;17;18;19	2026-10-15	the concurrent index validate scan doing nothing
 am_contracts	am_contracts	CREATE UNLOGGED TABLE ... USING pgcolumnar is refused (0A000) and leaves no table	15;16;17;18;19	2026-10-15	the storage hook accepting an unlogged columnar table
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at READ COMMITTED still skips a row committed after the statement began	15;16;17;18;19	never	-
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at REPEATABLE READ raises 40001 through a partitioned parent onto a pgcolumnar partition	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	ON CONFLICT DO NOTHING at SERIALIZABLE raises 40001 for a row committed after the snapshot	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 am_contracts	am_contracts	ON CONFLICT DO NOTHING skips the duplicate and inserts the new row	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
 am_contracts	am_contracts	ON CONFLICT DO UPDATE is refused as unsupported (0A000), and changes nothing	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
 am_contracts	am_contracts	ON CONFLICT DO UPDATE with no conflicting row inserts it	15;16;17;18;19	2026-10-14	speculative insert refused as unsupported, as before #1341
@@ -134,6 +138,14 @@ am_contracts	am_contracts	and the primary key finds every outer row by index	15;
 am_contracts	am_contracts	and the primary key still finds them by index	15;16;17;18;19	2026-10-14	TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	and the primary key still refuses a duplicate of a restored row	15;16;17;18;19	2026-10-14	TRUNCATE empties the old storage in place (RelationTruncate before the swap)
 am_contracts	am_contracts	and the unique index answers the key with that one row	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a conflicting row the snapshot sees, without error	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a key its own statement wrote to an already flushed stripe	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, DO NOTHING skips a key this transaction inserted in an earlier statement	15;16;17;18;19	never	-
+am_contracts	am_contracts	at REPEATABLE READ, a key twice in one DO NOTHING statement is inserted once, without error	15;16;17;18;19	never	-
+am_contracts	am_contracts	heap control: a concurrent VACUUM does not make DO NOTHING at REPEATABLE READ fail	15;16;17;18;19	never	-
+am_contracts	am_contracts	known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent compact_rewrite moved	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	known limitation: DO NOTHING at REPEATABLE READ raises 40001 for a row a concurrent recluster moved	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
+am_contracts	am_contracts	premise: heap raises 40001 for a DO NOTHING conflict its REPEATABLE READ snapshot cannot see	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the conflict table holds ten rows	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the index exists and is valid	15;16;17;18;19	never	-
 am_contracts	am_contracts	premise: the older snapshot was taken before the delete	15;16;17;18;19	never	-
@@ -1523,6 +1535,7 @@ fdw_plan_privilege	fdw_plan_privilege	the unprivileged Iceberg scan is still ref
 fk_referencing	fk_referencing	ALTER TABLE ADD CONSTRAINT is refused by the same rule	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar partition of an FK-referenced parent is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a columnar table may reference a heap table	15;16;17;18;19	2026-10-16	columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
+fk_referencing	fk_referencing	a deferred foreign key does not check a referencing row deleted before commit, as heap	15;16;17;18;19	2026-11-24	tuple_satisfies_snapshot always true, as before #2060
 fk_referencing	fk_referencing	a foreign key between two heap tables is unaffected	15;16;17;18;19	never	-
 fk_referencing	fk_referencing	a foreign key referencing a columnar table is refused	15;16;17;18;19	2026-10-16	columnar_tableam.c: a foreign key referencing a columnar table no longer refused;columnar_tableam.c: the foreign-key guard keyed on the referencing table, not the referenced one
 fk_referencing	fk_referencing	a partitioned table with no foreign key still converts	17;18;19	never	-
@@ -3879,6 +3892,47 @@ index_only	index_only	after vacuum: block 120 all-visible	15;16;17;18;19	2026-10
 index_only	index_only	after vacuum: block 50 all-visible	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	all-visible interior: zero heap fetches	15;16;17;18;19	2026-10-21	lazy vacuum sets no all-visible bit
 index_only	index_only	before vacuum: block 50 not all-visible	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: no target block all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a delete over three row groups: the writer deleted 79 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a delete over three row groups: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block delete: the writer deleted 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: block 2 not all-visible after commit	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: index-only scan returns no deleted row of block 2	15;16;17;18;19	2026-11-24	flush-time VM clear clears only the first marked block per chunk (#2059 review, columnar_delete_vector.c lastBlock != PG_UINT64_MAX);flush-time VM clear computes the block as (rowNumber + 1) / K (#2059 review, columnar_delete_vector.c);flush-time VM clear stops after the first marked block per chunk (#2059 review, columnar_delete_vector.c break after lastBlock = block)
+index_only	index_only	concurrent vacuum during a two-block update: the writer updated 301 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during a two-block update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during delete: the writer deleted 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during delete: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: block 1 not all-visible after commit	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a VACUUM during a DELETE or UPDATE re-sets the all-visible bit (#2059, src at main d52f6e8c)
+index_only	index_only	concurrent vacuum during update: the writer updated 101 rows	15;16;17;18;19	never	-
+index_only	index_only	concurrent vacuum during update: vacuum ran while the writer was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: block 1 not all-visible after vacuum	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	a delete that commits between VACUUM's computation and its set leaves the bit set (#2059, second pass removed)
+index_only	index_only	delete between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: block 515 not all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: clean block 514 still all-visible	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass skips a run that ends at the block, again[j].end < b (#2059 review, columnar_visibilitymap.c)
+index_only	index_only	delete in the second row group between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete in the second row group between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: every target block all-visible before the writer starts	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: index-only scan returns no deleted row	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: no target block all-visible after vacuum	15;16;17;18;19	2026-11-24	VACUUM's second pass clears only its first stale block (#2059 review, columnar_visibilitymap.c goto after the first clear)
+index_only	index_only	delete over three row groups between vacuum's two steps: the delete committed while vacuum was paused	15;16;17;18;19	never	-
+index_only	index_only	delete over three row groups between vacuum's two steps: vacuum paused before its set	15;16;17;18;19	never	-
 index_only	index_only	first set on fresh block succeeds	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle (all-visible)	15;16;17;18;19	never	-
 index_only	index_only	index-only results match heap oracle after delete (fallback)	15;16;17;18;19	2026-10-21	a delete leaves its block's all-visible bit set
@@ -3961,11 +4015,17 @@ isolation	isolation	isolation spec recluster_vs_delete	15;16;17;18;19	2026-10-21
 isolation	isolation	isolation spec truncate_vs_reader	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
 isolation	isolation	isolation spec truncate_vs_truncate	15;16;17;18;19	never	-
 isolation	isolation	isolation spec truncate_vs_writer	15;16;17;18;19	2026-10-21	end-truncation waits for its AccessExclusiveLock instead of skipping when the table is held
-large_values	large_values	a chunk over 1 GB is refused with 54000, commits nothing, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	1.1 GB of incompressible text in one chunk group's rows loads, and the server stays up	15;16;17;18;19	never	-
+large_values	large_values	10000 rows of 120 KB text, 1.2 GB for one chunk group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
+large_values	large_values	150000 rows of 8 KB text that heap stores compressed, copied to columnar, load and are stored exactly	15;16;17;18;19	2026-11-24	row_value_bytes counts a varlena at VARSIZE_ANY, its stored size, not toast_raw_datum_size, so a compressed value is undercounted (#2071, src/columnar_write_state.c)
+large_values	large_values	150000 rows of 8 KB text, 1.2 GB for one row group, load and are stored exactly	15;16;17;18;19	2026-11-24	main d52f6e8c: the writer closes row groups by row count only, so one column past 1 GB overflows a StringInfo (#2071, src/columnar_write_state.c)
 large_values	large_values	an UPDATE that takes a TOASTed heap value stores it exactly in the columnar row	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	and the other rows are unchanged	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 large_values	large_values	premise: heap holds a 1 MB, two 16 MB and a 200 MB value	15;16;17;18;19	never	-
+large_values	large_values	premise: heap stores the 150000 values of 8 KB compressed, under 20 MB in all	15;16;17;18;19	never	-
 large_values	large_values	premise: heap stores the new 16 MB value TOASTed, not inline	15;16;17;18;19	never	-
+large_values	large_values	premise: the row limits are the defaults, 150000 per row group and 10000 per chunk group	15;16;17;18;19	never	-
+large_values	large_values	the 8 KB rows make 5 row groups of 15984 to 33504 rows: the cap closes each one just under 256 MiB	15;16;17;18;19	2026-11-24	reset_stripe does not set stripeValueBytes back to 0, so every row group after the first cap flush holds one row (#2071, src/columnar_write_state.c)
 large_values	large_values	the values copied into a columnar table are stored exactly, by length and md5	15;16;17;18;19	2026-10-15	a TOASTed value stored as its pointer: the write path and the encoder both skip pg_detoast_datum for an external value (src/columnar_write_state.c, src/columnar_reader.c)
 latest_reading	latest_reading	premise: the document's index exists	15;16;17;18;19	never	-
 latest_reading	latest_reading	premise: the document's three recipe blocks were found	15;16;17;18;19	never	-
@@ -4997,6 +5057,12 @@ native_join_runtime_filter	native_join_runtime_filter	the hash-only uncorrelated
 native_join_runtime_filter	native_join_runtime_filter	with matching collations the same fixture's interval removes row groups	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	LEFT join refuses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	byte join clause over a case-insensitive column refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive join clause refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause input-collation check (main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	case-insensitive key under one collation keeps the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars also refusing a non-default or a nondeterministic fact-column collation
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys answer equals heap	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	duplicate dim keys refuse the join fold	15;16;17;18;19	2026-09-23	the dim-side uniqueness refusal disabled
 native_join_vector_agg	native_join_vector_agg	each default LATERAL fold rescan drains its own dimension keys	15;16;17;18;19	2026-11-24	-
@@ -5010,6 +5076,8 @@ native_join_vector_agg	native_join_vector_agg	extra join filter answer equals he
 native_join_vector_agg	native_join_vector_agg	extra join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter answer equals heap	15;16;17;18;19	2026-09-12	-
 native_join_vector_agg	native_join_vector_agg	inequality join filter refuses the join fold	15;16;17;18;19	2026-09-12	-
+native_join_vector_agg	native_join_vector_agg	non-default equality operator answer equals heap	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
+native_join_vector_agg	native_join_vector_agg	non-default equality operator refuses the join fold	15;16;17;18;19	2026-11-24	columnar_vector.c: pgcolumnar_join_fold_vars without the clause operator check (opno != tce->eq_opr deleted, main d52f6e8c, the #2066 defect)
 native_join_vector_agg	native_join_vector_agg	premise: heap's LATERAL rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's distinct rescan answer grows with each outer value	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: heap's scalar rescan answer grows with each outer value	15;16;17;18;19	never	-
@@ -5019,6 +5087,8 @@ native_join_vector_agg	native_join_vector_agg	premise: the default scalar rescan
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only LATERAL rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only distinct rescan uses the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	premise: the hash-only scalar rescan uses the join fold	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation answer equals heap	15;16;17;18;19	never	-
+native_join_vector_agg	native_join_vector_agg	text key under one collation keeps the join fold	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals GUC off	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join fold answer equals heap	15;16;17;18;19	never	-
 native_join_vector_agg	native_join_vector_agg	unique join uses core Agg when GUC off	15;16;17;18;19	never	-
@@ -6910,12 +6980,22 @@ parallel_export_parquet	parallel_export_parquet	the retry writes a fresh _SUCCES
 parallel_export_parquet	parallel_export_parquet	the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group	15;16;17;18;19	2026-10-31	parallel workers not passed the caller's export_group_bytes (#1811)
 parallel_flush_optin	parallel_flush_optin	a default flush dispatches serial	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
 parallel_flush_optin	parallel_flush_optin	a flush worker runs nothing that can raise after pinning its output, to the end of its PG_TRY block	15;16;17;18;19	2026-10-22	columnar_write_state.c: the flush worker commits after pinning its output (table_close, PopActiveSnapshot, CommitTransactionCommand moved after dsm_pin_segment)
+parallel_flush_optin	parallel_flush_optin	a parallel INSERT finishes while another session's ALTER TABLE waits for its lock (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel INSERT that another session's ALTER TABLE waits behind flushes every column in workers (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: a flush worker raises on a float8 column, so the backend redoes that column serially and the INSERT still succeeds
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER COLUMN TYPE in the same transaction finishes, every column in workers (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER COLUMN TYPE in the same transaction stores the serial path's chunks and rows (#2140)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS
+parallel_flush_optin	parallel_flush_optin	a parallel flush after ALTER TABLE ADD COLUMN in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	columnar_write_state.c: the flush worker takes column attributes from the relcache entry for relid (the #2072 NoLock rewrite, RelationIdGetRelation on a cassert build), not from KEY_ATTRS;main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush after TRUNCATE in the same transaction finishes, in workers (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
+parallel_flush_optin	parallel_flush_optin	a parallel flush writes the column ALTER TABLE added in the same transaction (#2072)	15;16;17;18;19	2026-11-24	main d52f6e8c under the tests at head: each flush worker opens the table with AccessShareLock (#2072)
 parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush leaves no worker segment pinned	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
 parallel_flush_optin	parallel_flush_optin	a twice-cancelled parallel flush reports the first cancel	15;16;17;18;19	2026-10-22	columnar_write_state.c: pflush_error_cleanup waits for its workers without HOLD_INTERRUPTS, so a second cancel leaves before the unpin loop
 parallel_flush_optin	parallel_flush_optin	opting in stores byte-identical chunks to the serial path	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel stores each worker column under the next index (colResults[(col + 1) % natts])
 parallel_flush_optin	parallel_flush_optin	parallel_flush is off by default	15;16;17;18;19	2026-10-21	columnar_tableam.c: pgcolumnar.parallel_flush boot default set to true
+parallel_flush_optin	parallel_flush_optin	premise: ALTER TABLE was waiting for the table lock while the parallel INSERT ran	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	premise: a flush worker is still encoding when the second cancel lands	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	premise: the cheap workers published their segments before the second cancel	15;16;17;18;19	never	-
+parallel_flush_optin	parallel_flush_optin	premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)	15;16;17;18;19	never	-
 parallel_flush_optin	parallel_flush_optin	the collect loop forgets a worker's handle in the statement after it unpins the segment	15;16;17;18;19	2026-10-23	columnar_write_state.c: the collect loop invalidates slots[i].outHandle after dsm_detach, not right after dsm_unpin_segment
 parallel_flush_optin	parallel_flush_optin	the dispatch metric is byte-identical for a random and a constant column (the metric cannot separate opposite-cost shapes)	15;16;17;18;19	2026-10-21	columnar_write_state.c: pflush_metrics adds each value stream's first byte to valbytes, a content term
 parallel_flush_optin	parallel_flush_optin	with the GUC on, a wide-numeric flush dispatches parallel (not a silent serial fall-back)	15;16;17;18;19	2026-10-21	columnar_write_state.c: flush_columns_parallel never registers a worker (if (false && RegisterDynamicBackgroundWorker(...))), so every column falls back to serial
@@ -8663,33 +8743,53 @@ sort_status_privilege	sort_status_privilege	the OWNER of the table can read its 
 sort_status_privilege	sort_status_privilege	the owner sees its sorted run, not a false empty	15;16;17;18;19	2026-10-20	sort_status back to invoker rights, so the owner is false-denied on the catalogs (#608);sort_status reports no group in the sorted run
 sorted_mark_rename	sorted_mark_rename	CONTROL: a repeat recluster on the same key is a no-op, so the gate fires	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	CONTROL: a second identical call is a no-op, so the gate does fire	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	DROP COLUMN of the sort-key column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE POINT: vacuum_sorted('a') after the swap does the work	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	THE WRONG-ANSWER ARM: and the rows really do come back ordered	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	a column of a POPULATED heap table drops, in a database without the extension	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of a POPULATED heap table drops, in this database	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of an EMPTY heap table drops, in a database without the extension	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	a column of an EMPTY heap table drops, in this database	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
+sorted_mark_rename	sorted_mark_rename	after the drop and a rename onto the name, ORDER BY plans a Sort	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	after the swap, ORDER BY on the now-unordered column plans a Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and ORDER BY on the column that IS ordered still needs no Sort	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and a bare vacuum_sorted() is a no-op, not a rewrite on a different key	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778);vacuum_sorted's skip raises instead of skipping (#760)
 sorted_mark_rename	sorted_mark_rename	and does not rewrite the storage row at all (xmin unchanged)	15;16;17;18;19	2026-10-20	a rename that touches no sort-key column still rewrites the storage row
 sorted_mark_rename	sorted_mark_rename	and the gate still fires	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	and the gate still fires after an unrelated drop	15;16;17;18;19	2026-11-24	the #2135 drop hook clears the ordering mark on every column drop, not only a sort-key column's
 sorted_mark_rename	sorted_mark_rename	and the partition really is ordered by k afterwards	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	and the table really is ordered by a afterwards	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	and vacuum_sorted on the new a does the work	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	and vd_t really is ordered by a afterwards	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
+sorted_mark_rename	sorted_mark_rename	dropping an unrelated column keeps the mark	15;16;17;18;19	2026-11-24	the #2135 drop hook clears the ordering mark on every column drop, not only a sort-key column's
+sorted_mark_rename	sorted_mark_rename	dropping one Z-order column clears the mark	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	premise: a bare vacuum_sorted() used the declared key	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the ordered column is the one now named b	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: after the swap the partition's ordered column is named j	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and NOT by b	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named a is NOT ordered	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: and the column now named k is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: and the library is loaded there, so its drop hook runs	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: before sorting, a is not in order	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: before the drop, the mark records key {a}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_ctl loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: rr_t loaded every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: sb loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the column that took the name a is NOT ordered	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the extension is absent in the second database	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the first recluster does real work	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the inheritance child is ordered by k	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the inheritance child's mark records key {k}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the mark records key {a}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the mark records {a,b} as zorder	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the parent is NOT itself columnar, so gating on it would skip the child	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition holds every row	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: the partition is ordered by k and its mark says so	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: the partition's mark records key {k}	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vacuum_sorted really ordered it by a	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_t loaded every row	15;16;17;18;19	never	-
+sorted_mark_rename	sorted_mark_rename	premise: vd_z's mark records {a,b} as zorder	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_ctl loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_o loaded every row (an overflowed INSERT would make an empty table look like a fired gate)	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	premise: vr_t is ordered by a	15;16;17;18;19	never	-
@@ -8704,7 +8804,9 @@ sorted_mark_rename	sorted_mark_rename	so vacuum_sorted on the partition does the
 sorted_mark_rename	sorted_mark_rename	the CHILD's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
 sorted_mark_rename	sorted_mark_rename	the DECLARED key follows the rename too	15;16;17;18;19	2026-10-20	the declared sort_by no longer follows a column rename (#778)
 sorted_mark_rename	sorted_mark_rename	the PARTITION's mark follows a rename issued on the parent	15;16;17;18;19	2026-10-20	a rename moves only the named relation's mark, not its partitions' or children's
+sorted_mark_rename	sorted_mark_rename	the PARTITION's mark is cleared by a drop issued on the parent	15;16;17;18;19	2026-11-24	the tree before #2069: DROP COLUMN leaves the ordering mark naming the dropped column
 sorted_mark_rename	sorted_mark_rename	the gate still fires for the right key after all that	15;16;17;18;19	2026-10-20	vacuum_sorted's skip raises instead of skipping (#760)
+sorted_mark_rename	sorted_mark_rename	the inheritance CHILD's mark is cleared by a drop issued on the parent	15;16;17;18;19	2026-11-24	the #2135 drop hook without its columnar-AM test, so a heap table's column drop reads block 0 as a columnar metapage
 sorted_mark_rename	sorted_mark_rename	the mark FOLLOWS the rename, so it still names the ordered column	15;16;17;18;19	never	-
 sorted_mark_rename	sorted_mark_rename	the mark follows both renames	15;16;17;18;19	never	-
 sorted_projection	sorted_projection	control: the set oracle is order-blind by design	15;16;17;18;19	never	-

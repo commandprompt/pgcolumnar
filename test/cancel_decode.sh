@@ -40,9 +40,15 @@ pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
 # Wide rows, so one group takes long enough to decode that the window is
 # unmistakable, without needing a row count that is slow to load.
+#
+# 2,000,000 rows, not more: the writer closes a row group before its values pass
+# 256 MiB (#2071), so the "one" table can only hold a single group while its
+# rows fit under that. By the writer's own measure (4 bytes per int, and each
+# text value's size plus two 4-byte headers) these rows come to 201,333,376
+# bytes, 75% of the cap. 4,000,000 rows came to 409,333,376 and split in two.
 DDL="a int, b int, c text, d text, e text, f text, h text, i text"
 SEL="g, g %% 1000, 'r'||g, 'r'||g, 'r'||g, 'r'||g, 'r'||g, 'r'||g"
-ROWS=4000000
+ROWS=2000000
 
 # VERBOSITY verbose, so an ERROR line carries its SQLSTATE: a refusal is read by
 # code AND message (#1341), never by a word grepped out of whatever came back.
