@@ -741,6 +741,77 @@ check "#2084 end-of-data marker / partitioned, 4 workers: rows returned = heap C
 check "#2084 end-of-data marker / partitioned, 4 workers: result == heap COPY" \
 	"$(pgc_set_hash "SELECT * FROM t_eodp")" "$(pgc_set_hash "SELECT * FROM h_eod")"
 
+# Only an odd backslash run escapes the newline after it. "v1\\" then a newline is
+# the value v1\ and a whole row, so a cut may follow it. even.txt alternates runs
+# of 2 and 4. Without these, a splitter that treats any run as escaping passed
+# every check above (review of #2148, mutants c1 and c2). evenp.txt puts an
+# unsorted row (id 5) right after row 1500, which ends in an even run and sits in
+# a later partition: the partitioned splitter must read it as its own row and
+# refuse the file. Joining it to the line before hid it from the sort guard and
+# the load hung, so the load runs under a timeout.
+F_EVEN="$DATADIR/even.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) { fmt = i % 2 ? "v%d\\\\\n" : "v%d\\\\\\\\\n"; printf fmt, i } }' >"$F_EVEN"
+F_EVENP="$DATADIR/evenp.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) { printf "%d\tv%d\\\\\n", i, i; if (i == 1500) printf "5\tback\n" } }' >"$F_EVENP"
+# Rows after \. that COPY would reject: COPY never reads them, so they must not
+# fail the load (review of #2148, mutant c4 and the splitter's stop at \.).
+F_EODJ="$DATADIR/eodjunk.txt"
+awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\n", i; printf "\\.\n";
+             for (i = 1; i <= 1000; i++) printf "notanint\tz\n" }' >"$F_EODJ"
+chmod 644 "$F_EVEN" "$F_EVENP" "$F_EODJ"
+psql_run "DROP TABLE IF EXISTS h_even, h_eodj, c_even, c_eodj CASCADE;
+          CREATE TABLE h_even (t text);           COPY h_even FROM '$F_EVEN';
+          CREATE TABLE h_eodj (id int, txt text); COPY h_eodj FROM '$F_EODJ';
+          CREATE TABLE c_even (t text) USING pgcolumnar;
+          CREATE TABLE c_eodj (id int, txt text) USING pgcolumnar;" >/dev/null
+mkpart t_evenp 4
+mkpart t_eodjp 4
+
+even_cuts() {	# path workers -> how many interior offsets rise, stay inside the file and follow an even backslash run and a newline
+	local f="$1" w="$2" arr i n=0 size hex run
+	size=$(stat -c %s "$f")
+	read -r -a arr <<<"$(offsets_of "$f" "$w")"
+	for i in $(seq 1 $((w - 1))); do
+		[[ "${arr[$i]:-x}" =~ ^[0-9]+$ ]] || continue
+		[ "${arr[$i]}" -gt "${arr[$((i - 1))]}" ] && [ "${arr[$i]}" -lt "$size" ] && [ "${arr[$i]}" -ge 9 ] || continue
+		hex=$(dd if="$f" bs=1 skip=$((arr[i] - 9)) count=9 2>/dev/null | od -An -tx1 | tr -d ' \n')
+		[ "${hex: -2}" = "0a" ] || continue
+		hex=${hex%0a}; run=0
+		while [ "${hex: -2}" = "5c" ]; do run=$((run + 1)); hex=${hex%5c}; done
+		[ "$run" -gt 0 ] && [ $((run % 2)) = 0 ] && n=$((n + 1))
+	done
+	echo "$n"
+}
+sqlstate_of() {	# SQL -> the SQLSTATE it raised under a 30 s statement_timeout, or "noerror (output)"
+	local out s
+	out="$(env PGOPTIONS='-c statement_timeout=30s' PATH="$PGC_BINDIR:$PATH" psql \
+		-h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY sqlstate
+$1;
+SQLEOF
+)"
+	s="$(printf '%s\n' "$out" | sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\).*/\1/p' | head -1)"
+	echo "${s:-noerror ($out)}"
+}
+check "#2084 even backslash run / 4 workers: every split offset is distinct and follows an even backslash run" \
+	"$(even_cuts "$F_EVEN" 4)" 3
+check "#2084 even backslash run / single table, 4 workers: rows returned = heap COPY's 2000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_even'::regclass, '$F_EVEN', 4)")" "$(q "SELECT count(*) FROM h_even")"
+check "#2084 even backslash run / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_even")" "$(pgc_set_hash "SELECT * FROM h_even")"
+check "#2084 even backslash run / partitioned: an unsorted row after an even run is refused (22000)" \
+	"$(sqlstate_of "SELECT pgcolumnar.parallel_copy('t_evenp'::regclass, '$F_EVENP', 4)")" 22000
+check "#2084 bad rows after the end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_eodj'::regclass, '$F_EODJ', 4)")" "$(q "SELECT count(*) FROM h_eodj")"
+check "#2084 bad rows after the end-of-data marker / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_eodj")" "$(pgc_set_hash "SELECT * FROM h_eodj")"
+check "#2084 bad rows after the end-of-data marker / single table: no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+check "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000" \
+	"$(q "SELECT pgcolumnar.parallel_copy('t_eodjp'::regclass, '$F_EODJ', 4)")" "$(q "SELECT count(*) FROM h_eodj")"
+check "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_eodjp")" "$(pgc_set_hash "SELECT * FROM h_eodj")"
+
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
 # a projection at statement end with no active snapshot. It does not: on main's

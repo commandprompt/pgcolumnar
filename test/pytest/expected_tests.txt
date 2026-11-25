@@ -1944,6 +1944,7 @@ guard_tests 895
 # collected, less guard_tests 894.
 # cluster_tests 5398 -> 5408 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
 # end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
-# as 5376 -> 5386 on the branch of #2148 before main moved), by collection of the files NO_CLUSTER does not
-# name, as ci.yml selects them: 5408 tests collected.
-cluster_tests 5408
+# as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
+# #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
+# files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
+cluster_tests 5417

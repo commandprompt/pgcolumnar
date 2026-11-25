@@ -177,6 +177,15 @@ class _Db:
         except psycopg.Error as exc:
             print(f"-- copy into {table} failed: {_message(exc)}")
 
+    def sqlstate(self, sql):
+        """-> the SQLSTATE `sql` raised under a 30 s statement_timeout, or "noerror (value)"."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, options="-c statement_timeout=30s") as conn:
+                row = conn.execute(sql).fetchone()
+        except psycopg.Error as exc:
+            return exc.sqlstate or query_error(_message(exc))
+        return f"noerror ({row[0] if row else None})"
+
     def offsets(self, path, workers):
         return self.value(f"SELECT pgcolumnar.file_split_offsets('{path}', {workers})")
 
@@ -289,6 +298,22 @@ def _server_file(db, d, name, sql):
     path = d / name
     db.run(f"COPY ({sql}) TO '{path}' WITH (FORMAT text)")
     return path
+
+
+def _even_run_cuts(data, offs):
+    """-> how many interior offsets rise, stay inside the file and follow a newline
+    that comes after an even, non-empty backslash run."""
+    n = 0
+    for k in range(1, len(offs) - 1):
+        o = offs[k]
+        if not (offs[k - 1] < o < len(data)) or data[o - 1] != 0x0A:
+            continue
+        run = 0
+        while o - 2 - run >= 0 and data[o - 2 - run] == 0x5C:
+            run += 1
+        if run and run % 2 == 0:
+            n += 1
+    return n
 
 
 def _read(path):
@@ -598,6 +623,43 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
             if key == "eod single":
                 r["2084 eod single leak"] = db.value(LEAK)
+
+        # Only an odd backslash run escapes the newline after it (review of #2148,
+        # mutants c1 and c2). even.txt alternates runs of 2 and 4. evenp.txt puts an
+        # unsorted row (id 5) right after row 1500, which ends in an even run and sits
+        # in a later partition: the partitioned splitter must refuse it. eodjunk.txt holds rows after \. that COPY would reject: COPY never
+        # reads them, so they must not fail the load (mutant c4, the stop at \.).
+        even = d / "even.txt"
+        even.write_bytes(b"".join((b"v%d\\\\\n" if i % 2 else b"v%d\\\\\\\\\n") % i for i in range(1, 2001)))
+        evenp = d / "evenp.txt"
+        evenp.write_bytes(b"".join(b"%d\tv%d\\\\\n" % (i, i) + (b"5\tback\n" if i == 1500 else b"")
+                                   for i in range(1, 2001)))
+        eodj = d / "eodjunk.txt"
+        eodj.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.\n" + b"notanint\tz\n" * 1000)
+        for f_ in (even, evenp, eodj):
+            os.chmod(f_, 0o644)
+        db.run(f"CREATE TABLE h_even (t text); COPY h_even FROM '{even}'; "
+               f"CREATE TABLE h_eodj (id int, txt text); COPY h_eodj FROM '{eodj}'; "
+               "CREATE TABLE c_even (t text) USING pgcolumnar; "
+               "CREATE TABLE c_eodj (id int, txt text) USING pgcolumnar")
+        _mkpart(db, "t_evenp", 4)
+        _mkpart(db, "t_eodjp", 4)
+        data = _read(even)
+        offs = db.offsets(even, 4)
+        if isinstance(data, bytes) and isinstance(offs, list) and len(offs) == 5:
+            r["2084 even cuts"] = _even_run_cuts(data, offs)
+        else:
+            r["2084 even cuts"] = data if not isinstance(data, bytes) else query_error(f"offsets: {offs}")
+        r["2084 evenp unsorted"] = db.sqlstate(f"SELECT pgcolumnar.parallel_copy('t_evenp'::regclass, '{evenp}', 4)")
+        for key, tgt, src, heap in (("even single", "c_even", even, "h_even"),
+                                    ("eodjunk single", "c_eodj", eodj, "h_eodj"),
+                                    ("eodjunk part", "t_eodjp", eodj, "h_eodj")):
+            r[f"2084 {key} rows"] = db.value(f"SELECT pgcolumnar.parallel_copy('{tgt}'::regclass, '{src}', 4)")
+            r[f"2084 {key} rows want"] = db.value(f"SELECT count(*) FROM {heap}")
+            r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
+            r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
+            if key == "eodjunk single":
+                r["2084 eodjunk single leak"] = db.value(LEAK)
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -915,12 +977,20 @@ SYNTAX_ROWS = (
     ("bsnl part", "#2084 escaped newline / partitioned, 4 workers: rows returned = heap COPY's 2000"),
     ("eod single", "#2084 end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000"),
     ("eod part", "#2084 end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000"),
+    ("even single", "#2084 even backslash run / single table, 4 workers: rows returned = heap COPY's 2000"),
+    ("eodjunk single",
+     "#2084 bad rows after the end-of-data marker / single table, 4 workers: rows returned = heap COPY's 1000"),
+    ("eodjunk part",
+     "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: rows returned = heap COPY's 1000"),
 )
 SYNTAX_VALUES = (
     ("bsnl single", "#2084 escaped newline / single table, 4 workers: result == heap COPY"),
     ("bsnl part", "#2084 escaped newline / partitioned, 4 workers: result == heap COPY"),
     ("eod single", "#2084 end-of-data marker / single table, 4 workers: result == heap COPY"),
     ("eod part", "#2084 end-of-data marker / partitioned, 4 workers: result == heap COPY"),
+    ("even single", "#2084 even backslash run / single table, 4 workers: result == heap COPY"),
+    ("eodjunk single", "#2084 bad rows after the end-of-data marker / single table, 4 workers: result == heap COPY"),
+    ("eodjunk part", "#2084 bad rows after the end-of-data marker / partitioned, 4 workers: result == heap COPY"),
 )
 
 
@@ -936,6 +1006,25 @@ def test_parallel_copy_loads_the_values_heap_copy_loads(pcopy, expect, key, name
 
 def test_parallel_copy_end_of_data_marker_leaves_no_prepared_transaction(pcopy, expect):
     expect.num(pcopy["2084 eod single leak"], 0, "#2084 end-of-data marker / single table: no prepared-transaction leak")
+
+
+def test_parallel_copy_split_cuts_after_an_even_backslash_run(pcopy, expect):
+    """An even backslash run does not escape the newline after it, so a cut may follow
+    it (review of #2148, mutant c1)."""
+    expect.num(pcopy["2084 even cuts"], 3,
+               "#2084 even backslash run / 4 workers: every split offset is distinct and follows an even backslash run")
+
+
+def test_parallel_copy_unsorted_row_after_an_even_backslash_run_is_refused(pcopy, expect):
+    """The partitioned splitter reads the line after an even run as its own row, so the
+    sort guard sees it (review of #2148, mutant c2)."""
+    expect.text(pcopy["2084 evenp unsorted"], "22000",
+                "#2084 even backslash run / partitioned: an unsorted row after an even run is refused (22000)")
+
+
+def test_parallel_copy_bad_rows_after_the_end_of_data_marker_leave_no_prepared_transaction(pcopy, expect):
+    expect.num(pcopy["2084 eodjunk single leak"], 0,
+               "#2084 bad rows after the end-of-data marker / single table: no prepared-transaction leak")
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

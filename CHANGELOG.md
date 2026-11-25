@@ -612,12 +612,15 @@ true until the next version shipped.
   field, so a cut there split one value into two rows: 2000 input rows stored
   2003 with no error. A partitioned target refused the same file with
   `invalid input syntax for type integer`. A worker whose range started after
-  a `\.` line also loaded rows that `COPY FROM` never reads: 1920 rows instead
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1921 rows instead
   of 1000. The splitters now cut only at a newline with an even run of
   backslashes before it. The partitioned splitter ends the load at a `\.`
   line. A loader whose COPY stops at a `\.` line reports it, and the
   coordinator rolls back every range after it. `file_split_offsets` uses the
-  same rule. `test/parallel_copy.sh` and `test_parallel_copy.py`.
+  same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 19
+  checks, including files whose values end in a backslash (an even run before
+  the newline) and a file whose rows after `\.` are invalid.
 - `avg()` over a `float8` or `real` column no longer fails with `value out of
   range: overflow` where heap returns `Infinity`. It failed when one group's
   values were split into partial results and one of them held a single
