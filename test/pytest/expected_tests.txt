@@ -1993,12 +1993,21 @@ guard_tests 895
 # flush after ALTER COLUMN TYPE in the same transaction finishes with every column in workers, and stores
 # the serial path's chunks and rows; the INSERT that a queued ALTER TABLE waits behind flushes every column
 # in workers), by collection over the cluster files: 5394 tests collected.
-# cluster_tests 5478 -> 5479 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
+# cluster_tests 5478 -> 5483 for #2067's five tests in test_alter_column_type.py (an INSERT after a rewrite in
+# the same transaction keeps its rows: after a type change, after a same-type rewrite, after a rewrite released
+# from a savepoint, the rolled-back-savepoint control, and the text -> int8 case that crashed the backend), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG 18.6>/bin/pg_config pytest --collect-only -q`: 6275 tests
+# collected, less guard_tests 894.
+# cluster_tests 5483 -> 5485 for #2067's two descriptor tests in test_alter_column_type.py (a filtered read
+# finds a row inserted after int4 becomes oid, and after a collation change, in the same transaction, with no
+# rewrite), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5405
+# tests collected after the merge of main f29bf592 (5391 before it).
+# cluster_tests 5485 -> 5486 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
 # RENAME COLUMN carries the new name into ttl_column, and expire does not cut on a column that takes the old
 # name), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5385
 # tests collected.
-# cluster_tests 5479 -> 5480 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
+# cluster_tests 5486 -> 5487 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
 # (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
 # still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-cluster_tests 5480
+cluster_tests 5487
