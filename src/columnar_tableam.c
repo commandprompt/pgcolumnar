@@ -2097,7 +2097,16 @@ pgcolumnar_tuple_fetch_row_version(Relation rel, ItemPointer tid,
 static bool
 pgcolumnar_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
 {
-	return true;
+	/*
+	 * A TID scan asks this before it fetches a ctid it was given. A block
+	 * holds offsets 1..COLUMNAR_VALID_ITEMPOINTER_OFFSETS, as
+	 * PgColumnarRowNumberToItemPointer makes them. Offset 0 is no ctid at all
+	 * and failed an assertion in the fetch; an offset past the last one read
+	 * as a row of a later block, so '(0,292)' reached the row at (1,1)
+	 * (#2058).
+	 */
+	return ItemPointerIsValid(tid) &&
+		ItemPointerGetOffsetNumber(tid) <= COLUMNAR_VALID_ITEMPOINTER_OFFSETS;
 }
 
 static void
