@@ -605,6 +605,28 @@ true until the next version shipped.
 
 ### Fixed
 
+- Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
+  renames it in `pgcolumnar.options` too (#2070). Before this fix,
+  `ttl_column` kept the old name. `pgcolumnar.expire` then failed with
+  `retention column "..." does not exist`, so retention stopped. If another
+  `date`, `timestamp` or `timestamptz` column later took the old name,
+  `expire` cut on that column and retired row groups whose rows were all
+  inside the retention. The rename already updated `sort_by` and
+  `sketch_columns`; it now updates `ttl_column` in the same catalog row.
+  `DROP COLUMN` of the retention column is unchanged: the declaration keeps
+  the name and `expire` refuses with 42703. If another column later takes
+  the dropped name, `expire` cuts on it and can still delete rows inside the
+  retention; #2070 stays open for that half. `test/ttl_expire.sh` and
+  `test_ttl_expire.py`. More checks pin the name test: a rename leaves a
+  NULL `ttl_column` NULL, and renaming a column whose name is a prefix of the
+  retention column, starts or ends with its name, has its first letter and
+  length, or differs only in case leaves `ttl_column` alone. The rename
+  fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
+  only there leaves `ttl_column` alone, and renaming the retention column moves
+  `sort_by` and `ttl_column` together. A third table declares only
+  retention, as most do: renaming its retention column moves `ttl_column`
+  even though no `sort_by` update writes the row. Each went red under a
+  mutant from @OffgridwithJD's reviews of #2136.
 - A remote read no longer fails when the server or a proxy sends an interim
   1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
   (#2090). `read_parquet` and the Parquet foreign table failed with
