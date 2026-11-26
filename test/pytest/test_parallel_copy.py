@@ -992,7 +992,9 @@ def _slots_load(cluster, path, slots):
                                  (path,)).fetchone()[0])
         except psycopg.Error as e:
             msg = (str(e).splitlines() or ["?"])[0]
-            return "refused" if "could not register pgcolumnar parallel_copy loader" in msg else f"ERROR:  {msg}"
+            if "could not register pgcolumnar parallel_copy loader" in msg:
+                return "refused"
+            return query_error(msg)
 
 
 @pytest.fixture(scope="module")
