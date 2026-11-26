@@ -2176,4 +2176,9 @@ guard_tests 895
 # transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
 # COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
 # the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
-cluster_tests 5625
+# cluster_tests 5625 -> 5634 for the 9 tests the review of #2148 at 33724a76 asked for in
+# test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
+# file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
+# in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
+# collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
+cluster_tests 5634

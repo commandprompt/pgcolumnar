@@ -618,7 +618,7 @@ true until the next version shipped.
   line. A loader whose COPY stops at a `\.` line reports it, and the
   coordinator rolls back every range after it. `file_split_offsets` uses the
   same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
-  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 45
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 54
   checks, including files whose values end in a backslash (an even run before
   the newline) and a file whose rows after `\.` are invalid. They also cover
   runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
@@ -629,7 +629,10 @@ true until the next version shipped.
   they cover a `\.` file loaded twice with dedup on, which must leave no
   prepared transaction, and a `\.` line inside a continued record, where
   `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
-  (refused with 22P04).
+  (refused with 22P04). And they cover a malformed marker in a partitioned
+  load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
+  newline), which must be refused with 22P04 as heap `COPY` refuses it, and
+  a `\.` line in the first range, which must end the load there.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

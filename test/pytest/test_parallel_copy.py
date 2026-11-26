@@ -828,6 +828,46 @@ def pcopy(pgc_cluster, server_dir):
         r["2084 contdot hash"] = db.set_hash("SELECT * FROM t_contdotp")
         r["2084 contdot hash want"] = db.set_hash("SELECT * FROM h_contdot")
 
+        # Two more gaps, from the review of #2148 at 33724a76. eodcr.txt (\.\r\n in an
+        # LF file) and eodnonl.txt (\. at the end with no newline) are partitioned loads
+        # heap COPY refuses with 22P04; the last range must keep the marker line so its
+        # loader refuses too (n22, n55). eodearly.txt has the \. line in the first range
+        # (n57). The shell gives the byte layout.
+        eodcr = d / "eodcr.txt"
+        eodcr.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.\r\n"
+                          + b"".join(b"%d\ty\n" % i for i in range(1001, 2001)))
+        eodnonl = d / "eodnonl.txt"
+        eodnonl.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1001)) + b"\\.")
+        eodearly = d / "eodearly.txt"
+        eodearly.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 101)) + b"\\.\n"
+                             + b"".join(b"%d\tx\n" % i for i in range(101, 2001)))
+        for f_ in (eodcr, eodnonl, eodearly):
+            os.chmod(f_, 0o644)
+        db.run("CREATE TABLE h_eodcr (id int, txt text); CREATE TABLE h_eodnonl (id int, txt text); "
+               f"CREATE TABLE h_eodearly (id int, txt text); COPY h_eodearly FROM '{eodearly}'; "
+               "CREATE TABLE c_eodearly (id int, txt text) USING pgcolumnar")
+        for t in ("t_eodcrp", "t_eodnonlp"):
+            db.run(f"CREATE TABLE {t} (id int, txt text) PARTITION BY RANGE (id); "
+                   f"CREATE TABLE {t}_a PARTITION OF {t} FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+                   f"CREATE TABLE {t}_b PARTITION OF {t} FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+                   f"CREATE TABLE {t}_c PARTITION OF {t} FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+                   f"CREATE TABLE {t}_d PARTITION OF {t} FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+        for key, path in (("eodcr", eodcr), ("eodnonl", eodnonl)):
+            r[f"2084 {key} heap"] = db.outcome(f"COPY h_{key} FROM '{path}'", f"h_{key}")
+            r[f"2084 {key} part"] = db.outcome(
+                f"SELECT pgcolumnar.parallel_copy('t_{key}p'::regclass, '{path}', 4)", f"t_{key}p")
+            r[f"2084 {key} left"] = f"{db.value(f'SELECT count(*) FROM t_{key}p')} {db.value(LEAK)}"
+        data = _read(eodearly)
+        offs = db.offsets(eodearly, 4)
+        r["2084 eodearly premise"] = (
+            f"{db.value('SELECT count(*) FROM h_eodearly')} {len(data)} {data[492:495].hex()} "
+            f"{' '.join(map(str, offs)) if isinstance(offs, list) else offs}" if isinstance(data, bytes) else data)
+        r["2084 eodearly rows"] = db.value(f"SELECT pgcolumnar.parallel_copy('c_eodearly'::regclass, '{eodearly}', 4)")
+        r["2084 eodearly rows want"] = db.value("SELECT count(*) FROM h_eodearly")
+        r["2084 eodearly hash"] = db.set_hash("SELECT * FROM c_eodearly")
+        r["2084 eodearly hash want"] = db.set_hash("SELECT * FROM h_eodearly")
+        r["2084 eodearly leak"] = db.value(LEAK)
+
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
         r["projection leak"] = db.value(LEAK)
@@ -1314,6 +1354,66 @@ def test_parallel_copy_marker_line_inside_a_continued_record_loads_heap_copys_va
     expect.hash(pcopy["2084 contdot hash"], pcopy["2084 contdot hash want"],
                 "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers:"
                 " result == heap COPY")
+
+
+def test_parallel_copy_fixture_premise_malformed_markers(pcopy, expect):
+    """Pins heap COPY's outcome on the two malformed-marker files: both refused."""
+    expect.text(f"{pcopy['2084 eodcr heap']} {pcopy['2084 eodnonl heap']}", "22P04 22P04",
+                "#2084 premise: heap COPY refuses eodcr.txt (\\.\\r\\n in an LF file) and eodnonl.txt"
+                " (\\. at the end with no newline) with 22P04")
+
+
+def test_parallel_copy_malformed_marker_in_an_lf_file_gives_heap_copys_outcome(pcopy, expect):
+    """The last range keeps the \\.\\r\\n line, so its loader refuses it as heap COPY
+    does (mutant n22)."""
+    expect.text(pcopy["2084 eodcr part"], pcopy["2084 eodcr heap"],
+                "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers:"
+                " the outcome is heap COPY's")
+
+
+def test_parallel_copy_malformed_marker_in_an_lf_file_leaves_nothing(pcopy, expect):
+    expect.text(pcopy["2084 eodcr left"], "0 0",
+                "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers:"
+                " the partitions hold 0 rows and no prepared transaction is left")
+
+
+def test_parallel_copy_marker_at_eof_without_newline_gives_heap_copys_outcome(pcopy, expect):
+    """A \\. with no newline at the end is the marker too, and the last range keeps it
+    (mutants n22 and n55)."""
+    expect.text(pcopy["2084 eodnonl part"], pcopy["2084 eodnonl heap"],
+                "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers:"
+                " the outcome is heap COPY's")
+
+
+def test_parallel_copy_marker_at_eof_without_newline_leaves_nothing(pcopy, expect):
+    expect.text(pcopy["2084 eodnonl left"], "0 0",
+                "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers:"
+                " the partitions hold 0 rows and no prepared transaction is left")
+
+
+def test_parallel_copy_fixture_premise_eodearly(pcopy, expect):
+    """Pins N and the layout mutant n57 needs: the \\. line at byte 492, before the
+    first interior offset 3225."""
+    expect.text(pcopy["2084 eodearly premise"], "100 12896 5c2e0a 0 3225 6449 9676 12896",
+                "#2084 premise: heap COPY loads eodearly 100 rows; eodearly.txt is 12896 bytes with 5c 2e 0a"
+                " at bytes 492-494; offsets with 4 workers are 0 3225 6449 9676 12896, so the marker is in"
+                " the first range")
+
+
+def test_parallel_copy_marker_in_the_first_range_stops_the_load(pcopy, expect):
+    """A marker in range 0 ends the load there (mutant n57)."""
+    expect.num(pcopy["2084 eodearly rows"], pcopy["2084 eodearly rows want"],
+               "#2084 end-of-data marker in the first range / single table, 4 workers: rows returned = heap COPY's 100")
+
+
+def test_parallel_copy_marker_in_the_first_range_loads_heap_copys_values(pcopy, expect):
+    expect.hash(pcopy["2084 eodearly hash"], pcopy["2084 eodearly hash want"],
+                "#2084 end-of-data marker in the first range / single table, 4 workers: result == heap COPY")
+
+
+def test_parallel_copy_marker_in_the_first_range_leaves_no_prepared_transaction(pcopy, expect):
+    expect.num(pcopy["2084 eodearly leak"], 0,
+               "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak")
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

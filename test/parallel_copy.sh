@@ -995,6 +995,60 @@ check "#2084 end-of-data marker line inside a continued record / partitioned, 4 
 check "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers: result == heap COPY" \
 	"$(pgc_set_hash "SELECT * FROM t_contdotp")" "$(pgc_set_hash "SELECT * FROM h_contdot")"
 
+# Two more fixture gaps, from the review of #2148 at 33724a76.
+#
+# eodcr.txt and eodnonl.txt (partitioned) end the data with a malformed marker:
+# \.\r\n in an LF file, and \. at the end of the file with no newline. Heap COPY
+# refuses both with 22P04. The partitioned splitter must keep the marker line in
+# the last range, so core COPY in that loader sees it and refuses the file too.
+# Mutants n22 (both files) and n55 (eodnonl.txt).
+#
+# eodearly.txt (single table): 100 rows, \. at byte 492, then 1900 rows COPY
+# never reads. The marker is in the first range, so the load must stop there.
+# Mutant n57.
+F_EODCR="$DATADIR/eodcr.txt"
+awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\n", i; printf "\\.\r\n";
+             for (i = 1001; i <= 2000; i++) printf "%d\ty\n", i }' >"$F_EODCR"
+F_EODNONL="$DATADIR/eodnonl.txt"
+awk 'BEGIN { for (i = 1; i <= 1000; i++) printf "%d\tx\n", i; printf "\\." }' >"$F_EODNONL"
+F_EODEARLY="$DATADIR/eodearly.txt"
+awk 'BEGIN { for (i = 1; i <= 100; i++) printf "%d\tx\n", i; printf "\\.\n";
+             for (i = 101; i <= 2000; i++) printf "%d\tx\n", i }' >"$F_EODEARLY"
+chmod 644 "$F_EODCR" "$F_EODNONL" "$F_EODEARLY"
+psql_run "DROP TABLE IF EXISTS h_eodcr, h_eodnonl, h_eodearly, c_eodearly, t_eodcrp, t_eodnonlp CASCADE;
+          CREATE TABLE h_eodcr (id int, txt text);
+          CREATE TABLE h_eodnonl (id int, txt text);
+          CREATE TABLE h_eodearly (id int, txt text); COPY h_eodearly FROM '$F_EODEARLY';
+          CREATE TABLE c_eodearly (id int, txt text) USING pgcolumnar;" >/dev/null
+for _t in t_eodcrp t_eodnonlp; do
+	psql_run "CREATE TABLE $_t (id int, txt text) PARTITION BY RANGE (id);
+	          CREATE TABLE ${_t}_a PARTITION OF $_t FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar;
+	          CREATE TABLE ${_t}_b PARTITION OF $_t FOR VALUES FROM (500) TO (1000) USING pgcolumnar;
+	          CREATE TABLE ${_t}_c PARTITION OF $_t FOR VALUES FROM (1000) TO (1500) USING pgcolumnar;
+	          CREATE TABLE ${_t}_d PARTITION OF $_t FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+done
+_eodcr_heap="$(outcome_of "COPY h_eodcr FROM '$F_EODCR'" h_eodcr)"
+_eodnonl_heap="$(outcome_of "COPY h_eodnonl FROM '$F_EODNONL'" h_eodnonl)"
+check "#2084 premise: heap COPY refuses eodcr.txt (\\.\\r\\n in an LF file) and eodnonl.txt (\\. at the end with no newline) with 22P04" \
+	"$_eodcr_heap $_eodnonl_heap" "22P04 22P04"
+check "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers: the outcome is heap COPY's" \
+	"$(outcome_of "SELECT pgcolumnar.parallel_copy('t_eodcrp'::regclass, '$F_EODCR', 4)" t_eodcrp)" "$_eodcr_heap"
+check "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
+	"$(q "SELECT count(*) FROM t_eodcrp") $(q "SELECT count(*) FROM pg_prepared_xacts")" "0 0"
+check "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers: the outcome is heap COPY's" \
+	"$(outcome_of "SELECT pgcolumnar.parallel_copy('t_eodnonlp'::regclass, '$F_EODNONL', 4)" t_eodnonlp)" "$_eodnonl_heap"
+check "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
+	"$(q "SELECT count(*) FROM t_eodnonlp") $(q "SELECT count(*) FROM pg_prepared_xacts")" "0 0"
+check "#2084 premise: heap COPY loads eodearly 100 rows; eodearly.txt is 12896 bytes with 5c 2e 0a at bytes 492-494; offsets with 4 workers are 0 3225 6449 9676 12896, so the marker is in the first range" \
+	"$(q "SELECT count(*) FROM h_eodearly") $(stat -c %s "$F_EODEARLY") $(od -An -tx1 -j 492 -N 3 "$F_EODEARLY" | tr -d ' ') $(offsets_of "$F_EODEARLY" 4)" \
+	"100 12896 5c2e0a 0 3225 6449 9676 12896"
+check "#2084 end-of-data marker in the first range / single table, 4 workers: rows returned = heap COPY's 100" \
+	"$(q "SELECT pgcolumnar.parallel_copy('c_eodearly'::regclass, '$F_EODEARLY', 4)")" "$(q "SELECT count(*) FROM h_eodearly")"
+check "#2084 end-of-data marker in the first range / single table, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM c_eodearly")" "$(pgc_set_hash "SELECT * FROM h_eodearly")"
+check "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
+
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
 # a projection at statement end with no active snapshot. It does not: on main's

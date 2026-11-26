@@ -12324,6 +12324,15 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_fixture_premise_contdot` | heap `COPY` of `contdot.txt`, where a line that is only `\.` continues a record, loads 2000 rows on PG 17 and older and refuses the file with SQLSTATE 22P04 on PG 18 and newer |
 | `test_parallel_copy_marker_line_inside_a_continued_record_gives_heap_copys_outcome` | a partitioned load of `contdot.txt` with 4 workers gives heap `COPY`'s outcome: the same row count on PG 17, the same 22P04 refusal on PG 18. The `\.` line inside a record does not end the data for the partitioned splitter (#2084, review of #2148 at 7e71ab06, mutant m5, red on PG 17) |
 | `test_parallel_copy_marker_line_inside_a_continued_record_loads_heap_copys_values` | the rows that load equal heap `COPY`'s |
+| `test_parallel_copy_fixture_premise_malformed_markers` | heap `COPY` refuses `eodcr.txt` (`\.\r\n` in a file with LF line ends) and `eodnonl.txt` (`\.` at the end of the file with no newline) with SQLSTATE 22P04 (review of #2148 at 33724a76) |
+| `test_parallel_copy_malformed_marker_in_an_lf_file_gives_heap_copys_outcome` | a partitioned load of `eodcr.txt` with 4 workers is refused with 22P04, as heap `COPY` is: the last range keeps the marker line, so its loader sees it (#2084, mutant n22) |
+| `test_parallel_copy_malformed_marker_in_an_lf_file_leaves_nothing` | after that refusal the partitions hold 0 rows and no prepared transaction is left |
+| `test_parallel_copy_marker_at_eof_without_newline_gives_heap_copys_outcome` | a partitioned load of `eodnonl.txt` with 4 workers is refused with 22P04, as heap `COPY` is (#2084, mutants n22 and n55) |
+| `test_parallel_copy_marker_at_eof_without_newline_leaves_nothing` | after that refusal the partitions hold 0 rows and no prepared transaction is left |
+| `test_parallel_copy_fixture_premise_eodearly` | premise: heap `COPY` loads 100 rows from `eodearly.txt`, which is 12896 bytes with `\.` and a newline at bytes 492-494, and its 4-worker offsets are `0 3225 6449 9676 12896`, so the marker is in the first range |
+| `test_parallel_copy_marker_in_the_first_range_stops_the_load` | a single-table load of `eodearly.txt` with 4 workers returns heap `COPY`'s 100 rows: a marker in the first range ends the load there (#2084, review of #2148 at 33724a76, mutant n57) |
+| `test_parallel_copy_marker_in_the_first_range_loads_heap_copys_values` | the rows that load equal heap `COPY`'s |
+| `test_parallel_copy_marker_in_the_first_range_leaves_no_prepared_transaction` | that load leaves no prepared transaction |
 | `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
