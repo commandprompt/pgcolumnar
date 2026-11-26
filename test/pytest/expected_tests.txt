@@ -2101,32 +2101,87 @@ guard_tests 895
 #   test_a_read_answered_102_processing_first_reads_every_row
 #   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
-# cluster_tests 5555 -> 5561 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# cluster_tests 5555 -> 5556 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
+# RENAME COLUMN carries the new name into ttl_column, and expire does not cut on a column that takes the old
+# name), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5385
+# tests collected.
+# cluster_tests 5556 -> 5557 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
+# (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
+# still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5557 -> 5558 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
+# test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
+# rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5558 -> 5562 for #2085 in test_arrow_export.py: a timestamp and a timestamptz past Arrow's
+# int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
+# test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
+# (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5402 cluster tests collected.
+# cluster_tests 5562 -> 5565 for the #2085 review in test_arrow_export.py: the last timestamp Arrow holds
+# imports back unchanged (test_the_last_timestamp_arrow_holds_imports_back_unchanged), and a timestamp[]
+# element and a composite field past the range are refused with the table column named
+# (test_a_timestamp_array_element_past_arrows_range_names_the_column,
+# test_a_timestamp_composite_field_past_arrows_range_names_the_column), by collection: 6277 tests
+# collected, less guard_tests 894.
+# cluster_tests 5565 -> 5566 for the second #2085 review in test_arrow_export.py: a timestamp before 1970
+# (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
+# (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5566 -> 5570 for the third #2085 review in test_arrow_export.py: a timestamp two levels
+# deep is refused with the table column named, in an array of composites and in a composite's array
+# (test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column,
+# test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column), an in-range nested timestamp
+# still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
+# (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
+# cluster_tests 5570 -> 5575 for #2088's five tests in test_iceberg_name_mapping.py (an equality delete on a
+# long and on a string column applies to a name-mapped data file with no field ids, an equality column the
+# mapping does not bind is refused and the refusal names the field id, and the backend survives:
+# test_name_mapping_equality_* and test_name_mapping_backend_up_after_equality_deletes), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6275 tests collected,
+# less guard_tests 894, is 5381. That count was taken on the PR's first base, where this line read
+# 5376 -> 5381; restates since have shifted the line's numbers but not its collection.
+# cluster_tests 5575 -> 5576 for test_name_mapping_equality_mapped_amount_applies in
+# test_iceberg_name_mapping.py (#2088 review on b14589eb: the amount = 30 equality delete under the full
+# mapping applies, the positive control for the unbound refusal), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6299 tests collected,
+# cluster_tests 5576 -> 5577 for test_name_mapping_equality_delete_reordered in test_iceberg_name_mapping.py
+# (#2088 review on c47ee97a: the equality delete applies when the query lists the columns in another order
+# than the mapping), by collection on PG 18.6:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6380 tests collected,
+# less guard_tests 895.
+# cluster_tests 5577 -> 5580 for test_name_mapping_equality_delete_two_columns,
+# test_name_mapping_equality_delete_two_files and test_name_mapping_equality_two_column_unbound_is_refused in
+# test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
+# an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
+# cluster_tests 5580 -> 5586 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
 # take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
 # rewrite both commit (three tests, each parametrized over the two verbs), by collection:
 # `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5561 -> 5567, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# cluster_tests 5586 -> 5592, still #2074: three more tests, each parametrized over the two verbs. A writer that
 # deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
 # "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
-# cluster_tests 5567 -> 5593, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# cluster_tests 5592 -> 5618, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
 # before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
 # with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
-# cluster_tests 5593 -> 5605, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# cluster_tests 5618 -> 5630, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
 # pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
 # lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
-# cluster_tests 5605 -> 5623, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# cluster_tests 5630 -> 5648, still #2074, for the review of #2139 at 686aed4e: eight more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
 # lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
 # inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
 # max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5555 tests collected.
-# cluster_tests 5623 -> 5630, still #2074, for the review of #2139 at b1d94859: two more tests in
+# cluster_tests 5648 -> 5655, still #2074, for the review of #2139 at b1d94859: two more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
 # 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
 # and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
-cluster_tests 5630
+cluster_tests 5655

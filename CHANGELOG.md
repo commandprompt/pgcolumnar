@@ -641,6 +641,58 @@ true until the next version shipped.
   and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
   A session that does not set the limit gets the 10 s default, and
   `recluster` locks its last group too.
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
+  `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
+- `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, other
+  readers saw a date before year 0, and `import_arrow` refused the file. Such a
+  value now fails the export with SQLSTATE 22008, naming the table column, and
+  no file is written. For an element of an array column or a field of a
+  composite column, the error names that table column too, at any depth. A
+  timestamp before 1970, down to 4714-11-24 BC, still exports, and so does an
+  in-range timestamp inside an array or a composite. The tests check the
+  SQLSTATE and the DETAIL as well as the message.
+  docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
+- Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
+  renames it in `pgcolumnar.options` too (#2070). Before this fix,
+  `ttl_column` kept the old name. `pgcolumnar.expire` then failed with
+  `retention column "..." does not exist`, so retention stopped. If another
+  `date`, `timestamp` or `timestamptz` column later took the old name,
+  `expire` cut on that column and retired row groups whose rows were all
+  inside the retention. The rename already updated `sort_by` and
+  `sketch_columns`; it now updates `ttl_column` in the same catalog row.
+  `DROP COLUMN` of the retention column is unchanged: the declaration keeps
+  the name and `expire` refuses with 42703. If another column later takes
+  the dropped name, `expire` cuts on it and can still delete rows inside the
+  retention; #2070 stays open for that half. `test/ttl_expire.sh` and
+  `test_ttl_expire.py`. More checks pin the name test: a rename leaves a
+  NULL `ttl_column` NULL, and renaming a column whose name is a prefix of the
+  retention column, starts or ends with its name, has its first letter and
+  length, or differs only in case leaves `ttl_column` alone. The rename
+  fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
+  only there leaves `ttl_column` alone, and renaming the retention column moves
+  `sort_by` and `ttl_column` together. A third table declares only
+  retention, as most do: renaming its retention column moves `ttl_column`
+  even though no `sort_by` update writes the row. Each went red under a
+  mutant from @OffgridwithJD's reviews of #2136.
 - A remote read no longer fails when the server or a proxy sends an interim
   1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
   (#2090). `read_parquet` and the Parquet foreign table failed with
