@@ -10223,7 +10223,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
 
-The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`. Each target holds a good file first, and the FATAL re-export must leave it intact. Two more exports end a transaction with FATAL: one after two finished exports, one after a failed export rolled back to a savepoint. Neither leaves a temp file. Three more exports fail away from Write: one whose rename fails (a non-empty directory at the final name) ends with FATAL and leaves no temp file, and so does one whose flush fails (its temp name is a symlink to `/dev/full`); one whose rename fails and one whose temp file cannot be opened (a missing parent directory) are rolled back to a savepoint before a FATAL export, which leaves no temp file, and the failed rename's own temp file is gone after the rollback. One more export, whose Abort cannot unlink its stale temp file (a read-only directory), is rolled back to a savepoint before a FATAL export, which leaves no temp file. One session runs 25 exports: each returns its row count, the session survives, and no temp file remains. The server log shows no backend killed by a signal, and no AddressSanitizer report, during the FATAL arms.
 
 ### Every test
 
@@ -10247,6 +10247,30 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
 | `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
 | `test_after_reset_exports_work_again` | after RESET, exports work again |
+| `test_fatal_the_export_ends_its_backend_with_fatal[parquet]` | fatal: the parquet export ends its backend with FATAL |
+| `test_fatal_the_export_ends_its_backend_with_fatal[arrow]` | fatal: the arrow export ends its backend with FATAL |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[parquet]` | fatal: a FATAL re-export leaves the previous parquet file intact |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[arrow]` | fatal: a FATAL re-export leaves the previous arrow file intact |
+| `test_fatal_no_temp_file_after_a_fatal_exit[parquet]` | fatal: no parquet temp file after a FATAL exit |
+| `test_fatal_no_temp_file_after_a_fatal_exit[arrow]` | fatal: no arrow temp file after a FATAL exit |
+| `test_fatal_after_finished_exports_in_one_transaction_ends_with_fatal` | fatal: a FATAL export after two finished exports in one transaction ends with FATAL |
+| `test_fatal_no_temp_file_after_finished_exports_in_one_transaction` | fatal: no temp file after a FATAL export that followed finished exports |
+| `test_fatal_after_a_failed_export_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_rolled_back_export` | fatal: no temp file after a FATAL export that followed a rolled-back export |
+| `test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms` | fatal: no backend died by a signal during the FATAL arms |
+| `test_fatal_an_export_whose_rename_fails_ends_its_backend_with_fatal` | fatal: an export whose rename fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_rename` | fatal: no temp file after a FATAL at the rename |
+| `test_fatal_an_export_whose_flush_fails_ends_its_backend_with_fatal` | fatal: an export whose flush fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_flush` | fatal: no temp file after a FATAL at the flush |
+| `test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_rename` | fatal: no temp file after a FATAL export that followed a failed rename |
+| `test_fatal_no_temp_file_after_a_failed_rename_rolled_back_to_a_savepoint` | fatal: no temp file after a failed rename rolled back to a savepoint |
+| `test_fatal_25_exports_in_one_session_each_return_their_row_count` | fatal: 25 exports in one session each return their row count |
+| `test_fatal_no_temp_file_after_25_exports_in_one_session` | fatal: no temp file after 25 exports in one session |
+| `test_fatal_after_a_failed_unlink_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_unlink` | fatal: no temp file after a FATAL export that followed a failed unlink |
+| `test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_open` | fatal: no temp file after a FATAL export that followed a failed open |
 
 ## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
 
