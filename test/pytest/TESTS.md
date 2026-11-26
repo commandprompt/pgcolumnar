@@ -7950,6 +7950,7 @@ The pytest twin of `test/parquet_import.sh`, every check by the shell's name (#4
 | `test_the_how_to_creates_its_events_table_for_parquet` | the how-to's first example creates its `events` table, in a private database (#2093) |
 | `test_the_how_to_parquet_export_runs` | the how-to's Parquet export example runs as written on that table |
 | `test_the_how_to_parquet_read_runs` | the how-to's Parquet read example runs on the file that export wrote: its `read_parquet` names every column |
+| `test_the_how_to_object_storage_read_runs_on_that_file` | the how-to's object-storage `read_parquet` example runs on that file too, with `s3://bucket/` pointed at the same local directory: its column list names every column (OffgridwithJD's mutant M1 on #2159) |
 | `test_the_user_guide_creates_its_events_table` | the user guide's first example creates its `events` table |
 | `test_the_sql_reference_round_trip_runs` | the SQL reference's Parquet round trip runs on the user guide's `events` table |
 | `test_a_parquet_import_into_a_table_with_a_projection_keeps_the_server_up` | (#2092) `import_parquet into a table with a projection, with or without set_options, keeps the server up and fills the projection (#2092)`: a neighbour table gets an options row first, so the case without set_options can fail too; then four tables, projection crossed with set_options, each imports 1000 rows, holds 2000, a projection holds 2000 too, and the server log shows no backend crash |
@@ -12283,6 +12284,9 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_the_user_guide_worker_counts_fit_a_default_server` | the same for the user guide |
 | `test_the_sql_reference_worker_counts_fit_a_default_server` | the same for the SQL reference |
 | `test_the_documented_loads_leave_no_prepared_transaction` | no prepared transaction is left after those loads |
+| `test_every_parallel_copy_page_gives_the_same_slot_figure` | the how-to, the user guide, the SQL reference, limitations.md and best-practices.md each give the slot rule (the worker count plus one, plus the server's own background workers) and the same figure for four workers (#2093) |
+| `test_four_workers_fail_one_slot_short_of_the_documented_figure` | on a private cluster at `max_worker_processes` one below that figure, a four-worker load fails with "could not register pgcolumnar parallel_copy loader" |
+| `test_four_workers_load_at_the_documented_figure` | on the same cluster at the figure, the same load returns 5000 rows (OffgridwithJD's mutant M10 on #2159 turns all three red) |
 | `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns

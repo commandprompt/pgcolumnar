@@ -466,7 +466,7 @@ def pq_docs(pgc_cluster, server_dir):
         sql = _doc_sql(page, heading, n)
         if not sql:
             return f"no block {n} under '{heading}' in {page}"
-        sql = re.sub(r"'/(?:data|tmp)/", "'" + str(base) + "/", sql)
+        sql = re.sub(r"'(?:/(?:data|tmp)/|s3://bucket/)", "'" + str(base) + "/", sql)
         try:
             for stmt in _statements(sql):
                 conn.execute(stmt)
@@ -485,6 +485,8 @@ def pq_docs(pgc_cluster, server_dir):
             conn.execute(DOC_ROWS)
             r["howto export"] = run(conn, "how-to.md", "## Read and write Parquet", 2)
             r["howto read"] = run(conn, "how-to.md", "## Read and write Parquet", 1)
+            # s3://bucket/ is pointed at the same local directory (mutant M1).
+            r["howto s3 read"] = run(conn, "how-to.md", "## Use object storage", 1)
             conn.execute("DROP TABLE events CASCADE")
             r["ug create"] = run(conn, "user-guide.md", "## Create a columnar table", 1)
             conn.execute(DOC_ROWS)
@@ -507,6 +509,10 @@ def test_the_how_to_parquet_export_runs(pq_docs, expect):
 
 def test_the_how_to_parquet_read_runs(pq_docs, expect):
     expect.text(pq_docs["howto read"], "ok", "the how-to's Parquet read example runs on the file that export wrote")
+
+
+def test_the_how_to_object_storage_read_runs_on_that_file(pq_docs, expect):
+    expect.text(pq_docs["howto s3 read"], "ok", "the how-to's object-storage read_parquet example runs on that file")
 
 
 def test_the_user_guide_creates_its_events_table(pq_docs, expect):

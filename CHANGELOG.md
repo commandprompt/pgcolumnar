@@ -630,9 +630,16 @@ true until the next version shipped.
   for ERROR or FATAL said "ok" when the example crashed the backend. Selftest
   part 650 checks the helper. It also checks that each suite's `run_doc` calls
   `psql_block`, with comments ignored, makes no psql call of its own, and
-  prints the helper's verdict unchanged. The pages now say how many
+  prints the helper's verdict unchanged, and that it hands the helper the
+  page's block. The pages, docs/best-practices.md among them, now say how many
   `max_worker_processes` slots a load needs: the worker count plus one, plus
-  the server's own workers (two on PostgreSQL 18 with pgcolumnar preloaded).
+  the server's own workers (two on PostgreSQL 15 to 19 with pgcolumnar
+  preloaded), so four workers need 7. best-practices.md no longer names
+  `max_parallel_workers`, which does not limit the load.
+  `test/parallel_copy.sh` and its twin read that figure from the pages, then
+  restart a cluster one slot short of it, where four workers fail, and at it,
+  where they load. `test/parquet_import.sh` and its twin also run the how-to's
+  object-storage `read_parquet` example, on a local file.
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
 - `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or

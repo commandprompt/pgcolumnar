@@ -39,11 +39,14 @@ import os
 import pathlib
 import random
 import re
+import shutil
+import tempfile
 import threading
 
 import psycopg
 import pytest
 
+from pgc_cluster import Cluster, pick_port
 from pgc_vacuity import query_error
 
 DB = "pgc_parallel_copy"
@@ -950,3 +953,91 @@ def test_parallel_copy_into_a_table_with_a_projection_fills_the_projection(pcopy
                 "w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1",
                 "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction"
                 " and keeps the server up (#2092)")
+
+
+# ---- #2093: the documented slot figure is the smallest that loads -------------------
+# Each page that covers parallel_copy gives the slot rule and a figure, "four workers
+# need 7". The figure is read from every page. A private cluster then runs one slot
+# short of it, where a four-worker load must fail to register a loader, and at the
+# figure, where it must load. Measured by hand on PG15 to PG19: 6 fails, 7 loads
+# (OffgridwithJD's review of #2159, mutant M10). The shared cluster is not restarted.
+SLOT_PAGES = ("how-to.md", "user-guide.md", "sql-reference.md", "limitations.md", "best-practices.md")
+_SLOT_RULE = "the worker count plus one, plus the slots"
+_SLOT_FIG = re.compile(r"four workers need (\d+)")
+
+
+def _slot_figure(page):
+    """-> the page's four-worker figure, "no-rule" or "no-figure"."""
+    t = " ".join((DOCS / page).read_text().split())
+    if _SLOT_RULE not in t:
+        return "no-rule"
+    return ",".join(sorted(set(_SLOT_FIG.findall(t)))) or "no-figure"
+
+
+def _slots_load(cluster, path, slots):
+    """-> rows a four-worker load returns at max_worker_processes = slots, or "refused"."""
+    if not str(slots).isdigit():
+        return "no documented figure"
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        c.execute(f"ALTER SYSTEM SET max_worker_processes = {int(slots)}")
+    cluster.stop()
+    cluster.start()
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        now = c.execute("SHOW max_worker_processes").fetchone()[0]
+        if now != str(slots):
+            return f"max_worker_processes is [{now}], not {slots}"
+        c.execute("TRUNCATE t_doc")
+        try:
+            return str(c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)",
+                                 (path,)).fetchone()[0])
+        except psycopg.Error as e:
+            msg = (str(e).splitlines() or ["?"])[0]
+            return "refused" if "could not register pgcolumnar parallel_copy loader" in msg else f"ERROR:  {msg}"
+
+
+@pytest.fixture(scope="module")
+def slot_loads(pgc_cluster):
+    figs = {p: _slot_figure(p) for p in SLOT_PAGES}
+    fig = figs["how-to.md"]
+    r = {"figures": (" ".join(f"{p}:{v}" for p, v in figs.items()),
+                     " ".join(f"{p}:{fig if fig.isdigit() else 'a-figure'}" for p in SLOT_PAGES))}
+    if not fig.isdigit():
+        r["short"] = r["at"] = "no documented figure"
+        yield r
+        return
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-pcslots-"))
+    work.chmod(0o777)
+    datadir = work / "data"
+    datadir.mkdir()
+    cluster = Cluster(pgc_cluster.pg_config, "pcslots", datadir, pick_port(44))
+    try:
+        cluster.initdb()
+        cluster.start()
+        path = str(work / "rows.txt")
+        with open(path, "w") as fh:
+            fh.writelines(f"{g}\tdoc_{g}\n" for g in range(1, 5001))
+        os.chmod(path, 0o644)
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            c.execute("ALTER SYSTEM SET max_prepared_transactions = 8")
+            c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+            c.execute("CREATE TABLE t_doc (id int, txt text) USING pgcolumnar")
+        r["short"] = _slots_load(cluster, path, int(fig) - 1)
+        r["at"] = _slots_load(cluster, path, int(fig))
+        yield r
+    finally:
+        cluster.stop()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_every_parallel_copy_page_gives_the_same_slot_figure(slot_loads, expect):
+    got, want = slot_loads["figures"]
+    expect.text(got, want, "every page that covers parallel_copy gives the slot rule and the same four-worker figure")
+
+
+def test_four_workers_fail_one_slot_short_of_the_documented_figure(slot_loads, expect):
+    expect.text(slot_loads["short"], "refused",
+                "four workers fail to register a loader one slot short of the documented figure")
+
+
+def test_four_workers_load_at_the_documented_figure(slot_loads, expect):
+    expect.text(slot_loads["at"], "5000", "four workers load at the documented figure")

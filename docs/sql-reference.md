@@ -1049,7 +1049,7 @@ commits on its own. It is not part of the calling transaction, and a caller
 worker count, because the load prepares one transaction per worker. Set
 `max_worker_processes` to at least the worker count plus one, plus the slots the
 server's own background workers hold. The load takes one background worker slot
-per worker and one for its coordinator. On PostgreSQL 18 with pgcolumnar
+per worker and one for its coordinator. On PostgreSQL 15 to 19 with pgcolumnar
 preloaded, the server's own workers hold two slots, so four workers need 7. At
 the default of 8, four workers fit while no parallel query runs. A parallel query's workers take slots too. Both
 settings take effect only after a restart.

@@ -34,10 +34,13 @@ columns. Those columns cost 106.4% of their raw bytes at the accepted minimum of
 
 **Use `parallel_copy` for a large file.** `pgcolumnar.parallel_copy` splits a
 server-side file across workers and scales the load into one table. It runs a
-coordinator plus the loader workers, so it needs one worker slot more than the
-loader count, in `max_worker_processes` and `max_parallel_workers`. Without the
-extra slot, the load moves no rows. The caller needs the `pg_read_server_files`
-role.
+coordinator plus the loader workers. Set `max_worker_processes` to at least the
+worker count plus one, plus the slots the server's own background workers hold.
+On PostgreSQL 15 to 19 with pgcolumnar preloaded, the server's own workers hold
+two slots, so four workers need 7. `max_parallel_workers` does not limit the
+load. A load that cannot get a slot fails with "could not register pgcolumnar
+parallel_copy loader" and moves no rows. The caller needs the
+`pg_read_server_files` role.
 
 **Do not over-partition.** Native partitioning multiplies catalog and planning cost.
 Use it when a partition key genuinely bounds most queries, not by default. A single

@@ -2023,4 +2023,8 @@ guard_tests 899
 # test_native_cluster.py, test_parquet_import.py, test_rollup.py and test_parallel_copy.py), by collection
 # over the cluster files (the complement of NO_CLUSTER) after the merge of main 26bb5236: 5511 tests
 # collected (5501 after the merge of main f898249c); NO_CLUSTER collects guard_tests 899.
-cluster_tests 5511
+# cluster_tests 5511 -> 5515 for #2093's four tests from the review of #2159 at f89f48e6: in
+# test_parallel_copy.py, every page gives the same four-worker slot figure, four workers fail one slot
+# short of it and load at it; in test_parquet_import.py, the how-to's object-storage read_parquet example
+# runs. By collection over the cluster files (the complement of NO_CLUSTER): 5515 tests collected.
+cluster_tests 5515

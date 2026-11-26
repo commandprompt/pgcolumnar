@@ -39,7 +39,7 @@ doc_sql() {
 # (psql_block in lib.sh, which reads psql's exit status: #2093).
 run_doc() {
 	local b
-	b="$(doc_sql "$1" "$2" "$3" | sed -E "s#'/(data|tmp)/#'$PQ_DOCDIR/#g")"
+	b="$(doc_sql "$1" "$2" "$3" | sed -E "s#'(/(data|tmp)/|s3://bucket/)#'$PQ_DOCDIR/#g")"
 	[ -n "$b" ] || { echo "no block $3 under '$2' in $1"; return; }
 	psql_block "$b"
 }
@@ -52,6 +52,12 @@ check "the how-to's Parquet export example runs on that events table" \
 	"$(run_doc how-to.md '## Read and write Parquet' 2)" "ok"
 check "the how-to's Parquet read example runs on the file that export wrote" \
 	"$(run_doc how-to.md '## Read and write Parquet' 1)" "ok"
+# The object-storage block reads and writes s3://bucket/events.parquet. run_doc
+# points that prefix at the same local directory, because read_parquet takes a
+# local path too, so the block reads the file the export above wrote. On main its
+# column list was two columns, and the read failed (OffgridwithJD's mutant M1).
+check "the how-to's object-storage read_parquet example runs on that file" \
+	"$(run_doc how-to.md '## Use object storage' 1)" "ok"
 psql_run "DROP TABLE events CASCADE;"
 check "the user guide's first example creates its events table" \
 	"$(run_doc user-guide.md '## Create a columnar table' 1)" "ok"

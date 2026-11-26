@@ -746,4 +746,52 @@ check "parallel_copy into a table with a projection fills the projection, leaves
 	"$_proj_got | leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
 	"w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1"
 
+# ---- #2093: the documented slot figure is the smallest that loads ---------------
+# Each page that covers parallel_copy gives the slot rule ("the worker count plus
+# one, plus the slots the server's own background workers hold") and a figure:
+# "four workers need 7". The figure is read from every page. Then this cluster is
+# restarted one slot short of it, where a four-worker load must fail to register a
+# loader, and at the figure, where it must load. Measured by hand on PG15 to PG19:
+# 6 fails, 7 loads (OffgridwithJD's review of #2159, mutant M10). These checks
+# restart the cluster, so they run last.
+SLOT_PAGES="how-to.md user-guide.md sql-reference.md limitations.md best-practices.md"
+slot_figure() {	# slot_figure PAGE -> its four-worker figure, "no-rule" or "no-figure"
+	local t f
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	case "$t" in *"the worker count plus one, plus the slots"*) ;; *) echo "no-rule"; return ;; esac
+	f="$(grep -oE 'four workers need [0-9]+' <<<"$t" | grep -oE '[0-9]+$' | sort -u | paste -sd, -)"
+	echo "${f:-no-figure}"
+}
+SLOT_FIG="$(slot_figure how-to.md)"
+_slot_got="" _slot_want=""
+for _p in $SLOT_PAGES; do
+	_slot_got="$_slot_got${_slot_got:+ }$_p:$(slot_figure "$_p")"
+	if [[ "$SLOT_FIG" =~ ^[0-9]+$ ]]; then _slot_want="$_slot_want${_slot_want:+ }$_p:$SLOT_FIG"
+	else _slot_want="$_slot_want${_slot_want:+ }$_p:a-figure"; fi
+done
+check "every page that covers parallel_copy gives the slot rule and the same four-worker figure" \
+	"$_slot_got" "$_slot_want"
+slots_load() {	# slots_load SLOTS -> rows a four-worker load returns, or "refused"
+	[[ "$1" =~ ^[0-9]+$ ]] || { echo "no documented figure"; return; }
+	psql_admin "ALTER SYSTEM SET max_worker_processes = $1;" >/dev/null
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+		|| { echo "restart failed"; return; }
+	local now out
+	now="$(q "SHOW max_worker_processes")"
+	[ "$now" = "$1" ] || { echo "max_worker_processes is [$now], not $1"; return; }
+	psql_run "TRUNCATE t_doc;"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', 4)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+	case "$out" in
+	*"could not register pgcolumnar parallel_copy loader"*) echo "refused" ;;
+	*) echo "${out:-no output}" ;;
+	esac
+}
+_short=""; [[ "$SLOT_FIG" =~ ^[0-9]+$ ]] && _short=$((SLOT_FIG - 1))
+check "four workers fail to register a loader one slot short of the documented figure" \
+	"$(slots_load "$_short")" "refused"
+check "four workers load at the documented figure" \
+	"$(slots_load "$SLOT_FIG")" "5000"
+psql_admin "ALTER SYSTEM RESET max_worker_processes;" >/dev/null
+
 pgc_summary

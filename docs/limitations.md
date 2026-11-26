@@ -309,7 +309,7 @@ these constraints.
 - Set `max_worker_processes` to at least the worker count plus one, plus the
   slots the server's own background workers hold. The load takes one
   background worker slot per worker and one for its coordinator. On
-  PostgreSQL 18 with pgcolumnar preloaded, the server's own workers hold two
+  PostgreSQL 15 to 19 with pgcolumnar preloaded, the server's own workers hold two
   slots, so four workers need 7. Any parallel query holds slots too. At the
   default of 8, four workers fit while no parallel query runs. A load that
   cannot get a slot fails with "could not register pgcolumnar parallel_copy
