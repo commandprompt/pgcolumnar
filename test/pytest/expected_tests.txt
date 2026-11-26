@@ -2156,24 +2156,27 @@ guard_tests 895
 # test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
-# cluster_tests 5580 -> 5586 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+# cluster_tests 5581 -> 5587 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
 # leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
 # `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5586 -> 5591 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# cluster_tests 5587 -> 5592 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
 # the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
 # FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
 # file, and no backend killed by a signal), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
-# cluster_tests 5591 -> 5597 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# cluster_tests 5592 -> 5598 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
 # export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
 # after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
-# cluster_tests 5597 -> 5600 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# cluster_tests 5598 -> 5601 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
 # export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
 # leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5507 tests collected.
-# cluster_tests 5600 -> 5604 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
+# cluster_tests 5601 -> 5605 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
 # exports in one session each return their row count and leave no temp file; a FATAL export after a failed
 # unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
-cluster_tests 5604
+cluster_tests 5605
