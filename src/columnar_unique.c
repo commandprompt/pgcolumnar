@@ -222,8 +222,13 @@ pgcolumnar_unique_build(Relation rel)
 		indexRel = index_open(indexOid, AccessShareLock);
 		idxForm = indexRel->rd_index;
 
-		/* only immediate, valid, ready, unique indexes enforce uniqueness */
-		if (!idxForm->indisunique || !idxForm->indimmediate ||
+		/*
+		 * Every valid, ready index that enforces a constraint: unique, immediate
+		 * or deferrable, and exclusion (#2063). A deferrable or exclusion check
+		 * resolves another inserter's buffered row exactly as the immediate
+		 * unique check does, so it misses that row just the same.
+		 */
+		if (!(idxForm->indisunique || idxForm->indisexclusion) ||
 			!idxForm->indisvalid || !idxForm->indisready)
 		{
 			index_close(indexRel, AccessShareLock);
@@ -242,11 +247,18 @@ pgcolumnar_unique_build(Relation rel)
 #else
 		uidx->nullsNotDistinct = false;
 #endif
-		uidx->coarse = false;
+		/*
+		 * Lock the whole index for every exclusion constraint. A non-btree one,
+		 * such as gist &&, would fail the hash family test below and go coarse
+		 * anyway. A btree one can only use =, so per-key hashing would be
+		 * correct for it; it is coarse only to keep one rule for exclusion
+		 * constraints, at the cost of serializing inserts of different keys.
+		 */
+		uidx->coarse = idxForm->indisexclusion;
 		uidx->cols = (UniqueKeyCol *)
 			palloc0(uidx->nKeyCols * sizeof(UniqueKeyCol));
 
-		for (c = 0; c < uidx->nKeyCols; c++)
+		for (c = 0; !uidx->coarse && c < uidx->nKeyCols; c++)
 		{
 			if (!pgcolumnar_key_col_hash(indexRel, c, cxt, &uidx->cols[c]))
 			{
@@ -329,8 +341,8 @@ pgcolumnar_acquire_key_lock(Oid indexOid, uint32 bucket)
 /*
  * PgColumnarHasUniqueIndex
  *		Does rel have a unique index that a new row version is checked against?
- *		The same set PgColumnarLockUniqueKeys locks for (unique, immediate, valid,
- *		ready), read from the same cache. The update path asks it to decide
+ *		The same set PgColumnarLockUniqueKeys locks for (unique or exclusion,
+ *		valid, ready), read from the same cache. The update path asks it to decide
  *		whether a row must be serialized before its new version is inserted
  *		(#1421). Independent of enable_unique_insert_lock: without that lock the
  *		btree's own uniqueness check still waits on the winner's key.
@@ -350,7 +362,12 @@ PgColumnarHasUniqueIndex(Relation rel)
  *		re-entrant, so a same-statement duplicate simply re-locks the same tag.
  *
  *		Handled per index:
- *		  - unique, immediate, valid, ready indexes only;
+ *		  - valid, ready indexes that are unique (immediate or deferrable) or
+ *		    back an exclusion constraint (#2063);
+ *		  - deferrable unique: the lock is taken at insert and held to commit,
+ *		    so the deferred recheck runs after the first inserter has committed;
+ *		  - exclusion constraints: always the coarse per-index lock, because the
+ *		    operator may not be equality and so equal hashes prove nothing;
  *		  - partial indexes: locked only when the row satisfies the predicate;
  *		  - expression indexes: the indexed expression value is hashed;
  *		  - NULLS DISTINCT (default): a key with any NULL never conflicts and is
