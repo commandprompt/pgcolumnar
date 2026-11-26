@@ -2033,5 +2033,10 @@ guard_tests 895
 # cluster_tests 5505 -> 5507 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
 # and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
-# files not in NO_CLUSTER: 5490 tests collected.
-cluster_tests 5507
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5507 -> 5509 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER: 5509 tests collected.
+cluster_tests 5509

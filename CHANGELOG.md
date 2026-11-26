@@ -614,9 +614,12 @@ true until the next version shipped.
   A default of any JSON type is refused, including `""`, `false` and `0`.
   The refusal covers an output column and the column an equality delete
   compares, whatever its type and whether it is required. A query that leaves
-  the field out still reads. A null `initial-default` counts as none, and so
-  does a field that has only a `write-default`. Reading the default is not
-  supported yet.
+  the field out still reads, except through a `pgcolumnar_iceberg` foreign
+  table: it refuses any scan when one of its columns has an `initial-default`.
+  A null `initial-default` counts as none, even when the field also has a
+  `write-default`, and so does a field that has only a `write-default`. The
+  refusal also applies in a metadata file whose `format-version` is below 3.
+  Reading the default is not supported yet.
   docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong

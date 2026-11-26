@@ -483,7 +483,9 @@ check "a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-de
 # v3strdefault / v3booldefault: qty optional, a string with initial-default ""
 # and a boolean with initial-default false, so a refusal narrowed to numbers,
 # or one that takes a falsy default for none, reads null again.
-# v3nulldefault: qty optional with initial-default null, which means none.
+# v3nulldefault: qty optional with initial-default null, which means none,
+# and a write-default of 5, so a reader that falls back to the write-default
+# for a null initial-default refuses it (review of #2151 at 48251e9f).
 # v3firstdefault: v3default with qty, initial-default 7, first in the field
 # list, so a refusal above the name match would refuse the other columns.
 # eq_v3otherdefault: the eq table with a new field "extra", initial-default 7,
@@ -506,7 +508,7 @@ variant("v3strdefault", {"id": 4, "name": "qty", "required": False, "type": "str
 variant("v3booldefault", {"id": 4, "name": "qty", "required": False, "type": "boolean",
                           "initial-default": False, "write-default": False})
 variant("v3nulldefault", {"id": 4, "name": "qty", "required": False, "type": "int",
-                          "initial-default": None})
+                          "initial-default": None, "write-default": 5})
 variant("v3firstdefault", {"id": 4, "name": "qty", "required": True, "type": "int",
                            "initial-default": 7, "write-default": 7}, first=True)
 e = json.load(open(eq_src))
@@ -582,6 +584,39 @@ check "iceberg_scan reads an optional v3 column that has only a write-default as
 	      FROM pgcolumnar.iceberg_scan('$MDDIR/v3writedefault.metadata.json') AS t(id bigint, qty int)
 	      ORDER BY id")" \
 	"$(printf '1|null\n2|null\n3|null\n4|null\n5|null')"
+# Two more copies (#2087, review of #2151 at 48251e9f):
+# eq_v3intdefault: warehouse_del's eqpart_apply table, whose equality deletes
+# compare grp, an int, as format-version 3 with grp's initial-default 0. A
+# refusal placed after the int type match reads rows again.
+# v2optdefault: v3optdefault with format-version 2. Iceberg forbids a non-null
+# initial-default below v3, but the reader refuses it there too, so a refusal
+# gated on format-version 3 fails.
+python3 - "$DMD/eqpart_apply.metadata.json" "$DMD/eq_v3intdefault.metadata.json" \
+	"$MDDIR/v3optdefault.metadata.json" "$MDDIR/v2optdefault.metadata.json" <<'PYEOF'
+import json, sys
+eq_src, eq_out, v3_src, v2_out = sys.argv[1:]
+e = json.load(open(eq_src))
+e["format-version"] = 3
+cur = next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])
+for f in cur["fields"]:
+    if f["name"] == "grp":
+        f["initial-default"] = 0
+        f["write-default"] = 0
+json.dump(e, open(eq_out, "w"))
+m = json.load(open(v3_src))
+m["format-version"] = 2
+json.dump(m, open(v2_out, "w"))
+PYEOF
+check "iceberg_scan refuses an equality delete on a v3 int column whose initial-default is 0 (0A000)" \
+	"$(refusal "SELECT string_agg(id::text, ',' ORDER BY id)
+	            FROM pgcolumnar.iceberg_scan('$DMD/eq_v3intdefault.metadata.json') AS t(id bigint)" \
+	   'field "grp" has an initial-default' "refusal naming grp")" \
+	"0A000 (refusal naming grp)"
+check "iceberg_scan refuses an initial-default in a format-version 2 metadata file (0A000)" \
+	"$(refusal "SELECT id || '|' || coalesce(qty::text, 'null')
+	            FROM pgcolumnar.iceberg_scan('$MDDIR/v2optdefault.metadata.json') AS t(id bigint, qty int)
+	            ORDER BY id" 'field "qty" has an initial-default' "refusal naming qty")" \
+	"0A000 (refusal naming qty)"
 
 # ---- privilege -------------------------------------------------------------
 # USAGE on the schema, so the refusal is the FILE gate's: without it the role was
