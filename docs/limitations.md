@@ -1118,6 +1118,14 @@ The exporter can write `json` and `jsonb` to Parquet, and other tools can read
 them. pgColumnar cannot import them from Parquet at this time. Arrow supports
 both types in each direction.
 
+`export_arrow` refuses a `timestamp` or `timestamptz` after
+294247-01-10 04:00:54.775807. Arrow stores a timestamp as 64-bit microseconds since
+1970-01-01, and that is the last value it holds. PostgreSQL timestamps run to
+294276-12-31. The export fails with `out of range for an Arrow timestamp`
+(SQLSTATE 22008), names the table column, and writes no file. For a value
+inside an array or composite column, it names that column, not the array element
+or the field. It writes `infinity` and `-infinity` as null, as before.
+
 ## Write size limits
 
 A row group holds at most `stripe_row_limit` rows, and at most 256 MiB of values

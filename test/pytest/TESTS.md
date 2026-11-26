@@ -6748,8 +6748,11 @@ restored byte-identical.
 | `test_a_timestamp_retention_column_uses_the_sessions_local_time` | a `timestamp` column's cutoff is the session's local now: in UTC+14, exactly the groups wholly before it are retired (#1339) |
 | `test_expire_records_what_it_retires_and_nothing_else` | `expire` writes exactly the groups it retires to `pgcolumnar.retired_group` (#1294); a rolled-back `expire` and a `compact_rewrite` record nothing; dropping the table drops its rows |
 | `test_a_no_op_expire_reads_the_extent_not_every_zone_map` | #1310: with the retention column's extent (#1304 option 5) past the cutoff, a no-op `expire` makes 0 zone-map scans where it made one per group; the same groups retire with or without the extent; aged rows written in `expire`'s own transaction retire; a column left with only NULLs needs no reads. Counted in a fresh connection, with the test schema's `search_path` carried over. Seen red first: 40 scans |
+| `test_the_retention_column_follows_a_rename` | #2070: `ALTER TABLE ... RENAME COLUMN` carries the new name into `ttl_column`; renaming `t` (a prefix of `ts`), `"TS"` (a case variant), `ts_old` (starts with `ts`), `old_ts` (ends with `ts`) or `tx` (same first letter and length) leaves it `ts`; the table also declares `sort_by` and `sketch_columns`, so renaming a column held only there leaves `ttl_column` alone and `expire` retires nothing, and renaming `ts` moves `sort_by` and `ttl_column` together; `expire` still runs and returns 0, and a column that later takes the old name, holding values two years old, retires no group and drops no row. Seen red first: `ttl_column` stayed `ts` |
+| `test_the_retention_column_follows_a_rename_on_a_retention_only_table` | #2070: on a table that declares only `ttl_column` and `ttl_interval`, with no `sort_by` or `sketch_columns`, renaming `ts` moves `ttl_column` to `event_at`, `expire` still runs and returns 0, and a column that then takes the old name, holding values a year old, retires no group and drops no row. On `ttl_ren` the `sort_by` update writes the catalog row on its own, so only this table shows that the `ttl_column` update asks for the write itself. Seen red first under the #2136 review's mutant M2a (the ttl block's `any = true` removed): `ttl_column` stayed `ts` |
+| `test_a_rename_leaves_a_null_retention_column_null` | #2070: renaming a column on a table that declares only an interval leaves `ttl_column` NULL, and `expire` still refuses it with `55000`, every year-old row kept. Seen red first under the #2136 review's mutant M3c (`!isnull &&` -> `isnull \|\|`): `ttl_column` became `created_at` |
 
-The shell twin is `test/ttl_expire.sh`, 67 checks since #1310, all in the mutation ledger. The two halves share no code:
+The shell twin is `test/ttl_expire.sh`, 104 checks since the #2136 review, all in the mutation ledger. The two halves share no code:
 different tables, different row counts, different retention windows, and the
 refusals asserted by SQLSTATE here (`55000` for no declared retention, `22023` for
 a non-positive interval) where the shell greps its message.
@@ -8931,6 +8934,18 @@ A module fixture on a private database runs the SQL in the shell's order and rea
 | `test_every_kept_text_reaches_its_own_value_in_the_stream` | every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them (#1843 review) |
 | `test_over_1gib_of_one_column_exports_in_several_record_batches` | over 1 GiB of one column (2200 values of 500000 bytes) exports whole, in 5 record batches of at most 536 rows; opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
 | `test_a_row_far_wider_as_written_than_stored_goes_in_a_batch_of_its_own` | a row of 8200 numerics of 1e100000 (98 KB stored, 820 MB as text) after a 260 MB row exports whole, in 2 record batches of 1 (#1843 review); opt-in with `PGC_RUN_OVER_1GB=1`, and otherwise declines as `UNMET_PRECONDITION` |
+| `test_a_timestamp_past_arrows_range_is_refused` | a timestamp one microsecond past 294247-01-10 04:00:54.775807 fails with SQLSTATE 22008 and `a value in column "ts" is out of range for an Arrow timestamp`, rather than being written as a wrapped negative value (#2085) |
+| `test_a_refused_timestamp_export_leaves_no_file` | and that refused export leaves no file at the target path |
+| `test_a_timestamptz_past_arrows_range_is_refused` | a timestamptz of 294276-12-31 23:59:59.999999+00 fails the same way (#2085) |
+| `test_the_last_timestamp_arrow_holds_still_exports` | 294247-01-10 04:00:54.775807 in a timestamp and a timestamptz column still exports, as int64 9223372036854775807 (#2085) |
+| `test_the_last_timestamp_arrow_holds_imports_back_unchanged` | and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085) |
+| `test_a_timestamp_before_1970_still_exports` | a timestamp before 1970 still exports: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz, so the range check refuses only past the top (#2085 review) |
+| `test_a_timestamp_array_element_past_arrows_range_names_the_column` | a timestamp[] element past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the Arrow element "item" (#2085) |
+| `test_a_timestamp_composite_field_past_arrows_range_names_the_column` | a timestamp field of a composite column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the field (#2085) |
+| `test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column` | a timestamp field of an array-of-composites column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the Arrow element "item" or the field: two levels deep, the parent's own name differs from the column (#2085 review) |
+| `test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column` | a timestamp[] element inside a composite column past Arrow's range is refused with SQLSTATE 22008, and the error names the table column, not the field (#2085 review) |
+| `test_an_in_range_nested_timestamp_still_exports` | an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review) |
+| `test_the_out_of_range_timestamp_error_gives_arrows_last_value` | and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review) |
 | `test_export_arrow_writes_the_live_columns_of_a_table_with_dropped_columns` | export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row (#2076); a second module fixture on its own database, with rows written before and after the drops, read with pyarrow against the table's rows |
 | `test_import_arrow_loads_into_a_table_with_a_dropped_column` | import_arrow loads a,c,d into a table with a dropped column, every row (#2076); the stream comes from a copy of the table with no dropped column, so the import is tested whatever export_arrow does. The dropped column is text, so a slot left unset before the live ones are filled crashes the server (#2143 review) |
 | `test_export_arrow_writes_16_live_columns_beside_a_dropped_one` | export_arrow writes a table with 16 live columns and 1 dropped column, every row (#2143 review); the limit of 16 columns counts live columns, not attributes |
@@ -11008,7 +11023,7 @@ One module fixture copies the fixtures into `server_dir`, builds the FIFOs there
 
 ## 266. test_iceberg_name_mapping.py: an Iceberg data file with no field ids binds by name mapping
 
-The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, and the cap's opening allocation by a source read with comments blanked out.
+The twin of `test/iceberg_name_mapping.sh` (#388). An id-less data file (an imported dataset) is read by binding its columns by name through `schema.name-mapping.default`: every row against the fixture's own rows, a renamed schema column, an alias, projection, refusals (no mapping, a duplicate name, a field id beyond int32, one name over the cap) by SQLSTATE, null-fill for unmapped and later-added columns, equality deletes applied through the mapping, also when the query lists the columns in another order, for a delete keyed on two columns and for two delete files on different columns, with an unbound delete column still refused (alone or beside a bound one), while the same delete under the full mapping applies (#2088), and the cap's opening allocation by a source read with comments blanked out.
 
 ### Every test
 
@@ -11033,6 +11048,16 @@ One check per test, each by the shell's name, every reading a value from a modul
 | `test_name_mapping_added_column_reads_null` | a column added after the file was written reads null (schema evolution) |
 | `test_name_mapping_evolved_columns_are_real` | ...and its other columns still carry real data |
 | `test_name_mapping_backend_up_after_null_fill` | backend still up after the null-fill reads |
+| `test_name_mapping_equality_delete_long` | an equality delete on a long column applies to an id-less file |
+| `test_name_mapping_equality_delete_reordered` | an equality delete applies when the query lists the columns in another order |
+| `test_name_mapping_equality_delete_two_columns` | an equality delete keyed on two columns applies to an id-less file |
+| `test_name_mapping_equality_delete_two_files` | two equality-delete files on different columns both apply to an id-less file |
+| `test_name_mapping_equality_two_column_unbound_is_refused` | a two-column equality delete with one column the mapping does not bind is refused, naming it |
+| `test_name_mapping_equality_delete_string` | an equality delete on a string column applies to an id-less file |
+| `test_name_mapping_equality_unbound_is_refused` | an equality column the mapping does not bind is still refused (22023) |
+| `test_name_mapping_equality_unbound_names_the_id` | ...and the refusal names the unbound field id |
+| `test_name_mapping_equality_mapped_amount_applies` | an equality delete on the column the unbound arm uses applies once the mapping binds it |
+| `test_name_mapping_backend_up_after_equality_deletes` | backend still up after the equality-delete reads |
 | `test_name_mapping_at_the_cap_is_accepted` | a mapping with exactly the cap in names is accepted |
 | `test_name_mapping_over_the_cap_is_refused` | one name over the cap is refused |
 | `test_name_mapping_cap_refusal_names_the_cap` | ...and the refusal names the cap |

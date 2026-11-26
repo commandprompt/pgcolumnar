@@ -2101,20 +2101,75 @@ guard_tests 895
 #   test_a_read_answered_102_processing_first_reads_every_row
 #   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
-# cluster_tests 5555 -> 5561 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# cluster_tests 5555 -> 5556 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
+# RENAME COLUMN carries the new name into ttl_column, and expire does not cut on a column that takes the old
+# name), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5385
+# tests collected.
+# cluster_tests 5556 -> 5557 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
+# (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
+# still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5557 -> 5558 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
+# test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
+# rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5558 -> 5562 for #2085 in test_arrow_export.py: a timestamp and a timestamptz past Arrow's
+# int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
+# test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
+# (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5402 cluster tests collected.
+# cluster_tests 5562 -> 5565 for the #2085 review in test_arrow_export.py: the last timestamp Arrow holds
+# imports back unchanged (test_the_last_timestamp_arrow_holds_imports_back_unchanged), and a timestamp[]
+# element and a composite field past the range are refused with the table column named
+# (test_a_timestamp_array_element_past_arrows_range_names_the_column,
+# test_a_timestamp_composite_field_past_arrows_range_names_the_column), by collection: 6277 tests
+# collected, less guard_tests 894.
+# cluster_tests 5565 -> 5566 for the second #2085 review in test_arrow_export.py: a timestamp before 1970
+# (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
+# (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5566 -> 5570 for the third #2085 review in test_arrow_export.py: a timestamp two levels
+# deep is refused with the table column named, in an array of composites and in a composite's array
+# (test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column,
+# test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column), an in-range nested timestamp
+# still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
+# (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
+# cluster_tests 5570 -> 5575 for #2088's five tests in test_iceberg_name_mapping.py (an equality delete on a
+# long and on a string column applies to a name-mapped data file with no field ids, an equality column the
+# mapping does not bind is refused and the refusal names the field id, and the backend survives:
+# test_name_mapping_equality_* and test_name_mapping_backend_up_after_equality_deletes), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6275 tests collected,
+# less guard_tests 894, is 5381. That count was taken on the PR's first base, where this line read
+# 5376 -> 5381; restates since have shifted the line's numbers but not its collection.
+# cluster_tests 5575 -> 5576 for test_name_mapping_equality_mapped_amount_applies in
+# test_iceberg_name_mapping.py (#2088 review on b14589eb: the amount = 30 equality delete under the full
+# mapping applies, the positive control for the unbound refusal), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6299 tests collected,
+# cluster_tests 5576 -> 5577 for test_name_mapping_equality_delete_reordered in test_iceberg_name_mapping.py
+# (#2088 review on c47ee97a: the equality delete applies when the query lists the columns in another order
+# than the mapping), by collection on PG 18.6:
+# `cd test/pytest && PGC_PG_CONFIG=$PG_CONFIG python -m pytest --collect-only -q`: 6380 tests collected,
+# less guard_tests 895.
+# cluster_tests 5577 -> 5580 for test_name_mapping_equality_delete_two_columns,
+# test_name_mapping_equality_delete_two_files and test_name_mapping_equality_two_column_unbound_is_refused in
+# test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
+# an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
+# cluster_tests 5580 -> 5586 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
 # leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
 # `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5561 -> 5566 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# cluster_tests 5586 -> 5591 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
 # the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
 # FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
 # file, and no backend killed by a signal), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
-# cluster_tests 5566 -> 5572 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# cluster_tests 5591 -> 5597 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
 # export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
 # after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
-# cluster_tests 5572 -> 5575 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# cluster_tests 5597 -> 5600 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
 # export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
 # leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5507 tests collected.
-cluster_tests 5575
+cluster_tests 5600
