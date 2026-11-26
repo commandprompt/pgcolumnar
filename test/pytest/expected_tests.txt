@@ -2009,19 +2009,26 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5497 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+# cluster_tests 5495 -> 5505 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
 # end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
 # as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
 # #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
 # files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
-# cluster_tests 5506 -> 5520 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# cluster_tests 5514 -> 5528 for the 14 tests the review of #2148 at 7a40d479 asked for in
 # test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
 # lines with the key after them, an unsorted row after continued records, a file that ends inside a
 # record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
 # NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
-# cluster_tests 5520 -> 5527 for the 7 tests the review of #2148 at 29b71633 asked for in
+# cluster_tests 5528 -> 5535 for the 7 tests the review of #2148 at 29b71633 asked for in
 # test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
 # rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
 # offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
 # ci.yml selects them: 5527 tests collected.
-cluster_tests 5527
+cluster_tests 5535
