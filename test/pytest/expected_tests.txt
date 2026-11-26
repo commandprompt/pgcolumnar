@@ -2156,26 +2156,29 @@ guard_tests 895
 # test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
-# cluster_tests 5580 -> 5586 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+# cluster_tests 5581 -> 5587 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
 # the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
 # loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
-# cluster_tests 5586 -> 5588 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# cluster_tests 5587 -> 5589 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
 # refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
 # 98 on main, 106 on this branch.
-# cluster_tests 5588 -> 5590 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# cluster_tests 5589 -> 5591 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
 # exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
 # collected for that file: 108.
-# cluster_tests 5590 -> 5593 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# cluster_tests 5591 -> 5594 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
 # unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
 # one of 4 loaders, which a row trigger's sequence shows; collected for that file: 111.
-# cluster_tests 5593 -> 5596 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# cluster_tests 5594 -> 5597 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
 # unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
 # default worker count; collected for that file: 114.
-# cluster_tests 5596 -> 5598 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# cluster_tests 5597 -> 5599 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
 # exclusion constraint and an expression unique index are refused with 2 workers; collected for that file: 116.
-# cluster_tests 5598 -> 5603 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
+# cluster_tests 5599 -> 5604 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
 # constraint and a NULLS NOT DISTINCT unique index with an INCLUDE column are refused with 2 workers; a caller
 # without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
 # its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
-# main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
-cluster_tests 5603
+# main. By collection over the cluster files after the merge of main 6f79946f: 5604 tests collected.
+cluster_tests 5604
