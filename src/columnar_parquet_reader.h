@@ -54,4 +54,22 @@ extern int64 PgColumnarReadParquetByFieldIdNM(const char *path, TupleDesc tupdes
 											   const PgColumnarObjStoreConfig *cfg,
 											   const char *caller);
 
+/*
+ * As PgColumnarReadParquetByFieldIdNM, but a projected field id that no file
+ * column carries (natively or through the mapping) is an error, not a null.
+ * Used by the Iceberg equality-delete probe: an unbound delete column must be
+ * refused, because reading it as null would keep rows the delete removes.
+ */
+extern int64 PgColumnarReadParquetByFieldIdNMStrict(const char *path,
+													 TupleDesc tupdesc,
+													 const int *field_ids,
+													 int nfield,
+													 const char *const *nm_names,
+													 const int *nm_ids,
+													 int nm_count,
+													 Tuplestorestate *tupstore,
+													 TupleTableSlot *slot,
+													 const PgColumnarObjStoreConfig *cfg,
+													 const char *caller);
+
 #endif							/* COLUMNAR_PARQUET_READER_H */
