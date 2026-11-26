@@ -2016,27 +2016,66 @@ guard_tests 895
 # (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
 # set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
 # over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
-# cluster_tests 5495 -> 5500 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# cluster_tests 5495 -> 5497 for #2082's two tests in test_arrow_import.py: a file of another type
+# family is refused by type (added earlier on this branch without its line), and every Arrow type meets
+# its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5400 tests collected.
+# cluster_tests does not change for the #2082 re-check: the check that the refusal names numeric(5,2) joins
+# test_arrow_import.py::test_a_file_of_another_type_family_is_refused_by_type, and varchar, json and jsonb
+# join the matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files after the merge of f07210bc.
+# cluster_tests does not change for the #2082 round-3 review: the month_day_nano interval file joins the
+# matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files.
+# cluster_tests 5497 -> 5502 for #2076 (export_parquet, parallel_export_parquet, tier_partition, export_arrow
+# and import_arrow on a table with dropped columns): 3 tests in test_parquet_export.py and 2 in
+# test_arrow_export.py. On main d52f6e8c, collection gave 6275 tests, less guard_tests 894: 5381 cluster
+# tests (5376 -> 5381 there). restate.py has shifted the two numbers above at each merge of main.
+# cluster_tests 5502 -> 5504 for the #2143 review (#2076): test_export_arrow_writes_16_live_columns_beside_a_dropped_one
+# and test_export_arrow_refuses_17_live_columns in test_arrow_export.py. On main 078b37bb, collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it) gave 5391 (5389 -> 5391 there).
+# restate.py has shifted the two numbers above at each merge of main; at 6eed71af its collection gave 5485.
+# cluster_tests 5504 -> 5512 for the second #2143 review: 4 tests in test_arrow_export.py (imports into tables
+# whose first or last column is dropped, 1 live column beside 60 dropped ones, the byte cut beside a dropped
+# column) and 4 in test_parquet_export.py (export_parquet and parallel_export_parquet of a dropped first
+# column with composites after it, 1 live column beside 60 dropped ones, the byte cut beside a dropped
+# column). On main f07210bc, collection over the cluster files gave 5493 (5485 -> 5493 there). restate.py
+# has shifted the two numbers above at each merge of main; merged with main f898249c, its collection gave 5500.
+# cluster_tests 5512 -> 5517 for the subtransaction handle fix's five arm-F tests in test_objstore_http_read.py
+# (404s caught in EXCEPTION blocks or rolled back to a SAVEPOINT leak no handle; a loop of 1200 caught 404s
+# finishes; a scan and a cursor keep reading after a subtransaction abort), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest
+# --collect-only -q`: 6275 tests collected, less guard_tests 894.
+# cluster_tests 5517 -> 5520 for three more arm-F tests in test_objstore_http_read.py (#2158 review: caught
+# REST requests and caught s3:// exports leak no handle; a scan inside an outer EXCEPTION block reads on), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6301 tests
+# collected, less guard_tests 895.
+# cluster_tests 5520 -> 5523 for three arm-F commit-side controls in test_objstore_http_read.py (#2158
+# second review: a cursor reads on after an inner block commits and its outer block aborts, after RELEASE of
+# an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
+# less guard_tests 895.
+# cluster_tests 5523 -> 5528 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
 # test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
 # test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
 # test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
 # test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
 # test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
 # collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
-# cluster_tests 5500 -> 5505 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5528 -> 5533 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
 # test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
 # test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
 # test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
 # test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
-# cluster_tests 5505 -> 5507 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5533 -> 5535 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
 # and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
 # by main's later growth.
-# cluster_tests 5507 -> 5509 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5535 -> 5537 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
 # and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
 # files not in NO_CLUSTER: 5509 tests collected.
-cluster_tests 5509
+cluster_tests 5537
