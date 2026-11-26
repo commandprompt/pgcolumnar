@@ -605,6 +605,103 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
+  `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
+- `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, other
+  readers saw a date before year 0, and `import_arrow` refused the file. Such a
+  value now fails the export with SQLSTATE 22008, naming the table column, and
+  no file is written. For an element of an array column or a field of a
+  composite column, the error names that table column too, at any depth. A
+  timestamp before 1970, down to 4714-11-24 BC, still exports, and so does an
+  in-range timestamp inside an array or a composite. The tests check the
+  SQLSTATE and the DETAIL as well as the message.
+  docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
+- Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
+  renames it in `pgcolumnar.options` too (#2070). Before this fix,
+  `ttl_column` kept the old name. `pgcolumnar.expire` then failed with
+  `retention column "..." does not exist`, so retention stopped. If another
+  `date`, `timestamp` or `timestamptz` column later took the old name,
+  `expire` cut on that column and retired row groups whose rows were all
+  inside the retention. The rename already updated `sort_by` and
+  `sketch_columns`; it now updates `ttl_column` in the same catalog row.
+  `DROP COLUMN` of the retention column is unchanged: the declaration keeps
+  the name and `expire` refuses with 42703. If another column later takes
+  the dropped name, `expire` cuts on it and can still delete rows inside the
+  retention; #2070 stays open for that half. `test/ttl_expire.sh` and
+  `test_ttl_expire.py`. More checks pin the name test: a rename leaves a
+  NULL `ttl_column` NULL, and renaming a column whose name is a prefix of the
+  retention column, starts or ends with its name, has its first letter and
+  length, or differs only in case leaves `ttl_column` alone. The rename
+  fixtures also declare `sort_by` and `sketch_columns`: renaming a column held
+  only there leaves `ttl_column` alone, and renaming the retention column moves
+  `sort_by` and `ttl_column` together. A third table declares only
+  retention, as most do: renaming its retention column moves `ttl_column`
+  even though no `sort_by` update writes the row. Each went red under a
+  mutant from @OffgridwithJD's reviews of #2136.
+- A remote read no longer fails when the server or a proxy sends an interim
+  1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
+  (#2090). `read_parquet` and the Parquet foreign table failed with
+  `unexpected HTTP status 103`. An `s3://` glob or prefix failed with
+  `LIST ... returned HTTP 103`. The Iceberg REST catalog functions took the
+  interim answer as the reply; against a server that kept the connection open
+  they waited until the statement timed out. RFC 9110
+  section 15.2 says a client must accept such answers even when it did not ask
+  for them, and CDNs send 103 unasked. The reader now passes over every 1xx
+  answer and reads the final one, as the export path already did. That
+  includes a 1xx no RFC registers, such as 199.
+  `101 Switching Protocols` is now refused with `switched protocols with HTTP
+  101`, on reads and exports alike, because the client never asks to switch.
+  A 101 that follows another 1xx, such as `103` and then `101`, is refused
+  the same way.
+  An export over 1 MiB, which sends `Expect: 100-continue`, also refuses a 101
+  that answers its headers before the body; before, it sent the body and took
+  the next answer.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- Two overlapping inserts can no longer both commit rows that violate an
+  exclusion constraint or a `DEFERRABLE` unique constraint (#2063). A columnar
+  row stays in its backend's buffer until the statement ends, so another
+  backend's constraint check could not see it, did not wait, and let the
+  conflicting row in. Since #5 a transaction-scoped advisory lock closes that
+  window, but it covered only immediate unique indexes. It now also covers
+  deferrable unique indexes, by key, and exclusion constraints, immediate or
+  deferrable, with one lock for the whole index because the operator need not
+  be equality. The second
+  insert now waits for the first and fails with 23P01 or 23505, as on heap.
+  While one insert statement into a table with an exclusion constraint runs, a
+  second insert into that table now waits for it even when the rows do not
+  conflict, unless the second row's key holds a NULL. As before, two
+  transactions that insert into two pgcolumnar tables in opposite order can fail
+  with `deadlock_detected` (40P01) even when no rows conflict; on heap both
+  commit. Retry on 40P01. An `UPDATE` on a table with a
+  deferrable unique index or an exclusion constraint now also serializes each row
+  as it reaches it (#1421), as it already did with an immediate unique index. The
+  loser of two concurrent updates of one row on an exclusion-constrained table
+  now gets `serialization_failure` (40001), not `exclusion_violation` (23P01).
+  Each row inserted into a table with a deferrable unique index now takes a lock,
+  as with an immediate one, so a bulk insert into many such partitions may need a
+  higher `max_locks_per_transaction`.
+  docs/limitations.md.
+  `test/unique_conc.sh` and `test_unique_conc.py`; the exclusion-constraint arm
+  of `test/update_conc.sh` and `test_update_conc.py`.
 - A remote read that fails inside a subtransaction now closes its connection
   when the subtransaction aborts (#2089). Before, the handle stayed open until
   the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
