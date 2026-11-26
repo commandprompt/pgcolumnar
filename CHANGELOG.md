@@ -635,6 +635,46 @@ true until the next version shipped.
   the server's own workers (two on PostgreSQL 18 with pgcolumnar preloaded).
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
+- `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
+  `virtual` (#2091). The setting was a free-form string, and the object-store
+  module used virtual-host addressing only for `virtual`. So a typo such as
+  `virtaul`, a padded `'VIRTUAL '` or an empty string was accepted, `SHOW` echoed
+  it back, and every request went out path-style without a word. The setting is
+  now an enum, like `pgcolumnar.compression`: such a value fails with
+  `invalid value for parameter`, SQLSTATE 22023. Case still does not matter.
+  `ALTER SYSTEM SET` refuses such a value in the same way. A bad value already
+  in `postgresql.conf` now draws a warning and the server uses `path`, which is
+  what the module did with it before.
+  **Upgrade note.** Check stored values before you upgrade. A bad value stored
+  by `ALTER SYSTEM` or `ALTER ROLE ... SET` draws a warning, and the server or
+  session uses `path`. A bad value in a function's
+  `SET` clause makes every call of that function fail with
+  `invalid value for parameter`. Restoring a dump taken before this release
+  fails at each `ALTER ROLE ... SET` or `CREATE FUNCTION ... SET` line that
+  holds a bad value, and that function is then missing. To find the stored
+  values, run this once per cluster:
+  `SELECT * FROM pg_db_role_setting WHERE array_to_string(setconfig, ',') LIKE '%objstore_s3_addressing%'`
+  and this in each database:
+  `SELECT oid::regprocedure, proconfig FROM pg_proc WHERE array_to_string(proconfig, ',') LIKE '%objstore_s3_addressing%'`.
+  docs/configuration.md. `test/objstore_addressing.sh` and
+  `test_objstore_addressing.py`.
+- A columnar table no longer gives a row the item pointer of a different row
+  once its row numbers run out (#2073). Every transaction that writes reserves
+  `stripe_row_limit` row numbers, and a row number maps to an item pointer, so
+  the space ends after about 8.3 million writing transactions at the default
+  setting, or 582 at the largest. Past the end the block number wrapped: index
+  scans missed the new rows, UPDATE and DELETE through an index changed
+  nothing, and a primary key accepted duplicates. The writer now refuses the
+  reservation with SQLSTATE 54000, `has run out of row numbers`, and changes
+  nothing. `pgcolumnar.vacuum` renumbers the rows and frees the space.
+  `pgcolumnar.row_tid` now refuses a row number past the end with SQLSTATE
+  22003, as it already refused one below 1; it returned a wrapped item pointer.
+  A table that already holds wrapped rows stays readable by a sequential scan
+  until `pgcolumnar.vacuum` renumbers it. The writer refuses to add rows to such
+  a table: it checks only where the new run would end, so a table that an older
+  version pushed past the end is refused too. The tests also reserve a run that
+  ends exactly at the last row number, and one row number more.
+  docs/limitations.md. `test/native_writer.sh` and `test_native_writer.py`.
 - An INSERT into a columnar table after a rewrite in the same transaction now
   keeps its rows (#2067). The rewrite is ALTER COLUMN TYPE, or any ALTER that
   rewrites the table and keeps its column count. Before this fix, a transaction
