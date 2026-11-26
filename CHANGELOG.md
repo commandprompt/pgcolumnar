@@ -626,6 +626,46 @@ true until the next version shipped.
   `int` or `bigint` column, and when the spec puts a decimal's bucket field
   first. A `name` column over a bucketed Iceberg `int` is refused (42804).
   `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
+- `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
+  single columnar table with a unique index or primary key (#2080). With 2 or
+  more workers the load either waited until cancelled or failed with 40P01
+  `deadlock detected`, even when every key in the file was distinct. Each worker
+  keeps its unique-key locks in a prepared transaction until every worker has
+  finished, so the workers waited on each other. The function now refuses that
+  load up front with SQLSTATE 0A000 and the hint
+  `Load it with workers => 1, or with COPY.` An exclusion constraint is refused
+  the same way. Each worker checks again once it holds its lock on the table, so
+  a unique index created after the first check, but before any worker has opened
+  the table, is refused too. One worker still loads such a table, and a
+  partitioned target with a primary key still loads with more than one worker.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
+  including the exclusion-constraint table and the table whose unique index
+  appeared late, is checked to stay empty. The tests also cover a deferrable
+  unique index, a partial unique index, a unique index after a non-unique one,
+  and a late unique index with 4 workers, where no loader may insert a row.
+  They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
+  default. They also cover a deferrable exclusion constraint, a gist exclusion
+  constraint, a unique index on an expression, a unique index on two columns,
+  and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
+  INSERT still gets 42501 first, a URL still gets the refusal for remote files
+  first, and `dedup => true` still gets the refusal and its hint.
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
