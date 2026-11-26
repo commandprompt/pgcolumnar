@@ -633,18 +633,24 @@ true until the next version shipped.
   returned it, and nothing held the port until the caller bound it, so two
   suites whose walks met at one free port were both given it. The picker now
   takes a lock per user and reserves the port it returns, as a file named for
-  the port; a pick skips a port that another pick reserved less than 120 s ago.
+  the port that holds the picker's pid. A pick skips a reserved port: one whose
+  picker still runs, at any age, so a suite that restarts its own server on its
+  port keeps it, or one reserved less than 120 s ago by a picker that has gone.
   The pytest harness's `pick_port` uses the same lock and the same files, so a
   shell suite and a pytest twin don't collide either. `PGC_PORT_RESERVE_DIR`
   moves the directory, and `PGC_PORT_PICK_DELAY` holds a pick open, for tests.
   `iceberg_rest_vended` and `iceberg_rest_scan` used to wait 5 s for a REST
   fixture and carry on without it; they now wait up to 30 s and stop with a
   FATAL naming the fixture (the new `pgc_await_ready` in `test/lib.sh`), and
-  their twins raise. Measured with both suites forced onto one port at once:
+  their twins raise (the new `await_ready` in `pgc_cluster.py`). Selftest 650
+  and three tests in `test_runshape.py` drive each against a fixture that
+  exits, one that says READY late and one that never says it. Measured with both suites forced onto one port at once:
   before, both picked 29768, the vended S3 fixture failed with `Address
   already in use` and the scan failed 6 checks; after, they picked 29769 and
-  29768 and both passed (128 and 18 checks). Three new tests in
-  `test_runshape.py`.
+  29768 and both passed (128 and 18 checks). Nine new tests in
+  `test_runshape.py`: three on the pickers, three on how long a reservation
+  holds (60 s and 121 s for a picker that has gone, any age for one that
+  runs), and the three READY waits above.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

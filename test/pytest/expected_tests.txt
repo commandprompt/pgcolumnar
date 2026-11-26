@@ -372,7 +372,11 @@
 # guard_tests 897 -> 900 for #2165's three tests in test_runshape.py (four shell pickers with one seed get
 # four ports, two twin runs asking one slot get two, a shell suite and a twin never share one and reserve
 # in one directory), by collection over NO_CLUSTER: 900 tests collected (898 on main 2e3fea7a, before #2195).
-guard_tests 900
+# guard_tests 900 -> 906 for #2165's review (jdatcmd at b80617ac), six tests in test_runshape.py: three READY
+# waits on pgc_cluster.await_ready (a fixture that exits, one that says READY late, one that never says it) and
+# three on how long a port reservation holds (60 s and 121 s for a gone picker, any age for a live one), by
+# collection over NO_CLUSTER on main e000e095: 906 tests collected.
+guard_tests 906
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

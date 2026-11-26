@@ -156,10 +156,12 @@ pgc_port_free() {
 # bases are busy.
 #
 # So each pick is RESERVED. Under one lock per user, the picker skips a port
-# that another pick reserved less than PGC_PORT_RESERVE_TTL seconds ago, and
-# reserves the port it returns. The reservation only has to outlive the gap
-# between the pick and the bind; after the bind the probe sees the port busy.
-# A reservation is a file named for the port, and its mtime is its age, so a
+# that another pick reserved, and reserves the port it returns. A reservation
+# holds while the process that made it runs, and for PGC_PORT_RESERVE_TTL
+# seconds after the pick when that process has gone. It has to outlive the
+# gap between the pick and the bind, and a restart's gap after it; while the
+# port is bound, the probe sees it busy anyway. A reservation is a file named
+# for the port, holding the picker's pid, and its mtime is its age, so a
 # picker that died leaves nothing that needs cleaning up.
 #
 # test/pytest/pgc_cluster.py's pick_port takes the same lock and reads and
@@ -174,11 +176,24 @@ pgc_port_reserve_dir() {
 	printf '%s\n' "${PGC_PORT_RESERVE_DIR:-${TMPDIR:-/tmp}/pgcolumnar-ports-$(id -u)}"
 }
 
-# True when a pick reserved this port less than PGC_PORT_RESERVE_TTL seconds
-# before NOW. Called with the reservation lock held.
+# True when this port is reserved: the process that picked it (the pid the
+# reservation file names) is still running, or the pick was less than
+# PGC_PORT_RESERVE_TTL seconds before NOW. Called with the reservation lock held.
+#
+# A LIVE OWNER KEEPS ITS RESERVATION AT ANY AGE (review of #2208). A suite that
+# stops and restarts its own server on the port it picked (vended's restart, the
+# pg_upgrade cycles, crash recovery, replication) leaves it unbound for a moment,
+# possibly minutes after the pick, and the age rule alone handed it to the next
+# picker in that gap. The age rule now covers only an owner that has gone, so a
+# picker that died still leaves nothing that needs cleaning up.
 pgc_port_reserved() {	# pgc_port_reserved DIR PORT NOW
-	local m
+	local m owner rest
 	m="$(stat -c %Y "$1/$2" 2>/dev/null)" || return 1
+	read -r owner rest < "$1/$2" 2>/dev/null
+	case "$owner" in
+		''|*[!0-9]*) ;;
+		*) kill -0 "$owner" 2>/dev/null && return 0 ;;
+	esac
 	[ $(( $3 - m )) -lt "$PGC_PORT_RESERVE_TTL" ]
 }
 

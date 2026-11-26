@@ -1748,8 +1748,9 @@ it, so two pickers that started from the same port were both given it. In CI
 `iceberg_rest_scan` and `iceberg_rest_vended` both got 31732, and the scan got HTTP 401
 from the other suite's REST fixture (#2165). `pgc_pick_free_port` (test/portlib.sh)
 and `pick_port` now take one lock per user and reserve the port they return, as a file
-named for the port in one shared directory; a pick skips a port reserved less than
-120 s ago. Each arm starts every picker at the same port and binds nothing until all
+named for the port in one shared directory. A pick skips a reserved port: one whose
+reservation names a process that still runs, at any age, or one reserved less than
+120 s ago by a process that has gone. Each arm starts every picker at the same port and binds nothing until all
 have picked, so on main every arm is red. Each pick also sleeps a second between its
 probe and its reservation (`PGC_PORT_PICK_DELAY`), so the arms fail without the lock
 as well. The pickers reserve in a directory of the test's own.
@@ -1759,6 +1760,39 @@ as well. The pickers reserve in a directory of the test's own.
 | `test_four_shell_suites_picking_from_one_seed_get_four_ports` | premise: two shell pickers that share no reservations take one port; four shell pickers at once with one seed get four ports, and all four bind | main: four times one port; the reservation skip, its write or the lock removed, or the age test inverted, gives one port |
 | `test_two_twin_runs_picking_one_slot_get_two_ports` | premise: two twin pickers alone take one port; two processes asking `pick_port(27)` for gw0 at once get two ports, and both bind | main, or the twin's reservation skip or lock removed: one port |
 | `test_a_shell_suite_and_a_twin_never_share_a_port` | premise: the shell's seed 54 and the twin's slot 27 take one port alone; picking at once they get two, and both bind; with `PGC_PORT_RESERVE_DIR` unset, `pick_port` and portlib.sh reserve in the same directory | main: one port; the twin naming another default directory fails the last arm |
+
+### How long a reservation holds
+
+A suite that stops and restarts its own server on the port it picked (vended's
+restart, the pg_upgrade cycles, crash recovery, replication) leaves the port unbound
+for a moment, possibly more than 120 s after the pick. So a reservation holds while the
+process it names runs, at any age, and the 120 s limit applies only once that process
+has gone (review of #2208). Each arm learns the port a picker takes alone, rewrites that
+port's reservation with an owner and an age, and asks again in the same directory; both
+the shell picker and `pick_port` are asked. A gone owner is `pid_max + 1`.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_dead_pickers_reservation_holds_for_sixty_seconds` | a reservation 60 s old whose picker has gone moves both pickers off its port | the shell limit cut to 5 s, or the Python limit to 2 s or 1 s: that picker takes the port |
+| `test_a_dead_pickers_reservation_lapses_after_the_limit` | a reservation 121 s old whose picker has gone moves neither picker | either limit raised to 200 s, or either picker holding any reservation that names an owner: that picker moves |
+| `test_a_live_pickers_reservation_holds_at_any_age` | a reservation an hour old whose picker (this test's process) still runs moves both pickers | either picker ignoring a live owner: that picker takes the port |
+
+### A fixture that never says READY stops the run
+
+`iceberg_rest_scan` and `iceberg_rest_vended`, and their twins, used to wait 5 s for
+a REST fixture's READY and carry on without it, so their arms read whatever answered
+on the port: in CI another suite's fixture, which gave HTTP 401 (#2165). Both twins now
+wait through `pgc_cluster.await_ready`, which waits up to 30 s, stops early when the
+fixture's process exits, and raises naming the fixture. The suites reach it only on the
+path where READY arrives, so these drive it against real processes (review of #2208).
+The never-READY arm passes `wait=1`. The shell's `pgc_await_ready` has the same arms in
+selftest 650.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_a_fixture_that_exits_without_ready_stops_the_run` | a fixture that prints a bind error and exits raises `the test fixture on port 1 did not start (exited): bind: Address already in use`, and well inside its 20 s limit | the raise turned into a return; the exit not noticed (20.0 s); the two states swapped |
+| `test_a_fixture_that_says_ready_late_is_waited_for` | a fixture that says READY after 1 s is waited for, inside a 10 s limit | a wait of 0.5 s whatever the limit says |
+| `test_a_fixture_that_never_says_ready_stops_the_run` | a fixture that runs and never says READY raises `the silent fixture did not start (still running with no READY after 1 s)` | the raise turned into a return; the two states swapped |
 
 ## 11. test_zonemap_boundaries.py: exact boundaries
 

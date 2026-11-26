@@ -169,7 +169,7 @@ def irs(pgc_cluster):
     if not _warehouse_present():
         yield "fixture"
         return
-    from pgc_cluster import Cluster, pick_port
+    from pgc_cluster import Cluster, await_ready, pick_port
 
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-icerestscan-"))
     os.chmod(work, 0o777)
@@ -284,17 +284,10 @@ def irs(pgc_cluster):
                 stdout=open(fout, "w"), stderr=subprocess.STDOUT))
             # Up to 30 s, less when the fixture exits; a fixture that never says READY
             # stops the run (#2165), as the shell's pgc_await_ready does, rather than
-            # leaving its arms to read whatever answers on the port.
-            for _ in range(300):
-                if fout.is_file() and "READY" in fout.read_text(errors="replace"):
-                    return f"http://127.0.0.1:{port}"
-                if fx_srvs[-1].poll() is not None:
-                    break
-                time.sleep(0.1)
-            if fout.is_file() and "READY" in fout.read_text(errors="replace"):
-                return f"http://127.0.0.1:{port}"
-            raise RuntimeError(f"the REST catalog fixture {name} on port {port} did not start: "
-                               f"{fout.read_text(errors='replace')[-300:] if fout.is_file() else ''}")
+            # leaving its arms to read whatever answers on the port. test_runshape.py
+            # tests await_ready itself.
+            await_ready(fout, fx_srvs[-1], f"REST catalog fixture {name} on port {port}")
+            return f"http://127.0.0.1:{port}"
 
         def nslist(c):
             return _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('{c}') AS ns")

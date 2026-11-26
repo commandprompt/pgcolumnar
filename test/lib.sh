@@ -1569,15 +1569,20 @@ pgc_record() {	# pgc_record VERDICT NAME DISPLAY [REASON]
 # wait 5 s and carry on, and then its arms talked to whatever answered on that
 # port, which in CI was another suite's fixture: HTTP 401 for the wrong token,
 # and checks that failed by reading the wrong catalog.
+#
+# PGC_READY_WAIT (whole seconds) replaces the 30, for selftest 650 only, so its
+# never-READY arm takes a second rather than half a minute. Anything that is not
+# a whole number reads as 30.
 pgc_await_ready() {
-	local _i _st
-	for _i in $(seq 1 300); do
+	local _i _st _w="${PGC_READY_WAIT:-30}"
+	case "$_w" in ''|*[!0-9]*) _w=30 ;; esac
+	for _i in $(seq 1 $(( _w * 10 ))); do
 		grep -q READY "$1" 2>/dev/null && return 0
 		kill -0 "$2" 2>/dev/null || break
 		sleep 0.1
 	done
 	grep -q READY "$1" 2>/dev/null && return 0
-	if kill -0 "$2" 2>/dev/null; then _st="still running with no READY after 30 s"; else _st="exited"; fi
+	if kill -0 "$2" 2>/dev/null; then _st="still running with no READY after $_w s"; else _st="exited"; fi
 	echo "FATAL: the $3 did not start ($_st): $(tail -3 "$1" 2>/dev/null | tr '\n' ' ')"
 	exit 1
 }

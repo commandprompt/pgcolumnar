@@ -127,8 +127,9 @@ def worker_slot(worker_id=None):
 # to a twin, which share the AUX band) start from the same place, and the probe
 # proves a port free at one instant only. Both could be told the same port and the
 # second bind failed. pick_port therefore takes test/portlib.sh's reservation lock
-# and honours its reservations: a port another pick (shell or Python) reserved less
-# than PORT_RESERVE_TTL seconds ago is skipped, and the port returned is reserved.
+# and honours its reservations: a port another pick (shell or Python) reserved is
+# skipped while that pick's process runs, or for PORT_RESERVE_TTL seconds once it has
+# gone, and the port returned is reserved.
 # The reservation outlives the gap between the pick and the bind; after the bind
 # the probe sees the port busy. Same directory, same file per port, same mtime age,
 # same lock as portlib.sh, so the two harnesses honour each other's picks.
@@ -139,6 +140,25 @@ def port_reserve_dir():
     """portlib.sh's pgc_port_reserve_dir, by its own rule."""
     return os.environ.get("PGC_PORT_RESERVE_DIR") or os.path.join(
         os.environ.get("TMPDIR") or "/tmp", f"pgcolumnar-ports-{os.getuid()}")
+
+
+def _reserved(res, now):
+    """portlib.sh's pgc_port_reserved, by its own rule: the reservation file `res`
+    holds while the pid it names runs, at any age (review of #2208: a twin that
+    restarts its server on its port leaves the port unbound for a moment, possibly
+    after the age limit), and for PORT_RESERVE_TTL seconds when that pid is gone."""
+    try:
+        mtime = int(os.stat(res).st_mtime)
+    except OSError:
+        return False
+    try:
+        with open(res) as fh:
+            owner = int(fh.read().split()[0])
+        os.kill(owner, 0)
+        return True
+    except (OSError, ValueError, IndexError, OverflowError):
+        pass
+    return int(now) - mtime < PORT_RESERVE_TTL
 
 
 def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
@@ -162,11 +182,8 @@ def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
         for step in range(span):
             port = lo + ((start + step) % span)
             res = os.path.join(rdir, str(port))
-            try:
-                if int(now) - int(os.stat(res).st_mtime) < PORT_RESERVE_TTL:
-                    continue
-            except OSError:
-                pass
+            if _reserved(res, now):
+                continue
             if is_free(port):
                 if os.environ.get("PGC_PORT_PICK_DELAY"):  # as portlib.sh: to test the lock
                     time.sleep(float(os.environ["PGC_PORT_PICK_DELAY"]))
@@ -176,6 +193,31 @@ def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
     raise RuntimeError(
         f"no free port in the AUX band [{lo}, {hi}) for slot {slot} of worker "
         f"{worker_slot(worker_id)}")
+
+
+def await_ready(out, proc, what, wait=30):
+    """Returns once the fixture's output file `out` says READY; raises otherwise
+    (#2165), as the shell's pgc_await_ready stops the suite. The REST twins used
+    to wait 5 s and go on, so their arms could read whatever answered on the port.
+    Up to `wait` seconds, less when the fixture's process `proc` exits. One
+    helper for both twins, so test_runshape.py tests the code they run; `wait`
+    is shortened only by that test."""
+    out = pathlib.Path(out)
+
+    def said():
+        return out.is_file() and "READY" in out.read_text(errors="replace")
+
+    for _ in range(wait * 10):
+        if said():
+            return
+        if proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    if said():
+        return
+    state = "exited" if proc.poll() is not None else f"still running with no READY after {wait} s"
+    text = out.read_text(errors="replace")[-300:] if out.is_file() else ""
+    raise RuntimeError(f"the {what} did not start ({state}): {text}")
 
 
 class Cluster:

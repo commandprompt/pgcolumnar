@@ -31,9 +31,9 @@ FX="$(dirname "${BASH_SOURCE[0]}")/fixtures/iceberg"
 
 AKID="VENDEDKEYID"; SECRET="vended-secret-shh"; REGION="pgc-test-1"; BUCKET="pgc-bucket"
 RESTTOK="rest-token-vend"
-# One free port is picked per server only AFTER the previous one binds:
-# pgc_pick_free_port does not hold the port, so picking six up front returns the
-# same number six times (nothing is bound between the picks).
+# One free port is picked per server, just before it starts. pgc_pick_free_port
+# reserves each port it returns (#2165), so picks made before anything binds no
+# longer return one number twice.
 S3_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
 PIDS=""
 LAST_PORT=""
