@@ -488,6 +488,51 @@ check "a bound text parameter compared with a varchar column prunes (#2065)" \
 check "a bound array parameter of = ANY prunes (#2065)" \
 	"$(prune_arm 'int[]' "tk WHERE k = ANY(\$1)" "'{39500,39600}'")" "19|2"
 
+# Shapes that can never be keys because a key builder declines them (review of
+# 27aa4c46, blocker 1). pgcolumnar_preimage_range_scankey keys date_trunc only for a
+# timestamp column, a timestamp operand and a unit in its table; the range branch
+# keys && only against the column's own range type. tz holds a timestamp domain
+# column and a timestamptz column; no row matches its "< 2000-01-01" filters.
+q "CREATE DOMAIN tsdom AS timestamp;
+   CREATE TABLE tz (tsd tsdom, tsz timestamptz) USING pgcolumnar;
+   INSERT INTO tz SELECT timestamp '2020-01-01' + g * interval '1 hour', timestamptz '2020-01-01' + g * interval '1 hour'
+	FROM generate_series(1, 100) g;
+   CREATE FUNCTION boomc_tstz(int) RETURNS timestamptz LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_tstz called'; END \$\$;
+   CREATE FUNCTION boomc_date(int) RETURNS date LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_date called'; END \$\$;
+   CREATE FUNCTION boomc_mr(int) RETURNS tsmultirange LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_mr called'; END \$\$;" >/dev/null
+check "a stable timestamptz operand compared with date_trunc of a timestamp column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) = boomc_tstz(\$1)")" "0|0"
+check "a stable date operand compared with date_trunc of a timestamp column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) = boomc_date(\$1)")" "0|0"
+check "a stable operand of date_trunc to a decade is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('decade', tsp) = boomc_ts(\$1)")" "0|0"
+check "a stable operand of date_trunc to a plural unit (days) is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('days', tsp) = boomc_ts(\$1)")" "0|0"
+check "a stable operand of date_trunc of a timestamp domain column is not evaluated (#2065)" \
+	"$(nc_arm "tz WHERE tsd < '2000-01-01' AND date_trunc('day', tsd) = boomc_ts(\$1)")" "0|0"
+check "a stable multirange operand that a range column overlaps is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND r && boomc_mr(\$1)")" "0|0"
+# blocker 2 and the attacker's two items
+check "a stable operand of date_trunc of a timestamptz column is not evaluated (#2065)" \
+	"$(nc_arm "tz WHERE tsz < '2000-01-01' AND date_trunc('day', tsz) = boomc_tstz(\$1)")" "0|0"
+# trunc_k(text, int) has date_trunc's shape, a unit and a column, but is not date_trunc.
+q "CREATE FUNCTION trunc_k(text, int) RETURNS timestamp LANGUAGE plpgsql IMMUTABLE AS \$\$
+	BEGIN RETURN timestamp '2020-01-01' + \$2 * interval '1 hour'; END \$\$;" >/dev/null
+check "a stable operand compared with a two-argument function of the column other than date_trunc is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE k < 0 AND trunc_k('day', k) = boomc_ts(\$1)")" "0|0"
+check "a stable array operand of < ANY is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE k < 0 AND k < ANY(boomc_arr(\$1))")" "0|0"
+check "the heap copy answers the date_trunc >= and range @> pruning queries (premise) (#2065)" \
+	"$(heap_count timestamp "tkh WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'") $(heap_count timestamp "tkh WHERE r @> \$1" "'2024-07-01 00:30'")" \
+	"569 1"
+check "a bound parameter that date_trunc of a timestamp column is >= prunes (#2065)" \
+	"$(prune_arm timestamp "tk WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'")" "19|569"
+check "a bound parameter that a range column contains prunes (#2065)" \
+	"$(prune_arm timestamp "tk WHERE r @> \$1" "'2024-07-01 00:30'")" "19|1"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

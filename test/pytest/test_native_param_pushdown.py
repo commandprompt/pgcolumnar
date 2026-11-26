@@ -221,7 +221,17 @@ BOOMC = ["CREATE SEQUENCE ncalls"] + [
     f"""CREATE FUNCTION {name}(int) RETURNS {rettype} LANGUAGE plpgsql STABLE AS $$
     BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION '{name} called'; END $$"""
     for name, rettype in (("boomc", "int"), ("boomc_t", "text"), ("boomc_ts", "timestamp"),
-                          ("boomc_arr", "int[]"), ("boomc_r", "tsrange"))]
+                          ("boomc_arr", "int[]"), ("boomc_r", "tsrange"), ("boomc_tstz", "timestamptz"),
+                          ("boomc_date", "date"), ("boomc_mr", "tsmultirange"))]
+# tz holds a timestamp domain column and a timestamptz column; no row matches its
+# "< 2000-01-01" filters.
+TZ = ["CREATE DOMAIN tsdom AS timestamp",
+      "CREATE TABLE tz (tsd tsdom, tsz timestamptz) USING pgcolumnar",
+      "INSERT INTO tz SELECT timestamp '2020-01-01' + g * interval '1 hour', "
+      "timestamptz '2020-01-01' + g * interval '1 hour' FROM generate_series(1, 100) g",
+      # trunc_k(text, int) has date_trunc's shape, a unit and a column, but is not date_trunc.
+      """CREATE FUNCTION trunc_k(text, int) RETURNS timestamp LANGUAGE plpgsql IMMUTABLE AS $$
+    BEGIN RETURN timestamp '2020-01-01' + $2 * interval '1 hour'; END $$"""]
 NO_PARALLEL = "SET max_parallel_workers_per_gather = 0"
 NONC_Q = ("SELECT collname FROM pg_collation "
           "WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US', 'und-x-icu') "
@@ -252,6 +262,16 @@ NOT_KEYABLE = (
     ("not keyable range contains", "tk WHERE tsp < '2000-01-01' AND r @> boomc_r($1)"),
     ("not keyable other collation", "tk WHERE sn < '' AND sn > boomc_t($1) COLLATE \"C\""),
     ("not keyable abs", "t WHERE ts < 0 AND abs(ts) > boomc($1)"),
+    # review of 27aa4c46: shapes a key builder declines
+    ("not keyable date_trunc tstz operand", "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) = boomc_tstz($1)"),
+    ("not keyable date_trunc date operand", "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) = boomc_date($1)"),
+    ("not keyable date_trunc decade", "tk WHERE tsp < '2000-01-01' AND date_trunc('decade', tsp) = boomc_ts($1)"),
+    ("not keyable date_trunc days", "tk WHERE tsp < '2000-01-01' AND date_trunc('days', tsp) = boomc_ts($1)"),
+    ("not keyable date_trunc domain", "tz WHERE tsd < '2000-01-01' AND date_trunc('day', tsd) = boomc_ts($1)"),
+    ("not keyable range multirange", "tk WHERE tsp < '2000-01-01' AND r && boomc_mr($1)"),
+    ("not keyable date_trunc tstz column", "tz WHERE tsz < '2000-01-01' AND date_trunc('day', tsz) = boomc_tstz($1)"),
+    ("not keyable two-argument function", "tk WHERE k < 0 AND trunc_k('day', k) = boomc_ts($1)"),
+    ("not keyable lt any", "tk WHERE k < 0 AND k < ANY(boomc_arr($1))"),
 )
 # Clauses that are keys, each with a bound parameter: (key, type, where on {t}, value).
 PRUNE = (
@@ -260,6 +280,10 @@ PRUNE = (
     ("prune range overlap", "tsrange", "{t} WHERE r && $1", "'[2024-07-01,2024-07-02)'"),
     ("prune varchar", "text", "{t} WHERE v >= $1", "'039001'"),
     ("prune any", "int[]", "{t} WHERE k = ANY($1)", "'{39500,39600}'"),
+)
+PRUNE2 = (
+    ("prune date_trunc ge", "timestamp", "{t} WHERE date_trunc('day', tsp) >= $1", "'2024-07-01'"),
+    ("prune range contains", "timestamp", "{t} WHERE r @> $1", "'2024-07-01 00:30'"),
 )
 
 
@@ -471,7 +495,7 @@ def pp(pgc_cluster):
         nonc = _value(dsn, NONC_Q)
         r["nonc premise"] = _value(dsn, f"SELECT ('a' < 'B' COLLATE \"{nonc}\")::text || '|' || "
                                         "('a' < 'B' COLLATE \"C\")::text")
-        _session(dsn, BOOMC + [sql.format(nonc=nonc) for sql in TK])
+        _session(dsn, BOOMC + [sql.format(nonc=nonc) for sql in TK] + TZ)
         for key, where in NOT_KEYABLE:
             r[key] = _nc_arm(dsn, where)
         heap = []
@@ -481,6 +505,13 @@ def pp(pgc_cluster):
                                      f"EXECUTE ha({value})"])
             heap.append(hres if isinstance(hres, str) else (hres[-1] if hres else "no row"))
         r["prune heap"] = " ".join(heap)
+        heap = []
+        for key, typ, where, value in PRUNE2:
+            r[key] = _prune_arm(dsn, typ, where.format(t="tk"), value)
+            hres = _transcript(dsn, [GENERIC, f"PREPARE ha({typ}) AS SELECT count(*) FROM {where.format(t='tkh')}",
+                                     f"EXECUTE ha({value})"])
+            heap.append(hres if isinstance(hres, str) else (hres[-1] if hres else "no row"))
+        r["prune heap 2"] = " ".join(heap)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -792,6 +823,66 @@ def test_param_pushdown_a_bound_text_param_compared_with_a_varchar_column_prunes
 def test_param_pushdown_a_bound_array_param_of_eq_any_prunes(pp, expect):
     expect.text(pp["prune any"], "19|2",
                 "a bound array parameter of = ANY prunes (#2065)")
+
+
+def test_param_pushdown_a_stable_timestamptz_operand_compared_with_date_trunc_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc tstz operand"], "0|0",
+                "a stable timestamptz operand compared with date_trunc of a timestamp column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_date_operand_compared_with_date_trunc_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc date operand"], "0|0",
+                "a stable date operand compared with date_trunc of a timestamp column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_to_a_decade_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc decade"], "0|0",
+                "a stable operand of date_trunc to a decade is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_to_a_plural_unit_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc days"], "0|0",
+                "a stable operand of date_trunc to a plural unit (days) is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_of_a_domain_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc domain"], "0|0",
+                "a stable operand of date_trunc of a timestamp domain column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_multirange_operand_a_range_column_overlaps_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable range multirange"], "0|0",
+                "a stable multirange operand that a range column overlaps is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_of_a_timestamptz_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc tstz column"], "0|0",
+                "a stable operand of date_trunc of a timestamptz column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_compared_with_a_two_argument_function_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable two-argument function"], "0|0",
+                "a stable operand compared with a two-argument function of the column other than date_trunc is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_array_operand_of_lt_any_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable lt any"], "0|0",
+                "a stable array operand of < ANY is not evaluated (#2065)")
+
+
+def test_param_pushdown_the_heap_copy_answers_the_date_trunc_ge_and_range_contains_queries(pp, expect):
+    expect.text(pp["prune heap 2"], "569 1",
+                "the heap copy answers the date_trunc >= and range @> pruning queries (premise) (#2065)")
+
+
+def test_param_pushdown_a_bound_param_that_date_trunc_is_ge_prunes(pp, expect):
+    expect.text(pp["prune date_trunc ge"], "19|569",
+                "a bound parameter that date_trunc of a timestamp column is >= prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_param_that_a_range_column_contains_prunes(pp, expect):
+    expect.text(pp["prune range contains"], "19|1",
+                "a bound parameter that a range column contains prunes (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):
