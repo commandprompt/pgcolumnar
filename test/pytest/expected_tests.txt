@@ -2159,29 +2159,57 @@ guard_tests 895
 # cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
 # float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
-# cluster_tests 5581 -> 5591 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
+# test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
+# test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
+# test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
+# test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
+# by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
+# and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 -> 5607 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
 # end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
 # as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
 # #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
 # files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
-# cluster_tests 5600 -> 5614 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# cluster_tests 5616 -> 5630 for the 14 tests the review of #2148 at 7a40d479 asked for in
 # test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
 # lines with the key after them, an unsorted row after continued records, a file that ends inside a
 # record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
 # NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
-# cluster_tests 5614 -> 5621 for the 7 tests the review of #2148 at 29b71633 asked for in
+# cluster_tests 5630 -> 5637 for the 7 tests the review of #2148 at 29b71633 asked for in
 # test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
 # rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
 # offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
 # ci.yml selects them: 5527 tests collected.
-# cluster_tests 5621 -> 5626 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# cluster_tests 5637 -> 5642 for the 5 tests the review of #2148 at 7e71ab06 asked for in
 # test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
 # transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
 # COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
 # the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
-# cluster_tests 5626 -> 5635 for the 9 tests the review of #2148 at 33724a76 asked for in
+# cluster_tests 5642 -> 5651 for the 9 tests the review of #2148 at 33724a76 asked for in
 # test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
 # file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
 # in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
 # collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
-cluster_tests 5635
+cluster_tests 5651
