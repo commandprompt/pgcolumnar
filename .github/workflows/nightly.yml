@@ -315,6 +315,11 @@ jobs:
             bash test/build_san.sh "$SAN_PREFIX"
 
       - name: Confirm the build is the expected sanitizer build
+        # pg_config is instrumented too, and it leaks by design at exit. Without
+        # detect_leaks=0, LeakSanitizer reports that leak and fails the step,
+        # before any suite runs (#2195).
+        env:
+          ASAN_OPTIONS: detect_leaks=0:detect_stack_use_after_return=0:abort_on_error=1
         run: |
           set -euo pipefail
           "$SAN_PREFIX/bin/pg_config" --version

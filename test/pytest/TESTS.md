@@ -14519,6 +14519,8 @@ End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 | `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
 | `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
 | `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+| `test_the_reader_names_a_step_that_runs_the_prefix_with_leak_detection_on` | the nightly reader on stand-in jobs: a step that runs `$SAN_PREFIX/bin/...` without `detect_leaks=0` is named; the step's env, the command's own `env` and the job's env each cover it; a comment is not a run, and another job is not read |
+| `test_every_sanitizer_job_step_runs_the_prefix_with_leak_detection_off` | #2195: every step of the nightly's `sanitizer` job that runs an instrumented binary sets `detect_leaks=0`. On main it names "Confirm the build is the expected sanitizer build", the step that failed every night |
 
 ## 359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
 
