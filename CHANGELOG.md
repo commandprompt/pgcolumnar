@@ -650,6 +650,21 @@ true until the next version shipped.
   object-storage `read_parquet` example, on a local file.
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
 - `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
   single columnar table with a unique index or primary key (#2080). With 2 or
   more workers the load either waited until cancelled or failed with 40P01

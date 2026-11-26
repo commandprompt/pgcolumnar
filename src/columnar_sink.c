@@ -39,23 +39,52 @@ struct PqSink
 	/* remote (#394): NULL api => local sink */
 	const PgColumnarObjStoreApi *api;
 	PgColumnarObjSink *rsink;
-	dlist_node	openNode;		/* on sink_open_remote while rsink is live */
+	dlist_node	openNode;		/* on sink_open while listed */
+	bool		listed;
 };
 
 /*
- * Remote sinks with an upload in progress (#1722). A FATAL exit (SIGTERM, as
+ * Sinks still open: remote ones with an upload in progress (#1722) and local
+ * ones whose temp file exists (#2075). A FATAL exit (SIGTERM, as
  * pexport_cleanup sends each parallel_export worker on cancel, or
  * pg_terminate_backend) calls proc_exit without unwinding, so the writers'
- * PG_CATCH never reaches PgColumnarSinkAbort and the multipart upload stays
- * open on the store, billed until a lifecycle rule reaps it. A
- * before_shmem_exit callback aborts whatever is still on this list. It is
+ * PG_CATCH never reaches PgColumnarSinkAbort. A remote upload would stay open
+ * on the store, billed until a lifecycle rule reaps it, and a local temp file
+ * would stay on disk with nothing to remove it. A before_shmem_exit callback
+ * aborts the uploads and unlinks the temp files still on this list. It is
  * registered after InitPostgres's ShutdownPostgres, so it runs first, while
  * the transaction and the module's handles are still intact. Transaction end
  * empties the list: every writer finishes or aborts its sink inside its own
  * statement, so an entry still listed then belongs to memory being released.
  */
-static dlist_head sink_open_remote = DLIST_STATIC_INIT(sink_open_remote);
+static dlist_head sink_open = DLIST_STATIC_INIT(sink_open);
 static bool sink_exit_registered = false;
+
+static void sink_abort_open_at_exit(int code, Datum arg);
+static void sink_xact_callback(XactEvent event, void *arg);
+
+static void
+sink_list(PqSink *snk)
+{
+	if (!sink_exit_registered)
+	{
+		before_shmem_exit(sink_abort_open_at_exit, (Datum) 0);
+		RegisterXactCallback(sink_xact_callback, NULL);
+		sink_exit_registered = true;
+	}
+	dlist_push_head(&sink_open, &snk->openNode);
+	snk->listed = true;
+}
+
+static void
+sink_unlist(PqSink *snk)
+{
+	if (snk->listed)
+	{
+		dlist_delete(&snk->openNode);
+		snk->listed = false;
+	}
+}
 
 static void
 sink_abort_open_at_exit(int code, Datum arg)
@@ -66,15 +95,22 @@ sink_abort_open_at_exit(int code, Datum arg)
 	 * The module's abort never raises through PG_TRY, but under proc_exit an
 	 * ERROR is promoted to FATAL, which no CATCH sees. A failed DELETE then
 	 * ends this callback with one more FATAL line; shmem_exit has already
-	 * popped it, so the remaining callbacks still run.
+	 * popped it, so the remaining callbacks still run. A local sink needs
+	 * only its temp file unlinked; the file descriptor closes with the
+	 * process.
 	 */
-	dlist_foreach_modify(it, &sink_open_remote)
+	dlist_foreach_modify(it, &sink_open)
 	{
 		PqSink	   *snk = dlist_container(PqSink, openNode, it.cur);
 
-		dlist_delete(&snk->openNode);
-		snk->api->sink_abort(snk->rsink);
-		snk->rsink = NULL;
+		sink_unlist(snk);
+		if (snk->api == NULL)
+			(void) unlink(snk->tmpPath);
+		else
+		{
+			snk->api->sink_abort(snk->rsink);
+			snk->rsink = NULL;
+		}
 	}
 }
 
@@ -88,7 +124,7 @@ sink_xact_callback(XactEvent event, void *arg)
 		case XACT_EVENT_ABORT:
 		case XACT_EVENT_PARALLEL_ABORT:
 		case XACT_EVENT_PREPARE:
-			dlist_init(&sink_open_remote);
+			dlist_init(&sink_open);
 			break;
 		default:
 			break;
@@ -108,6 +144,7 @@ PgColumnarSinkOpenLocal(const char *path)
 				(errcode_for_file_access(),
 				 errmsg("could not open file \"%s\" for writing: %m",
 						snk->tmpPath)));
+	sink_list(snk);
 	return snk;
 }
 
@@ -148,13 +185,7 @@ PgColumnarSinkOpenWith(const char *path, const PgColumnarObjStoreConfig *cfg)
 		snk->finalPath = pstrdup(path);
 		snk->api = api;
 		snk->rsink = api->sink_create(path, cfg);
-		if (!sink_exit_registered)
-		{
-			before_shmem_exit(sink_abort_open_at_exit, (Datum) 0);
-			RegisterXactCallback(sink_xact_callback, NULL);
-			sink_exit_registered = true;
-		}
-		dlist_push_head(&sink_open_remote, &snk->openNode);
+		sink_list(snk);
 		return snk;
 	}
 	return PgColumnarSinkOpenLocal(path);
@@ -213,7 +244,7 @@ PgColumnarSinkFinish(PqSink *snk)
 	{
 		snk->api->sink_finish(snk->rsink);
 		/* only now: a complete that raised leaves it listed for the abort */
-		dlist_delete(&snk->openNode);
+		sink_unlist(snk);
 		snk->rsink = NULL;
 		return;
 	}
@@ -236,6 +267,8 @@ PgColumnarSinkFinish(PqSink *snk)
 
 	/* fsyncs the new name and its directory; raises on failure */
 	durable_rename(snk->tmpPath, snk->finalPath, ERROR);
+	/* only now: a rename that raised leaves the temp file listed for removal */
+	sink_unlist(snk);
 }
 
 void
@@ -247,7 +280,7 @@ PgColumnarSinkAbort(PqSink *snk)
 	{
 		if (snk->rsink != NULL)
 		{
-			dlist_delete(&snk->openNode);
+			sink_unlist(snk);
 			snk->api->sink_abort(snk->rsink);
 			snk->rsink = NULL;
 		}
@@ -259,6 +292,7 @@ PgColumnarSinkAbort(PqSink *snk)
 		snk->f = NULL;
 	}
 	(void) unlink(snk->tmpPath);
+	sink_unlist(snk);
 }
 
 /*
