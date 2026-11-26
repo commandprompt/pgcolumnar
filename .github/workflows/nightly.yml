@@ -264,6 +264,11 @@ jobs:
     env:
       PG_VERSION: "18.4"
       SAN_PREFIX: /home/runner/pg_san
+      # The build's own tools (pg_config, initdb) leak by design at exit; with leak
+      # checks on, `pg_config --version` exits 1 and the gate fails before any suite
+      # runs (#2195). build_san.sh sets the same options (its traps 3 and 4); run_san.py
+      # sets its own for the suites.
+      ASAN_OPTIONS: "detect_leaks=0:detect_stack_use_after_return=0:abort_on_error=1"
     steps:
       - uses: actions/checkout@v4
 

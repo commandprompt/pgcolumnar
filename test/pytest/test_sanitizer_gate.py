@@ -20,6 +20,7 @@ nightly's builds.
 
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import sys
@@ -215,3 +216,29 @@ def test_the_command_line_refuses_what_run_san_sh_refuses(tmp_path, expect):
     expect.text(f"{rc} {out.splitlines()[0] if out else ''}",
                 f"1 FAIL  {plain} is not the expected ASAN+UBSAN build",
                 "an ordinary build is refused")
+
+
+def test_every_step_of_the_sanitizer_job_runs_the_tools_without_leak_checks(expect):
+    """The tools in the sanitizer build (pg_config, initdb) leak by design at exit, so
+    build_san.sh turns LeakSanitizer off for them (its trap 3). The nightly's sanitizer
+    job set that only in the build step and the smoke start. Its check step ran
+    `pg_config --version` with leak checks on, and the gate failed every night from
+    2026-11-25 with "2076 byte(s) leaked" before any suite ran (#2195). So the job
+    itself sets detect_leaks=0, and every step inherits it."""
+    wf = (HERE.parent.parent / ".github" / "workflows" / "nightly.yml").read_text()
+    jobs, job, head = {}, None, True
+    for line in wf.split("\n"):
+        m = re.match(r"^  ([A-Za-z_-]+):\s*$", line)
+        if m:
+            job, head = m.group(1), True
+            jobs[job] = {"env": [], "body": []}
+        elif job and not line.lstrip().startswith("#"):
+            if re.match(r"^    steps:", line):
+                head = False
+            jobs[job]["env" if head else "body"].append(line)
+    users = {j: v for j, v in jobs.items() if any("$SAN_PREFIX/bin/" in ln for ln in v["body"])}
+    expect.at_least(len(users), 1, "premise: a nightly job runs a tool from $SAN_PREFIX/bin")
+    for name, v in sorted(users.items()):
+        opts = next((ln for ln in v["env"] if re.match(r"^\s+ASAN_OPTIONS:", ln)), "")
+        expect.text(str("detect_leaks=0" in opts), "True",
+                    f"nightly.yml:{name} sets ASAN_OPTIONS with detect_leaks=0 for every step")

@@ -14502,6 +14502,7 @@ End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 | `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
 | `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
 | `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+| `test_every_step_of_the_sanitizer_job_runs_the_tools_without_leak_checks` | every `nightly.yml` job that runs a tool from `$SAN_PREFIX/bin` sets `ASAN_OPTIONS` with `detect_leaks=0` in its job `env`, so every step inherits it (#2195). Red on main's `nightly.yml`: `got 'False' want 'True'` |
 
 ## 359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
 
