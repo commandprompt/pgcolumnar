@@ -341,6 +341,15 @@ these constraints.
   foreign key. Others are a table a trigger on the target writes to, and a
   sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
   `parallel_copy` before taking such locks, or after `COMMIT`.
+- The calling transaction must not have written to the target or to one of its
+  partitions, for example with an earlier `INSERT`. The function refuses such a
+  call with `55000` (#2211). The write holds a lock on the table's storage until
+  the transaction ends. The workers take that lock in their own transactions,
+  so they would wait for the caller until the statement timed out. Commit the
+  write first, or load the file with `COPY`.
+  The check does not see a write to a columnar table that a trigger on the
+  target writes. If no row was ever committed to that table, the load still waits
+  until `statement_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).

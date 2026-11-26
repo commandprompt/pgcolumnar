@@ -435,11 +435,29 @@ def _projection_load(db, path, workers, preload):
     return f"w{workers}:{got}/{rows}/{prows}"
 
 
-def _self_lock_copy(dsn, setup, table, path):
+def _self_lock_copy(dsn, setup, table, path, workers=2):
     """-> "SQLSTATE|message" of the error, or "none|<rows returned>", for BEGIN; setup;
-    parallel_copy of path into table; COMMIT in one session under a 5 s
-    statement_timeout (#2183). The timeout makes the old wait a 57014 rather than a
-    hang. A failure that never reached the server is a query_error()."""
+    parallel_copy of path into table with `workers`; COMMIT in one session under a 5 s
+    statement_timeout (#2183, #2211). The timeout makes the old wait a 57014 rather
+    than a hang. A failure that never reached the server is a query_error()."""
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            conn.execute(setup)
+            row = conn.execute(
+                f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', {workers})").fetchone()
+            conn.commit()
+    except psycopg.Error as exc:
+        if exc.sqlstate is None:
+            return query_error(_message(exc))
+        return f"{exc.sqlstate}|{exc.diag.message_primary or ''}"
+    return f"none|{row[0] if row else None}"
+
+
+def _own_write_copy(dsn, setup, table, path):
+    """-> "SQLSTATE|message|DETAIL" of the error for BEGIN; setup; a 2-worker parallel_copy
+    of path into table, under a 5 s statement_timeout (#2211), or what _self_lock_copy
+    returns when there is no server error."""
     try:
         with psycopg.connect(dsn) as conn:
             conn.execute("SET statement_timeout = '5s'")
@@ -449,7 +467,7 @@ def _self_lock_copy(dsn, setup, table, path):
     except psycopg.Error as exc:
         if exc.sqlstate is None:
             return query_error(_message(exc))
-        return f"{exc.sqlstate}|{exc.diag.message_primary or ''}"
+        return f"{exc.sqlstate}|{exc.diag.message_primary or ''}|{exc.diag.message_detail or ''}"
     return f"none|{row[0] if row else None}"
 
 
@@ -1099,6 +1117,42 @@ def pcopy(pgc_cluster, server_dir):
                 ("lk only parent", "LOCK TABLE ONLY t_lkp IN SHARE MODE", "t_lkp"),
                 ("lk only mid", "LOCK TABLE ONLY t_lk2_a IN ACCESS EXCLUSIVE MODE", "t_lk2"),
                 ("lk deep leaf", "LOCK TABLE t_lk2_a1 IN SHARE MODE", "t_lk2")):
+            r[key] = _self_lock_copy(db.dsn, setup, table, f)
+
+        # ---- #2211: the caller's own write to the target is refused, not waited on --
+        db.run("CREATE TABLE t_ownw (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_ownw1 (id int, txt text) USING pgcolumnar; "
+               "INSERT INTO t_ownw1 VALUES (-1, 'committed'); "
+               "CREATE TABLE t_ownw_other (id int, txt text) USING pgcolumnar")
+        _mkpart(db, "t_ownp", 4)
+        r["ownw premise"] = db.value(
+            "SELECT count(*) FILTER (WHERE relation_oid = 't_ownw'::regclass) || '/' || "
+            "count(*) FILTER (WHERE relation_oid = 't_ownw1'::regclass) FROM pgcolumnar.storage")
+        for key, setup, table, workers in (
+                ("ownw single", "INSERT INTO t_ownw VALUES (0, 'pre')", "t_ownw", 2),
+                ("ownw one worker", "INSERT INTO t_ownw VALUES (0, 'pre')", "t_ownw", 1),
+                ("ownw committed row", "INSERT INTO t_ownw1 VALUES (0, 'pre')", "t_ownw1", 2),
+                ("ownw partition", "INSERT INTO t_ownp VALUES (0, 'pre')", "t_ownp", 2)):
+            r[key] = _self_lock_copy(db.dsn, setup, table, f, workers)
+        r["ownw after"] = db.value(
+            "SELECT (SELECT count(*) FROM t_ownw) || ' rows, ' || (SELECT count(*) FROM t_ownw1) || ' rows, ' || "
+            "(SELECT count(*) FROM t_ownp) || ' partitioned rows, ' || "
+            "(SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 't_ownw'::regclass) || ' storage rows, ' || "
+            "(SELECT count(*) FROM pg_prepared_xacts) || ' prepared'")
+        for key, setup, table in (
+                ("ownw other", "INSERT INTO t_ownw_other VALUES (0, 'pre')", "t_ownw"),
+                ("ownw none", "SELECT 1", "t_ownw1"),
+                ("ownw none partitioned", "SELECT 1", "t_ownp")):
+            r[key] = _self_lock_copy(db.dsn, setup, table, f)
+        # which partition, and in what order (#2214 review)
+        db.run("CREATE TABLE t_ownu (id int PRIMARY KEY, txt text) USING pgcolumnar")
+        r["ownw last partition"] = _own_write_copy(db.dsn, "INSERT INTO t_ownp VALUES (4000, 'x')", "t_ownp", f)
+        for key, setup, table in (
+                ("ownw later partition", "INSERT INTO t_ownp_p2 VALUES (3000, 'x')", "t_ownp"),
+                ("ownw deep leaf", "INSERT INTO t_lk2 VALUES (2000, 'x')", "t_lk2"),
+                ("ownw order unique", "INSERT INTO t_ownu VALUES (0, 'pre')", "t_ownu"),
+                ("ownw order lock",
+                 "LOCK TABLE t_ownw IN ACCESS EXCLUSIVE MODE; INSERT INTO t_ownw VALUES (0, 'pre')", "t_ownw")):
             r[key] = _self_lock_copy(db.dsn, setup, table, f)
         yield r
     finally:
@@ -1851,3 +1905,91 @@ def test_parallel_copy_a_refused_load_loads_nothing(pcopy, expect):
     expect.text(pcopy["lk after"], "10000 rows, 0 partitioned rows, 0 prepared",
                 "parallel_copy refused for a lock the caller holds loads nothing and leaves no prepared transaction"
                 " (#2183)")
+
+
+# ---- #2211: the caller's own write to the target -----------------------------------
+
+def test_parallel_copy_own_write_premise(pcopy, expect):
+    expect.text(pcopy["ownw premise"], "0/1",
+                "premise: the table written in the #2211 checks has no storage row before them, and the table with"
+                " one committed row has one")
+
+
+@pytest.mark.parametrize("key,want,name", [
+    ("ownw single", '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw"',
+     "parallel_copy after an INSERT into the same table in the same transaction is refused with 55000, not waited"
+     " on (#2211)"),
+    ("ownw one worker", '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw"',
+     "parallel_copy with workers => 1 after an INSERT into the same table in the same transaction is refused with"
+     " 55000 (#2211)"),
+    ("ownw committed row",
+     '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw1"',
+     "parallel_copy after an INSERT into a table that already has a committed row is refused with 55000 (#2211)"),
+    ("ownw partition",
+     '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p0"',
+     "parallel_copy into a partitioned table after an INSERT that reached one partition is refused with 55000,"
+     " naming the partition (#2211)")])
+def test_parallel_copy_the_callers_own_write_is_refused_not_waited_on(pcopy, expect, key, want, name):
+    """#2211: the first writer of a columnar storage holds a transaction-scoped advisory
+    lock on it (PGCOLUMNAR_LOCKCLASS_STORAGE_ROW) to transaction end, taken on every
+    flush. After an INSERT into the target, or into one of its partitions, in the
+    caller's transaction, the coordinator or a loader waited on that lock in its own
+    transaction while the caller waited on them on a latch, until statement_timeout.
+    It is now refused with 55000, by SQLSTATE and message naming the written relation."""
+    expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_refused_after_its_own_write_loads_nothing(pcopy, expect):
+    """#2211: the refused loads were rolled back with the caller's INSERT, and leave no
+    committed storage row for the table that had none: the coordinator used to create
+    and commit one once the caller's rollback released the lock."""
+    expect.text(pcopy["ownw after"], "0 rows, 1 rows, 0 partitioned rows, 0 storage rows, 0 prepared",
+                "parallel_copy refused after the transaction's own INSERT loads nothing and leaves no prepared"
+                " transaction and no storage row (#2211)")
+
+
+@pytest.mark.parametrize("key,name", [
+    ("ownw other", "parallel_copy after an INSERT into another columnar table in the same transaction still loads"
+     " (#2211)"),
+    ("ownw none", "parallel_copy in a transaction that wrote nothing still loads (#2211)"),
+    ("ownw none partitioned",
+     "parallel_copy into a partitioned table in a transaction that wrote nothing still loads (#2211)")])
+def test_parallel_copy_without_a_write_to_the_target_still_loads(pcopy, expect, key, name):
+    """#2211: only the target's own storage lock is refused. A write to another table, or
+    none, still loads all 5000 rows inside a transaction block."""
+    expect.text(pcopy[key], "none|5000", name)
+
+
+def test_parallel_copy_own_write_refusal_names_the_last_partition_and_its_detail(pcopy, expect):
+    """#2211, #2214 review: S4 writes the first partition, so a check of only the first
+    columnar member passed it. A write that reaches the last partition is refused naming
+    it, and the DETAIL names the same partition, not the target."""
+    expect.text(pcopy["ownw last partition"],
+                '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p3"|The write'
+                ' holds the lock that serializes the first writers of "t_ownp_p3" until this transaction ends, and the'
+                ' background workers take that lock in their own transactions, so they would wait for this transaction'
+                ' to end.',
+                "parallel_copy into a partitioned table after an INSERT that reached its last partition is refused"
+                " with 55000, naming that partition in the message and the DETAIL (#2211)")
+
+
+@pytest.mark.parametrize("key,want,name", [
+    ("ownw later partition",
+     '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p2"',
+     "parallel_copy into a partitioned table after a direct INSERT into a later partition is refused with 55000,"
+     " naming it (#2211)"),
+    ("ownw deep leaf", '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_lk2_a2"',
+     "parallel_copy into a two-level partitioned table after an INSERT that reached a second-level leaf is refused"
+     " with 55000, naming the leaf (#2211)"),
+    ("ownw order unique", '55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownu"',
+     "parallel_copy into a primary-key table after the caller's own INSERT with 2 workers gets the #2211 refusal"
+     " (55000) before the unique-index refusal (#2211)"),
+    ("ownw order lock",
+     '55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_ownw"',
+     "parallel_copy after LOCK TABLE IN ACCESS EXCLUSIVE MODE and an INSERT into the same table gets the #2183 lock"
+     " refusal first (#2211)")])
+def test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order(pcopy, expect, key, want, name):
+    """#2211, #2214 review: a direct write to a later partition and a write reaching a
+    second-level leaf are refused naming that relation. The #2211 refusal comes after
+    #2183's lock refusal and before #2080's unique-index refusal."""
+    expect.text(pcopy[key], want, name)
