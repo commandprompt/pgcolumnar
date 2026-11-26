@@ -531,6 +531,13 @@ check "decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1" \
 	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 10000000")" "1"
 check "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2" \
 	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 20000000")" "2"
+# dec9kb reads the bucket source as bigint, which the reader refuses. The bucket
+# map must not hash 20000000 as a long and prune both files, which returned 0
+# rows and no error.
+q "CREATE FOREIGN TABLE dec9kb (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_DB')" >/dev/null
+check "decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM dec9kb WHERE d = 20000000")" "42804"
 # The long column beside it still prunes on its own bounds, so the fix did not
 # switch min/max pruning off.
 check "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)" \
@@ -596,6 +603,13 @@ check "int: a full scan of an Iceberg boolean declared int is refused (42804)" \
 	"$(tm_state "SELECT * FROM boolti")" "42804"
 check "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty" \
 	"$(tm_state "SELECT * FROM boolti WHERE b = 5")" "42804"
+# boolts reads the same Iceberg boolean as smallint. The int2 arm must check
+# the Iceberg type too, or b = 5 prunes both files on the boolean's bounds and
+# returns 0 rows.
+q "CREATE FOREIGN TABLE boolts (id bigint, b smallint)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+check "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM boolts WHERE b = 5")" "42804"
 
 # ---- bucket pruning on an Iceberg int source (#2086) -------------------------
 # byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files.

@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-118 literal matches and 0 missing (#1818's twelve and #2086's twenty-four included).
+120 literal matches and 0 missing (#1818's twelve and #2086's twenty-six included).
 
 | test | asserts |
 | --- | --- |
@@ -4549,6 +4549,7 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_decimal_18_read_as_bigint_is_not_pruned_on_its_bounds` | #2086: `decimal(18,2)` stored as INT64 and declared `bigint`: `d = 20000000` and `d >= 15000000` each return id 2 |
 | `test_a_refused_decimal_declaration_is_refused_with_a_filter_too` | #2086: `bigint` over an INT32 decimal is refused (42804) by a full scan, and by a filtered scan, which must not prune every file and return nothing |
 | `test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned` | #2086: `bucket[8]` on a decimal declared `int` returns id 1 for `d = 10000000` and id 2 for `d = 20000000`; Iceberg hashes a decimal's bytes, not a long |
+| `test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too` | #2086: a `bigint` column over the same bucketed decimal is refused (42804) by `d = 20000000`, which must not be bucket-pruned with a long's hash and return nothing |
 | `test_the_long_column_beside_a_decimal_still_prunes` | #2086's control: `id = 5` on the `long` column of the same file still prunes it on min/max (Files Pruned: 1) |
 | `test_the_field_type_lookup_matches_the_whole_field_name` | #2086: in `pfx` the `long` field `d_x` comes before the decimal `d`; `d = 20000000` returns id 2. A lookup that matched the name `d` as a prefix would read `d` as a long and prune its file |
 | `test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds` | #2086: a `bool` column over an Iceberg `boolean`: `b > false` prunes the all-false file (Files Pruned: 1) and returns ids 3 and 4 |
@@ -4557,6 +4558,7 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `long` is refused (42804) by `b < true`, which must not prune on the long's bounds and return nothing |
 | `test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `smallint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1), and `b = 8` returns id 8 |
 | `test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: an `int` column over an Iceberg `boolean` is refused (42804) by a full scan, and by `b = 5`, which must not prune on the boolean's bounds and return nothing |
+| `test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: a `smallint` column over an Iceberg `boolean` is refused (42804) by `b = 5`, which must not prune on the boolean's bounds and return nothing |
 | `test_bucket_pruning_works_on_an_iceberg_int_source` | #2086: `bucket[8]` of an Iceberg `int` declared `int`: `k = 5` prunes 4 of 5 files (Files Pruned: 4; bounds alone prune 3) and returns 5 |
 | `test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `text` column over the same Iceberg `int` is refused (42804) by `k = 'a'`, which must not be bucket-pruned with an int's hash and return nothing |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |

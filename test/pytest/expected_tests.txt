@@ -2102,7 +2102,7 @@ guard_tests 895
 #   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
 # cluster_tests 5555 -> 5560 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
-# 5495 at 26bb5236; #2152 adds 14 tests in all, listed here and below.
+# 5555 at 3dd019fe; #2152 adds 16 tests in all, listed here and below.
 # cluster_tests 5560 -> 5563 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
 # (test_the_field_type_lookup_matches_the_whole_field_name,
 # test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
@@ -2116,4 +2116,8 @@ guard_tests 895
 # cluster_tests 5568 -> 5569 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
 # in test_iceberg_fdw.py, from the third #2152 review. By collection of the cluster files (all test_*.py
 # not in NO_CLUSTER): 5509 tests collected after the merge of main at 26bb5236.
-cluster_tests 5569
+# cluster_tests 5569 -> 5571 for #2086's
+# test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
+# test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
+# fourth #2152 review. By collection of the cluster files after the merge of main at 3dd019fe: 5571 tests collected.
+cluster_tests 5571

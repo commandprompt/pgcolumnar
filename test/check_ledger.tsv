@@ -3390,6 +3390,7 @@ iceberg_fdw	iceberg_fdw	decimal: a full scan of decimal(9,2) read as bigint is r
 iceberg_fdw	iceberg_fdw	decimal: count where d > 15000000 on decimal(9,2) read as int is 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2	15;16;17;18;19	2026-11-25	columnar_iceberg.c: ice_field_type_is matches a field name by prefix (#2152 review, d1)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int arm returns true for a bigint bucket source before its Iceberg int/long check (#2152 review, N12)
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
 iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(9,2) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
@@ -3420,6 +3421,7 @@ iceberg_fdw	iceberg_fdw	id > 4 still returns the right rows	15;16;17;18;19	never
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci returns the eu rows	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	int: a full scan of an Iceberg boolean declared int is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int2 arm returns true before its Iceberg int/long check (#2152 review, N3)
 iceberg_fdw	iceberg_fdw	int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm also accepts an Iceberg boolean (#2152 review, note a)
 iceberg_fdw	iceberg_fdw	int: b = 8 on a smallint over an Iceberg int returns id 8	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: case INT2OID dropped from the gate (#2152 review, note c)

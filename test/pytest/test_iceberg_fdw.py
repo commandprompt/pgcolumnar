@@ -73,6 +73,7 @@ WAREHOUSES = {
     "dec9b":  ("warehouse_decimal", "dec9",        "id bigint, d bigint"),
     "dec18b": ("warehouse_decimal", "dec18",       "id bigint, d bigint"),
     "dec9k":  ("warehouse_decimal", "dec9_bucket", "id bigint, d int"),
+    "dec9kb": ("warehouse_decimal", "dec9_bucket", "id bigint, d bigint"),
     "dpfx":   ("warehouse_decimal", "pfx",         "id bigint, d_x bigint, d int"),
     "boolt":  ("warehouse_decimal", "boolt",       "id bigint, b bool"),
     "booli":  ("warehouse_decimal", "booli",       "id bigint, b bool"),
@@ -80,6 +81,7 @@ WAREHOUSES = {
     "booll":  ("warehouse_decimal", "booll",       "id bigint, b bool"),
     "booli2": ("warehouse_decimal", "booli",       "id bigint, b smallint"),
     "boolti": ("warehouse_decimal", "boolt",       "id bigint, b int"),
+    "boolts": ("warehouse_decimal", "boolt",       "id bigint, b smallint"),
     "byint":  ("warehouse_decimal", "byint",       "k int"),
     "byintt": ("warehouse_decimal", "byint",       "k text"),
 }
@@ -944,6 +946,17 @@ def test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned(ice, expect):
                 "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2")
 
 
+# dec9kb reads the bucket source as bigint, which the reader refuses. The bucket map must
+# not hash 20000000 as a long and prune both files, which returned 0 rows and no error.
+
+def test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "dec9kb"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM dec9kb WHERE d = 20000000"), "42804",
+                "decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty")
+
+
 def test_the_long_column_beside_a_decimal_still_prunes(ice, expect):
     """The fix stops pruning on a decimal's bounds, not min/max pruning as a whole."""
     conn, meta = ice
@@ -1033,6 +1046,17 @@ def test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(ice,
                 "int: a full scan of an Iceberg boolean declared int is refused (42804)")
     expect.text(_sqlstate(conn, "SELECT * FROM boolti WHERE b = 5"), "42804",
                 "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty")
+
+
+# boolts reads the same Iceberg boolean as smallint. The int2 arm must check the Iceberg
+# type too, or b = 5 prunes both files on the boolean's bounds and returns 0 rows.
+
+def test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "boolts"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM boolts WHERE b = 5"), "42804",
+                "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty")
 
 
 # ------------------------------------------------------- bucket pruning on an Iceberg int source
