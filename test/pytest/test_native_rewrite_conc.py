@@ -362,8 +362,9 @@ def _dl_make(d, extra=False, rows=3000, deletes="id <= 1000 AND id % 3 = 0"):
         e = d.run(sql)
         if e:
             return e
-    if extra:
-        return d.run("DELETE FROM dl WHERE id BETWEEN 1001 AND 2000 AND id % 3 = 0")
+    if extra:  # True: group 1 (ids 1001-2000); "all": groups 1 and 2 (ids 1001-3000)
+        last = 3000 if extra == "all" else 2000
+        return d.run(f"DELETE FROM dl WHERE id BETWEEN 1001 AND {last} AND id % 3 = 0")
     return ""
 
 
@@ -395,9 +396,11 @@ def _dl_rewrite_bg(d, verb, out):
     return rt
 
 
-def _dl_giveback(d, verb):
-    """-> {"waited", "writer", "rewrite", "after": "<id 1501 count> <bal of id 5>"}."""
-    e = _dl_make(d, extra=True)
+def _dl_giveback(d, verb, del_id=1501, extra=True):
+    """One writer deletes del_id (default 1501, group 1) and flushes it, waits until the verb
+    waits on a group lock, then updates id 5 (group 0).
+    -> {"waited", "writer", "rewrite", "after": "<del_id count> <bal of id 5>"}."""
+    e = _dl_make(d, extra=extra)
     if e:
         return {"waited": e, "writer": e, "rewrite": e, "after": e}
     out = {}
@@ -405,8 +408,8 @@ def _dl_giveback(d, verb):
     try:
         with psycopg.connect(d.dsn) as w:
             try:
-                w.execute("DELETE FROM dl WHERE id = 1501")
-                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: group 1's lock
+                w.execute(f"DELETE FROM dl WHERE id = {del_id}")
+                w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: its group's lock
                 out["waited"] = _dl_wait(d, _waiting(101))
                 w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 5")
                 w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: group 0's lock
@@ -417,7 +420,7 @@ def _dl_giveback(d, verb):
                 out["writer"] = _err(exc)
     finally:
         rt.join()
-    out["after"] = d.q("SELECT count(*) FILTER (WHERE id = 1501) || ' ' || "
+    out["after"] = d.q(f"SELECT count(*) FILTER (WHERE id = {del_id}) || ' ' || "
                        "max(bal) FILTER (WHERE id = 5) FROM dl")
     return out
 
@@ -788,6 +791,12 @@ def dl(pgc_cluster):
         for name, verb in DL_VERBS.items():
             out[name, "default_held"] = _dl_held(d, verb, DL_DELETER, 101, 15, ())
         out["paused_last"] = _dl_paused_last(d)
+        # the arms of the 42763bd3 review, in the shell's order
+        for name, verb in DL_VERBS.items():
+            out[name, "giveback_last"] = _dl_giveback(d, verb, del_id=2501, extra="all")
+            out[name, "unlimited_short"] = _dl_held(d, verb, DL_DELETER, 101, 4,
+                                                    ("SET pgcolumnar.rewrite_lock_timeout = 0",
+                                                     "SET lock_timeout = '500ms'"))
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1073,3 +1082,56 @@ def test_the_paused_recluster_commits_and_row_2500_matches_the_delete(dl, expect
                 "rewrite=ok yes",
                 "and the paused recluster commits, and row 2500 is gone exactly when that delete "
                 "committed")
+
+
+# ---- a busy last group, a limit of 0 under a user lock_timeout ----
+#
+# Review of #2139 at 42763bd3. A busy last group: before it waits on a busy group, the
+# rewrite gives back every group lock it took in that round, not only the last one. The
+# giveback arms above put the busy group second, so one lock was held. Here all three groups
+# have deletes, so compact_rewrite rewrites all three too, and the writer deletes id 2501 in
+# group 2, the last one. The
+# verb takes groups 0 and 1 and finds group 2 busy; the writer waits until the verb waits,
+# then updates id 5 in group 0. A rewrite that kept group 0 through its wait closes the
+# #2074 cycle, and the deadlock detector aborts it. A limit of 0 under a user lock_timeout:
+# the wait runs under the user's own lock_timeout, and its expiry is PostgreSQL's own
+# lock-timeout error, not a report that the limit ran out.
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_gave_back_its_group_locks_before_it_waited_on_its_last_group(dl, name, expect):
+    expect.text(str(dl[name, "giveback_last"]["waited"]), "True",
+                f"a {name} gave back its group locks before it waited on its last group, "
+                "which was busy")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_a_delete_in_the_last_group_then_an_update_in_group_0_and_the_rewrite_both_commit(
+        dl, name, expect):
+    r = dl[name, "giveback_last"]
+    expect.text(f"writer={r['writer']} rewrite={r['rewrite']}", "writer=ok rewrite=ok",
+                f"a DELETE in the last group then an UPDATE in group 0 from one writer and the "
+                f"{name} both commit")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_delete_in_the_last_group_and_the_update_in_group_0_took_effect(dl, name, expect):
+    expect.text(dl[name, "giveback_last"]["after"], "0 1001",
+                f"and the DELETE in the last group and the UPDATE in group 0 beside the {name} "
+                "took effect")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_with_limit_0_under_a_lock_timeout_stops_with_the_stock_error(
+        dl, name, expect):
+    r = dl[name, "unlimited_short"]
+    expect.text(f"{r['state']} {r['kind']}", "55P03 stock",
+                f"a {name} with rewrite_lock_timeout 0 under a lock_timeout of 500 ms stops with "
+                "the stock lock-timeout error")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_with_limit_0_under_a_lock_timeout_stops_within_it(dl, name, expect):
+    ms = dl[name, "unlimited_short"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and ms < 2000 else f"no ({ms} ms)", "yes",
+                f"and the {name} with rewrite_lock_timeout 0 stops within that 500 ms "
+                "lock_timeout plus 1.5 s")

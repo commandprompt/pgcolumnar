@@ -639,8 +639,10 @@ true until the next version shipped.
   storage-row lock while it holds its group locks, so a writer that inserts
   and then deletes beside it commits. A limit of `0` waits without a limit,
   and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
-  A session that does not set the limit gets the 10 s default, and
-  `recluster` locks its last group too.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

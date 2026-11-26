@@ -256,7 +256,8 @@ done
 
 dlp() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" "$@"; }
 
-# dl_make [extra]: the dl table; "extra" adds committed deletes in group 1 (ids 1001-2000)
+# dl_make [extra|all]: the dl table; "extra" adds committed deletes in group 1 (ids 1001-2000),
+# "all" in groups 1 and 2 (ids 1001-3000)
 dl_make() {
 	q "DROP TABLE IF EXISTS dl;
 	   CREATE TABLE dl (id int, bal int) USING pgcolumnar;
@@ -264,6 +265,7 @@ dl_make() {
 	   INSERT INTO dl SELECT g, 1000 FROM generate_series(1, 3000) g;
 	   DELETE FROM dl WHERE id <= 1000 AND id % 3 = 0;" >/dev/null
 	[ "${1:-}" = extra ] && q "DELETE FROM dl WHERE id BETWEEN 1001 AND 2000 AND id % 3 = 0;" >/dev/null
+	[ "${1:-}" = all ] && q "DELETE FROM dl WHERE id BETWEEN 1001 AND 3000 AND id % 3 = 0;" >/dev/null
 	return 0
 }
 
@@ -298,13 +300,15 @@ dl_rw_wait() {
 	DL_RW=$([ "$(tail -1 "$PGC_WORKDIR/dl.rw")" = "rc=0" ] && echo ok || echo error)
 }
 
-# dl_giveback VERB-SQL -> "waited=<t|f> writer=<ok|error> rewrite=<ok|error>"
+# dl_giveback VERB-SQL [ID] [MAKE] -> "waited=<t|f> writer=<ok|error> rewrite=<ok|error>":
+# one writer deletes ID (default 1501, group 1) and flushes it, waits until the verb waits
+# on a group lock, then updates id 5 (group 0); MAKE is dl_make's argument (default extra)
 dl_giveback() {
-	dl_make extra
+	dl_make "${3-extra}"
 	dl_rewrite_bg "$1"
 	dlp -qAt -v ON_ERROR_STOP=1 >"$PGC_WORKDIR/dl.w" 2>&1 <<SQL
 BEGIN;
-DELETE FROM dl WHERE id = 1501;
+DELETE FROM dl WHERE id = ${2:-1501};
 SELECT count(*) > 0 FROM dl;
 $(dl_wait_sql "$(dl_waiting 101)")
 SELECT 'waited=' || $(dl_waiting 101);
@@ -736,5 +740,37 @@ check "a delete in the last group of a paused recluster, with a 1 s lock_timeout
 	"$(cut -d' ' -f1 <<<"$got")" "delete=stock"
 check "and the paused recluster commits, and row 2500 is gone exactly when that delete committed" \
 	"$(awk '{c = (($1 == "delete=ok" && $3 == "row2500=0") || ($1 != "delete=ok" && $3 == "row2500=1")) ? "yes" : "no (" $1 " " $3 ")"; print $2 " " c}' <<<"$got")" "rewrite=ok yes"
+
+# ---- a busy last group, a limit of 0 under a user lock_timeout ----
+#
+# Review of #2139 at 42763bd3. Each arm reddens one way of getting that wrong:
+#
+#   - a busy last group: before it waits on a busy group, the rewrite gives back every
+#     group lock it took in that round, not only the last one. The arms above put the
+#     busy group second, so one lock was held. Here all three groups have deletes, so
+#     compact_rewrite rewrites all three too, and the writer deletes id 2501 in group 2,
+#     the last one.
+#     The verb takes groups 0 and 1 and finds group 2 busy. The writer waits until the
+#     verb waits, then updates id 5 in group 0. A rewrite that kept group 0 through its
+#     wait closes the #2074 cycle, and the deadlock detector aborts it.
+#   - a limit of 0 under a user lock_timeout: with pgcolumnar.rewrite_lock_timeout = 0
+#     the wait runs under the user's own lock_timeout, and its expiry is PostgreSQL's
+#     own lock-timeout error. It must not say the limit ran out: there is no limit.
+
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_giveback "$verb" 2501 all)"
+	check "a $name gave back its group locks before it waited on its last group, which was busy" \
+		"$(grep -o 'waited=[a-z]*' <<<"$got")" "waited=t"
+	check "a DELETE in the last group then an UPDATE in group 0 from one writer and the $name both commit" \
+		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "writer=ok rewrite=ok"
+	check "and the DELETE in the last group and the UPDATE in group 0 beside the $name took effect" \
+		"$(q "SELECT count(*) FILTER (WHERE id = 2501) || ' ' || max(bal) FILTER (WHERE id = 5) FROM dl;")" "0 1001"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 4 "SET pgcolumnar.rewrite_lock_timeout = 0; SET lock_timeout = '500ms';")"
+	check "a $name with rewrite_lock_timeout 0 under a lock_timeout of 500 ms stops with the stock lock-timeout error" \
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 stock"
+	check "and the $name with rewrite_lock_timeout 0 stops within that 500 ms lock_timeout plus 1.5 s" \
+		"$(awk '{print ($1 < 2000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+done
 
 pgc_summary
