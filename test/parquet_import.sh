@@ -19,6 +19,58 @@ set -uo pipefail
 
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
+# THE PARQUET EXAMPLES RUN AS WRITTEN (#2093). Before the pyarrow gate, because they
+# need only the extension. The how-to's read_parquet declared 3 of the file's columns,
+# and read_parquet needs every one. The SQL reference's round trip did not say which
+# `events` it used; on the user guide's, whose amount was a bare numeric, the import
+# refused it. Each block is read from its page, and its /data/ and /tmp/ paths are
+# moved into a directory the server can write.
+PQ_DOCDIR="$PGC_WORKDIR/pq_docs"
+mkdir -p "$PQ_DOCDIR/events"; chmod 777 "$PQ_DOCDIR" "$PQ_DOCDIR/events"
+if [ "$(id -u)" = "0" ]; then chown postgres "$PQ_DOCDIR" "$PQ_DOCDIR/events"; fi
+# doc_sql FILE HEADING N: the Nth ```sql block in the section whose heading line starts with HEADING.
+doc_sql() {
+	awk -v h="$2" -v n="$3" '!f {if (index($0, h) == 1) f=1; next}
+		/^```/ {if (c) {c=0; if (t) exit; next} c=1; if ($0 ~ /^```sql[[:space:]]*$/ && ++k == n) t=1; next}
+		!c && /^#/ {exit}
+		t {print}' "$PGC_SRCDIR/docs/$1"
+}
+# run_doc FILE HEADING N: run that block; "ok", "no block", or why psql stopped
+# (psql_block in lib.sh, which reads psql's exit status: #2093).
+run_doc() {
+	local b
+	b="$(doc_sql "$1" "$2" "$3" | sed -E "s#'(/(data|tmp)/|s3://bucket/)#'$PQ_DOCDIR/#g")"
+	[ -n "$b" ] || { echo "no block $3 under '$2' in $1"; return; }
+	psql_block "$b"
+}
+check "the how-to's first example creates its events table" \
+	"$(run_doc how-to.md '## Create a columnar table' 1)" "ok"
+psql_run "INSERT INTO events (id, ts, amount)
+	SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', g / 100.0
+	  FROM generate_series(1, 5000) g;"
+check "the how-to's Parquet export example runs on that events table" \
+	"$(run_doc how-to.md '## Read and write Parquet' 2)" "ok"
+check "the how-to's Parquet read example runs on the file that export wrote" \
+	"$(run_doc how-to.md '## Read and write Parquet' 1)" "ok"
+# The object-storage block reads and writes s3://bucket/events.parquet. run_doc
+# points that prefix at the same local directory, because read_parquet takes a
+# local path too, so the block reads the file the export above wrote. On main its
+# column list was two columns, and the read failed (OffgridwithJD's mutant M1).
+check "the how-to's object-storage read_parquet example runs on that file" \
+	"$(run_doc how-to.md '## Use object storage' 1)" "ok"
+psql_run "DROP TABLE events CASCADE;"
+check "the user guide's first example creates its events table" \
+	"$(run_doc user-guide.md '## Create a columnar table' 1)" "ok"
+psql_run "INSERT INTO events (id, ts, amount)
+	SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', g / 100.0
+	  FROM generate_series(1, 5000) g;"
+# The round trip's last line imports a directory, /data/events/; one file is put there.
+psql_run "SELECT pgcolumnar.export_parquet('events', '$PQ_DOCDIR/events/part-0.parquet');" >/dev/null
+check "the SQL reference's Parquet round trip runs on the user guide's events table" \
+	"$(run_doc sql-reference.md '### pgcolumnar.import_parquet(' 1)" "ok"
+psql_run "DROP TABLE IF EXISTS events, events_copy CASCADE;"
+
+
 if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Parquet import verification"
 fi

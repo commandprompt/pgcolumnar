@@ -27,7 +27,12 @@ set -uo pipefail
 # bgworker plus N loader bgworkers, so the cluster needs 2PC capacity and enough
 # worker slots. max_prepared_transactions is PGC_POSTMASTER, so it must be set
 # before the cluster starts (pgc_setup reads PGC_EXTRA_CONF into postgresql.conf).
-export PGC_EXTRA_CONF=$'max_prepared_transactions=8\nmax_worker_processes=16'
+#
+# max_worker_processes STAYS AT ITS DEFAULT OF 8 (#2093). It was 16 here, which
+# hid that the documented examples asked for 8 workers: with the coordinator and
+# the server's own background workers, 8 loaders do not fit a default server. No
+# check here uses more than 4 loaders, which fit.
+export PGC_EXTRA_CONF=$'max_prepared_transactions=8'
 
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
@@ -679,6 +684,45 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
 
+
+# ---- #2093: the documented worker counts fit a default server ---------------
+# Each load takes one background worker slot per loader plus one for its
+# coordinator, and the server's own background workers hold slots too. The docs
+# asked for 8 workers, which failed at the default max_worker_processes = 8 with
+# "could not register pgcolumnar parallel_copy loader 6 of 8". Every explicit
+# worker count in a page's parallel_copy calls is read from the page and loaded
+# with, into a single columnar table, on this cluster at the default setting.
+check "premise: the cluster runs at the default max_worker_processes" \
+	"$(q "SELECT setting = boot_val FROM pg_settings WHERE name = 'max_worker_processes'")" "t"
+psql_run "CREATE TABLE t_doc (id int, txt text) USING pgcolumnar;"
+F_DOC="$(make_file 5000)"
+doc_counts() {	# doc_counts PAGE -> every explicit worker count in its parallel_copy calls
+	grep -oE "parallel_copy\('[^']*', *'[^']*', *[0-9]+" "$PGC_SRCDIR/docs/$1" | grep -oE '[0-9]+$'
+}
+doc_loads() {	# doc_loads PAGE -> "N=rows" per count, the error for a failed load
+	local n out acc=""
+	for n in $(doc_counts "$1"); do
+		psql_run "TRUNCATE t_doc;"
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+			-c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', $n)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+		acc="$acc${acc:+ }$n=$out"
+	done
+	echo "${acc:-no worker count found}"
+}
+doc_wants() {	# doc_wants PAGE -> "N=5000" per count
+	local n acc=""
+	for n in $(doc_counts "$1"); do acc="$acc${acc:+ }$n=5000"; done
+	echo "${acc:-at least one worker count}"
+}
+check "the how-to's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads how-to.md)" "$(doc_wants how-to.md)"
+check "the user guide's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads user-guide.md)" "$(doc_wants user-guide.md)"
+check "the SQL reference's parallel_copy worker counts load at the default max_worker_processes" \
+	"$(doc_loads sql-reference.md)" "$(doc_wants sql-reference.md)"
+check "no prepared transaction is left after the documented loads" \
+	"$(q "SELECT count(*) FROM pg_prepared_xacts")" "0"
+
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on
@@ -888,5 +932,140 @@ _proj_got="$(proj_load 1 0) $(proj_load 2 1000)"
 check "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)" \
 	"$_proj_got | leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
 	"w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1"
+
+# ---- #2093: the documented slot figure is the smallest that loads ---------------
+# Each page that covers parallel_copy gives the slot rule ("the worker count plus
+# one, plus the slots the server's own background workers hold") and a figure:
+# "four workers need 7". The figure is read from every page. Then this cluster is
+# restarted one slot short of it, where a four-worker load must fail to register a
+# loader, and at the figure, where it must load. Measured by hand on PG15 to PG19:
+# 6 fails, 7 loads (OffgridwithJD's review of #2159, mutant M10). These checks
+# restart the cluster, so they run last.
+SLOT_PAGES="how-to.md user-guide.md sql-reference.md limitations.md best-practices.md"
+slot_figure() {	# slot_figure PAGE -> its four-worker figure, "no-rule" or "no-figure"
+	local t f
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	case "$t" in *"the worker count plus one, plus the slots"*) ;; *) echo "no-rule"; return ;; esac
+	f="$(grep -oE 'four workers need [0-9]+' <<<"$t" | grep -oE '[0-9]+$' | sort -u | paste -sd, -)"
+	echo "${f:-no-figure}"
+}
+SLOT_FIG="$(slot_figure how-to.md)"
+_slot_got="" _slot_want=""
+for _p in $SLOT_PAGES; do
+	_slot_got="$_slot_got${_slot_got:+ }$_p:$(slot_figure "$_p")"
+	if [[ "$SLOT_FIG" =~ ^[0-9]+$ ]]; then _slot_want="$_slot_want${_slot_want:+ }$_p:$SLOT_FIG"
+	else _slot_want="$_slot_want${_slot_want:+ }$_p:a-figure"; fi
+done
+check "every page that covers parallel_copy gives the slot rule and the same four-worker figure" \
+	"$_slot_got" "$_slot_want"
+# The figure is the sum the pages give: four loaders, one coordinator, and the
+# slots the server's own workers "hold". A page that says "hold one slot" and
+# keeps "need 7" adds up to 6, which is refused (OffgridwithJD's note on #2159).
+slot_sum() {	# slot_sum PAGE -> "ok", or the sum the page gives against its figure
+	local t n f
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	n="$(sed -nE 's/.*workers hold ([a-z]+) slots?.*/\1/p' <<<"$t")"
+	case "$n" in one) n=1 ;; two) n=2 ;; three) n=3 ;; four) n=4 ;; *) echo "no-hold"; return ;; esac
+	f="$(slot_figure "$1")"
+	[ "$((4 + 1 + n))" = "$f" ] && echo ok || echo "4+1+$n!=$f"
+}
+_sum_got="" _sum_want=""
+for _p in $SLOT_PAGES; do
+	_sum_got="$_sum_got${_sum_got:+ }$_p:$(slot_sum "$_p")"
+	_sum_want="$_sum_want${_sum_want:+ }$_p:ok"
+done
+check "every page's four-worker figure is four loaders plus a coordinator plus the slots it says the server's workers hold" \
+	"$_sum_got" "$_sum_want"
+# Four pages say max_prepared_transactions must be "at least the worker count".
+# Main said "above", and putting that back stayed green while the boundary arms
+# below pinned only the code (OffgridwithJD's B2 on #2159 at 06fd1c10). So read
+# the rule on every page that names the setting. best-practices.md does not.
+prep_rule() {	# prep_rule PAGE -> "at-least", "no-rule", or "not-named"
+	local t
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	case "$t" in *'`max_prepared_transactions`'*) ;; *) echo "not-named"; return ;; esac
+	if grep -qE '`max_prepared_transactions` (to )?at least the worker count' <<<"$t"; then echo "at-least"; else echo "no-rule"; fi
+}
+_prep_got=""
+for _p in $SLOT_PAGES; do _prep_got="$_prep_got${_prep_got:+ }$_p:$(prep_rule "$_p")"; done
+check "every page that states the max_prepared_transactions rule says at least the worker count" \
+	"$_prep_got" "how-to.md:at-least user-guide.md:at-least sql-reference.md:at-least limitations.md:at-least best-practices.md:not-named"
+slots_load() {	# slots_load SLOTS -> rows a four-worker load returns, or "refused"
+	[[ "$1" =~ ^[0-9]+$ ]] || { echo "no documented figure"; return; }
+	psql_admin "ALTER SYSTEM SET max_worker_processes = $1;" >/dev/null
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+		|| { echo "restart failed"; return; }
+	local now out
+	now="$(q "SHOW max_worker_processes")"
+	[ "$now" = "$1" ] || { echo "max_worker_processes is [$now], not $1"; return; }
+	psql_run "TRUNCATE t_doc;"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', 4)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+	case "$out" in
+	*"could not register pgcolumnar parallel_copy loader"*) echo "refused" ;;
+	*) echo "${out:-no output}" ;;
+	esac
+}
+_short=""; [[ "$SLOT_FIG" =~ ^[0-9]+$ ]] && _short=$((SLOT_FIG - 1))
+check "four workers fail to register a loader one slot short of the documented figure" \
+	"$(slots_load "$_short")" "refused"
+check "four workers load at the documented figure" \
+	"$(slots_load "$SLOT_FIG")" "5000"
+# conf_load NAME VALUE -> restart with NAME = VALUE (max_worker_processes stays at
+# the documented figure) and load with four workers: the row count, or the error's
+# SQLSTATE as "SQLSTATE nnnnn".
+# A third argument "auto" omits the worker count, so the function picks it.
+conf_load() {
+	local call="'t_doc'::regclass, '$F_DOC', 4"
+	[ "${3:-}" = auto ] && call="'t_doc'::regclass, '$F_DOC'"
+	psql_admin "ALTER SYSTEM SET $1 = $2;" >/dev/null
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+		|| { echo "restart failed"; return; }
+	local now out
+	now="$(q "SHOW $1")"
+	[ "$now" = "$2" ] || { echo "$1 is [$now], not $2"; return; }
+	psql_run "TRUNCATE t_doc;"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -v VERBOSITY=verbose -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -c "SELECT pgcolumnar.parallel_copy($call)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+	case "$out" in
+	*"ERROR:  "[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]:*) echo "SQLSTATE $(sed -E 's/.*ERROR:  ([0-9A-Z]{5}):.*/\1/' <<<"$out")" ;;
+	*) echo "${out:-no output}" ;;
+	esac
+}
+# best-practices.md says max_parallel_workers does not limit the load. Main said a
+# load needs a slot in it, and a revert of the sentence stayed green (OffgridwithJD's
+# mutant D2 on #2159). So read the sentence, and load at max_parallel_workers = 0.
+_mpw_says="no-sentence"
+case "$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/best-practices.md")" in
+*'`max_parallel_workers` does not limit the load'*) _mpw_says="says-so" ;;
+esac
+check "best-practices.md says max_parallel_workers does not limit the load, and four workers load at max_parallel_workers = 0" \
+	"$_mpw_says $(conf_load max_parallel_workers 0)" "says-so 5000"
+# With workers omitted, the count is half of max_parallel_workers, so that setting
+# does limit an auto load (OffgridwithJD's B1 on #2159 at 06fd1c10). The pages say
+# so. max_worker_processes is at the figure, where four workers fit and five do
+# not: an auto load loads at max_parallel_workers = 8 (four workers) and is refused
+# for a slot at 10 (five) and at 16 (eight; max_prepared_transactions is 8).
+AUTO_PAGES="how-to.md sql-reference.md best-practices.md"
+_auto_says=""
+for _p in $AUTO_PAGES; do
+	case "$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$_p")" in
+	*'With `workers` omitted, the worker count is half of `max_parallel_workers`'*) _auto_says="$_auto_says${_auto_says:+ }$_p:says-so" ;;
+	*) _auto_says="$_auto_says${_auto_says:+ }$_p:no-sentence" ;;
+	esac
+done
+check "the pages say an auto load uses half of max_parallel_workers, and it loads at 8 and is refused at 10 and 16" \
+	"$_auto_says | $(conf_load max_parallel_workers 8 auto) $(conf_load max_parallel_workers 10 auto) $(conf_load max_parallel_workers 16 auto)" \
+	"how-to.md:says-so sql-reference.md:says-so best-practices.md:says-so | 5000 SQLSTATE 53000 SQLSTATE 53000"
+psql_admin "ALTER SYSTEM RESET max_parallel_workers;" >/dev/null
+# The pages say max_prepared_transactions must be at least the worker count. The
+# guard is "max_prepared < workers" (src/columnar_parallel_copy.c). Every other
+# check runs at 8, so "<=" stayed green (OffgridwithJD's note S1 on #2159).
+check "four workers load at max_prepared_transactions = 4, the worker count" \
+	"$(conf_load max_prepared_transactions 4)" "5000"
+check "four workers are refused with SQLSTATE 55000 at max_prepared_transactions = 3" \
+	"$(conf_load max_prepared_transactions 3)" "SQLSTATE 55000"
+psql_admin "ALTER SYSTEM RESET max_prepared_transactions;" >/dev/null
+psql_admin "ALTER SYSTEM RESET max_worker_processes;" >/dev/null
 
 pgc_summary

@@ -316,9 +316,17 @@ these constraints.
   error for a text key and for an unsorted file.
 - The caller needs membership in the `pg_read_server_files` role and INSERT on
   the target. The file is read on the server host.
-- Set `max_prepared_transactions` above the worker count. The load prepares one
-  transaction per worker, and the function errors up front when the setting is
-  too low.
+- Set `max_prepared_transactions` to at least the worker count. The load
+  prepares one transaction per worker, and the function errors up front when
+  the setting is too low.
+- Set `max_worker_processes` to at least the worker count plus one, plus the
+  slots the server's own background workers hold. The load takes one
+  background worker slot per worker and one for its coordinator. On
+  PostgreSQL 15 to 19 with pgcolumnar preloaded, the server's own workers hold two
+  slots, so four workers need 7. Any parallel query holds slots too. At the
+  default of 8, four workers fit while no parallel query runs. A load that
+  cannot get a slot fails with "could not register pgcolumnar parallel_copy
+  loader".
 - The speedup is bounded by the physical core count. The columnar encode step is
   CPU bound, so workers past the physical cores add little.
 - The load commits on its own. It runs in background workers, so it is not part

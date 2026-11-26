@@ -17,6 +17,12 @@ refusal covers s3a:// and s3n:// too, in any case (#1918). parallel_copy refuses
 than one worker for a single table with a unique index, which used to hang or fail
 with a deadlock error (#2080). Each loader checks again under its own lock.
 
+THE DOCUMENTED WORKER COUNTS FIT A DEFAULT SERVER (#2093). Each load takes one
+background worker slot per loader plus one for its coordinator, and the docs asked
+for 8 workers, which failed at the default max_worker_processes of 8. Every explicit
+worker count in a page's parallel_copy calls is read with this file's own regex and
+loaded with, on the session cluster, which keeps that setting at its default.
+
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
 of the COPY path. A failed load must carry the loader's own message, not any message
@@ -32,13 +38,17 @@ transactions are counted in that database only, so another file's leftover canno
 redden this one.
 """
 import os
+import pathlib
 import random
 import re
+import shutil
+import tempfile
 import threading
 
 import psycopg
 import pytest
 
+from pgc_cluster import Cluster, pick_port
 from pgc_vacuity import query_error
 
 DB = "pgc_parallel_copy"
@@ -1038,6 +1048,72 @@ def test_parallel_copy_still_loads_a_local_path_holding_s3a(pcopy, expect):
                "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)")
 
 
+# ---- #2093: the documented worker counts fit a default server ---------------------
+DOCS = pathlib.Path(__file__).resolve().parents[2] / "docs"
+_COUNT = re.compile(r"parallel_copy\('[^']*',\s*'[^']*',\s*(\d+)")
+
+
+@pytest.fixture(scope="module")
+def doc_loads(pgc_cluster, server_dir):
+    db = "pgc_parallel_copy_docs"
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {db}")
+    r = {}
+    try:
+        with psycopg.connect(pgc_cluster.dsn(dbname=db), autocommit=True) as c:
+            c.execute("CREATE EXTENSION pgcolumnar")
+            r["default"] = c.execute("SELECT setting = boot_val FROM pg_settings "
+                                     "WHERE name = 'max_worker_processes'").fetchone()[0]
+            path = str(server_dir / "doc_counts.txt")
+            with open(path, "w") as fh:
+                fh.writelines(f"{g}\tdoc_{g}\n" for g in range(1, 5001))
+            os.chmod(path, 0o644)
+            c.execute("CREATE TABLE t_doc (id int, txt text) USING pgcolumnar")
+            for page in ("how-to.md", "user-guide.md", "sql-reference.md"):
+                got, want = [], []
+                for n in _COUNT.findall((DOCS / page).read_text()):
+                    c.execute("TRUNCATE t_doc")
+                    try:
+                        rows = c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, %s)",
+                                         (path, int(n))).fetchone()[0]
+                        got.append(f"{n}={rows}")
+                    except psycopg.Error as e:
+                        got.append(f"{n}=ERROR:  " + (str(e).splitlines() or ["?"])[0])
+                    want.append(f"{n}=5000")
+                r[page] = (" ".join(got) or "no worker count found",
+                           " ".join(want) or "at least one worker count")
+            r["leak"] = c.execute("SELECT count(*) FROM pg_prepared_xacts").fetchone()[0]
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
+
+
+def test_the_cluster_runs_at_the_default_worker_slots(doc_loads, expect):
+    expect.text(str(doc_loads["default"]), "True",
+                "premise: the cluster runs at the default max_worker_processes")
+
+
+def test_the_how_to_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["how-to.md"]
+    expect.text(got, want, "the how-to's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_user_guide_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["user-guide.md"]
+    expect.text(got, want, "the user guide's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_sql_reference_worker_counts_fit_a_default_server(doc_loads, expect):
+    got, want = doc_loads["sql-reference.md"]
+    expect.text(got, want,
+                "the SQL reference's parallel_copy worker counts load at the default max_worker_processes")
+
+
+def test_the_documented_loads_leave_no_prepared_transaction(doc_loads, expect):
+    expect.num(doc_loads["leak"], 0, "no prepared transaction is left after the documented loads")
+
 # ---- #2080: a single table with a unique index needs one worker --------------------
 
 def test_parallel_copy_refuses_a_primary_key_table_with_two_workers(pcopy, expect):
@@ -1171,3 +1247,214 @@ def test_parallel_copy_into_a_table_with_a_projection_fills_the_projection(pcopy
                 "w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1",
                 "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction"
                 " and keeps the server up (#2092)")
+
+
+# ---- #2093: the documented slot figure is the smallest that loads -------------------
+# Each page that covers parallel_copy gives the slot rule and a figure, "four workers
+# need 7". The figure is read from every page. A private cluster then runs one slot
+# short of it, where a four-worker load must fail to register a loader, and at the
+# figure, where it must load. Measured by hand on PG15 to PG19: 6 fails, 7 loads
+# (OffgridwithJD's review of #2159, mutant M10). The shared cluster is not restarted.
+SLOT_PAGES = ("how-to.md", "user-guide.md", "sql-reference.md", "limitations.md", "best-practices.md")
+_SLOT_RULE = "the worker count plus one, plus the slots"
+_SLOT_FIG = re.compile(r"four workers need (\d+)")
+
+
+def _slot_figure(page):
+    """-> the page's four-worker figure, "no-rule" or "no-figure"."""
+    t = " ".join((DOCS / page).read_text().split())
+    if _SLOT_RULE not in t:
+        return "no-rule"
+    return ",".join(sorted(set(_SLOT_FIG.findall(t)))) or "no-figure"
+
+
+def _slots_load(cluster, path, slots):
+    """-> rows a four-worker load returns at max_worker_processes = slots, or "refused"."""
+    if not str(slots).isdigit():
+        return "no documented figure"
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        c.execute(f"ALTER SYSTEM SET max_worker_processes = {int(slots)}")
+    cluster.stop()
+    cluster.start()
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        now = c.execute("SHOW max_worker_processes").fetchone()[0]
+        if now != str(slots):
+            return f"max_worker_processes is [{now}], not {slots}"
+        c.execute("TRUNCATE t_doc")
+        try:
+            return str(c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)",
+                                 (path,)).fetchone()[0])
+        except psycopg.Error as e:
+            msg = (str(e).splitlines() or ["?"])[0]
+            if "could not register pgcolumnar parallel_copy loader" in msg:
+                return "refused"
+            return query_error(msg)
+
+
+def _conf_load(cluster, path, name, value, auto=False):
+    """-> rows a four-worker load returns after a restart with name = value, or "SQLSTATE nnnnn".
+
+    With auto, the load omits the worker count, so the function picks it."""
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        c.execute(f"ALTER SYSTEM SET {name} = {int(value)}")
+        # cluster.stop() is an immediate shutdown. Without a checkpoint, recovery
+        # replays the last load's four PREPAREs, and at max_prepared_transactions = 3
+        # the server refuses to start ("maximum number of prepared transactions reached").
+        c.execute("CHECKPOINT")
+    cluster.stop()
+    cluster.start()
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        now = c.execute(f"SHOW {name}").fetchone()[0]
+        if now != str(value):
+            return f"{name} is [{now}], not {value}"
+        c.execute("TRUNCATE t_doc")
+        try:
+            sql = ("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s)" if auto
+                   else "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)")
+            return str(c.execute(sql, (path,)).fetchone()[0])
+        except psycopg.Error as e:
+            if e.sqlstate:
+                return f"SQLSTATE {e.sqlstate}"
+            return query_error((str(e).splitlines() or ["?"])[0])
+
+
+_HOLD = re.compile(r"workers hold (\w+) slots?")
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4}
+
+
+def _slot_sum(page):
+    """-> "ok" when the page's figure is 4 + 1 + the slots it says the server holds."""
+    t = " ".join((DOCS / page).read_text().split())
+    m = _HOLD.search(t)
+    if not m or m.group(1) not in _WORDS:
+        return "no-hold"
+    n, f = _WORDS[m.group(1)], _slot_figure(page)
+    return "ok" if str(4 + 1 + n) == f else f"4+1+{n}!={f}"
+
+
+_MPW_SENTENCE = "`max_parallel_workers` does not limit the load"
+_AUTO_SENTENCE = "With `workers` omitted, the worker count is half of `max_parallel_workers`"
+AUTO_PAGES = ("how-to.md", "sql-reference.md", "best-practices.md")
+_PREP_RULE = re.compile(r"`max_prepared_transactions` (to )?at least the worker count")
+
+
+def _prep_rule(page):
+    """-> "at-least", "no-rule", or "not-named" for the page's max_prepared_transactions rule."""
+    t = " ".join((DOCS / page).read_text().split())
+    if "`max_prepared_transactions`" not in t:
+        return "not-named"
+    return "at-least" if _PREP_RULE.search(t) else "no-rule"
+
+
+@pytest.fixture(scope="module")
+def slot_loads(pgc_cluster):
+    figs = {p: _slot_figure(p) for p in SLOT_PAGES}
+    fig = figs["how-to.md"]
+    r = {"figures": (" ".join(f"{p}:{v}" for p, v in figs.items()),
+                     " ".join(f"{p}:{fig if fig.isdigit() else 'a-figure'}" for p in SLOT_PAGES))}
+    if not fig.isdigit():
+        r["short"] = r["at"] = r["mpw"] = r["mpt4"] = r["mpt3"] = r["auto"] = "no documented figure"
+        yield r
+        return
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-pcslots-"))
+    work.chmod(0o777)
+    datadir = work / "data"
+    datadir.mkdir()
+    cluster = Cluster(pgc_cluster.pg_config, "pcslots", datadir, pick_port(44))
+    try:
+        cluster.initdb()
+        cluster.start()
+        path = str(work / "rows.txt")
+        with open(path, "w") as fh:
+            fh.writelines(f"{g}\tdoc_{g}\n" for g in range(1, 5001))
+        os.chmod(path, 0o644)
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            c.execute("ALTER SYSTEM SET max_prepared_transactions = 8")
+            c.execute("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+            c.execute("CREATE TABLE t_doc (id int, txt text) USING pgcolumnar")
+        r["short"] = _slots_load(cluster, path, int(fig) - 1)
+        r["at"] = _slots_load(cluster, path, int(fig))
+        # max_worker_processes stays at the figure for the arms below.
+        r["mpw"] = _conf_load(cluster, path, "max_parallel_workers", 0)
+        # An auto load uses half of max_parallel_workers: four workers at 8 fit the
+        # figure, five at 10 and eight at 16 do not.
+        r["auto"] = " ".join(_conf_load(cluster, path, "max_parallel_workers", v, auto=True)
+                             for v in (8, 10, 16))
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            c.execute("ALTER SYSTEM RESET max_parallel_workers")
+        r["mpt4"] = _conf_load(cluster, path, "max_prepared_transactions", 4)
+        r["mpt3"] = _conf_load(cluster, path, "max_prepared_transactions", 3)
+        yield r
+    finally:
+        cluster.stop()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_every_parallel_copy_page_gives_the_same_slot_figure(slot_loads, expect):
+    got, want = slot_loads["figures"]
+    expect.text(got, want, "every page that covers parallel_copy gives the slot rule and the same four-worker figure")
+
+
+def test_four_workers_fail_one_slot_short_of_the_documented_figure(slot_loads, expect):
+    expect.text(slot_loads["short"], "refused",
+                "four workers fail to register a loader one slot short of the documented figure")
+
+
+def test_four_workers_load_at_the_documented_figure(slot_loads, expect):
+    expect.text(slot_loads["at"], "5000", "four workers load at the documented figure")
+
+
+# best-practices.md says max_parallel_workers does not limit the load. Main said a load
+# needs a slot in it, and a revert of the sentence stayed green (OffgridwithJD's mutant
+# D2 on #2159). So read the sentence, and load at max_parallel_workers = 0.
+def test_four_workers_load_at_max_parallel_workers_zero(slot_loads, expect):
+    t = " ".join((DOCS / "best-practices.md").read_text().split())
+    says = "says-so" if _MPW_SENTENCE in t else "no-sentence"
+    expect.text(f"{says} {slot_loads['mpw']}", "says-so 5000",
+                "best-practices.md says max_parallel_workers does not limit the load,"
+                " and four workers load at max_parallel_workers = 0")
+
+
+# The figure is the sum the pages give: four loaders, one coordinator, and the slots
+# the server's own workers "hold". "hold one slot" with "need 7" adds up to 6, which is
+# refused (OffgridwithJD's note on #2159).
+def test_every_slot_figure_is_the_sum_the_page_gives(expect):
+    expect.text(" ".join(f"{p}:{_slot_sum(p)}" for p in SLOT_PAGES),
+                " ".join(f"{p}:ok" for p in SLOT_PAGES),
+                "every page's four-worker figure is four loaders plus a coordinator plus the"
+                " slots it says the server's workers hold")
+
+
+# The pages say max_prepared_transactions must be at least the worker count. The guard
+# is "max_prepared < workers" (src/columnar_parallel_copy.c). Every other check runs at
+# 8, so "<=" stayed green (OffgridwithJD's note S1 on #2159).
+def test_four_workers_load_at_max_prepared_transactions_four(slot_loads, expect):
+    expect.text(slot_loads["mpt4"], "5000",
+                "four workers load at max_prepared_transactions = 4, the worker count")
+
+
+def test_four_workers_are_refused_at_max_prepared_transactions_three(slot_loads, expect):
+    expect.text(slot_loads["mpt3"], "SQLSTATE 55000",
+                "four workers are refused with SQLSTATE 55000 at max_prepared_transactions = 3")
+
+
+# With workers omitted, the count is half of max_parallel_workers, so that setting does
+# limit an auto load (OffgridwithJD's B1 on #2159 at 06fd1c10). The pages say so, and
+# at the figure an auto load loads at 8 (four workers) and is refused at 10 and 16.
+def test_an_auto_load_uses_half_of_max_parallel_workers(slot_loads, expect):
+    says = " ".join(f"{p}:{'says-so' if _AUTO_SENTENCE in ' '.join((DOCS / p).read_text().split()) else 'no-sentence'}"
+                    for p in AUTO_PAGES)
+    expect.text(f"{says} | {slot_loads['auto']}",
+                "how-to.md:says-so sql-reference.md:says-so best-practices.md:says-so"
+                " | 5000 SQLSTATE 53000 SQLSTATE 53000",
+                "the pages say an auto load uses half of max_parallel_workers, and it loads at 8"
+                " and is refused at 10 and 16")
+
+
+# Four pages say max_prepared_transactions must be "at least the worker count". Main said
+# "above", and putting that back stayed green (OffgridwithJD's B2 on #2159 at 06fd1c10).
+def test_every_page_says_at_least_the_worker_count_for_max_prepared_transactions(expect):
+    expect.text(" ".join(f"{p}:{_prep_rule(p)}" for p in SLOT_PAGES),
+                "how-to.md:at-least user-guide.md:at-least sql-reference.md:at-least"
+                " limitations.md:at-least best-practices.md:not-named",
+                "every page that states the max_prepared_transactions rule says at least the worker count")

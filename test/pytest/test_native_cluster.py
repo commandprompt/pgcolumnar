@@ -23,7 +23,14 @@ EXPLAIN ANALYZE, or a failed reading. An unread count used to default to 0, and 
 "more than before" comparison then beat it for free.
 
 ON A PRIVATE DATABASE, built in the shell's order by a module fixture.
+
+THE HOW-TO'S EXAMPLES (#2093). Its first example creates `events`, and its sort,
+bloom, projection and index examples must run on that table as written. They used
+`customer_id` and `order_id`, which the table did not have, and clustered on a
+numeric column, which cluster refuses. Each block is read from docs/how-to.md by
+this file's own reader and run through psycopg, apart from the shell's awk and psql.
 """
+import pathlib
 import re
 import time
 
@@ -40,6 +47,60 @@ GEN = """SELECT g,
   FROM generate_series(1, 40960) g"""
 BOX = "x BETWEEN 20 AND 40 AND y BETWEEN 20 AND 40"
 IDR = "id BETWEEN 1 AND 2048"
+
+
+HOWTO = pathlib.Path(__file__).resolve().parents[2] / "docs" / "how-to.md"
+
+
+def _howto_sql(heading, n):
+    """-> the nth ```sql block in the how-to section whose heading starts with
+    `heading`, or None."""
+    lines = HOWTO.read_text().split("\n")
+    start = next((i for i, line in enumerate(lines) if line.startswith(heading)), None)
+    if start is None:
+        return None
+    k, fence, body = 0, None, []
+    for line in lines[start + 1:]:
+        if line.startswith("```"):
+            if fence is None:
+                fence = line[3:].strip()
+                if fence == "sql":
+                    k += 1
+                continue
+            if fence == "sql" and k == n:
+                return "\n".join(body)
+            fence = None
+            continue
+        if fence is None and line.startswith("#"):
+            return None
+        if fence == "sql" and k == n:
+            body.append(line)
+    return None
+
+
+def _statements(sql):
+    """-> the statements of a doc block, one per string, as psql sends them. One
+    multi-statement string would run as one implicit transaction, where VACUUM fails."""
+    out = []
+    for part in re.split(r";[ \t]*(?:--[^\n]*)?(?:\n|$)", sql):
+        if re.sub(r"--[^\n]*", "", part).strip():
+            out.append(part)
+    return out
+
+
+def _run_howto(dsn, heading, *blocks):
+    """-> "ok" when every block runs, else the first error or the missing block."""
+    for n in blocks:
+        sql = _howto_sql(heading, n)
+        if not sql:
+            return f"no block {n} under '{heading}'"
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                for stmt in _statements(sql):
+                    conn.execute(stmt)
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+    return "ok"
 
 
 def _message(exc):
@@ -192,6 +253,15 @@ def nc(pgc_cluster):
         r["missing"] = _refusal(dsn, "SELECT pgcolumnar.cluster('n', 'nope')",
                                 'column "nope" does not exist in table "n"')
         r["up"] = _survived(dsn, pgc_cluster, crashes_before)
+
+        r["howto create"] = _run_howto(dsn, "## Create a columnar table", 1)
+        _run(dsn, "INSERT INTO events (id, ts, region) "
+                  "SELECT g, timestamptz '2026-01-01 00:00+00' + g * interval '1 minute', "
+                  "'r' || (g % 5) FROM generate_series(1, 5000) g")
+        r["howto sort"] = _run_howto(dsn, "## Sort a table to skip more chunk groups", 1, 3)
+        r["howto bloom"] = _run_howto(dsn, "## Skip more chunk groups on equality filters", 1)
+        r["howto projection"] = _run_howto(dsn, "## Add a projection for a second sort order", 1)
+        r["howto index"] = _run_howto(dsn, "## Add indexes and use index-only scans", 1)
         yield r
     finally:
         _await_up(pgc_cluster.dsn())
@@ -252,3 +322,23 @@ def test_native_cluster_missing_column_is_refused(nc, expect):
 
 def test_native_cluster_backend_survives_the_refusals(nc, expect):
     expect.text(nc["up"], "1", "backend still up after the refusals")
+
+
+def test_the_how_to_creates_its_events_table(nc, expect):
+    expect.text(nc["howto create"], "ok", "the how-to's first example creates its events table")
+
+
+def test_the_how_to_sort_examples_run_on_its_events_table(nc, expect):
+    expect.text(nc["howto sort"], "ok", "the how-to's sort examples run on that events table")
+
+
+def test_the_how_to_bloom_example_runs_on_its_events_table(nc, expect):
+    expect.text(nc["howto bloom"], "ok", "the how-to's bloom example runs on that events table")
+
+
+def test_the_how_to_projection_example_runs_on_its_events_table(nc, expect):
+    expect.text(nc["howto projection"], "ok", "the how-to's projection example runs on that events table")
+
+
+def test_the_how_to_index_example_runs_on_its_events_table(nc, expect):
+    expect.text(nc["howto index"], "ok", "the how-to's index example runs on that events table")

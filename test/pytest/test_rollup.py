@@ -24,6 +24,8 @@ avg of an integer, avg of a float8), so a check of one name asserts one
 property in both twins (#1339).
 """
 
+import pathlib
+import re
 import threading
 import time
 
@@ -860,6 +862,64 @@ def test_min_and_max_keep_each_columns_collation(pgc_own_db, expect):
     # has no collation to use. Equality does not depend on which one is chosen.
     expect.text(str(_one(conn, 'SELECT min(sc) COLLATE "C" <> min(su) COLLATE "C" FROM ct')), "True",
                 "premise: the two collations disagree on these rows, so the arm can tell them apart")
+
+
+HOWTO = pathlib.Path(__file__).resolve().parents[2] / "docs" / "how-to.md"
+
+
+def _howto_sql(heading, n):
+    """-> the nth ```sql block in the how-to section whose heading starts with
+    `heading`, or None."""
+    lines = HOWTO.read_text().split("\n")
+    start = next((i for i, line in enumerate(lines) if line.startswith(heading)), None)
+    if start is None:
+        return None
+    k, fence, body = 0, None, []
+    for line in lines[start + 1:]:
+        if line.startswith("```"):
+            if fence is None:
+                fence = line[3:].strip()
+                k += fence == "sql"
+                continue
+            if fence == "sql" and k == n:
+                return "\n".join(body)
+            fence = None
+            continue
+        if fence is None and line.startswith("#"):
+            return None
+        if fence == "sql" and k == n:
+            body.append(line)
+    return None
+
+
+def _statements(sql):
+    """-> the statements of a doc block, one per string, as psql sends them. One
+    multi-statement string would run as one implicit transaction, where VACUUM fails."""
+    out = []
+    for part in re.split(r";[ \t]*(?:--[^\n]*)?(?:\n|$)", sql):
+        if re.sub(r"--[^\n]*", "", part).strip():
+            out.append(part)
+    return out
+
+
+def test_the_how_to_rollup_example_runs_as_written(pgc_own_db, expect):
+    """#2093. The how-to's rollup example named `metrics`, which its partitions
+    section creates PARTITION BY RANGE, and create_rollup refused it. The two
+    sections are read by this file's own reader and run in the how-to's order."""
+    def run(heading):
+        sql = _howto_sql(heading, 1)
+        if not sql:
+            return f"no block 1 under '{heading}'"
+        try:
+            with pgc_own_db.cursor() as cur:
+                for stmt in _statements(sql):
+                    cur.execute(stmt)
+        except psycopg.Error as e:
+            return query_error((str(e).splitlines() or ["?"])[0])
+        return "ok"
+
+    expect.text(run("## Create time partitions ahead"), "ok", "the how-to's partitions example runs")
+    expect.text(run("## Keep a rollup up to date"), "ok", "the how-to's rollup example runs after it")
 
 
 def test_row_tid_refuses_a_row_number_below_one(pgc_conn, expect):

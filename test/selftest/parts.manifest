@@ -61,3 +61,4 @@
 620-a-suite-s-own-trap-must-stop.sh
 630-a-build-with-no-pg-config-must.sh
 640-every-suite-job-installs-the-extensions.sh
+650-a-doc-block-fails-on-psql-s-exit-status.sh

@@ -369,7 +369,12 @@
 # guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
 # that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
 # over NO_CLUSTER: 897 tests collected.
-guard_tests 897
+# guard_tests 895 -> 899 for #2093's four tests in test_docs_style.py (no sql block holds a postgresql.conf
+# line; the how-to's load section names both files and its parallel_copy does not read the CSV; every
+# parallel_copy section names both settings), by collection over NO_CLUSTER: 899 tests collected.
+# guard_tests 897 -> 901 after the merge of main 455e9e38 (#2195's two guards, and #2093's four), by collection
+# over NO_CLUSTER: 901 tests collected.
+guard_tests 901
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2232,4 +2237,30 @@ guard_tests 897
 # exports in one session each return their row count and leave no temp file; a FATAL export after a failed
 # unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
-cluster_tests 5644
+# cluster_tests 5580 -> 5596 for #2093's sixteen tests (the documented examples run as written, in
+# test_native_cluster.py, test_parquet_import.py, test_rollup.py and test_parallel_copy.py), by collection
+# over the cluster files (the complement of NO_CLUSTER) after the merge of main 3dd019fe: 5571 tests
+# collected (5539 after the merge of main 6b54a65a); NO_CLUSTER collects guard_tests 899.
+# cluster_tests 5596 -> 5600 for #2093's four tests from the review of #2159 at f89f48e6: in
+# test_parallel_copy.py, every page gives the same four-worker slot figure, four workers fail one slot
+# short of it and load at it; in test_parquet_import.py, the how-to's object-storage read_parquet example
+# runs. By collection over the cluster files (the complement of NO_CLUSTER): 5575 tests collected after the merge
+# of main 3dd019fe (5543 after the merge of main 6b54a65a).
+# cluster_tests 5600 -> 5604 for #2093's four tests from the review of #2159 at bf3d4d82, in
+# test_parallel_copy.py: four workers load at max_parallel_workers = 0 and best-practices.md says so; every
+# page's slot figure is the sum it gives; four workers load at max_prepared_transactions = 4 and are refused
+# with SQLSTATE 55000 at 3. By collection over the cluster files (the complement of NO_CLUSTER): 5604 tests
+# collected after the merge of main 199e4aa7.
+# cluster_tests 5604 -> 5605 after the merge of main 6f79946f (#2082's struct-field test, +1). By collection over
+# the cluster files (the complement of NO_CLUSTER): 5605 tests collected; NO_CLUSTER collects guard_tests 899.
+# cluster_tests 5605 -> 5621 after the merge of main 2e3fea7a (#2087's sixteen test_iceberg_scan.py tests). By
+# collection over the cluster files (the complement of NO_CLUSTER): 5621 tests collected; NO_CLUSTER collects guard_tests 899.
+# cluster_tests 5621 -> 5623 for #2093's two tests from the review of #2159 at 06fd1c10, in
+# test_parallel_copy.py: an auto load uses half of max_parallel_workers and the pages say so; every page
+# that names max_prepared_transactions says at least the worker count. By collection over the cluster
+# files (the complement of NO_CLUSTER): 5623 tests collected after the merge of main 2e3fea7a.
+# cluster_tests 5623 -> 5646 after the merge of main 455e9e38 (#2080's 23 tests in test_parallel_copy.py), by
+# collection over the cluster files (the complement of NO_CLUSTER): 5646 tests collected.
+# cluster_tests 5646 -> 5670 after the merge of main c756ef06 (#2075's 24 tests in test_export_sink.py), by
+# collection over the cluster files (the complement of NO_CLUSTER): 5670 tests collected.
+cluster_tests 5670

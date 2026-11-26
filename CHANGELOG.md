@@ -605,6 +605,51 @@ true until the next version shipped.
 
 ### Fixed
 
+- Eight SQL examples in docs/how-to.md, docs/user-guide.md and
+  docs/sql-reference.md now run as written (#2093). The how-to's `events`
+  table gains the `customer_id` and `order_id` columns its later examples use,
+  and its `amount` is `numeric(12,2)`. Its `cluster` and `recluster` examples
+  use `ts`, not the numeric `amount`, which `cluster` refuses. Its
+  `read_parquet` examples name every column of the file. Its `parallel_copy`
+  example reads a text file, not the CSV file with a header that `COPY` loads.
+  Its rollup example creates a columnar source, because `create_rollup`
+  refuses the partitioned `metrics`. Its two postgresql.conf snippets are
+  fenced as `conf`, not `sql`. The `parallel_copy` examples use 4 workers, not
+  8: 8 did not fit a server at the default `max_worker_processes` of 8. All
+  three pages now name `max_worker_processes` beside
+  `max_prepared_transactions`. The SQL reference's Parquet round trip names
+  the table it uses, the user guide's, whose `amount` is now `numeric(12,2)`.
+  `test/parallel_copy.sh` now runs at the default `max_worker_processes`.
+  `test/docs_style.sh`, `test/native_cluster.sh`, `test/parquet_import.sh`,
+  `test/rollup.sh`, `test/parallel_copy.sh` and their pytest twins run the
+  examples from the pages. docs/limitations.md now asks for
+  `max_prepared_transactions` at least the worker count, names
+  `max_worker_processes` too, and the pages say that a parallel query's workers
+  take slots from the same pool. The shell suites judge an example by psql's
+  exit status, through the new `psql_block` helper in `test/lib.sh`: a grep
+  for ERROR or FATAL said "ok" when the example crashed the backend. Selftest
+  part 650 checks the helper. It also checks that each suite's `run_doc` calls
+  `psql_block`, with comments ignored, makes no psql call of its own, and
+  prints the helper's verdict unchanged, and that it hands the helper the
+  page's block. The pages, docs/best-practices.md among them, now say how many
+  `max_worker_processes` slots a load needs: the worker count plus one, plus
+  the server's own workers (two on PostgreSQL 15 to 19 with pgcolumnar
+  preloaded), so four workers need 7. best-practices.md now says that
+  `max_parallel_workers` does not limit a load with an explicit worker count,
+  where it said a load needs a slot in it. The how-to, the SQL reference and
+  best-practices.md now say that with `workers` omitted, the worker count is
+  half of `max_parallel_workers`. `test/parallel_copy.sh` and its twin read that figure from the
+  pages and check that it is the sum the page gives, then restart a cluster one
+  slot short of it, where four workers fail, and at it, where they load. They
+  also load four workers at `max_parallel_workers = 0`, and at
+  `max_prepared_transactions` equal to the worker count; one below it, the load
+  is refused with SQLSTATE 55000. They read "at least the worker count" from
+  every page that names `max_prepared_transactions`. A load without a worker
+  count loads at `max_parallel_workers = 8` and is refused at 10 and 16.
+  `test/parquet_import.sh` and its twin also run the how-to's
+  object-storage `read_parquet` example, on a local file.
+  The check for a postgresql.conf line in a `sql` block now also matches a
+  setting name with a digit. Reported by @OffgridwithJD.
 - A local `export_parquet` or `export_arrow` that ends with FATAL no longer
   leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
   to that temp file and renames it at the end. On an error the writer removes
