@@ -605,6 +605,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
+  carries no Parquet field ids (#2088). Such a file comes from Iceberg
+  `add_files` or a Hive or Spark migration, and is read through the table's
+  `schema.name-mapping.default` property. The pass that finds the deleted rows
+  ignored that mapping, so once the table had an equality delete, the scan
+  failed with `the Parquet file carries no field ids` and a hint asking for the
+  mapping the table already had. That pass now binds the delete columns through
+  the mapping, as the data read does. A delete column the mapping does not bind
+  is still refused (22023), because reading it as null would keep rows the
+  delete removes. The same delete applies once the mapping binds that column,
+  so the refusal comes from the mapping alone. The delete also applies when the
+  query lists the columns in another order than the mapping, so the pass binds
+  through the mapping's field ids, not the query's. It applies to a delete
+  keyed on two columns and to two delete files on different columns, and a
+  two-column delete with one unbound column is refused too.
+  docs/sql-reference.md.
+  `test/iceberg_name_mapping.sh` and `test_iceberg_name_mapping.py`.
 - `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
   294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
   microseconds since 1970-01-01, and that is the last value it holds. The
