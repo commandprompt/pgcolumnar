@@ -279,7 +279,9 @@ pgc_fb_arrow_type(FBB *b, ArrowKind kind, int precision, int scale, uint8 *typet
  * ------------------------------------------------------------------------- */
 typedef struct ArrowCol
 {
-	char	   *name;
+	char	   *name;			/* Arrow field name: "item" for a list element */
+	char	   *column;			/* the table column this value belongs to, for
+								 * errors; the same as name at the top level */
 	ArrowKind	kind;
 	int			width;			/* fixed-width byte size, 0 otherwise */
 	int			precision;		/* decimal precision (A_DECIMAL128) */
@@ -413,14 +415,18 @@ arrow_kind_for_type(Oid typid, int32 typmod, int *width, int *precision, int *sc
  *		(typid, typmod). A 1-D array becomes A_LIST with one element child; a
  *		named composite becomes A_STRUCT with one child per live field; anything
  *		else is a scalar. Sets *ok = false if any (leaf) type is unsupported.
+ *		`column` is the table column's name for a child, so an error about a
+ *		nested value names the column; pass NULL for the column itself.
  */
 static void
-arrowcol_init(ArrowCol *c, const char *name, Oid typid, int32 typmod, bool *ok)
+arrowcol_init(ArrowCol *c, const char *name, char *column, Oid typid,
+			  int32 typmod, bool *ok)
 {
 	Oid			elemtype;
 
 	memset(c, 0, sizeof(*c));
 	c->name = name ? pstrdup(name) : NULL;
+	c->column = column ? column : c->name;
 	initStringInfo(&c->valid);
 	initStringInfo(&c->fixed);
 	initStringInfo(&c->boolvals);
@@ -436,7 +442,7 @@ arrowcol_init(ArrowCol *c, const char *name, Oid typid, int32 typmod, bool *ok)
 		c->nchildren = 1;
 		c->children = (ArrowCol *) palloc0(sizeof(ArrowCol));
 		/* arrays do not carry the element typmod, so pass -1 */
-		arrowcol_init(&c->children[0], "item", elemtype, -1, ok);
+		arrowcol_init(&c->children[0], "item", c->column, elemtype, -1, ok);
 		return;
 	}
 
@@ -460,7 +466,7 @@ arrowcol_init(ArrowCol *c, const char *name, Oid typid, int32 typmod, bool *ok)
 
 			if (fa->attisdropped)
 				continue;
-			arrowcol_init(&c->children[fi++], NameStr(fa->attname),
+			arrowcol_init(&c->children[fi++], NameStr(fa->attname), c->column,
 						  fa->atttypid, fa->atttypmod, ok);
 		}
 		ReleaseTupleDesc(td);
@@ -499,12 +505,17 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 	char		one = 1,
 				zero = 0;
 	__int128	dec = 0;
+	int64		unixUsecs = 0;
 
 	/*
 	 * A few types can carry values with no target representation (±infinity
 	 * dates/timestamps, NaN/Infinity numerics). Fold those to null, computing
 	 * the decimal here so a non-finite value is detected before validity is
 	 * written.
+	 *
+	 * A finite timestamp after 294247-01-10 04:00:54.775807 does not fit in
+	 * Arrow's int64 microseconds since 1970-01-01. Refuse it rather than
+	 * write a wrapped value or lose it as a null (#2085).
 	 */
 	if (!isnull)
 	{
@@ -518,6 +529,13 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 			case A_TIMESTAMPTZ:
 				if (TIMESTAMP_NOT_FINITE(DatumGetTimestamp(d)))
 					isnull = true;
+				else if (pg_add_s64_overflow((int64) DatumGetTimestamp(d),
+											 PG_TO_UNIX_USECS, &unixUsecs))
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("columnar: a value in column \"%s\" is out of range for an Arrow timestamp",
+									c->column ? c->column : "?"),
+							 errdetail("Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807.")));
 				break;
 			case A_DECIMAL128:
 				if (!numeric_to_int128(d, c->scale, &dec))
@@ -587,8 +605,7 @@ arrowcol_append(ArrowCol *c, Datum d, bool isnull)
 		case A_TIMESTAMP:
 		case A_TIMESTAMPTZ:
 			{
-				int64		v = isnull ? 0 :
-					(int64) DatumGetTimestamp(d) + PG_TO_UNIX_USECS;
+				int64		v = isnull ? 0 : unixUsecs;
 
 				appendBinaryStringInfo(&c->fixed, (char *) &v, 8);
 				break;
@@ -1216,7 +1233,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 		bool		ok = true;
 
 		/* build the (possibly nested) accumulator tree for this column */
-		arrowcol_init(&cols[i], NameStr(att->attname),
+		arrowcol_init(&cols[i], NameStr(att->attname), NULL,
 					  att->atttypid, att->atttypmod, &ok);
 		if (!ok)
 		{
