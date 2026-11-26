@@ -25,12 +25,22 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Arrow export verification"
 fi
 
-# refusal LABEL SQL MESSAGE: the SQL must fail with MESSAGE. Any error used to pass,
-# so a missing table, or a refusal removed and a later error raised in its place,
-# read as the refusal.
+# refusal LABEL SQL MESSAGE [SQLSTATE]: the SQL must fail with MESSAGE. Any error used
+# to pass, so a missing table, or a refusal removed and a later error raised in its
+# place, read as the refusal. With SQLSTATE, psql prints the error code before the
+# message (VERBOSITY verbose), and the error must carry that code too.
 refusal() {
-	local label="$1" sql="$2" msg="$3" out got
-	if out="$(psql_run "$sql" 2>&1)"; then
+	local label="$1" sql="$2" msg="$3" code="${4:-}" out got rc
+	if [ -n "$code" ]; then
+		msg="ERROR:  $code: $msg"
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -q -c "$sql" 2>&1)"
+		rc=$?
+	else
+		out="$(psql_run "$sql" 2>&1)"
+		rc=$?
+	fi
+	if [ "$rc" -eq 0 ]; then
 		got="succeeded"
 	else
 		case "$out" in
@@ -344,6 +354,131 @@ PY
 )"
 check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them" \
 	"$ar_txt_rows|$ar_txt_read" "300|$(q "$TXT_DIGEST")"
+
+# ---- a timestamp past Arrow's int64 range is refused, not wrapped (#2085) ------------
+# Arrow stores a timestamp as int64 microseconds since 1970-01-01, so its last value is
+# 294247-01-10 04:00:54.775807. PostgreSQL timestamps reach 294276-12-31. The writer
+# added the epoch shift without an overflow check, so a later value wrapped to a large
+# negative number, and the export reported success. Now the export fails with an
+# out-of-range error and leaves no file at the target path.
+TSOVER="$PGC_WORKDIR/tsover.arrows"
+TZOVER="$PGC_WORKDIR/tzover.arrows"
+TSEDGE="$PGC_WORKDIR/tsedge.arrows"
+psql_run "CREATE TABLE ar_tsover (ts timestamp) USING pgcolumnar;
+          INSERT INTO ar_tsover VALUES ('294247-01-10 04:00:54.775808');
+          CREATE TABLE ar_tzover (tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tzover VALUES ('294276-12-31 23:59:59.999999+00');
+          CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00');" >/dev/null
+refusal "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 'columnar: a value in column "ts" is out of range for an Arrow timestamp' 22008
+check "and the refused timestamp export leaves no file at the target path" \
+	"$([ -e "$TSOVER" ] && echo present || echo absent)" "absent"
+refusal "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tzover', '$TZOVER')" 'columnar: a value in column "tz" is out of range for an Arrow timestamp' 22008
+edge_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsedge', '$TSEDGE')")"
+edge_read="$(python3 - "$TSEDGE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    print(",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz")))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz" \
+	"$edge_rows|$edge_read" "1|9223372036854775807,9223372036854775807"
+psql_run "CREATE TABLE ar_tsback (ts timestamp, tz timestamptz) USING pgcolumnar;" >/dev/null
+back_rows="$(q "SELECT pgcolumnar.import_arrow('ar_tsback', '$TSEDGE')")"
+back_vals="$(q "SELECT string_agg(ts::text || ',' || (tz AT TIME ZONE 'UTC')::text, ' ') FROM ar_tsback")"
+check "and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085)" \
+	"$back_rows|$back_vals" "1|294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807"
+# The range check must not refuse a value before 1970-01-01, which Arrow stores as a
+# negative number. The last microsecond of 1969 is -1; PostgreSQL's first timestamp,
+# 4714-11-24 00:00:00 BC, is -210866803200000000, well inside int64.
+TSPRE="$PGC_WORKDIR/tspre.arrows"
+psql_run "CREATE TABLE ar_tspre (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tspre VALUES ('1969-12-31 23:59:59.999999', '1969-12-31 23:59:59.999999+00'),
+                                      ('4714-11-24 00:00:00 BC', '4714-11-24 00:00:00+00 BC');" >/dev/null
+pre_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tspre', '$TSPRE')")"
+pre_read="$(python3 - "$TSPRE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    ts, tz = (t.column(n).cast(pa.int64()).to_pylist() for n in ("ts", "tz"))
+    print(" ".join("%s,%s" % p for p in zip(ts, tz)))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "a timestamp before 1970 still exports: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz (#2085 review)" \
+	"$pre_rows|$pre_read" "2|-1,-1 -210866803200000000,-210866803200000000"
+# The check runs on every timestamp the writer appends, including an array element and a
+# composite field. Arrow calls those "item" and the field name; the error must name the
+# table column the reader can find, not them.
+psql_run "CREATE TABLE ar_tsarr (tsarr timestamp[]) USING pgcolumnar;
+          INSERT INTO ar_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[]);
+          CREATE TYPE ar_tsfield AS (t timestamp);
+          CREATE TABLE ar_tscomp (tscomp ar_tsfield) USING pgcolumnar;
+          INSERT INTO ar_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'));" >/dev/null
+refusal "a timestamp[] element past Arrow's range is refused, and the error names the table column, not the Arrow element (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsarr', '$PGC_WORKDIR/tsarr.arrows')" \
+	'columnar: a value in column "tsarr" is out of range for an Arrow timestamp' 22008
+refusal "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tscomp', '$PGC_WORKDIR/tscomp.arrows')" \
+	'columnar: a value in column "tscomp" is out of range for an Arrow timestamp' 22008
+# Two levels deep, the parent of the timestamp is itself a child, so its own name
+# ("item" or a field name) differs from the table column. Each child must pass the table
+# column down, not its own name.
+psql_run "CREATE TYPE ar_tsrow AS (a int, ts timestamp);
+          CREATE TABLE ar_aoc (aoc ar_tsrow[]) USING pgcolumnar;
+          INSERT INTO ar_aoc VALUES (ARRAY[ROW(1, '294247-01-10 04:00:54.775808')::ar_tsrow]);
+          CREATE TYPE ar_tsarrrow AS (a int, tsa timestamp[]);
+          CREATE TABLE ar_coa (coa ar_tsarrrow) USING pgcolumnar;
+          INSERT INTO ar_coa VALUES (ROW(1, ARRAY['294247-01-10 04:00:54.775808'::timestamp]));" >/dev/null
+refusal "a timestamp field of an array-of-composites column past Arrow's range is refused, and the error names the table column, not the Arrow element or the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_aoc', '$PGC_WORKDIR/aoc.arrows')" \
+	'columnar: a value in column "aoc" is out of range for an Arrow timestamp' 22008
+refusal "a timestamp[] element inside a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_coa', '$PGC_WORKDIR/coa.arrows')" \
+	'columnar: a value in column "coa" is out of range for an Arrow timestamp' 22008
+# The range check must not refuse an in-range timestamp inside an array or a composite.
+# The first and last values here sit next to the two ends of the check: -1 and the
+# largest int64.
+TSNEST="$PGC_WORKDIR/tsnest.arrows"
+psql_run "CREATE TYPE ar_tspair AS (lo timestamp, hi timestamptz);
+          CREATE TABLE ar_tsnest (tsa timestamp[], tza timestamptz[], tsc ar_tspair) USING pgcolumnar;
+          INSERT INTO ar_tsnest VALUES (
+            ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[],
+            ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[],
+            ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::ar_tspair);" >/dev/null
+nest_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsnest', '$TSNEST')")"
+nest_read="$(python3 - "$TSNEST" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    print(" ".join(",".join(str(v) for v in vals) for vals in lists + [pair]))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review)" \
+	"$nest_rows|$nest_read" "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807"
+# The refusal's DETAIL tells the reader where Arrow's range ends.
+detail_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 2>&1)"
+case "$detail_out" in
+*"DETAIL:  Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807."*) detail_got="present" ;;
+*) detail_got="missing: $(printf '%s' "$detail_out" | tr '\n' ' ')" ;;
+esac
+check "and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review)" \
+	"$detail_got" "present"
 
 # ---- a table with dropped columns exports and imports its live columns (#2076) -----
 # A dropped column stays in the tuple descriptor, marked attisdropped. export_arrow

@@ -688,10 +688,107 @@ check_num "expire retires the aged groups and keeps those of NULLs" \
 	"$(q "SELECT pgcolumnar.expire('ttl_n');")" "2"
 check "a later expire on a column of only NULLs reads no zone map" "$(_expire_scans ttl_n)" "n=0 scans=0"
 
+# The retention column follows RENAME COLUMN (#2070). options.ttl_column holds a
+# NAME, and expire resolves it on every run. A stale name made expire fail, and
+# once another timestamp column took the old name, expire cut on that column. The
+# second column holds old values on purpose: cutting on it would retire every group.
+# Columns t (a prefix of ts), ts_old (starts with ts), old_ts (ends with ts), tx
+# (same first letter and length) and "TS" (ts in upper case) are near misses: a
+# name test that matched too much would point retention at one of them, and they
+# hold old values too.
+# The rename handler updates sort_by, sketch_columns and ttl_column in ONE catalog
+# row, so the fixture declares all three: sort_by holds ts and sorted_old,
+# sketch_columns holds sketched_old. A rename that hits sort_by must still move
+# ttl_column, and a rename that hits only sort_by or sketch_columns must not.
+psql_run "CREATE TABLE ttl_rn (id int, ts timestamptz, imported timestamptz, t timestamptz, \"TS\" timestamptz, ts_old timestamptz,
+	old_ts timestamptz, tx timestamptz, sorted_old timestamptz, sketched_old timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_rn', sort_by => ARRAY['ts', 'sorted_old']::name[], sketch_columns => ARRAY['sketched_old']::name[],
+	                              ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_rn SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year', now() - interval '1 year',
+	                          now() - interval '1 year', now() - interval '1 year', now() - interval '1 year', now() - interval '1 year' FROM generate_series(1, 3000) g;"
+check_num "premise: the rename fixture has several row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_rn');")" "3"
+check_num "premise: expire retires nothing while every row is inside the retention" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN t TO t2;"
+check "renaming a column whose name is a prefix of the retention column leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN \"TS\" TO upper_ts;"
+check "renaming a column whose name differs from the retention column only in case leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts_old TO legacy;"
+check "renaming a column whose name starts with the retention column's name leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN old_ts TO archived_at;"
+check "renaming a column whose name ends with the retention column's name leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN tx TO tx2;"
+check "renaming a column with the retention column's first letter and length leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN sorted_old TO sorted_legacy;"
+check "renaming a sort_by column that is not the retention column leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column || '|' || sort_by::text FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts|{ts,sorted_legacy}"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN sketched_old TO sketched_legacy;"
+check "renaming a sketch_columns column that is not the retention column leaves ttl_column alone (#2070)" \
+	"$(q "SELECT ttl_column || '|' || sketch_columns::text FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "ts|{sketched_legacy}"
+check_num "expire retires nothing after a sort_by and a sketch_columns column are renamed (#2070)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN ts TO event_at;"
+check "the retention column follows RENAME COLUMN (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "event_at"
+check "a rename that hits sort_by and the retention column moves both (#2070)" \
+	"$(q "SELECT ttl_column || '|' || sort_by::text FROM pgcolumnar.options WHERE regclass = 'ttl_rn'::regclass;")" "event_at|{event_at,sorted_legacy}"
+check_num "expire still runs after the retention column is renamed" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+psql_run "ALTER TABLE ttl_rn RENAME COLUMN imported TO ts;"
+check_num "a column that takes the old name is not used for retention (#2070)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rn');")" "0"
+check_num "NO row inside the retention is dropped after the retention column is renamed" \
+	"$(q "SELECT count(*) FROM ttl_rn;")" "3000"
+
+# The same rename on a table that declares only retention (#2070): no sort_by and
+# no sketch_columns, as on most tables with retention. On ttl_rn, renaming ts also
+# hits sort_by, and the sort_by loop then writes the catalog row on its own. A ttl
+# block that forgot to ask for the write would still pass there. Here only the ttl
+# block asks for it. As on ttl_rn, loaded holds old values and takes the old name.
+psql_run "CREATE TABLE ttl_rnp (id int, ts timestamptz, loaded timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_rnp', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_rnp SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;"
+check_num "premise: the retention-only rename fixture has several row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_rnp');")" "3"
+check "premise: the retention-only rename fixture declares no sort_by and no sketch_columns" \
+	"$(q "SELECT coalesce(sort_by::text, 'NULL') || '|' || coalesce(sketch_columns::text, 'NULL') FROM pgcolumnar.options WHERE regclass = 'ttl_rnp'::regclass;")" "NULL|NULL"
+psql_run "ALTER TABLE ttl_rnp RENAME COLUMN ts TO event_at;"
+check "on a table that declares only retention, the retention column follows RENAME COLUMN (#2070)" \
+	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_rnp'::regclass;")" "event_at"
+check_num "on a table that declares only retention, expire still runs after the retention column is renamed (#2070)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rnp');")" "0"
+psql_run "ALTER TABLE ttl_rnp RENAME COLUMN loaded TO ts;"
+check_num "on a table that declares only retention, a column that takes the old name is not used for retention (#2070)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_rnp');")" "0"
+check_num "on a table that declares only retention, NO row inside the retention is dropped after a rename (#2070)" \
+	"$(q "SELECT count(*) FROM ttl_rnp;")" "3000"
+
+# A rename on a table that names no retention column (#2070). ttl_rniv declares
+# only an interval, so ttl_column is NULL and expire refuses it. The rename must
+# leave ttl_column NULL: writing the new name there would turn retention on for a
+# column nobody chose, and every row here is a year old. The expire check is at
+# the end of the suite, beside ttl_hiv's, for the reason given there.
+psql_run "CREATE TABLE ttl_rniv (id int, created timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_rniv', stripe_row_limit => 1000, ttl_interval => '7 days');
+	INSERT INTO ttl_rniv SELECT g, now() - interval '1 year' FROM generate_series(1, 3000) g;
+	ALTER TABLE ttl_rniv RENAME COLUMN created TO created_at;"
+check "a rename on a table with no retention column leaves ttl_column NULL (#2070)" \
+	"$(q "SELECT coalesce(ttl_column::text, 'NULL') || '|' || coalesce(ttl_interval::text, '-') FROM pgcolumnar.options WHERE regclass = 'ttl_rniv'::regclass;")" "NULL|7 days"
+
 # The interval-only half (#1341), LAST IN THE SUITE ON PURPOSE: with the reader's
 # column test removed, expire on ttl_hiv crashed the backend (PG17), and a crash
-# mid-suite takes the checks after it down with it, premises included.
+# mid-suite takes the checks after it down with it, premises included. The
+# ttl_rniv check after it expires an interval-only table too, so it sits here
+# for the same reason (#2070).
 check "and an interval without a column is no retention either" \
 	"$(ttl_state "SELECT pgcolumnar.expire('ttl_hiv');")|$(q 'SELECT count(*) FROM ttl_hiv')" "55000|3000"
+check "after a rename, a table with no retention column is still refused (55000) and keeps every row (#2070)" \
+	"$(ttl_state "SELECT pgcolumnar.expire('ttl_rniv');")|$(q 'SELECT count(*) FROM ttl_rniv')" "55000|3000"
 
 pgc_summary

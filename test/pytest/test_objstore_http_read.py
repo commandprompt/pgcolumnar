@@ -27,6 +27,12 @@ F  a read error caught in a subtransaction frees its handle when the subtransact
    not run out of external FDs. The same for a caught REST request and a caught
    s3:// export (#2158 review). A scan's own handle, also inside an outer
    EXCEPTION block, and a cursor's survive a subtransaction abort inside them.
+G  interim 1xx answers (#2090): a server that sends 100 Continue or 103 Early Hints
+   ahead of each final answer is read as if it sent none, on a read's HEAD and ranged
+   GETs, on an s3 glob's ListObjectsV2, and on the Iceberg REST catalog's requests.
+   The stdlib server cannot send them, so this file runs its own raw-socket server
+   in a thread, with its own fixture. 101 Switching Protocols is refused, not passed
+   over: the client never asks to switch.
 Survival: the server answers and the server log's "terminated by signal" count has
 not moved -- waited for first, since a crashed server comes back.
 
@@ -40,7 +46,9 @@ import re
 import shutil
 import subprocess
 import sys
+import socket
 import tempfile
+import threading
 import time
 
 import psycopg
@@ -1326,3 +1334,399 @@ def test_the_server_survives(ohr, expect):
     else:
         got = f"no ([{up}], {c1 - c0} backend crashes)"
     expect.text(got, "1", "survival: the server answers and no backend crashed")
+
+
+# ---- G: interim 1xx answers before the final one (#2090) -------------------------
+# RFC 9110 section 15.2: a client must accept one or more 1xx answers before the
+# final answer, even unasked. The read path took the first 1xx as the final answer.
+# The first path segment picks what goes ahead of every answer: inone nothing (the
+# control), i100 100 Continue, i103 103 Early Hints with a Link header, iboth both,
+# i199 an unregistered 199, i102 102 Processing. i103c sends 103 and closes the
+# connection after each answer, so every request after the first on a kept-alive
+# connection takes the stale retry.
+# i101 sends 101 Switching Protocols and then the normal answer, so a client that
+# passed over the 101 would read every row: the client never sends Upgrade, so a 101
+# is refused, as issue #2090 asks. i103x101 sends 103 and then 101, so the 101 is
+# not the first head on the wire.
+# Under it the server answers a ranged object, an s3 ListObjectsV2 of its bucket
+# (the segment is the bucket), the REST catalog paths iceberg_rest_namespaces asks,
+# and an export's PUT. With Expect, the PUT gets the interim answer as the early
+# answer to its headers; 101 there is refused too (#2156 review).
+INTERIM_SCHEMA = "pgc_objstore_http_interim"
+_CONT = b"HTTP/1.1 100 Continue\r\n\r\n"
+_EARLY = b"HTTP/1.1 103 Early Hints\r\nLink: </x>; rel=preload\r\n\r\n"
+_SWITCH = b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+_ODD = b"HTTP/1.1 199 Whatever\r\n\r\n"
+_PROC = b"HTTP/1.1 102 Processing\r\n\r\n"
+INTERIM_AHEAD = {"inone": b"", "i100": _CONT, "i103": _EARLY, "iboth": _CONT + _EARLY,
+                 "i101": _SWITCH, "i199": _ODD, "i102": _PROC, "i103x101": _EARLY + _SWITCH,
+                 "i103c": _EARLY}
+INTERIM_CLOSE = {"i103c"}
+# A 1xx read as a final answer with Connection: close waited for a body that never
+# ended, so every reading is bounded.
+INTERIM_TIMEOUT = "SET statement_timeout = '20s'"
+SWITCH_REFUSAL = "switched protocols with HTTP 101"
+
+
+def _interim_serve(conn, root, puts, puts_lock):
+    def reply(mode, status, body, extra=b"", head=False):
+        conn.sendall(INTERIM_AHEAD[mode] + b"HTTP/1.1 " + status + b"\r\nContent-Length: "
+                     + str(len(body)).encode() + b"\r\n" + extra + b"\r\n"
+                     + (b"" if head else body))
+
+    rf = conn.makefile("rb")
+    try:
+        while True:
+            line = rf.readline()
+            if not line:
+                break
+            hdr = {}
+            while True:
+                h = rf.readline()
+                if h in (b"\r\n", b""):
+                    break
+                k, _, v = h.decode().partition(":")
+                hdr[k.strip().lower()] = v.strip()
+            meth, target = line.decode().split()[:2]
+            path, _, query = target.partition("?")
+            mode, _, rest = path.lstrip("/").partition("/")
+            if mode not in INTERIM_AHEAD:
+                conn.sendall(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            elif rest.startswith("v1/"):
+                if rest == "v1/config":
+                    body = b'{"defaults":{},"overrides":{}}'
+                elif rest == "v1/namespaces" and "parent=" not in query:
+                    body = b'{"namespaces":[["interim_ns"]]}'
+                else:
+                    body = b'{"namespaces":[]}'
+                reply(mode, b"200 OK", body, b"Content-Type: application/json\r\n")
+            elif "list-type=2" in query:
+                keys = sorted(p.name for p in root.glob("*.parquet"))
+                items = "".join(f"<Contents><Key>{k}</Key><Size>{(root / k).stat().st_size}"
+                                "</Size></Contents>" for k in keys)
+                body = ('<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>'
+                        f"<KeyCount>{len(keys)}</KeyCount>{items}</ListBucketResult>").encode()
+                reply(mode, b"200 OK", body, b"Content-Type: application/xml\r\n")
+            elif meth == "PUT":
+                # An export. With Expect, the interim answer is the early answer to
+                # the headers, and the final 200 follows the body with nothing ahead.
+                early = hdr.get("expect", "").lower() == "100-continue"
+                with puts_lock:
+                    puts.append(f"PUT /{mode}/{rest} expect={int(early)}")
+                if early:
+                    conn.sendall(INTERIM_AHEAD[mode])
+                n = int(hdr.get("content-length", "0"))
+                while n > 0:
+                    got = rf.read(min(n, 65536))
+                    if not got:
+                        break
+                    n -= len(got)
+                if n > 0:
+                    break
+                if early:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                else:
+                    reply(mode, b"200 OK", b"")
+            else:
+                data = (root / pathlib.PurePosixPath(rest).name).read_bytes()
+                if meth == "HEAD":
+                    reply(mode, b"200 OK", data, head=True)
+                else:
+                    lo, hi = map(int, re.match(r"bytes=(\d+)-(\d+)", hdr["range"]).groups())
+                    reply(mode, b"206 Partial Content", data[lo:hi + 1],
+                          b"Content-Range: bytes %d-%d/%d\r\n" % (lo, hi, len(data)))
+                if mode in INTERIM_CLOSE:
+                    # Half-close, then take the next request before closing, so the
+                    # client reads a clean EOF, not a reset, and retries.
+                    conn.shutdown(socket.SHUT_WR)
+                    while rf.read(65536):
+                        pass
+                    break
+    except OSError:
+        pass
+    finally:
+        conn.close()
+
+
+def _interim_read(dsn, sql, needle=None):
+    """`sql` after INTERIM_TIMEOUT on one connection -> "no error: <rows>", or the
+    SQLSTATE and primary message it failed with. A message that holds `needle` is
+    cut to it, as the shell's refusal_of does, so the URL's port does not matter."""
+    try:
+        with _connect(dsn) as conn:
+            conn.execute(INTERIM_TIMEOUT)
+            rows = conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = exc.diag.message_primary or ""
+        if needle is not None and needle in msg:
+            msg = needle
+        return f"{exc.sqlstate}: {msg}"
+    return "no error: " + " ".join(" ".join(str(v) for v in row) for row in rows)[:200]
+
+
+@pytest.fixture(scope="module")
+def interim(pgc_cluster):
+    work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-ohr-interim-"))
+    wrote = _write_fixture(work / "fixture.parquet")
+    if wrote is not None:
+        shutil.rmtree(work, ignore_errors=True)
+        yield {"absent": wrote}
+        return
+    lsock = socket.socket()
+    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    lsock.bind(("127.0.0.1", 0))
+    lsock.listen(16)
+    stop = threading.Event()
+    puts, puts_lock = [], threading.Lock()
+
+    def accept_loop():
+        while not stop.is_set():
+            try:
+                conn, _ = lsock.accept()
+            except OSError:
+                return
+            threading.Thread(target=_interim_serve, args=(conn, work, puts, puts_lock),
+                             daemon=True).start()
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+    base = f"http://127.0.0.1:{lsock.getsockname()[1]}"
+    dsn = pgc_cluster.dsn()
+    rows = f"SELECT count(*) FROM pgcolumnar.read_parquet('{base}/%s/fixture.parquet') AS t({COLDEFS})"
+    rest = "SELECT * FROM pgcolumnar.iceberg_rest_namespaces('" + base + "/%s')"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"DROP SCHEMA IF EXISTS {INTERIM_SCHEMA} CASCADE")
+            c.execute("DROP SERVER IF EXISTS ohr_isrv CASCADE")
+            c.execute(f"CREATE SCHEMA {INTERIM_SCHEMA}")
+            c.execute("CREATE SERVER ohr_isrv FOREIGN DATA WRAPPER pgcolumnar_parquet "
+                      f"OPTIONS (endpoint '{base}', region 'us-east-1')")
+            c.execute("CREATE USER MAPPING FOR CURRENT_USER SERVER ohr_isrv "
+                      "OPTIONS (access_key_id 'pgc', secret_access_key 'pgc')")
+            for m in INTERIM_AHEAD:
+                c.execute(f"CREATE FOREIGN TABLE {INTERIM_SCHEMA}.glob_{m} ({COLDEFS}) "
+                          f"SERVER ohr_isrv OPTIONS (path 's3://{m}/*.parquet')")
+        glob = f"SELECT count(*) FROM {INTERIM_SCHEMA}.glob_%s"
+        try:
+            with socket.create_connection(lsock.getsockname(), timeout=5):
+                up = 1
+        except OSError:
+            up = 0
+        r = {"absent": None, "server up": up}
+        for m in ("inone", "i100", "i103", "iboth"):
+            r[("read", m)] = _interim_read(dsn, rows % m)
+        for m in ("inone", "i103", "iboth"):
+            r[("glob", m)] = _interim_read(dsn, glob % m)
+            r[("rest", m)] = _interim_read(dsn, rest % m)
+        r[("read", "i101")] = _interim_read(dsn, rows % "i101", SWITCH_REFUSAL)
+        r[("glob", "i101")] = _interim_read(dsn, glob % "i101", SWITCH_REFUSAL)
+        r[("rest", "i101")] = _interim_read(dsn, rest % "i101", SWITCH_REFUSAL)
+        r[("read", "i103x101")] = _interim_read(dsn, rows % "i103x101", SWITCH_REFUSAL)
+        r[("rest", "i103x101")] = _interim_read(dsn, rest % "i103x101", SWITCH_REFUSAL)
+        r[("read", "i199")] = _interim_read(dsn, rows % "i199")
+        r[("read", "i102")] = _interim_read(dsn, rows % "i102")
+        r[("read", "i103c")] = _interim_read(dsn, rows % "i103c")
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE TABLE {INTERIM_SCHEMA}.f_big (id int8, pad text) USING pgcolumnar")
+            c.execute(f"INSERT INTO {INTERIM_SCHEMA}.f_big SELECT g, md5(g::text)||md5((g+1)::text) "
+                      "FROM generate_series(1,40000) g")
+            c.execute(f"CREATE TABLE {INTERIM_SCHEMA}.f_small (id int) USING pgcolumnar")
+            c.execute(f"INSERT INTO {INTERIM_SCHEMA}.f_small SELECT generate_series(1,10)")
+        export = ("SELECT pgcolumnar.export_parquet('" + INTERIM_SCHEMA + ".%s', '"
+                  + base + "/%s/%s.parquet')")
+        r[("export big", "i100")] = _interim_read(dsn, export % ("f_big", "i100", "big"))
+        with puts_lock:
+            r["big expect"] = puts.count("PUT /i100/big.parquet expect=1")
+        r[("export big", "i103")] = _interim_read(dsn, export % ("f_big", "i103", "big"))
+        r[("export big", "i101")] = _interim_read(dsn, export % ("f_big", "i101", "big"),
+                                                  SWITCH_REFUSAL)
+        r[("export small", "i101")] = _interim_read(dsn, export % ("f_small", "i101", "small"),
+                                                    SWITCH_REFUSAL)
+        yield r
+    finally:
+        try:
+            with psycopg.connect(dsn, autocommit=True) as c:
+                c.execute(f"DROP SCHEMA IF EXISTS {INTERIM_SCHEMA} CASCADE")
+                c.execute("DROP SERVER IF EXISTS ohr_isrv CASCADE")
+        except psycopg.Error:
+            pass
+        stop.set()
+        lsock.close()
+        shutil.rmtree(work, ignore_errors=True)
+
+
+INTERIM_ROWS = f"no error: {G * ROWS_PER_GROUP}"
+
+
+def test_the_interim_answer_server_is_up(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.num(interim["server up"], 1, "premise: the interim-answer server is up")
+
+
+def test_a_read_from_the_interim_answer_server_that_sends_none_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "inone")], INTERIM_ROWS,
+                "G: control: a read from the interim-answer server that sends none reads every row")
+
+
+def test_a_read_answered_100_continue_first_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i100")], INTERIM_ROWS,
+                "G: a read whose HEAD and GETs are each answered 100 Continue first reads every row")
+
+
+def test_a_read_answered_103_early_hints_first_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i103")], INTERIM_ROWS,
+                "G: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row")
+
+
+def test_a_read_answered_100_and_then_103_first_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "iboth")], INTERIM_ROWS,
+                "G: a read answered 100 Continue and then 103 Early Hints first reads every row")
+
+
+def test_an_s3_glob_from_the_server_that_sends_no_interim_answer_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("glob", "inone")], INTERIM_ROWS,
+                "G: control: an s3 glob listed and read from the server that sends no interim answer reads every row")
+
+
+def test_an_s3_glob_answered_103_early_hints_first_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("glob", "i103")], INTERIM_ROWS,
+                "G: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row")
+
+
+def test_an_s3_glob_answered_100_and_103_first_reads_every_row(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("glob", "iboth")], INTERIM_ROWS,
+                "G: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row")
+
+
+def test_the_rest_catalog_that_sends_no_interim_answer_lists_its_namespace(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "inone")], "no error: interim_ns",
+                "G: control: the REST catalog that sends no interim answer lists its namespace")
+
+
+def test_a_rest_catalog_answering_after_103_early_hints_lists_its_namespace(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "i103")], "no error: interim_ns",
+                "G: a REST catalog whose answers each follow 103 Early Hints lists its namespace")
+
+
+def test_a_rest_catalog_answering_after_100_and_103_lists_its_namespace(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "iboth")], "no error: interim_ns",
+                "G: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace")
+
+
+def test_a_read_answered_101_switching_protocols_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a read whose HEAD is answered 101 Switching Protocols first is refused")
+
+
+def test_an_s3_glob_answered_101_switching_protocols_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("glob", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: an s3 glob whose LIST is answered 101 Switching Protocols first is refused")
+
+
+def test_a_rest_catalog_answering_after_101_switching_protocols_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a REST catalog whose answer follows 101 Switching Protocols is refused")
+
+
+def test_a_read_answered_103_and_then_101_is_refused(interim, expect):
+    # Each head is checked for 101, not only the first (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused")
+
+
+def test_a_rest_catalog_answering_after_103_and_then_101_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("rest", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused")
+
+
+def test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row(interim, expect):
+    # 199 pins the top of the 1xx range: a loop that stops at 104 reads it as final.
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i199")], INTERIM_ROWS,
+                "G: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row")
+
+
+def test_a_read_answered_102_processing_first_reads_every_row(interim, expect):
+    # 102 is passed over like any other 1xx but 101: only 101 is refused.
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i102")], INTERIM_ROWS,
+                "G: a read whose HEAD and GETs are each answered 102 Processing first reads every row")
+
+
+def test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row(interim, expect):
+    # Each request after the first takes the stale keep-alive retry, which passes
+    # over the 1xx as the first attempt does (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("read", "i103c")], INTERIM_ROWS,
+                "G: a read from a server that sends 103 Early Hints and closes after each answer reads every row")
+
+
+def test_a_large_export_whose_expect_is_answered_100_continue_is_written(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i100")], "no error: 40000",
+                "G: control: a large export whose Expect is answered 100 Continue is written")
+
+
+def test_the_large_export_was_sent_with_expect(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.num(interim["big expect"], 1,
+               "premise: the large export was sent with Expect: 100-continue")
+
+
+def test_a_large_export_whose_expect_is_answered_103_early_hints_is_written(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i103")], "no error: 40000",
+                "G: a large export whose Expect is answered 103 Early Hints is written")
+
+
+def test_a_large_export_whose_expect_is_answered_101_is_refused(interim, expect):
+    # The early answer during the Expect wait refuses 101 too (#2156 review).
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export big", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a large export whose Expect is answered 101 Switching Protocols is refused")
+
+
+def test_a_small_export_answered_101_first_is_refused(interim, expect):
+    if _declined(interim, expect):
+        return
+    expect.text(interim[("export small", "i101")], f"08P01: {SWITCH_REFUSAL}",
+                "G: a small export answered 101 Switching Protocols first is refused")
