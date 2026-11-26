@@ -96,7 +96,7 @@ bool		pgcolumnar_objstore_buffered = true;	/* #393 */
 bool		pgcolumnar_objstore_pin_reads = true;	/* #1866 */
 int			pgcolumnar_objstore_part_size = 0;	/* #394 remote part size */
 char	   *pgcolumnar_objstore_allowed_endpoints = NULL;	/* #393 allow-list */
-char	   *pgcolumnar_objstore_s3_addressing = NULL;	/* #621 path|virtual */
+int			pgcolumnar_objstore_s3_addressing = COLUMNAR_S3_ADDRESSING_PATH;	/* #621, #2091 */
 bool		pgcolumnar_autovacuum = false;		/* #415 daemon master switch */
 int			pgcolumnar_autovacuum_naptime = 60;
 double		pgcolumnar_autovacuum_compact_threshold = 0.2;
@@ -104,6 +104,13 @@ double		pgcolumnar_autovacuum_recluster_threshold = 0.05;
 bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
+
+/* pgcolumnar.objstore_s3_addressing (#621, #2091) */
+static const struct config_enum_entry pgcolumnar_s3_addressing_options[] = {
+	{"path", COLUMNAR_S3_ADDRESSING_PATH, false},
+	{"virtual", COLUMNAR_S3_ADDRESSING_VIRTUAL, false},
+	{NULL, 0, false}
+};
 
 /* value set for columnar.compression (spec 5, 8.3) */
 static const struct config_enum_entry pgcolumnar_compression_options[] = {
@@ -4873,18 +4880,21 @@ _PG_init(void)
 
 	/*
 	 * S3 addressing style (#621), read by the object-store module via
-	 * GetConfigOption. "path" (the default) sends s3://bucket/key to
-	 * endpoint/bucket/key; "virtual" sends it to bucket.endpoint/key, which is
-	 * what AWS now prefers. Any value other than "virtual" is treated as path.
+	 * GetConfigOption, which returns the option's name. "path" (the default)
+	 * sends s3://bucket/key to endpoint/bucket/key; "virtual" sends it to
+	 * bucket.endpoint/key, which is what AWS now prefers. An enum, so SET
+	 * refuses any other value (#2091): as a free-form string it accepted a typo
+	 * such as 'virtaul' and quietly addressed path-style.
 	 */
-	DefineCustomStringVariable("pgcolumnar.objstore_s3_addressing",
-							   "S3 request addressing style: 'path' or 'virtual'.",
-							   "Virtual-host puts the bucket in the hostname (bucket.endpoint); path keeps it as the first path segment.",
-							   &pgcolumnar_objstore_s3_addressing,
-							   "path",
-							   PGC_USERSET,
-							   0,
-							   NULL, NULL, NULL);
+	DefineCustomEnumVariable("pgcolumnar.objstore_s3_addressing",
+							 "S3 request addressing style: 'path' or 'virtual'.",
+							 "Virtual-host puts the bucket in the hostname (bucket.endpoint); path keeps it as the first path segment.",
+							 &pgcolumnar_objstore_s3_addressing,
+							 COLUMNAR_S3_ADDRESSING_PATH,
+							 pgcolumnar_s3_addressing_options,
+							 PGC_USERSET,
+							 0,
+							 NULL, NULL, NULL);
 
 	/*
 	 * Dev fault injection for the export sink (#394): fail the sink, as
