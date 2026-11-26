@@ -2055,4 +2055,15 @@ guard_tests 895
 # an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
 # less guard_tests 895.
-cluster_tests 5523
+# cluster_tests 5523 -> 5526 for #2063 in test_unique_conc.py: test_an_exclusion_constraint and
+# test_a_deferrable_unique_constraint, parametrized initially immediate and initially deferred, by
+# collection: 6273 tests collected, less guard_tests 894.
+# cluster_tests 5526 -> 5527 for #2063 in test_unique_conc.py: test_a_btree_exclusion_constraint, by
+# collection: 6274 tests collected, less guard_tests 894.
+# cluster_tests 5527 -> 5529 for #2063 in test_update_conc.py: test_an_update_on_an_exclusion_constrained_table,
+# parametrized xb (btree (id WITH =)) and xg (gist &&), by collection over the files NO_CLUSTER does not name,
+# as ci.yml selects them: 5404 tests collected.
+# cluster_tests 5529 -> 5531 for #2063 in test_unique_conc.py: test_a_deferrable_exclusion_constraint,
+# parametrized xg-DEFERRED (gist &&) and xb-IMMEDIATE (btree =), by collection over the files NO_CLUSTER
+# does not name, as ci.yml selects them: 5486 tests collected.
+cluster_tests 5531
