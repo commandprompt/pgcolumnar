@@ -2241,4 +2241,9 @@ guard_tests 897
 # ACCESS EXCLUSIVE on another table), test_parallel_copy_refusal_order_with_a_lock_the_caller_holds (2
 # parametrized: 55000 before #2080's 0A000, 42501 before 55000) and test_parallel_copy_a_refused_load_loads_nothing,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 5658
+# cluster_tests 5658 -> 5665 for the #2212 review of #2183: in test_parallel_export_parquet.py one more case of
+# test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on (an export in a savepoint keeps 25001), and in
+# test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
+# still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
+# mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
+cluster_tests 5665

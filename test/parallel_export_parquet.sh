@@ -545,6 +545,12 @@ check "parallel_export_parquet while the transaction holds ACCESS EXCLUSIVE on a
 check "parallel_export_parquet of a partitioned table after LOCK TABLE on one leaf IN ACCESS EXCLUSIVE MODE is refused with 55000 (#2183)" \
 	"$(self_lock_export "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE" t_part "$PGC_WORKDIR/lk_leaf")" \
 	'55000|pgcolumnar.parallel_export_parquet cannot run while this transaction holds AccessExclusiveLock on "t_p1"'
+# An export can never run in a subtransaction: ExportSnapshot refuses it with
+# 25001 before any worker starts. The lock refusal must not hide that error behind
+# a 55000 whose hint cannot help (#2212 review).
+check "parallel_export_parquet in a savepoint after LOCK TABLE IN ACCESS EXCLUSIVE MODE keeps the subtransaction refusal 25001 (#2183)" \
+	"$(self_lock_export "SAVEPOINT s; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE" t_lk "$PGC_WORKDIR/lk_subx")" \
+	'25001|cannot export a snapshot from a subtransaction'
 
 check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 

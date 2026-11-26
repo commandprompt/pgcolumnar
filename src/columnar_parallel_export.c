@@ -1005,9 +1005,14 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 			}
 			PgColumnarParquetCheckExportable(part);
 			table_close(part, AccessShareLock);
-			/* a worker opens each leaf with ACCESS SHARE (#2183) */
-			PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
-											leafoids[i], AccessShareLock);
+			/*
+			 * A worker opens each leaf with ACCESS SHARE (#2183). Not in a
+			 * subtransaction: ExportSnapshot below refuses that with 25001
+			 * before any worker starts, and that error says what to change.
+			 */
+			if (!IsSubTransaction())
+				PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
+												leafoids[i], AccessShareLock);
 		}
 		single_table = false;
 		ntasks = npart;
@@ -1019,9 +1024,10 @@ pgcolumnar_parallel_export_parquet(PG_FUNCTION_ARGS)
 		List	   *groups;
 
 		PgColumnarParquetCheckExportable(rel);
-		/* a worker opens the table with ACCESS SHARE (#2183) */
-		PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
-										relid, AccessShareLock);
+		/* a worker opens the table with ACCESS SHARE (#2183); see the leaf case */
+		if (!IsSubTransaction())
+			PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_export_parquet",
+											relid, AccessShareLock);
 		storageId = PgColumnarStorageId(rel);
 		groups = PgColumnarReadRowGroupList(storageId, PgColumnarCatalogSnapshot(snap));
 		ntasks = list_length(groups);

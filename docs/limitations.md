@@ -335,6 +335,12 @@ these constraints.
   would wait for the caller until the statement timed out.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
+- The check covers only the target and its partitions. The load still waits
+  until `statement_timeout` when the calling transaction locks another table
+  the loaders need. One example is a table the target references through a
+  foreign key. Others are a table a trigger on the target writes to, and a
+  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
+  `parallel_copy` before taking such locks, or after `COMMIT`.
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).

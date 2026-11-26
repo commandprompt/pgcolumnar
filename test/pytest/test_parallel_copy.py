@@ -779,6 +779,20 @@ def pcopy(pgc_cluster, server_dir):
                "GRANT SELECT, UPDATE ON t_lko TO pcopy_noins")
         r["lk order unique"] = _self_lock_copy(db.dsn, "LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
         r["lk order acl"] = _self_lock_copy(db.dsn, "SET ROLE pcopy_noins; LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
+        # the rest of the conflict table, and the partition tree in depth (#2212 review)
+        db.run("CREATE TABLE t_lk2 (id int, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_lk2_a PARTITION OF t_lk2 FOR VALUES FROM (MINVALUE) TO (2501) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_lk2_a1 PARTITION OF t_lk2_a FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar; "
+               "CREATE TABLE t_lk2_a2 PARTITION OF t_lk2_a FOR VALUES FROM (1251) TO (2501) USING pgcolumnar; "
+               "CREATE TABLE t_lk2_b PARTITION OF t_lk2 FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar")
+        for key, setup, table in (
+                ("lk sue", "LOCK TABLE t_lkc IN SHARE UPDATE EXCLUSIVE MODE", "t_lkc"),
+                ("lk excl", "LOCK TABLE t_lkc IN EXCLUSIVE MODE", "t_lkc"),
+                ("lk sre", "LOCK TABLE t_lkc IN SHARE ROW EXCLUSIVE MODE", "t_lkc"),
+                ("lk only parent", "LOCK TABLE ONLY t_lkp IN SHARE MODE", "t_lkp"),
+                ("lk only mid", "LOCK TABLE ONLY t_lk2_a IN ACCESS EXCLUSIVE MODE", "t_lk2"),
+                ("lk deep leaf", "LOCK TABLE t_lk2_a1 IN SHARE MODE", "t_lk2")):
+            r[key] = _self_lock_copy(db.dsn, setup, table, f)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1251,6 +1265,32 @@ def test_parallel_copy_refusal_order_with_a_lock_the_caller_holds(pcopy, expect,
     a lock the caller holds (55000), then a unique index with more than one worker
     (0A000). The unique-index hint says "workers => 1", which would only lead a caller
     holding SHARE to the lock refusal, so that refusal comes first."""
+    expect.text(pcopy[key], want, name)
+
+
+@pytest.mark.parametrize("key,want,name", [
+    ("lk sue", "none|5000",
+     "parallel_copy after LOCK TABLE IN SHARE UPDATE EXCLUSIVE MODE in the same transaction still loads (#2183)"),
+    ("lk excl", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ExclusiveLock on "t_lkc"',
+     "parallel_copy after LOCK TABLE IN EXCLUSIVE MODE in the same transaction is refused with 55000, naming"
+     " ExclusiveLock (#2183)"),
+    ("lk sre", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareRowExclusiveLock on "t_lkc"',
+     "parallel_copy after LOCK TABLE IN SHARE ROW EXCLUSIVE MODE in the same transaction is refused with 55000,"
+     " naming ShareRowExclusiveLock (#2183)"),
+    ("lk only parent", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkp"',
+     "parallel_copy into a partitioned table after LOCK TABLE ONLY the parent IN SHARE MODE is refused with 55000,"
+     " naming the parent (#2183)"),
+    ("lk only mid", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lk2_a"',
+     "parallel_copy into a two-level partitioned table after LOCK TABLE ONLY the mid level IN ACCESS EXCLUSIVE MODE is"
+     " refused with 55000, naming it (#2183)"),
+    ("lk deep leaf", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lk2_a1"',
+     "parallel_copy into a two-level partitioned table after LOCK TABLE on a second-level leaf IN SHARE MODE is"
+     " refused with 55000, naming it (#2183)")])
+def test_parallel_copy_lock_modes_and_partition_depth(pcopy, expect, key, want, name):
+    """#2183, #2212 review: the rest of PostgreSQL's conflict table for ROW EXCLUSIVE
+    (SHARE UPDATE EXCLUSIVE still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused,
+    each naming its mode), and the partition tree in depth (ONLY the parent, ONLY a
+    partitioned mid level, a second-level leaf)."""
     expect.text(pcopy[key], want, name)
 
 

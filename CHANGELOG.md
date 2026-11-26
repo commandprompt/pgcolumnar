@@ -666,9 +666,10 @@ true until the next version shipped.
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
 - `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
-  wait until `statement_timeout` when the calling transaction already holds a
-  lock their workers' lock conflicts with, as after `LOCK TABLE ... IN ACCESS
-  EXCLUSIVE MODE` or `TRUNCATE` in the same transaction (#2183). Export workers
+  wait until `statement_timeout` when the calling transaction already holds,
+  on the target or one of its partitions, a lock their workers' lock conflicts
+  with, as after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` or `TRUNCATE` in the
+  same transaction (#2183). Export workers
   open the table, or each leaf, with ACCESS SHARE; parallel_copy's coordinator and
   loaders open the target, and the partitions they route to, with ROW EXCLUSIVE.
   Each worker runs in its own transaction, outside the caller's lock group, and
@@ -681,7 +682,10 @@ true until the next version shipped.
   parallel_copy still runs under ROW EXCLUSIVE or SHARE UPDATE EXCLUSIVE, or with
   any lock on another table. `parallel_copy` checks INSERT (42501) first, then
   this lock, then its unique-index refusal (#2080), so a caller holding SHARE on
-  a table with a primary key gets 55000. `parallel_export_parquet.sh`, `parallel_copy.sh`,
+  a table with a primary key gets 55000. An export in a savepoint still gets
+  25001, as before. A lock on a table the loaders reach only through a foreign
+  key, a trigger or a sequence still makes `parallel_copy` wait; see
+  docs/limitations.md. `parallel_export_parquet.sh`, `parallel_copy.sh`,
   `test_parallel_export_parquet.py` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg

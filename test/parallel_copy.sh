@@ -957,5 +957,34 @@ check "parallel_copy into a primary-key table under the caller's SHARE lock gets
 check "parallel_copy gives a caller without INSERT that holds SHARE on the table 42501 before the lock refusal (#2183)" \
 	"$(PGOPTIONS='-c role=pcopy_noins' self_lock_copy "LOCK TABLE t_lko IN SHARE MODE" t_lko)" \
 	'42501|permission denied for table t_lko'
+# The rest of the conflict table, and the partition tree in depth (#2212 review).
+# SHARE UPDATE EXCLUSIVE is stronger than ROW EXCLUSIVE by number but does not
+# conflict with it, so the load runs; EXCLUSIVE and SHARE ROW EXCLUSIVE conflict,
+# and each refusal names its mode. LOCK TABLE ONLY locks the parent alone, and
+# t_lk2 has a partitioned partition t_lk2_a, so both the mid level and a
+# second-level leaf must be checked.
+psql_run "DROP TABLE IF EXISTS t_lk2 CASCADE;
+          CREATE TABLE t_lk2 (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_lk2_a PARTITION OF t_lk2 FOR VALUES FROM (MINVALUE) TO (2501) PARTITION BY RANGE (id);
+          CREATE TABLE t_lk2_a1 PARTITION OF t_lk2_a FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar;
+          CREATE TABLE t_lk2_a2 PARTITION OF t_lk2_a FOR VALUES FROM (1251) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_lk2_b PARTITION OF t_lk2 FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+check "parallel_copy after LOCK TABLE IN SHARE UPDATE EXCLUSIVE MODE in the same transaction still loads (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN SHARE UPDATE EXCLUSIVE MODE" t_lkc)" "none|5000"
+check "parallel_copy after LOCK TABLE IN EXCLUSIVE MODE in the same transaction is refused with 55000, naming ExclusiveLock (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN EXCLUSIVE MODE" t_lkc)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ExclusiveLock on "t_lkc"'
+check "parallel_copy after LOCK TABLE IN SHARE ROW EXCLUSIVE MODE in the same transaction is refused with 55000, naming ShareRowExclusiveLock (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN SHARE ROW EXCLUSIVE MODE" t_lkc)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareRowExclusiveLock on "t_lkc"'
+check "parallel_copy into a partitioned table after LOCK TABLE ONLY the parent IN SHARE MODE is refused with 55000, naming the parent (#2183)" \
+	"$(self_lock_copy "LOCK TABLE ONLY t_lkp IN SHARE MODE" t_lkp)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkp"'
+check "parallel_copy into a two-level partitioned table after LOCK TABLE ONLY the mid level IN ACCESS EXCLUSIVE MODE is refused with 55000, naming it (#2183)" \
+	"$(self_lock_copy "LOCK TABLE ONLY t_lk2_a IN ACCESS EXCLUSIVE MODE" t_lk2)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lk2_a"'
+check "parallel_copy into a two-level partitioned table after LOCK TABLE on a second-level leaf IN SHARE MODE is refused with 55000, naming it (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lk2_a1 IN SHARE MODE" t_lk2)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lk2_a1"'
 
 pgc_summary

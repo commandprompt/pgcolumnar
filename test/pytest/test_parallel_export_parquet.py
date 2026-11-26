@@ -419,7 +419,8 @@ def pep(pgc_cluster, server_dir):
                 ("lk trunc", "TRUNCATE t_lk", "t_lk"),
                 ("lk share", "LOCK TABLE t_lk IN SHARE MODE", "t_lk"),
                 ("lk other", "LOCK TABLE t_lk_other IN ACCESS EXCLUSIVE MODE", "t_lk"),
-                ("lk leaf", "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE", "t_part")):
+                ("lk leaf", "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE", "t_part"),
+                ("lk subx", "SAVEPOINT s; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE", "t_lk")):
             r[key] = _self_lock_export(dsn, setup, table, w / key.replace(" ", "_"))
 
         r["up"] = _survived(pgc_cluster, db, before)
@@ -685,7 +686,10 @@ def test_pexport_workers_use_the_callers_group_byte_cap(pep, expect):
     ("lk leaf", '55000|pgcolumnar.parallel_export_parquet cannot run while this transaction holds AccessExclusiveLock'
      ' on "t_p1"',
      "parallel_export_parquet of a partitioned table after LOCK TABLE on one leaf IN ACCESS EXCLUSIVE MODE is"
-     " refused with 55000 (#2183)")])
+     " refused with 55000 (#2183)"),
+    ("lk subx", "25001|cannot export a snapshot from a subtransaction",
+     "parallel_export_parquet in a savepoint after LOCK TABLE IN ACCESS EXCLUSIVE MODE keeps the subtransaction"
+     " refusal 25001 (#2183)")])
 def test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on(pep, expect, key, want, name):
     """#2183: the workers take ACCESS SHARE on the table, or each leaf, in their own
     transactions, outside the caller's lock group, and the caller waits for them on a
