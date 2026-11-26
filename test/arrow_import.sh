@@ -582,6 +582,12 @@ extra = {
     'tu_bin': pa.array([b'ab'], pa.binary()),
     'tu_bool': pa.array([True], pa.bool_()),
     'tu_lf64': pa.array([[1.5]], pa.list_(pa.float64())),
+    # A struct whose one field is float64, and one whose field is a decimal.
+    # Each goes into a composite (a bigint), where the field must be refused
+    # by its own type, as a top-level column of that type is.
+    'tu_sf64': pa.array([{'a': 1.5}, {'a': -2.0}], pa.struct([('a', pa.float64())])),
+    'tu_sdec': pa.array([{'a': decimal.Decimal(7)}, {'a': decimal.Decimal(-3)}],
+                        pa.struct([('a', pa.decimal128(10, 0))])),
     # Two rows each, so a reader that takes 64-bit offsets as 32-bit ones
     # stores a wrong value rather than failing (#2082).
     'tu_lstr': pa.array(['a', 'b'], pa.large_string()),
@@ -895,6 +901,19 @@ PY
 		"$(tu_import_state tu_bool int)" "42804"
 	check "a list of float64 is refused for a bigint[] column (#2082)" \
 		"$(tu_import_state tu_lf64 'bigint[]')" "42804"
+	# A struct field is checked by its own type too. No check pinned that:
+	# with a two-token change that skips the type check for struct fields
+	# only, every check here stayed green, and these two imported raw bytes:
+	#
+	#     struct<a: float64> 1.5, -2.0     into (a bigint) -> (4609434218613702656),
+	#                                                         (-4611686018427387904)
+	#     struct<a: decimal128(10,0)> 7, -3 into (a bigint) -> (7), (0)
+	psql_run "DROP TYPE IF EXISTS tu_sb CASCADE; CREATE TYPE tu_sb AS (a bigint);" \
+		>/dev/null 2>&1
+	check "a struct field of float64 is refused for a composite (a bigint) field (#2082)" \
+		"$(tu_import_state tu_sf64 tu_sb)" "42804"
+	check "a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)" \
+		"$(tu_import_state tu_sdec tu_sb)" "42804"
 	tu_import_state tu_f64 bigint >/dev/null
 	check "and a cross-family refusal leaves the target empty (#2082)" \
 		"$(q "SELECT count(*) FROM tu_t;")" "0"
@@ -1052,6 +1071,8 @@ else
 			"a string file is refused for bigint, not called malformed (#2082)" \
 			"a boolean file is refused for a 4-byte int (#2082)" \
 			"a list of float64 is refused for a bigint[] column (#2082)" \
+			"a struct field of float64 is refused for a composite (a bigint) field (#2082)" \
+			"a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)" \
 			"and a cross-family refusal leaves the target empty (#2082)" \
 			"control: an int64 file still imports into timestamp as microseconds (#2082)" \
 			"control: a string file still imports into bytea (#2082)" \
