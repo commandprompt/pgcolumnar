@@ -1360,6 +1360,27 @@ ice_current_schema_fields(JsonbContainer *root, const char *path)
 }
 
 /*
+ * Refuse a schema field that carries a non-null "initial-default" (#2087).
+ * Format-version 3 lets a field added to an existing table name the value a
+ * reader must return for it in data files written before it existed. This
+ * reader does not apply that value: it would read those rows as null, and an
+ * equality delete would compare them as null. So refuse the field instead of
+ * returning wrong values. A null initial-default is the same as none.
+ */
+static void
+ice_refuse_initial_default(JsonbContainer *field, const char *name)
+{
+	JsonbValue *def = ice_field(field, "initial-default");
+
+	if (def != NULL && def->type != jbvNull)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("iceberg: field \"%s\" has an initial-default, which pgColumnar cannot apply",
+						name),
+				 errdetail("Rows in data files written before the field was added would read as null, not as the default.")));
+}
+
+/*
  * Build the field id to bind each output column to, by matching the output
  * column name to a field in the table's current schema. Returns a palloc'd array
  * of one id per non-dropped attribute, in attribute order; *nout is its length.
@@ -1427,6 +1448,7 @@ ice_field_ids_for_columns(JsonbContainer *root, TupleDesc tupdesc,
 									? pnstrdup(kind->val.string.val, kind->val.string.len)
 									: "nested")));
 				}
+				ice_refuse_initial_default(f->val.binary.data, nm);
 				fid = ice_schema_field_id(f->val.binary.data,
 										  fn->val.string.val, fn->val.string.len);
 				if (fid >= 0)
@@ -2973,6 +2995,7 @@ ice_eq_col_type(JsonbContainer *root, int32 fid, const char *path,
 		*fname = (fn != NULL && fn->type == jbvString)
 			? pnstrdup(fn->val.string.val, fn->val.string.len)
 			: psprintf("field_%d", fid);
+		ice_refuse_initial_default(f->val.binary.data, *fname);
 		ft = ice_field(f->val.binary.data, "type");
 		if (ft == NULL || ft->type != jbvString)
 			ereport(ERROR,
