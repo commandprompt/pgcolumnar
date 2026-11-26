@@ -2058,13 +2058,59 @@ guard_tests 899
 # an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
 # less guard_tests 895.
-# cluster_tests 5523 -> 5539 for #2093's sixteen tests (the documented examples run as written, in
+# cluster_tests 5523 -> 5526 for #2063 in test_unique_conc.py: test_an_exclusion_constraint and
+# test_a_deferrable_unique_constraint, parametrized initially immediate and initially deferred, by
+# collection: 6273 tests collected, less guard_tests 894.
+# cluster_tests 5526 -> 5527 for #2063 in test_unique_conc.py: test_a_btree_exclusion_constraint, by
+# collection: 6274 tests collected, less guard_tests 894.
+# cluster_tests 5527 -> 5529 for #2063 in test_update_conc.py: test_an_update_on_an_exclusion_constrained_table,
+# parametrized xb (btree (id WITH =)) and xg (gist &&), by collection over the files NO_CLUSTER does not name,
+# as ci.yml selects them: 5404 tests collected.
+# cluster_tests 5529 -> 5531 for #2063 in test_unique_conc.py: test_a_deferrable_exclusion_constraint,
+# parametrized xg-DEFERRED (gist &&) and xb-IMMEDIATE (btree =), by collection over the files NO_CLUSTER
+# does not name, as ci.yml selects them: 5486 tests collected.
+# cluster_tests 5531 -> 5545 for #2090 in test_objstore_http_read.py: 11 tests for interim 1xx answers
+# (a premise, three controls, seven reads past 100 and 103) and 3 that refuse 101 Switching Protocols:
+#   test_the_interim_answer_server_is_up
+#   test_a_read_from_the_interim_answer_server_that_sends_none_reads_every_row
+#   test_a_read_answered_100_continue_first_reads_every_row
+#   test_a_read_answered_103_early_hints_first_reads_every_row
+#   test_a_read_answered_100_and_then_103_first_reads_every_row
+#   test_an_s3_glob_from_the_server_that_sends_no_interim_answer_reads_every_row
+#   test_an_s3_glob_answered_103_early_hints_first_reads_every_row
+#   test_an_s3_glob_answered_100_and_103_first_reads_every_row
+#   test_the_rest_catalog_that_sends_no_interim_answer_lists_its_namespace
+#   test_a_rest_catalog_answering_after_103_early_hints_lists_its_namespace
+#   test_a_rest_catalog_answering_after_100_and_103_lists_its_namespace
+#   test_a_read_answered_101_switching_protocols_first_is_refused
+#   test_an_s3_glob_answered_101_switching_protocols_first_is_refused
+#   test_a_rest_catalog_answering_after_101_switching_protocols_is_refused
+# by collection before the merge of origin/main f29bf592: the cluster files alone collected 5390.
+# cluster_tests 5545 -> 5551 for the #2156 review in test_objstore_http_read.py: a read past an
+# unregistered 199, two large exports past an early 100 and 103, a premise that the large export
+# sent Expect, and two exports that refuse 101 (one on the early answer, one on the final answer):
+#   test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row
+#   test_a_large_export_whose_expect_is_answered_100_continue_is_written
+#   test_the_large_export_was_sent_with_expect
+#   test_a_large_export_whose_expect_is_answered_103_early_hints_is_written
+#   test_a_large_export_whose_expect_is_answered_101_is_refused
+#   test_a_small_export_answered_101_first_is_refused
+# by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5418 tests collected.
+# cluster_tests 5551 -> 5555 for the second #2156 review in test_objstore_http_read.py: a read and a
+# REST catalog that refuse 101 after 103, a read past 102, and a read whose server sends 103 and
+# closes after each answer, so the stale keep-alive retry passes over the 1xx too:
+#   test_a_read_answered_103_and_then_101_is_refused
+#   test_a_rest_catalog_answering_after_103_and_then_101_is_refused
+#   test_a_read_answered_102_processing_first_reads_every_row
+#   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
+# by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
+# cluster_tests 5555 -> 5571 for #2093's sixteen tests (the documented examples run as written, in
 # test_native_cluster.py, test_parquet_import.py, test_rollup.py and test_parallel_copy.py), by collection
-# over the cluster files (the complement of NO_CLUSTER) after the merge of main 6b54a65a: 5539 tests
-# collected (5511 after the merge of main 26bb5236); NO_CLUSTER collects guard_tests 899.
-# cluster_tests 5539 -> 5543 for #2093's four tests from the review of #2159 at f89f48e6: in
+# over the cluster files (the complement of NO_CLUSTER) after the merge of main 3dd019fe: 5571 tests
+# collected (5539 after the merge of main 6b54a65a); NO_CLUSTER collects guard_tests 899.
+# cluster_tests 5571 -> 5575 for #2093's four tests from the review of #2159 at f89f48e6: in
 # test_parallel_copy.py, every page gives the same four-worker slot figure, four workers fail one slot
 # short of it and load at it; in test_parquet_import.py, the how-to's object-storage read_parquet example
-# runs. By collection over the cluster files (the complement of NO_CLUSTER): 5543 tests collected after the merge
-# of main 6b54a65a (5515 before it).
-cluster_tests 5543
+# runs. By collection over the cluster files (the complement of NO_CLUSTER): 5575 tests collected after the merge
+# of main 3dd019fe (5543 after the merge of main 6b54a65a).
+cluster_tests 5575

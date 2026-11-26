@@ -642,6 +642,51 @@ true until the next version shipped.
   object-storage `read_parquet` example, on a local file.
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
+- A remote read no longer fails when the server or a proxy sends an interim
+  1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
+  (#2090). `read_parquet` and the Parquet foreign table failed with
+  `unexpected HTTP status 103`. An `s3://` glob or prefix failed with
+  `LIST ... returned HTTP 103`. The Iceberg REST catalog functions took the
+  interim answer as the reply; against a server that kept the connection open
+  they waited until the statement timed out. RFC 9110
+  section 15.2 says a client must accept such answers even when it did not ask
+  for them, and CDNs send 103 unasked. The reader now passes over every 1xx
+  answer and reads the final one, as the export path already did. That
+  includes a 1xx no RFC registers, such as 199.
+  `101 Switching Protocols` is now refused with `switched protocols with HTTP
+  101`, on reads and exports alike, because the client never asks to switch.
+  A 101 that follows another 1xx, such as `103` and then `101`, is refused
+  the same way.
+  An export over 1 MiB, which sends `Expect: 100-continue`, also refuses a 101
+  that answers its headers before the body; before, it sent the body and took
+  the next answer.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- Two overlapping inserts can no longer both commit rows that violate an
+  exclusion constraint or a `DEFERRABLE` unique constraint (#2063). A columnar
+  row stays in its backend's buffer until the statement ends, so another
+  backend's constraint check could not see it, did not wait, and let the
+  conflicting row in. Since #5 a transaction-scoped advisory lock closes that
+  window, but it covered only immediate unique indexes. It now also covers
+  deferrable unique indexes, by key, and exclusion constraints, immediate or
+  deferrable, with one lock for the whole index because the operator need not
+  be equality. The second
+  insert now waits for the first and fails with 23P01 or 23505, as on heap.
+  While one insert statement into a table with an exclusion constraint runs, a
+  second insert into that table now waits for it even when the rows do not
+  conflict, unless the second row's key holds a NULL. As before, two
+  transactions that insert into two pgcolumnar tables in opposite order can fail
+  with `deadlock_detected` (40P01) even when no rows conflict; on heap both
+  commit. Retry on 40P01. An `UPDATE` on a table with a
+  deferrable unique index or an exclusion constraint now also serializes each row
+  as it reaches it (#1421), as it already did with an immediate unique index. The
+  loser of two concurrent updates of one row on an exclusion-constrained table
+  now gets `serialization_failure` (40001), not `exclusion_violation` (23P01).
+  Each row inserted into a table with a deferrable unique index now takes a lock,
+  as with an immediate one, so a bulk insert into many such partitions may need a
+  higher `max_locks_per_transaction`.
+  docs/limitations.md.
+  `test/unique_conc.sh` and `test_unique_conc.py`; the exclusion-constraint arm
+  of `test/update_conc.sh` and `test_update_conc.py`.
 - A remote read that fails inside a subtransaction now closes its connection
   when the subtransaction aborts (#2089). Before, the handle stayed open until
   the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
