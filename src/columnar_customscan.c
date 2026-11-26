@@ -294,6 +294,47 @@ pgcolumnar_commute_strategy(StrategyNumber s)
 	}
 }
 
+
+/*
+ * The date_trunc units pgcolumnar_preimage_range_scankey can key, with the width
+ * of one bucket. The step for `month` is not a fixed number of seconds, so it is
+ * an interval applied by calendar arithmetic. Units not listed are DECLINED
+ * rather than approximated: date_trunc accepts more (microseconds, decade,
+ * century, millennium, plurals), and each would need its own entry proved first.
+ * pgcolumnar_operand_keyable reads the same table (#2065), so the two cannot
+ * disagree about which units are keys.
+ */
+static const struct
+{
+	const char *unit;
+	const char *step;
+}			pgcolumnar_date_trunc_units[] = {
+	{"second", "1 second"},
+	{"minute", "1 minute"},
+	{"hour", "1 hour"},
+	{"day", "1 day"},
+	{"week", "1 week"},
+	{"month", "1 month"},
+	{"quarter", "3 months"},
+	{"year", "1 year"},
+};
+
+/*
+ * The step for `unit`, or NULL when the table does not list it. The comparison
+ * is case-insensitive because date_trunc's own is.
+ */
+static const char *
+pgcolumnar_date_trunc_step(text *unit)
+{
+	char	   *unitStr = text_to_cstring(unit);
+	int			i;
+
+	for (i = 0; i < (int) lengthof(pgcolumnar_date_trunc_units); i++)
+		if (pg_strcasecmp(unitStr, pgcolumnar_date_trunc_units[i].unit) == 0)
+			return pgcolumnar_date_trunc_units[i].step;
+	return NULL;
+}
+
 /*
  * pgcolumnar_preimage_range_scankey
  *		Rewrite `f(col) OP const` into a bound on col, for a function whose
@@ -472,43 +513,13 @@ pgcolumnar_preimage_range_scankey(OpExpr *op, Index scanrelid, TupleDesc tupdesc
 	 */
 
 	/*
-	 * hi is where the NEXT bucket starts, so the step is one unit wide.
-	 *
-	 * This IS a table of unit names, and it is the honest way to do it: the
-	 * step for `month` is not a fixed number of seconds, so it has to be
-	 * expressed as an interval and applied by the calendar arithmetic that
-	 * knows about month lengths. Units not listed here are DECLINED rather than
-	 * approximated -- `date_trunc` accepts more of them (microseconds, decade,
-	 * century, millennium), and each would need its own entry proved before it
-	 * could be trusted.
-	 *
-	 * The comparison is case-insensitive because date_trunc's own is.
+	 * hi is where the NEXT bucket starts, so the step is one unit wide. The
+	 * step comes from the table pgcolumnar_date_trunc_units, which declines a
+	 * unit it does not list.
 	 */
 	{
-		static const struct
-		{
-			const char *unit;
-			const char *step;
-		}			units[] = {
-			{"second", "1 second"},
-			{"minute", "1 minute"},
-			{"hour", "1 hour"},
-			{"day", "1 day"},
-			{"week", "1 week"},
-			{"month", "1 month"},
-			{"quarter", "3 months"},
-			{"year", "1 year"},
-		};
-		char	   *unitStr = text_to_cstring(unit);
-		const char *stepStr = NULL;
-		int			i;
+		const char *stepStr = pgcolumnar_date_trunc_step(unit);
 
-		for (i = 0; i < (int) (sizeof(units) / sizeof(units[0])); i++)
-			if (pg_strcasecmp(unitStr, units[i].unit) == 0)
-			{
-				stepStr = units[i].step;
-				break;
-			}
 		if (stepStr == NULL)
 			return 0;
 
@@ -1340,6 +1351,7 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 						   TupleDesc tupdesc)
 {
 	Node	   *other;
+	Node	   *operand;
 	Oid			opno;
 	Oid			inputcollid;
 	Var		   *var;
@@ -1353,6 +1365,7 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 		if (!saop->useOr || argno != 1)
 			return false;
 		other = (Node *) linitial(saop->args);
+		operand = (Node *) lsecond(saop->args);
 		opno = saop->opno;
 		inputcollid = saop->inputcollid;
 	}
@@ -1361,6 +1374,7 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 		OpExpr	   *op = (OpExpr *) clause;
 
 		other = (Node *) list_nth(op->args, 1 - argno);
+		operand = (Node *) list_nth(op->args, argno);
 		opno = op->opno;
 		inputcollid = op->inputcollid;
 	}
@@ -1369,22 +1383,28 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 
 	/*
 	 * date_trunc(unit, col) compared with a value (#403). As in
-	 * pgcolumnar_preimage_range_scankey, the unit must be a Const, the argument a
-	 * column of this scan, and the operator one with a btree strategy.
+	 * pgcolumnar_preimage_range_scankey: the unit is a Const that its table
+	 * lists, the argument is a timestamp column of this scan (not a domain over
+	 * timestamp, which reaches here inside a RelabelType and so is no Var), the
+	 * operand is a timestamp too, and the operator has a btree strategy.
 	 */
 	if (IsA(clause, OpExpr) && IsA(other, FuncExpr))
 	{
 		FuncExpr   *f = (FuncExpr *) other;
+		Const	   *unitCon;
 		Node	   *col;
 
 		if (f->funcid != F_DATE_TRUNC_TEXT_TIMESTAMP ||
 			list_length(f->args) != 2 || !IsA(linitial(f->args), Const))
 			return false;
+		unitCon = (Const *) linitial(f->args);
+		if (unitCon->constisnull ||
+			pgcolumnar_date_trunc_step(DatumGetTextPP(unitCon->constvalue)) == NULL)
+			return false;
 		col = (Node *) lsecond(f->args);
-		if (IsA(col, RelabelType))
-			col = (Node *) ((RelabelType *) col)->arg;
 		if (!IsA(col, Var) || ((Var *) col)->varno != scanrelid ||
-			((Var *) col)->varlevelsup != 0)
+			((Var *) col)->varlevelsup != 0 ||
+			exprType(operand) != TIMESTAMPOID)
 			return false;
 		tce = lookup_type_cache(TIMESTAMPOID, TYPECACHE_BTREE_OPFAMILY);
 		return OidIsValid(tce->btree_opf) &&
@@ -1416,7 +1436,9 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 		StrategyNumber rstrat = OidIsValid(gistFamily)
 			? get_op_opfamily_strategy(opno, gistFamily) : InvalidStrategy;
 
-		if (rstrat == RTOverlapStrategyNumber ||
+		/* && keys only against the column's own range type, not a multirange */
+		if ((rstrat == RTOverlapStrategyNumber &&
+			 exprType(operand) == var->vartype) ||
 			(rstrat == RTContainsElemStrategyNumber && varOnLeft))
 			return true;
 	}

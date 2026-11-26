@@ -632,9 +632,10 @@ true until the next version shipped.
   the keys frozen at the first run keep the join's runtime range, also
   when the join is rescanned. The scan evaluates only an operand whose
   clause could become a scan key: a clause such as `x <> f($1)`,
-  `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`, or `x LIKE f($1)`
-  under a collation that is not C stays in the Filter, as on heap and
-  btree, so its operand is never called when no row reaches it.
+  `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`,
+  `date_trunc('decade', x) = f($1)`, `x LIKE f($1)` under a collation that
+  is not C, or `r && f($1)` with a multirange stays in the Filter, as on
+  heap and btree, so its operand is never called when no row reaches it.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
