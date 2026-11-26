@@ -589,6 +589,50 @@ pq.write_table(pa.table({"ls": pa.array([[i, i] if i % 3 else None for i in rang
                os.path.join(W, "v2_list.parquet"), data_page_version="2.0",
                compression="none")
 
+# Round 5 of the review.
+#
+# A DataPageHeader or DataPageHeaderV2 that carries its own field 1 (num_values)
+# twice, the second time as 0. Kept as the last value, the count would be 0 and,
+# with the footer at 150 rows, ids 50..99 would be dropped with no error. pyarrow
+# reads both files that way. The reader refuses a repeated field 1, as it refuses a
+# repeated struct.
+replace_page2_header("f_rep1_v1_150.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + fh(1, I32) + zz(50) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3)
+                     + fh(1, I32) + zz(3) + lf(I32, 1) + zz(0) + STOP + STOP)
+replace_page2_header("f_rep1_v2_150.parquet", preq, lambda n: sizes(3, n) + fh(5, STRUCT)
+                     + fh(1, I32) + zz(50) + fh(1, I32) + zz(0) + fh(1, I32) + zz(50)
+                     + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+                     + lf(I32, 1) + zz(0) + STOP + STOP)
+
+# A header that carries the page's own struct twice, the second one complete with
+# num_values 10. The footer holds 110 rows. Taking the second struct would read ids
+# 0..59 and 100..149 with no error. pyarrow reads them that way; the reader refuses
+# any repeated struct, not only one with num_values 0.
+replace_page2_header("a_dup5_nv10_110.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + lf(STRUCT, 5) + fh(1, I32) + zz(10) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP, rows=110)
+replace_page2_header("a_dup8_nv10_110.parquet", preq, lambda n: sizes(3, n) + fh(5, STRUCT)
+                     + V2FULL(50) + lf(STRUCT, 8) + V2FULL(10) + STOP, rows=110)
+
+# Empty DATA_PAGE_V2 pages count toward the run of empty pages too: 16 in a row read,
+# 17 are refused. (pyarrow reads both; the bound is this reader's own rule.)
+with_pages("a_v2run16.parquet", popt, {1: empty_v2_page() * 16})
+with_pages("a_v2run17.parquet", popt, {1: empty_v2_page() * 17})
+
+# A struct of the other version is ignored even when it appears twice: a DATA_PAGE
+# with two DataPageHeaderV2 structs after its own, and a DATA_PAGE_V2 with two
+# DataPageHeader structs before its own. pyarrow reads both as 200 rows.
+replace_page2_header("a_other8x2_200.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(3, STRUCT) + V2FULL(0) + lf(STRUCT, 8) + V2FULL(0) + STOP, rows=200)
+V1ZERO = (fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP)
+replace_page2_header("a_other5x2_v2_200.parquet", preq, lambda n: sizes(3, n) + fh(2, STRUCT)
+                     + V1ZERO + lf(STRUCT, 5) + V1ZERO + fh(3, STRUCT) + V2FULL(50) + STOP,
+                     rows=200)
+
+# a DATA_PAGE_V2 with num_values -1 on a nullable column: refused like negnv, its v1 twin
+replace_page2_header("a_v2neg_opt_200.parquet", popt, lambda n: sizes(3, n) + fh(5, STRUCT)
+                     + V2FULL(-1) + STOP, rows=200)
+
 
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
@@ -616,6 +660,8 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "dicthdr_only", "dicthdr_zero_loss", "idx_negcsz", "alt20",
              "p_dup5_nv0", "p_dup8_nv0", "p_only8_type0", "p_only5_type3", "p_empty5_full8",
              "p_enc_v2dict_200", "dict_v1nv0", "p_mixrun_9e_8i", "p_mixrun_8e_8i", "v2_list",
+             "f_rep1_v1_150", "f_rep1_v2_150", "a_dup5_nv10_110", "a_dup8_nv10_110",
+             "a_v2run16", "a_v2run17", "a_other8x2_200", "a_other5x2_v2_200", "a_v2neg_opt_200",
              "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

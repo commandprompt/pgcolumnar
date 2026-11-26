@@ -1774,6 +1774,7 @@ typedef struct PqDataHdr
 	int			rep_levels_len; /* v2 only */
 	bool		is_compressed;	/* v2 only; default true */
 	int			nseen;			/* how many times the header carried this struct */
+	bool		nv_repeated;	/* one occurrence gave num_values twice */
 } PqDataHdr;
 
 /*
@@ -1822,6 +1823,7 @@ static void
 parse_data_page_header(TCReader *r, PqPageHeader *h, PqDataHdr *d, bool v2)
 {
 	int			lastId = 0;
+	bool		nv_seen = false;	/* in this occurrence of the struct */
 
 	for (;;)
 	{
@@ -1836,6 +1838,9 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, PqDataHdr *d, bool v2)
 			switch (fid)
 			{
 				case 1:
+					if (nv_seen)
+						d->nv_repeated = true;
+					nv_seen = true;
 					d->num_values = pq_page_i32(r, h, ft);
 					d->has_num_values = true;
 					break;
@@ -1856,6 +1861,9 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, PqDataHdr *d, bool v2)
 			switch (fid)
 			{
 				case 1:
+					if (nv_seen)
+						d->nv_repeated = true;
+					nv_seen = true;
 					d->num_values = pq_page_i32(r, h, ft);
 					d->has_num_values = true;
 					break;
@@ -1976,6 +1984,12 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 	 * values would be dropped. pyarrow refuses that file. It reads a header
 	 * whose second struct is complete; this reader refuses it, which is
 	 * stricter.
+	 *
+	 * For the same reason a page is refused when its own struct gives
+	 * num_values (field 1) twice. The last value is kept, so a second
+	 * num_values 0 would drop the page's values with no error. pyarrow reads
+	 * such a file that way; this reader refuses it, which is stricter. A
+	 * struct of another type is still ignored, whatever it holds.
 	 */
 	if (h->type == PQ_PAGE_DATA)
 		d = &v1;
@@ -1988,7 +2002,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 		h->num_values = dict_num_values;
 	if (d != NULL)
 	{
-		h->has_data_hdr = d->has_num_values && d->nseen == 1;
+		h->has_data_hdr = d->has_num_values && d->nseen == 1 && !d->nv_repeated;
 		h->num_values = d->num_values;
 		h->encoding = d->encoding;
 		h->def_levels_len = d->def_levels_len;

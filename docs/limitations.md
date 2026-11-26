@@ -1297,8 +1297,10 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   of another type in the same header is ignored. A data page that
   carries only a struct of another type is refused, where pyarrow 23 reads it as
   empty. A header that carries the page's own struct twice is refused. pyarrow 23
-  reads such a page when the second struct is complete. The reader refuses more than 16 pages
-  with no values in a row in one column chunk. An INDEX_PAGE, or a page type the reader
+  reads such a page when the second struct is complete. A struct that gives its
+  own `num_values` twice is refused too, where pyarrow 23 keeps the last value.
+  The reader refuses more than 16 pages with no values in a row in one column
+  chunk, DATA_PAGE and DATA_PAGE_V2 alike. An INDEX_PAGE, or a page type the reader
   does not know, counts as a page with no values and is stepped over. These
   refusals raise SQLSTATE XX001. The run limit stops a crafted file from making
   the reader walk a large area a few bytes at a time. In the files tested,

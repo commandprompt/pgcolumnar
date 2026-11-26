@@ -621,8 +621,11 @@ true until the next version shipped.
   drop the page's values. A data page that carries only a struct of another type is
   refused; pyarrow 23 reads it as empty, so this is stricter too. A header that
   carries the page's own struct twice is refused too. When the second struct is
-  complete, pyarrow 23 reads the page, so this is stricter as well.
-  It refuses more than 16 pages with no values in a row, and steps over an
+  complete, pyarrow 23 reads the page, so this is stricter as well. A struct that
+  gives its own `num_values` twice is refused; pyarrow 23 keeps the last value,
+  which can drop the page's values.
+  It refuses more than 16 pages with no values in a row, of either data page
+  version, and steps over an
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.

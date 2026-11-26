@@ -192,7 +192,9 @@ def pqs(pgc_cluster, server_dir):
                           ("mix dict0 200", "mix_dict0_200"), ("mix v2full 200", "mix_v2full_200"),
                           ("v2 ok req", "v2_ok_req"), ("mix dictnv0", "mix_dictnv0"),
                           ("mix v2zero", "mix_v2zero"), ("p enc v2dict 200", "p_enc_v2dict_200"),
-                          ("dict v1nv0", "dict_v1nv0"), ("p mixrun 8e 8i", "p_mixrun_8e_8i")):
+                          ("dict v1nv0", "dict_v1nv0"), ("p mixrun 8e 8i", "p_mixrun_8e_8i"),
+                          ("a v2run16", "a_v2run16"), ("a other8x2 200", "a_other8x2_200"),
+                          ("a other5x2 v2 200", "a_other5x2_v2_200")):
             r[key] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
                                 f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)", sep=" ")
         for key, name in (("empty run", "empty_page_run"), ("run17", "empty_run17"),
@@ -204,7 +206,10 @@ def pqs(pgc_cluster, server_dir):
                           ("dicthdr zero", "dicthdr_zero_loss"), ("idx negcsz", "idx_negcsz"),
                           ("p dup5 nv0", "p_dup5_nv0"), ("p dup8 nv0", "p_dup8_nv0"),
                           ("p only8 type0", "p_only8_type0"), ("p only5 type3", "p_only5_type3"),
-                          ("p empty5 full8", "p_empty5_full8"), ("p mixrun 9e 8i", "p_mixrun_9e_8i")):
+                          ("p empty5 full8", "p_empty5_full8"), ("p mixrun 9e 8i", "p_mixrun_9e_8i"),
+                          ("f rep1 v1 150", "f_rep1_v1_150"), ("f rep1 v2 150", "f_rep1_v2_150"),
+                          ("a dup5 nv10 110", "a_dup5_nv10_110"), ("a dup8 nv10 110", "a_dup8_nv10_110"),
+                          ("a v2run17", "a_v2run17"), ("a v2neg opt 200", "a_v2neg_opt_200")):
             r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
         r["alt20"] = _rows(dsn, f"SELECT count(*), count(ls), sum(cardinality(ls)) FROM "
                                 f"pgcolumnar.read_parquet('{w}/alt20.parquet') AS t(ls text[])", sep=" ")
@@ -252,6 +257,12 @@ def _readings(request, expect):
     return r
 
 
+def _got(r, key):
+    """-> the reading under key. If the crafter failed, every check shows why
+    instead; a key missing after a good build fails loudly (KeyError)."""
+    return r[key] if r["crafted"] == "built" else r["crafted"]
+
+
 def test_parquet_streaming_crafted_files_were_built(request, expect):
     r = _readings(request, expect)
     if r is not None:
@@ -261,85 +272,85 @@ def test_parquet_streaming_crafted_files_were_built(request, expect):
 def test_parquet_streaming_schema_reads_a_file_over_the_palloc_ceiling(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("schema big", r["crafted"]), "2", "parquet_schema reads a file over the 1GB palloc ceiling")
+        expect.text(_got(r, "schema big"), "2", "parquet_schema reads a file over the 1GB palloc ceiling")
 
 
 def test_parquet_streaming_schema_reports_the_oversized_files_columns(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("schema cols", r["crafted"]), "id,v",
+        expect.text(_got(r, "schema cols"), "id,v",
                     "parquet_schema reports the columns of the oversized file")
 
 
 def test_parquet_streaming_value_read_of_the_sparse_file_fails_cleanly(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("sparse read", r["crafted"]), "OK", "value read of the sparse file fails cleanly")
+        expect.text(_got(r, "sparse read"), "OK", "value read of the sparse file fails cleanly")
 
 
 def test_parquet_streaming_backend_survived_the_failed_read(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("survived read", r["crafted"]), "1", "backend survived the failed read")
+        expect.text(_got(r, "survived read"), "1", "backend survived the failed read")
 
 
 def test_parquet_streaming_schema_still_reads_a_normal_file(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("schema small", r["crafted"]), "2", "parquet_schema still reads a normal file")
+        expect.text(_got(r, "schema small"), "2", "parquet_schema still reads a normal file")
 
 
 def test_parquet_streaming_read_parquet_still_reads_a_normal_file(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("read small", r["crafted"]), "3", "read_parquet still reads a normal file")
+        expect.text(_got(r, "read small"), "3", "read_parquet still reads a normal file")
 
 
 def test_parquet_streaming_zero_filled_page_area_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("zero", r["crafted"]), "CLEAN REJECT",
+        expect.text(_got(r, "zero"), "CLEAN REJECT",
                     "zero-filled page area is rejected, not walked byte by byte")
 
 
 def test_parquet_streaming_page_size_past_eof_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("bad size", r["crafted"]), "ERROR:  could not decode Parquet column 0 in row group 0",
+        expect.text(_got(r, "bad size"), "ERROR:  could not decode Parquet column 0 in row group 0",
                     "page size past end of file is rejected by the size bound")
 
 
 def test_parquet_streaming_negative_page_offset_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("bad offset", r["crafted"]), "ERROR:  could not decode Parquet column 1 in row group 0",
+        expect.text(_got(r, "bad offset"), "ERROR:  could not decode Parquet column 1 in row group 0",
                     "negative page offset is rejected by the offset check")
 
 
 def test_parquet_streaming_unparseable_page_header_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("noise", r["crafted"]), "OK", "unparseable page header is rejected")
+        expect.text(_got(r, "noise"), "OK", "unparseable page header is rejected")
 
 
 def test_parquet_streaming_second_dictionary_page_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("two dicts", r["crafted"]), "ERROR:  could not decode Parquet column 0 in row group 0",
+        expect.text(_got(r, "two dicts"), "ERROR:  could not decode Parquet column 0 in row group 0",
                     "a second dictionary page in a chunk is rejected")
 
 
 def test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("v2", r["crafted"]), "ERROR:  could not decode Parquet column 0 in row group 0",
+        expect.text(_got(r, "v2"), "ERROR:  could not decode Parquet column 0 in row group 0",
                     "v2 level lengths past the page are rejected")
 
 
 def test_parquet_streaming_all_null_column_still_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("allnull", r["crafted"]), "100 0", "all-null column (empty dictionary page) still reads")
+        expect.text(_got(r, "allnull"), "100 0", "all-null column (empty dictionary page) still reads")
 
 
 def test_parquet_streaming_data_page_with_no_values_reads(request, expect):
@@ -347,7 +358,7 @@ def test_parquet_streaming_data_page_with_no_values_reads(request, expect):
     column when it flushes pages often. The page loop refused every such page."""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("empty page", r["crafted"]), "{yy} NULL",
+        expect.text(_got(r, "empty page"), "{yy} NULL",
                     "a data page with no values (pyarrow list column) reads")
 
 
@@ -355,74 +366,74 @@ def test_parquet_streaming_data_page_with_no_values_snappy_reads(request, expect
     """#2077 acceptance: the compressed variant, a dictionary list<int64> column."""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("empty snappy", r["crafted"]), "{1,2} NULL {3} {}",
+        expect.text(_got(r, "empty snappy"), "{1,2} NULL {3} {}",
                     "a data page with no values (snappy list<int64> column) reads")
 
 
 def test_parquet_streaming_one_empty_data_page_between_data_pages_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("one empty", r["crafted"]), "200 19900",
+        expect.text(_got(r, "one empty"), "200 19900",
                     "one empty data page between two data pages reads")
 
 
 def test_parquet_streaming_run_of_empty_data_pages_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("empty run", r["crafted"]), REFUSED, "a run of 1000 empty data pages is rejected")
+        expect.text(_got(r, "empty run"), REFUSED, "a run of 1000 empty data pages is rejected")
 
 
 def test_parquet_streaming_run_of_16_empty_data_pages_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("run16", r["crafted"]), "200 19900", "a run of 16 empty data pages reads")
+        expect.text(_got(r, "run16"), "200 19900", "a run of 16 empty data pages reads")
 
 
 def test_parquet_streaming_run_of_17_empty_data_pages_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("run17", r["crafted"]), REFUSED, "a run of 17 empty data pages is rejected")
+        expect.text(_got(r, "run17"), REFUSED, "a run of 17 empty data pages is rejected")
 
 
 def test_parquet_streaming_two_runs_of_10_empty_data_pages_read(request, expect):
     """a page with values resets the run: the limit is 16 in a row, not 16 per chunk"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("runs 10 10", r["crafted"]), "200 19900",
+        expect.text(_got(r, "runs 10 10"), "200 19900",
                     "two runs of 10 empty data pages read (the limit is per run)")
 
 
 def test_parquet_streaming_empty_v1_page_without_body_reads_when_required(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nobody v1 req", r["crafted"]), "200 19900",
+        expect.text(_got(r, "nobody v1 req"), "200 19900",
                     "an empty v1 page with no body reads on a REQUIRED column")
 
 
 def test_parquet_streaming_empty_v2_page_without_body_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nobody v2", r["crafted"]), "200 19900", "an empty v2 page with no body reads")
+        expect.text(_got(r, "nobody v2"), "200 19900", "an empty v2 page with no body reads")
 
 
 def test_parquet_streaming_empty_v1_page_without_body_is_rejected_when_nullable(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nobody v1 opt", r["crafted"]), REFUSED,
+        expect.text(_got(r, "nobody v1 opt"), REFUSED,
                     "an empty v1 page with no body is rejected on a nullable column")
 
 
 def test_parquet_streaming_empty_data_page_with_garbage_body_is_rejected(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("garbage body", r["crafted"]), REFUSED,
+        expect.text(_got(r, "garbage body"), REFUSED,
                     "an empty data page with a garbage body is rejected")
 
 
 def test_parquet_streaming_index_page_is_stepped_over(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("index page", r["crafted"]), "200 19900",
+        expect.text(_got(r, "index page"), "200 19900",
                     "an INDEX_PAGE between data pages is stepped over")
 
 
@@ -430,21 +441,21 @@ def test_parquet_streaming_run_of_16_index_pages_reads(request, expect):
     """the run limit is the same for INDEX_PAGEs as for empty data pages: 16 read"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("index run16", r["crafted"]), "200 19900", "a run of 16 INDEX_PAGEs reads")
+        expect.text(_got(r, "index run16"), "200 19900", "a run of 16 INDEX_PAGEs reads")
 
 
 def test_parquet_streaming_run_of_17_index_pages_is_rejected(request, expect):
     """an INDEX_PAGE holds no values, so it counts toward the run limit"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("index run17", r["crafted"]), REFUSED, "a run of 17 INDEX_PAGEs is rejected")
+        expect.text(_got(r, "index run17"), REFUSED, "a run of 17 INDEX_PAGEs is rejected")
 
 
 def test_parquet_streaming_data_page_without_header_is_rejected(request, expect):
     """skipping the page would read 150 rows with ids 50..99 silently gone"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nohdr loss", r["crafted"]), REFUSED,
+        expect.text(_got(r, "nohdr loss"), REFUSED,
                     "a DATA_PAGE with no DataPageHeader is rejected, not skipped")
 
 
@@ -452,7 +463,7 @@ def test_parquet_streaming_data_page_header_without_num_values_is_rejected(reque
     """decoding it as an empty page would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nv missing", r["crafted"]), REFUSED,
+        expect.text(_got(r, "nv missing"), REFUSED,
                     "a DataPageHeader without num_values is rejected")
 
 
@@ -460,7 +471,7 @@ def test_parquet_streaming_empty_data_page_header_struct_is_rejected(request, ex
     """decoding it as an empty page would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("hdr5 empty", r["crafted"]), REFUSED,
+        expect.text(_got(r, "hdr5 empty"), REFUSED,
                     "an empty DataPageHeader struct is rejected")
 
 
@@ -468,7 +479,7 @@ def test_parquet_streaming_empty_data_page_header_v2_struct_is_rejected(request,
     """decoding it as an empty page would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("hdr8 empty", r["crafted"]), REFUSED,
+        expect.text(_got(r, "hdr8 empty"), REFUSED,
                     "an empty DataPageHeaderV2 struct is rejected")
 
 
@@ -476,7 +487,7 @@ def test_parquet_streaming_data_page_v2_without_header_is_rejected(request, expe
     """decoding it as an empty v1 page would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nohdr v2", r["crafted"]), REFUSED,
+        expect.text(_got(r, "nohdr v2"), REFUSED,
                     "a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected")
 
 
@@ -484,7 +495,7 @@ def test_parquet_streaming_negative_num_values_is_rejected(request, expect):
     """without the check, the reader fails with an internal XX000 from a wrapped size"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("negnv", r["crafted"]), REFUSED,
+        expect.text(_got(r, "negnv"), REFUSED,
                     "a data page with a negative num_values is rejected")
 
 
@@ -492,14 +503,14 @@ def test_parquet_streaming_unknown_page_type_is_stepped_over(request, expect):
     """a page type no Parquet version defines holds no values; pyarrow steps over it"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("unknown type", r["crafted"]), "200 19900", "a page of an unknown type is stepped over")
+        expect.text(_got(r, "unknown type"), "200 19900", "a page of an unknown type is stepped over")
 
 
 def test_parquet_streaming_dictionary_header_does_not_overwrite_data_page_count(request, expect):
     """page 2 keeps its count of 50: 150 rows are ids 0..149; a count of 0 drops ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("mix dictnv0", r["crafted"]), "150 11175",
+        expect.text(_got(r, "mix dictnv0"), "150 11175",
                     "a DictionaryPageHeader after a DataPageHeader does not overwrite its count")
 
 
@@ -507,7 +518,7 @@ def test_parquet_streaming_data_page_v2_header_does_not_overwrite_data_page_coun
     """page 2 keeps its count of 50: 150 rows are ids 0..149; a count of 0 drops ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("mix v2zero", r["crafted"]), "150 11175",
+        expect.text(_got(r, "mix v2zero"), "150 11175",
                     "a DataPageHeaderV2 after a DataPageHeader does not overwrite its count")
 
 
@@ -515,7 +526,7 @@ def test_parquet_streaming_data_page_count_ignores_a_dictionary_header(request, 
     """pyarrow uses the struct of the page's own type and reads 200 rows"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("mix dict0 200", r["crafted"]), "200 19900",
+        expect.text(_got(r, "mix dict0 200"), "200 19900",
                     "a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader")
 
 
@@ -523,7 +534,7 @@ def test_parquet_streaming_data_page_count_ignores_a_data_page_v2_header(request
     """pyarrow uses the struct of the page's own type and reads 200 rows"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("mix v2full 200", r["crafted"]), "200 19900",
+        expect.text(_got(r, "mix v2full 200"), "200 19900",
                     "a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2")
 
 
@@ -531,7 +542,7 @@ def test_parquet_streaming_data_page_v2_with_values_reads(request, expect):
     """the control for the DataPageHeaderV2 refusal below"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("v2 ok req", r["crafted"]), "200 19900",
+        expect.text(_got(r, "v2 ok req"), "200 19900",
                     "a DATA_PAGE_V2 with values reads")
 
 
@@ -539,7 +550,7 @@ def test_parquet_streaming_data_page_v2_header_without_num_values_is_rejected(re
     """decoding it as an empty page would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("nv2 missing", r["crafted"]), REFUSED,
+        expect.text(_got(r, "nv2 missing"), REFUSED,
                     "a DataPageHeaderV2 without num_values is rejected")
 
 
@@ -547,7 +558,7 @@ def test_parquet_streaming_data_page_with_only_a_dictionary_header_is_rejected(r
     """a dictionary page's count is not a data page's"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dicthdr only", r["crafted"]), REFUSED,
+        expect.text(_got(r, "dicthdr only"), REFUSED,
                     "a DATA_PAGE with only a DictionaryPageHeader is rejected")
 
 
@@ -555,7 +566,7 @@ def test_parquet_streaming_data_page_with_only_an_empty_dictionary_header_is_rej
     """taking the dictionary count would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dicthdr zero", r["crafted"]), REFUSED,
+        expect.text(_got(r, "dicthdr zero"), REFUSED,
                     "a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected")
 
 
@@ -563,7 +574,7 @@ def test_parquet_streaming_index_page_with_negative_compressed_size_is_rejected(
     """stepping over it first would re-read page 1: ids 0..49 four times"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("idx negcsz", r["crafted"]), REFUSED,
+        expect.text(_got(r, "idx negcsz"), REFUSED,
                     "an INDEX_PAGE with a negative compressed_size is rejected")
 
 
@@ -571,7 +582,7 @@ def test_parquet_streaming_run_of_one_value_pages_reads(request, expect):
     """a page with one value resets the run of empty pages"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("alt20", r["crafted"]), "40 20 20",
+        expect.text(_got(r, "alt20"), "40 20 20",
                     "a run of one-value pages reads (pyarrow list column, 41 pages)")
 
 
@@ -579,7 +590,7 @@ def test_parquet_streaming_repeated_data_page_header_is_rejected(request, expect
     """a second DataPageHeader with num_values 0 would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p dup5 nv0", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p dup5 nv0"), REFUSED,
                     "a repeated DataPageHeader with num_values 0 is rejected")
 
 
@@ -587,7 +598,7 @@ def test_parquet_streaming_repeated_data_page_v2_header_is_rejected(request, exp
     """a second DataPageHeaderV2 with num_values 0 would drop ids 50..99"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p dup8 nv0", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p dup8 nv0"), REFUSED,
                     "a repeated DataPageHeaderV2 with num_values 0 is rejected")
 
 
@@ -595,7 +606,7 @@ def test_parquet_streaming_data_page_with_only_a_v2_header_is_rejected(request, 
     """a DataPageHeaderV2 is not a DATA_PAGE's own header"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p only8 type0", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p only8 type0"), REFUSED,
                     "a DATA_PAGE with only a DataPageHeaderV2 is rejected")
 
 
@@ -603,7 +614,7 @@ def test_parquet_streaming_data_page_v2_with_only_a_v1_header_is_rejected(reques
     """a DataPageHeader is not a DATA_PAGE_V2's own header"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p only5 type3", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p only5 type3"), REFUSED,
                     "a DATA_PAGE_V2 with only a DataPageHeader is rejected")
 
 
@@ -611,7 +622,7 @@ def test_parquet_streaming_v2_count_does_not_stand_in_for_an_empty_v1_header(req
     """the page's own struct is empty, so the page is refused"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p empty5 full8", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p empty5 full8"), REFUSED,
                     "a DATA_PAGE with an empty DataPageHeader and a full DataPageHeaderV2 is rejected")
 
 
@@ -619,7 +630,7 @@ def test_parquet_streaming_data_page_encoding_ignores_a_data_page_v2_header(requ
     """the v2 struct says RLE_DICTIONARY; the page is PLAIN, as its own struct says"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p enc v2dict 200", r["crafted"]), "200 19900",
+        expect.text(_got(r, "p enc v2dict 200"), "200 19900",
                     "a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHeaderV2")
 
 
@@ -627,7 +638,7 @@ def test_parquet_streaming_dictionary_count_ignores_a_data_page_header(request, 
     """a DataPageHeader with num_values 0 in a dictionary page's header is ignored"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dict v1nv0", r["crafted"]), "200 900",
+        expect.text(_got(r, "dict v1nv0"), "200 900",
                     "a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader")
 
 
@@ -635,7 +646,7 @@ def test_parquet_streaming_empty_and_index_pages_share_one_run(request, expect):
     """9 empty data pages and 8 INDEX_PAGEs in a row are 17 pages"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p mixrun 9e 8i", r["crafted"]), REFUSED,
+        expect.text(_got(r, "p mixrun 9e 8i"), REFUSED,
                     "9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run)")
 
 
@@ -643,57 +654,129 @@ def test_parquet_streaming_8_empty_and_8_index_pages_read(request, expect):
     """16 pages in a row is the limit"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("p mixrun 8e 8i", r["crafted"]), "200 19900",
+        expect.text(_got(r, "p mixrun 8e 8i"), "200 19900",
                     "8 empty data pages and 8 INDEX_PAGEs in a row read")
+
+
+def test_parquet_streaming_data_page_header_that_repeats_num_values_is_rejected(request, expect):
+    """a second num_values 0 in the same DataPageHeader would drop ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "f rep1 v1 150"), REFUSED,
+                    "a DataPageHeader that repeats num_values is rejected")
+
+
+def test_parquet_streaming_data_page_v2_header_that_repeats_num_values_is_rejected(request, expect):
+    """a second num_values 0 in the same DataPageHeaderV2 would drop ids 50..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "f rep1 v2 150"), REFUSED,
+                    "a DataPageHeaderV2 that repeats num_values is rejected")
+
+
+def test_parquet_streaming_repeated_complete_data_page_header_is_rejected(request, expect):
+    """a second, complete DataPageHeader with num_values 10 is refused, not only one with 0"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a dup5 nv10 110"), REFUSED,
+                    "a repeated complete DataPageHeader is rejected")
+
+
+def test_parquet_streaming_repeated_complete_data_page_v2_header_is_rejected(request, expect):
+    """a second, complete DataPageHeaderV2 with num_values 10 is refused, not only one with 0"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a dup8 nv10 110"), REFUSED,
+                    "a repeated complete DataPageHeaderV2 is rejected")
+
+
+def test_parquet_streaming_run_of_16_empty_v2_pages_reads(request, expect):
+    """16 empty DATA_PAGE_V2 pages in a row is the limit"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a v2run16"), "200 19900",
+                    "a run of 16 empty DATA_PAGE_V2 pages reads")
+
+
+def test_parquet_streaming_run_of_17_empty_v2_pages_is_rejected(request, expect):
+    """empty DATA_PAGE_V2 pages count toward the run of empty pages"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a v2run17"), REFUSED,
+                    "a run of 17 empty DATA_PAGE_V2 pages is rejected")
+
+
+def test_parquet_streaming_data_page_with_two_v2_headers_besides_its_own_reads(request, expect):
+    """a struct of the other version is ignored, even when it appears twice"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a other8x2 200"), "200 19900",
+                    "a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads")
+
+
+def test_parquet_streaming_data_page_v2_with_two_v1_headers_besides_its_own_reads(request, expect):
+    """a struct of the other version is ignored, even when it appears twice"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a other5x2 v2 200"), "200 19900",
+                    "a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads")
+
+
+def test_parquet_streaming_data_page_v2_with_a_negative_num_values_is_rejected(request, expect):
+    """the v2 twin of negnv, on a nullable column"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "a v2neg opt 200"), REFUSED,
+                    "a DATA_PAGE_V2 with a negative num_values is rejected")
 
 
 def test_parquet_streaming_data_page_v2_on_a_list_column_reads(request, expect):
     """a v2 page of a repeated column carries a repetition-level length"""
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("v2 list", r["crafted"]), "300 200 400 30000",
+        expect.text(_got(r, "v2 list"), "300 200 400 30000",
                     "a DATA_PAGE_V2 on a list column reads")
 
 
 def test_parquet_streaming_backend_survived_the_crafted_page_areas(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("survived crafted", r["crafted"]), "1", "backend survived the crafted page areas")
+        expect.text(_got(r, "survived crafted"), "1", "backend survived the crafted page areas")
 
 
 def test_parquet_streaming_uncompressed_source_file_still_reads(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("plain", r["crafted"]), "200 19900", "the uncompressed source file still reads")
+        expect.text(_got(r, "plain"), "200 19900", "the uncompressed source file still reads")
 
 
 def test_parquet_streaming_full_scan_content_is_correct(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("full", r["crafted"]), "4000 7998000 15996000", "streaming: full scan content is correct")
+        expect.text(_got(r, "full"), "4000 7998000 15996000", "streaming: full scan content is correct")
 
 
 def test_parquet_streaming_full_scan_decodes_all_four_row_groups(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dec all", r["crafted"]), "4", "streaming: a full scan decodes all four row groups")
+        expect.text(_got(r, "dec all"), "4", "streaming: a full scan decodes all four row groups")
 
 
 def test_parquet_streaming_limit_10_decodes_one_row_group(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dec 10", r["crafted"]), "1",
+        expect.text(_got(r, "dec 10"), "1",
                     "streaming: LIMIT 10 (inside group 0) decodes one row group")
 
 
 def test_parquet_streaming_limit_1010_decodes_two_row_groups(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("dec 1010", r["crafted"]), "2",
+        expect.text(_got(r, "dec 1010"), "2",
                     "streaming: LIMIT 1010 (into group 1) decodes two row groups")
 
 
 def test_parquet_streaming_rescan_under_a_nested_loop_is_correct(request, expect):
     r = _readings(request, expect)
     if r is not None:
-        expect.text(r.get("rescan", r["crafted"]), "2", "streaming: rescan under a nested loop is correct")
+        expect.text(_got(r, "rescan"), "2", "streaming: rescan under a nested loop is correct")

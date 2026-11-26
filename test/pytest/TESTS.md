@@ -13082,6 +13082,15 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_dictionary_count_ignores_a_data_page_header` | a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader |
 | `test_parquet_streaming_empty_and_index_pages_share_one_run` | 9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run) |
 | `test_parquet_streaming_8_empty_and_8_index_pages_read` | 8 empty data pages and 8 INDEX_PAGEs in a row read |
+| `test_parquet_streaming_data_page_header_that_repeats_num_values_is_rejected` | a DataPageHeader that repeats num_values is rejected |
+| `test_parquet_streaming_data_page_v2_header_that_repeats_num_values_is_rejected` | a DataPageHeaderV2 that repeats num_values is rejected |
+| `test_parquet_streaming_repeated_complete_data_page_header_is_rejected` | a repeated complete DataPageHeader is rejected |
+| `test_parquet_streaming_repeated_complete_data_page_v2_header_is_rejected` | a repeated complete DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_run_of_16_empty_v2_pages_reads` | a run of 16 empty DATA_PAGE_V2 pages reads |
+| `test_parquet_streaming_run_of_17_empty_v2_pages_is_rejected` | a run of 17 empty DATA_PAGE_V2 pages is rejected |
+| `test_parquet_streaming_data_page_with_two_v2_headers_besides_its_own_reads` | a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads |
+| `test_parquet_streaming_data_page_v2_with_two_v1_headers_besides_its_own_reads` | a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads |
+| `test_parquet_streaming_data_page_v2_with_a_negative_num_values_is_rejected` | a DATA_PAGE_V2 with a negative num_values is rejected |
 | `test_parquet_streaming_data_page_v2_on_a_list_column_reads` | a DATA_PAGE_V2 on a list column reads |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |

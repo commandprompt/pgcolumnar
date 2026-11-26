@@ -233,6 +233,17 @@ check "a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHea
 check "a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader" "$(cs dict_v1nv0)" "200 900"
 check "9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run)" "$(ce p_mixrun_9e_8i)" "$REFUSED"
 check "8 empty data pages and 8 INDEX_PAGEs in a row read" "$(cs p_mixrun_8e_8i)" "200 19900"
+# a struct that repeats its own num_values, a repeated complete struct, a run of
+# empty v2 pages, a struct of the other version given twice, and a negative v2 count
+check "a DataPageHeader that repeats num_values is rejected" "$(ce f_rep1_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 that repeats num_values is rejected" "$(ce f_rep1_v2_150)" "$REFUSED"
+check "a repeated complete DataPageHeader is rejected" "$(ce a_dup5_nv10_110)" "$REFUSED"
+check "a repeated complete DataPageHeaderV2 is rejected" "$(ce a_dup8_nv10_110)" "$REFUSED"
+check "a run of 16 empty DATA_PAGE_V2 pages reads" "$(cs a_v2run16)" "200 19900"
+check "a run of 17 empty DATA_PAGE_V2 pages is rejected" "$(ce a_v2run17)" "$REFUSED"
+check "a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads" "$(cs a_other8x2_200)" "200 19900"
+check "a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads" "$(cs a_other5x2_v2_200)" "200 19900"
+check "a DATA_PAGE_V2 with a negative num_values is rejected" "$(ce a_v2neg_opt_200)" "$REFUSED"
 check "a DATA_PAGE_V2 on a list column reads" \
 	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)), sum(ls[1]) FROM pgcolumnar.read_parquet('$W/v2_list.parquet') AS t(ls int[]);" | tr '|' ' ')" \
 	"300 200 400 30000"

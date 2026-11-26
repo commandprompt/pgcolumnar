@@ -2183,4 +2183,9 @@ guard_tests 895
 # dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
 # 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
 # `--collect-only -q`: 5536 tests collected.
-cluster_tests 5621
+# cluster_tests 5621 -> 5630 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
+# (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
+# given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5630 tests collected.
+cluster_tests 5630
