@@ -2159,6 +2159,9 @@ guard_tests 899
 # test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
 # cluster_tests 5580 -> 5596 for #2093's sixteen tests (the documented examples run as written, in
 # test_native_cluster.py, test_parquet_import.py, test_rollup.py and test_parallel_copy.py), by collection
 # over the cluster files (the complement of NO_CLUSTER) after the merge of main 3dd019fe: 5571 tests
@@ -2173,4 +2176,6 @@ guard_tests 899
 # page's slot figure is the sum it gives; four workers load at max_prepared_transactions = 4 and are refused
 # with SQLSTATE 55000 at 3. By collection over the cluster files (the complement of NO_CLUSTER): 5604 tests
 # collected after the merge of main 199e4aa7.
-cluster_tests 5604
+# cluster_tests 5604 -> 5605 after the merge of main 6f79946f (#2082's struct-field test, +1). By collection over
+# the cluster files (the complement of NO_CLUSTER): 5605 tests collected; NO_CLUSTER collects guard_tests 899.
+cluster_tests 5605
