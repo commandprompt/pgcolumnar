@@ -20,8 +20,12 @@ after a finished export and after a failed one rolled back to a savepoint, so th
 callback walks a list that once held other sinks. Three more fail an export at the
 rename (a non-empty directory at the final name) and at the open (a missing parent
 directory): a FATAL at the rename leaves no temp file, and a failed rename or open rolled
-back to a savepoint leaves no freed sink on the list. The server log must show no backend
-killed by a signal, and no AddressSanitizer report, during these arms.
+back to a savepoint leaves no freed sink on the list. A flush that fails at close (a temp
+name symlinked to /dev/full) leaves no temp file under FATAL either, and neither do 25
+exports in one session. An export whose Abort cannot unlink its temp file (a read-only
+directory), rolled back to a savepoint, leaves no freed sink on the list. The server log
+must show no backend killed by a signal, and no AddressSanitizer report, during these
+arms.
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The files live in `server_dir`, because the backend writes
@@ -290,8 +294,33 @@ def es(pgc_cluster, server_dir):
             want=("53100", "could not flush"),
             on_pid=lambda pid: os.symlink("/dev/full", d / f"es_full.parquet.tmp.{pid}"))
         r["flush fatal tmp"] = _tmp_of(d, "es_full.parquet")
+        # Every local export lists its sink, so the once-only registration of the
+        # exit callback guards every export. Registered again on each one, the
+        # callbacks fill before_shmem_exit's 20 slots, and a later export dies with
+        # FATAL and leaves its temp file. 25 exports in one session pass that limit.
+        _run(dsn, "CREATE TABLE es_small (id int) USING pgcolumnar")
+        _run(dsn, "INSERT INTO es_small SELECT generate_series(1, 3)")
+        many = []
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                for i in range(1, 26):
+                    many.append(conn.execute(
+                        f"SELECT pgcolumnar.export_parquet('es_small', '{d / f'es_many{i}.parquet'}')"
+                    ).fetchone()[0])
+                many.append(conn.execute("SELECT 'alive'").fetchone()[0])
+        except psycopg.Error as exc:
+            many.append(_message(exc))
+        r["many"] = f"{many.count(3)}:{many.count('alive')}"
+        try:
+            r["many tmp"] = sum(1 for p in d.iterdir()
+                                if p.name.startswith("es_many") and ".parquet.tmp." in p.name)
+        except OSError as exc:
+            r["many tmp"] = query_error(f"listing {d} failed: {exc}")
         # Abort must unlist a sink whose file Finish already closed; the repeat()
-        # query allocates after ROLLBACK TO frees it, as the review's repro did
+        # query allocates after ROLLBACK TO frees it, as the review's repro did.
+        # The FATAL rename arm may have left an es_isdir temp file, so count only
+        # the ones this arm adds.
+        isdir_at = _tmp_of(d, "es_isdir")
         seen, res = _fatal_session(dsn, [
             "BEGIN", "SAVEPOINT s",
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_isdir'}')",
@@ -301,7 +330,9 @@ def es(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp3.parquet'}')"])
         r["sp rename fatal"] = f"{res.count('42809')}:{seen}"
         # the plain ERROR at that rename went through Abort, after Finish closed the file
-        r["sp rename isdir tmp"] = _tmp_of(d, "es_isdir")
+        isdir_now = _tmp_of(d, "es_isdir")
+        r["sp rename isdir tmp"] = isdir_now - isdir_at if isinstance(isdir_at, int) \
+            and isinstance(isdir_now, int) else query_error(f"unread: {isdir_at} / {isdir_now}")
         r["sp rename tmp"] = _tmp_of(d, "es_sp3.parquet")
         # A failed open must leave nothing listed: no Abort would unlist it. The walk
         # of a freed sink faults on an assert build (signal) and an ASan build (an
@@ -316,6 +347,36 @@ def es(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp4.parquet'}')"])
         r["sp open fatal"] = f"{res.count('58P01')}:{seen}"
         r["sp open tmp"] = _tmp_of(d, "es_sp4.parquet")
+        # Abort must unlist its sink even when its unlink fails. A stale temp file
+        # from a reused pid, in a directory the server cannot write, makes that
+        # unlink fail with EACCES; the open still succeeds, because it truncates the
+        # stale file. The file is writable by everyone and the directory by no one
+        # but root, so the server user is bound whether pytest runs as it or as root.
+        ro = d / "es_ro"
+        ro.mkdir(exist_ok=True)
+
+        def plant(pid):
+            stale = ro / f"a.parquet.tmp.{pid}"
+            stale.touch()
+            os.chmod(stale, 0o666)
+            os.chmod(ro, 0o555)
+        try:
+            seen, res = _fatal_session(dsn, [
+                "BEGIN", "SAVEPOINT s", "SET pgcolumnar.sink_fail_after = 8192",
+                f"SELECT pgcolumnar.export_parquet('es_src', '{ro / 'a.parquet'}')",
+                "ROLLBACK TO SAVEPOINT s",
+                "SELECT repeat('x', 4000) FROM generate_series(1, 50) LIMIT 0",
+                *FATAL_PRE,
+                f"SELECT pgcolumnar.export_parquet('es_src', '{d / 'es_sp5.parquet'}')"],
+                on_pid=plant)
+            # the premise: Abort's unlink failed, so the stale file is still there
+            left = _tmp_of(ro, "a.parquet")
+        finally:
+            os.chmod(ro, 0o755)
+            for p in ro.glob("a.parquet.tmp.*"):
+                p.unlink()
+        r["sp unlink fatal"] = f"{res.count('53100')}:{left}:{seen}"
+        r["sp unlink tmp"] = _tmp_of(d, "es_sp5.parquet")
         # a crash restarts the cluster: wait for it to answer before reading the log
         for _ in range(100):
             if _value(dsn, "SELECT 1") == 1:
@@ -466,6 +527,24 @@ def test_fatal_no_temp_file_after_a_failed_rename(es, expect):
 def test_fatal_no_temp_file_after_a_failed_rename_rolled_back_to_a_savepoint(es, expect):
     expect.text(str(es["sp rename isdir tmp"]), "0",
                 "fatal: no temp file after a failed rename rolled back to a savepoint")
+
+
+def test_fatal_25_exports_in_one_session_each_return_their_row_count(es, expect):
+    expect.text(es["many"], "25:1", "fatal: 25 exports in one session each return their row count")
+
+
+def test_fatal_no_temp_file_after_25_exports_in_one_session(es, expect):
+    expect.text(str(es["many tmp"]), "0", "fatal: no temp file after 25 exports in one session")
+
+
+def test_fatal_after_a_failed_unlink_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):
+    expect.text(es["sp unlink fatal"], "1:1:fatal gone",
+                "fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL")
+
+
+def test_fatal_no_temp_file_after_a_failed_unlink(es, expect):
+    expect.text(str(es["sp unlink tmp"]), "0",
+                "fatal: no temp file after a FATAL export that followed a failed unlink")
 
 
 def test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal(es, expect):

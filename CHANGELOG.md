@@ -616,7 +616,9 @@ true until the next version shipped.
   FATAL export after other exports in the same transaction does not crash the
   backend. A FATAL at the final rename or at the flush before it also leaves no
   temp file, and an export whose rename or open failed inside a rolled-back
-  savepoint does not crash a later FATAL export. `test/export_sink.sh` and
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
   `test_export_sink.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg

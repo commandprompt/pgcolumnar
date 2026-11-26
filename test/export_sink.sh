@@ -37,9 +37,14 @@
 #             fail an export at the rename (a non-empty directory at the final
 #             name) and at the open (a missing parent directory): a FATAL at
 #             the rename leaves no temp file, and a failed rename or open
-#             rolled back to a savepoint leaves no freed sink on the list. The
-#             server log must show no backend killed by a signal, and no
-#             AddressSanitizer report, during these arms.
+#             rolled back to a savepoint leaves no freed sink on the list. A
+#             flush that fails at close (a temp name symlinked to /dev/full)
+#             leaves no temp file under FATAL either, and neither do 25
+#             exports in one session. An export whose Abort cannot unlink its
+#             temp file (a read-only directory), rolled back to a savepoint,
+#             leaves no freed sink on the list. The server log must show no
+#             backend killed by a signal, and no AddressSanitizer report,
+#             during these arms.
 #
 # Usage:  test/export_sink.sh [PG_CONFIG]
 # Written fresh for pgColumnar.
@@ -254,10 +259,30 @@ SET exit_on_error = on;
 SELECT pgcolumnar.export_parquet('es_empty', '$PGC_WORKDIR/es_full.parquet');" "FATAL:  53100: could not flush"
 check "fatal: an export whose flush fails ends its backend with FATAL" "$FS" "fatal gone"
 check_num "fatal: no temp file after a FATAL at the flush" "$(debris_of es_full.parquet)" "0"
+# Every local export lists its sink, so the once-only registration of the exit
+# callback now guards every export. Registered again on each export, the
+# callbacks fill before_shmem_exit's 20 slots, and a later export dies with
+# FATAL and leaves its temp file. 25 exports in one session pass that limit.
+psql_run "CREATE TABLE es_small (id int) USING pgcolumnar;"
+psql_run "INSERT INTO es_small SELECT generate_series(1, 3);"
+MANY="$(for i in $(seq 1 25); do
+	echo "SELECT pgcolumnar.export_parquet('es_small', '$PGC_WORKDIR/es_many$i.parquet');"
+done)"
+MANY_OUT="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+$MANY
+SELECT 'alive';
+SQLEOF
+)"
+check "fatal: 25 exports in one session each return their row count" \
+	"$(lines_of "$MANY_OUT" "3"):$(lines_of "$MANY_OUT" "alive")" "25:1"
+check_num "fatal: no temp file after 25 exports in one session" "$(debris_of 'es_many*.parquet')" "0"
 # Finish closes the file before the rename, so Abort must unlist a sink whose
 # file is already closed. A sink left listed is freed by ROLLBACK TO, and the
 # next FATAL in the transaction walks it. The query between them allocates
-# after the free, as the review's repro did.
+# after the free, as the review's repro did. The FATAL rename arm above may
+# have left an es_isdir temp file, so this arm counts only the ones it adds.
+ISDIR_AT="$(debris_of es_isdir)"
 fatal_session "BEGIN;
 SAVEPOINT s;
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_isdir');
@@ -269,8 +294,13 @@ check "fatal: a FATAL export after a failed rename rolled back to a savepoint en
 	"$(grep -c '^ERROR:  42809: ' <<<"$FS_OUT"):$FS" "1:fatal gone"
 # The plain ERROR at that rename went through Abort, which must remove the
 # temp file even though Finish had already closed it.
+ISDIR_NOW="$(debris_of es_isdir)"
+case "$ISDIR_AT:$ISDIR_NOW" in
+[0-9]*:[0-9]*) ISDIR_NEW=$((ISDIR_NOW - ISDIR_AT)) ;;
+*) ISDIR_NEW="unread: $ISDIR_AT / $ISDIR_NOW" ;;
+esac
 check_num "fatal: no temp file after a failed rename rolled back to a savepoint" \
-	"$(debris_of es_isdir)" "0"
+	"$ISDIR_NEW" "0"
 check_num "fatal: no temp file after a FATAL export that followed a failed rename" \
 	"$(debris_of es_sp3.parquet)" "0"
 # A failed open must leave nothing listed: the caller's PG_TRY has not begun, so
@@ -290,6 +320,35 @@ check "fatal: a FATAL export after a failed open rolled back to a savepoint ends
 	"$(grep -c '^ERROR:  58P01: could not open file' <<<"$FS_OUT"):$FS" "1:fatal gone"
 check_num "fatal: no temp file after a FATAL export that followed a failed open" \
 	"$(debris_of es_sp4.parquet)" "0"
+# Abort must unlist its sink even when its unlink fails. A stale temp file from
+# a reused pid, in a directory the server cannot write, makes that unlink fail
+# with EACCES. The open still succeeds, because it truncates the stale file. A
+# sink left listed is freed by ROLLBACK TO, and the next FATAL walks it; the
+# signal check below counts the fault on an assert or ASan build. The file is
+# made writable by everyone and the directory by no one but root, so the server
+# user is bound whether psql runs as that user or as root.
+RO="$PGC_WORKDIR/es_ro"
+mkdir -p "$RO"
+fatal_session "SELECT pg_backend_pid() AS bpid \gset
+\setenv BPID :bpid
+\! touch '$RO/a.parquet.tmp.'\$BPID && chmod 666 '$RO/a.parquet.tmp.'\$BPID && chmod 555 '$RO'
+BEGIN;
+SAVEPOINT s;
+SET pgcolumnar.sink_fail_after = 8192;
+SELECT pgcolumnar.export_parquet('es_src', '$RO/a.parquet');
+ROLLBACK TO SAVEPOINT s;
+SELECT repeat('x', 4000) FROM generate_series(1, 50) LIMIT 0;
+$FATAL_PRE
+SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_sp5.parquet');"
+# The premise: Abort's unlink failed, so the stale file is still there.
+RO_LEFT="$(debris_of a.parquet)"
+chmod 755 "$RO"
+rm -f "$RO"/a.parquet.tmp.*
+check "fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL" \
+	"$(grep -c '^ERROR:  53100: columnar: export write failed (injected fault)' <<<"$FS_OUT"):$RO_LEFT:$FS" \
+	"1:1:fatal gone"
+check_num "fatal: no temp file after a FATAL export that followed a failed unlink" \
+	"$(debris_of es_sp5.parquet)" "0"
 # A crash restarts the cluster. Wait for it to answer before reading the log.
 for i in $(seq 1 100); do [ "$(q "SELECT 1")" = "1" ] && break; sleep 0.1; done
 SIGS="unread"
