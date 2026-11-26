@@ -100,15 +100,23 @@ check "every suite's run_doc runs its block through psql_block" "${_pb_users:-al
 # run_doc that skips the helper (G1 never reaches the stub), and a native_cluster
 # loop that lets some failures through as ok: its `[ "$out" = ok ]` test is the
 # one place a body can drop a verdict while still calling psql_block.
+# The stub prints its verdict only when it is handed the block doc_sql printed.
+# Otherwise it prints "not the doc block", so a run_doc that calls psql_block on
+# some other SQL and ignores the block fails here (OffgridwithJD's mutant G4).
 _pb_relay() {	# _pb_relay SUITE STUB -> what SUITE's run_doc prints when psql_block prints STUB
 	local body
 	body="$(awk '/^run_doc\(\)/ {inb = 1} inb {print} inb && /^}/ {exit}' "$PGC_TESTDIR/$1.sh")"
 	(
 		PQ_DOCDIR="$PGC_WORKDIR"
 		_pb_stub="$2"
-		doc_sql() { echo "SELECT 1;"; }
+		doc_sql() { echo "SELECT 'pb650 doc block';"; }
 		eval "$body"
-		psql_block() { echo "$_pb_stub"; }
+		psql_block() {
+			case "$1" in
+			*"pb650 doc block"*) echo "$_pb_stub" ;;
+			*) echo "not the doc block" ;;
+			esac
+		}
 		run_doc '## a heading' 1 2 2>&1
 	)
 }
