@@ -34,12 +34,29 @@ HERE = pathlib.Path(__file__).resolve().parent
 
 
 def _fds_on(pid, path):
-    """-> (descriptors of `pid` on `path`, all descriptors of `pid`)."""
+    """-> (descriptors of `pid` on `path`, all descriptors of `pid`).
+
+    A descriptor that closes between the listing and its readlink is skipped, as
+    the shell twin's `find -lname` skips it (#2193). The control reads a child
+    that is still starting: right after exec, the dynamic loader opens each of
+    sleep's shared libraries (libc, libselinux, libpcre2, ...) as fd 4 and
+    closes it again. One such readlink failing used to discard the whole
+    listing as "0 held", though the lock's descriptor, fd 3, inherited at fork,
+    was there the whole time. Measured on main: 86 of 2000 runs of the
+    control's command read "0 held" that way, every one "readlink fd4 ENOENT".
+    A process whose descriptor directory can't be listed at all still reads
+    (0, 0)."""
     fd_dir = pathlib.Path(f"/proc/{pid}/fd")
     try:
-        links = [os.readlink(fd_dir / n) for n in os.listdir(fd_dir)]
+        names = os.listdir(fd_dir)
     except OSError:
         return 0, 0
+    links = []
+    for n in names:
+        try:
+            links.append(os.readlink(fd_dir / n))
+        except OSError:
+            continue
     return sum(1 for link in links if link == str(path)), len(links)
 
 

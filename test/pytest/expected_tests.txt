@@ -2190,4 +2190,6 @@ guard_tests 897
 # review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
 # and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
 # of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 unchanged for #2193: test_harness_isolation.py's _fds_on skips a descriptor that
+# closes between the listing and its readlink; no test added or removed.
 cluster_tests 5597

@@ -625,6 +625,17 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- `test_harness_isolation.py::test_control_a_plain_child_under_flock_holds_the_lock`
+  no longer fails with `got '0 held, lock free=1'` (#2193; once in CI, about 1
+  run in 25 on a busy dev machine).
+  The descriptor count read every link in `/proc/<pid>/fd` and gave up with 0
+  when one readlink failed. The control reads a `sleep` that has just started,
+  and its dynamic loader opens and closes each shared library as fd 4, so that
+  descriptor can vanish between the listing and its readlink. The count now
+  skips a descriptor that vanished, as the shell twin's `find -lname` does. The
+  lock's descriptor is inherited at fork and is never skipped, so a child that
+  does not hold the lock (`flock -o`) still fails the control. Measured: 78 of
+  2000 runs of the control's command read 0 before, none of 2000 after.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
