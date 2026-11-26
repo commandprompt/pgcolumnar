@@ -1739,6 +1739,27 @@ already in use` (#1742). CI runs the cluster files serially, so only `-n` runs m
 | `test_every_literal_fixture_slot_fits_a_workers_block` | every literal `pick_port(<n>)` in the corpus fits a worker's block of WORKER_STRIDE ports, naming any file that asks for more |
 | `test_the_highest_slot_in_the_corpus_gets_a_port` | the corpus's highest slot gets a port inside the AUX band, so the stride and the corpus cannot drift apart |
 
+### Two runs at once must not get one fixture port
+
+The worker blocks keep one run's workers apart, not two runs. `run_all_versions.sh`
+runs suites in parallel, and a shell suite and a twin share the AUX band. A picker
+proves a port free and returns it, and nothing held the port until the caller bound
+it, so two pickers that started from the same port were both given it. In CI
+`iceberg_rest_scan` and `iceberg_rest_vended` both got 31732, and the scan got HTTP 401
+from the other suite's REST fixture (#2165). `pgc_pick_free_port` (test/portlib.sh)
+and `pick_port` now take one lock per user and reserve the port they return, as a file
+named for the port in one shared directory; a pick skips a port reserved less than
+120 s ago. Each arm starts every picker at the same port and binds nothing until all
+have picked, so on main every arm is red. Each pick also sleeps a second between its
+probe and its reservation (`PGC_PORT_PICK_DELAY`), so the arms fail without the lock
+as well. The pickers reserve in a directory of the test's own.
+
+| test | what it asserts | how it fails |
+| --- | --- | --- |
+| `test_four_shell_suites_picking_from_one_seed_get_four_ports` | premise: two shell pickers that share no reservations take one port; four shell pickers at once with one seed get four ports, and all four bind | main: four times one port; the reservation skip, its write or the lock removed, or the age test inverted, gives one port |
+| `test_two_twin_runs_picking_one_slot_get_two_ports` | premise: two twin pickers alone take one port; two processes asking `pick_port(27)` for gw0 at once get two ports, and both bind | main, or the twin's reservation skip or lock removed: one port |
+| `test_a_shell_suite_and_a_twin_never_share_a_port` | premise: the shell's seed 54 and the twin's slot 27 take one port alone; picking at once they get two, and both bind; with `PGC_PORT_RESERVE_DIR` unset, `pick_port` and portlib.sh reserve in the same directory | main: one port; the twin naming another default directory fails the last arm |
+
 ## 11. test_zonemap_boundaries.py: exact boundaries
 
 ### `test_exact_zonemap_boundaries`

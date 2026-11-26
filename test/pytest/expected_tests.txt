@@ -369,7 +369,10 @@
 # guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
 # that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
 # over NO_CLUSTER: 897 tests collected.
-guard_tests 897
+# guard_tests 897 -> 900 for #2165's three tests in test_runshape.py (four shell pickers with one seed get
+# four ports, two twin runs asking one slot get two, a shell suite and a twin never share one and reserve
+# in one directory), by collection over NO_CLUSTER: 900 tests collected (898 on main 2e3fea7a, before #2195).
+guard_tests 900
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and

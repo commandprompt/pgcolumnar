@@ -282,11 +282,19 @@ def irs(pgc_cluster):
                  "--log", str(work / f"{name}.log"), "--token", TOKEN,
                  "--metadata-location", mdloc, *args],
                 stdout=open(fout, "w"), stderr=subprocess.STDOUT))
-            for _ in range(50):
+            # Up to 30 s, less when the fixture exits; a fixture that never says READY
+            # stops the run (#2165), as the shell's pgc_await_ready does, rather than
+            # leaving its arms to read whatever answers on the port.
+            for _ in range(300):
                 if fout.is_file() and "READY" in fout.read_text(errors="replace"):
+                    return f"http://127.0.0.1:{port}"
+                if fx_srvs[-1].poll() is not None:
                     break
                 time.sleep(0.1)
-            return f"http://127.0.0.1:{port}"
+            if fout.is_file() and "READY" in fout.read_text(errors="replace"):
+                return f"http://127.0.0.1:{port}"
+            raise RuntimeError(f"the REST catalog fixture {name} on port {port} did not start: "
+                               f"{fout.read_text(errors='replace')[-300:] if fout.is_file() else ''}")
 
         def nslist(c):
             return _rows(dsn, f"SELECT string_agg(ns, ',' ORDER BY ns) FROM pgcolumnar.iceberg_rest_namespaces('{c}') AS ns")

@@ -122,8 +122,27 @@ def worker_slot(worker_id=None):
     return int(digits) if digits.isdigit() else 0
 
 
+# A PICKED PORT STAYS PICKED UNTIL SOMETHING BINDS IT (#2165). The worker blocks keep
+# one run's workers apart, but two runs at once (two majors, or a shell suite next
+# to a twin, which share the AUX band) start from the same place, and the probe
+# proves a port free at one instant only. Both could be told the same port and the
+# second bind failed. pick_port therefore takes test/portlib.sh's reservation lock
+# and honours its reservations: a port another pick (shell or Python) reserved less
+# than PORT_RESERVE_TTL seconds ago is skipped, and the port returned is reserved.
+# The reservation outlives the gap between the pick and the bind; after the bind
+# the probe sees the port busy. Same directory, same file per port, same mtime age,
+# same lock as portlib.sh, so the two harnesses honour each other's picks.
+PORT_RESERVE_TTL = 120
+
+
+def port_reserve_dir():
+    """portlib.sh's pgc_port_reserve_dir, by its own rule."""
+    return os.environ.get("PGC_PORT_RESERVE_DIR") or os.path.join(
+        os.environ.get("TMPDIR") or "/tmp", f"pgcolumnar-ports-{os.getuid()}")
+
+
 def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
-    """A free port in the AUX band for this slot of this worker.
+    """A free port in the AUX band for this slot of this worker, reserved (#2165).
 
     Walks on collision instead of trusting the band, because the band only makes
     a collision unlikely and this harness has already been broken once by a port
@@ -135,10 +154,25 @@ def pick_port(slot, floor=None, is_free=port_is_free, worker_id=None):
     lo, hi = aux_band(floor if floor is not None else read_ephemeral_floor())
     span = hi - lo
     start = worker_slot(worker_id) * WORKER_STRIDE + slot * 2
-    for step in range(span):
-        port = lo + ((start + step) % span)
-        if is_free(port):
-            return port
+    rdir = port_reserve_dir()
+    os.makedirs(rdir, exist_ok=True)
+    with open(os.path.join(rdir, "lock"), "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        now = time.time()
+        for step in range(span):
+            port = lo + ((start + step) % span)
+            res = os.path.join(rdir, str(port))
+            try:
+                if int(now) - int(os.stat(res).st_mtime) < PORT_RESERVE_TTL:
+                    continue
+            except OSError:
+                pass
+            if is_free(port):
+                if os.environ.get("PGC_PORT_PICK_DELAY"):  # as portlib.sh: to test the lock
+                    time.sleep(float(os.environ["PGC_PORT_PICK_DELAY"]))
+                with open(res, "w") as fh:
+                    fh.write(f"{os.getpid()} {int(now)}\n")
+                return port
     raise RuntimeError(
         f"no free port in the AUX band [{lo}, {hi}) for slot {slot} of worker "
         f"{worker_slot(worker_id)}")

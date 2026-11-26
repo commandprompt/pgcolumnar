@@ -452,3 +452,127 @@ def test_the_highest_slot_in_the_corpus_gets_a_port(expect):
         reading = f"refused: {exc}"
     expect.text(reading, "in the band",
                 f"the highest slot the corpus uses ({top}) gets a port in the AUX band")
+
+
+# ---- two runs at once never share a fixture port (#2165) ---------------------------
+#
+# The worker blocks above keep one run's workers apart. Two RUNS at once are another
+# matter: run_all_versions runs suites in parallel, and a shell suite and a twin share
+# the AUX band. A picker proves a port free and returns it, and nothing holds the port
+# until the caller binds it, so two pickers that start from the same port are both
+# told it. In CI iceberg_rest_scan and iceberg_rest_vended both got 31732, and the
+# scan's arms got HTTP 401 from the vended suite's REST fixture.
+#
+# Each arm forces that collision: every picker starts at the same port, and nothing
+# binds until all of them have picked, which is the probe-then-bind gap held open. On
+# main every arm is red. Each pick also sleeps a second between its probe and its
+# reservation (PGC_PORT_PICK_DELAY), so without the lock the pickers would all probe
+# the port free before any reserved it. The pickers share a reservation directory of their own, so
+# the arms neither see nor leave reservations in the user's real one.
+_PORTLIB = pathlib.Path(__file__).resolve().parent.parent / "portlib.sh"
+_SHELL_PICK = '. "$1"; pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI" "$2"'
+_TWIN_PICK = ("import sys; sys.path.insert(0, sys.argv[1]); from pgc_cluster import pick_port; "
+              "print(pick_port(27, worker_id='gw0'))")
+
+
+def _pick_env(tmp_path, name="reserved"):
+    import os
+    # PGC_PORT_PICK_DELAY holds each pick's probe-to-reservation gap open for a
+    # second, so the pickers overlap there unless the lock serialises them.
+    env = dict(os.environ, PGC_PORT_RESERVE_DIR=str(tmp_path / name), PGC_PORT_PICK_DELAY="1")
+    env.pop("PYTEST_XDIST_WORKER", None)
+    return env
+
+
+def _shell_picker(env, seed):
+    import subprocess
+    return subprocess.Popen(["bash", "-c", _SHELL_PICK, "pick", str(_PORTLIB), str(seed)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _twin_picker(env):
+    import subprocess
+    import sys
+    return subprocess.Popen([sys.executable, "-c", _TWIN_PICK,
+                             str(pathlib.Path(__file__).resolve().parent)],
+                            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _picked(procs):
+    """-> the ports the pickers printed, in order, or their errors."""
+    out = []
+    for p in procs:
+        so, se = p.communicate(timeout=120)
+        out.append(so.strip() if p.returncode == 0 and so.strip().isdigit()
+                   else f"rc={p.returncode}: {se.strip()[-200:]}")
+    return out
+
+
+def _bind_all(ports):
+    """Binds every picked port at once, as the fixtures would: 'bound' or why not."""
+    import socket
+    held, got = [], []
+    try:
+        for p in ports:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            held.append(s)
+            try:
+                s.bind(("127.0.0.1", int(p)))
+                got.append("bound")
+            except (OSError, ValueError) as e:
+                got.append(f"{p}: {e}")
+    finally:
+        for s in held:
+            s.close()
+    return " ".join(got)
+
+
+def test_four_shell_suites_picking_from_one_seed_get_four_ports(tmp_path, expect):
+    """Four shell suites pick at once with one seed, so every walk starts at one port."""
+    alone = _picked([_shell_picker(_pick_env(tmp_path, f"alone{i}"), 7) for i in range(2)])
+    expect.num(len(set(alone)), 1,
+               f"premise: two shell pickers that share no reservations take one port: {alone}")
+    env = _pick_env(tmp_path)
+    ports = _picked([_shell_picker(env, 7) for _ in range(4)])
+    expect.num(len(set(ports)), 4, f"four shell suites picking at once get four ports: {ports}")
+    expect.text(_bind_all(ports), "bound bound bound bound",
+                "and each shell suite binds the port it was given")
+
+
+def test_two_twin_runs_picking_one_slot_get_two_ports(tmp_path, expect):
+    """Two pytest runs (not two workers of one run) ask for one slot of one worker."""
+    alone = _picked([_twin_picker(_pick_env(tmp_path, f"alone{i}")) for i in range(2)])
+    expect.num(len(set(alone)), 1,
+               f"premise: two twin pickers that share no reservations take one port: {alone}")
+    env = _pick_env(tmp_path)
+    ports = _picked([_twin_picker(env) for _ in range(2)])
+    expect.num(len(set(ports)), 2, f"two twin runs picking one slot get two ports: {ports}")
+    expect.text(_bind_all(ports), "bound bound", "and each twin run binds the port it was given")
+
+
+def test_a_shell_suite_and_a_twin_never_share_a_port(tmp_path, expect):
+    """The shell's seed 54 starts at the twin's slot 27 of gw0: lo + 54 for both."""
+    import os
+    import subprocess
+    alone = _picked([_shell_picker(_pick_env(tmp_path, "alone0"), 54),
+                     _twin_picker(_pick_env(tmp_path, "alone1"))])
+    expect.num(len(set(alone)), 1,
+               f"premise: the shell's seed 54 and the twin's slot 27 take one port alone: {alone}")
+    env = _pick_env(tmp_path)
+    ports = _picked([_shell_picker(env, 54), _twin_picker(env)])
+    expect.num(len(set(ports)), 2, f"a shell suite and a twin picking at once get two ports: {ports}")
+    expect.text(_bind_all(ports), "bound bound", "and each binds the port it was given")
+    # The arms above share a directory through PGC_PORT_RESERVE_DIR. Without it, the
+    # two harnesses must still pick the same default, or they never see each other.
+    plain = {k: v for k, v in os.environ.items() if k != "PGC_PORT_RESERVE_DIR"}
+    shell_dir = subprocess.run(["bash", "-c", '. "$1"; pgc_port_reserve_dir', "dir", str(_PORTLIB)],
+                               env=plain, capture_output=True, text=True).stdout.strip()
+    import pgc_cluster
+    saved = os.environ.pop("PGC_PORT_RESERVE_DIR", None)
+    try:
+        twin_dir = getattr(pgc_cluster, "port_reserve_dir", lambda: "(pgc_cluster has no port_reserve_dir)")()
+    finally:
+        if saved is not None:
+            os.environ["PGC_PORT_RESERVE_DIR"] = saved
+    expect.text(twin_dir, shell_dir or "(the shell named no directory)",
+                "the twin and the shell reserve ports in the same directory by default")

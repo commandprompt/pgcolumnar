@@ -1563,6 +1563,25 @@ pgc_record() {	# pgc_record VERDICT NAME DISPLAY [REASON]
 		"${_nl_reason}"
 }
 
+# pgc_await_ready OUT PID WHAT -> returns once the fixture's output OUT says
+# READY; otherwise the suite stops with a FATAL naming WHAT (#2165). Waits up to
+# 30 s, and stops early when the fixture process PID has exited. A suite used to
+# wait 5 s and carry on, and then its arms talked to whatever answered on that
+# port, which in CI was another suite's fixture: HTTP 401 for the wrong token,
+# and checks that failed by reading the wrong catalog.
+pgc_await_ready() {
+	local _i _st
+	for _i in $(seq 1 300); do
+		grep -q READY "$1" 2>/dev/null && return 0
+		kill -0 "$2" 2>/dev/null || break
+		sleep 0.1
+	done
+	grep -q READY "$1" 2>/dev/null && return 0
+	if kill -0 "$2" 2>/dev/null; then _st="still running with no READY after 30 s"; else _st="exited"; fi
+	echo "FATAL: the $3 did not start ($_st): $(tail -3 "$1" 2>/dev/null | tr '\n' ' ')"
+	exit 1
+}
+
 pgc_pass() {	# pgc_pass NAME
 	pgc_record PASS "$1" "PASS  $1"
 }

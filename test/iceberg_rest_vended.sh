@@ -109,7 +109,7 @@ start_rest() {  # $@=extra args; picks a fresh free port into LAST_PORT
 		--metadata-location "s3://$BUCKET/db/t/metadata/apply.metadata.json" \
 		"$@" > "$PGC_WORKDIR/rest_$LAST_PORT.out" 2>&1 &
 	PIDS="$PIDS $!"
-	for _ in $(seq 1 50); do grep -q READY "$PGC_WORKDIR/rest_$LAST_PORT.out" 2>/dev/null && break; sleep 0.1; done
+	pgc_await_ready "$PGC_WORKDIR/rest_$LAST_PORT.out" "$!" "REST catalog fixture on port $LAST_PORT"
 }
 
 # ---- serve the warehouse over the SigV4 S3 fixture ---------------------------
