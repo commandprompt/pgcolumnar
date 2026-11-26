@@ -199,6 +199,17 @@ class _Db:
             return exc.sqlstate or query_error(_message(exc))
         return f"noerror ({row[0] if row else None})"
 
+    def outcome(self, sql, table):
+        """-> "N rows" (N = `table`'s count) when `sql` ran under a 30 s statement_timeout,
+        or the SQLSTATE it raised; a query_error() when the server never answered."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, options="-c statement_timeout=30s") as conn:
+                conn.execute(sql)
+        except psycopg.Error as exc:
+            return exc.sqlstate or query_error(_message(exc))
+        n = self.value(f"SELECT count(*) FROM {table}")
+        return f"{n} rows" if isinstance(n, int) else n
+
     def offsets(self, path, workers):
         return self.value(f"SELECT pgcolumnar.file_split_offsets('{path}', {workers})")
 
@@ -783,6 +794,40 @@ def pcopy(pgc_cluster, server_dir):
             r[f"2084 {key} hash"] = db.set_hash(f"SELECT * FROM {tgt}")
             r[f"2084 {key} hash want"] = db.set_hash(f"SELECT * FROM {heap}")
 
+        # Two more gaps, from the review of #2148 at 7e71ab06. eod.txt loaded twice with
+        # dedup on: nothing but the rollback after the marker resolves the ranges after
+        # it (m1). contdot.txt (partitioned) puts a line that is only \. inside a
+        # continued record: PG 17's COPY loads every row, PG 18's refuses with 22P04
+        # (m5, which only PG 17 shows). The shell gives the byte layout.
+        db.run("CREATE TABLE c_eodd (id int, txt text) USING pgcolumnar")
+        for n in (1, 2):
+            r[f"2084 eodd load {n}"] = db.value(f"SELECT pgcolumnar.parallel_copy('c_eodd'::regclass, '{eod}', 4, true)")
+            r[f"2084 eodd leak {n}"] = db.value(LEAK)
+        r["2084 eodd table"] = db.value("SELECT count(*) FROM c_eodd")
+        r["2084 eodd want"] = db.value("SELECT count(*) FROM h_eod")
+        # A leaked range holds locks for the rest of the run, so resolve any here.
+        gids = db.value("SELECT coalesce(string_agg(gid, ' '), '') FROM pg_prepared_xacts"
+                        " WHERE database = current_database()")
+        for gid in (gids.split() if isinstance(gids, str) else ()):
+            db.run(f"ROLLBACK PREPARED '{gid}'")
+        contdot = d / "contdot.txt"
+        contdot.write_bytes(b"".join(b"%d\tx\n" % i for i in range(1, 1000)) + b"999\tcont\\\n\\.\n"
+                            + b"".join(b"%d\ty\n" % i for i in range(1000, 2000)))
+        os.chmod(contdot, 0o644)
+        db.run("CREATE TABLE h_contdot (id int, txt text); "
+               "CREATE TABLE t_contdotp (id int, txt text) PARTITION BY RANGE (id); "
+               "CREATE TABLE t_contdotp_a PARTITION OF t_contdotp FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar; "
+               "CREATE TABLE t_contdotp_b PARTITION OF t_contdotp FOR VALUES FROM (500) TO (1000) USING pgcolumnar; "
+               "CREATE TABLE t_contdotp_c PARTITION OF t_contdotp FOR VALUES FROM (1000) TO (1500) USING pgcolumnar; "
+               "CREATE TABLE t_contdotp_d PARTITION OF t_contdotp FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar")
+        srv = db.value("SHOW server_version_num")
+        r["2084 contdot want"] = "22P04" if str(srv).isdigit() and int(srv) >= 180000 else "2000 rows"
+        r["2084 contdot heap"] = db.outcome(f"COPY h_contdot FROM '{contdot}'", "h_contdot")
+        r["2084 contdot part"] = db.outcome(
+            f"SELECT pgcolumnar.parallel_copy('t_contdotp'::regclass, '{contdot}', 4)", "t_contdotp")
+        r["2084 contdot hash"] = db.set_hash("SELECT * FROM t_contdotp")
+        r["2084 contdot hash want"] = db.set_hash("SELECT * FROM h_contdot")
+
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
         r["projection leak"] = db.value(LEAK)
@@ -1229,7 +1274,46 @@ def test_parallel_copy_split_clears_the_escape_after_a_non_newline_byte(pcopy, e
 def test_parallel_copy_split_puts_the_end_of_data_marker_on_a_range_start(pcopy, expect):
     """The fixture premise for mutant a8: the second range starts at the \\. line."""
     expect.text(pcopy["2084 eodstart offsets 4"], "0 3500 7003 10503 13996",
-                "#2084 end-of-data marker on a range start / 4 workers: offsets are 0 3500 7003 10503 13996")
+                "#2084 premise: eodstart.txt with 4 workers: offsets are 0 3500 7003 10503 13996,"
+                " so the second range starts at the end-of-data marker")
+
+
+def test_parallel_copy_end_of_data_marker_with_dedup_leaves_no_prepared_transaction(pcopy, expect):
+    """With dedup on, only the rollback after the marker resolves the ranges after it,
+    on the first load and on the refused repeat (mutant m1)."""
+    expect.text(f"{pcopy['2084 eodd leak 1']} {pcopy['2084 eodd leak 2']}", "0 0",
+                "#2084 end-of-data marker, dedup on / single table, 4 workers: no prepared-transaction leak"
+                " after the load or after its repeat")
+
+
+def test_parallel_copy_end_of_data_marker_with_dedup_loads_once(pcopy, expect):
+    want = pcopy["2084 eodd want"]
+    expect.text(f"{pcopy['2084 eodd load 1']} {pcopy['2084 eodd load 2']} {pcopy['2084 eodd table']}",
+                f"{want} 0 {want}",
+                "#2084 end-of-data marker, dedup on / single table, 4 workers: the load returns heap COPY's 1000,"
+                " the repeat returns 0, the table holds 1000")
+
+
+def test_parallel_copy_fixture_premise_contdot(pcopy, expect):
+    """Pins heap COPY's outcome on contdot.txt for this major: PG 17 reads on past a
+    \\. line inside a record, PG 18 refuses the file."""
+    expect.text(pcopy["2084 contdot heap"], pcopy["2084 contdot want"],
+                "#2084 premise: heap COPY of contdot.txt loads 2000 rows on PG 17 and older, and refuses it"
+                " with 22P04 on PG 18 and newer")
+
+
+def test_parallel_copy_marker_line_inside_a_continued_record_gives_heap_copys_outcome(pcopy, expect):
+    """A line that is only \\. inside a continued record does not end the data for the
+    partitioned splitter (mutant m5, red on PG 17)."""
+    expect.text(pcopy["2084 contdot part"], pcopy["2084 contdot heap"],
+                "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers:"
+                " the outcome is heap COPY's")
+
+
+def test_parallel_copy_marker_line_inside_a_continued_record_loads_heap_copys_values(pcopy, expect):
+    expect.hash(pcopy["2084 contdot hash"], pcopy["2084 contdot hash want"],
+                "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers:"
+                " result == heap COPY")
 
 # ---- #2092: a load into a table with a projection --------------------------------
 

@@ -938,12 +938,62 @@ check "#2084 escape of a byte that is not a newline / single table, 4 workers: r
 	"$(q "SELECT pgcolumnar.parallel_copy('c_esc'::regclass, '$F_ESC', 4)")" "$(q "SELECT count(*) FROM h_esc")"
 check "#2084 escape of a byte that is not a newline / single table, 4 workers: result == heap COPY" \
 	"$(pgc_set_hash "SELECT * FROM c_esc")" "$(pgc_set_hash "SELECT * FROM h_esc")"
-check "#2084 end-of-data marker on a range start / 4 workers: offsets are 0 3500 7003 10503 13996" \
+check "#2084 premise: eodstart.txt with 4 workers: offsets are 0 3500 7003 10503 13996, so the second range starts at the end-of-data marker" \
 	"$(offsets_of "$F_EODSTART" 4)" "0 3500 7003 10503 13996"
 check "#2084 end-of-data marker on a range start / single table, 4 workers: rows returned = heap COPY's 500" \
 	"$(q "SELECT pgcolumnar.parallel_copy('c_eodstart'::regclass, '$F_EODSTART', 4)")" "$(q "SELECT count(*) FROM h_eodstart")"
 check "#2084 end-of-data marker on a range start / single table, 4 workers: result == heap COPY" \
 	"$(pgc_set_hash "SELECT * FROM c_eodstart")" "$(pgc_set_hash "SELECT * FROM h_eodstart")"
+
+# Two more fixture gaps, from the review of #2148 at 7e71ab06.
+#
+# eod.txt again, loaded twice with dedup on. The coordinator rolls back every
+# range after the one that stopped at the end-of-data marker. On a dedup load
+# nothing else resolves those ranges, so a skipped rollback leaves them
+# prepared, holding locks. Mutant m1.
+#
+# contdot.txt (partitioned): row 999 ends in an escaped newline, so its record
+# goes on into the next line, which is \. alone. That line is part of the
+# record, not the end-of-data marker. PG 17's COPY reads on past it and loads
+# all 2000 rows; PG 18's COPY refuses the file with 22P04. parallel_copy must
+# give heap COPY's outcome on each major. Mutant m5, which only PG 17 shows.
+F_CONTDOT="$DATADIR/contdot.txt"
+awk 'BEGIN { for (i = 1; i <= 999; i++) printf "%d\tx\n", i; printf "999\tcont\\\n\\.\n";
+             for (i = 1000; i <= 1999; i++) printf "%d\ty\n", i }' >"$F_CONTDOT"
+chmod 644 "$F_CONTDOT"
+psql_run "DROP TABLE IF EXISTS c_eodd, h_contdot, t_contdotp CASCADE;
+          CREATE TABLE c_eodd (id int, txt text) USING pgcolumnar;
+          CREATE TABLE h_contdot (id int, txt text);
+          CREATE TABLE t_contdotp (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_contdotp_a PARTITION OF t_contdotp FOR VALUES FROM (MINVALUE) TO (500) USING pgcolumnar;
+          CREATE TABLE t_contdotp_b PARTITION OF t_contdotp FOR VALUES FROM (500) TO (1000) USING pgcolumnar;
+          CREATE TABLE t_contdotp_c PARTITION OF t_contdotp FOR VALUES FROM (1000) TO (1500) USING pgcolumnar;
+          CREATE TABLE t_contdotp_d PARTITION OF t_contdotp FOR VALUES FROM (1500) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+_eodd1="$(q "SELECT pgcolumnar.parallel_copy('c_eodd'::regclass, '$F_EOD', 4, true)")"
+_eodd_leak1="$(q "SELECT count(*) FROM pg_prepared_xacts")"
+_eodd2="$(q "SELECT pgcolumnar.parallel_copy('c_eodd'::regclass, '$F_EOD', 4, true)")"
+_eodd_leak2="$(q "SELECT count(*) FROM pg_prepared_xacts")"
+check "#2084 end-of-data marker, dedup on / single table, 4 workers: no prepared-transaction leak after the load or after its repeat" \
+	"$_eodd_leak1 $_eodd_leak2" "0 0"
+check "#2084 end-of-data marker, dedup on / single table, 4 workers: the load returns heap COPY's 1000, the repeat returns 0, the table holds 1000" \
+	"$_eodd1 $_eodd2 $(q "SELECT count(*) FROM c_eodd")" "$(q "SELECT count(*) FROM h_eod") 0 $(q "SELECT count(*) FROM h_eod")"
+# A leaked range holds locks for the rest of the run, so resolve any here.
+for _g in $(q "SELECT gid FROM pg_prepared_xacts"); do q "ROLLBACK PREPARED '$_g'" >/dev/null; done
+
+outcome_of() {	# SQL TABLE -> "N rows" (N = TABLE's count) when SQL ran, else the SQLSTATE it raised
+	local s
+	s="$(sqlstate_of "$1")"
+	case "$s" in noerror*) echo "$(q "SELECT count(*) FROM $2") rows" ;; *) echo "$s" ;; esac
+}
+_srv="$(q 'SHOW server_version_num')"
+if [ "${_srv:-0}" -ge 180000 ]; then _contdot_want="22P04"; else _contdot_want="2000 rows"; fi
+_contdot_heap="$(outcome_of "COPY h_contdot FROM '$F_CONTDOT'" h_contdot)"
+check "#2084 premise: heap COPY of contdot.txt loads 2000 rows on PG 17 and older, and refuses it with 22P04 on PG 18 and newer" \
+	"$_contdot_heap" "$_contdot_want"
+check "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers: the outcome is heap COPY's" \
+	"$(outcome_of "SELECT pgcolumnar.parallel_copy('t_contdotp'::regclass, '$F_CONTDOT', 4)" t_contdotp)" "$_contdot_heap"
+check "#2084 end-of-data marker line inside a continued record / partitioned, 4 workers: result == heap COPY" \
+	"$(pgc_set_hash "SELECT * FROM t_contdotp")" "$(pgc_set_hash "SELECT * FROM h_contdot")"
 
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote

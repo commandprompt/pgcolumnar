@@ -618,14 +618,18 @@ true until the next version shipped.
   line. A loader whose COPY stops at a `\.` line reports it, and the
   coordinator rolls back every range after it. `file_split_offsets` uses the
   same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
-  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 40
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 45
   checks, including files whose values end in a backslash (an even run before
   the newline) and a file whose rows after `\.` are invalid. They also cover
   runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
   and 4 lines with the key after them, a file that ends inside a continued
   record, a `\.\r\n` marker, and which failing row the error names. And they
   cover an escape of a byte that is not a newline (`\t`), a line made only of
-  backslashes, and a `\.` line that falls exactly on a range start.
+  backslashes, and a `\.` line that falls exactly on a range start. And
+  they cover a `\.` file loaded twice with dedup on, which must leave no
+  prepared transaction, and a `\.` line inside a continued record, where
+  `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
+  (refused with 22P04).
 - A remote read no longer fails when the server or a proxy sends an interim
   1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
   (#2090). `read_parquet` and the Parquet foreign table failed with

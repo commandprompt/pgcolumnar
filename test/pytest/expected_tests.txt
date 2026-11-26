@@ -2116,4 +2116,9 @@ guard_tests 895
 # rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
 # offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
 # ci.yml selects them: 5527 tests collected.
-cluster_tests 5595
+# cluster_tests 5595 -> 5600 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
+# transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
+# COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
+# the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
+cluster_tests 5600
