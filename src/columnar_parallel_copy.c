@@ -58,6 +58,7 @@
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "fmgr.h"
@@ -1659,6 +1660,26 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		 * target is refused.
 		 */
 		PgColumnarRefuseRemotePath("parallel_copy", path);
+
+		/*
+		 * The coordinator and the loaders open the target with ROW EXCLUSIVE, and
+		 * the loaders route rows into its partitions under the same mode, each in
+		 * its own transaction (#2183). Refuse a lock of ours that would make them
+		 * wait, before anything is read or spawned.
+		 *
+		 * After the INSERT, RLS and URL checks, so a caller who may not write the
+		 * target gets 42501 whatever it holds. Before the unique-index refusal
+		 * below (#2080): that one's hint is "workers => 1", and a caller holding
+		 * such a lock would be refused again with one worker, so the refusal
+		 * whose cause holds for every worker count comes first.
+		 */
+		{
+			ListCell   *lc;
+
+			foreach(lc, find_all_inheritors(relid, NoLock, NULL))
+				PgColumnarRefuseOwnLockConflict("pgcolumnar.parallel_copy",
+												lfirst_oid(lc), RowExclusiveLock);
+		}
 
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{

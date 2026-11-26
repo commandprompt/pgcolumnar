@@ -501,6 +501,51 @@ PY
 check "the workers cut row groups at the caller's export_group_bytes: 4000 rows of 3000 bytes under a 65536-byte cap, at most 21 rows a group" \
 	"$cap_n|$cap_groups" "4000|4000|21"
 
+# ---- a lock the caller holds is refused, not waited on (#2183) ---------------
+# The workers open the table, or each leaf, with ACCESS SHARE in their own
+# transactions. They are not in the caller's lock group, and the caller waits for
+# them on a latch, so the deadlock detector cannot see the wait: after LOCK TABLE
+# ... IN ACCESS EXCLUSIVE MODE or TRUNCATE in the caller's transaction, the export
+# waited until statement_timeout. It is now refused up front with 55000, naming the
+# lock and the relation. A lock the workers' ACCESS SHARE does not conflict with
+# (SHARE on the table, ACCESS EXCLUSIVE on another table) must still export, and a
+# lock on one leaf of a partitioned table is refused like one on the table.
+# Every run gets a 5s statement_timeout, so the old wait reads 57014, not a hang.
+#
+# self_lock_export SETUP TABLE DIR -> "SQLSTATE|message" of the first ERROR, or
+# "none|<rows returned>" when BEGIN; SETUP; the export of TABLE; COMMIT ran.
+psql_run "DROP TABLE IF EXISTS t_lk, t_lk_other;
+          CREATE TABLE t_lk ($COLS) USING pgcolumnar;
+          INSERT INTO t_lk $GEN_TX_COMMITTED;
+          CREATE TABLE t_lk_other (a int);" >/dev/null
+self_lock_export() {
+	local out rc
+	out="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 \
+		-c "SET statement_timeout = '5s'" -c '\set VERBOSITY verbose' \
+		-c "BEGIN; $1; SELECT pgcolumnar.parallel_export_parquet('$2'::regclass, '$3', 2); COMMIT;" 2>&1)"
+	rc=$?
+	if grep -q '^ERROR:' <<<"$out"; then
+		sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1
+	elif [ "$rc" -eq 0 ]; then
+		echo "none|$(tail -1 <<<"$out")"
+	else
+		echo "no reading (psql exit $rc: $(head -1 <<<"$out"))"
+	fi
+}
+LK_REFUSED='55000|pgcolumnar.parallel_export_parquet cannot run while this transaction holds AccessExclusiveLock on "t_lk"'
+check "parallel_export_parquet after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction is refused with 55000, not waited on (#2183)" \
+	"$(self_lock_export "LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE" t_lk "$PGC_WORKDIR/lk_ael")" "$LK_REFUSED"
+check "parallel_export_parquet after TRUNCATE in the same transaction is refused with 55000, not waited on (#2183)" \
+	"$(self_lock_export "TRUNCATE t_lk" t_lk "$PGC_WORKDIR/lk_trunc")" "$LK_REFUSED"
+check "parallel_export_parquet after LOCK TABLE IN SHARE MODE in the same transaction still exports (#2183)" \
+	"$(self_lock_export "LOCK TABLE t_lk IN SHARE MODE" t_lk "$PGC_WORKDIR/lk_share")" "none|$NC"
+check "parallel_export_parquet while the transaction holds ACCESS EXCLUSIVE on another table still exports (#2183)" \
+	"$(self_lock_export "LOCK TABLE t_lk_other IN ACCESS EXCLUSIVE MODE" t_lk "$PGC_WORKDIR/lk_other")" "none|$NC"
+check "parallel_export_parquet of a partitioned table after LOCK TABLE on one leaf IN ACCESS EXCLUSIVE MODE is refused with 55000 (#2183)" \
+	"$(self_lock_export "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE" t_part "$PGC_WORKDIR/lk_leaf")" \
+	'55000|pgcolumnar.parallel_export_parquet cannot run while this transaction holds AccessExclusiveLock on "t_p1"'
+
 check "server still up after the exports" "$(survived "$CRASHES_AT_START")" 1
 
 pgc_summary

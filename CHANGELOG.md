@@ -650,6 +650,24 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
+  wait until `statement_timeout` when the calling transaction already holds a
+  lock their workers' lock conflicts with, as after `LOCK TABLE ... IN ACCESS
+  EXCLUSIVE MODE` or `TRUNCATE` in the same transaction (#2183). Export workers
+  open the table, or each leaf, with ACCESS SHARE; parallel_copy's coordinator and
+  loaders open the target, and the partitions they route to, with ROW EXCLUSIVE.
+  Each worker runs in its own transaction, outside the caller's lock group, and
+  the caller waits for them on a latch, so PostgreSQL's deadlock detector could
+  not see the wait. #2072 fixed the same wait in `parallel_flush` by not opening
+  the table in its workers; these workers read or write the table itself, so
+  both functions now refuse the call up front with 55000
+  (`object_not_in_prerequisite_state`), naming the lock and the relation. Only a
+  conflicting lock is refused: an export still runs under SHARE, and
+  parallel_copy still runs under ROW EXCLUSIVE or SHARE UPDATE EXCLUSIVE, or with
+  any lock on another table. `parallel_copy` checks INSERT (42501) first, then
+  this lock, then its unique-index refusal (#2080), so a caller holding SHARE on
+  a table with a primary key gets 55000. `parallel_export_parquet.sh`, `parallel_copy.sh`,
+  `test_parallel_export_parquet.py` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

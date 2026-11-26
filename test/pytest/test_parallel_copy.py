@@ -377,6 +377,24 @@ def _projection_load(db, path, workers, preload):
     return f"w{workers}:{got}/{rows}/{prows}"
 
 
+def _self_lock_copy(dsn, setup, table, path):
+    """-> "SQLSTATE|message" of the error, or "none|<rows returned>", for BEGIN; setup;
+    parallel_copy of path into table; COMMIT in one session under a 5 s
+    statement_timeout (#2183). The timeout makes the old wait a 57014 rather than a
+    hang. A failure that never reached the server is a query_error()."""
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute("SET statement_timeout = '5s'")
+            conn.execute(setup)
+            row = conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2)").fetchone()
+            conn.commit()
+    except psycopg.Error as exc:
+        if exc.sqlstate is None:
+            return query_error(_message(exc))
+        return f"{exc.sqlstate}|{exc.diag.message_primary or ''}"
+    return f"none|{row[0] if row else None}"
+
+
 @pytest.fixture(scope="module")
 def pcopy(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -741,6 +759,26 @@ def pcopy(pgc_cluster, server_dir):
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
         r["projection leak"] = db.value(LEAK)
         r["projection up"] = _survived(db, pgc_cluster, before)
+
+        # ---- #2183: a lock the caller holds is refused, not waited on -------------
+        db.run("CREATE TABLE t_lkc (id int, txt text) USING pgcolumnar; CREATE TABLE t_lkc_other (a int)")
+        _mkpart(db, "t_lkp", 4)
+        for key, setup, table in (
+                ("lk ael", "LOCK TABLE t_lkc IN ACCESS EXCLUSIVE MODE", "t_lkc"),
+                ("lk trunc", "TRUNCATE t_lkc", "t_lkc"),
+                ("lk share", "LOCK TABLE t_lkc IN SHARE MODE", "t_lkc"),
+                ("lk rowex", "LOCK TABLE t_lkc IN ROW EXCLUSIVE MODE", "t_lkc"),
+                ("lk other", "LOCK TABLE t_lkc_other IN ACCESS EXCLUSIVE MODE", "t_lkc"),
+                ("lk part", "LOCK TABLE t_lkp_p2 IN ACCESS EXCLUSIVE MODE", "t_lkp")):
+            r[key] = _self_lock_copy(db.dsn, setup, table, f)
+        r["lk after"] = (f"{db.value('SELECT count(*) FROM t_lkc')} rows, "
+                         f"{db.value('SELECT count(*) FROM t_lkp')} partitioned rows, {db.value(LEAK)} prepared")
+        # the order of the refusals (#2183 with #2080): the lock refusal before the
+        # unique-index one, and a caller without INSERT gets 42501 before both
+        db.run("CREATE TABLE t_lko (id int PRIMARY KEY, txt text) USING pgcolumnar; "
+               "GRANT SELECT, UPDATE ON t_lko TO pcopy_noins")
+        r["lk order unique"] = _self_lock_copy(db.dsn, "LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
+        r["lk order acl"] = _self_lock_copy(db.dsn, "SET ROLE pcopy_noins; LOCK TABLE t_lko IN SHARE MODE", "t_lko", f)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1171,3 +1209,52 @@ def test_parallel_copy_into_a_table_with_a_projection_fills_the_projection(pcopy
                 "w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1",
                 "parallel_copy into a table with a projection fills the projection, leaves no prepared transaction"
                 " and keeps the server up (#2092)")
+
+
+# ---- #2183: a lock the caller holds ------------------------------------------------
+
+@pytest.mark.parametrize("key,want,name", [
+    ("lk ael", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lkc"',
+     "parallel_copy after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction is refused with 55000,"
+     " not waited on (#2183)"),
+    ("lk trunc", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lkc"',
+     "parallel_copy after TRUNCATE in the same transaction is refused with 55000, not waited on (#2183)"),
+    ("lk share", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkc"',
+     "parallel_copy after LOCK TABLE IN SHARE MODE in the same transaction is refused with 55000, not waited on"
+     " (#2183)"),
+    ("lk rowex", "none|5000",
+     "parallel_copy after LOCK TABLE IN ROW EXCLUSIVE MODE in the same transaction still loads (#2183)"),
+    ("lk other", "none|5000",
+     "parallel_copy while the transaction holds ACCESS EXCLUSIVE on another table still loads (#2183)"),
+    ("lk part", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lkp_p2"',
+     "parallel_copy into a partitioned table after LOCK TABLE on one partition IN ACCESS EXCLUSIVE MODE is"
+     " refused with 55000 (#2183)")])
+def test_parallel_copy_a_lock_the_caller_holds_is_refused_not_waited_on(pcopy, expect, key, want, name):
+    """#2183: the coordinator and the loaders take ROW EXCLUSIVE on the target, and the
+    loaders on the partitions they route to, in their own transactions, outside the
+    caller's lock group; the caller waits for them on a latch. A caller holding a lock
+    that conflicts with ROW EXCLUSIVE (LOCK TABLE, TRUNCATE, SHARE) waited until
+    statement_timeout; it is now refused with 55000, by SQLSTATE and message. A lock
+    ROW EXCLUSIVE does not conflict with still loads."""
+    expect.text(pcopy[key], want, name)
+
+
+@pytest.mark.parametrize("key,want,name", [
+    ("lk order unique", '55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lko"',
+     "parallel_copy into a primary-key table under the caller's SHARE lock gets the lock refusal (55000) before the"
+     " unique-index refusal (#2183)"),
+    ("lk order acl", "42501|permission denied for table t_lko",
+     "parallel_copy gives a caller without INSERT that holds SHARE on the table 42501 before the lock refusal"
+     " (#2183)")])
+def test_parallel_copy_refusal_order_with_a_lock_the_caller_holds(pcopy, expect, key, want, name):
+    """#2183 with #2080: parallel_copy refuses a caller without INSERT (42501) first, then
+    a lock the caller holds (55000), then a unique index with more than one worker
+    (0A000). The unique-index hint says "workers => 1", which would only lead a caller
+    holding SHARE to the lock refusal, so that refusal comes first."""
+    expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_a_refused_load_loads_nothing(pcopy, expect):
+    expect.text(pcopy["lk after"], "10000 rows, 0 partitioned rows, 0 prepared",
+                "parallel_copy refused for a lock the caller holds loads nothing and leaves no prepared transaction"
+                " (#2183)")

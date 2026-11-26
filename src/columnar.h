@@ -590,6 +590,9 @@ extern bool pgcolumnar_enable_end_truncation;
 extern void PgColumnarRequireTableOwner(Relation rel);
 extern void PgColumnarRequireTableOwnerByOid(Oid relid);
 extern void PgColumnarRequireNoRowSecurity(Oid relid);
+/* refuse when this transaction holds a lock its workers would wait on (#2183) */
+extern void PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid,
+											LOCKMODE workerlock);
 
 /*
  * Assert-only invariant: a storage's live row-group footprints and its
