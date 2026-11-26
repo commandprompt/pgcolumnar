@@ -150,7 +150,9 @@ def _v3_default_copies(md, eq_md):
     """Write three format-version 3 copies of fixture metadata (#2087) and return
     their paths. v3default.metadata.json: the events table, whose current schema
     gains field 4, qty, required, initial-default 7, which no data file carries.
-    v3optdefault.metadata.json: the same, but qty is optional, initial-default 42.
+    v3optdefault.metadata.json: the same, but qty is optional, initial-default 42,
+    and has no write-default, so a refusal that also requires a write-default
+    fails (review of #2151 at 0a0a6255).
     eq_v3default.metadata.json: warehouse_promo's equality-delete table, with
     initial-default 0 on k, the column its equality deletes compare. k is made
     required, so an eq-delete refusal that skips required fields fails."""
@@ -167,7 +169,7 @@ def _v3_default_copies(md, eq_md):
     v3md = md.parent / "v3default.metadata.json"
     v3md.write_text(json.dumps(m))
     added["fields"][-1] = {"id": 4, "name": "qty", "required": False, "type": "int",
-                           "initial-default": 42, "write-default": 42}
+                           "initial-default": 42}
     v3opt = md.parent / "v3optdefault.metadata.json"
     v3opt.write_text(json.dumps(m))
     e = json.loads(eq_md.read_text())
@@ -281,6 +283,39 @@ def _v3_round4_copies(v3opt, dmd):
     for p in (eq_out, v2_out):
         p.chmod(0o666)
     return eq_out, v2_out
+
+
+def _v3_round6_copies(v3md, dmd):
+    """Write two more copies (#2087, review of #2151 at 0a0a6255) and return their
+    paths. eq_v3multidefault.metadata.json: warehouse_del's eqmulti table, whose
+    equality deletes compare id and region, as format-version 3 with region's
+    initial-default "x"; region is the second equality column, so a refusal that
+    checks only the first one reads rows again. v3twodefaults.metadata.json: the
+    events table with two optional fields that each have an initial-default, qty
+    (id 4) and then note (id 5), and last-column-id 5; the scan selects qty, which
+    is neither the last field nor the last-column-id, so a refusal narrowed to
+    either reads qty as null again."""
+    e = json.loads((dmd / "eqmulti.metadata.json").read_text())
+    e["format-version"] = 3
+    cur = next(s for s in e["schemas"] if s["schema-id"] == e["current-schema-id"])
+    for f in cur["fields"]:
+        if f["name"] == "region":
+            f["initial-default"] = "x"
+    eq_out = dmd / "eq_v3multidefault.metadata.json"
+    eq_out.write_text(json.dumps(e))
+    m = json.loads(v3md.read_text())
+    cur = next(s for s in m["schemas"] if s["schema-id"] == m["current-schema-id"])
+    cur["fields"] = [f for f in cur["fields"] if f["id"] != 4]
+    cur["fields"].append({"id": 4, "name": "qty", "required": False, "type": "int",
+                          "initial-default": 7})
+    cur["fields"].append({"id": 5, "name": "note", "required": False, "type": "string",
+                          "initial-default": "n"})
+    m["last-column-id"] = 5
+    v3_out = v3md.parent / "v3twodefaults.metadata.json"
+    v3_out.write_text(json.dumps(m))
+    for p in (eq_out, v3_out):
+        p.chmod(0o666)
+    return eq_out, v3_out
 
 
 @pytest.fixture(scope="module")
@@ -502,6 +537,15 @@ def isc(pgc_cluster, server_dir):
             "v2 default": _refusal(dsn, "SELECT id, qty FROM "
                                         f"{scan.format(v2opt)} AS t(id bigint, qty int) ORDER BY id",
                                    r'field "qty" has an initial-default', "refusal naming qty"),
+        })
+        v3eqmulti, v3two = _v3_round6_copies(v3md, dmd)
+        r.update({
+            "v3 eq second column default": _refusal(dsn, "SELECT string_agg(id::text, ',' ORDER BY id) "
+                                                         f"FROM {scan.format(v3eqmulti)} AS t(id bigint)",
+                                                    r'field "region" has an initial-default', "refusal naming region"),
+            "v3 two defaults": _refusal(dsn, "SELECT id, qty FROM "
+                                             f"{scan.format(v3two)} AS t(id bigint, qty int) ORDER BY id",
+                                        r'field "qty" has an initial-default', "refusal naming qty"),
         })
         yield r
     finally:
@@ -943,3 +987,17 @@ def test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file(isc, expe
         return
     expect.text(str(isc["v2 default"]), "0A000 (refusal naming qty)",
                 "iceberg_scan refuses an initial-default in a format-version 2 metadata file (0A000)")
+
+
+def test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 eq second column default"]), "0A000 (refusal naming region)",
+                "iceberg_scan refuses an equality delete whose second column has a v3 initial-default (0A000)")
+
+
+def test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id(isc, expect):
+    if _declined(isc, expect):
+        return
+    expect.text(str(isc["v3 two defaults"]), "0A000 (refusal naming qty)",
+                "iceberg_scan refuses a v3 column with an initial-default that is neither the last field nor the last-column-id (0A000)")

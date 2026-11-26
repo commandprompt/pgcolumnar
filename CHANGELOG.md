@@ -612,8 +612,9 @@ true until the next version shipped.
   before the column existed read as null, even in a required column, with no
   error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
   A default of any JSON type is refused, including `""`, `false` and `0`.
-  The refusal covers an output column and the column an equality delete
-  compares, whatever its type and whether it is required. A query that leaves
+  The refusal covers an output column and every column an equality delete
+  compares, whatever its type, whether it is required, and whether the field
+  also has a `write-default`. A query that leaves
   the field out still reads, except through a `pgcolumnar_iceberg` foreign
   table: it refuses any scan when one of its columns has an `initial-default`.
   A null `initial-default` counts as none, even when the field also has a
