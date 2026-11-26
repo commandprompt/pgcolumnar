@@ -2156,32 +2156,35 @@ guard_tests 895
 # test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
-# cluster_tests 5580 -> 5585 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
 # test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
 # test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
 # test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
 # test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
 # test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
 # collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
-# cluster_tests 5585 -> 5590 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
 # test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
 # test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
 # test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
 # test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
-# cluster_tests 5590 -> 5592 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
 # and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
 # by main's later growth.
-# cluster_tests 5592 -> 5594 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
 # and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
 # files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
 # by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
-# cluster_tests 5594 -> 5596 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
 # review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
 # and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
-# of the files not in NO_CLUSTER (5596 tests collected).
-cluster_tests 5596
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+cluster_tests 5597
