@@ -605,6 +605,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read that fails inside a subtransaction now closes its connection
+  when the subtransaction aborts (#2089). Before, the handle stayed open until
+  the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
+  or undone by `ROLLBACK TO SAVEPOINT`, kept a socket and an external file
+  descriptor. A retry loop that caught about 325 missing objects ran the
+  backend out of file descriptors, and unrelated statements then failed with
+  `Too many open files`. A transaction that committed after caught errors
+  logged one `leaked to commit` WARNING per handle. Each handle now belongs to
+  the resource owner that opened it, so a subtransaction abort closes only its
+  own handles; a scan or cursor of the outer statement keeps reading.
+  This covers all three places a handle opens: a read, an Iceberg REST
+  request and an `s3://` write or listing.
+  A subtransaction commit, such as `RELEASE SAVEPOINT`, hands only its own
+  handles to the enclosing subtransaction, so a cursor opened before it still
+  reads after an enclosing abort.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
 - `export_parquet`, `parallel_export_parquet`, `export_arrow` and
   `tier_partition` now export a table that has had a column dropped (#2076).
   They failed with `does not support dropped columns`, wherever the dropped

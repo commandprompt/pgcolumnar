@@ -2041,4 +2041,18 @@ guard_tests 895
 # column with composites after it, 1 live column beside 60 dropped ones, the byte cut beside a dropped
 # column). On main f07210bc, collection over the cluster files gave 5493 (5485 -> 5493 there). restate.py
 # has shifted the two numbers above at each merge of main; merged with main f898249c, its collection gave 5500.
-cluster_tests 5512
+# cluster_tests 5512 -> 5517 for the subtransaction handle fix's five arm-F tests in test_objstore_http_read.py
+# (404s caught in EXCEPTION blocks or rolled back to a SAVEPOINT leak no handle; a loop of 1200 caught 404s
+# finishes; a scan and a cursor keep reading after a subtransaction abort), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=/usr/local/pgsql/bin/pg_config /root/pyenv/bin/python -m pytest
+# --collect-only -q`: 6275 tests collected, less guard_tests 894.
+# cluster_tests 5517 -> 5520 for three more arm-F tests in test_objstore_http_read.py (#2158 review: caught
+# REST requests and caught s3:// exports leak no handle; a scan inside an outer EXCEPTION block reads on), by
+# collection: `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6301 tests
+# collected, less guard_tests 895.
+# cluster_tests 5520 -> 5523 for three arm-F commit-side controls in test_objstore_http_read.py (#2158
+# second review: a cursor reads on after an inner block commits and its outer block aborts, after RELEASE of
+# an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
+# `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
+# less guard_tests 895.
+cluster_tests 5523
