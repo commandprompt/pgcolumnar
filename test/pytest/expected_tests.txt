@@ -2009,25 +2009,32 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5490 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+# cluster_tests 5495 -> 5498 for #2077 in test_native_parquet_streaming.py: a data page with no values
 # reads (test_parquet_streaming_data_page_with_no_values_reads,
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
-# cluster_tests 5490 -> 5501 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# cluster_tests 5498 -> 5509 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
 # the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-# cluster_tests 5501 -> 5508 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# cluster_tests 5509 -> 5516 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
 # pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-# cluster_tests 5508 -> 5518 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5516 -> 5526 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
 # pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
 # with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-cluster_tests 5518
+cluster_tests 5526
