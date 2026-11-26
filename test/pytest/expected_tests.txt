@@ -2016,4 +2016,15 @@ guard_tests 895
 # (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
 # set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
 # over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
-cluster_tests 5495
+# cluster_tests 5495 -> 5497 for #2082's two tests in test_arrow_import.py: a file of another type
+# family is refused by type (added earlier on this branch without its line), and every Arrow type meets
+# its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5400 tests collected.
+# cluster_tests does not change for the #2082 re-check: the check that the refusal names numeric(5,2) joins
+# test_arrow_import.py::test_a_file_of_another_type_family_is_refused_by_type, and varchar, json and jsonb
+# join the matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files after the merge of f07210bc.
+# cluster_tests does not change for the #2082 round-3 review: the month_day_nano interval file joins the
+# matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files.
+cluster_tests 5497
