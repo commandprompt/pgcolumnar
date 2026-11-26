@@ -625,7 +625,8 @@ true until the next version shipped.
   and a late unique index with 4 workers, where no loader may insert a row.
   They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
   CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
-  default.
+  default. They also cover a deferrable exclusion constraint, a unique index on
+  an expression, and a unique index on two columns.
 - A remote read no longer fails when the server or a proxy sends an interim
   1xx answer, such as `100 Continue` or `103 Early Hints`, before the real one
   (#2090). `read_parquet` and the Parquet foreign table failed with

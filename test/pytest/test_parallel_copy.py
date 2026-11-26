@@ -609,12 +609,13 @@ def pcopy(pgc_cluster, server_dir):
         # t_uk's second, non-unique index comes after its primary key, so the
         # refusal must find the unique index when it is not the last one. t_ui's
         # non-unique index comes before its unique one, so the refusal must also
-        # find the unique index when it is not the first one.
+        # find the unique index when it is not the first one. t_ui's unique index
+        # has two key columns, so the refusal must not count only one-column ones.
         db.run("CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar; "
                "CREATE INDEX t_uk_txt ON t_uk (txt); "
                "CREATE TABLE t_ui (id int, txt text) USING pgcolumnar; "
                "CREATE INDEX t_ui_txt ON t_ui (txt); "
-               "CREATE UNIQUE INDEX t_ui_id ON t_ui (id); "
+               "CREATE UNIQUE INDEX t_ui_id ON t_ui (id, txt); "
                "CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar; "
                "CREATE TABLE t_nu (id int, txt text) USING pgcolumnar; "
                "CREATE INDEX t_nu_id ON t_nu (id)")
@@ -637,6 +638,19 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_ud'::regclass, '{f}', 2)", timeout="10s")
         r["partial"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_up'::regclass, '{f}', 2)", timeout="10s")
+        # A deferrable exclusion constraint: indisunique and indimmediate are
+        # false, so only indisexclusion catches it. An expression unique index:
+        # the loaders hash its key into their unique locks, so two loaders wait
+        # on each other even with distinct keys. The keys are distinct, so a load
+        # that is not refused would succeed or hang, and either is red.
+        db.run("CREATE TABLE t_uxd (id int, txt text, "
+               "EXCLUDE USING btree (id WITH =) DEFERRABLE INITIALLY DEFERRED) USING pgcolumnar; "
+               "CREATE TABLE t_ue (id int, txt text) USING pgcolumnar; "
+               "CREATE UNIQUE INDEX t_ue_id ON t_ue ((id + 0))")
+        r["deferrable exclusion"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uxd'::regclass, '{f}', 2)", timeout="10s")
+        r["expression"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_ue'::regclass, '{f}', 2)", timeout="10s")
         # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY
         # fails on a columnar table and leaves the index invalid but ready, and a
         # ready unique index still checks every insert. The keys are distinct, so
@@ -656,8 +670,9 @@ def pcopy(pgc_cluster, server_dir):
             timeout="10s", options="-c max_parallel_workers=4")
         r["unique empty"] = db.value(
             "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui) + (SELECT count(*) FROM t_ud) "
-            "+ (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd)")
-        r["exclusion empty"] = db.value("SELECT count(*) FROM t_ux")
+            "+ (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd) "
+            "+ (SELECT count(*) FROM t_ue)")
+        r["exclusion empty"] = db.value("SELECT (SELECT count(*) FROM t_ux) + (SELECT count(*) FROM t_uxd)")
         r["unique one worker"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
         r["non-unique index"] = db.value(
@@ -675,8 +690,8 @@ def pcopy(pgc_cluster, server_dir):
 
         # A unique index created after the calling backend's check, before the
         # loaders open the table. A second session holds SHARE on t_ur: the check
-        # passes, and the coordinator and the loaders stop at ROW EXCLUSIVE. Once
-        # one waits, the session creates the unique index and commits.
+        # passes, and the coordinator stops at ROW EXCLUSIVE before any loader
+        # starts. Once it waits, the session creates the unique index and commits.
         db.run("CREATE TABLE t_ur (id int, txt text) USING pgcolumnar")
         r["unique late"] = db.unique_index_after_check(f)
         r["unique late empty"] = db.value("SELECT count(*) FROM t_ur")
@@ -1019,6 +1034,16 @@ def test_parallel_copy_refuses_a_deferrable_unique_index_table_with_two_workers(
 def test_parallel_copy_refuses_a_partial_unique_index_table_with_two_workers(pcopy, expect):
     expect.text(pcopy["partial"], _want_unique("t_up"),
                 "parallel_copy refuses a single table with a partial unique index and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_refuses_a_deferrable_exclusion_constraint_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["deferrable exclusion"], _want_unique("t_uxd"),
+                "parallel_copy refuses a single table with a deferrable exclusion constraint and 2 workers with 0A000 (#2080)")
+
+
+def test_parallel_copy_refuses_an_expression_unique_index_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["expression"], _want_unique("t_ue"),
+                "parallel_copy refuses a single table with an expression unique index and 2 workers with 0A000, not a hang (#2080)")
 
 
 def test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index(pcopy, expect):

@@ -2117,4 +2117,7 @@ guard_tests 895
 # cluster_tests 5568 -> 5571 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
 # unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
 # default worker count; by collection over the cluster files: 5503 tests collected (114 for that file).
-cluster_tests 5571
+# cluster_tests 5571 -> 5573 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# exclusion constraint and an expression unique index are refused with 2 workers; by collection over the cluster
+# files: 5573 tests collected (116 for that file).
+cluster_tests 5573
