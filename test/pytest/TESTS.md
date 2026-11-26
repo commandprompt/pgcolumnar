@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-120 literal matches and 0 missing (#1818's twelve and #2086's twenty-six included).
+125 literal matches and 0 missing (#1818's twelve and #2086's thirty-one included).
 
 | test | asserts |
 | --- | --- |
@@ -4559,8 +4559,12 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `smallint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1), and `b = 8` returns id 8 |
 | `test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: an `int` column over an Iceberg `boolean` is refused (42804) by a full scan, and by `b = 5`, which must not prune on the boolean's bounds and return nothing |
 | `test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: a `smallint` column over an Iceberg `boolean` is refused (42804) by `b = 5`, which must not prune on the boolean's bounds and return nothing |
+| `test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `bigint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1) |
 | `test_bucket_pruning_works_on_an_iceberg_int_source` | #2086: `bucket[8]` of an Iceberg `int` declared `int`: `k = 5` prunes 4 of 5 files (Files Pruned: 4; bounds alone prune 3) and returns 5 |
+| `test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int` | #2086: the same `bucket[8]` of an Iceberg `int` declared `bigint`: `k = 5` prunes 4 of 5 files (Files Pruned: 4) |
 | `test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `text` column over the same Iceberg `int` is refused (42804) by `k = 'a'`, which must not be bucket-pruned with an int's hash and return nothing |
+| `test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too` | #2086: a `name` column over the same Iceberg `int` is refused (42804) by `k = 'a'::text`, which must not be bucket-pruned and return nothing |
+| `test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field` | #2086: `two` is partitioned by `bucket[2]` of a decimal, then `bucket[4]` of an `int` `k`. The decimal field is skipped, and `k = 5` still prunes 3 of 4 files (Files Pruned: 3; bounds alone prune 1) and returns `5:1.00` |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 

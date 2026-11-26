@@ -37,6 +37,10 @@
 #              bucket. Iceberg hashes an int as an 8-byte long, so the FDW may
 #              prune by bucket on an Iceberg int. Writing it needs
 #              pyiceberg-core for the bucket transform.
+#   db.two   : k int, d decimal(9,2), partitioned by bucket[2](d) then
+#              bucket[4](k). k = 1 to 16, d = 1.00 in every row, so the files
+#              split by k's bucket only: four files. The bucket map must skip
+#              the gated decimal field and still keep k's bucket field.
 #
 # Run: ~/icevenv/bin/python gen_iceberg_decimal.py <out warehouse> <scratch root>
 #      [table ...]
@@ -132,6 +136,27 @@ def make_bucket_int(name):
     publish(name, t, loc, 1)
 
 
+def make_bucket_two(name):
+    """k int and d decimal(9,2), partitioned by bucket[2](d) then bucket[4](k),
+    appended by pyiceberg so that pyiceberg computes the buckets."""
+    if ONLY and name not in ONLY:
+        return
+    schema = Schema(NestedField(1, "k", IntegerType(), required=False),
+                    NestedField(2, "d", DecimalType(9, 2), required=False))
+    spec = PartitionSpec(
+        PartitionField(source_id=2, field_id=1000, transform=BucketTransform(2),
+                       name="d_bucket"),
+        PartitionField(source_id=1, field_id=1001, transform=BucketTransform(4),
+                       name="k_bucket"))
+    t = cat.create_table(f"db.{name}", schema=schema, partition_spec=spec)
+    loc = t.metadata.location.replace("file://", "")
+    t.append(pa.table({
+        "k": pa.array(range(1, 17), pa.int32()),
+        "d": pa.array([D("1.00")] * 16, pa.decimal128(9, 2)),
+    }))
+    publish(name, t, loc, 1)
+
+
 def publish(name, t, loc, fid):
     """Copy the table's metadata and data into the output warehouse, and print
     each data file's partition and its bounds for field `fid`."""
@@ -172,3 +197,4 @@ make_plain("booll",
            [("id", LongType(), pa.int64()), ("b", LongType(), pa.int64())],
            [[(5, 5), (6, 6), (7, 7), (8, 8)]])
 make_bucket_int("byint")
+make_bucket_two("two")

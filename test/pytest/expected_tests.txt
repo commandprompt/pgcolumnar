@@ -2157,7 +2157,7 @@ guard_tests 895
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
 # cluster_tests 5580 -> 5585 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
-# 5555 at 3dd019fe; #2152 adds 16 tests in all, listed here and below.
+# 5580 at 199e4aa7; #2152 adds 20 tests in all, listed here and below.
 # cluster_tests 5585 -> 5588 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
 # (test_the_field_type_lookup_matches_the_whole_field_name,
 # test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
@@ -2169,10 +2169,15 @@ guard_tests 895
 # test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
 # test_bucket_pruning_works_on_an_iceberg_int_source).
 # cluster_tests 5593 -> 5594 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
-# in test_iceberg_fdw.py, from the third #2152 review. By collection of the cluster files (all test_*.py
-# not in NO_CLUSTER): 5509 tests collected after the merge of main at 26bb5236.
+# in test_iceberg_fdw.py, from the third #2152 review, counted by collection of the cluster files (all
+# test_*.py not in NO_CLUSTER).
 # cluster_tests 5594 -> 5596 for #2086's
 # test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
 # test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
-# fourth #2152 review. By collection of the cluster files after the merge of main at 3dd019fe: 5571 tests collected.
-cluster_tests 5596
+# fourth #2152 review.
+# cluster_tests 5596 -> 5600 for #2086's test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int,
+# test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
+# test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
+# fifth #2152 review. By collection of the cluster files after the merge of main at 199e4aa7: 5600 tests collected.
+cluster_tests 5600

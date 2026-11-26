@@ -84,6 +84,10 @@ WAREHOUSES = {
     "boolts": ("warehouse_decimal", "boolt",       "id bigint, b smallint"),
     "byint":  ("warehouse_decimal", "byint",       "k int"),
     "byintt": ("warehouse_decimal", "byint",       "k text"),
+    "bib":    ("warehouse_decimal", "booli",       "id bigint, b bigint"),
+    "byb":    ("warehouse_decimal", "byint",       "k bigint"),
+    "byn":    ("warehouse_decimal", "byint",       "k name"),
+    "two":    ("warehouse_decimal", "two",         "k int, d numeric"),
 }
 
 
@@ -1059,6 +1063,17 @@ def test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too(
                 "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty")
 
 
+# bib reads booli's Iceberg int as bigint. The int8 arm must accept an Iceberg int, not
+# only a long, or b > 8 loses the bounds pruning main has.
+
+def test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "bib"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM bib WHERE b > 8"), 1,
+               "int: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)")
+
+
 # ------------------------------------------------------- bucket pruning on an Iceberg int source
 #
 # byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files. Iceberg
@@ -1076,6 +1091,17 @@ def test_bucket_pruning_works_on_an_iceberg_int_source(ice, expect):
                 "bucket: k = 5 on bucket[8] of an Iceberg int returns 5")
 
 
+# byb reads the same Iceberg int as bigint. The bucket gate must accept a bigint over an
+# Iceberg int, or k = 5 loses the bucket pruning main has.
+
+def test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byb"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM byb WHERE k = 5"), 4,
+               "bucket: k = 5 on a bigint over bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)")
+
+
 # byintt reads the same Iceberg int as text. The reader refuses a full scan (42804). The
 # bucket map must not hash 'a' as an int's bucket and prune every file, which returned 0
 # rows and no error.
@@ -1086,6 +1112,34 @@ def test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too(ice, exp
         return
     expect.text(_sqlstate(conn, "SELECT * FROM byintt WHERE k = 'a'"), "42804",
                 "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty")
+
+
+# byn reads the same Iceberg int as name, which the reader refuses. k = 'a'::text uses the
+# name = text operator, so the bucket map sees a text constant. The gate must refuse a name
+# column, or every file is pruned and the query returns 0 rows and no error.
+
+def test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "byn"):
+        return
+    expect.text(_sqlstate(conn, "SELECT * FROM byn WHERE k = 'a'::text"), "42804",
+                "bucket: k = 'a' on a name column over an Iceberg int is refused (42804), not empty")
+
+
+# two: k int, d decimal(9,2), partitioned by bucket[2](d) then bucket[4](k), k = 1 to 16
+# with d = 1.00, written by pyiceberg into four files. The gate skips the decimal's bucket
+# field. The bucket map must still keep k's field: k = 5 prunes 3 files by bucket, but
+# only 1 by bounds.
+
+def test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field(ice, expect):
+    conn, meta = ice
+    if not _need(expect, meta, "two"):
+        return
+    expect.num(_pruned(conn, "SELECT * FROM two WHERE k = 5"), 3,
+               "bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files (Files Pruned: 3)")
+    expect.text(_one(conn, "SELECT string_agg(k::text || ':' || d::text, ',' ORDER BY k) "
+                           "FROM two WHERE k = 5") or "none", "5:1.00",
+                "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00")
 
 
 # ------------------------------------------------------------------- option validation

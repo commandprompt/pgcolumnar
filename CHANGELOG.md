@@ -622,7 +622,9 @@ true until the next version shipped.
   decimal partitioned by bucket, and a `text` column over an Iceberg `int`
   partitioned by bucket. The FDW matches the Iceberg field by
   its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
-  `d_x`. Bucket pruning on an Iceberg `int` source still works.
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
   `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg

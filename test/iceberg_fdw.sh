@@ -610,6 +610,12 @@ q "CREATE FOREIGN TABLE boolts (id bigint, b smallint)
    SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
 check "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty" \
 	"$(tm_state "SELECT * FROM boolts WHERE b = 5")" "42804"
+# bib reads booli's Iceberg int as bigint. The int8 arm must accept an Iceberg
+# int, not only a long, or b > 8 loses the bounds pruning main has.
+q "CREATE FOREIGN TABLE bib (id bigint, b bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+check "int: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM bib WHERE b > 8")" "1"
 
 # ---- bucket pruning on an Iceberg int source (#2086) -------------------------
 # byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files.
@@ -623,6 +629,12 @@ check "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files P
 	"$(fp "SELECT * FROM byint WHERE k = 5")" "4"
 check "bucket: k = 5 on bucket[8] of an Iceberg int returns 5" \
 	"$(q "SELECT coalesce(string_agg(k::text, ',' ORDER BY k), 'none') FROM byint WHERE k = 5")" "5"
+# byb reads the same Iceberg int as bigint. The bucket gate must accept a bigint
+# over an Iceberg int, or k = 5 loses the bucket pruning main has.
+q "CREATE FOREIGN TABLE byb (k bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 5 on a bigint over bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)" \
+	"$(fp "SELECT * FROM byb WHERE k = 5")" "4"
 # byintt reads the same Iceberg int as text. The reader refuses a full scan
 # (42804). The bucket map must not hash 'a' as an int's bucket and prune every
 # file, which returned 0 rows and no error.
@@ -630,6 +642,25 @@ q "CREATE FOREIGN TABLE byintt (k text)
    SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
 check "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty" \
 	"$(tm_state "SELECT * FROM byintt WHERE k = 'a'")" "42804"
+# byn reads the same Iceberg int as name, which the reader refuses. k = 'a'::text
+# uses the name = text operator, so the bucket map sees a text constant. The gate
+# must refuse a name column, or every file is pruned and the query returns 0
+# rows and no error.
+q "CREATE FOREIGN TABLE byn (k name)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 'a' on a name column over an Iceberg int is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM byn WHERE k = 'a'::text")" "42804"
+# two: k int, d decimal(9,2), partitioned by bucket[2](d) then bucket[4](k),
+# k = 1 to 16 with d = 1.00, written by pyiceberg into four files. The gate
+# skips the decimal's bucket field. The bucket map must still keep k's field:
+# k = 5 prunes 3 files by bucket, but only 1 by bounds.
+MD_TWO="$(ls "$DCWH"/db/two/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE two (k int, d numeric)
+   SERVER ice OPTIONS (metadata_path '$MD_TWO')" >/dev/null
+check "bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files (Files Pruned: 3)" \
+	"$(fp "SELECT * FROM two WHERE k = 5")" "3"
+check "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00" \
+	"$(q "SELECT coalesce(string_agg(k::text || ':' || d::text, ',' ORDER BY k), 'none') FROM two WHERE k = 5")" "5:1.00"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \
