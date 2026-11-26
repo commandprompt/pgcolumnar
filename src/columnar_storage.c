@@ -21,6 +21,7 @@
 #include "access/xlogrecord.h"
 #include "catalog/storage.h"
 #include "catalog/storage_xlog.h"
+#include "common/int.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
@@ -168,6 +169,11 @@ PgColumnarStorageId(Relation rel)
  *
  *		Serialized by the exclusive lock on the metapage buffer; no relation
  *		extension lock is needed here because no data pages are extended.
+ *
+ *		Refuses a run that would reach COLUMNAR_ROW_NUMBER_LIMIT (#2073): a row
+ *		number past it would wrap its item pointer's block number, and an index
+ *		would then point at the wrong row. The refusal comes before the
+ *		metapage changes, so a refused writer uses up nothing.
  */
 void
 PgColumnarReserveRowNumbers(Relation rel, uint64 rowCount,
@@ -176,11 +182,39 @@ PgColumnarReserveRowNumbers(Relation rel, uint64 rowCount,
 	Buffer		buffer;
 	Page		page;
 	PgColumnarMetapage *meta;
+	uint64		end;
 
 	buffer = ReadBuffer(rel, COLUMNAR_METAPAGE_BLOCKNO);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	page = BufferGetPage(buffer);
 	meta = PgColumnarMetapagePointer(page);
+
+	/*
+	 * One comparison of where the run would end. It also refuses a table
+	 * whose metapage an older version already advanced past the limit, since
+	 * that run ends past the limit too. There is no separate clause for that
+	 * case, so no test has to reach it. The addition cannot overflow for any
+	 * metapage a writer produced, but a corrupt one could hold any value.
+	 */
+	if (pg_add_u64_overflow(meta->reservedRowNumber, rowCount, &end) ||
+		end > COLUMNAR_ROW_NUMBER_LIMIT)
+	{
+		uint64		next = meta->reservedRowNumber;
+
+		UnlockReleaseBuffer(buffer);
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("columnar table \"%s\" has run out of row numbers",
+						RelationGetRelationName(rel)),
+				 errdetail("The writer needs row numbers " UINT64_FORMAT " to "
+						   UINT64_FORMAT ", but the largest row number an item "
+						   "pointer can address is " UINT64_FORMAT ".",
+						   next, next + rowCount - 1,
+						   COLUMNAR_ROW_NUMBER_LIMIT - 1),
+				 errhint("Each transaction that writes reserves stripe_row_limit "
+						 "row numbers. Run pgcolumnar.vacuum on the table to "
+						 "renumber its rows.")));
+	}
 
 	*stripeId = meta->reservedStripeId;
 	*firstRowNumber = meta->reservedRowNumber;
@@ -654,6 +688,14 @@ PgColumnarResetMetapage(Relation rel)
 
 /*
  * Row-number <-> item-pointer mapping (spec 6). Row number 0 is invalid.
+ *
+ * There is deliberately no check against COLUMNAR_ROW_NUMBER_LIMIT here
+ * (#2073). The writer refuses to reserve a row number at or past the limit,
+ * and pgcolumnar.row_tid refuses one from SQL. A table written before that fix
+ * may still hold such rows, and every scan maps them through here; an Assert
+ * would abort the backend on a build with assertions, and an error would make
+ * the table unreadable. The block number wraps instead, as it always did, so
+ * such a table stays readable until pgcolumnar.vacuum renumbers it.
  */
 void
 PgColumnarRowNumberToItemPointer(uint64 rowNumber, ItemPointer tid)
@@ -687,6 +729,12 @@ pgcolumnar_row_tid(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("row number " INT64_FORMAT " is out of range", rowNumber),
 				 errdetail("Row numbers start at 1.")));
+	if ((uint64) rowNumber >= COLUMNAR_ROW_NUMBER_LIMIT)
+		ereport(ERROR,
+				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+				 errmsg("row number " INT64_FORMAT " is out of range", rowNumber),
+				 errdetail("The largest row number an item pointer can address is "
+						   UINT64_FORMAT ".", COLUMNAR_ROW_NUMBER_LIMIT - 1)));
 	tid = (ItemPointer) palloc(sizeof(ItemPointerData));
 	PgColumnarRowNumberToItemPointer((uint64) rowNumber, tid);
 	PG_RETURN_POINTER(tid);		/* PG_RETURN_ITEMPOINTER is 16+; tid is by reference */

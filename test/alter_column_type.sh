@@ -176,6 +176,76 @@ check "nulls stay on the same rows through a conversion" \
 	"$(q "SELECT count(*) FROM at_n a JOIN at_nh b USING (id)
 		WHERE a.v IS DISTINCT FROM b.v;" | tail -1)/$(q "SELECT count(*) FROM at_n;" | tail -1)" "0/$ROWS"
 
+# --- an INSERT after the rewrite, in the same transaction (#2067) -------------
+#
+# The write state for a table is cached for the transaction. A rewrite gives the
+# table new storage and, for a type change, new column types, but keeps the
+# column count. The cache was checked by column count alone, so an INSERT after
+# the rewrite reused the old state: its rows went to the retired storage and
+# COMMIT lost them without an error. Each transaction below inserts 100 rows,
+# rewrites, and inserts 100 more; all 200 must be there after COMMIT.
+same_xact() {  # label, the statements between the two inserts
+	psql_run "DROP TABLE IF EXISTS at_x;
+		CREATE TABLE at_x (id int, v int8) USING pgcolumnar;" >/dev/null 2>&1
+	psql_run "BEGIN;
+		INSERT INTO at_x SELECT g, g FROM generate_series(1, 100) g;
+		$2
+		INSERT INTO at_x SELECT g, g FROM generate_series(101, 200) g;
+		COMMIT;" >/dev/null 2>&1
+	check "$1" "$(q "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM at_x;" | tail -1)" "200|1|200"
+}
+
+same_xact "rows inserted after a type change in the same transaction survive COMMIT" \
+	"ALTER TABLE at_x ALTER COLUMN v TYPE numeric;"
+same_xact "rows inserted after a same-type rewrite in the same transaction survive COMMIT" \
+	"ALTER TABLE at_x ALTER COLUMN v TYPE int8 USING v + 0;"
+same_xact "rows inserted after a rewrite released from a savepoint survive COMMIT" \
+	"SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; RELEASE SAVEPOINT s;"
+same_xact "rows inserted after a rewrite rolled back to a savepoint survive COMMIT" \
+	"SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; ROLLBACK TO SAVEPOINT s;"
+
+# A type or collation change that needs no rewrite keeps the relfilenode but
+# changes the descriptor. The reused write state kept the old descriptor, so the
+# chunk min and max of the rows inserted after the ALTER were computed under the
+# old ordering, and a filtered read pruned the chunk that holds the match
+# (#2067). A heap table altered the same way in the same transaction is the
+# oracle and must agree with the answer written here. same_desc prints
+# "<relfilenode unchanged>|<columnar>|<heap>": if the relfilenode changed, the
+# check no longer tests a change without a rewrite. The check names stay literal
+# at the call sites, so selftest 480 can match the unrunnable record (#1040).
+# The last argument puts v first or last. The oid case alters the first column
+# and the collation case the last, so the descriptor comparison is pinned at
+# both ends of its loop.
+same_desc() {  # old type, first value, alter clause, new values, filter, read, first|last
+	local cols="id int, v $1" row0="(0, $2)"
+	if [ "$7" = first ]; then cols="v $1, id int"; row0="($2, 0)"; fi
+	psql_run "DROP TABLE IF EXISTS at_d, at_dh;
+		CREATE TABLE at_d ($cols) USING pgcolumnar;
+		CREATE TABLE at_dh ($cols);" >/dev/null 2>&1
+	local before
+	before="$(q "SELECT relfilenode FROM pg_class WHERE relname = 'at_d';" | tail -1)"
+	psql_run "BEGIN;
+		INSERT INTO at_d VALUES $row0;  INSERT INTO at_dh VALUES $row0;
+		ALTER TABLE at_d ALTER COLUMN v TYPE $3;  ALTER TABLE at_dh ALTER COLUMN v TYPE $3;
+		INSERT INTO at_d VALUES $4;  INSERT INTO at_dh VALUES $4;
+		COMMIT;" >/dev/null 2>&1
+	q "SELECT (relfilenode = '$before') || '|' ||
+			coalesce((SELECT $6 FROM at_d WHERE $5), '') || '|' ||
+			coalesce((SELECT $6 FROM at_dh WHERE $5), '')
+		FROM pg_class WHERE relname = 'at_d';" | tail -1
+}
+
+check "a filtered read finds a row inserted after int4 becomes oid in the same transaction" \
+	"$(same_desc int4 1 "oid" "(4294967295, 1), (5, 2)" "v = 4294967295" "count(*)::text" first)" "true|1|1"
+if [ "$(q "SELECT count(*) FROM pg_collation WHERE collname = 'und-x-icu';" | tail -1)" = 1 ]; then
+	check "a filtered read finds a row inserted after a collation change in the same transaction" \
+		"$(same_desc "text COLLATE \"C\"" "'m'" "text COLLATE \"und-x-icu\"" "(1, 'a'), (2, 'B')" \
+			"v > 'A' AND v < 'Z' AND v <> 'm'" "string_agg(v, ',' ORDER BY v)" last)" "true|B|B"
+else
+	check_unrunnable "a filtered read finds a row inserted after a collation change in the same transaction" \
+		MISSING_DEPENDENCY "this server has no ICU collation und-x-icu"
+fi
+
 # --- the crash, deliberately last ---------------------------------------------
 #
 # The stored bytes are varlena, the new type is fixed width, and against the
@@ -186,5 +256,19 @@ check "nulls stay on the same rows through a conversion" \
 # a run against a broken build unreadable. Ordering it here keeps the controls
 # above meaningful.
 conv "text to int (the crash)"  text     "g::text"                    "int USING v::int"
+
+# The same stale write state, when the type change crosses from by-reference to
+# by-value: the new int8 Datum was encoded under the old text descriptor and
+# dereferenced as a pointer, and the backend died with SIGSEGV (#2067). After the
+# other crash for the same reason: it takes the cluster down.
+psql_run "DROP TABLE IF EXISTS at_s;
+	CREATE TABLE at_s (id int, v text) USING pgcolumnar;" >/dev/null 2>&1
+psql_run "BEGIN;
+	INSERT INTO at_s VALUES (1, '5');
+	ALTER TABLE at_s ALTER COLUMN v TYPE int8 USING v::int8;
+	INSERT INTO at_s VALUES (2, 7);
+	COMMIT;" >/dev/null 2>&1
+check "a by-value row inserted after text becomes int8 in the same transaction is kept" \
+	"$(q "SELECT string_agg(id || ':' || v, ',' ORDER BY id) FROM at_s;" | tail -1)" "1:5,2:7"
 
 pgc_summary

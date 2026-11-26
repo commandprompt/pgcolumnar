@@ -126,6 +126,61 @@ def _want(dsn, clause):
     return f"0/{ROWS}/{target or 'the target type'}"
 
 
+# #2067: label, the statements between two 100-row inserts in one transaction. The
+# write state is cached for the transaction; a rewrite gives the table new storage
+# but keeps the column count, and the cache was checked by column count alone, so
+# the second insert went to the retired storage and COMMIT lost it.
+SAME_XACT = [
+    ("rows inserted after a type change in the same transaction survive COMMIT",
+     "ALTER TABLE at_x ALTER COLUMN v TYPE numeric;"),
+    ("rows inserted after a same-type rewrite in the same transaction survive COMMIT",
+     "ALTER TABLE at_x ALTER COLUMN v TYPE int8 USING v + 0;"),
+    ("rows inserted after a rewrite released from a savepoint survive COMMIT",
+     "SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; RELEASE SAVEPOINT s;"),
+    ("rows inserted after a rewrite rolled back to a savepoint survive COMMIT",
+     "SAVEPOINT s; ALTER TABLE at_x ALTER COLUMN v TYPE numeric; ROLLBACK TO SAVEPOINT s;"),
+]
+
+
+def _same_xact(dsn, between):
+    """-> "count|min|max" of at_x after one transaction inserts ids 1-100, runs
+    `between`, inserts ids 101-200 and commits."""
+    _run(dsn, "DROP TABLE IF EXISTS at_x; CREATE TABLE at_x (id int, v int8) USING pgcolumnar;")
+    _run(dsn, "BEGIN; INSERT INTO at_x SELECT g, g FROM generate_series(1, 100) g; "
+              f"{between} INSERT INTO at_x SELECT g, g FROM generate_series(101, 200) g; COMMIT;")
+    return _value(dsn, "SELECT count(*) || '|' || min(id) || '|' || max(id) FROM at_x")
+
+
+# #2067: a type or collation change that needs no rewrite keeps the relfilenode
+# but changes the descriptor. The reused write state kept the old descriptor, so
+# the chunk min and max of the rows inserted after the ALTER were computed under
+# the old ordering, and a filtered read pruned the chunk holding the match. A heap
+# table altered the same way in the same transaction is the oracle. label, old
+# type, first value, alter clause, new values, filter, read, where v goes, want:
+# the shell's same_desc() calls, in order. The oid case alters the first column
+# and the collation case the last, so both ends of the comparison loop are pinned.
+OID_CASE = ("a filtered read finds a row inserted after int4 becomes oid in the same transaction",
+            "int4", "1", "oid", "(4294967295, 1), (5, 2)", "v = 4294967295", "count(*)::text", "first", "1")
+COLL_CASE = ("a filtered read finds a row inserted after a collation change in the same transaction",
+             'text COLLATE "C"', "'m'", 'text COLLATE "und-x-icu"', "(1, 'a'), (2, 'B')",
+             "v > 'A' AND v < 'Z' AND v <> 'm'", "string_agg(v, ',' ORDER BY v)", "last", "B")
+
+
+def _same_desc(dsn, old, first, clause, rows, where, read, place):
+    """The shell's same_desc(): -> "<relfilenode unchanged>|<columnar>|<heap>"."""
+    cols, row0 = (f"v {old}, id int", f"({first}, 0)") if place == "first" else (f"id int, v {old}", f"(0, {first})")
+    _run(dsn, f"DROP TABLE IF EXISTS at_d, at_dh; CREATE TABLE at_d ({cols}) USING pgcolumnar; "
+              f"CREATE TABLE at_dh ({cols});")
+    before = _value(dsn, "SELECT relfilenode FROM pg_class WHERE relname = 'at_d'")
+    _run(dsn, f"BEGIN; INSERT INTO at_d VALUES {row0}; INSERT INTO at_dh VALUES {row0}; "
+              f"ALTER TABLE at_d ALTER COLUMN v TYPE {clause}; ALTER TABLE at_dh ALTER COLUMN v TYPE {clause}; "
+              f"INSERT INTO at_d VALUES {rows}; INSERT INTO at_dh VALUES {rows}; COMMIT;")
+    return _value(dsn, f"SELECT (relfilenode = '{before}') || '|' || "
+                       f"coalesce((SELECT {read} FROM at_d WHERE {where}), '') || '|' || "
+                       f"coalesce((SELECT {read} FROM at_dh WHERE {where}), '') "
+                       "FROM pg_class WHERE relname = 'at_d'")
+
+
 @pytest.fixture(scope="module")
 def act(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -165,9 +220,27 @@ def act(pgc_cluster):
         mismatch = _num(dsn, "SELECT count(*) FROM at_n a JOIN at_nh b USING (id) WHERE a.v IS DISTINCT FROM b.v")
         r["n rows"] = f"{_part(mismatch)}/{_part(_num(dsn, 'SELECT count(*) FROM at_n'))}"
 
+        # an INSERT after the rewrite, in the same transaction (#2067)
+        for label, between in SAME_XACT:
+            r[label] = _same_xact(dsn, between)
+
+        # a type or collation change without a rewrite, in the same transaction (#2067)
+        r[OID_CASE[0]] = _same_desc(dsn, *OID_CASE[1:8])
+        icu = _value(dsn, "SELECT count(*) FROM pg_collation WHERE collname = 'und-x-icu'")
+        r[COLL_CASE[0]] = _same_desc(dsn, *COLL_CASE[1:8]) if icu == "1" else None
+
         # the crash, deliberately last
         label, typ, expr, clause = CRASH
         r[label] = (_conv(dsn, typ, expr, clause), _want(dsn, clause))
+
+        # the by-reference to by-value crash of #2067, after the other crash for
+        # the same reason: it takes the cluster down
+        _run(dsn, "DROP TABLE IF EXISTS at_s; CREATE TABLE at_s (id int, v text) USING pgcolumnar;")
+        _run(dsn, "BEGIN; INSERT INTO at_s VALUES (1, '5'); "
+                  "ALTER TABLE at_s ALTER COLUMN v TYPE int8 USING v::int8; "
+                  "INSERT INTO at_s VALUES (2, 7); COMMIT;")
+        r["by-value after text"] = _value(
+            dsn, "SELECT string_agg(id || ':' || v, ',' ORDER BY id) FROM at_s")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -260,3 +333,44 @@ def test_nulls_stay_on_the_same_rows_through_a_conversion(act, expect):
 
 def test_text_to_int_the_crash(act, expect):
     expect.text(*act["text to int (the crash)"], "text to int (the crash)")
+
+
+def test_rows_inserted_after_a_type_change_in_the_same_transaction_survive_commit(act, expect):
+    expect.text(act["rows inserted after a type change in the same transaction survive COMMIT"], "200|1|200",
+                "rows inserted after a type change in the same transaction survive COMMIT")
+
+
+def test_rows_inserted_after_a_same_type_rewrite_in_the_same_transaction_survive_commit(act, expect):
+    expect.text(act["rows inserted after a same-type rewrite in the same transaction survive COMMIT"], "200|1|200",
+                "rows inserted after a same-type rewrite in the same transaction survive COMMIT")
+
+
+def test_rows_inserted_after_a_rewrite_released_from_a_savepoint_survive_commit(act, expect):
+    expect.text(act["rows inserted after a rewrite released from a savepoint survive COMMIT"], "200|1|200",
+                "rows inserted after a rewrite released from a savepoint survive COMMIT")
+
+
+def test_rows_inserted_after_a_rewrite_rolled_back_to_a_savepoint_survive_commit(act, expect):
+    expect.text(act["rows inserted after a rewrite rolled back to a savepoint survive COMMIT"], "200|1|200",
+                "rows inserted after a rewrite rolled back to a savepoint survive COMMIT")
+
+
+def test_a_by_value_row_inserted_after_text_becomes_int8_in_the_same_transaction_is_kept(act, expect):
+    expect.text(act["by-value after text"], "1:5,2:7",
+                "a by-value row inserted after text becomes int8 in the same transaction is kept")
+
+
+def test_a_filtered_read_finds_a_row_inserted_after_int4_becomes_oid_in_the_same_transaction(act, expect):
+    expect.text(act["a filtered read finds a row inserted after int4 becomes oid in the same transaction"],
+                "true|1|1",
+                "a filtered read finds a row inserted after int4 becomes oid in the same transaction")
+
+
+def test_a_filtered_read_finds_a_row_inserted_after_a_collation_change_in_the_same_transaction(act, expect):
+    got = act["a filtered read finds a row inserted after a collation change in the same transaction"]
+    if got is None:
+        expect.cannot_run("MISSING_DEPENDENCY", "this server has no ICU collation und-x-icu",
+                          name="a filtered read finds a row inserted after a collation change in the same transaction")
+        return
+    expect.text(got, "true|B|B",
+                "a filtered read finds a row inserted after a collation change in the same transaction")

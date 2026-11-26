@@ -168,6 +168,17 @@
  */
 #define COLUMNAR_VALID_ITEMPOINTER_OFFSETS ((uint64) MaxHeapTuplesPerPage)
 
+/*
+ * One past the largest row number an item pointer can address (#2073). A block
+ * number holds 32 bits and MaxBlockNumber is the largest valid one, so the last
+ * usable row number is the last offset of block MaxBlockNumber. A row number at
+ * or above this limit would wrap the block number and give the row the item
+ * pointer of a different row. PgColumnarReserveRowNumbers refuses to reserve
+ * past it, and pgcolumnar.row_tid refuses such a row number from SQL.
+ */
+#define COLUMNAR_ROW_NUMBER_LIMIT \
+	(((uint64) MaxBlockNumber + 1) * COLUMNAR_VALID_ITEMPOINTER_OFFSETS)
+
 /* compression codes (spec 5) */
 #define COLUMNAR_COMPRESSION_NONE 0
 #define COLUMNAR_COMPRESSION_PGLZ 1
@@ -286,7 +297,10 @@ extern bool pgcolumnar_objstore_buffered;	/* chunk-granular remote reads (#393) 
 extern bool pgcolumnar_objstore_pin_reads;	/* pin remote reads to one version (#1866) */
 extern char *pgcolumnar_objstore_allowed_endpoints; /* #393 allow-list, SUSET */
 extern int	pgcolumnar_objstore_part_size;	/* #394 remote multipart part size */
-extern char *pgcolumnar_objstore_s3_addressing; /* #621 path|virtual addressing */
+/* pgcolumnar.objstore_s3_addressing (#621); an enum since #2091 */
+#define COLUMNAR_S3_ADDRESSING_PATH		0
+#define COLUMNAR_S3_ADDRESSING_VIRTUAL	1
+extern int	pgcolumnar_objstore_s3_addressing;
 /* #415 autovacuum daemon */
 extern bool pgcolumnar_autovacuum;
 extern int	pgcolumnar_autovacuum_naptime;
