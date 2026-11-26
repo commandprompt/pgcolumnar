@@ -639,6 +639,8 @@ true until the next version shipped.
   storage-row lock while it holds its group locks, so a writer that inserts
   and then deletes beside it commits. A limit of `0` waits without a limit,
   and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default, and
+  `recluster` locks its last group too.
 - `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
   `virtual` (#2091). The setting was a free-form string, and the object-store
   module used virtual-host addressing only for `virtual`. So a typo such as

@@ -595,7 +595,7 @@ def _dl_finished(d, verb):
 #
 # Review of #2139 at 686aed4e. Longer lock_timeout: with lock_timeout = 20 s and a 1 s
 # limit, behind a deleter held for 8 s, the verb stops with 55P03 naming the setting within
-# 4 s and the session gets its 20 s back. Storage-row lock kept: the rewrite keeps 102 from
+# 1.8 s and the session gets its 20 s back. Storage-row lock kept: the rewrite keeps 102 from
 # lock_rewrite_groups to commit; one that gave it back would take it again, waiting, to
 # flush while it holds its group locks, and a writer that inserts and then deletes in one of
 # those groups closes the #2074 cycle. An expression index calls dl_pause(), which sleeps
@@ -611,6 +611,28 @@ DL_PAUSE = ("CREATE OR REPLACE FUNCTION dl_pause(i int) RETURNS int LANGUAGE plp
 DL_PAUSED = "a.wait_event = 'PgSleep' AND a.query LIKE 'SELECT pgcolumnar.%'"
 
 
+def _dl_pause_bg(d, verb, out):
+    """Start the verb in a thread with pgc.pause on and a 20 s limit; dl must carry the
+    dl_pause index. out["rewrite"] gets "ok" or the error. -> the thread."""
+    def rewrite():
+        e = d.run(f"SELECT {verb}", settings=("SET pgc.pause = 'on'",
+                                               "SET pgcolumnar.rewrite_lock_timeout = '20s'"))
+        out["rewrite"] = e or "ok"
+
+    rt = threading.Thread(target=rewrite)
+    rt.start()
+    return rt
+
+
+def _dl_wait_paused(probe):
+    """On an autocommit connection, poll until a verb sleeps in dl_pause (up to 30 s)."""
+    for _ in range(300):
+        if probe.execute("SELECT EXISTS (SELECT 1 FROM pg_stat_activity a "
+                         f"WHERE {DL_PAUSED} AND a.pid <> pg_backend_pid())").fetchone()[0]:
+            return
+        time.sleep(0.1)
+
+
 def _dl_paused(d, verb):
     """-> {"locks": "groups=<yes|no> storage=<n>", "writer", "rewrite",
     "after": "<id 2 count> <id -1 count>"}."""
@@ -619,21 +641,11 @@ def _dl_paused(d, verb):
         return {"locks": e, "writer": e, "rewrite": e, "after": e}
     out = {}
 
-    def rewrite():
-        e = d.run(f"SELECT {verb}", settings=("SET pgc.pause = 'on'",
-                                               "SET pgcolumnar.rewrite_lock_timeout = '20s'"))
-        out["rewrite"] = e or "ok"
-
-    rt = threading.Thread(target=rewrite)
-    rt.start()
+    rt = _dl_pause_bg(d, verb, out)
     try:
         # one connection waits for the pause and reads pg_locks, so a slow connect cannot miss it
         with psycopg.connect(d.dsn, autocommit=True) as probe:
-            for _ in range(300):
-                if probe.execute("SELECT EXISTS (SELECT 1 FROM pg_stat_activity a "
-                                 f"WHERE {DL_PAUSED} AND a.pid <> pg_backend_pid())").fetchone()[0]:
-                    break
-                time.sleep(0.1)
+            _dl_wait_paused(probe)
             out["locks"] = probe.execute(
                 "SELECT 'groups=' || CASE WHEN count(*) FILTER (WHERE l.objsubid = 101) > 0 "
                 "THEN 'yes' ELSE 'no' END || ' storage=' || count(*) FILTER (WHERE l.objsubid = 102) "
@@ -697,6 +709,45 @@ def _dl_capped(d):
     return out
 
 
+# ---- the 10 s default, recluster's last group ----
+#
+# Review of #2139 at b1d94859. The default: pgcolumnar.rewrite_lock_timeout defaults to
+# 10 s, and every session that does not set it runs on that, the maintenance daemon too. A
+# default of 0 would wait without a limit. A fresh session shows 10s, and each verb run with
+# no SET behind a deleter held for 15 s stops with 55P03 naming the setting after 9 to 12 s.
+# Recluster's last group: recluster locks every group it rewrites, the last one too. It
+# pauses on its first row with its group locks taken, and a delete of id 2500, in the last
+# group, with a 1 s lock_timeout stops at its group lock. Had it gone through, the recluster
+# would write the row back from its own snapshot.
+
+def _dl_paused_last(d):
+    """A recluster pauses with its group locks taken; then one session deletes id 2500, in
+    the last group, with a 1 s lock_timeout and flushes the delete with a scan.
+    -> {"delete": ok | stock | other, "rewrite", "row2500"}."""
+    e = _dl_make(d) or d.run(DL_PAUSE) or d.run("CREATE INDEX dl_pause_idx ON dl (dl_pause(id))")
+    if e:
+        return {"delete": e, "rewrite": e, "row2500": e}
+    out = {}
+    rt = _dl_pause_bg(d, "pgcolumnar.recluster('dl', 'id')", out)
+    try:
+        # one connection waits for the pause and deletes, so a slow connect cannot miss it
+        with psycopg.connect(d.dsn, autocommit=True) as w:
+            _dl_wait_paused(w)
+            w.execute("SET lock_timeout = '1s'")
+            try:
+                with w.transaction():
+                    w.execute("DELETE FROM dl WHERE id = 2500")
+                    w.execute("SELECT count(*) FROM dl WHERE id = 2500").fetchone()
+                out["delete"] = "ok"
+            except psycopg.Error as exc:
+                out["delete"] = ("stock" if "canceling statement due to lock timeout" in str(exc)
+                                 else _err(exc))
+    finally:
+        rt.join()
+    out["row2500"] = d.q("SELECT count(*) FROM dl WHERE id = 2500")
+    return out
+
+
 @pytest.fixture(scope="module")
 def dl(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -732,6 +783,11 @@ def dl(pgc_cluster):
             out[name, "unlimited_held"] = _dl_held(d, verb, DL_DELETER, 101, 3,
                                                    ("SET pgcolumnar.rewrite_lock_timeout = 0",))
         out["capped"] = _dl_capped(d)
+        # the arms of the b1d94859 review, in the shell's order
+        out["default"] = d.q("SHOW pgcolumnar.rewrite_lock_timeout")
+        for name, verb in DL_VERBS.items():
+            out[name, "default_held"] = _dl_held(d, verb, DL_DELETER, 101, 15, ())
+        out["paused_last"] = _dl_paused_last(d)
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -863,8 +919,8 @@ def test_the_rewrite_behind_an_open_writer_stops_with_55p03(dl, name, expect):
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_behind_an_open_writer_stops_within_its_limit(dl, name, expect):
     ms = dl[name, "stuck"]["ms"]
-    expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
-                f"and the {name} stops within its 1 s rewrite_lock_timeout plus 3 s")
+    expect.text("yes" if isinstance(ms, int) and ms < 1800 else f"no ({ms} ms)", "yes",
+                f"and the {name} stops within its 1 s rewrite_lock_timeout plus 0.8 s")
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
@@ -884,9 +940,9 @@ def test_the_rewrite_behind_an_open_inserter_stops_with_55p03(dl, name, expect):
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_behind_an_open_inserter_stops_within_its_limit(dl, name, expect):
     ms = dl[name, "stuck102"]["ms"]
-    expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
+    expect.text("yes" if isinstance(ms, int) and ms < 1800 else f"no ({ms} ms)", "yes",
                 f"and the {name} behind that inserter stops within its 1 s "
-                "rewrite_lock_timeout plus 3 s")
+                "rewrite_lock_timeout plus 0.8 s")
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
@@ -922,9 +978,9 @@ def test_the_rewrite_under_a_longer_lock_timeout_stops_with_55p03(dl, name, expe
 @pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_under_a_longer_lock_timeout_stops_within_its_limit(dl, name, expect):
     ms = dl[name, "longer"]["ms"]
-    expect.text("yes" if isinstance(ms, int) and ms < 4000 else f"no ({ms} ms)", "yes",
+    expect.text("yes" if isinstance(ms, int) and ms < 1800 else f"no ({ms} ms)", "yes",
                 f"and the {name} under that 20 s lock_timeout stops within its 1 s "
-                "rewrite_lock_timeout plus 3 s")
+                "rewrite_lock_timeout plus 0.8 s")
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
@@ -980,3 +1036,40 @@ def test_a_delete_in_the_group_max_groups_left_out_commits(dl, expect):
     expect.text(f"delete={dl['capped']['delete']}", "delete=ok",
                 "and a delete in the group that max_groups left out, with a 1 s lock_timeout, "
                 "commits while that transaction is open")
+
+
+def test_a_fresh_session_shows_the_10s_default(dl, expect):
+    expect.text(dl["default"], "10s",
+                "a fresh session's pgcolumnar.rewrite_lock_timeout is the documented default of 10s")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_with_no_set_stops_with_55p03(dl, name, expect):
+    r = dl[name, "default_held"]
+    expect.text(f"{r['state']} {r['kind']}", "55P03 names-limit",
+                f"a {name} with no SET behind a deleter held for 15 s stops with 55P03 naming "
+                "rewrite_lock_timeout")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_with_no_set_stops_at_the_10s_default(dl, name, expect):
+    ms = dl[name, "default_held"]["ms"]
+    expect.text("yes" if isinstance(ms, int) and 9000 <= ms < 12000 else f"no ({ms} ms)", "yes",
+                f"and the {name} with no SET stops at the 10 s default, after 9 to 12 s")
+
+
+def test_a_delete_in_the_last_group_of_a_paused_recluster_stops(dl, expect):
+    expect.text(f"delete={dl['paused_last']['delete']}", "delete=stock",
+                "a delete in the last group of a paused recluster, with a 1 s lock_timeout, "
+                "stops with the stock lock-timeout error")
+
+
+def test_the_paused_recluster_commits_and_row_2500_matches_the_delete(dl, expect):
+    r = dl["paused_last"]
+    same = ((r["delete"] == "ok" and r["row2500"] == "0")
+            or (r["delete"] != "ok" and r["row2500"] == "1"))
+    expect.text(f"rewrite={r['rewrite']} " + ("yes" if same else
+                                             f"no (delete={r['delete']} row2500={r['row2500']})"),
+                "rewrite=ok yes",
+                "and the paused recluster commits, and row 2500 is gone exactly when that delete "
+                "committed")

@@ -2039,4 +2039,9 @@ guard_tests 895
 # inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
 # max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5555 tests collected.
-cluster_tests 5563
+# cluster_tests 5563 -> 5570, still #2074, for the review of #2139 at b1d94859: two more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
+# 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
+# and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
+cluster_tests 5570

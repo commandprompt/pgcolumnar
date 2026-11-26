@@ -499,15 +499,15 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 	got="$(dl_held "$verb" "$DL_DELETER" 101 8 "SET pgcolumnar.rewrite_lock_timeout = '1s';")"
 	check "a $name behind a writer that stays open stops with 55P03 naming rewrite_lock_timeout" \
 		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
-	check "and the $name stops within its 1 s rewrite_lock_timeout plus 3 s" \
-		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the $name stops within its 1 s rewrite_lock_timeout plus 0.8 s" \
+		"$(awk '{print ($1 < 1800) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
 	check "and the session's lock_timeout after the $name's 55P03 is back to 0" \
 		"$(cut -d' ' -f4 <<<"$got")" "lock_timeout=0"
 	got="$(dl_held "$verb" "$DL_INSERTER" 102 8 "SET pgcolumnar.rewrite_lock_timeout = '1s';")"
 	check "a $name behind an inserter that stays open stops with 55P03 naming rewrite_lock_timeout" \
 		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
-	check "and the $name behind that inserter stops within its 1 s rewrite_lock_timeout plus 3 s" \
-		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the $name behind that inserter stops within its 1 s rewrite_lock_timeout plus 0.8 s" \
+		"$(awk '{print ($1 < 1800) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
 	check "after a $name that finished, the session's lock_timeout is back to 0" \
 		"$(dl_finished "$verb")" "ok lock_timeout=0"
 	got="$(dl_held "$verb" "$DL_DELETER" 101 6 "SET lock_timeout = '500ms'; SET pgcolumnar.rewrite_lock_timeout = '5s';")"
@@ -524,7 +524,7 @@ done
 #
 #   - longer lock_timeout: a user lock_timeout longer than the time left must not
 #     replace the limit. With lock_timeout = 20 s and a 1 s limit, behind a deleter
-#     held for 8 s, the verb stops with 55P03 naming the setting within 4 s, and the
+#     held for 8 s, the verb stops with 55P03 naming the setting within 1.8 s, and the
 #     session gets its 20 s back.
 #   - storage-row lock kept: the rewrite keeps the storage-row lock (102) from
 #     lock_rewrite_groups to commit. A rewrite that gave it back would take it again,
@@ -547,11 +547,13 @@ dl_wait_activity_sql() {
 	printf 'DO $$ BEGIN FOR i IN 1..300 LOOP PERFORM pg_stat_clear_snapshot(); EXIT WHEN %s; PERFORM pg_sleep(0.1); END LOOP; END $$;\n' "$1"
 }
 
-# dl_paused VERB-SQL -> "groups=<yes|no> storage=<n> writer=<ok|error> rewrite=<ok|error>":
-# the verb pauses on its first row with its group locks taken; pg_locks shows whether it
-# also holds the storage-row lock; then a writer inserts, scans, deletes in group 0, scans
-# and commits
-dl_paused() {
+# dl_pause_bg VERB-SQL: a fresh dl with an expression index on dl_pause(id), which sleeps
+# 8 s on id 1 when the session sets pgc.pause; then the verb starts in the background with
+# pgc.pause on and a 20 s rewrite_lock_timeout, output in dl.rw. While it sleeps, the verb
+# has taken its group locks and has not flushed. DL_PAUSED matches its pg_stat_activity row
+# (as a)
+DL_PAUSED="a.wait_event = 'PgSleep' AND a.query LIKE 'SELECT pgcolumnar.%'"
+dl_pause_bg() {
 	dl_make
 	q "CREATE OR REPLACE FUNCTION dl_pause(i int) RETURNS int LANGUAGE plpgsql IMMUTABLE AS \$\$
 	   BEGIN
@@ -567,7 +569,15 @@ dl_paused() {
 		echo "rc=$?" >>"$PGC_WORKDIR/dl.rw"
 	) &
 	DL_RW_PID=$!
-	local paused="a.wait_event = 'PgSleep' AND a.query LIKE 'SELECT pgcolumnar.%'"
+}
+
+# dl_paused VERB-SQL -> "groups=<yes|no> storage=<n> writer=<ok|error> rewrite=<ok|error>":
+# the verb pauses on its first row with its group locks taken; pg_locks shows whether it
+# also holds the storage-row lock; then a writer inserts, scans, deletes in group 0, scans
+# and commits
+dl_paused() {
+	dl_pause_bg "$1"
+	local paused="$DL_PAUSED"
 	# one session waits for the pause and reads pg_locks, so a slow connect cannot miss it
 	local locks
 	locks="$(dlp -qAt 2>&1 <<SQL
@@ -646,8 +656,8 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 	got="$(dl_held "$verb" "$DL_DELETER" 101 8 "SET lock_timeout = '20s'; SET pgcolumnar.rewrite_lock_timeout = '1s';")"
 	check "a $name under a longer lock_timeout of 20 s stops with 55P03 naming rewrite_lock_timeout" \
 		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
-	check "and the $name under that 20 s lock_timeout stops within its 1 s rewrite_lock_timeout plus 3 s" \
-		"$(awk '{print ($1 < 4000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+	check "and the $name under that 20 s lock_timeout stops within its 1 s rewrite_lock_timeout plus 0.8 s" \
+		"$(awk '{print ($1 < 1800) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
 	check "and the session's lock_timeout after that $name's 55P03 is back to 20s" \
 		"$(cut -d' ' -f4 <<<"$got")" "lock_timeout=20s"
 	got="$(dl_paused "$verb")"
@@ -669,5 +679,62 @@ check "a compact_rewrite with max_groups 1 in an open transaction rewrites one g
 	"$(cut -d' ' -f1-2 <<<"$got")" "verb=1 locks=1"
 check "and a delete in the group that max_groups left out, with a 1 s lock_timeout, commits while that transaction is open" \
 	"$(cut -d' ' -f3 <<<"$got")" "delete=ok"
+
+# ---- the 10 s default, recluster's last group ----
+#
+# Review of #2139 at b1d94859. Each arm reddens one way of getting that wrong:
+#
+#   - the default: pgcolumnar.rewrite_lock_timeout defaults to 10 s, and every session
+#     that does not set it runs on that, the maintenance daemon too. A default of 0 would
+#     wait without a limit. A fresh session shows 10s, and each verb run with no SET
+#     behind a deleter held for 15 s stops with 55P03 naming the setting after 9 to 12 s.
+#   - recluster's last group: recluster locks every group it rewrites, the last one too.
+#     It pauses on its first row with its group locks taken, and a delete of id 2500, in
+#     the last group, with a 1 s lock_timeout stops at its group lock. Had it gone through,
+#     the recluster would write the row back from its own snapshot.
+
+# dl_paused_last -> "delete=<ok|stock|other> rewrite=<ok|error> row2500=<n>": a recluster
+# pauses with its group locks taken; then one session deletes id 2500, in the last group,
+# with a 1 s lock_timeout and flushes the delete with a scan
+dl_paused_last() {
+	dl_pause_bg "pgcolumnar.recluster('dl', 'id')"
+	local out d_rc
+	# one session waits for the pause and deletes, so a slow connect cannot miss it
+	out="$(dlp -qAt -v ON_ERROR_STOP=1 2>&1 <<SQL
+$(dl_wait_activity_sql "EXISTS (SELECT 1 FROM pg_stat_activity a WHERE $DL_PAUSED AND a.pid <> pg_backend_pid())")
+SET lock_timeout = '1s';
+BEGIN;
+DELETE FROM dl WHERE id = 2500;
+SELECT count(*) FROM dl WHERE id = 2500;
+COMMIT;
+SQL
+)"
+	d_rc=$?
+	dl_rw_wait
+	echo "delete=$(if [ "$d_rc" = 0 ]; then echo ok
+		elif grep -q 'canceling statement due to lock timeout' <<<"$out"; then echo stock
+		else echo other; fi)" \
+		"rewrite=$DL_RW" \
+		"row2500=$(q "SELECT count(*) FROM dl WHERE id = 2500;")"
+	grep -h 'ERROR' "$PGC_WORKDIR/dl.rw" >&2
+	grep 'ERROR' <<<"$out" >&2
+	return 0
+}
+
+check "a fresh session's pgcolumnar.rewrite_lock_timeout is the documented default of 10s" \
+	"$(q "SHOW pgcolumnar.rewrite_lock_timeout;")" "10s"
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	got="$(dl_held "$verb" "$DL_DELETER" 101 15 "")"
+	check "a $name with no SET behind a deleter held for 15 s stops with 55P03 naming rewrite_lock_timeout" \
+		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 names-limit"
+	check "and the $name with no SET stops at the 10 s default, after 9 to 12 s" \
+		"$(awk '{print ($1 >= 9000 && $1 < 12000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+done
+got="$(dl_paused_last)"
+check "a delete in the last group of a paused recluster, with a 1 s lock_timeout, stops with the stock lock-timeout error" \
+	"$(cut -d' ' -f1 <<<"$got")" "delete=stock"
+check "and the paused recluster commits, and row 2500 is gone exactly when that delete committed" \
+	"$(awk '{c = (($1 == "delete=ok" && $3 == "row2500=0") || ($1 != "delete=ok" && $3 == "row2500=1")) ? "yes" : "no (" $1 " " $3 ")"; print $2 " " c}' <<<"$got")" "rewrite=ok yes"
 
 pgc_summary
