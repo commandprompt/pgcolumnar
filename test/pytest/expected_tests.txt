@@ -2192,4 +2192,9 @@ guard_tests 897
 # of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
 # cluster_tests 5597 unchanged for #2193: test_harness_isolation.py's _fds_on skips a descriptor that
 # closes between the listing and its readlink; no test added or removed.
-cluster_tests 5597
+# cluster_tests 5597 -> 5599 for #2193's review (jdatcmd at 82a1f0a5): test_a_descriptor_that_closes_mid_read_is_skipped
+# and test_a_pid_that_does_not_exist_reads_nothing in test_harness_isolation.py, 2 tests, by collection of the
+# files not in NO_CLUSTER on main e000e095: 5599 tests collected. They need no cluster, but they test that file's
+# own _fds_on and sit beside it; the file stays cluster-bound through its other tests, so they run in the cluster
+# job. A NO_CLUSTER home would have to import one test module from another.
+cluster_tests 5599

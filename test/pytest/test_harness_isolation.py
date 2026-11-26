@@ -19,6 +19,7 @@ The Python harness's own machinery throughout. One shell check has no twin here:
 harness has no descriptor-closing loop to measure instead, so it belongs to the
 shell harness alone (CONTEXT.md, Tests; declared in test_compare_to_bash.py).
 """
+import errno
 import fcntl
 import os
 import pathlib
@@ -42,8 +43,11 @@ def _fds_on(pid, path):
     sleep's shared libraries (libc, libselinux, libpcre2, ...) as fd 4 and
     closes it again. One such readlink failing used to discard the whole
     listing as "0 held", though the lock's descriptor, fd 3, inherited at fork,
-    was there the whole time. Measured on main: 86 of 2000 runs of the
-    control's command read "0 held" that way, every one "readlink fd4 ENOENT".
+    was there the whole time. Measured with main's comprehension on an 8-CPU
+    shared dev machine at load 4.8: 88 of 2000 runs of the control's command
+    read "0 held" (the fix: 0 of 2000). That rate belongs to the machine, so
+    test_a_descriptor_that_closes_mid_read_is_skipped pins the property
+    without the race.
     A process whose descriptor directory can't be listed at all still reads
     (0, 0)."""
     fd_dir = pathlib.Path(f"/proc/{pid}/fd")
@@ -84,6 +88,59 @@ def test_control_a_plain_child_under_flock_holds_the_lock(lock, expect):
                     "control: a child of a plain shell under flock holds the lock")
     finally:
         subprocess.run(["kill", str(pid)])
+
+
+def _with_a_vanished_descriptor(monkeypatch, pid, name):
+    """Make /proc/<pid>/fd list one extra descriptor, `name`, whose readlink
+    raises ENOENT: the shape of a descriptor that closes between the listing and
+    its readlink (#2193), made deterministic. Returns the real listing's names."""
+    fd_dir = f"/proc/{pid}/fd"
+    real_listdir, real_readlink = os.listdir, os.readlink
+
+    def listdir(path="."):
+        names = real_listdir(path)
+        return names + [name] if str(path) == fd_dir else names
+
+    def readlink(path, *args, **kwargs):
+        if str(path) == f"{fd_dir}/{name}":
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+        return real_readlink(path, *args, **kwargs)
+
+    names = real_listdir(fd_dir)
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "readlink", readlink)
+    return names
+
+
+def test_a_descriptor_that_closes_mid_read_is_skipped(tmp_path, monkeypatch, expect):
+    """_fds_on's own property, with no cluster and no race (#2193, review of #2207).
+    The control above reaches it only when a starting child's loader closes fd 4
+    inside the window, which is rare; here the vanished descriptor is always
+    there. This process holds the lock on one descriptor, and the listing carries
+    one more whose readlink raises ENOENT. Reverting the fix (one comprehension,
+    any readlink error discards the listing) reads (0, 0), and so does a handler
+    that gives up with `return 0, 0`. The pytest harness's own helper, so it has
+    no shell twin: the shell's count is `find -lname`, which has no such step."""
+    lock = tmp_path / "own.lock"
+    with open(lock, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        names = _with_a_vanished_descriptor(monkeypatch, os.getpid(), "999")
+        expect.text(f"999 listed={'999' in names}", "999 listed=False",
+                    "premise: fd 999 is not really open, so only the patch lists it")
+        held, total = _fds_on(os.getpid(), lock)
+    expect.num(held, 1, "a descriptor that closes mid-read does not hide the lock's")
+    expect.text(f"total>0={total > 0}", "total>0=True",
+                "and the other descriptors are still counted")
+
+
+def test_a_pid_that_does_not_exist_reads_nothing(expect):
+    """The listing itself failing still reads (0, 0): a pid above pid_max can
+    never exist, so /proc/<pid>/fd is absent and nothing is counted."""
+    pid = int(pathlib.Path("/proc/sys/kernel/pid_max").read_text()) + 1
+    expect.text(f"exists={pathlib.Path(f'/proc/{pid}').exists()}", "exists=False",
+                "premise: the pid has no /proc entry")
+    expect.text("%d held of %d" % _fds_on(pid, "/nonexistent"), "0 held of 0",
+                "a pid that does not exist reads (0, 0)")
 
 
 START = """
@@ -154,7 +211,12 @@ cluster, root = pgc_cluster.make_cluster({cfg!r}, "gw-isolation")
 try:
     pm = int((cluster.datadir / "postmaster.pid").read_text().split()[0])
     import os
-    links = [os.readlink(f"/proc/{{pm}}/fd/" + n) for n in os.listdir(f"/proc/{{pm}}/fd")]
+    links = []
+    for n in os.listdir(f"/proc/{{pm}}/fd"):
+        try:
+            links.append(os.readlink(f"/proc/{{pm}}/fd/" + n))
+        except OSError:
+            continue  # closed between the listing and its readlink, as in _fds_on (#2193)
     held = sum(1 for link in links if link == {lock!r})
     free = subprocess.run(["flock", "-n", {lock!r}, "true"]).returncode
     print(f"lock free={{free}}, postmaster holds {{held}} of {{max(len(links), 1)}}")
