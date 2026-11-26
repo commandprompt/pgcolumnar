@@ -2159,36 +2159,64 @@ guard_tests 895
 # cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
 # float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
-# cluster_tests 5581 -> 5584 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
+# test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
+# test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
+# test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
+# test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
+# by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
+# and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 -> 5600 for #2077 in test_native_parquet_streaming.py: a data page with no values
 # reads (test_parquet_streaming_data_page_with_no_values_reads,
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
-# cluster_tests 5584 -> 5595 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# cluster_tests 5600 -> 5611 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
 # the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-# cluster_tests 5595 -> 5602 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# cluster_tests 5611 -> 5618 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
 # pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-# cluster_tests 5602 -> 5612 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5618 -> 5628 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
 # pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
 # with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-# cluster_tests 5612 -> 5622 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5628 -> 5638 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
 # pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
 # version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
 # dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
 # 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
 # `--collect-only -q`: 5536 tests collected.
-# cluster_tests 5622 -> 5631 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# cluster_tests 5638 -> 5647 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
 # pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
 # (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
 # given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
-# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5631 tests collected.
-cluster_tests 5631
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
+cluster_tests 5647

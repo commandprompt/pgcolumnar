@@ -629,6 +629,26 @@ true until the next version shipped.
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
+- `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
+  table now refuse an Iceberg field that has an `initial-default` (#2087).
+  Format-version 3 lets a column added to a table name the value that older data
+  files must read for it. The reader ignored that value, so every row written
+  before the column existed read as null, even in a required column, with no
+  error. Such a field now fails the scan with SQLSTATE 0A000, naming the field.
+  A default of any JSON type is refused, including `""`, `false` and `0`.
+  The refusal covers an output column and every column an equality delete
+  compares, whatever its type, whether it is required, and whether the field
+  also has a `write-default`. A query that leaves
+  the field out still reads, except through a `pgcolumnar_iceberg` foreign
+  table: it refuses any scan when one of its columns has an `initial-default`.
+  A null `initial-default` counts as none, even when the field also has a
+  `write-default`, and so does a field that has only a `write-default`. The
+  refusal also applies in a metadata file whose `format-version` is below 3.
+  Reading the default is not supported yet.
+  docs/limitations.md. `test/iceberg_scan.sh` and `test_iceberg_scan.py`;
+  each refusal check matches the message that names the field (`field "qty"`,
+  or `field "k"` for the equality delete), so a message that names the wrong
+  field fails it.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
