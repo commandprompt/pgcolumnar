@@ -1135,16 +1135,38 @@ build_top_column(TopColumn *tc, const char *name, Oid typid, int32 typmod,
 }
 
 /*
+ * pq_live_attrs
+ *		Fill live[] with the index of each attribute that is not dropped, in
+ *		order, and return how many there are. A dropped column stays in the
+ *		tuple descriptor, so a table that ever lost one still has it there
+ *		(#2076). The writer exports the live columns only: output column j is
+ *		attribute live[j]. live must hold tupdesc->natts entries.
+ */
+static int
+pq_live_attrs(TupleDesc tupdesc, int *live)
+{
+	int			nlive = 0;
+	int			i;
+
+	for (i = 0; i < tupdesc->natts; i++)
+		if (!TupleDescAttr(tupdesc, i)->attisdropped)
+			live[nlive++] = i;
+	return nlive;
+}
+
+/*
  * PgColumnarParquetCheckExportable
- *		Ereport if rel cannot be exported to Parquet (a dropped column, or a
- *		column type the writer does not support). Lets the parallel exporter fail
- *		fast in the dispatcher, before it opens files or spawns workers.
+ *		Ereport if rel cannot be exported to Parquet (a column type the writer
+ *		does not support). Lets the parallel exporter fail fast in the
+ *		dispatcher, before it opens files or spawns workers. Dropped columns
+ *		are skipped, as the writer skips them.
  */
 void
 PgColumnarParquetCheckExportable(Relation rel)
 {
 	TupleDesc	tupdesc = RelationGetDescr(rel);
-	int			ntop = tupdesc->natts;
+	int		   *live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	int			ntop = pq_live_attrs(tupdesc, live);
 	int			totalLeaves = 0;
 	int			nleaves = 0;
 	TopColumn  *tops;
@@ -1153,19 +1175,15 @@ PgColumnarParquetCheckExportable(Relation rel)
 
 	for (i = 0; i < ntop; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 
-		if (att->attisdropped)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar parquet export does not support dropped columns")));
 		totalLeaves += count_leaves_for(att->atttypid, att->atttypmod);
 	}
-	tops = palloc0(sizeof(TopColumn) * ntop);
+	tops = palloc0(sizeof(TopColumn) * Max(ntop, 1));
 	leaves = palloc0(sizeof(PqLeaf) * Max(totalLeaves, 1));
 	for (i = 0; i < ntop; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
 		build_top_column(&tops[i], NameStr(att->attname), att->atttypid,
@@ -1179,6 +1197,7 @@ PgColumnarParquetCheckExportable(Relation rel)
 	}
 	pfree(tops);
 	pfree(leaves);
+	pfree(live);
 }
 
 /*
@@ -1460,28 +1479,30 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 	int			nrgs = 0;
 	int			rgCap = 0;
 	MemoryContext rgCtx = CurrentMemoryContext;
+	int		   *live;
+	Datum	   *liveValues;
+	bool	   *liveNulls;
 
 	tupdesc = RelationGetDescr(rel);
-	ntop = tupdesc->natts;
 
-	/* reject dropped columns and count the leaf columns (arrays and composites
-	 * expand to more than one leaf) */
+	/* the live columns only: output column i is attribute live[i] (#2076) */
+	live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	ntop = pq_live_attrs(tupdesc, live);
+
+	/* count the leaf columns (arrays and composites expand to more than one
+	 * leaf) */
 	for (i = 0; i < ntop; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 
-		if (att->attisdropped)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar parquet export does not support dropped columns")));
 		totalLeaves += count_leaves_for(att->atttypid, att->atttypmod);
 	}
 
-	tops = palloc0(sizeof(TopColumn) * ntop);
+	tops = palloc0(sizeof(TopColumn) * Max(ntop, 1));
 	leaves = palloc0(sizeof(PqLeaf) * Max(totalLeaves, 1));
 	for (i = 0; i < ntop; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
 		build_top_column(&tops[i], NameStr(att->attname), att->atttypid,
@@ -1500,8 +1521,11 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 	PgColumnarSinkWrite(snk, "PAR1", 4);	/* magic header */
 	offset = 4;
 
-	values = palloc(sizeof(Datum) * ntop);
-	nulls = palloc(sizeof(bool) * ntop);
+	/* the reader fills one slot per attribute, dropped ones included */
+	values = palloc(sizeof(Datum) * Max(tupdesc->natts, 1));
+	nulls = palloc(sizeof(bool) * Max(tupdesc->natts, 1));
+	liveValues = palloc(sizeof(Datum) * Max(ntop, 1));
+	liveNulls = palloc(sizeof(bool) * Max(ntop, 1));
 
 	readState = PgColumnarBeginRead(rel, snapshot, NULL, NULL, 0, NULL);
 	/*
@@ -1522,6 +1546,12 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 		{
 			CHECK_FOR_INTERRUPTS();
 
+			for (i = 0; i < ntop; i++)
+			{
+				liveValues[i] = values[live[i]];
+				liveNulls[i] = nulls[live[i]];
+			}
+
 			/*
 			 * Cut by bytes too (#1811): start a new row group before a row
 			 * that would take the buffered bytes past the cap. Each leaf
@@ -1530,7 +1560,7 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 			 */
 			if (groupRows > 0 &&
 				pq_group_bytes(leaves, nleaves) +
-				pq_row_bytes(tops, ntop, leaves, values, nulls) >
+				pq_row_bytes(tops, ntop, leaves, liveValues, liveNulls) >
 				(int64) pgcolumnar_export_group_bytes)
 			{
 				pq_flush_row_group(snk, leaves, nleaves, groupRows, &offset,
@@ -1538,7 +1568,7 @@ PgColumnarWriteParquetFileWith(Relation rel, Snapshot snapshot, const char *file
 				groupRows = 0;
 			}
 			for (i = 0; i < ntop; i++)
-				shred_top(&tops[i], leaves, values[i], nulls[i]);
+				shred_top(&tops[i], leaves, liveValues[i], liveNulls[i]);
 			groupRows++;
 			total++;
 		}
