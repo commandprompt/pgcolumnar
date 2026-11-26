@@ -47,6 +47,17 @@
  *   closes before its opener returns. The invariant still holds: the handle is
  *   the running statement's, EndForeignScan closes it on the normal path, and
  *   the release callback closes it on abort, whoever holds the pointer.
+ *
+ * - A subtransaction abort closes only the handles its resource owner holds
+ *   (#2089). Each handle records CurrentResourceOwner when it opens. When a
+ *   subtransaction aborts, the release callback closes the handles of each
+ *   owner being released; when one commits, or a portal is dropped, they move
+ *   to the parent owner. Closing every handle there would be wrong: a scan of
+ *   the outer statement can call a function whose EXCEPTION block aborts, and
+ *   a cursor opened before a SAVEPOINT stays usable after ROLLBACK TO. Their
+ *   handles belong to owners the abort does not release. Before #2089 the
+ *   callback skipped subtransactions, so each caught read error kept its
+ *   socket and external FD until the transaction ended.
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -226,6 +237,8 @@ struct PgColumnarObjHandle
 	int			rb_len;			/* valid bytes */
 
 	dlist_node	node;			/* open-handle list, for abort cleanup */
+	ResourceOwner owner;		/* CurrentResourceOwner at open, or its parent
+								 * after a subtransaction commit (#2089) */
 };
 
 /* SHA-256 of an empty payload; every request we sign sends no body. */
@@ -454,8 +467,36 @@ static void
 os_resource_release(ResourceReleasePhase phase, bool isCommit,
 					bool isTopLevel, void *arg)
 {
-	if (phase != RESOURCE_RELEASE_AFTER_LOCKS || !isTopLevel)
+	if (phase != RESOURCE_RELEASE_AFTER_LOCKS)
 		return;
+
+	/*
+	 * Below the top level, PostgreSQL releases one owner at a time and sets
+	 * CurrentResourceOwner to it while the callbacks run (#2089). An abort
+	 * closes that owner's handles. A commit, or a portal drop, hands them to
+	 * the parent owner, so a later abort of the parent still finds them.
+	 */
+	if (!isTopLevel)
+	{
+		ResourceOwner releasing = CurrentResourceOwner;
+		dlist_mutable_iter iter;
+
+		if (releasing == NULL)
+			return;
+		dlist_foreach_modify(iter, &os_open_handles)
+		{
+			PgColumnarObjHandle *h =
+				dlist_container(PgColumnarObjHandle, node, iter.cur);
+
+			if (h->owner != releasing)
+				continue;
+			if (isCommit)
+				h->owner = ResourceOwnerGetParent(releasing);
+			else
+				os_free_handle(h);
+		}
+		return;
+	}
 
 	os_stmt_pins_reset();
 	while (!dlist_is_empty(&os_open_handles))
@@ -1258,6 +1299,48 @@ os_read_head(PgColumnarObjHandle *h, OsResponse *resp)
 	return true;
 }
 
+/*
+ * Refuse 101 Switching Protocols. It answers only a request that sent Upgrade
+ * (RFC 9110 section 15.2.2), and this client never sends one, so what follows
+ * it on the connection is not this request's answer. Both places that read a
+ * response head call this: os_read_final_head, and the early answer an export
+ * reads during its Expect wait (#2156 review).
+ */
+static void
+os_refuse_switch(PgColumnarObjHandle *h, const OsResponse *resp)
+{
+	if (resp->status == 101)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("columnar: \"%s\" switched protocols with HTTP 101",
+						h->url),
+				 errdetail("This client never asks to switch protocols.")));
+}
+
+/*
+ * Read the final response head, passing over interim (1xx) ones. RFC 9110
+ * section 15.2 says a client must accept one or more 1xx answers before the
+ * final one, even when it did not ask for them: a store that answered 100
+ * Continue after the Expect wait ran out, or a server or proxy that sends 103
+ * Early Hints. An interim answer has no body, so only its head is read. Every
+ * request reads its final answer here (#2090); only an export's early answer
+ * during its Expect wait is read with os_read_head, and it refuses 101 too.
+ * Returns false on the same stale-connection condition as os_read_head.
+ *
+ * 101 Switching Protocols is refused, not passed over (os_refuse_switch).
+ */
+static bool
+os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
+{
+	do
+	{
+		if (!os_read_head(h, resp))
+			return false;
+		os_refuse_switch(h, resp);
+	} while (resp->status >= 100 && resp->status < 200);
+	return true;
+}
+
 /* Take min(n, buffered) bytes from staging into dst (or discard). */
 static int64
 os_take(PgColumnarObjHandle *h, uint8 *dst, int64 n)
@@ -1656,7 +1739,7 @@ os_request(PgColumnarObjHandle *h, const char *method,
 		if (h->fd < 0)
 			os_connect(h);
 
-		if (os_send_all(h, req.data, req.len) && os_read_head(h, resp))
+		if (os_send_all(h, req.data, req.len) && os_read_final_head(h, resp))
 			break;
 
 		/*
@@ -2071,6 +2154,7 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 	h->fd = -1;
 	h->url = pstrdup(url);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
 
@@ -2412,6 +2496,7 @@ os_write_handle_as(const char *url, const char *name,
 	h->fd = -1;
 	h->url = pstrdup(name);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
 
@@ -2649,22 +2734,6 @@ os_await_answer(PgColumnarObjHandle *h, int ms, bool *timedOut)
 }
 
 /*
- * Read the final response head, passing over interim (1xx) ones: a store that
- * answered 100 Continue after the Expect wait ran out sends it ahead of the
- * final answer to the body.
- */
-static bool
-os_read_final_head(PgColumnarObjHandle *h, OsResponse *resp)
-{
-	do
-	{
-		if (!os_read_head(h, resp))
-			return false;
-	} while (resp->status >= 100 && resp->status < 200);
-	return true;
-}
-
-/*
  * True when a reply has no body whatever its headers say: a 1xx, 204 or 304
  * (RFC 9112 section 6.3).
  */
@@ -2774,7 +2843,9 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		 * "failed before a response"). A 2xx whose own body ends at
 		 * connection close closes it too (#1880), so it goes the same way.
 		 * A 100 Continue read here is not an answer: the body goes, and
-		 * os_read_final_head reads the final answer after it.
+		 * os_read_final_head reads the final answer after it. Another 1xx
+		 * goes the same way, except 101, which is refused here as it is
+		 * everywhere (#2156 review).
 		 */
 		if (sent && expect)
 		{
@@ -2782,6 +2853,7 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 			{
 				/* bytes are staged, so this reads a head or raises */
 				(void) os_read_head(h, resp);
+				os_refuse_switch(h, resp);
 				if (resp->status == 417)
 				{
 					pfree(req.data);
@@ -3666,7 +3738,7 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 		os_sign_write(h, "GET", h->abspath, rawQuery, emptyHash, &req);
 		appendStringInfoString(&req, "User-Agent: pgcolumnar-objstore/1\r\n\r\n");
 
-		if (os_send_all(h, req.data, req.len) && os_read_head(h, &resp))
+		if (os_send_all(h, req.data, req.len) && os_read_final_head(h, &resp))
 		{
 			pfree(req.data);
 			break;
@@ -4169,6 +4241,7 @@ objstore_http_request(const char *url, const char *method,
 	h->fd = -1;
 	h->url = pstrdup(url);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);	/* before any raise */
 
@@ -4218,7 +4291,7 @@ objstore_http_request(const char *url, const char *method,
 		appendBinaryStringInfo(&req, body, (int) body_len);
 
 	os_connect(h);				/* allow-list + link-local + TLS handshake */
-	if (!os_send_all(h, req.data, req.len) || !os_read_head(h, &resp))
+	if (!os_send_all(h, req.data, req.len) || !os_read_final_head(h, &resp))
 	{
 		os_disconnect(h);
 		ereport(ERROR,

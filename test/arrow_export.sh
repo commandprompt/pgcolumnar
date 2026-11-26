@@ -25,12 +25,22 @@ if ! python3 -c 'import pyarrow' 2>/dev/null; then
 	pgc_skip pyarrow "pyarrow not available; skipping Arrow export verification"
 fi
 
-# refusal LABEL SQL MESSAGE: the SQL must fail with MESSAGE. Any error used to pass,
-# so a missing table, or a refusal removed and a later error raised in its place,
-# read as the refusal.
+# refusal LABEL SQL MESSAGE [SQLSTATE]: the SQL must fail with MESSAGE. Any error used
+# to pass, so a missing table, or a refusal removed and a later error raised in its
+# place, read as the refusal. With SQLSTATE, psql prints the error code before the
+# message (VERBOSITY verbose), and the error must carry that code too.
 refusal() {
-	local label="$1" sql="$2" msg="$3" out got
-	if out="$(psql_run "$sql" 2>&1)"; then
+	local label="$1" sql="$2" msg="$3" code="${4:-}" out got rc
+	if [ -n "$code" ]; then
+		msg="ERROR:  $code: $msg"
+		out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+			-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -q -c "$sql" 2>&1)"
+		rc=$?
+	else
+		out="$(psql_run "$sql" 2>&1)"
+		rc=$?
+	fi
+	if [ "$rc" -eq 0 ]; then
 		got="succeeded"
 	else
 		case "$out" in
@@ -344,6 +354,271 @@ PY
 )"
 check "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the stream as PostgreSQL prints them" \
 	"$ar_txt_rows|$ar_txt_read" "300|$(q "$TXT_DIGEST")"
+
+# ---- a timestamp past Arrow's int64 range is refused, not wrapped (#2085) ------------
+# Arrow stores a timestamp as int64 microseconds since 1970-01-01, so its last value is
+# 294247-01-10 04:00:54.775807. PostgreSQL timestamps reach 294276-12-31. The writer
+# added the epoch shift without an overflow check, so a later value wrapped to a large
+# negative number, and the export reported success. Now the export fails with an
+# out-of-range error and leaves no file at the target path.
+TSOVER="$PGC_WORKDIR/tsover.arrows"
+TZOVER="$PGC_WORKDIR/tzover.arrows"
+TSEDGE="$PGC_WORKDIR/tsedge.arrows"
+psql_run "CREATE TABLE ar_tsover (ts timestamp) USING pgcolumnar;
+          INSERT INTO ar_tsover VALUES ('294247-01-10 04:00:54.775808');
+          CREATE TABLE ar_tzover (tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tzover VALUES ('294276-12-31 23:59:59.999999+00');
+          CREATE TABLE ar_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00');" >/dev/null
+refusal "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 'columnar: a value in column "ts" is out of range for an Arrow timestamp' 22008
+check "and the refused timestamp export leaves no file at the target path" \
+	"$([ -e "$TSOVER" ] && echo present || echo absent)" "absent"
+refusal "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Arrow, not written as a wrapped negative value (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tzover', '$TZOVER')" 'columnar: a value in column "tz" is out of range for an Arrow timestamp' 22008
+edge_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsedge', '$TSEDGE')")"
+edge_read="$(python3 - "$TSEDGE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    print(",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz")))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "the last timestamp Arrow can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz" \
+	"$edge_rows|$edge_read" "1|9223372036854775807,9223372036854775807"
+psql_run "CREATE TABLE ar_tsback (ts timestamp, tz timestamptz) USING pgcolumnar;" >/dev/null
+back_rows="$(q "SELECT pgcolumnar.import_arrow('ar_tsback', '$TSEDGE')")"
+back_vals="$(q "SELECT string_agg(ts::text || ',' || (tz AT TIME ZONE 'UTC')::text, ' ') FROM ar_tsback")"
+check "and that last timestamp imports back unchanged from the export, in timestamp and timestamptz (#2085)" \
+	"$back_rows|$back_vals" "1|294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807"
+# The range check must not refuse a value before 1970-01-01, which Arrow stores as a
+# negative number. The last microsecond of 1969 is -1; PostgreSQL's first timestamp,
+# 4714-11-24 00:00:00 BC, is -210866803200000000, well inside int64.
+TSPRE="$PGC_WORKDIR/tspre.arrows"
+psql_run "CREATE TABLE ar_tspre (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO ar_tspre VALUES ('1969-12-31 23:59:59.999999', '1969-12-31 23:59:59.999999+00'),
+                                      ('4714-11-24 00:00:00 BC', '4714-11-24 00:00:00+00 BC');" >/dev/null
+pre_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tspre', '$TSPRE')")"
+pre_read="$(python3 - "$TSPRE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    ts, tz = (t.column(n).cast(pa.int64()).to_pylist() for n in ("ts", "tz"))
+    print(" ".join("%s,%s" % p for p in zip(ts, tz)))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "a timestamp before 1970 still exports: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz (#2085 review)" \
+	"$pre_rows|$pre_read" "2|-1,-1 -210866803200000000,-210866803200000000"
+# The check runs on every timestamp the writer appends, including an array element and a
+# composite field. Arrow calls those "item" and the field name; the error must name the
+# table column the reader can find, not them.
+psql_run "CREATE TABLE ar_tsarr (tsarr timestamp[]) USING pgcolumnar;
+          INSERT INTO ar_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[]);
+          CREATE TYPE ar_tsfield AS (t timestamp);
+          CREATE TABLE ar_tscomp (tscomp ar_tsfield) USING pgcolumnar;
+          INSERT INTO ar_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'));" >/dev/null
+refusal "a timestamp[] element past Arrow's range is refused, and the error names the table column, not the Arrow element (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tsarr', '$PGC_WORKDIR/tsarr.arrows')" \
+	'columnar: a value in column "tsarr" is out of range for an Arrow timestamp' 22008
+refusal "a timestamp field of a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085)" \
+	"SELECT pgcolumnar.export_arrow('ar_tscomp', '$PGC_WORKDIR/tscomp.arrows')" \
+	'columnar: a value in column "tscomp" is out of range for an Arrow timestamp' 22008
+# Two levels deep, the parent of the timestamp is itself a child, so its own name
+# ("item" or a field name) differs from the table column. Each child must pass the table
+# column down, not its own name.
+psql_run "CREATE TYPE ar_tsrow AS (a int, ts timestamp);
+          CREATE TABLE ar_aoc (aoc ar_tsrow[]) USING pgcolumnar;
+          INSERT INTO ar_aoc VALUES (ARRAY[ROW(1, '294247-01-10 04:00:54.775808')::ar_tsrow]);
+          CREATE TYPE ar_tsarrrow AS (a int, tsa timestamp[]);
+          CREATE TABLE ar_coa (coa ar_tsarrrow) USING pgcolumnar;
+          INSERT INTO ar_coa VALUES (ROW(1, ARRAY['294247-01-10 04:00:54.775808'::timestamp]));" >/dev/null
+refusal "a timestamp field of an array-of-composites column past Arrow's range is refused, and the error names the table column, not the Arrow element or the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_aoc', '$PGC_WORKDIR/aoc.arrows')" \
+	'columnar: a value in column "aoc" is out of range for an Arrow timestamp' 22008
+refusal "a timestamp[] element inside a composite column past Arrow's range is refused, and the error names the table column, not the field (#2085 review)" \
+	"SELECT pgcolumnar.export_arrow('ar_coa', '$PGC_WORKDIR/coa.arrows')" \
+	'columnar: a value in column "coa" is out of range for an Arrow timestamp' 22008
+# The range check must not refuse an in-range timestamp inside an array or a composite.
+# The first and last values here sit next to the two ends of the check: -1 and the
+# largest int64.
+TSNEST="$PGC_WORKDIR/tsnest.arrows"
+psql_run "CREATE TYPE ar_tspair AS (lo timestamp, hi timestamptz);
+          CREATE TABLE ar_tsnest (tsa timestamp[], tza timestamptz[], tsc ar_tspair) USING pgcolumnar;
+          INSERT INTO ar_tsnest VALUES (
+            ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[],
+            ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[],
+            ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::ar_tspair);" >/dev/null
+nest_rows="$(q "SELECT pgcolumnar.export_arrow('ar_tsnest', '$TSNEST')")"
+nest_read="$(python3 - "$TSNEST" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    print(" ".join(",".join(str(v) for v in vals) for vals in lists + [pair]))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "an in-range timestamp inside an array or a composite still exports: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2085 review)" \
+	"$nest_rows|$nest_read" "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807"
+# The refusal's DETAIL tells the reader where Arrow's range ends.
+detail_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "SELECT pgcolumnar.export_arrow('ar_tsover', '$TSOVER')" 2>&1)"
+case "$detail_out" in
+*"DETAIL:  Arrow stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807."*) detail_got="present" ;;
+*) detail_got="missing: $(printf '%s' "$detail_out" | tr '\n' ' ')" ;;
+esac
+check "and the out-of-range timestamp error's DETAIL gives Arrow's last timestamp, 294247-01-10 04:00:54.775807 (#2085 review)" \
+	"$detail_got" "present"
+
+# ---- a table with dropped columns exports and imports its live columns (#2076) -----
+# A dropped column stays in the tuple descriptor, marked attisdropped. export_arrow
+# and import_arrow refused any such table ("does not support dropped columns"). The
+# table below loses a middle column and its last column, with rows written before and
+# after the drops. The stream must hold the live columns a, c, d, in order, and every
+# row. import_arrow must load a stream of a, c, d into a table that has a dropped
+# column. That stream comes from a copy of the table with no dropped column, so the
+# import is tested on its own, whatever export_arrow does. The dropped column in
+# ar_drop_in is text: import_arrow must set every slot to null before it fills the live
+# ones, or the dropped slot keeps a stale pointer and the server crashes (#2143 review).
+# qerr SQL -> the value, or the ERROR line when the statement fails
+qerr() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>&1)" || { grep -m1 '^ERROR' <<<"$out" || echo "failed: $out"; return; }
+	echo "$out"
+}
+# ar_live PATH -> "columns|rows|md5 of a:c:d ..." read with pyarrow, in the form
+# drop_digest reads a table
+ar_live() {
+	python3 - "$1" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow as pa, pyarrow.ipc as ipc
+    t = ipc.open_stream(pa.OSFile(sys.argv[1], 'rb')).read_all()
+    d = t.to_pydict()
+    rows = sorted(zip(d["a"], d["c"], d["d"]))
+    s = " ".join("%d:%s:%d" % (a, "N" if c is None else c, dd) for a, c, dd in rows)
+    print("%s|%d|%s" % (",".join(t.schema.names), t.num_rows, hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+drop_digest() { echo "SELECT 'a,c,d|' || count(*) || '|' || md5(string_agg(a || ':' || coalesce(c, 'N') || ':' || d, ' ' ORDER BY a)) FROM $1"; }
+psql_run "CREATE TABLE ar_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar;
+          INSERT INTO ar_drop SELECT g, -g, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g END, g * 1000, 'x'
+            FROM generate_series(1, 150) g;
+          ALTER TABLE ar_drop DROP COLUMN junk;
+          ALTER TABLE ar_drop DROP COLUMN tail;
+          INSERT INTO ar_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g;
+          CREATE TABLE ar_nodrop USING pgcolumnar AS SELECT a, c, d FROM ar_drop;
+          CREATE TABLE ar_drop_in (a int, junk text, c text, d int8) USING pgcolumnar;
+          ALTER TABLE ar_drop_in DROP COLUMN junk;"
+ar_drop_want="$(q "$(drop_digest ar_drop)")"
+check "export_arrow writes a table with a dropped middle and last column as its live columns a,c,d, every row" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_drop', '$PGC_WORKDIR/drop.arrow')")|$(ar_live "$PGC_WORKDIR/drop.arrow")" \
+	"200|$ar_drop_want"
+q "SELECT pgcolumnar.export_arrow('ar_nodrop', '$PGC_WORKDIR/nodrop.arrow')" >/dev/null
+check "import_arrow loads a,c,d into a table with a dropped column, every row" \
+	"$(qerr "SELECT pgcolumnar.import_arrow('ar_drop_in', '$PGC_WORKDIR/nodrop.arrow')")|$(qerr "$(drop_digest ar_drop_in)")" \
+	"200|$ar_drop_want"
+
+# export_arrow writes at most 16 columns. The limit counts live columns, so a table with
+# 16 live columns and 1 dropped column exports, and a table with 17 live columns is
+# refused (#2143 review).
+wide_cols() { local n=$1 i out="c1 int"; for ((i = 2; i <= n; i++)); do out+=", c$i int"; done; echo "$out"; }
+wide_vals() { local n=$1 i out="g"; for ((i = 2; i <= n; i++)); do out+=", g + $i"; done; echo "$out"; }
+psql_run "CREATE TABLE ar_w16 (junk text, $(wide_cols 16)) USING pgcolumnar;
+          ALTER TABLE ar_w16 DROP COLUMN junk;
+          INSERT INTO ar_w16 SELECT $(wide_vals 16) FROM generate_series(1, 5) g;
+          CREATE TABLE ar_w17 ($(wide_cols 17)) USING pgcolumnar;
+          INSERT INTO ar_w17 SELECT $(wide_vals 17) FROM generate_series(1, 5) g;"
+check "export_arrow writes a table with 16 live columns and 1 dropped column, every row" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_w16', '$PGC_WORKDIR/w16.arrow')")" "5"
+# qstate SQL -> the value, or the ERROR line with its SQLSTATE when the statement
+# fails, so a refusal is checked by its code as well as its message
+qstate() {
+	local out
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -v VERBOSITY=verbose -c "$1" 2>&1)" || { grep -m1 '^ERROR' <<<"$out" || echo "failed: $out"; return; }
+	echo "$out"
+}
+check "export_arrow refuses a table with 17 live columns" \
+	"$(qstate "SELECT pgcolumnar.export_arrow('ar_w17', '$PGC_WORKDIR/w17.arrow')")" \
+	"ERROR:  0A000: columnar.export_arrow supports at most 16 columns"
+
+# A dropped column can be first or last, not only in the middle (#2143 review, second
+# round). import_arrow must set the slot of a dropped column to null wherever it sits,
+# and its map of live attributes must leave it out. Each table below takes the stream
+# of a, c, d; its dropped column is text, last in ar_drop_last and first in
+# ar_drop_first.
+psql_run "CREATE TABLE ar_drop_last (a int, c text, d int8, junk text) USING pgcolumnar;
+          ALTER TABLE ar_drop_last DROP COLUMN junk;
+          CREATE TABLE ar_drop_first (junk text, a int, c text, d int8) USING pgcolumnar;
+          ALTER TABLE ar_drop_first DROP COLUMN junk;"
+check "import_arrow loads a,c,d into a table whose last column is dropped, every row" \
+	"$(qerr "SELECT pgcolumnar.import_arrow('ar_drop_last', '$PGC_WORKDIR/nodrop.arrow')")|$(qerr "$(drop_digest ar_drop_last)")" \
+	"200|$ar_drop_want"
+check "import_arrow loads a,c,d into a table whose first column is dropped, every row" \
+	"$(qerr "SELECT pgcolumnar.import_arrow('ar_drop_first', '$PGC_WORKDIR/nodrop.arrow')")|$(qerr "$(drop_digest ar_drop_first)")" \
+	"200|$ar_drop_want"
+
+# The reader fills one slot per attribute, dropped ones included, so export_arrow sizes
+# its row buffer by every attribute, not by the live ones (#2143 review, second round).
+# ar_wdrop keeps 1 live column beside 60 dropped text columns. The first 2000 rows were
+# written with text in every dropped column, the next 2000 after the drop. The check
+# reads the values back, not only the row count.
+xcols() { local i out=""; for ((i = 1; i <= 60; i++)); do out+=", x$i text"; done; echo "$out"; }
+xvals() { local i out=""; for ((i = 1; i <= 60; i++)); do out+=", 'x$i-' || g"; done; echo "$out"; }
+xdrops() { local i out="DROP COLUMN x1"; for ((i = 2; i <= 60; i++)); do out+=", DROP COLUMN x$i"; done; echo "$out"; }
+# one_live READER PATH -> "columns|rows|nulls|md5 of a, ascending" read with pyarrow, in
+# the form ONE_LIVE reads the table
+one_live() {
+	python3 - "$1" "$2" <<'PY'
+import sys, hashlib
+try:
+    import pyarrow as pa
+    if sys.argv[1] == "arrow":
+        import pyarrow.ipc as ipc
+        t = ipc.open_stream(pa.OSFile(sys.argv[2], 'rb')).read_all()
+    else:
+        import pyarrow.parquet as pq
+        t = pq.read_table(sys.argv[2])
+    a = t.column("a").to_pylist()
+    s = " ".join(str(v) for v in sorted(v for v in a if v is not None))
+    print("%s|%d|%d|%s" % (",".join(t.schema.names), t.num_rows, sum(v is None for v in a), hashlib.md5(s.encode()).hexdigest()))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+}
+one_live_sql() { echo "SELECT 'a|' || count(*) || '|' || count(*) FILTER (WHERE a IS NULL) || '|' || md5(string_agg(a::text, ' ' ORDER BY a)) FROM $1"; }
+psql_run "CREATE TABLE ar_wdrop (a int$(xcols)) USING pgcolumnar;
+          INSERT INTO ar_wdrop SELECT g$(xvals) FROM generate_series(1, 2000) g;
+          ALTER TABLE ar_wdrop $(xdrops);
+          INSERT INTO ar_wdrop SELECT g FROM generate_series(2001, 4000) g;"
+check "export_arrow writes the one live column of a table with 60 dropped text columns, every value" \
+	"$(qerr "SELECT pgcolumnar.export_arrow('ar_wdrop', '$PGC_WORKDIR/wdrop.arrow')")|$(one_live arrow "$PGC_WORKDIR/wdrop.arrow")" \
+	"4000|$(q "$(one_live_sql ar_wdrop)")"
+
+# The byte cut sizes each row from its live values (#1811, #2143 review). In ar_bdrop a
+# dropped column sits before the wide text column, so a row sized from the slots by
+# position, not through the map of live attributes, reads the dropped slot in place of
+# the text and comes out 10000 bytes short. As in ar_bytes, 40 rows of 10010 bytes
+# under a 65536-byte cap make batches of 6,6,6,6,6,6,4.
+psql_run "CREATE TABLE ar_bdrop (id int, junk int, s text) USING pgcolumnar;
+          ALTER TABLE ar_bdrop DROP COLUMN junk;
+          INSERT INTO ar_bdrop SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g;"
+check "a record batch is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make batches of 6,6,6,6,6,6,4" \
+	"$(ar_cut ar_bdrop "$PGC_WORKDIR/bdrop.arrow" 65536)" "40|40|6,6,6,6,6,6,4"
 
 # Over 1 GiB in one batch at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
