@@ -798,6 +798,10 @@ true until the next version shipped.
   refusal now names the target type with its precision and scale, for example
   `numeric(5,2)`, not `numeric`. A table-driven check imports one file of each
   of 19 Arrow types into each of 19 target types and pins every pairing.
+  Two more checks pin the same refusal for a field inside a struct: a struct
+  field of float64, or of decimal128(10,0), is refused for a composite field of
+  type `bigint`. With the type check skipped for struct fields only, the two
+  imported `(4609434218613702656)` and `(7),(0)` and every other check passed.
   docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
 - `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
   `virtual` (#2091). The setting was a free-form string, and the object-store

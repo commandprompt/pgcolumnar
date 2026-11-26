@@ -2156,40 +2156,43 @@ guard_tests 895
 # test_iceberg_name_mapping.py (#2088 review on 6d801134: equality deletes that read more than one column of
 # an id-less file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5505 tests collected after the merge of main 26bb5236 (5497 before it).
-# cluster_tests 5580 -> 5585 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+# cluster_tests 5581 -> 5586 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5585 -> 5588 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5586 -> 5589 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5588 -> 5592 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5589 -> 5593 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5592 -> 5594 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5593 -> 5595 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-# cluster_tests 5594 -> 5597 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# cluster_tests 5595 -> 5598 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-# cluster_tests 5597 -> 5603 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# cluster_tests 5598 -> 5604 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
 # test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
 # domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
 # pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
-# cluster_tests 5603 -> 5610 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5604 -> 5611 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
 # (under a hash join, a key frozen at the first run counts what heap counts, keeps the runtime range after it
 # as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
 # alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
-# cluster_tests 5610 -> 5618 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5611 -> 5619 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
 # (a heap copy answers a hash-join rescan, the columnar scan with a key frozen at the first run counts the same
 # in each loop, with the backend alive; a NULL from a stable function builds no key on an int column and counts
 # 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
 # an expression of the column, is not evaluated), by collection over the cluster files (the complement of
-# NO_CLUSTER, as ci.yml derives it): 5618 tests collected.
-cluster_tests 5618
+# NO_CLUSTER, as ci.yml derives it): 5619 tests collected after the merge of main 6f79946f (5618 before it).
+cluster_tests 5619

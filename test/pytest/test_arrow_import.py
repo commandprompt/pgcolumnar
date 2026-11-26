@@ -392,6 +392,10 @@ def _temporal_fixtures(pa, out):
         "tu_utf8": pa.array(["10"]), "tu_bin": pa.array([b"ab"], pa.binary()),
         "tu_bool": pa.array([True], pa.bool_()),
         "tu_lf64": pa.array([[1.5]], pa.list_(pa.float64())),
+        # a struct whose one field is float64, and one whose field is a decimal
+        "tu_sf64": pa.array([{"a": 1.5}, {"a": -2.0}], pa.struct([("a", pa.float64())])),
+        "tu_sdec": pa.array([{"a": decimal.Decimal(7)}, {"a": decimal.Decimal(-3)}],
+                            pa.struct([("a", pa.decimal128(10, 0))])),
         # two rows each, so 64-bit offsets read as 32-bit store a wrong value
         "tu_lstr": pa.array(["a", "b"], pa.large_string()),
         "tu_lbin": pa.array([b"a", b"b"], pa.large_binary()),
@@ -595,6 +599,30 @@ def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, 
 
     expect.text(values("tu_dur", "bigint"), "5,6",
                 "control: a duration file still imports into bigint as its count (#2082)")
+
+
+def test_a_struct_field_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, expect):
+    """#2082: a struct field is checked by its own type, as a top-level column
+    is. No check pinned that: with a two-token change that skips the type check
+    for struct fields only, every other check stayed green, and struct<a: float64>
+    1.5, -2.0 into a composite (a bigint) stored (4609434218613702656) and
+    (-4611686018427387904), and struct<a: decimal128(10,0)> 7, -3 stored (7), (0)."""
+    pa = expect.require_module(
+        "pyarrow", name="a struct field of float64 is refused for a composite (a bigint) field (#2082)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _temporal_fixtures(pa, server_dir)
+    _run(conn, "DROP TYPE IF EXISTS tu_sb CASCADE", "CREATE TYPE tu_sb AS (a bigint)")
+
+    def state(fixture):
+        _run(conn, "DROP TABLE IF EXISTS sf_t", "CREATE TABLE sf_t (v tu_sb) USING pgcolumnar")
+        return _state(conn, f"SELECT pgcolumnar.import_arrow('sf_t', '{server_dir / (fixture + '.arrows')}')")
+
+    expect.text(state("tu_sf64"), "42804",
+                "a struct field of float64 is refused for a composite (a bigint) field (#2082)")
+    expect.text(state("tu_sdec"), "42804",
+                "a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)")
 
 
 def test_every_arrow_type_meets_its_documented_targets(pgc_conn, server_dir, expect):
