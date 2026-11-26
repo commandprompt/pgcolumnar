@@ -2009,28 +2009,35 @@ guard_tests 895
 # test_native_writer.py (with 1000 row numbers left, 1001 are refused with 54000 and 1000 fit, ending at
 # (4294967294,291)), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5386 tests collected.
-# cluster_tests 5487 -> 5491 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5487 -> 5491 for #2091's four tests in test_objstore_addressing.py (the addressing setting
+# refuses 'virtaul', 'VIRTUAL ' and the empty string at SET, three parameters, and still takes path, virtual
+# and VIRTUAL). They were 5376 -> 5380 on the branch; the merge of main f29bf592 shifted them.
+# cluster_tests 5491 -> 5495 for #2091's four tests in test_objstore_addressing.py from the review of #2154
+# (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
+# set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
+# over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
+# cluster_tests 5495 -> 5499 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5491 -> 5495 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5499 -> 5503 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5495 -> 5501 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5503 -> 5509 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5501 -> 5502 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5509 -> 5510 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-# cluster_tests 5502 -> 5506 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# cluster_tests 5510 -> 5514 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-# cluster_tests 5506 -> 5508 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# cluster_tests 5514 -> 5516 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
 # #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
 # struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
-cluster_tests 5508
+cluster_tests 5516
