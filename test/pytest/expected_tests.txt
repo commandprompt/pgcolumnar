@@ -2190,24 +2190,46 @@ guard_tests 897
 # review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
 # and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
 # of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
-# cluster_tests 5597 -> 5603 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# cluster_tests 5597 -> 5603 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
+# loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
+# cluster_tests 5603 -> 5605 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
+# 98 on main, 106 on this branch.
+# cluster_tests 5605 -> 5607 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
+# collected for that file: 108.
+# cluster_tests 5607 -> 5610 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
+# one of 4 loaders, which a row trigger's sequence shows; collected for that file: 111.
+# cluster_tests 5610 -> 5613 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
+# default worker count; collected for that file: 114.
+# cluster_tests 5613 -> 5615 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# exclusion constraint and an expression unique index are refused with 2 workers; collected for that file: 116.
+# cluster_tests 5615 -> 5620 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
+# constraint and a NULLS NOT DISTINCT unique index with an INCLUDE column are refused with 2 workers; a caller
+# without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
+# its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
+# main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
+# cluster_tests 5620 -> 5626 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
 # leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
 # `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5603 -> 5608 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# cluster_tests 5626 -> 5631 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
 # the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
 # FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
 # file, and no backend killed by a signal), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
-# cluster_tests 5608 -> 5614 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# cluster_tests 5631 -> 5637 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
 # export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
 # after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
-# cluster_tests 5614 -> 5617 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# cluster_tests 5637 -> 5640 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
 # export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
 # leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5507 tests collected.
-# cluster_tests 5617 -> 5621 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
+# cluster_tests 5640 -> 5644 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
 # exports in one session each return their row count and leave no temp file; a FATAL export after a failed
 # unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
-cluster_tests 5621
+cluster_tests 5644
