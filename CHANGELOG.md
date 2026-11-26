@@ -650,6 +650,31 @@ true until the next version shipped.
   object-storage `read_parquet` example, on a local file.
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.
+- `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
+  single columnar table with a unique index or primary key (#2080). With 2 or
+  more workers the load either waited until cancelled or failed with 40P01
+  `deadlock detected`, even when every key in the file was distinct. Each worker
+  keeps its unique-key locks in a prepared transaction until every worker has
+  finished, so the workers waited on each other. The function now refuses that
+  load up front with SQLSTATE 0A000 and the hint
+  `Load it with workers => 1, or with COPY.` An exclusion constraint is refused
+  the same way. Each worker checks again once it holds its lock on the table, so
+  a unique index created after the first check, but before any worker has opened
+  the table, is refused too. One worker still loads such a table, and a
+  partitioned target with a primary key still loads with more than one worker.
+  docs/limitations.md and docs/sql-reference.md.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`. Each refused table,
+  including the exclusion-constraint table and the table whose unique index
+  appeared late, is checked to stay empty. The tests also cover a deferrable
+  unique index, a partial unique index, a unique index after a non-unique one,
+  and a late unique index with 4 workers, where no loader may insert a row.
+  They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
+  default. They also cover a deferrable exclusion constraint, a gist exclusion
+  constraint, a unique index on an expression, a unique index on two columns,
+  and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
+  INSERT still gets 42501 first, a URL still gets the refusal for remote files
+  first, and `dedup => true` still gets the refusal and its hint.
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
