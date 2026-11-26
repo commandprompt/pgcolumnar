@@ -22,7 +22,12 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
 D  statement_timeout cancels a transfer the server wedged mid-body, within 10 s.
 E  only an s3:// key is a pattern (#1785): a query string on an http URL reaches the
    server, and a bracketed IPv6 host is refused by name.
-F  interim 1xx answers (#2090): a server that sends 100 Continue or 103 Early Hints
+F  a read error caught in a subtransaction frees its handle when the subtransaction
+   aborts (#2089): no "leaked to commit" WARNING, and a loop of 1200 caught 404s does
+   not run out of external FDs. The same for a caught REST request and a caught
+   s3:// export (#2158 review). A scan's own handle, also inside an outer
+   EXCEPTION block, and a cursor's survive a subtransaction abort inside them.
+G  interim 1xx answers (#2090): a server that sends 100 Continue or 103 Early Hints
    ahead of each final answer is read as if it sent none, on a read's HEAD and ranged
    GETs, on an s3 glob's ListObjectsV2, and on the Iceberg REST catalog's requests.
    The stdlib server cannot send them, so this file runs its own raw-socket server
@@ -251,6 +256,33 @@ def _detail(dsn, sql):
     return f"no error: {' '.join(' '.join(str(v) for v in row) for row in rows)[:200]}"
 
 
+def _leaks(dsn, sqls):
+    """The shell's leaks_of: run `sqls` in turn on one connection, letting a
+    statement fail, -> "rows=<last row> leaked=<n>". The last row any statement
+    returned, or the first error's SQLSTATE and message when none returned a row
+    (the shell shows its ERROR line there), and how many
+    "leaked to commit" WARNINGs the server sent (#2089)."""
+    _await_server(dsn)
+    notes, last, first_err = [], None, None
+    try:
+        with _connect(dsn) as conn:
+            conn.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+            for sql in sqls:
+                try:
+                    cur = conn.execute(sql)
+                except psycopg.Error as exc:
+                    if first_err is None:
+                        first_err = f"{exc.sqlstate}: {exc.diag.message_primary or _message(exc)}"
+                    continue
+                if cur.description is not None:
+                    for row in cur.fetchall():
+                        last = " ".join(str(v) for v in row)
+    except psycopg.Error as exc:
+        return query_error(_message(exc))
+    shown = last if last is not None else (first_err or "")
+    return f"rows={shown} leaked={sum('leaked to commit' in n for n in notes)}"
+
+
 def _requests(log):
     """-> the request log's lines split into fields, or a query_error()."""
     try:
@@ -447,6 +479,61 @@ def ohr(pgc_cluster):
             c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_two() RETURNS text LANGUAGE plpgsql AS $f$ "
                       f"DECLARE a text; b text; BEGIN {sel2 % 'a'} {sel2 % 'b'} "
                       "RETURN a || ' | ' || b; END $f$")
+            # pgc_try404() and pgc_catch404(n), as the shell's (#2089): a 404
+            # read caught in an EXCEPTION block, and a loop of n of them
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_try404() RETURNS int LANGUAGE plpgsql AS $f$ "
+                      f"BEGIN PERFORM count(*) FROM {SCHEMA}.f404; RETURN 1; "
+                      "EXCEPTION WHEN undefined_file THEN RETURN 0; END $f$")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_catch404(n int) RETURNS int LANGUAGE plpgsql AS $f$ "
+                      "DECLARE caught int := 0; BEGIN FOR i IN 1..n LOOP "
+                      f"caught := caught + 1 - {SCHEMA}.pgc_try404(); END LOOP; "
+                      "RETURN caught; END $f$")
+            # pgc_cursor_sum(), as the shell's: a cursor opened before an
+            # EXCEPTION block, first fetched inside it, then read to the end
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_cursor_sum() RETURNS int8 LANGUAGE plpgsql AS $f$ "
+                      "DECLARE c refcursor; x int8; s int8 := 0; BEGIN "
+                      f"OPEN c FOR SELECT c0 FROM {SCHEMA}.fhttp; "
+                      "BEGIN FETCH c INTO x; s := s + x; PERFORM 1 / 0; "
+                      "EXCEPTION WHEN division_by_zero THEN NULL; END; "
+                      "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
+                      "CLOSE c; RETURN s; END $f$")
+            # pgc_catch_state(stmt, state, n), as the shell's (#2158 review):
+            # run stmt n times, each in its own EXCEPTION block, and count the
+            # errors whose SQLSTATE is state
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_catch_state(stmt text, state text, n int) "
+                      "RETURNS int LANGUAGE plpgsql AS $f$ "
+                      "DECLARE caught int := 0; BEGIN FOR i IN 1..n LOOP "
+                      "BEGIN EXECUTE stmt; EXCEPTION WHEN OTHERS THEN "
+                      "IF SQLSTATE = state THEN caught := caught + 1; END IF; END; "
+                      "END LOOP; RETURN caught; END $f$")
+            # pgc_nested_scan(), as the shell's: the scan of fhttp inside an
+            # outer EXCEPTION block, so its handle belongs to the parent of each
+            # subtransaction pgc_try404() aborts. It returns only the SQLSTATE
+            # it catches: a read of freed memory puts arbitrary bytes into
+            # SQLERRM, which psycopg cannot decode (#2158 second review)
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS $f$ "
+                      "DECLARE r text; BEGIN BEGIN "
+                      f"SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
+                      f"THEN 1 - {SCHEMA}.pgc_try404() ELSE 0 END) INTO r FROM {SCHEMA}.fhttp; "
+                      "EXCEPTION WHEN OTHERS THEN r := 'outer caught ' || SQLSTATE; "
+                      "END; RETURN r; END $f$")
+            # pgc_fetch_sum(c, n) and pgc_cursor_commit_sum(), as the shell's
+            # (#2158 second review): sum up to n rows of cursor c (all when n is
+            # NULL); and a cursor read on after an inner block commits and its
+            # outer block aborts
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_fetch_sum(c refcursor, n int) RETURNS int8 "
+                      "LANGUAGE plpgsql AS $f$ DECLARE x int8; s int8 := 0; i int := 0; BEGIN "
+                      "LOOP EXIT WHEN n IS NOT NULL AND i >= n; FETCH c INTO x; EXIT WHEN NOT FOUND; "
+                      "s := s + x; i := i + 1; END LOOP; RETURN s; END $f$")
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_cursor_commit_sum() RETURNS int8 LANGUAGE plpgsql AS $f$ "
+                      "DECLARE c refcursor; x int8; s int8 := 0; BEGIN "
+                      f"OPEN c FOR SELECT c0 FROM {SCHEMA}.fhttp; FETCH c INTO x; s := x; "
+                      "BEGIN BEGIN NULL; EXCEPTION WHEN OTHERS THEN NULL; END; PERFORM 1 / 0; "
+                      "EXCEPTION WHEN division_by_zero THEN NULL; END; "
+                      "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
+                      "CLOSE c; RETURN s; END $f$")
+            c.execute(f"CREATE TABLE {SCHEMA}.pgc_pe (id int8) USING pgcolumnar")
+            c.execute(f"INSERT INTO {SCHEMA}.pgc_pe SELECT generate_series(1, 10)")
         r["crashes0"] = _crashes(plog)
 
         r["A full"] = (_set_hash(dsn, "SELECT * FROM fhttp"), _set_hash(dsn, "SELECT * FROM flocal"))
@@ -612,6 +699,29 @@ def ohr(pgc_cluster):
         r["E ipv6"] = _refusal(dsn, f"SELECT count(*) FROM pgcolumnar.read_parquet("
                                     f"'http://[::1]:{port}/fixture.parquet') AS t({COLDEFS})",
                                "IPv6 literal hosts are not supported")
+
+        r["F fn"] = _leaks(dsn, ["SELECT pgc_catch404(3)"])
+        r["F savepoint"] = _leaks(dsn, ["BEGIN"]
+                                  + ["SAVEPOINT s", "SELECT count(*) FROM f404", "ROLLBACK TO s"] * 3
+                                  + ["SELECT 'done'", "COMMIT"])
+        r["F loop"] = _leaks(dsn, ["SELECT pgc_catch404(1200)"])
+        r["F local"] = _value(dsn, "SELECT sum(c0) FROM flocal")
+        r["F scan"] = _leaks(dsn, [f"SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % {ROWS_PER_GROUP} = 0 "
+                                   "THEN 1 - pgc_try404() ELSE 0 END) FROM fhttp"])
+        r["F cursor"] = _leaks(dsn, ["SELECT pgc_cursor_sum()"])
+        r["F nested scan"] = _leaks(dsn, ["SELECT pgc_nested_scan()"])
+        first = "SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true)"
+        rest = "SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL)"
+        declare = ["BEGIN", "DECLARE c CURSOR FOR SELECT c0 FROM fhttp", first]
+        r["F commit fn"] = _leaks(dsn, ["SELECT pgc_cursor_commit_sum()"])
+        r["F release rollback"] = _leaks(dsn, declare + ["SAVEPOINT s1", "SAVEPOINT s2", "RELEASE s2",
+                                                         "ROLLBACK TO s1", "SELECT count(*) FROM (SELECT 1) z",
+                                                         rest, "COMMIT"])
+        r["F release"] = _leaks(dsn, declare + ["SAVEPOINT s", "RELEASE s", rest, "COMMIT"])
+        r["F rest"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT * FROM pgcolumnar.iceberg_rest_namespaces("
+                                   f"''http://127.0.0.1:{dead}/v1'')', '08006', 3)"])
+        r["F export"] = _leaks(dsn, ["SELECT pgc_catch_state('SELECT pgcolumnar.parallel_export_parquet("
+                                     f"''{SCHEMA}.pgc_pe''::regclass, ''s3://bkt/pre/'', 2)', '28000', 3)"])
 
         r["up"] = _await_server(dsn)
         r["crashes1"] = _crashes(plog)
@@ -1111,6 +1221,108 @@ def test_an_ipv6_literal_http_host_is_refused(ohr, expect):
                 "E: an IPv6 literal http host is refused as IPv6, not as a listing")
 
 
+def test_404s_caught_in_exception_blocks_leak_no_handle_to_commit(ohr, expect):
+    """#2089: a read that raises in a subtransaction frees its handle when the
+    subtransaction aborts, so the commit reports no handle leaked."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F fn"], "rows=3 leaked=0",
+                "F: three 404s caught in a function's EXCEPTION blocks leak no handle to commit")
+
+
+def test_404s_rolled_back_to_a_savepoint_leak_no_handle_to_commit(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F savepoint"], "rows=done leaked=0",
+                "F: three 404s each rolled back to a SAVEPOINT leak no handle to commit")
+
+
+def test_a_loop_that_catches_1200_404s_finishes(ohr, expect):
+    """More caught errors than the backend has external FDs: each leaked handle
+    kept one, so the loop used to run out of them."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F loop"], "rows=1200 leaked=0", "F: a loop that catches 1200 404s finishes")
+
+
+def test_a_subtransaction_abort_inside_a_scan_leaves_the_scans_handle_open(ohr, expect):
+    """Control: a subtransaction abort frees only that subtransaction's handles.
+    The streaming scan of fhttp (#620) reads its next row group through its own
+    handle after the function aborts a subtransaction."""
+    if _declined(ohr, expect):
+        return
+    scan = ohr["F scan"]
+    got = scan.split(" leaked=")[0] if isinstance(scan, str) else scan
+    expect.text(got, f"rows={ohr['F local']} {G}",
+                "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)")
+
+
+def test_a_cursor_first_fetched_in_an_aborted_subtransaction_reads_on(ohr, expect):
+    """Control: a cursor opened before a subtransaction holds its handle through
+    the cursor, so the subtransaction's abort leaves it open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F cursor"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)")
+
+
+def test_a_scan_inside_an_outer_exception_block_reads_on_after_each_inner_abort(ohr, expect):
+    """Control (#2158 review): the scan's handle belongs to the outer block's
+    subtransaction, the parent of each one that aborts. Freeing the parent's
+    handles too would make the next row group read freed memory."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F nested scan"], f"rows={ohr['F local']} aborts={G} leaked=0",
+                "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)")
+
+
+def test_a_cursor_reads_on_after_an_inner_commit_and_an_outer_abort(ohr, expect):
+    """Control (#2158 second review): a subtransaction commit hands only its
+    own handles to its parent, so the cursor's handle is still open when the
+    enclosing block aborts."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F commit fn"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after an inner block commits and its outer block aborts (http == local)")
+
+
+def test_a_cursor_reads_on_after_release_and_rollback_to_an_outer_savepoint(ohr, expect):
+    """Control (#2158 second review): RELEASE of an inner SAVEPOINT, then
+    ROLLBACK TO the outer one, leaves the cursor's handle open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F release rollback"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after RELEASE of an inner SAVEPOINT and ROLLBACK TO the outer one "
+                "(http == local)")
+
+
+def test_a_cursor_reads_on_after_savepoint_and_release(ohr, expect):
+    """Control (#2158 second review): a commit below the top level frees no
+    handle, so a plain SAVEPOINT and RELEASE leave the cursor's handle open."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F release"], f"rows={ohr['F local']} leaked=0",
+                "F: a cursor reads on after SAVEPOINT and RELEASE (http == local)")
+
+
+def test_caught_rest_requests_to_a_closed_port_leak_no_handle_to_commit(ohr, expect):
+    """#2158 review: a handle opened by objstore_http_request belongs to its
+    subtransaction too."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F rest"], "rows=3 leaked=0",
+                "F: three caught REST requests to a closed port (08006) leak no handle to commit")
+
+
+def test_caught_s3_exports_with_no_endpoint_leak_no_handle_to_commit(ohr, expect):
+    """#2158 review: a handle opened by os_write_handle_as belongs to its
+    subtransaction too."""
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["F export"], "rows=3 leaked=0",
+                "F: three caught s3:// exports with no endpoint (28000) leak no handle to commit")
+
+
 def test_the_server_survives(ohr, expect):
     if _declined(ohr, expect):
         return
@@ -1124,7 +1336,7 @@ def test_the_server_survives(ohr, expect):
     expect.text(got, "1", "survival: the server answers and no backend crashed")
 
 
-# ---- F: interim 1xx answers before the final one (#2090) -------------------------
+# ---- G: interim 1xx answers before the final one (#2090) -------------------------
 # RFC 9110 section 15.2: a client must accept one or more 1xx answers before the
 # final answer, even unasked. The read path took the first 1xx as the final answer.
 # The first path segment picks what goes ahead of every answer: inone nothing (the
@@ -1357,91 +1569,91 @@ def test_a_read_from_the_interim_answer_server_that_sends_none_reads_every_row(i
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "inone")], INTERIM_ROWS,
-                "F: control: a read from the interim-answer server that sends none reads every row")
+                "G: control: a read from the interim-answer server that sends none reads every row")
 
 
 def test_a_read_answered_100_continue_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i100")], INTERIM_ROWS,
-                "F: a read whose HEAD and GETs are each answered 100 Continue first reads every row")
+                "G: a read whose HEAD and GETs are each answered 100 Continue first reads every row")
 
 
 def test_a_read_answered_103_early_hints_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i103")], INTERIM_ROWS,
-                "F: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row")
+                "G: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row")
 
 
 def test_a_read_answered_100_and_then_103_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "iboth")], INTERIM_ROWS,
-                "F: a read answered 100 Continue and then 103 Early Hints first reads every row")
+                "G: a read answered 100 Continue and then 103 Early Hints first reads every row")
 
 
 def test_an_s3_glob_from_the_server_that_sends_no_interim_answer_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("glob", "inone")], INTERIM_ROWS,
-                "F: control: an s3 glob listed and read from the server that sends no interim answer reads every row")
+                "G: control: an s3 glob listed and read from the server that sends no interim answer reads every row")
 
 
 def test_an_s3_glob_answered_103_early_hints_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("glob", "i103")], INTERIM_ROWS,
-                "F: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row")
+                "G: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row")
 
 
 def test_an_s3_glob_answered_100_and_103_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("glob", "iboth")], INTERIM_ROWS,
-                "F: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row")
+                "G: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row")
 
 
 def test_the_rest_catalog_that_sends_no_interim_answer_lists_its_namespace(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("rest", "inone")], "no error: interim_ns",
-                "F: control: the REST catalog that sends no interim answer lists its namespace")
+                "G: control: the REST catalog that sends no interim answer lists its namespace")
 
 
 def test_a_rest_catalog_answering_after_103_early_hints_lists_its_namespace(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("rest", "i103")], "no error: interim_ns",
-                "F: a REST catalog whose answers each follow 103 Early Hints lists its namespace")
+                "G: a REST catalog whose answers each follow 103 Early Hints lists its namespace")
 
 
 def test_a_rest_catalog_answering_after_100_and_103_lists_its_namespace(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("rest", "iboth")], "no error: interim_ns",
-                "F: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace")
+                "G: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace")
 
 
 def test_a_read_answered_101_switching_protocols_first_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a read whose HEAD is answered 101 Switching Protocols first is refused")
+                "G: a read whose HEAD is answered 101 Switching Protocols first is refused")
 
 
 def test_an_s3_glob_answered_101_switching_protocols_first_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("glob", "i101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: an s3 glob whose LIST is answered 101 Switching Protocols first is refused")
+                "G: an s3 glob whose LIST is answered 101 Switching Protocols first is refused")
 
 
 def test_a_rest_catalog_answering_after_101_switching_protocols_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("rest", "i101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a REST catalog whose answer follows 101 Switching Protocols is refused")
+                "G: a REST catalog whose answer follows 101 Switching Protocols is refused")
 
 
 def test_a_read_answered_103_and_then_101_is_refused(interim, expect):
@@ -1449,14 +1661,14 @@ def test_a_read_answered_103_and_then_101_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused")
+                "G: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused")
 
 
 def test_a_rest_catalog_answering_after_103_and_then_101_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("rest", "i103x101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused")
+                "G: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused")
 
 
 def test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row(interim, expect):
@@ -1464,7 +1676,7 @@ def test_a_read_answered_199_an_unregistered_1xx_first_reads_every_row(interim, 
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i199")], INTERIM_ROWS,
-                "F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row")
+                "G: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row")
 
 
 def test_a_read_answered_102_processing_first_reads_every_row(interim, expect):
@@ -1472,7 +1684,7 @@ def test_a_read_answered_102_processing_first_reads_every_row(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i102")], INTERIM_ROWS,
-                "F: a read whose HEAD and GETs are each answered 102 Processing first reads every row")
+                "G: a read whose HEAD and GETs are each answered 102 Processing first reads every row")
 
 
 def test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row(interim, expect):
@@ -1481,14 +1693,14 @@ def test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row(interim,
     if _declined(interim, expect):
         return
     expect.text(interim[("read", "i103c")], INTERIM_ROWS,
-                "F: a read from a server that sends 103 Early Hints and closes after each answer reads every row")
+                "G: a read from a server that sends 103 Early Hints and closes after each answer reads every row")
 
 
 def test_a_large_export_whose_expect_is_answered_100_continue_is_written(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("export big", "i100")], "no error: 40000",
-                "F: control: a large export whose Expect is answered 100 Continue is written")
+                "G: control: a large export whose Expect is answered 100 Continue is written")
 
 
 def test_the_large_export_was_sent_with_expect(interim, expect):
@@ -1502,7 +1714,7 @@ def test_a_large_export_whose_expect_is_answered_103_early_hints_is_written(inte
     if _declined(interim, expect):
         return
     expect.text(interim[("export big", "i103")], "no error: 40000",
-                "F: a large export whose Expect is answered 103 Early Hints is written")
+                "G: a large export whose Expect is answered 103 Early Hints is written")
 
 
 def test_a_large_export_whose_expect_is_answered_101_is_refused(interim, expect):
@@ -1510,11 +1722,11 @@ def test_a_large_export_whose_expect_is_answered_101_is_refused(interim, expect)
     if _declined(interim, expect):
         return
     expect.text(interim[("export big", "i101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a large export whose Expect is answered 101 Switching Protocols is refused")
+                "G: a large export whose Expect is answered 101 Switching Protocols is refused")
 
 
 def test_a_small_export_answered_101_first_is_refused(interim, expect):
     if _declined(interim, expect):
         return
     expect.text(interim[("export small", "i101")], f"08P01: {SWITCH_REFUSAL}",
-                "F: a small export answered 101 Switching Protocols first is refused")
+                "G: a small export answered 101 Switching Protocols first is refused")

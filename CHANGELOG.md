@@ -624,6 +624,122 @@ true until the next version shipped.
   that answers its headers before the body; before, it sent the body and took
   the next answer.
   `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- Two overlapping inserts can no longer both commit rows that violate an
+  exclusion constraint or a `DEFERRABLE` unique constraint (#2063). A columnar
+  row stays in its backend's buffer until the statement ends, so another
+  backend's constraint check could not see it, did not wait, and let the
+  conflicting row in. Since #5 a transaction-scoped advisory lock closes that
+  window, but it covered only immediate unique indexes. It now also covers
+  deferrable unique indexes, by key, and exclusion constraints, immediate or
+  deferrable, with one lock for the whole index because the operator need not
+  be equality. The second
+  insert now waits for the first and fails with 23P01 or 23505, as on heap.
+  While one insert statement into a table with an exclusion constraint runs, a
+  second insert into that table now waits for it even when the rows do not
+  conflict, unless the second row's key holds a NULL. As before, two
+  transactions that insert into two pgcolumnar tables in opposite order can fail
+  with `deadlock_detected` (40P01) even when no rows conflict; on heap both
+  commit. Retry on 40P01. An `UPDATE` on a table with a
+  deferrable unique index or an exclusion constraint now also serializes each row
+  as it reaches it (#1421), as it already did with an immediate unique index. The
+  loser of two concurrent updates of one row on an exclusion-constrained table
+  now gets `serialization_failure` (40001), not `exclusion_violation` (23P01).
+  Each row inserted into a table with a deferrable unique index now takes a lock,
+  as with an immediate one, so a bulk insert into many such partitions may need a
+  higher `max_locks_per_transaction`.
+  docs/limitations.md.
+  `test/unique_conc.sh` and `test_unique_conc.py`; the exclusion-constraint arm
+  of `test/update_conc.sh` and `test_update_conc.py`.
+- A remote read that fails inside a subtransaction now closes its connection
+  when the subtransaction aborts (#2089). Before, the handle stayed open until
+  the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
+  or undone by `ROLLBACK TO SAVEPOINT`, kept a socket and an external file
+  descriptor. A retry loop that caught about 325 missing objects ran the
+  backend out of file descriptors, and unrelated statements then failed with
+  `Too many open files`. A transaction that committed after caught errors
+  logged one `leaked to commit` WARNING per handle. Each handle now belongs to
+  the resource owner that opened it, so a subtransaction abort closes only its
+  own handles; a scan or cursor of the outer statement keeps reading.
+  This covers all three places a handle opens: a read, an Iceberg REST
+  request and an `s3://` write or listing.
+  A subtransaction commit, such as `RELEASE SAVEPOINT`, hands only its own
+  handles to the enclosing subtransaction, so a cursor opened before it still
+  reads after an enclosing abort.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- `export_parquet`, `parallel_export_parquet`, `export_arrow` and
+  `tier_partition` now export a table that has had a column dropped (#2076).
+  They failed with `does not support dropped columns`, wherever the dropped
+  column was, and nothing in the table could clear it. This included a
+  partition made on its own, given an extra column that was then dropped, and
+  attached. The writers now skip a dropped column and write the live columns
+  in order. `import_arrow` now loads into a table with a dropped column, as
+  `import_parquet` already did; the dropped column is stored as null.
+  `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
+  live columns and a dropped one exports. Tests pin that limit, the refusal of a
+  17th live column (with SQLSTATE `0A000`), and an import into a table whose
+  dropped column is text. Further tests drop the first or the last column, keep
+  1 live column beside 60 dropped ones, put composites after the dropped
+  columns, and cut by bytes beside a dropped column (#2143 review).
+  `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
+- `pgcolumnar.import_arrow` now refuses an Arrow column whose type family does
+  not match the target column (#2082). Before, it copied the file's bytes as the
+  column's type and stored bit patterns with no error: float64 `1.5` into
+  `bigint` stored `4609434218613702656`, int64 `1` into `float8` stored
+  `5e-324`, and a decimal into `uuid` stored `7d000000-...`. When the layouts
+  differed, it raised XX001 `malformed Arrow IPC file` for a valid file. Such a
+  column now fails with SQLSTATE 42804, naming the column, the Arrow type and
+  the target type, and no row is stored. Four pairings still import: a signed
+  int64 into `timestamp` or `timestamptz`, read as microseconds; a duration into
+  `bigint`, read as its count without the unit; a string into `bytea`; and a
+  binary into `text`, `varchar`, `json`, `jsonb` or a `numeric` declared without
+  a precision (or with one above 38). A binary into a `numeric(p,s)` with `p` up
+  to 38 is refused. An int64 into a timestamp column now needs a signed 64-bit
+  carrier. The same refusal closes a second silent corruption: a large string
+  `['a','b']` into `text` stored `''` and `'a'`, and a large binary into `bytea`
+  did the same, because the reader took 64-bit offsets as 32-bit ones. These
+  pairings also change: a duration into `smallint` or `int`, which stored
+  half-width values (`5,6` became `5,0`), is now refused; a Null-type column,
+  and a binary into `numeric(p,s)`, now fail with 42804 instead of XX001. Three
+  more pairings that imported on main are now refused with 42804: an int32 into
+  `date`, which main read as days since 1970; a duration into `timestamp`, which
+  main read as microseconds whatever its unit; and a uint64 into `timestamp` or
+  `timestamptz`. A 16-byte fixed-size binary into `bytea` now fails with 42804
+  instead of XX001. An interval column is now refused for every target with
+  42804. On main, a month_day_nano interval `(1 month, 2 days, 3000 ns)` into
+  `bigint` stored `8589934593`, and into `int` stored `1`, with no error; into
+  `text` it failed with XX001. A decimal into a `numeric` declared without a
+  precision, or with one above 38, now fails with 42804 instead of XX001. It
+  imported nothing on main either: a decimal128(38,10) into `numeric`, and a
+  decimal128(10,2) into `numeric(50,2)`, both failed with XX001 `too few
+  buffers for the schema`.
+  A decimal still reads only into a `numeric(p,s)` with `p` up to 38. The
+  refusal now names the target type with its precision and scale, for example
+  `numeric(5,2)`, not `numeric`. A table-driven check imports one file of each
+  of 19 Arrow types into each of 19 target types and pins every pairing.
+  docs/limitations.md. `test/arrow_import.sh` and `test_arrow_import.py`.
+- `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
+  `virtual` (#2091). The setting was a free-form string, and the object-store
+  module used virtual-host addressing only for `virtual`. So a typo such as
+  `virtaul`, a padded `'VIRTUAL '` or an empty string was accepted, `SHOW` echoed
+  it back, and every request went out path-style without a word. The setting is
+  now an enum, like `pgcolumnar.compression`: such a value fails with
+  `invalid value for parameter`, SQLSTATE 22023. Case still does not matter.
+  `ALTER SYSTEM SET` refuses such a value in the same way. A bad value already
+  in `postgresql.conf` now draws a warning and the server uses `path`, which is
+  what the module did with it before.
+  **Upgrade note.** Check stored values before you upgrade. A bad value stored
+  by `ALTER SYSTEM` or `ALTER ROLE ... SET` draws a warning, and the server or
+  session uses `path`. A bad value in a function's
+  `SET` clause makes every call of that function fail with
+  `invalid value for parameter`. Restoring a dump taken before this release
+  fails at each `ALTER ROLE ... SET` or `CREATE FUNCTION ... SET` line that
+  holds a bad value, and that function is then missing. To find the stored
+  values, run this once per cluster:
+  `SELECT * FROM pg_db_role_setting WHERE array_to_string(setconfig, ',') LIKE '%objstore_s3_addressing%'`
+  and this in each database:
+  `SELECT oid::regprocedure, proconfig FROM pg_proc WHERE array_to_string(proconfig, ',') LIKE '%objstore_s3_addressing%'`.
+  docs/configuration.md. `test/objstore_addressing.sh` and
+  `test_objstore_addressing.py`.
 - A columnar table no longer gives a row the item pointer of a different row
   once its row numbers run out (#2073). Every transaction that writes reserves
   `stripe_row_limit` row numbers, and a row number maps to an item pointer, so

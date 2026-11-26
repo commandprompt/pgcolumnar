@@ -35,7 +35,14 @@
 #      deleted, this check hangs or reds.
 #   E  only an s3:// key is a pattern (#1785): a query string on an http URL
 #      reaches the server, and a bracketed IPv6 host is refused by name.
-#   F  interim 1xx answers (#2090): a server or proxy that sends 100 Continue
+#   F  a read error caught in a subtransaction frees its handle when the
+#      subtransaction aborts (#2089): no "leaked to commit" WARNING, and a loop
+#      of 1200 caught 404s does not run out of external FDs. The same for a
+#      caught REST request and a caught s3:// export (#2158 review). A scan's
+#      own handle, also inside an outer EXCEPTION block, and a cursor's survive
+#      a subtransaction abort inside them, and a cursor's survives a
+#      subtransaction commit (RELEASE) followed by an enclosing abort.
+#   G  interim 1xx answers (#2090): a server or proxy that sends 100 Continue
 #      or 103 Early Hints ahead of each final answer is read as if it sent none,
 #      on the HEAD and ranged GETs of a read, on the ListObjectsV2 of an s3 glob,
 #      and on the Iceberg REST catalog's requests. A small raw-socket server
@@ -736,7 +743,209 @@ check "E: an IPv6 literal http host is refused as IPv6, not as a listing" \
 	"$(refusal_of "SELECT count(*) FROM pgcolumnar.read_parquet('http://[::1]:$HTTP_PORT/fixture.parquet') AS t($COLDEFS)" \
 		"IPv6 literal hosts are not supported")" "0A000: IPv6 literal hosts are not supported"
 
-# ---- arm F: interim 1xx answers before the final one (#2090) ---------------
+# ---- arm F: a caught read error frees its handle (#2089) -------------------
+# A read that raises inside a subtransaction (a PL/pgSQL EXCEPTION block, or
+# SAVEPOINT and ROLLBACK TO) must close its socket and return its external FD
+# when the subtransaction aborts, not when the transaction ends. A handle that
+# lives on to COMMIT is reported there with the WARNING "leaked to commit".
+#
+# leaks_of SQL -> "rows=<last row> leaked=<WARNINGs>": the last row SQL returned,
+# or its first ERROR when it returned none, and how many handles it reported
+# leaked to commit.
+leaks_of() {
+	local out last
+	await_server >/dev/null
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY terse
+$1
+SQLEOF
+)"
+	last="$(printf '%s\n' "$out" | awk '/^ERROR:/ && !f { e = $0; f = 1 } !/^(WARNING|NOTICE|ERROR):/ && NF { l = $0 } END { print (l != "" ? l : e) }')"
+	echo "rows=$last leaked=$(printf '%s\n' "$out" | grep -c 'leaked to commit')"
+}
+psql_run "CREATE FUNCTION pgc_try404() RETURNS int LANGUAGE plpgsql AS \$f\$
+BEGIN
+	PERFORM count(*) FROM f404;
+	RETURN 1;
+EXCEPTION WHEN undefined_file THEN
+	RETURN 0;
+END \$f\$;"
+psql_run "CREATE FUNCTION pgc_catch404(n int) RETURNS int LANGUAGE plpgsql AS \$f\$
+DECLARE caught int := 0;
+BEGIN
+	FOR i IN 1..n LOOP
+		caught := caught + 1 - pgc_try404();
+	END LOOP;
+	RETURN caught;
+END \$f\$;"
+# pgc_catch_state(stmt, state, n) runs stmt n times, each in its own EXCEPTION
+# block, and counts the errors whose SQLSTATE is state. Counting one SQLSTATE,
+# not any error, keeps a different failure from passing as a caught one.
+psql_run "CREATE FUNCTION pgc_catch_state(stmt text, state text, n int) RETURNS int LANGUAGE plpgsql AS \$f\$
+DECLARE caught int := 0;
+BEGIN
+	FOR i IN 1..n LOOP
+		BEGIN
+			EXECUTE stmt;
+		EXCEPTION WHEN OTHERS THEN
+			IF SQLSTATE = state THEN
+				caught := caught + 1;
+			END IF;
+		END;
+	END LOOP;
+	RETURN caught;
+END \$f\$;"
+# pgc_nested_scan() scans fhttp inside an outer EXCEPTION block, so the scan's
+# handle belongs to that block's subtransaction, the parent of each inner
+# subtransaction pgc_try404() aborts (#2158 review).
+# It returns only the SQLSTATE of an error it catches: a read of freed memory
+# puts arbitrary bytes into SQLERRM, which the pytest twin cannot decode
+# (#2158 second review).
+psql_run "CREATE FUNCTION pgc_nested_scan() RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE r text;
+BEGIN
+	BEGIN
+		SELECT sum(c0) || ' aborts=' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN 1 - pgc_try404() ELSE 0 END)
+			INTO r FROM fhttp;
+	EXCEPTION WHEN OTHERS THEN
+		r := 'outer caught ' || SQLSTATE;
+	END;
+	RETURN r;
+END \$f\$;"
+psql_run "CREATE TABLE pgc_pe (id int8) USING pgcolumnar; INSERT INTO pgc_pe SELECT generate_series(1, 10);"
+# pgc_cursor_sum() opens a cursor, fetches its first row inside an EXCEPTION
+# block that then aborts, and reads the rest after it (the last control below).
+psql_run "CREATE FUNCTION pgc_cursor_sum() RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE c refcursor; x int8; s int8 := 0;
+BEGIN
+	OPEN c FOR SELECT c0 FROM fhttp;
+	BEGIN
+		FETCH c INTO x;
+		s := s + x;
+		PERFORM 1 / 0;
+	EXCEPTION WHEN division_by_zero THEN
+		NULL;
+	END;
+	LOOP
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+	END LOOP;
+	CLOSE c;
+	RETURN s;
+END \$f\$;"
+# pgc_fetch_sum(c, n) fetches up to n rows from cursor c (all of them when n is
+# NULL) and returns their sum; the commit-side controls below read a cursor
+# declared in SQL with it (#2158 second review).
+psql_run "CREATE FUNCTION pgc_fetch_sum(c refcursor, n int) RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE x int8; s int8 := 0; i int := 0;
+BEGIN
+	LOOP
+		EXIT WHEN n IS NOT NULL AND i >= n;
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+		i := i + 1;
+	END LOOP;
+	RETURN s;
+END \$f\$;"
+# pgc_cursor_commit_sum() fetches a cursor's first row, then runs an outer
+# EXCEPTION block in which an inner block commits and the outer block aborts,
+# and reads the rest after it (#2158 second review).
+psql_run "CREATE FUNCTION pgc_cursor_commit_sum() RETURNS int8 LANGUAGE plpgsql AS \$f\$
+DECLARE c refcursor; x int8; s int8 := 0;
+BEGIN
+	OPEN c FOR SELECT c0 FROM fhttp;
+	FETCH c INTO x;
+	s := x;
+	BEGIN
+		BEGIN
+			NULL;
+		EXCEPTION WHEN OTHERS THEN
+			NULL;
+		END;
+		PERFORM 1 / 0;
+	EXCEPTION WHEN division_by_zero THEN
+		NULL;
+	END;
+	LOOP
+		FETCH c INTO x;
+		EXIT WHEN NOT FOUND;
+		s := s + x;
+	END LOOP;
+	CLOSE c;
+	RETURN s;
+END \$f\$;"
+check "F: three 404s caught in a function's EXCEPTION blocks leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch404(3);")" "rows=3 leaked=0"
+check "F: three 404s each rolled back to a SAVEPOINT leak no handle to commit" \
+	"$(leaks_of "BEGIN;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SAVEPOINT s; SELECT count(*) FROM f404; ROLLBACK TO s;
+SELECT 'done';
+COMMIT;")" "rows=done leaked=0"
+# More caught errors than the backend has external FDs (max_files_per_process
+# is 1000 by default, and a backend may hold about a third of those for
+# sockets). Each leaked handle kept one, so the loop ran out of them.
+check "F: a loop that catches 1200 404s finishes" \
+	"$(leaks_of "SELECT pgc_catch404(1200);")" "rows=1200 leaked=0"
+# Control: freeing handles at a subtransaction abort frees only that
+# subtransaction's. The streaming scan of fhttp holds its handle across rows
+# (#620); the function aborts a subtransaction at the first row of each row
+# group, and the scan then reads the next group through its own handle.
+F_LOCAL="$(q "SELECT sum(c0) FROM flocal")"
+# The second field counts the aborts: one per row group, so G when every call
+# of pgc_try404() caught its 404.
+F_SCAN="$(leaks_of "SELECT sum(c0) || ' ' || sum(CASE WHEN c0 % $ROWS_PER_GROUP = 0 THEN 1 - pgc_try404() ELSE 0 END) FROM fhttp;")"
+check "F: a subtransaction abort inside a scan leaves the scan's own handle open (http == local)" \
+	"${F_SCAN%% leaked=*}" "rows=$F_LOCAL $G"
+# Control: a cursor opened before a subtransaction, and first fetched inside
+# it, stays usable after that subtransaction aborts. Its handle belongs to the
+# cursor, not to the subtransaction, so the abort must not close it.
+F_CURSOR="$(leaks_of "SELECT pgc_cursor_sum();")"
+check "F: a cursor first fetched in a subtransaction that aborts reads on to the end (http == local)" \
+	"$F_CURSOR" "rows=$F_LOCAL leaked=0"
+# Control: the same scan inside an outer EXCEPTION block. Its handle belongs to
+# the outer subtransaction, the parent of each one that aborts, so freeing the
+# parent's handles too would make the next row group read freed memory.
+check "F: a scan inside an outer EXCEPTION block reads on after each inner abort (http == local)" \
+	"$(leaks_of "SELECT pgc_nested_scan();")" "rows=$F_LOCAL aborts=$G leaked=0"
+# Controls for the commit side (#2158 second review). A subtransaction commit
+# hands only its own handles to its parent, so the cursor's handle, which
+# belongs to the cursor, is still open when an enclosing subtransaction later
+# aborts. Handing every handle to the parent, or freeing every handle at a
+# commit below the top level, made the cursor's next FETCH read freed memory.
+check "F: a cursor reads on after an inner block commits and its outer block aborts (http == local)" \
+	"$(leaks_of "SELECT pgc_cursor_commit_sum();")" "rows=$F_LOCAL leaked=0"
+check "F: a cursor reads on after RELEASE of an inner SAVEPOINT and ROLLBACK TO the outer one (http == local)" \
+	"$(leaks_of "BEGIN;
+DECLARE c CURSOR FOR SELECT c0 FROM fhttp;
+SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true);
+SAVEPOINT s1; SAVEPOINT s2; RELEASE s2; ROLLBACK TO s1;
+SELECT count(*) FROM (SELECT 1) z;
+SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL);
+COMMIT;")" "rows=$F_LOCAL leaked=0"
+check "F: a cursor reads on after SAVEPOINT and RELEASE (http == local)" \
+	"$(leaks_of "BEGIN;
+DECLARE c CURSOR FOR SELECT c0 FROM fhttp;
+SELECT set_config('pgc.first', pgc_fetch_sum('c', 1)::text, true);
+SAVEPOINT s; RELEASE s;
+SELECT current_setting('pgc.first')::int8 + pgc_fetch_sum('c', NULL);
+COMMIT;")" "rows=$F_LOCAL leaked=0"
+# The other two places a handle opens (#2158 review): objstore_http_request,
+# here an Iceberg REST call to a closed port (08006), and os_write_handle_as,
+# here an s3:// export with no AWS_ENDPOINT_URL in the server environment
+# (28000). Each error is caught three times; none may leak to commit.
+check "F: three caught REST requests to a closed port (08006) leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch_state('SELECT * FROM pgcolumnar.iceberg_rest_namespaces(''http://127.0.0.1:$DEADPORT/v1'')', '08006', 3);")" \
+	"rows=3 leaked=0"
+check "F: three caught s3:// exports with no endpoint (28000) leak no handle to commit" \
+	"$(leaks_of "SELECT pgc_catch_state('SELECT pgcolumnar.parallel_export_parquet(''pgc_pe''::regclass, ''s3://bkt/pre/'', 2)', '28000', 3);")" \
+	"rows=3 leaked=0"
+
+# ---- arm G: interim 1xx answers before the final one (#2090) ---------------
 # RFC 9110 section 15.2: a client must accept one or more 1xx answers before
 # the final answer, even unasked. The read path took the first 1xx as the final
 # answer and failed with "unexpected HTTP status 100". The first path segment
@@ -875,51 +1084,51 @@ done
 # waited for a body that never ends.
 F_TO="SET statement_timeout = '20s'"
 F_ROWS="no error: $((G * ROWS_PER_GROUP))"
-check "F: control: a read from the interim-answer server that sends none reads every row" \
+check "G: control: a read from the interim-answer server that sends none reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/inone/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
-check "F: a read whose HEAD and GETs are each answered 100 Continue first reads every row" \
+check "G: a read whose HEAD and GETs are each answered 100 Continue first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i100/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
-check "F: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row" \
+check "G: a read whose HEAD and GETs are each answered 103 Early Hints first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i103/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
-check "F: a read answered 100 Continue and then 103 Early Hints first reads every row" \
+check "G: a read answered 100 Continue and then 103 Early Hints first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/iboth/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
-check "F: control: an s3 glob listed and read from the server that sends no interim answer reads every row" \
+check "G: control: an s3 glob listed and read from the server that sends no interim answer reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_inone" "@@")" "$F_ROWS"
-check "F: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row" \
+check "G: an s3 glob whose LIST and reads are each answered 103 Early Hints first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_i103" "@@")" "$F_ROWS"
-check "F: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row" \
+check "G: an s3 glob whose LIST and reads are each answered 100 Continue and 103 Early Hints first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_iboth" "@@")" "$F_ROWS"
-check "F: control: the REST catalog that sends no interim answer lists its namespace" \
+check "G: control: the REST catalog that sends no interim answer lists its namespace" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/inone')" "@@")" "no error: interim_ns"
-check "F: a REST catalog whose answers each follow 103 Early Hints lists its namespace" \
+check "G: a REST catalog whose answers each follow 103 Early Hints lists its namespace" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i103')" "@@")" "no error: interim_ns"
-check "F: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace" \
+check "G: a REST catalog whose answers each follow 100 Continue and 103 Early Hints lists its namespace" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/iboth')" "@@")" "no error: interim_ns"
 F_101="switched protocols with HTTP 101"
-check "F: a read whose HEAD is answered 101 Switching Protocols first is refused" \
+check "G: a read whose HEAD is answered 101 Switching Protocols first is refused" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i101/fixture.parquet') AS t($COLDEFS)" "$F_101")" "08P01: $F_101"
-check "F: an s3 glob whose LIST is answered 101 Switching Protocols first is refused" \
+check "G: an s3 glob whose LIST is answered 101 Switching Protocols first is refused" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM glob_i101" "$F_101")" "08P01: $F_101"
-check "F: a REST catalog whose answer follows 101 Switching Protocols is refused" \
+check "G: a REST catalog whose answer follows 101 Switching Protocols is refused" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i101')" "$F_101")" "08P01: $F_101"
 # Each head is checked for 101, not only the first: a 101 after another 1xx is
 # refused the same way (#2156 review).
-check "F: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused" \
+check "G: a read whose HEAD is answered 103 Early Hints and then 101 Switching Protocols is refused" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i103x101/fixture.parquet') AS t($COLDEFS)" "$F_101")" "08P01: $F_101"
-check "F: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused" \
+check "G: a REST catalog whose answer follows 103 Early Hints and then 101 Switching Protocols is refused" \
 	"$(refusal_of "$F_TO; SELECT * FROM pgcolumnar.iceberg_rest_namespaces('$IBASE/i103x101')" "$F_101")" "08P01: $F_101"
 # 199 is a 1xx that no RFC registers. RFC 9110 section 15.2 still asks the
 # client to pass over it, and it pins the top of the range: a loop that stops
 # at 103 or 104 reads it as the final answer (#2156 review).
-check "F: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row" \
+check "G: a read whose HEAD and GETs are each answered 199, an unregistered 1xx, first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i199/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
 # 102 is passed over like any other 1xx but 101: only 101 is refused.
-check "F: a read whose HEAD and GETs are each answered 102 Processing first reads every row" \
+check "G: a read whose HEAD and GETs are each answered 102 Processing first reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i102/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
 # The server closes after each answer, so the next request on the kept-alive
 # connection fails and is retried once on a new one. The retry passes over the
 # 1xx as the first attempt does (#2156 review).
-check "F: a read from a server that sends 103 Early Hints and closes after each answer reads every row" \
+check "G: a read from a server that sends 103 Early Hints and closes after each answer reads every row" \
 	"$(refusal_of "$F_TO; SELECT count(*) FROM pgcolumnar.read_parquet('$IBASE/i103c/fixture.parquet') AS t($COLDEFS)" "@@")" "$F_ROWS"
 # An export over 1 MiB sends Expect: 100-continue and reads an early answer to
 # its headers before the body. The server sends the mode's interim answer
@@ -930,15 +1139,15 @@ psql_run "CREATE TABLE f_big (id int8, pad text) USING pgcolumnar;
           INSERT INTO f_big SELECT g, md5(g::text)||md5((g+1)::text) FROM generate_series(1,40000) g;
           CREATE TABLE f_small (id int) USING pgcolumnar;
           INSERT INTO f_small SELECT generate_series(1,10);"
-check "F: control: a large export whose Expect is answered 100 Continue is written" \
+check "G: control: a large export whose Expect is answered 100 Continue is written" \
 	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i100/big.parquet')" "@@")" "no error: 40000"
 check "premise: the large export was sent with Expect: 100-continue" \
 	"$(grep -c '^PUT /i100/big.parquet expect=1$' "$PGC_WORKDIR/interim_server.out")" "1"
-check "F: a large export whose Expect is answered 103 Early Hints is written" \
+check "G: a large export whose Expect is answered 103 Early Hints is written" \
 	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i103/big.parquet')" "@@")" "no error: 40000"
-check "F: a large export whose Expect is answered 101 Switching Protocols is refused" \
+check "G: a large export whose Expect is answered 101 Switching Protocols is refused" \
 	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_big', '$IBASE/i101/big.parquet')" "$F_101")" "08P01: $F_101"
-check "F: a small export answered 101 Switching Protocols first is refused" \
+check "G: a small export answered 101 Switching Protocols first is refused" \
 	"$(refusal_of "$F_TO; SELECT pgcolumnar.export_parquet('f_small', '$IBASE/i101/small.parquet')" "$F_101")" "08P01: $F_101"
 
 # ---- survival ----------------------------------------------------------------

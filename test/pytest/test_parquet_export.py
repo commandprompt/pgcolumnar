@@ -8,7 +8,9 @@ group (80003 rows, over PARQUET_ROWGROUP_ROWS of 65536), and every value must eq
 heap's; DuckDB, a second and independent reader, must count the same rows and the same
 non-null b. An empty table writes a readable schema-only file; a heap table and an
 unsupported column type are refused, each by its own message; and date, time,
-timestamps, uuid, numeric and json export to the representation each maps to.
+timestamps, uuid, numeric and json export to the representation each maps to. A table
+with dropped columns exports its live columns through export_parquet,
+parallel_export_parquet and tier_partition (#2076).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading, so one red cannot stop the next (#1339). The heap oracle is read
@@ -640,3 +642,192 @@ def test_every_kept_text_reaches_its_own_value_in_the_file(pqx, expect):
         return
     expect.text(f"{pqx['txt rows']}|{_reading(_texts, pa, pqx['files']['txt'])}", f"300|{pqx['txt digest']}",
                 "every numeric and jsonb text reaches its own value: 300 rows of numeric, numeric[], jsonb and a composite read back from the file as PostgreSQL prints them")
+
+
+# ---- #2076: a table with dropped columns exports its live columns ------------------
+#
+# A dropped column stays in the tuple descriptor, marked attisdropped, and the writer
+# refused any such table. The table loses a middle column and its last column, with rows
+# written before and after the drops; each export must hold the live columns a, c, d, in
+# order, and every row. The oracle is the table's rows read over the driver; the file is
+# read with pyarrow. On its own database, so the fixture above is not disturbed. The
+# second review round (#2143) added: a table with a dropped first column and three
+# composites after the dropped columns, a table with 1 live column beside 60 dropped
+# text columns, and the byte cut on a table with a dropped column before its text
+# column.
+DROP_DB = "pgc_parquet_export_drop"
+DROP_SETUP = (
+    "CREATE TABLE pq_drop (a int, junk int, c text, d int8, tail text) USING pgcolumnar",
+    "INSERT INTO pq_drop SELECT g, -g, CASE WHEN g % 9 = 0 THEN NULL ELSE 'v' || g END, g * 1000, 'x' "
+    "FROM generate_series(1, 150) g",
+    "ALTER TABLE pq_drop DROP COLUMN junk",
+    "ALTER TABLE pq_drop DROP COLUMN tail",
+    "INSERT INTO pq_drop SELECT g, 'w' || g, g * 1000 FROM generate_series(151, 200) g",
+    # a partition prepared on its own, given a column that is dropped to match the
+    # parent, then attached
+    "CREATE SERVER pq_drop_srv FOREIGN DATA WRAPPER pgcolumnar_parquet",
+    "CREATE TABLE pq_dpar (id int, v text) PARTITION BY RANGE (id)",
+    "CREATE TABLE pq_dpar1 (id int, junk int, v text) USING pgcolumnar",
+    "ALTER TABLE pq_dpar1 DROP COLUMN junk",
+    "ALTER TABLE pq_dpar ATTACH PARTITION pq_dpar1 FOR VALUES FROM (0) TO (100)",
+    "CREATE TABLE pq_dpar2 PARTITION OF pq_dpar FOR VALUES FROM (100) TO (200) USING pgcolumnar",
+    "INSERT INTO pq_dpar SELECT g, 'p' || g FROM generate_series(1, 150) g",
+    # a dropped first column and composites after the dropped columns; each field
+    # holds a * 100 + its number
+    "CREATE TYPE pq_ten AS (" + ", ".join(f"f{i} int" for i in range(1, 21)) + ")",
+    "CREATE TABLE pq_dcmp (junk text, a int, junk2 int, b text, t pq_ten, t2 pq_ten, t3 pq_ten) USING pgcolumnar",
+    "INSERT INTO pq_dcmp SELECT 'j' || g, g, -g, 'b' || g, {t}, {t}, {t} FROM generate_series(1, 1500) g",
+    "ALTER TABLE pq_dcmp DROP COLUMN junk",
+    "ALTER TABLE pq_dcmp DROP COLUMN junk2",
+    "INSERT INTO pq_dcmp SELECT g, 'b' || g, {t}, {t}, {t} FROM generate_series(1501, 3000) g",
+    # 1 live column beside 60 dropped text columns
+    "CREATE TABLE pq_wdrop (a int" + "".join(f", x{i} text" for i in range(1, 61)) + ") USING pgcolumnar",
+    "INSERT INTO pq_wdrop SELECT g" + "".join(f", 'x{i}-' || g" for i in range(1, 61)) + " FROM generate_series(1, 2000) g",
+    "ALTER TABLE pq_wdrop " + ", ".join(f"DROP COLUMN x{i}" for i in range(1, 61)),
+    "INSERT INTO pq_wdrop SELECT g FROM generate_series(2001, 4000) g",
+    # a dropped column before the wide text column, for the byte cut
+    "CREATE TABLE pq_bdrop (id int, junk int, s text) USING pgcolumnar",
+    "ALTER TABLE pq_bdrop DROP COLUMN junk",
+    "INSERT INTO pq_bdrop SELECT g, repeat(chr(64 + g % 26), 10000) FROM generate_series(1, 40) g",
+)
+_TEN = "ROW(" + ", ".join(f"g * 100 + {i}" for i in range(1, 21)) + ")::pq_ten"
+DROP_SETUP = tuple(st.replace("{t}", _TEN) for st in DROP_SETUP)
+CMP_DIGEST = ("SELECT 'a,b,t,t2,t3|' || count(*) || '|' || md5(string_agg(a || ':' || b || ':' || (t).f1 || ':' || "
+              "(t2).f10 || ':' || (t3).f20, ' ' ORDER BY a)) FROM pq_dcmp")
+ONE_LIVE = ("SELECT 'a|' || count(*) || '|' || count(*) FILTER (WHERE a IS NULL) || '|' || "
+            "md5(string_agg(a::text, ' ' ORDER BY a)) FROM pq_wdrop")
+DROP_ORACLE = "SELECT a, c, d FROM pq_drop ORDER BY a"
+DPAR_ORACLE = "SELECT id, v FROM pq_dpar ORDER BY id"
+
+
+@pytest.fixture(scope="module")
+def pqd(pgc_cluster, server_dir):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {DROP_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {DROP_DB}")
+    try:
+        dsn = pgc_cluster.dsn(dbname=DROP_DB)
+        _run(dsn, "CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        for st in DROP_SETUP:
+            _run(dsn, st)
+        f = {"serial": server_dir / "drop.parquet", "par": server_dir / "drop_par",
+             "tier": server_dir / "dpar1.parquet"}
+        r = {"files": f, "oracle": _rows(dsn, DROP_ORACLE), "dpar before": _rows(dsn, DPAR_ORACLE)}
+        r["serial"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_drop', '{f['serial']}')")
+        r["par"] = _value(dsn, f"SELECT pgcolumnar.parallel_export_parquet('pq_drop'::regclass, '{f['par']}', 2)")
+        r["tier"] = _value(dsn, f"SELECT pgcolumnar.tier_partition('pq_dpar1', 'pq_drop_srv', '{f['tier']}')")
+        r["dpar after"] = _rows(dsn, DPAR_ORACLE)
+        f["cmp"], f["cmp par"] = server_dir / "dcmp.parquet", server_dir / "dcmp_par"
+        r["cmp want"] = _value(dsn, CMP_DIGEST)
+        r["cmp"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_dcmp', '{f['cmp']}')")
+        r["cmp par"] = _value(dsn, f"SELECT pgcolumnar.parallel_export_parquet('pq_dcmp'::regclass, '{f['cmp par']}', 2)")
+        f["wdrop"] = server_dir / "wdrop.parquet"
+        r["wdrop want"] = _value(dsn, ONE_LIVE)
+        r["wdrop"] = _value(dsn, f"SELECT pgcolumnar.export_parquet('pq_wdrop', '{f['wdrop']}')")
+        f["bdrop"] = server_dir / "bdrop.parquet"
+        r["bdrop"] = _value_after(dsn, ["SET pgcolumnar.export_group_bytes = 65536"],
+                                  f"SELECT pgcolumnar.export_parquet('pq_bdrop', '{f['bdrop']}')")
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DROP_DB} WITH (FORCE)")
+
+
+def _live(pa, path, oracle):
+    """-> "columns|rows|MATCH" for the file or directory at `path` against `oracle`."""
+    if isinstance(oracle, str):
+        return oracle
+    t = _read(pa, path)
+    d = t.to_pydict()
+    got = sorted(zip(d.get("a", []), d.get("c", []), d.get("d", [])))
+    want = sorted(oracle)
+    if len(want) != 200:
+        return f"the oracle holds {len(want)} rows, not the 200 the setup wrote"
+    return f"{','.join(t.schema.names)}|{t.num_rows}|{'MATCH' if got == want else 'MISMATCH'}"
+
+
+def test_export_parquet_writes_the_live_columns_of_a_table_with_dropped_columns(pqd, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['serial']}|{_reading(_live, pa, pqd['files']['serial'], pqd['oracle'])}",
+                "200|a,c,d|200|MATCH",
+                "export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row")
+
+
+def test_parallel_export_parquet_writes_the_live_columns_of_a_table_with_dropped_columns(pqd, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['par']}|{_reading(_live, pa, pqd['files']['par'], pqd['oracle'])}",
+                "200|a,c,d|200|MATCH",
+                "parallel_export_parquet writes a table with a dropped middle and last column as its live columns a,c,d, every row")
+
+
+def test_tier_partition_moves_a_partition_with_a_dropped_column(pqd, expect):
+    if expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    before, after = pqd["dpar before"], pqd["dpar after"]
+    if isinstance(before, str) or len(before) != 150:
+        got = f"{pqd['tier']}|premise: the parent held {before!r} before the move, not 150 rows"
+    elif isinstance(after, str):
+        got = f"{pqd['tier']}|{after}"
+    else:
+        got = f"{pqd['tier']}|{len(after)}|{'MATCH' if after == before else 'MISMATCH'}"
+    expect.text(got, "99|150|MATCH",
+                "tier_partition moves a partition with a dropped column, and the parent reads back every row")
+
+
+def _cmp(pa, path):
+    """-> "columns|rows|md5 of a:b:t.f1:t2.f10:t3.f20 ...", in the form CMP_DIGEST reads the table."""
+    t = _read(pa, path)
+    d = t.to_pydict()
+    rows = sorted(zip(d["a"], d["b"], d["t"], d["t2"], d["t3"]), key=lambda r: r[0])
+    s = " ".join(f"{a}:{b}:{x['f1']}:{y['f10']}:{z['f20']}" for a, b, x, y, z in rows)
+    return f"{','.join(t.schema.names)}|{t.num_rows}|{hashlib.md5(s.encode()).hexdigest()}"
+
+
+def test_export_parquet_writes_a_dropped_first_column_and_composites_after_it(pqd, expect):
+    """#2143 review, second round: attribute 0 is dropped, and each composite's 20
+    leaves are counted through the map of live attributes."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['cmp']}|{_reading(_cmp, pa, pqd['files']['cmp'])}", f"3000|{pqd['cmp want']}",
+                "export_parquet writes a table with a dropped first column and composites after it as its live columns a,b,t,t2,t3, every row")
+
+
+def test_parallel_export_parquet_writes_a_dropped_first_column_and_composites_after_it(pqd, expect):
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['cmp par']}|{_reading(_cmp, pa, pqd['files']['cmp par'])}", f"3000|{pqd['cmp want']}",
+                "parallel_export_parquet writes a table with a dropped first column and composites after it as its live columns a,b,t,t2,t3, every row")
+
+
+def _one_live(pa, path):
+    """-> "columns|rows|nulls|md5 of a, ascending", in the form ONE_LIVE reads the table."""
+    t = _read(pa, path)
+    a = t.column("a").to_pylist()
+    s = " ".join(str(v) for v in sorted(v for v in a if v is not None))
+    return f"{','.join(t.schema.names)}|{t.num_rows}|{sum(v is None for v in a)}|{hashlib.md5(s.encode()).hexdigest()}"
+
+
+def test_export_parquet_writes_one_live_column_beside_60_dropped_ones(pqd, expect):
+    """#2143 review, second round: the reader fills one slot per attribute, so the row
+    buffer is sized by every attribute. The values are compared, not only the count."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['wdrop']}|{_reading(_one_live, pa, pqd['files']['wdrop'])}", f"4000|{pqd['wdrop want']}",
+                "export_parquet writes the one live column of a table with 60 dropped text columns, every value")
+
+
+def test_a_row_group_cut_on_a_table_with_a_dropped_column(pqd, expect):
+    """#1811, #2143 review: each row is sized from its live values. A row sized from
+    the slots by position reads the dropped slot in place of the 10000-byte text."""
+    pa = expect.require_module("pyarrow", name="pyarrow not available; skipping Parquet export verification")
+    if pa is None or expect.require_module("pyarrow.parquet", name="pyarrow not available; skipping Parquet export verification") is None:
+        return
+    expect.text(f"{pqd['bdrop']}|{_reading(_groups, pa, pqd['files']['bdrop'])}", "40|40|6,6,6,6,6,6,4",
+                "a row group is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make groups of 6,6,6,6,6,6,4")
