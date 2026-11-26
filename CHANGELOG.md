@@ -622,10 +622,14 @@ true until the next version shipped.
   refused; pyarrow 23 reads it as empty, so this is stricter too. A header that
   carries the page's own struct twice is refused too. When the second struct is
   complete, pyarrow 23 reads the page, so this is stricter as well. A struct that
-  gives its own `num_values` twice is refused; pyarrow 23 keeps the last value,
-  which can drop the page's values.
+  gives its own `num_values` twice is refused, whatever its last value; pyarrow 23
+  keeps the last value, which can drop the page's values. A page header with a
+  Thrift field id outside the int16 range is refused as corrupt. Before,
+  the reader kept such an id whole and skipped the field, while pyarrow 23 narrows
+  it (65537 reads as field 1): a crafted header could hide a `num_values` 50 behind
+  id 65537, and the page's values were dropped with no error.
   It refuses more than 16 pages with no values in a row, of either data page
-  version, and steps over an
+  version (a dictionary page does not end a run), and steps over an
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.

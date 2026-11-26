@@ -244,6 +244,19 @@ check "a run of 17 empty DATA_PAGE_V2 pages is rejected" "$(ce a_v2run17)" "$REF
 check "a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads" "$(cs a_other8x2_200)" "200 19900"
 check "a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads" "$(cs a_other5x2_v2_200)" "200 19900"
 check "a DATA_PAGE_V2 with a negative num_values is rejected" "$(ce a_v2neg_opt_200)" "$REFUSED"
+# a repeated num_values whose last value is not 0, a field id outside int16, and a
+# struct of the other version that repeats its own num_values
+check "a DataPageHeader that repeats num_values with a nonzero last value is rejected" "$(ce e_r1v1_50_10_110)" "$REFUSED"
+check "a DataPageHeaderV2 that repeats num_values with a nonzero last value is rejected" "$(ce e_r1v2_50_10_110)" "$REFUSED"
+check "a DataPageHeader with field id 65537 is rejected" "$(ce x_fid65537_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 with field id 65537 is rejected" "$(ce x_fid65537_v2_req150)" "$REFUSED"
+check "a DataPageHeader with field id -65535 is rejected" "$(ce x_fidm65535_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 with field id -65535 is rejected" "$(ce x_fidm65535_v2_req150)" "$REFUSED"
+check "a DataPageHeader with field id 32769 from a short-form delta is rejected" "$(ce x_fid32769_short_v1_200)" "$REFUSED"
+check "a DataPageHeader with an unknown field id 32767 reads" "$(cs x_fid32767_v1_200)" "200 19900"
+check "a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads" "$(cs e_oth8_r1_200)" "200 19900"
+check "a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads" "$(cs e_oth5_r1_v2_200)" "200 19900"
+check "16 empty data pages, a dictionary page and 16 more are rejected (one run)" "$(ce x_run16_dict_16)" "$REFUSED"
 check "a DATA_PAGE_V2 on a list column reads" \
 	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)), sum(ls[1]) FROM pgcolumnar.read_parquet('$W/v2_list.parquet') AS t(ls int[]);" | tr '|' ' ')" \
 	"300 200 400 30000"

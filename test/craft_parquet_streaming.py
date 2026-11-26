@@ -633,6 +633,58 @@ replace_page2_header("a_other5x2_v2_200.parquet", preq, lambda n: sizes(3, n) + 
 replace_page2_header("a_v2neg_opt_200.parquet", popt, lambda n: sizes(3, n) + fh(5, STRUCT)
                      + V2FULL(-1) + STOP, rows=200)
 
+# Round 6 of the review.
+#
+# A struct that repeats num_values with a last value that is not 0: 50, then 10 in
+# long form. The footer holds 110 rows. Keeping the last value would read ids 0..59
+# and 100..149 with no error, as main and pyarrow do. The reader refuses any repeated
+# num_values, not only one that ends on 0.
+replace_page2_header("e_r1v1_50_10_110.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + fh(1, I32) + zz(50) + lf(I32, 1) + zz(10) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP + STOP, rows=110)
+replace_page2_header("e_r1v2_50_10_110.parquet", preq, lambda n: sizes(3, n) + fh(5, STRUCT)
+                     + fh(1, I32) + zz(50) + lf(I32, 1) + zz(10) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(10) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(0) + STOP + STOP, rows=110)
+
+# A long-form field id outside int16. Thrift field ids are i16: pyarrow narrows 65537
+# and -65535 to 1, so it reads num_values twice and keeps the 50. A reader that kept
+# the id whole skipped the field, took num_values 0 and, with the footer at 150 rows,
+# dropped ids 50..99 with no error. The reader refuses such a header as corrupt.
+V1NV0 = (fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3) + fh(1, I32) + zz(3))
+for fid, tag in ((65537, "65537"), (-65535, "m65535")):
+    replace_page2_header("x_fid%s_v1_150.parquet" % tag, popt, lambda n, f=fid: sizes(0, n)
+                         + fh(2, STRUCT) + V1NV0 + lf(I32, f) + zz(50) + STOP + STOP)
+    replace_page2_header("x_fid%s_v2_req150.parquet" % tag, preq, lambda n, f=fid: sizes(3, n)
+                         + fh(5, STRUCT) + V2FULL(0)[:-1] + lf(I32, f) + zz(50) + STOP + STOP)
+# The same bound holds for an id reached by a short-form delta: a long-form 32767 and
+# then a delta of 2 gives 32769, which is refused. Field id 32767 itself is in range:
+# an unknown field with that id is skipped and the page reads.
+V1FULL = (fh(1, I32) + zz(50) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3) + fh(1, I32) + zz(3))
+replace_page2_header("x_fid32769_short_v1_200.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + V1FULL + lf(I32, 32767) + zz(0) + fh(2, I32) + zz(0) + STOP + STOP, rows=200)
+replace_page2_header("x_fid32767_v1_200.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + V1FULL + lf(I32, 32767) + zz(0) + STOP + STOP, rows=200)
+
+# A struct of the other version that gives field 1 twice in one occurrence is still
+# ignored: a DATA_PAGE whose DataPageHeaderV2 repeats num_values, and a DATA_PAGE_V2
+# whose DataPageHeader does. pyarrow reads both as 200 rows.
+V1REP = (fh(1, I32) + zz(50) + lf(I32, 1) + zz(0) + fh(1, I32) + zz(0) + fh(1, I32) + zz(3)
+         + fh(1, I32) + zz(3) + STOP)
+replace_page2_header("e_oth8_r1_200.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + lf(STRUCT, 8) + fh(1, I32) + zz(50) + lf(I32, 1) + zz(0) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(50) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+                     + fh(1, I32) + zz(0) + STOP + STOP, rows=200)
+replace_page2_header("e_oth5_r1_v2_200.parquet", preq, lambda n: sizes(3, n) + fh(2, STRUCT)
+                     + V1REP + fh(3, STRUCT) + V2FULL(50) + STOP, rows=200)
+
+# A dictionary page does not reset the run of empty pages: 16 empty data pages, an
+# empty DICTIONARY_PAGE (7:{num_values 0, encoding PLAIN}), and 16 more empty data
+# pages are 32 pages with no values in a row, and they are refused.
+EMPTY_DICT = (fh(1, I32) + zz(2) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+              + fh(4, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + STOP + STOP)
+with_pages("x_run16_dict_16.parquet", popt, {1: empty_data_page() * 16 + EMPTY_DICT + empty_data_page() * 16})
+
 
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
@@ -662,6 +714,9 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "p_enc_v2dict_200", "dict_v1nv0", "p_mixrun_9e_8i", "p_mixrun_8e_8i", "v2_list",
              "f_rep1_v1_150", "f_rep1_v2_150", "a_dup5_nv10_110", "a_dup8_nv10_110",
              "a_v2run16", "a_v2run17", "a_other8x2_200", "a_other5x2_v2_200", "a_v2neg_opt_200",
+             "e_r1v1_50_10_110", "e_r1v2_50_10_110", "x_fid65537_v1_150", "x_fid65537_v2_req150",
+             "x_fidm65535_v1_150", "x_fidm65535_v2_req150", "e_oth8_r1_200", "e_oth5_r1_v2_200",
+             "x_fid32769_short_v1_200", "x_fid32767_v1_200", "x_run16_dict_16",
              "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

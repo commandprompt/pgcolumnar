@@ -13108,6 +13108,17 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_data_page_with_two_v2_headers_besides_its_own_reads` | a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads |
 | `test_parquet_streaming_data_page_v2_with_two_v1_headers_besides_its_own_reads` | a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads |
 | `test_parquet_streaming_data_page_v2_with_a_negative_num_values_is_rejected` | a DATA_PAGE_V2 with a negative num_values is rejected |
+| `test_parquet_streaming_data_page_header_that_repeats_num_values_ending_nonzero_is_rejected` | a DataPageHeader that repeats num_values with a nonzero last value is rejected |
+| `test_parquet_streaming_data_page_v2_header_that_repeats_num_values_ending_nonzero_is_rejected` | a DataPageHeaderV2 that repeats num_values with a nonzero last value is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_65537_is_rejected` | a DataPageHeader with field id 65537 is rejected |
+| `test_parquet_streaming_data_page_v2_header_with_field_id_65537_is_rejected` | a DataPageHeaderV2 with field id 65537 is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_minus_65535_is_rejected` | a DataPageHeader with field id -65535 is rejected |
+| `test_parquet_streaming_data_page_v2_header_with_field_id_minus_65535_is_rejected` | a DataPageHeaderV2 with field id -65535 is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_32769_from_a_delta_is_rejected` | a DataPageHeader with field id 32769 from a short-form delta is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_32767_reads` | a DataPageHeader with an unknown field id 32767 reads |
+| `test_parquet_streaming_data_page_whose_v2_header_repeats_num_values_reads` | a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads |
+| `test_parquet_streaming_data_page_v2_whose_v1_header_repeats_num_values_reads` | a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads |
+| `test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run` | 16 empty data pages, a dictionary page and 16 more are rejected (one run) |
 | `test_parquet_streaming_data_page_v2_on_a_list_column_reads` | a DATA_PAGE_V2 on a list column reads |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |

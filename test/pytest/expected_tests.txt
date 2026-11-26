@@ -2219,4 +2219,10 @@ guard_tests 895
 # (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
 # given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
 # collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
-cluster_tests 5647
+# cluster_tests 5647 -> 5658 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
+# pin the refusal of a repeated num_values whose last value is not 0 (v1 and v2), of a Thrift field id
+# outside int16 (65537 and -65535, v1 and v2, and 32769 from a short-form delta), the read of an unknown
+# field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
+# dictionary page that does not reset the run of empty pages, by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5658 tests collected.
+cluster_tests 5658

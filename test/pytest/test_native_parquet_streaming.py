@@ -194,7 +194,9 @@ def pqs(pgc_cluster, server_dir):
                           ("mix v2zero", "mix_v2zero"), ("p enc v2dict 200", "p_enc_v2dict_200"),
                           ("dict v1nv0", "dict_v1nv0"), ("p mixrun 8e 8i", "p_mixrun_8e_8i"),
                           ("a v2run16", "a_v2run16"), ("a other8x2 200", "a_other8x2_200"),
-                          ("a other5x2 v2 200", "a_other5x2_v2_200")):
+                          ("a other5x2 v2 200", "a_other5x2_v2_200"),
+                          ("e oth8 r1 200", "e_oth8_r1_200"), ("e oth5 r1 v2 200", "e_oth5_r1_v2_200"),
+                          ("x fid32767 v1", "x_fid32767_v1_200")):
             r[key] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
                                 f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)", sep=" ")
         for key, name in (("empty run", "empty_page_run"), ("run17", "empty_run17"),
@@ -209,7 +211,11 @@ def pqs(pgc_cluster, server_dir):
                           ("p empty5 full8", "p_empty5_full8"), ("p mixrun 9e 8i", "p_mixrun_9e_8i"),
                           ("f rep1 v1 150", "f_rep1_v1_150"), ("f rep1 v2 150", "f_rep1_v2_150"),
                           ("a dup5 nv10 110", "a_dup5_nv10_110"), ("a dup8 nv10 110", "a_dup8_nv10_110"),
-                          ("a v2run17", "a_v2run17"), ("a v2neg opt 200", "a_v2neg_opt_200")):
+                          ("a v2run17", "a_v2run17"), ("a v2neg opt 200", "a_v2neg_opt_200"),
+                          ("e r1v1 50 10 110", "e_r1v1_50_10_110"), ("e r1v2 50 10 110", "e_r1v2_50_10_110"),
+                          ("x fid65537 v1", "x_fid65537_v1_150"), ("x fid65537 v2", "x_fid65537_v2_req150"),
+                          ("x fidm65535 v1", "x_fidm65535_v1_150"), ("x fidm65535 v2", "x_fidm65535_v2_req150"),
+                          ("x fid32769 short v1", "x_fid32769_short_v1_200"), ("x run16 dict 16", "x_run16_dict_16")):
             r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
         r["alt20"] = _rows(dsn, f"SELECT count(*), count(ls), sum(cardinality(ls)) FROM "
                                 f"pgcolumnar.read_parquet('{w}/alt20.parquet') AS t(ls text[])", sep=" ")
@@ -728,6 +734,94 @@ def test_parquet_streaming_data_page_v2_with_a_negative_num_values_is_rejected(r
     if r is not None:
         expect.text(_got(r, "a v2neg opt 200"), REFUSED,
                     "a DATA_PAGE_V2 with a negative num_values is rejected")
+
+
+def test_parquet_streaming_data_page_header_that_repeats_num_values_ending_nonzero_is_rejected(request, expect):
+    """num_values 50 then 10 would drop ids 60..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "e r1v1 50 10 110"), REFUSED,
+                    "a DataPageHeader that repeats num_values with a nonzero last value is rejected")
+
+
+def test_parquet_streaming_data_page_v2_header_that_repeats_num_values_ending_nonzero_is_rejected(request, expect):
+    """num_values 50 then 10 would drop ids 60..99"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "e r1v2 50 10 110"), REFUSED,
+                    "a DataPageHeaderV2 that repeats num_values with a nonzero last value is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_field_id_65537_is_rejected(request, expect):
+    """Thrift field ids are i16; kept whole, the id hid a num_values 50"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fid65537 v1"), REFUSED,
+                    "a DataPageHeader with field id 65537 is rejected")
+
+
+def test_parquet_streaming_data_page_v2_header_with_field_id_65537_is_rejected(request, expect):
+    """Thrift field ids are i16; kept whole, the id hid a num_values 50"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fid65537 v2"), REFUSED,
+                    "a DataPageHeaderV2 with field id 65537 is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_field_id_minus_65535_is_rejected(request, expect):
+    """Thrift field ids are i16; kept whole, the id hid a num_values 50"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fidm65535 v1"), REFUSED,
+                    "a DataPageHeader with field id -65535 is rejected")
+
+
+def test_parquet_streaming_data_page_v2_header_with_field_id_minus_65535_is_rejected(request, expect):
+    """Thrift field ids are i16; kept whole, the id hid a num_values 50"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fidm65535 v2"), REFUSED,
+                    "a DataPageHeaderV2 with field id -65535 is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_field_id_32769_from_a_delta_is_rejected(request, expect):
+    """a short-form delta past 32767 leaves int16 too"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fid32769 short v1"), REFUSED,
+                    "a DataPageHeader with field id 32769 from a short-form delta is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_unknown_field_id_32767_reads(request, expect):
+    """32767 is the largest field id; an unknown field with it is skipped"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x fid32767 v1"), "200 19900",
+                    "a DataPageHeader with an unknown field id 32767 reads")
+
+
+def test_parquet_streaming_data_page_whose_v2_header_repeats_num_values_reads(request, expect):
+    """a struct of the other version is ignored, whatever it holds"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "e oth8 r1 200"), "200 19900",
+                    "a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads")
+
+
+def test_parquet_streaming_data_page_v2_whose_v1_header_repeats_num_values_reads(request, expect):
+    """a struct of the other version is ignored, whatever it holds"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "e oth5 r1 v2 200"), "200 19900",
+                    "a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads")
+
+
+def test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run(request, expect):
+    """16 empty pages, a dictionary page and 16 more are 32 in a row"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "x run16 dict 16"), REFUSED,
+                    "16 empty data pages, a dictionary page and 16 more are rejected (one run)")
 
 
 def test_parquet_streaming_data_page_v2_on_a_list_column_reads(request, expect):
