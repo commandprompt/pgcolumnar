@@ -57,6 +57,7 @@
 #include "access/xact.h"
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_class.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "fmgr.h"
@@ -78,6 +79,7 @@
 #include "storage/latch.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
+#include "utils/syscache.h"
 #include "tcop/tcopprot.h"
 #if PG_VERSION_NUM >= 160000
 #include "utils/wait_event.h"	/* PG_WAIT_EXTENSION */
@@ -232,6 +234,48 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 
 	pfree(buf);
 	return offs;
+}
+
+/*
+ * pcopy_has_unique_or_exclusion_index
+ *		Does rel have a unique or exclusion index?
+ *
+ *		parallel_copy cannot load such a single table with more than one worker
+ *		(#2080). Each loader keeps the locks its inserts took -- the unique-key
+ *		advisory locks, and the xid a sibling's btree or exclusion check waits
+ *		on -- in its prepared transaction. The coordinator commits only after
+ *		every loader has finished, so a loader that waits on a sibling's
+ *		prepared transaction either waits until cancelled or fails with a
+ *		deadlock error. Distinct keys do not help: the advisory locks are hash
+ *		buckets.
+ *
+ *		The calling backend checks before it starts any worker, and each loader
+ *		checks again once it holds ROW EXCLUSIVE on the table: the first check
+ *		runs under ACCESS SHARE, which CREATE INDEX does not wait for.
+ */
+static bool
+pcopy_has_unique_or_exclusion_index(Relation rel)
+{
+	List	   *indexes = RelationGetIndexList(rel);
+	ListCell   *lc;
+	bool		found = false;
+
+	foreach(lc, indexes)
+	{
+		HeapTuple	tup = SearchSysCache1(INDEXRELID,
+										  ObjectIdGetDatum(lfirst_oid(lc)));
+		Form_pg_index idx;
+
+		if (!HeapTupleIsValid(tup))
+			continue;
+		idx = (Form_pg_index) GETSTRUCT(tup);
+		found = idx->indisunique || idx->indisexclusion;
+		ReleaseSysCache(tup);
+		if (found)
+			break;
+	}
+	list_free(indexes);
+	return found;
 }
 
 /*
@@ -887,6 +931,25 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		pcopy_src.path = hdr->filename;
 
 		rel = table_open(hdr->relid, RowExclusiveLock);
+
+		/*
+		 * The calling backend refused a unique or exclusion index under ACCESS
+		 * SHARE, which CREATE INDEX does not wait for, so one may have appeared
+		 * since (#2080). ROW EXCLUSIVE makes CREATE INDEX wait until this load
+		 * ends, so the index list read now holds for the whole load.
+		 *
+		 * This catches an index created before any loader opened the table. A
+		 * CREATE INDEX that queues for its SHARE lock after some loaders hold
+		 * ROW EXCLUSIVE makes the other loaders queue behind it, so they never
+		 * reach this check, and the load can still hang until cancelled.
+		 */
+		if (hdr->single_table && hdr->nworkers > 1 &&
+			pcopy_has_unique_or_exclusion_index(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
+							RelationGetRelationName(rel)),
+					 errhint("Load it with workers => 1, or with COPY.")));
 		pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = "(pgcolumnar parallel_copy)";
 
@@ -1611,7 +1674,26 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 * the storage row and the loaders skip its creation lock via
 			 * pgcolumnar_bulk_parallel_writer). Any record-aligned byte split is
 			 * correct -- no partition key, so no sorted-input requirement.
+			 *
+			 * Not with a unique or exclusion index and more than one worker: the
+			 * loaders would wait on each other's prepared transactions until
+			 * cancelled, or fail with a deadlock error (#2080). Each loader checks
+			 * again under its ROW EXCLUSIVE lock. A partitioned target is not
+			 * affected, because each worker loads distinct partitions, and so
+			 * distinct indexes.
 			 */
+			if (workers > 1 && pcopy_has_unique_or_exclusion_index(target))
+			{
+				char		nm[NAMEDATALEN];
+
+				strlcpy(nm, RelationGetRelationName(target), NAMEDATALEN);
+				table_close(target, AccessShareLock);
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
+								nm),
+						 errhint("Load it with workers => 1, or with COPY.")));
+			}
 			offs = pcopy_naive_offsets(path, workers);
 			single_table = true;
 		}

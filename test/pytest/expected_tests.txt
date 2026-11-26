@@ -366,7 +366,10 @@
 # the module map naming every source file and catalog, by collection over NO_CLUSTER.
 # guard_tests 894 -> 895 for test_coverage_report.py's derived guard that every job running run_coverage.py
 # fetches the release tags first (#2054), by collection over NO_CLUSTER.
-guard_tests 895
+# guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
+# that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
+# over NO_CLUSTER: 897 tests collected.
+guard_tests 897
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2159,42 +2162,112 @@ guard_tests 895
 # cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
 # float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
-# cluster_tests 5581 -> 5587 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
+# test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
+# test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
+# test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
+# test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
+# by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
+# and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 -> 5603 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
+# loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
+# cluster_tests 5603 -> 5605 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
+# 98 on main, 106 on this branch.
+# cluster_tests 5605 -> 5607 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
+# collected for that file: 108.
+# cluster_tests 5607 -> 5610 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
+# one of 4 loaders, which a row trigger's sequence shows; collected for that file: 111.
+# cluster_tests 5610 -> 5613 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
+# default worker count; collected for that file: 114.
+# cluster_tests 5613 -> 5615 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# exclusion constraint and an expression unique index are refused with 2 workers; collected for that file: 116.
+# cluster_tests 5615 -> 5620 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
+# constraint and a NULLS NOT DISTINCT unique index with an INCLUDE column are refused with 2 workers; a caller
+# without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
+# its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
+# main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
+# cluster_tests 5620 -> 5626 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
+# `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5626 -> 5631 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
+# FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
+# file, and no backend killed by a signal), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
+# cluster_tests 5631 -> 5637 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
+# after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
+# cluster_tests 5637 -> 5640 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
+# leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5507 tests collected.
+# cluster_tests 5640 -> 5644 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
+# exports in one session each return their row count and leave no temp file; a FATAL export after a failed
+# unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
+# cluster_tests 5644 -> 5650 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
 # take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
 # rewrite both commit (three tests, each parametrized over the two verbs), by collection:
 # `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5587 -> 5593, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# cluster_tests 5650 -> 5656, still #2074: three more tests, each parametrized over the two verbs. A writer that
 # deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
 # "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
-# cluster_tests 5593 -> 5619, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# cluster_tests 5656 -> 5682, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
 # before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
 # with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
-# cluster_tests 5619 -> 5631, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# cluster_tests 5682 -> 5694, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
 # test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
 # pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
 # lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
-# cluster_tests 5631 -> 5649, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# cluster_tests 5694 -> 5712, still #2074, for the review of #2139 at 686aed4e: eight more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
 # lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
 # inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
 # max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5555 tests collected.
-# cluster_tests 5649 -> 5656, still #2074, for the review of #2139 at b1d94859: two more tests in
+# cluster_tests 5712 -> 5719, still #2074, for the review of #2139 at b1d94859: two more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
 # 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
 # and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
-# cluster_tests 5656 -> 5666, still #2074, for the review of #2139 at 42763bd3: five more tests in
+# cluster_tests 5719 -> 5729, still #2074, for the review of #2139 at 42763bd3: five more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs. Each verb gives back every group lock it took
 # before it waits on a busy last group, so a writer that then updates group 0 and the rewrite both commit, and
 # with a limit of 0 a user lock_timeout ends the wait with PostgreSQL's own lock-timeout error, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5665 tests collected.
-# cluster_tests 5666 -> 5672, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
+# cluster_tests 5729 -> 5735, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
 # test_native_rewrite_conc.py parametrized over the two verbs. While each verb waits on a busy last group it
 # holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
 # and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5672 tests collected.
-cluster_tests 5672
+cluster_tests 5735

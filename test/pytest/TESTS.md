@@ -10032,7 +10032,7 @@ One module fixture runs the three scenarios in a private database; session 2's b
 
 ## 231. test_iceberg_scan.py: iceberg_scan reads by field id, behind the server-file gate
 
-The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens.
+The twin of `test/iceberg_scan.sh` (#388 phase 3c). Over a relocated warehouse the scan reads the current snapshot, projects and reorders by field id, reads a subset and a column the schema renamed, refuses a name the schema lacks, refuses a role without pg_read_server_files, and lets a non-superuser member read every row. Over a copy of the metadata whose schema also has a struct, a list and a map, it still reads the scalar columns, and refuses each nested column declared with a scalar type with 0A000 and a message naming the column and its kind, through `iceberg_scan` and through a `pgcolumnar_iceberg` foreign table (#1788). Over `warehouse_promo` (#1789), files written before an int -> long, float -> double or decimal(10,2) -> decimal(20,2) promotion read as the current types: alone, mixed with a newer file, under equality deletes on the promoted column written on both sides of it, and through a `pgcolumnar_iceberg` foreign table. A narrower declared type, a date declared bigint and positional `read_parquet`'s bigint over INT32 are refused with 42804, and `read_parquet` by field id widens. Over format-version 3 copies of the events and `warehouse_promo` metadata (#2087), a field with an `initial-default` is refused with 0A000 as a required or an optional output column, as the column an equality delete compares (a required long and, over `warehouse_del`, an optional string with a string default and an optional int with a default of 0), and through a `pgcolumnar_iceberg` foreign table, while the columns without one still read. A string default of `""` and a boolean default of `false` are refused too, and a null default reads as null, even beside a write-default, as does a field that has only a write-default. A default in a format-version 2 copy is refused too, as are a default with no write-default, a default on the second column of a two-column equality delete, and a default on a field that is neither the last in the schema nor the last-column-id. One refusal lists the defaulted column first. The other columns still read when the defaulted field comes first in the schema, and equality deletes still apply when an earlier field that they do not compare has a default.
 
 ### Every test
 
@@ -10086,6 +10086,22 @@ One module fixture copies the warehouse into `server_dir`, writes the renamed an
 | `test_a_date_column_declared_bigint_is_refused` | a date column declared bigint is refused, not widened (42804) |
 | `test_read_parquet_by_field_id_widens_an_int32_column` | read_parquet by field id reads an INT32 column as bigint |
 | `test_positional_read_parquet_keeps_its_exact_type_map` | positional read_parquet still refuses bigint over an INT32 column (42804) |
+| `test_iceberg_scan_refuses_a_v3_column_with_an_initial_default` | iceberg_scan refuses a v3 column whose initial-default it cannot apply (0A000) |
+| `test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default` | iceberg_scan refuses an optional v3 column whose initial-default it cannot apply (0A000) |
+| `test_iceberg_scan_reads_the_v3_columns_without_an_initial_default` | iceberg_scan still reads the v3 table's columns that have no initial-default |
+| `test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default` | iceberg_scan refuses an equality delete on a v3 column with an initial-default (0A000) |
+| `test_a_foreign_table_refuses_a_v3_column_with_an_initial_default` | a pgcolumnar_iceberg foreign table refuses a v3 column with an initial-default (0A000) |
+| `test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default` | iceberg_scan refuses an optional v3 string column whose initial-default is empty (0A000) |
+| `test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default` | iceberg_scan refuses an optional v3 boolean column whose initial-default is false (0A000) |
+| `test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null` | iceberg_scan reads an optional v3 column whose initial-default is null as null |
+| `test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first` | iceberg_scan still reads the other columns when the v3 field with an initial-default comes first |
+| `test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field` | iceberg_scan still applies equality deletes when an earlier, uncompared v3 field has an initial-default |
+| `test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default` | iceberg_scan refuses an equality delete on a v3 string column whose initial-default is a string (0A000) |
+| `test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null` | iceberg_scan reads an optional v3 column that has only a write-default as null |
+| `test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default` | iceberg_scan refuses an equality delete on a v3 int column whose initial-default is 0 (0A000) |
+| `test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file` | iceberg_scan refuses an initial-default in a format-version 2 metadata file (0A000) |
+| `test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default` | iceberg_scan refuses an equality delete whose second column has a v3 initial-default (0A000) |
+| `test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id` | iceberg_scan refuses a v3 column with an initial-default that is neither the last field nor the last-column-id (0A000) |
 
 ## 232. test_iceberg_catalog.py: the Iceberg catalog reader resolves the named current snapshot
 
@@ -10207,7 +10223,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
 
-The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`. Each target holds a good file first, and the FATAL re-export must leave it intact. Two more exports end a transaction with FATAL: one after two finished exports, one after a failed export rolled back to a savepoint. Neither leaves a temp file. Three more exports fail away from Write: one whose rename fails (a non-empty directory at the final name) ends with FATAL and leaves no temp file, and so does one whose flush fails (its temp name is a symlink to `/dev/full`); one whose rename fails and one whose temp file cannot be opened (a missing parent directory) are rolled back to a savepoint before a FATAL export, which leaves no temp file, and the failed rename's own temp file is gone after the rollback. One more export, whose Abort cannot unlink its stale temp file (a read-only directory), is rolled back to a savepoint before a FATAL export, which leaves no temp file. One session runs 25 exports: each returns its row count, the session survives, and no temp file remains. The server log shows no backend killed by a signal, and no AddressSanitizer report, during the FATAL arms.
 
 ### Every test
 
@@ -10231,6 +10247,30 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
 | `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
 | `test_after_reset_exports_work_again` | after RESET, exports work again |
+| `test_fatal_the_export_ends_its_backend_with_fatal[parquet]` | fatal: the parquet export ends its backend with FATAL |
+| `test_fatal_the_export_ends_its_backend_with_fatal[arrow]` | fatal: the arrow export ends its backend with FATAL |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[parquet]` | fatal: a FATAL re-export leaves the previous parquet file intact |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[arrow]` | fatal: a FATAL re-export leaves the previous arrow file intact |
+| `test_fatal_no_temp_file_after_a_fatal_exit[parquet]` | fatal: no parquet temp file after a FATAL exit |
+| `test_fatal_no_temp_file_after_a_fatal_exit[arrow]` | fatal: no arrow temp file after a FATAL exit |
+| `test_fatal_after_finished_exports_in_one_transaction_ends_with_fatal` | fatal: a FATAL export after two finished exports in one transaction ends with FATAL |
+| `test_fatal_no_temp_file_after_finished_exports_in_one_transaction` | fatal: no temp file after a FATAL export that followed finished exports |
+| `test_fatal_after_a_failed_export_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_rolled_back_export` | fatal: no temp file after a FATAL export that followed a rolled-back export |
+| `test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms` | fatal: no backend died by a signal during the FATAL arms |
+| `test_fatal_an_export_whose_rename_fails_ends_its_backend_with_fatal` | fatal: an export whose rename fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_rename` | fatal: no temp file after a FATAL at the rename |
+| `test_fatal_an_export_whose_flush_fails_ends_its_backend_with_fatal` | fatal: an export whose flush fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_flush` | fatal: no temp file after a FATAL at the flush |
+| `test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_rename` | fatal: no temp file after a FATAL export that followed a failed rename |
+| `test_fatal_no_temp_file_after_a_failed_rename_rolled_back_to_a_savepoint` | fatal: no temp file after a failed rename rolled back to a savepoint |
+| `test_fatal_25_exports_in_one_session_each_return_their_row_count` | fatal: 25 exports in one session each return their row count |
+| `test_fatal_no_temp_file_after_25_exports_in_one_session` | fatal: no temp file after 25 exports in one session |
+| `test_fatal_after_a_failed_unlink_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_unlink` | fatal: no temp file after a FATAL export that followed a failed unlink |
+| `test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_open` | fatal: no temp file after a FATAL export that followed a failed open |
 
 ## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
 
@@ -12236,7 +12276,7 @@ The pytest twin of `test/parallel_copy_dedup.sh` (ported for #1341), every check
 
 ## 297. test_parallel_copy.py: parallel_copy splits a file on record boundaries and loads it atomically
 
-The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). A load into a table with a projection fills the projection (#2092). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database.
+The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by the shell's name. `pgcolumnar.file_split_offsets` cuts a text file into record-aligned ranges that cover it, and loading the ranges one by one gives back the rows the file was generated from. `pgcolumnar.parallel_copy` loads a partitioned or a single columnar target with the rows a single COPY gives, leaves no prepared transaction, rolls every worker back when one fails, and refuses a text key, an unsorted file, a DEFAULT partition, too many workers, a missing file, a heap target and a FIFO. Both functions refuse an object-storage URL with 0A000, naming themselves and the URL (#1886); `parallel_copy` does it after its INSERT check and before it checks the target's kind. Both refuse `s3a://` and `s3n://` URLs too, in any case (#1918). `parallel_copy` refuses more than one worker for a single table with a unique index or an exclusion constraint, with 0A000, where it used to hang or fail with a deadlock error, and refuses it again when the unique index appears after its first check; a partitioned table with a primary key still loads with 4 workers (#2080). A load into a table with a projection fills the projection (#2092). A survival check reads the server log's count of killed backends as well as `SELECT 1`. A loader that fails closes its file once, so the server log holds no `CloseTransientFile` WARNING from the failed loads (#2083). On a private database.
 
 ### Every test
 
@@ -12304,6 +12344,29 @@ The pytest twin of `test/parallel_copy.sh` (ported for #1341), every check by th
 | `test_parallel_copy_refuses_s3a_and_s3n_in_any_case` | the same for `S3A://` and `S3n://` |
 | `test_parallel_copy_split_still_reads_a_local_path_holding_s3a` | control: `file_split_offsets` still splits a local file whose path holds `s3a://` past its start; its last offset is the file size |
 | `test_parallel_copy_still_loads_a_local_path_holding_s3a` | control: `parallel_copy` still loads that file's 5000 rows |
+| `test_parallel_copy_refuses_a_primary_key_table_with_two_workers` | `parallel_copy` with 2 workers into a single table with a primary key and a second, non-unique index created after it is refused with 0A000 and the hint, within a 10 s statement_timeout, rather than hanging or failing with 40P01 (#2080) |
+| `test_parallel_copy_refuses_a_unique_index_table_with_four_workers` | the same with 4 workers and a two-column `CREATE UNIQUE INDEX ... (id, txt)` created after a non-unique index, so the unique index is not the first in the list and has more than one key column (#2080) |
+| `test_parallel_copy_refuses_an_exclusion_constraint_table_with_two_workers` | the same with 2 workers and `EXCLUDE USING btree (id WITH =)`, an index with `indisunique` false and `indisexclusion` true (#2080) |
+| `test_parallel_copy_refuses_a_deferrable_unique_index_table_with_two_workers` | the same with 2 workers and `UNIQUE DEFERRABLE INITIALLY DEFERRED` (#2080) |
+| `test_parallel_copy_refuses_a_partial_unique_index_table_with_two_workers` | the same with 2 workers and a partial unique index, `WHERE id >= 0`, that every row matches (#2080) |
+| `test_parallel_copy_refuses_a_deferrable_exclusion_constraint_table_with_two_workers` | the same with 2 workers and `EXCLUDE USING btree (id WITH =) DEFERRABLE INITIALLY DEFERRED`, an index with `indisunique` and `indimmediate` false, so only `indisexclusion` catches it (#2080) |
+| `test_parallel_copy_refuses_an_expression_unique_index_table_with_two_workers` | the same with 2 workers and a unique index on the expression `(id + 0)`, whose key the loaders hash into their unique locks (#2080) |
+| `test_parallel_copy_refuses_a_gist_exclusion_constraint_table_with_two_workers` | the same with 2 workers and `EXCLUDE USING gist (int4range(id, id, '[]') WITH &&)`, whose ranges do not overlap: the refusal does not look at the access method (#2080) |
+| `test_parallel_copy_refuses_a_nulls_not_distinct_include_unique_index_table_with_two_workers` | the same with 2 workers and `UNIQUE NULLS NOT DISTINCT (id) INCLUDE (txt)`, where `indnatts` differs from `indnkeyatts` (#2080) |
+| `test_parallel_copy_gives_a_caller_without_insert_42501_before_the_unique_refusal` | a role with `pg_read_server_files` and SELECT but no INSERT on the primary-key table gets `42501 permission denied for table t_uk` with 2 workers, not the 0A000 refusal (#2080, #563) |
+| `test_parallel_copy_refuses_a_url_before_the_unique_refusal` | an `s3://` URL into the primary-key table with 2 workers gets the #1886 refusal, not the 0A000 unique-index refusal (#2080) |
+| `test_parallel_copy_refuses_a_primary_key_table_with_dedup` | `dedup => true` with 2 workers into the primary-key table still gets the calling backend's 0A000 and the hint (#2080) |
+| `test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index` | premise: `CREATE UNIQUE INDEX CONCURRENTLY` fails on a columnar table and leaves the index with `indisunique` t, `indisvalid` f and `indisready` t (#2080) |
+| `test_parallel_copy_refuses_an_invalid_unique_index_table_with_two_workers` | `parallel_copy` with 2 workers into that table is refused with 0A000 and the hint: an invalid but ready unique index still checks every insert (#2080) |
+| `test_parallel_copy_refuses_a_primary_key_table_with_the_default_worker_count` | `parallel_copy` with no worker count, under `max_parallel_workers=4` (so 2 workers), into a table with a primary key is refused by the calling backend with 0A000 and the hint (#2080) |
+| `test_parallel_copy_unique_refusal_loads_nothing` | every table refused for a unique index stays empty: the primary key, unique, deferrable, partial, invalid, default-worker-count, expression and NULLS NOT DISTINCT INCLUDE tables (#2080) |
+| `test_parallel_copy_exclusion_refusal_loads_nothing` | the three tables with an exclusion constraint (btree immediate, btree deferrable and gist) stay empty after their refusals (#2080) |
+| `test_parallel_copy_still_loads_a_primary_key_table_with_one_worker` | control: 1 worker still loads the 5000 rows into a table with a primary key |
+| `test_parallel_copy_still_loads_a_non_unique_index_table_with_two_workers` | control: 2 workers still load the 5000 rows into a table with a non-unique index |
+| `test_parallel_copy_still_loads_a_partitioned_primary_key_table_with_four_workers` | control: 4 workers still load the 5000 rows into a RANGE-partitioned table with a primary key, within a 30 s statement_timeout, and the table holds 5000 rows (#2080) |
+| `test_parallel_copy_refuses_a_unique_index_created_after_its_check` | a unique index created after the first check, while a second session holds SHARE on the table, is refused by the loaders with 0A000 rather than a hang or 40P01 (#2080) |
+| `test_parallel_copy_late_unique_refusal_loads_nothing` | the table whose unique index appeared after the first check stays empty after the loaders refuse it (#2080) |
+| `test_parallel_copy_refuses_a_late_unique_index_in_every_loader` | the late unique index with 4 workers: the load is refused with 0A000, and a row trigger's sequence shows that no loader inserted a row, so every loader ran its check (#2080) |
 | `test_parallel_copy_into_a_table_with_a_projection_fills_the_projection` | (#2092) `parallel_copy into a table with a projection fills the projection, leaves no prepared transaction and keeps the server up (#2092)`: 1 worker into an empty projection and 2 workers into a projection that already holds 1000 rows, each table with an options row; both return 5000 and the projection holds every row. 2 or more workers into an empty projection hang (#2161), so no case covers that |
 
 ## 298. test_parallel.py: a parallel columnar scan returns what the heap returns
@@ -14565,6 +14628,8 @@ End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 | `test_the_gate_passes_only_when_every_suite_passed` | any FAIL fails the gate, any DECLINED makes it incomplete, and a gate that ran no suite fails |
 | `test_each_suite_runs_with_fatal_sanitizers_logging_to_its_own_directory` | through `main()` with a stand-in prefix and pytest: `abort_on_error=1` and `log_path` in both option strings, `detect_leaks=0`, a separate log directory per suite, `PGC_ITERS=200`, and a report written during a passing suite failing the gate; with none, it passes |
 | `test_the_command_line_refuses_what_run_san_sh_refuses` | through the entry point: `--list-suites` with no build, and a missing or ordinary build refused with `run_san.sh`'s words |
+| `test_the_reader_names_a_step_that_runs_the_prefix_with_leak_detection_on` | the nightly reader on stand-in jobs: a step that runs `$SAN_PREFIX/bin/...` without `detect_leaks=0` is named; the step's env, the command's own `env` and the job's env each cover it; a comment is not a run, and another job is not read |
+| `test_every_sanitizer_job_step_runs_the_prefix_with_leak_detection_off` | #2195: every step of the nightly's `sanitizer` job that runs an instrumented binary sets `detect_leaks=0`. On main it names "Confirm the build is the expected sanitizer build", the step that failed every night |
 
 ## 359. test_coverage_report.py: the coverage report over the pytest corpus keeps run_coverage.sh's refusals
 
