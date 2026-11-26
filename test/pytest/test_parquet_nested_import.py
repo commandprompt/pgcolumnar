@@ -16,6 +16,8 @@ ON A PRIVATE DATABASE, built once by a module fixture in the shell's order. Only
 pyarrow arms need pyarrow, and each declines by its own name without it, as the shell's
 two skips do. The files live in `server_dir`, because the backend reads and writes them.
 """
+import threading
+
 import psycopg
 import pytest
 
@@ -37,6 +39,18 @@ def _value(dsn, sql):
     except psycopg.Error as exc:
         return _failed(exc)
     return "" if row is None or row[0] is None else str(row[0])
+
+
+def _bounded_value(dsn, sql, seconds=60):
+    """_value with a client-side bound. A wrong walk up the schema tree can loop
+    in the backend, which then ignores statement_timeout and every cancel; under
+    the bound that reads as a failed query, not a hung run (#2146 fifth review).
+    The daemon thread is left blocked; the cluster's immediate stop ends it."""
+    out = []
+    worker = threading.Thread(target=lambda: out.append(_value(dsn, sql)), daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return out[0] if out else query_error(f"no answer in {seconds} s")
 
 
 def _run(dsn, sql):
@@ -271,6 +285,31 @@ def _write_more_shape_files(paths, pa, pq):
     # the leading part of the struct (#2146 fourth review).
     pre = pa.array([{"a": 1, "b": 2}, None, {"a": None, "b": 3}], pa.struct([("a", i32), ("b", i32)]))
     pq.write_table(pa.table({"id": pa.array([0, 1, 2], i32), "s": pre}), str(paths["pre"]))
+    # Leaves two levels below the struct that holds them, or below none (#2146
+    # fifth review). Each walk up the tree must run to the end, not one step.
+    # s1 struct<p struct<a>> and s2 struct<q struct<b>>: no one struct holds a and b.
+    pq.write_table(pa.table({"id": pa.array([0, 1], i32),
+                             "s1": pa.array([{"p": {"a": 1}}, {"p": None}],
+                                            pa.struct([("p", pa.struct([("a", i32)]))])),
+                             "s2": pa.array([{"q": {"b": 2}}, None],
+                                            pa.struct([("q", pa.struct([("b", i32)]))]))}),
+                   str(paths["twodeep"]))
+    # s struct<p struct<x struct<a>>, q struct<y struct<b>>>: s holds both, two levels up.
+    far = pa.array([{"p": {"x": {"a": 1}}, "q": {"y": {"b": 2}}}, {"p": None, "q": {"y": {"b": 5}}}, None,
+                    {"p": {"x": None}, "q": {"y": None}}],
+                   pa.struct([("p", pa.struct([("x", pa.struct([("a", i32)]))])),
+                              ("q", pa.struct([("y", pa.struct([("b", i32)]))]))]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], i32), "s": far}), str(paths["far"]))
+    # s struct<p struct<q struct<b>>, a>: the first leaf is two levels deeper than the last.
+    dfirst = pa.array([{"p": {"q": {"b": 2}}, "a": 1}, {"p": None, "a": 3}, None,
+                       {"p": {"q": None}, "a": None}],
+                      pa.struct([("p", pa.struct([("q", pa.struct([("b", i32)]))])), ("a", i32)]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], i32), "s": dfirst}), str(paths["dfirst"]))
+    # s struct<a, p struct<q struct<b>>>: the last leaf is two levels deeper than the first.
+    dlast = pa.array([{"a": 1, "p": {"q": {"b": 2}}}, {"a": 3, "p": None}, None,
+                      {"a": None, "p": {"q": None}}],
+                     pa.struct([("a", i32), ("p", pa.struct([("q", pa.struct([("b", i32)]))]))]))
+    pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], i32), "s": dlast}), str(paths["dlast"]))
     for path in paths.values():
         path.chmod(0o644)
 
@@ -329,7 +368,8 @@ def _level_arm(ni, pa, pq):
         got["flat refusal"] = _refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
         more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3",
-                                                                 "two", "reqin", "part", "pre")}
+                                                                 "two", "reqin", "part", "pre",
+                                                                 "twodeep", "far", "dfirst", "dlast")}
         _write_more_shape_files(more, pa, pq)
         rows = "string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
         _run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
@@ -377,6 +417,14 @@ def _level_arm(ni, pa, pq):
             dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || "
                  "coalesce(a::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['mirror']}') AS t(id int, c lvl_b, a int)")
+        got["twodeep refusal"] = _refusal(
+            dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['twodeep']}') AS t(id int, c lvl_ii)")
+        got["far read"] = _bounded_value(
+            dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['far']}') AS t(id int, s lvl_ii)")
+        got["dfirst read"] = _bounded_value(
+            dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['dfirst']}') AS t(id int, s lvl_ba)")
+        got["dlast read"] = _bounded_value(
+            dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['dlast']}') AS t(id int, s lvl_ii)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -614,3 +662,51 @@ def test_a_composite_over_a_deep_leaf_stands_for_its_own_struct_not_the_next_lea
     if got is not None:
         expect.text(got["mirror deep leaf read"], "0:(2):1 1:NULL:3 2:NULL:NULL 3:(4):NULL",
                     "a composite over a deep leaf stands for its own struct, not the next leaf's")
+
+
+def test_a_composite_over_two_structs_two_levels_down_is_refused(ni, expect):
+    # s1 struct<p struct<a>> and s2 struct<q struct<b>>: no one struct holds a and b.
+    pa = expect.require_module("pyarrow", name="a composite over two structs two levels down is refused")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite over two structs two levels down is refused") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["twodeep refusal"], "refused: not inside one struct",
+                    "a composite over two structs two levels down is refused")
+
+
+def test_a_composite_finds_a_struct_two_levels_above_both_its_leaves(ni, expect):
+    # s struct<p struct<x struct<a>>, q struct<y struct<b>>>: s holds both, two levels up.
+    pa = expect.require_module("pyarrow", name="a composite finds a struct two levels above both its leaves")
+    pq = expect.require_module("pyarrow.parquet",
+                               name="a composite finds a struct two levels above both its leaves") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["far read"], "0:(1,2) 1:(,5) 2:NULL 3:(,)",
+                    "a composite finds a struct two levels above both its leaves")
+
+
+def test_a_composite_finds_its_struct_when_a_leaf_two_levels_down_comes_first(ni, expect):
+    # s struct<p struct<q struct<b>>, a>: the first leaf is two levels deeper than the last.
+    pa = expect.require_module(
+        "pyarrow", name="a composite finds its struct when a leaf two levels down comes first")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite finds its struct when a leaf two levels down comes first") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["dfirst read"], "0:(2,1) 1:(,3) 2:NULL 3:(,)",
+                    "a composite finds its struct when a leaf two levels down comes first")
+
+
+def test_a_composite_finds_its_struct_when_a_leaf_two_levels_down_comes_last(ni, expect):
+    # s struct<a, p struct<q struct<b>>>: the last leaf is two levels deeper than the first.
+    pa = expect.require_module(
+        "pyarrow", name="a composite finds its struct when a leaf two levels down comes last")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite finds its struct when a leaf two levels down comes last") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["dlast read"], "0:(1,2) 1:(3,) 2:NULL 3:(,)",
+                    "a composite finds its struct when a leaf two levels down comes last")

@@ -85,6 +85,11 @@ check "round-trips after delete" \
 #
 #     with pyarrow     28 passed + 0 skipped = 28
 #     without pyarrow   5 passed + 23 skipped = 28
+#
+# The fifth review of #2146 added four more, which decline the same way:
+#
+#     with pyarrow     32 passed + 0 skipped = 32
+#     without pyarrow   5 passed + 27 skipped = 32
 # pyarrow-written nested Parquet file: list<int32> and struct<x:int,y:string>.
 # This proves we read the Dremel levels the reference writer produces, not just
 # our own exporter's byte layout.
@@ -161,6 +166,10 @@ LVL_TWO="$PGC_WORKDIR/lvl_two.parquet"
 LVL_REQIN="$PGC_WORKDIR/lvl_reqin.parquet"
 LVL_PART="$PGC_WORKDIR/lvl_part.parquet"
 LVL_PRE="$PGC_WORKDIR/lvl_pre.parquet"
+LVL_TDEEP="$PGC_WORKDIR/lvl_twodeep.parquet"
+LVL_FAR="$PGC_WORKDIR/lvl_far.parquet"
+LVL_DFIRST="$PGC_WORKDIR/lvl_dfirst.parquet"
+LVL_DLAST="$PGC_WORKDIR/lvl_dlast.parquet"
 LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"required lists and struct read like pyarrow"
 	"required lists and struct import like pyarrow"
@@ -181,10 +190,21 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"a REQUIRED struct is NULL under a NULL parent"
 	"a composite over part of a struct is NULL only when that struct is"
 	"a composite over the leading part of a struct is NULL only when that struct is"
-	"a composite over a deep leaf stands for its own struct, not the next leaf's")
+	"a composite over a deep leaf stands for its own struct, not the next leaf's"
+	"a composite over two structs two levels down is refused"
+	"a composite finds a struct two levels above both its leaves"
+	"a composite finds its struct when a leaf two levels down comes first"
+	"a composite finds its struct when a leaf two levels down comes last")
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
+# lvl_q SQL -- q with a client-side bound of 60 s. A wrong walk up the schema
+# tree can loop in the backend, which then ignores statement_timeout and every
+# cancel; under the bound that reads as an empty value, a FAIL (#2146 fifth review).
+lvl_q() {
+	timeout 60 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -At -c "$1" 2>/dev/null || true
+}
 lvl_refusal() {
 	local out
 	if out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
@@ -199,7 +219,8 @@ lvl_refusal() {
 }
 if python3 - "$LVL_STL" "$LVL_REQ" "$LVL_SUB" "$LVL_FLAT" \
 	"$LVL_MIR" "$LVL_ONE" "$LVL_DEEP" "$LVL_NEST" "$LVL_SOS" "$LVL_DEEP3" \
-	"$LVL_TWO" "$LVL_REQIN" "$LVL_PART" "$LVL_PRE" <<'PY'
+	"$LVL_TWO" "$LVL_REQIN" "$LVL_PART" "$LVL_PRE" \
+	"$LVL_TDEEP" "$LVL_FAR" "$LVL_DFIRST" "$LVL_DLAST" <<'PY'
 import sys
 try:
     import pyarrow as pa
@@ -283,6 +304,27 @@ pq.write_table(pa.table({"id": pa.array([0, 1, 2], I), "s": part}), sys.argv[13]
 # the leading part of the struct (#2146 fourth review).
 pre = pa.array([{"a": 1, "b": 2}, None, {"a": None, "b": 3}], pa.struct([("a", I), ("b", I)]))
 pq.write_table(pa.table({"id": pa.array([0, 1, 2], I), "s": pre}), sys.argv[14])
+# Leaves two levels below the struct that holds them, or below none (#2146
+# fifth review). Each walk up the tree must run to the end, not one step.
+# s1 struct<p struct<a>> and s2 struct<q struct<b>>: no one struct holds a and b.
+pq.write_table(pa.table({"id": pa.array([0, 1], I),
+                         "s1": pa.array([{"p": {"a": 1}}, {"p": None}], pa.struct([("p", pa.struct([("a", I)]))])),
+                         "s2": pa.array([{"q": {"b": 2}}, None], pa.struct([("q", pa.struct([("b", I)]))]))}),
+               sys.argv[15])
+# s struct<p struct<x struct<a>>, q struct<y struct<b>>>: s holds both, two levels up.
+far = pa.array([{"p": {"x": {"a": 1}}, "q": {"y": {"b": 2}}}, {"p": None, "q": {"y": {"b": 5}}}, None,
+                {"p": {"x": None}, "q": {"y": None}}],
+               pa.struct([("p", pa.struct([("x", pa.struct([("a", I)]))])),
+                          ("q", pa.struct([("y", pa.struct([("b", I)]))]))]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], I), "s": far}), sys.argv[16])
+# s struct<p struct<q struct<b>>, a>: the first leaf is two levels deeper than the last.
+dfirst = pa.array([{"p": {"q": {"b": 2}}, "a": 1}, {"p": None, "a": 3}, None, {"p": {"q": None}, "a": None}],
+                  pa.struct([("p", pa.struct([("q", pa.struct([("b", I)]))])), ("a", I)]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], I), "s": dfirst}), sys.argv[17])
+# s struct<a, p struct<q struct<b>>>: the last leaf is two levels deeper than the first.
+dlast = pa.array([{"a": 1, "p": {"q": {"b": 2}}}, {"a": 3, "p": None}, None, {"a": None, "p": {"q": None}}],
+                 pa.struct([("a", I), ("p", pa.struct([("q", pa.struct([("b", I)]))]))]))
+pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], I), "s": dlast}), sys.argv[18])
 PY
 then
 	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
@@ -401,6 +443,24 @@ then
 		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(a::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_MIR') AS t(id int, c lvl_b, a int);")" \
 		'0:(2):1 1:NULL:3 2:NULL:NULL 3:(4):NULL'
+	# The struct that holds both leaves is two levels above each of them, or
+	# there is none. Each check reads like pyarrow only if every walk up the
+	# tree runs to the end (#2146 fifth review).
+	check "a composite over two structs two levels down is refused" \
+		"$(lvl_refusal "SELECT * FROM pgcolumnar.read_parquet('$LVL_TDEEP') AS t(id int, c lvl_ii);")" \
+		"refused: not inside one struct"
+	check "a composite finds a struct two levels above both its leaves" \
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_FAR') AS t(id int, c lvl_ii);")" \
+		'0:(1,2) 1:(,5) 2:NULL 3:(,)'
+	check "a composite finds its struct when a leaf two levels down comes first" \
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_DFIRST') AS t(id int, c lvl_ba);")" \
+		'0:(2,1) 1:(,3) 2:NULL 3:(,)'
+	check "a composite finds its struct when a leaf two levels down comes last" \
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_DLAST') AS t(id int, c lvl_ii);")" \
+		'0:(1,2) 1:(3,) 2:NULL 3:(,)'
 else
 	rc=$?
 	if [ "$rc" = 3 ]; then
