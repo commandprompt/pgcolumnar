@@ -2101,32 +2101,66 @@ guard_tests 895
 #   test_a_read_answered_102_processing_first_reads_every_row
 #   test_a_read_from_a_server_that_sends_103_and_closes_reads_every_row
 # by collection of the cluster files (every test_*.py not in NO_CLUSTER): 5502 tests collected.
-# cluster_tests 5555 -> 5559 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5555 -> 5556 for test_the_retention_column_follows_a_rename in test_ttl_expire.py (#2070:
+# RENAME COLUMN carries the new name into ttl_column, and expire does not cut on a column that takes the old
+# name), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5385
+# tests collected.
+# cluster_tests 5556 -> 5557 for test_a_rename_leaves_a_null_retention_column_null in test_ttl_expire.py
+# (#2070, review of #2136: a rename on a table that declares only an interval leaves ttl_column NULL and expire
+# still refuses it), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5386 tests collected.
+# cluster_tests 5557 -> 5558 for test_the_retention_column_follows_a_rename_on_a_retention_only_table in
+# test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
+# rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5558 -> 5562 for #2085 in test_arrow_export.py: a timestamp and a timestamptz past Arrow's
+# int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
+# test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
+# (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5402 cluster tests collected.
+# cluster_tests 5562 -> 5565 for the #2085 review in test_arrow_export.py: the last timestamp Arrow holds
+# imports back unchanged (test_the_last_timestamp_arrow_holds_imports_back_unchanged), and a timestamp[]
+# element and a composite field past the range are refused with the table column named
+# (test_a_timestamp_array_element_past_arrows_range_names_the_column,
+# test_a_timestamp_composite_field_past_arrows_range_names_the_column), by collection: 6277 tests
+# collected, less guard_tests 894.
+# cluster_tests 5565 -> 5566 for the second #2085 review in test_arrow_export.py: a timestamp before 1970
+# (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
+# (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5566 -> 5570 for the third #2085 review in test_arrow_export.py: a timestamp two levels
+# deep is refused with the table column named, in an array of composites and in a composite's array
+# (test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column,
+# test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column), an in-range nested timestamp
+# still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
+# (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
+# cluster_tests 5570 -> 5574 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5559 -> 5563 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5574 -> 5578 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5563 -> 5569 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5578 -> 5584 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5569 -> 5570 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5584 -> 5585 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-# cluster_tests 5570 -> 5574 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# cluster_tests 5585 -> 5589 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-# cluster_tests 5574 -> 5576 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# cluster_tests 5589 -> 5591 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
 # #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
 # struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
-# cluster_tests 5576 -> 5580 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# cluster_tests 5591 -> 5595 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
 # #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
 # leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
-cluster_tests 5580
+cluster_tests 5595
