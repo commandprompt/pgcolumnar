@@ -1319,6 +1319,91 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 }
 
 /*
+ * pgcolumnar_operand_keyable
+ *		Whether `clause`, with its operand number `argno` (0 or 1) replaced by a
+ *		Const, is a clause pgcolumnar_clause_to_scankey could turn into a key.
+ *
+ * It reads the clause's shape only and calls nothing. The other side must be
+ * a column of this scan (or date_trunc of one, #403), compared under the
+ * column's collation, by an operator that has a btree strategy in the column
+ * type's family, by an anchored LIKE, by a range operator (#1144), or by
+ * `= ANY` (#704). pgcolumnar_clause_to_scankey makes the final decision once
+ * the operand is a Const; this only rules out a clause that can never be a key.
+ *
+ * Such a clause is not frozen at all (#2065). Evaluating its operand could
+ * never prune anything, and an error it raised would fail a query that heap and
+ * btree answer: they test `ts <> f($1)` or `ts + 0 > f($1)` per row, in the
+ * Filter, and never call f() when no row reaches that clause.
+ */
+static bool
+pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
+						   TupleDesc tupdesc)
+{
+	Node	   *other;
+	Oid			opno;
+	Oid			inputcollid;
+	Var		   *var;
+	TypeCacheEntry *tce;
+	bool		varOnLeft = (argno == 1);
+
+	if (IsA(clause, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		if (!saop->useOr || argno != 1)
+			return false;
+		other = (Node *) linitial(saop->args);
+		opno = saop->opno;
+		inputcollid = saop->inputcollid;
+	}
+	else
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+
+		other = (Node *) list_nth(op->args, 1 - argno);
+		opno = op->opno;
+		inputcollid = op->inputcollid;
+	}
+	if (IsA(other, RelabelType))
+		other = (Node *) ((RelabelType *) other)->arg;
+
+	/* date_trunc(unit, col) compared with a value (#403) */
+	if (IsA(clause, OpExpr) && IsA(other, FuncExpr))
+		return ((FuncExpr *) other)->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP;
+
+	if (!IsA(other, Var))
+		return false;
+	var = (Var *) other;
+	if (var->varno != scanrelid || var->varlevelsup != 0 ||
+		var->varattno < 1 || var->varattno > tupdesc->natts)
+		return false;
+	if (inputcollid != TupleDescAttr(tupdesc, var->varattno - 1)->attcollation)
+		return false;
+
+	tce = lookup_type_cache(var->vartype, TYPECACHE_BTREE_OPFAMILY);
+	if (IsA(clause, ScalarArrayOpExpr))
+		return OidIsValid(tce->btree_opf) &&
+			get_op_opfamily_strategy(opno, tce->btree_opf) == BTEqualStrategyNumber;
+
+	if (opno == OID_TEXT_LIKE_OP)
+		return varOnLeft;
+	if (type_is_range(var->vartype))
+	{
+		Oid			gistClass = GetDefaultOpClass(var->vartype, GIST_AM_OID);
+		Oid			gistFamily = OidIsValid(gistClass)
+			? get_opclass_family(gistClass) : InvalidOid;
+		StrategyNumber rstrat = OidIsValid(gistFamily)
+			? get_op_opfamily_strategy(opno, gistFamily) : InvalidStrategy;
+
+		if (rstrat == RTOverlapStrategyNumber ||
+			(rstrat == RTContainsElemStrategyNumber && varOnLeft))
+			return true;
+	}
+	return OidIsValid(tce->btree_opf) &&
+		get_op_opfamily_strategy(opno, tce->btree_opf) != InvalidStrategy;
+}
+
+/*
  * Freeze execution-stable non-Const operands of a scan qual into Consts, so a
  * predicate like "col >= $1" (a PARAM_EXTERN from a prepared statement or
  * PL/pgSQL, or a stable subexpression) can drive chunk-group skipping.
@@ -1336,10 +1421,12 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
  * pgcolumnar_bound_param_const. `*pending` is then set when an operand that
  * could be frozen was left for the first run. With `evaluate` true (the first
  * run), every such operand is evaluated, and an error it raises propagates.
+ * Either way, only an operand whose clause could become a scan key is touched;
+ * see pgcolumnar_operand_keyable.
  */
 static List *
 pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool evaluate,
-						   bool *pending)
+						   bool *pending, Index scanrelid, TupleDesc tupdesc)
 {
 	ExprContext *econtext;
 	List	   *out = NIL;
@@ -1356,6 +1443,7 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool evaluate,
 		List	   *newargs = NIL;
 		ListCell   *alc;
 		bool		changed = false;
+		int			argno = 0;
 
 		/*
 		 * The same freeze serves `col = ANY($1)` (#704): the array argument of
@@ -1379,12 +1467,14 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool evaluate,
 		{
 			Node	   *arg = (Node *) lfirst(alc);
 			Node	   *bare = arg;
+			int			thisarg = argno++;
 
 			if (IsA(bare, RelabelType))
 				bare = (Node *) ((RelabelType *) bare)->arg;
 			if (!IsA(bare, Const) &&
 				!pgcolumnar_operand_unstable_walker(arg, NULL) &&
-				!contain_volatile_functions(arg))
+				!contain_volatile_functions(arg) &&
+				pgcolumnar_operand_keyable(clause, thisarg, scanrelid, tupdesc))
 			{
 				Node	   *c = evaluate
 					? pgcolumnar_eval_const(arg, ps, econtext)
@@ -3868,7 +3958,9 @@ PgColumnarBeginCustomScan(CustomScanState *node, EState *estate, int eflags)
 	cstate->scanKeys =
 		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
 														   &node->ss.ps, false,
-														   &cstate->keysPending),
+														   &cstate->keysPending,
+														   cscan->scan.scanrelid,
+														   tupdesc),
 							  cscan->scan.scanrelid,
 							  tupdesc, &cstate->nScanKeys);
 
@@ -4043,7 +4135,9 @@ pgcolumnar_freeze_pending_keys(PgColumnarCustomScanState *cstate)
 	cstate->scanKeys =
 		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
 														   &node->ss.ps, true,
-														   NULL),
+														   NULL,
+														   cscan->scan.scanrelid,
+														   RelationGetDescr(node->ss.ss_currentRelation)),
 							  cscan->scan.scanrelid,
 							  RelationGetDescr(node->ss.ss_currentRelation),
 							  &cstate->nScanKeys);
