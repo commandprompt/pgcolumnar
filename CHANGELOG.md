@@ -618,6 +618,37 @@ true until the next version shipped.
   temp file, and an export whose rename or open failed inside a rolled-back
   savepoint does not crash a later FATAL export. `test/export_sink.sh` and
   `test_export_sink.py`.
+- A remote read that fails inside a subtransaction now closes its connection
+  when the subtransaction aborts (#2089). Before, the handle stayed open until
+  the transaction ended. So each error caught by a PL/pgSQL `EXCEPTION` block,
+  or undone by `ROLLBACK TO SAVEPOINT`, kept a socket and an external file
+  descriptor. A retry loop that caught about 325 missing objects ran the
+  backend out of file descriptors, and unrelated statements then failed with
+  `Too many open files`. A transaction that committed after caught errors
+  logged one `leaked to commit` WARNING per handle. Each handle now belongs to
+  the resource owner that opened it, so a subtransaction abort closes only its
+  own handles; a scan or cursor of the outer statement keeps reading.
+  This covers all three places a handle opens: a read, an Iceberg REST
+  request and an `s3://` write or listing.
+  A subtransaction commit, such as `RELEASE SAVEPOINT`, hands only its own
+  handles to the enclosing subtransaction, so a cursor opened before it still
+  reads after an enclosing abort.
+  `test/objstore_http_read.sh` and `test_objstore_http_read.py`.
+- `export_parquet`, `parallel_export_parquet`, `export_arrow` and
+  `tier_partition` now export a table that has had a column dropped (#2076).
+  They failed with `does not support dropped columns`, wherever the dropped
+  column was, and nothing in the table could clear it. This included a
+  partition made on its own, given an extra column that was then dropped, and
+  attached. The writers now skip a dropped column and write the live columns
+  in order. `import_arrow` now loads into a table with a dropped column, as
+  `import_parquet` already did; the dropped column is stored as null.
+  `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
+  live columns and a dropped one exports. Tests pin that limit, the refusal of a
+  17th live column (with SQLSTATE `0A000`), and an import into a table whose
+  dropped column is text. Further tests drop the first or the last column, keep
+  1 live column beside 60 dropped ones, put composites after the dropped
+  columns, and cut by bytes beside a dropped column (#2143 review).
+  `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
 - `pgcolumnar.import_arrow` now refuses an Arrow column whose type family does
   not match the target column (#2082). Before, it copied the file's bytes as the
   column's type and stored bit patterns with no error: float64 `1.5` into

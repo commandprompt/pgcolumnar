@@ -47,6 +47,17 @@
  *   closes before its opener returns. The invariant still holds: the handle is
  *   the running statement's, EndForeignScan closes it on the normal path, and
  *   the release callback closes it on abort, whoever holds the pointer.
+ *
+ * - A subtransaction abort closes only the handles its resource owner holds
+ *   (#2089). Each handle records CurrentResourceOwner when it opens. When a
+ *   subtransaction aborts, the release callback closes the handles of each
+ *   owner being released; when one commits, or a portal is dropped, they move
+ *   to the parent owner. Closing every handle there would be wrong: a scan of
+ *   the outer statement can call a function whose EXCEPTION block aborts, and
+ *   a cursor opened before a SAVEPOINT stays usable after ROLLBACK TO. Their
+ *   handles belong to owners the abort does not release. Before #2089 the
+ *   callback skipped subtransactions, so each caught read error kept its
+ *   socket and external FD until the transaction ended.
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
@@ -226,6 +237,8 @@ struct PgColumnarObjHandle
 	int			rb_len;			/* valid bytes */
 
 	dlist_node	node;			/* open-handle list, for abort cleanup */
+	ResourceOwner owner;		/* CurrentResourceOwner at open, or its parent
+								 * after a subtransaction commit (#2089) */
 };
 
 /* SHA-256 of an empty payload; every request we sign sends no body. */
@@ -454,8 +467,36 @@ static void
 os_resource_release(ResourceReleasePhase phase, bool isCommit,
 					bool isTopLevel, void *arg)
 {
-	if (phase != RESOURCE_RELEASE_AFTER_LOCKS || !isTopLevel)
+	if (phase != RESOURCE_RELEASE_AFTER_LOCKS)
 		return;
+
+	/*
+	 * Below the top level, PostgreSQL releases one owner at a time and sets
+	 * CurrentResourceOwner to it while the callbacks run (#2089). An abort
+	 * closes that owner's handles. A commit, or a portal drop, hands them to
+	 * the parent owner, so a later abort of the parent still finds them.
+	 */
+	if (!isTopLevel)
+	{
+		ResourceOwner releasing = CurrentResourceOwner;
+		dlist_mutable_iter iter;
+
+		if (releasing == NULL)
+			return;
+		dlist_foreach_modify(iter, &os_open_handles)
+		{
+			PgColumnarObjHandle *h =
+				dlist_container(PgColumnarObjHandle, node, iter.cur);
+
+			if (h->owner != releasing)
+				continue;
+			if (isCommit)
+				h->owner = ResourceOwnerGetParent(releasing);
+			else
+				os_free_handle(h);
+		}
+		return;
+	}
 
 	os_stmt_pins_reset();
 	while (!dlist_is_empty(&os_open_handles))
@@ -2071,6 +2112,7 @@ objstore_open(const char *url, const PgColumnarObjStoreConfig *cfg, int64 *len)
 	h->fd = -1;
 	h->url = pstrdup(url);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
 
@@ -2412,6 +2454,7 @@ os_write_handle_as(const char *url, const char *name,
 	h->fd = -1;
 	h->url = pstrdup(name);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);
 
@@ -4169,6 +4212,7 @@ objstore_http_request(const char *url, const char *method,
 	h->fd = -1;
 	h->url = pstrdup(url);
 	h->rb = (uint8 *) palloc(OS_RBUF);
+	h->owner = CurrentResourceOwner;
 	MemoryContextSwitchTo(oldcxt);
 	dlist_push_head(&os_open_handles, &h->node);	/* before any raise */
 
