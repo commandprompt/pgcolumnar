@@ -470,6 +470,24 @@ check "unique/RC columnar loser gets serialization_failure (40001), as without a
 	"$C_SS|$C_CNT" "40001|1"
 
 # ---------------------------------------------------------------------------
+# An exclusion constraint, btree (id WITH =) and gist && (#2063). The loser must
+# get 40001 here too. PgColumnarHasUniqueIndex answers yes for these tables, so
+# the update serializes the old row before the new version's key lock, as with a
+# unique index (#1421). If it answered no, the loser got exclusion_violation
+# (23P01) for a row it only updated. A deferrable unique index cannot pin this:
+# its loser gets 40001 either way.
+# ---------------------------------------------------------------------------
+echo; echo "### an exclusion constraint: the loser still gets 40001 (#2063)"
+ctl_q "CREATE TABLE t_colxb (id int, v int, EXCLUDE USING btree (id WITH =)) USING pgcolumnar;" >/dev/null
+ctl_q "CREATE TABLE t_colxg (id int, v int, EXCLUDE USING gist (int4range(id, id, '[]') WITH &&)) USING pgcolumnar;" >/dev/null
+for x in xb xg; do
+	uu "t_col$x" "READ COMMITTED" "uxc${x}_"
+	echo "-- col+$x: count=$RES_CNT sqlstate=$RES_SS"
+	check "exclusion $x/RC columnar loser gets serialization_failure (40001)" \
+		"$RES_SS|$RES_CNT" "40001|1"
+done
+
+# ---------------------------------------------------------------------------
 # savepoint: a subtransaction that updates a row then rolls back must discard both
 # the delete mark and the appended new version, and must not wedge on the
 # transaction-scoped row lock. Single session, deterministic. Final state must
