@@ -138,6 +138,13 @@ PROJ_HIGH = "SELECT count(*), sum(k) FROM prsc WHERE k >= 19990 AND k <= same(20
 # a key that still points at the freed result crashes the backend.
 SAME_T = """CREATE FUNCTION same_t(text) RETURNS text LANGUAGE plpgsql STABLE AS $$
     BEGIN RETURN $1; END $$"""
+# A hash join attaches its runtime range after Begin; the first run's keys must keep it.
+# The hash builds on d (k 8001..8200) and probes f (20 groups of 1000). Heap answers
+# 51|416925.
+JOIN_SET = ["SET plan_cache_mode = force_generic_plan", "SET enable_nestloop = off",
+            "SET enable_mergejoin = off", "SET max_parallel_workers_per_gather = 0"]
+JOIN_Q = "PREPARE j(int) AS SELECT count(*), sum(f.k) FROM f JOIN d ON f.k = d.k WHERE f.k >= same($1)"
+JOIN_EXPLAIN = "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE j(8150)"
 TEXT_RESCAN = ("PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t($1) "
                "AND s <= g::text || 'z') FROM generate_series(1, 3) g")
 
@@ -347,6 +354,27 @@ def pp(pgc_cluster):
                                "EXECUTE nt(NULL)"])
         r["null text count"] = nt if isinstance(nt, str) else (nt[-1] if nt else query_error("no row"))
         r["null text survived"] = _survived(dsn, pgc_cluster, before)
+        _session(dsn, ["SET pgcolumnar.stripe_row_limit = 1000",
+                       "CREATE TABLE d (k int)", "INSERT INTO d SELECT generate_series(8001, 8200)",
+                       "CREATE TABLE f (k int, p text) USING pgcolumnar",
+                       "INSERT INTO f SELECT g, 'p' || g FROM generate_series(1, 20000) g",
+                       "ANALYZE d", "ANALYZE f"])
+        _await_up(dsn)
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                for sql in JOIN_SET + [JOIN_Q]:
+                    conn.execute(sql)
+                r["rr answer"] = "|".join(str(v) for v in conn.execute("EXECUTE j(8150)").fetchone())
+        except psycopg.Error as exc:
+            r["rr answer"] = _failed(exc)
+        rr_on = _transcript(dsn, JOIN_SET + [JOIN_Q, JOIN_EXPLAIN])
+        r["rr skip preds"] = _field(rr_on, "Columnar Usable Skip Predicates")
+        r["rr removed"] = _field(rr_on, "Runtime Filter Groups Removed")
+        r["rr survived"] = _survived(dsn, pgc_cluster, before)
+        rr_off = _transcript(dsn, JOIN_SET + ["SET pgcolumnar.enable_qual_pushdown = off", JOIN_Q, JOIN_EXPLAIN])
+        r["rr off skip preds"] = _field(rr_off, "Columnar Usable Skip Predicates")
+        r["rr off groups read"] = _field(rr_off, "Columnar Chunk Groups Read")
+        r["rr off survived"] = _survived(dsn, pgc_cluster, before)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -502,6 +530,40 @@ def test_param_pushdown_a_null_bound_text_param_counts_zero(pp, expect):
 def test_param_pushdown_the_backend_is_alive_after_the_null_text_param(pp, expect):
     expect.text(pp["null text survived"], "1",
                 "the backend is alive after the NULL text parameter (#2065)")
+
+
+def test_param_pushdown_a_first_run_key_under_a_runtime_range_counts_what_heap_counts(pp, expect):
+    expect.text(pp["rr answer"], "51|416925",
+                "a key frozen at the first run under a hash join's runtime range counts what heap counts (#2065)")
+
+
+def test_param_pushdown_the_scan_keeps_the_runtime_range_after_the_frozen_key(pp, expect):
+    expect.text(pp["rr skip preds"], "3",
+                "the scan keeps the runtime range after the frozen key: three skip predicates (#2065)")
+
+
+def test_param_pushdown_the_kept_runtime_range_still_removes_groups(pp, expect):
+    expect.text(pp["rr removed"], "11",
+                "and the kept runtime range still removes groups (11 removed) (#2065)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_runtime_range_arm(pp, expect):
+    expect.text(pp["rr survived"], "1", "the backend is alive after the runtime-range arm (#2065)")
+
+
+def test_param_pushdown_with_pushdown_off_the_scan_keeps_the_runtime_range_alone(pp, expect):
+    expect.text(pp["rr off skip preds"], "2",
+                "with pushdown off, the scan keeps the runtime range alone: two skip predicates (#2065)")
+
+
+def test_param_pushdown_with_pushdown_off_the_runtime_range_still_reads_one_group(pp, expect):
+    expect.text(pp["rr off groups read"], "1",
+                "with pushdown off, the runtime range still reads one chunk group (#2065)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_runtime_range_arm_with_pushdown_off(pp, expect):
+    expect.text(pp["rr off survived"], "1",
+                "the backend is alive after the runtime-range arm with pushdown off (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

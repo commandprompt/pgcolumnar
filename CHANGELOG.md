@@ -628,7 +628,8 @@ true until the next version shipped.
   tested when there are several, and a long text key survives a rescan.
   A bound parameter that is NULL builds no key, a varchar or domain parameter
   is pushed down like any other bound parameter, and `EXPLAIN ANALYZE`
-  counts a key frozen at the first run as pushed down.
+  counts a key frozen at the first run as pushed down. Under a hash join,
+  the keys frozen at the first run keep the join's runtime range.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `SET pgcolumnar.objstore_s3_addressing` now refuses any value but `path` or
   `virtual` (#2091). The setting was a free-form string, and the object-store

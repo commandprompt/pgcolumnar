@@ -2041,4 +2041,9 @@ guard_tests 895
 # domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
 # pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
-cluster_tests 5518
+# cluster_tests 5518 -> 5525 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
+# (under a hash join, a key frozen at the first run counts what heap counts, keeps the runtime range after it
+# as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
+# alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
+cluster_tests 5525

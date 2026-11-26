@@ -320,6 +320,38 @@ check "a NULL bound text parameter on a generic plan counts 0 (#2065)" \
 		"EXECUTE nt(NULL)" | tail -1)" "0"
 check "the backend is alive after the NULL text parameter (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
 
+# A hash join attaches its runtime range to the columnar scan after Begin. When the
+# first run replaces the scan's predicates with the frozen keys, the range must stay,
+# after them. A slip there loses the range's pruning, and two slips crashed the
+# backend: one that dropped the range's copy, and one that, with pushdown off, kept
+# the old predicate count and wrote the range past the new array. The hash builds on
+# d (200 rows, k 8001..8200) and probes f (20000 rows in 20 groups of 1000). Heap
+# answers 51|416925 (k 8150..8200).
+q "SET pgcolumnar.stripe_row_limit = 1000;
+   CREATE TABLE d (k int); INSERT INTO d SELECT generate_series(8001, 8200);
+   CREATE TABLE f (k int, p text) USING pgcolumnar;
+   INSERT INTO f SELECT g, 'p' || g FROM generate_series(1, 20000) g;
+   ANALYZE d; ANALYZE f;" >/dev/null
+JOIN_SET=("SET plan_cache_mode = force_generic_plan" "SET enable_nestloop = off" "SET enable_mergejoin = off"
+	"SET max_parallel_workers_per_gather = 0")
+JOIN_Q="PREPARE j(int) AS SELECT count(*), sum(f.k) FROM f JOIN d ON f.k = d.k WHERE f.k >= same(\$1)"
+RR_ON="$(psql_m "${JOIN_SET[@]}" "$JOIN_Q" "EXECUTE j(8150)" \
+	"EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE j(8150)")"
+check "a key frozen at the first run under a hash join's runtime range counts what heap counts (#2065)" \
+	"$(grep -xE '[0-9]+\|[0-9]+' <<<"$RR_ON" | head -1)" "51|416925"
+check "the scan keeps the runtime range after the frozen key: three skip predicates (#2065)" \
+	"$(sed -n 's/.*Columnar Usable Skip Predicates: \([0-9]*\).*/\1/p' <<<"$RR_ON" | head -1)" "3"
+check "and the kept runtime range still removes groups (11 removed) (#2065)" \
+	"$(sed -n 's/.*Runtime Filter Groups Removed: \([0-9]*\).*/\1/p' <<<"$RR_ON" | head -1)" "11"
+check "the backend is alive after the runtime-range arm (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
+RR_OFF="$(psql_m "${JOIN_SET[@]}" "SET pgcolumnar.enable_qual_pushdown = off" "$JOIN_Q" \
+	"EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE j(8150)")"
+check "with pushdown off, the scan keeps the runtime range alone: two skip predicates (#2065)" \
+	"$(sed -n 's/.*Columnar Usable Skip Predicates: \([0-9]*\).*/\1/p' <<<"$RR_OFF" | head -1)" "2"
+check "with pushdown off, the runtime range still reads one chunk group (#2065)" \
+	"$(sed -n 's/.*Columnar Chunk Groups Read: \([0-9]*\).*/\1/p' <<<"$RR_OFF" | head -1)" "1"
+check "the backend is alive after the runtime-range arm with pushdown off (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary
