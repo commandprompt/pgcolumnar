@@ -2159,47 +2159,75 @@ guard_tests 895
 # cluster_tests 5580 -> 5581 for #2082's struct-field test in test_arrow_import.py (a struct field of
 # float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
-# cluster_tests 5581 -> 5586 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5581 -> 5586 for test_iceberg_scan.py's format-version 3 initial-default refusal (#2087):
+# test_iceberg_scan_refuses_a_v3_column_with_an_initial_default,
+# test_iceberg_scan_refuses_an_optional_v3_column_with_an_initial_default,
+# test_iceberg_scan_reads_the_v3_columns_without_an_initial_default,
+# test_iceberg_scan_refuses_an_equality_delete_on_a_v3_column_with_an_initial_default and
+# test_a_foreign_table_refuses_a_v3_column_with_an_initial_default, 5 tests. First counted as 5376 -> 5381 by
+# collection (6275 tests collected, less guard_tests 894); the numbers here are shifted by main's later growth.
+# cluster_tests 5586 -> 5591 for five more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151): test_iceberg_scan_refuses_a_v3_string_column_with_an_empty_initial_default,
+# test_iceberg_scan_refuses_a_v3_boolean_column_with_a_false_initial_default,
+# test_iceberg_scan_reads_a_v3_column_with_a_null_initial_default_as_null,
+# test_iceberg_scan_reads_other_columns_when_the_defaulted_v3_field_comes_first and
+# test_iceberg_scan_applies_eq_deletes_past_an_earlier_defaulted_v3_field, 5 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5403 -> 5408; the numbers here are shifted by main's later growth.
+# cluster_tests 5591 -> 5593 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 09098feb): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_string_column_with_a_string_default
+# and test_iceberg_scan_reads_a_v3_column_with_only_a_write_default_as_null, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5488 -> 5490 (5490 tests collected); the numbers here are shifted
+# by main's later growth.
+# cluster_tests 5593 -> 5595 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 48251e9f): test_iceberg_scan_refuses_an_eq_delete_on_a_v3_int_column_with_a_zero_default
+# and test_iceberg_scan_refuses_an_initial_default_in_a_v2_metadata_file, 2 tests, by collection of the
+# files not in NO_CLUSTER. First counted as 5507 -> 5509 (5509 tests collected); the numbers here are shifted
+# by main's later growth, and the merge of main at 6b54a65a gives 5537 tests collected.
+# cluster_tests 5595 -> 5597 for two more arms of test_iceberg_scan.py's initial-default refusal (#2087,
+# review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
+# and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
+# of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
+# cluster_tests 5597 -> 5602 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5586 -> 5589 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5602 -> 5605 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5589 -> 5593 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5605 -> 5609 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5593 -> 5595 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5609 -> 5611 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-# cluster_tests 5595 -> 5598 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# cluster_tests 5611 -> 5614 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-# cluster_tests 5598 -> 5604 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# cluster_tests 5614 -> 5620 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
 # test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
 # domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
 # pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
-# cluster_tests 5604 -> 5611 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5620 -> 5627 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
 # (under a hash join, a key frozen at the first run counts what heap counts, keeps the runtime range after it
 # as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
 # alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
-# cluster_tests 5611 -> 5619 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5627 -> 5635 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
 # (a heap copy answers a hash-join rescan, the columnar scan with a key frozen at the first run counts the same
 # in each loop, with the backend alive; a NULL from a stable function builds no key on an int column and counts
 # 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
 # an expression of the column, is not evaluated), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5619 tests collected after the merge of main 6f79946f (5618 before it).
-# cluster_tests 5619 -> 5636 for #2065's seventeen tests from the seventh #2133 review in
+# cluster_tests 5635 -> 5652 for #2065's seventeen tests from the seventh #2133 review in
 # test_native_param_pushdown.py (twelve clause shapes that can never be scan keys are not evaluated, shown by a
 # call counter: LIKE under a collation that is not C, LIKE with the operand on the column side, date_trunc with
 # <>, over an expression or with a unit from a column, <> ANY, = ALL, range @> range, another collation, another
 # function of the column; five keyable shapes with a bound parameter prune 19 of 20 groups: date_trunc, LIKE on
 # a C column, a range overlap, a varchar column, = ANY; a collation premise and a heap premise), by collection
-# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5636 tests collected.
-cluster_tests 5636
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5652 tests collected after the merge of main 2e3fea7a (5636 before it).
+cluster_tests 5652
