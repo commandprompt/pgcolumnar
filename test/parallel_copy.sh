@@ -1029,15 +1029,15 @@ for _t in t_eodcrp t_eodnonlp; do
 done
 _eodcr_heap="$(outcome_of "COPY h_eodcr FROM '$F_EODCR'" h_eodcr)"
 _eodnonl_heap="$(outcome_of "COPY h_eodnonl FROM '$F_EODNONL'" h_eodnonl)"
-check "#2084 premise: heap COPY refuses eodcr.txt (\\.\\r\\n in an LF file) and eodnonl.txt (\\. at the end with no newline) with 22P04" \
+check "#2084 premise: heap COPY refuses eodcr.txt (\.\r\n in an LF file) and eodnonl.txt (\. at the end with no newline) with 22P04" \
 	"$_eodcr_heap $_eodnonl_heap" "22P04 22P04"
-check "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers: the outcome is heap COPY's" \
+check "#2084 malformed end-of-data marker \.\r\n in an LF file / partitioned, 4 workers: the outcome is heap COPY's" \
 	"$(outcome_of "SELECT pgcolumnar.parallel_copy('t_eodcrp'::regclass, '$F_EODCR', 4)" t_eodcrp)" "$_eodcr_heap"
-check "#2084 malformed end-of-data marker \\.\\r\\n in an LF file / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
+check "#2084 malformed end-of-data marker \.\r\n in an LF file / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
 	"$(q "SELECT count(*) FROM t_eodcrp") $(q "SELECT count(*) FROM pg_prepared_xacts")" "0 0"
-check "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers: the outcome is heap COPY's" \
+check "#2084 end-of-data marker \. at the end with no newline / partitioned, 4 workers: the outcome is heap COPY's" \
 	"$(outcome_of "SELECT pgcolumnar.parallel_copy('t_eodnonlp'::regclass, '$F_EODNONL', 4)" t_eodnonlp)" "$_eodnonl_heap"
-check "#2084 end-of-data marker \\. at the end with no newline / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
+check "#2084 end-of-data marker \. at the end with no newline / partitioned, 4 workers: the partitions hold 0 rows and no prepared transaction is left" \
 	"$(q "SELECT count(*) FROM t_eodnonlp") $(q "SELECT count(*) FROM pg_prepared_xacts")" "0 0"
 check "#2084 premise: heap COPY loads eodearly 100 rows; eodearly.txt is 12896 bytes with 5c 2e 0a at bytes 492-494; offsets with 4 workers are 0 3225 6449 9676 12896, so the marker is in the first range" \
 	"$(q "SELECT count(*) FROM h_eodearly") $(stat -c %s "$F_EODEARLY") $(od -An -tx1 -j 492 -N 3 "$F_EODEARLY" | tr -d ' ') $(offsets_of "$F_EODEARLY" 4)" \
