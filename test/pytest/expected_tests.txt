@@ -366,7 +366,10 @@
 # the module map naming every source file and catalog, by collection over NO_CLUSTER.
 # guard_tests 894 -> 895 for test_coverage_report.py's derived guard that every job running run_coverage.py
 # fetches the release tags first (#2054), by collection over NO_CLUSTER.
-guard_tests 895
+# guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
+# that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
+# over NO_CLUSTER: 897 tests collected.
+guard_tests 897
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2187,29 +2190,51 @@ guard_tests 895
 # review of #2151 at 0a0a6255): test_iceberg_scan_refuses_an_eq_delete_whose_second_column_has_a_v3_default
 # and test_iceberg_scan_refuses_a_v3_default_that_is_not_the_last_field_or_column_id, 2 tests, by collection
 # of the files not in NO_CLUSTER (5596 tests collected before the merge of main 6f79946f, 5597 after it).
-# cluster_tests 5597 -> 5607 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# cluster_tests 5597 -> 5603 for the parallel_copy unique-index fix's test_parallel_copy.py (#2080): 2 refusals,
+# the refused tables stay empty, 2 controls, and a unique index created after the first check, which the
+# loaders refuse; 6 tests, collected for that file: 96 on main, 102 on this branch.
+# cluster_tests 5603 -> 5605 for the #2080 review's two tests in test_parallel_copy.py: an exclusion constraint is
+# refused with 2 workers, and a partitioned table with a primary key still loads with 4; collected for that file:
+# 98 on main, 106 on this branch.
+# cluster_tests 5605 -> 5607 for the #2080 re-check's two tests in test_parallel_copy.py: the table with the
+# exclusion constraint and the table whose unique index appeared late both stay empty after their refusals;
+# collected for that file: 108.
+# cluster_tests 5607 -> 5610 for the #2147 review of d6a8d50d, three tests in test_parallel_copy.py: a deferrable
+# unique index and a partial unique index are refused with 2 workers, and a late unique index is refused by every
+# one of 4 loaders, which a row trigger's sequence shows; collected for that file: 111.
+# cluster_tests 5610 -> 5613 for the #2147 review of 564ec4cf, three tests in test_parallel_copy.py: an invalid
+# unique index left by a failed CREATE UNIQUE INDEX CONCURRENTLY (its premise and its refusal), and a call with the
+# default worker count; collected for that file: 114.
+# cluster_tests 5613 -> 5615 for the #2147 review of 32e6b1b2, two tests in test_parallel_copy.py: a deferrable
+# exclusion constraint and an expression unique index are refused with 2 workers; collected for that file: 116.
+# cluster_tests 5615 -> 5620 for the #2147 review of fa01775c, five tests in test_parallel_copy.py: a gist exclusion
+# constraint and a NULLS NOT DISTINCT unique index with an INCLUDE column are refused with 2 workers; a caller
+# without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
+# its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
+# main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
+# cluster_tests 5620 -> 5630 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
 # end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
 # as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
 # #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
 # files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
-# cluster_tests 5616 -> 5630 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# cluster_tests 5639 -> 5653 for the 14 tests the review of #2148 at 7a40d479 asked for in
 # test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
 # lines with the key after them, an unsorted row after continued records, a file that ends inside a
 # record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
 # NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
-# cluster_tests 5630 -> 5637 for the 7 tests the review of #2148 at 29b71633 asked for in
+# cluster_tests 5653 -> 5660 for the 7 tests the review of #2148 at 29b71633 asked for in
 # test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
 # rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
 # offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
 # ci.yml selects them: 5527 tests collected.
-# cluster_tests 5637 -> 5642 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# cluster_tests 5660 -> 5665 for the 5 tests the review of #2148 at 7e71ab06 asked for in
 # test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
 # transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
 # COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
 # the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
-# cluster_tests 5642 -> 5651 for the 9 tests the review of #2148 at 33724a76 asked for in
+# cluster_tests 5665 -> 5674 for the 9 tests the review of #2148 at 33724a76 asked for in
 # test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
 # file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
 # in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
 # collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
-cluster_tests 5651
+cluster_tests 5674
