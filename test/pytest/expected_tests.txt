@@ -2016,20 +2016,31 @@ guard_tests 895
 # (ALTER SYSTEM refuses 'virtaul', ALTER SYSTEM still takes virtual, a role that is not a superuser can still
 # set the setting, and a typo in postgresql.conf draws a WARNING and the server uses path), by collection
 # over the files NO_CLUSTER does not name, as ci.yml selects them: 5406 tests collected.
-# cluster_tests 5495 -> 5501 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# cluster_tests 5495 -> 5497 for #2082's two tests in test_arrow_import.py: a file of another type
+# family is refused by type (added earlier on this branch without its line), and every Arrow type meets
+# its documented targets (the 18-file by 16-type matrix and its four named rows), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5400 tests collected.
+# cluster_tests does not change for the #2082 re-check: the check that the refusal names numeric(5,2) joins
+# test_arrow_import.py::test_a_file_of_another_type_family_is_refused_by_type, and varchar, json and jsonb
+# join the matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files after the merge of f07210bc.
+# cluster_tests does not change for the #2082 round-3 review: the month_day_nano interval file joins the
+# matrix in test_every_arrow_type_meets_its_documented_targets, so no test is added; 5480 by
+# collection over the cluster files.
+# cluster_tests 5497 -> 5503 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
 # leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
 # `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
-# cluster_tests 5501 -> 5506 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# cluster_tests 5503 -> 5508 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
 # the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
 # FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
 # file, and no backend killed by a signal), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
-# cluster_tests 5506 -> 5512 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# cluster_tests 5508 -> 5514 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
 # export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
 # after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
-# cluster_tests 5512 -> 5515 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# cluster_tests 5514 -> 5517 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
 # export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
 # leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 5507 tests collected.
-cluster_tests 5515
+cluster_tests 5517

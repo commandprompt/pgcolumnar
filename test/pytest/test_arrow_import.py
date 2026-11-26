@@ -307,6 +307,50 @@ def test_nanosecond_narrowing_is_reported_never_refused(pgc_conn, server_dir, ex
                 "the narrowed values are floored to the microsecond")
 
 
+def _matrix_fixtures(pa):
+    """#2082: one file per Arrow type, two rows each, as the shell writes them.
+    Every kept pairing must import, so the values suit each kept target: '10'
+    parses as numeric, and the int64 rows are valid instants."""
+    s2000us = 946684800 * 10**6
+    return {
+        "mx_i16": pa.array([7, -3], pa.int16()), "mx_i32": pa.array([7, -3], pa.int32()),
+        "mx_i64": pa.array([s2000us, 1], pa.int64()), "mx_u64": pa.array([7, 3], pa.uint64()),
+        "mx_f32": pa.array([1.5, -3], pa.float32()), "mx_f64": pa.array([1.5, -3], pa.float64()),
+        "mx_bool": pa.array([True, False], pa.bool_()),
+        "mx_utf8": pa.array(["10", "-3"], pa.string()), "mx_bin": pa.array([b"10", b"-3"], pa.binary()),
+        "mx_lutf8": pa.array(["10", "-3"], pa.large_string()),
+        "mx_lbin": pa.array([b"10", b"-3"], pa.large_binary()),
+        "mx_d32": pa.array([10957, 10958], pa.date32()),
+        "mx_t64": pa.array([43200 * 10**6, 1], pa.time64("us")),
+        "mx_ts": pa.array([s2000us, 1], pa.timestamp("us")), "mx_dur": pa.array([5, 6], pa.duration("us")),
+        "mx_dec": pa.array([decimal.Decimal(7), decimal.Decimal(-3)], pa.decimal128(10, 0)),
+        "mx_fsb16": pa.array([b"0123456789abcdef", b"fedcba9876543210"], pa.binary(16)),
+        "mx_null": pa.array([None, None], pa.null()),
+        # No kept target. Main read it into bigint as raw bytes: 8589934593.
+        "mx_iv": pa.array([(1, 2, 3000), (0, 5, 7000)], pa.month_day_nano_interval()),
+    }
+
+
+# The documented pairings (docs/limitations.md, docs/sql-reference.md): each must
+# import, and every other file-by-target pair must be refused with 42804.
+_MX_FILES = ("mx_i16", "mx_i32", "mx_i64", "mx_u64", "mx_f32", "mx_f64", "mx_bool", "mx_utf8", "mx_bin",
+             "mx_lutf8", "mx_lbin", "mx_d32", "mx_t64", "mx_ts", "mx_dur", "mx_dec", "mx_fsb16", "mx_null",
+             "mx_iv")
+_MX_TARGETS = ("smallint", "int", "bigint", "float4", "float8", "bool", "text", "bytea", "date", "time",
+               "timestamp", "timestamptz", "uuid", "numeric(10,0)", "numeric", "numeric(50,2)", "varchar",
+               "json", "jsonb")
+_MX_KEPT = {
+    ("mx_i16", "smallint"), ("mx_i32", "int"), ("mx_i64", "bigint"), ("mx_i64", "timestamp"),
+    ("mx_i64", "timestamptz"), ("mx_f32", "float4"), ("mx_f64", "float8"), ("mx_bool", "bool"),
+    ("mx_utf8", "text"), ("mx_utf8", "bytea"), ("mx_utf8", "numeric"), ("mx_utf8", "numeric(50,2)"),
+    ("mx_utf8", "varchar"), ("mx_utf8", "json"), ("mx_utf8", "jsonb"),
+    ("mx_bin", "text"), ("mx_bin", "bytea"), ("mx_bin", "numeric"), ("mx_bin", "numeric(50,2)"),
+    ("mx_bin", "varchar"), ("mx_bin", "json"), ("mx_bin", "jsonb"),
+    ("mx_d32", "date"), ("mx_t64", "time"), ("mx_ts", "timestamp"), ("mx_ts", "timestamptz"),
+    ("mx_dur", "bigint"), ("mx_dec", "numeric(10,0)"), ("mx_fsb16", "uuid"),
+}
+
+
 def _temporal_fixtures(pa, out):
     """The shell's fixture files, written the same ways: raw-byte packing for the
     temporal carriers and pa.array for the #881 parameter cases."""
@@ -344,7 +388,16 @@ def _temporal_fixtures(pa, out):
         "tu_int64_ts": pa.array([946684800 * 10**6], pa.int64()),
         # three date32 rows: a 12-byte buffer a stride-8 decoder runs off the end of
         "tu_d32_3": pa.array([10957, 10958, 10959], pa.date32()),
+        # #2082: a file whose type family differs from the column's
+        "tu_utf8": pa.array(["10"]), "tu_bin": pa.array([b"ab"], pa.binary()),
+        "tu_bool": pa.array([True], pa.bool_()),
+        "tu_lf64": pa.array([[1.5]], pa.list_(pa.float64())),
+        # two rows each, so 64-bit offsets read as 32-bit store a wrong value
+        "tu_lstr": pa.array(["a", "b"], pa.large_string()),
+        "tu_lbin": pa.array([b"a", b"b"], pa.large_binary()),
+        "tu_dur": pa.array([5, 6], pa.duration("s")), "tu_null": pa.array([None, None], pa.null()),
     }
+    extra.update(_matrix_fixtures(pa))
     for name, arr in extra.items():
         _write_stream(pa, out / f"{name}.arrows", pa.table({"v": arr}))
     ns = s2000 * 10**9
@@ -474,6 +527,112 @@ def test_the_refusals_and_every_temporal_carrier(pgc_conn, server_dir, expect):
     _run(conn, "DROP TYPE IF EXISTS tu_st CASCADE", "CREATE TYPE tu_st AS (a int, b timestamp)")
     expect.text(tu_value("tu_struct_ns", "tu_st"), '(7,"2000-01-01 00:00:00")',
                 "a struct field's nanosecond unit is honoured at child index 1")
+
+
+def test_a_file_of_another_type_family_is_refused_by_type(pgc_conn, server_dir, expect):
+    """#2082: the #881 parameter checks ran only within a type family. Across
+    families the reader copied the file's bytes as the column's type, so float64
+    1.5 into bigint stored 4609434218613702656, and three strings into bigint failed
+    with XX001, calling a valid file malformed. Each pairing is refused by type."""
+    pa = expect.require_module("pyarrow", name="a float64 file is refused for bigint (#2082)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _temporal_fixtures(pa, server_dir)
+
+    def state(fixture, pgtype):
+        _run(conn, "DROP TABLE IF EXISTS cf_t", f"CREATE TABLE cf_t (v {pgtype}) USING pgcolumnar")
+        return _state(conn, f"SELECT pgcolumnar.import_arrow('cf_t', '{server_dir / (fixture + '.arrows')}')")
+
+    expect.text(state("tu_f64", "bigint"), "42804", "a float64 file is refused for bigint (#2082)")
+    expect.text(state("tu_i64", "float8"), "42804", "an int64 file is refused for float8 (#2082)")
+    expect.text(state("tu_f32", "int"), "42804", "a float32 file is refused for a 4-byte int (#2082)")
+    expect.text(state("tu_d102", "uuid"), "42804", "a decimal file is refused for uuid (#2082)")
+    expect.text(state("tu_f64", "timestamp"), "42804", "a float64 file is refused for timestamp (#2082)")
+    expect.text(state("tu_i32", "timestamp"), "42804", "an int32 file is refused for timestamp (#2082)")
+    expect.text(state("tu_i32", "bool"), "42804", "an int32 file is refused for bool (#2082)")
+    expect.text(state("tu_utf8", "bigint"), "42804",
+                "a string file is refused for bigint, not called malformed (#2082)")
+    expect.text(state("tu_bool", "int"), "42804", "a boolean file is refused for a 4-byte int (#2082)")
+    expect.text(state("tu_lf64", "bigint[]"), "42804",
+                "a list of float64 is refused for a bigint[] column (#2082)")
+    state("tu_f64", "bigint")
+    expect.num(_one(conn, "SELECT count(*) FROM cf_t"), 0,
+               "and a cross-family refusal leaves the target empty (#2082)")
+
+    def value(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT v::text FROM cf_t LIMIT 1") if st == "00000" else st
+
+    expect.text(value("tu_int64_ts", "timestamp"), "2000-01-01 00:00:00",
+                "control: an int64 file still imports into timestamp as microseconds (#2082)")
+    expect.text(value("tu_utf8", "bytea"), "\\x3130",
+                "control: a string file still imports into bytea (#2082)")
+    expect.text(value("tu_bin", "text"), "ab", "control: a binary file still imports into text (#2082)")
+
+    # Tags outside those families: on main a large string ['a','b'] into text
+    # stored '' and 'a', a duration into int stored 5 and 0, and a null-type
+    # column and a binary into numeric(5,2) failed with XX001.
+    expect.text(state("tu_lstr", "text"), "42804",
+                "a large string file is refused for text, not read with short offsets (#2082)")
+    expect.text(state("tu_lbin", "bytea"), "42804",
+                "a large binary file is refused for bytea, not read with short offsets (#2082)")
+    expect.text(state("tu_dur", "int"), "42804",
+                "a duration file is refused for a 4-byte int, not read at half width (#2082)")
+    expect.text(state("tu_null", "text"), "42804",
+                "a null-type file is refused for text, not called malformed (#2082)")
+    expect.text(state("tu_bin", "numeric(5,2)"), "42804",
+                "a binary file is refused for a numeric(5,2) column, not called malformed (#2082)")
+    # The message names the declared type with its typmod; format_type_be said
+    # "type numeric", which hid why a binary that reads into numeric is refused.
+    expect.text(_refusal(conn, f"SELECT pgcolumnar.import_arrow('cf_t', '{server_dir / 'tu_bin.arrows'}')"),
+                '42804 Arrow column "v" holds a binary, which pgcolumnar.import_arrow cannot read into type '
+                'numeric(5,2)',
+                "the refusal names the target as numeric(5,2), with its typmod (#2082)")
+    def values(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT string_agg(v::text, ',' ORDER BY v) FROM cf_t") if st == "00000" else st
+
+    expect.text(values("tu_dur", "bigint"), "5,6",
+                "control: a duration file still imports into bigint as its count (#2082)")
+
+
+def test_every_arrow_type_meets_its_documented_targets(pgc_conn, server_dir, expect):
+    """#2082: the checks above sample arrow_tag_fits_kind. These pin each of its
+    rows. Each of the first four is a row a one-line mutant could change with
+    every sampled check green: the decimal and fixed-size binary rows could
+    accept bigint and store raw bytes, and the int16 and int64 rows could drop
+    smallint or timestamptz and refuse a documented pairing."""
+    pa = expect.require_module("pyarrow", name="a decimal128(10,0) file is refused for bigint (#2082)")
+    if pa is None:
+        return
+    conn = pgc_conn
+    _temporal_fixtures(pa, server_dir)
+
+    def state(fixture, pgtype):
+        _run(conn, "DROP TABLE IF EXISTS mx_t", f"CREATE TABLE mx_t (v {pgtype}) USING pgcolumnar")
+        return _state(conn, f"SELECT pgcolumnar.import_arrow('mx_t', '{server_dir / (fixture + '.arrows')}')")
+
+    def values(fixture, pgtype):
+        st = state(fixture, pgtype)
+        return _one(conn, "SELECT string_agg(v::text, ',' ORDER BY v) FROM mx_t") if st == "00000" else st
+
+    expect.text(state("mx_dec", "bigint"), "42804", "a decimal128(10,0) file is refused for bigint (#2082)")
+    expect.text(state("mx_fsb16", "bigint"), "42804", "a 16-byte fixed-size binary is refused for bigint (#2082)")
+    expect.text(values("mx_i16", "smallint"), "-3,7", "control: an int16 file still imports into smallint (#2082)")
+    _run(conn, "SET timezone = 'UTC'")
+    expect.text(values("mx_i64", "timestamptz"), "1970-01-01 00:00:00.000001+00,2000-01-01 00:00:00+00",
+                "control: an int64 file still imports into timestamptz as microseconds (#2082)")
+
+    bad = []
+    for f in _MX_FILES:
+        for t in _MX_TARGETS:
+            want = "00000" if (f, t) in _MX_KEPT else "42804"
+            got = state(f, t)
+            if got != want:
+                bad.append(f"{f}:{t}={got}")
+    expect.text(" ".join(bad) or "none", "none",
+                "every Arrow type imports into its documented targets and no other (#2082)")
 
 
 def test_an_import_maintains_the_tables_indexes(pgc_conn, server_dir, expect):
