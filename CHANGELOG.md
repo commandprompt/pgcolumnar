@@ -605,6 +605,21 @@ true until the next version shipped.
 
 ### Fixed
 
+- `export_parquet`, `parallel_export_parquet`, `export_arrow` and
+  `tier_partition` now export a table that has had a column dropped (#2076).
+  They failed with `does not support dropped columns`, wherever the dropped
+  column was, and nothing in the table could clear it. This included a
+  partition made on its own, given an extra column that was then dropped, and
+  attached. The writers now skip a dropped column and write the live columns
+  in order. `import_arrow` now loads into a table with a dropped column, as
+  `import_parquet` already did; the dropped column is stored as null.
+  `export_arrow`'s limit of 16 columns counts live columns, so a table with 16
+  live columns and a dropped one exports. Tests pin that limit, the refusal of a
+  17th live column (with SQLSTATE `0A000`), and an import into a table whose
+  dropped column is text. Further tests drop the first or the last column, keep
+  1 live column beside 60 dropped ones, put composites after the dropped
+  columns, and cut by bytes beside a dropped column (#2143 review).
+  `test/parquet_export.sh`, `test/arrow_export.sh` and their twins.
 - `pgcolumnar.import_arrow` now refuses an Arrow column whose type family does
   not match the target column (#2082). Before, it copied the file's bytes as the
   column's type and stored bit patterns with no error: float64 `1.5` into
