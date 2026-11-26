@@ -305,7 +305,8 @@ def es(pgc_cluster, server_dir):
         r["sp rename tmp"] = _tmp_of(d, "es_sp3.parquet")
         # A failed open must leave nothing listed: no Abort would unlist it. The walk
         # of a freed sink faults on an assert build (signal) and an ASan build (an
-        # AddressSanitizer report); a release build reads it without faulting.
+        # AddressSanitizer report). On a PG 18 release build it read the freed memory
+        # without faulting; on a PG 17 release build it faulted (#2142 review 4).
         nodir = d / "es_nodir"
         seen, res = _fatal_session(dsn, [
             "BEGIN", "SAVEPOINT s",

@@ -277,8 +277,9 @@ check_num "fatal: no temp file after a FATAL export that followed a failed renam
 # no Abort would unlist it. A sink left listed is freed by ROLLBACK TO, and the
 # next FATAL walks it. On an assert build the freed memory is overwritten, so
 # the walk faults and the signal check below counts it. On an ASan build the
-# fault is an AddressSanitizer report, which that check counts too. A release
-# build reads the freed memory without faulting, so no check here sees it there.
+# fault is an AddressSanitizer report, which that check counts too. On a PG 18
+# release build the walk read the freed memory without faulting, so no check
+# here sees it there. On a PG 17 release build it faulted (#2142 review 4).
 fatal_session "BEGIN;
 SAVEPOINT s;
 SELECT pgcolumnar.export_parquet('es_src', '$PGC_WORKDIR/es_nodir/a.parquet');
