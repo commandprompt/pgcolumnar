@@ -214,6 +214,77 @@ def _survived(dsn, cluster, before):
     return f"no ([{up}], {now - before} backend crashes)"
 
 
+# Each boomc function counts its calls in the sequence ncalls and then raises. A sequence
+# keeps its value when the query fails, so "COUNT|CALLS" shows a call even where main's
+# code swallowed the error and still counted 0 (review of 5f90e108).
+BOOMC = ["CREATE SEQUENCE ncalls"] + [
+    f"""CREATE FUNCTION {name}(int) RETURNS {rettype} LANGUAGE plpgsql STABLE AS $$
+    BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION '{name} called'; END $$"""
+    for name, rettype in (("boomc", "int"), ("boomc_t", "text"), ("boomc_ts", "timestamp"),
+                          ("boomc_arr", "int[]"), ("boomc_r", "tsrange"))]
+NO_PARALLEL = "SET max_parallel_workers_per_gather = 0"
+NONC_Q = ("SELECT collname FROM pg_collation "
+          "WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US', 'und-x-icu') "
+          "AND collencoding IN (-1, pg_char_to_encoding(current_setting('server_encoding'))) "
+          "ORDER BY collname = 'und-x-icu', collname LIMIT 1")
+# tk holds each clause shape the scan can key, 20 groups of 2000 rows. tkh is a heap copy.
+TK = ["SET pgcolumnar.stripe_row_limit = 2000",
+      "CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"{nonc}\", v varchar, tsp timestamp, "
+      "r tsrange) USING pgcolumnar",
+      "INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), "
+      "timestamp '2020-01-01' + g * interval '1 hour', "
+      "tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour') "
+      "FROM generate_series(1, 40000) g",
+      "CREATE TABLE tkh AS SELECT * FROM tk"]
+# Clauses that can never be scan keys: ts < 0, tsp < '2000-01-01' and sc/sn < '' hold
+# for no row, so heap never calls the operand. Each must give "0|0".
+NOT_KEYABLE = (
+    ("not keyable ne", "t WHERE ts < 0 AND ts <> boomc($1)"),
+    ("not keyable expr", "t WHERE ts < 0 AND ts + 0 > boomc($1)"),
+    ("not keyable like non-c", "tk WHERE sn < '' AND sn LIKE boomc_t($1)"),
+    ("not keyable date_trunc ne", "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) <> boomc_ts($1)"),
+    ("not keyable date_trunc expr",
+     "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp + interval '1 hour') = boomc_ts($1)"),
+    ("not keyable date_trunc unit", "tk WHERE tsp < '2000-01-01' AND date_trunc(sc, tsp) = boomc_ts($1)"),
+    ("not keyable like reversed", "tk WHERE sc < '' AND boomc_t($1) LIKE sc"),
+    ("not keyable ne any", "t WHERE ts < 0 AND ts <> ANY(boomc_arr($1))"),
+    ("not keyable eq all", "t WHERE ts < 0 AND ts = ALL(boomc_arr($1))"),
+    ("not keyable range contains", "tk WHERE tsp < '2000-01-01' AND r @> boomc_r($1)"),
+    ("not keyable other collation", "tk WHERE sn < '' AND sn > boomc_t($1) COLLATE \"C\""),
+    ("not keyable abs", "t WHERE ts < 0 AND abs(ts) > boomc($1)"),
+)
+# Clauses that are keys, each with a bound parameter: (key, type, where on {t}, value).
+PRUNE = (
+    ("prune date_trunc", "timestamp", "{t} WHERE date_trunc('day', tsp) = $1", "'2024-07-01'"),
+    ("prune like c", "text", "{t} WHERE sc LIKE $1", "'0390%'"),
+    ("prune range overlap", "tsrange", "{t} WHERE r && $1", "'[2024-07-01,2024-07-02)'"),
+    ("prune varchar", "text", "{t} WHERE v >= $1", "'039001'"),
+    ("prune any", "int[]", "{t} WHERE k = ANY($1)", "'{39500,39600}'"),
+)
+
+
+def _nc_arm(dsn, where):
+    """-> "COUNT|CALLS" for one EXECUTE of `SELECT count(*) FROM where`; COUNT is
+    "raised: ..." if the query raised."""
+    _session(dsn, ["SELECT setval('ncalls', 1, false)"])
+    res = _transcript(dsn, [GENERIC, NO_PARALLEL, f"PREPARE nc(int) AS SELECT count(*) FROM {where}",
+                            "EXECUTE nc(0)"])
+    if isinstance(res, str):
+        return res
+    calls = _value(dsn, "SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM ncalls")
+    return f"{res[-1] if res else 'no row'}|{calls}"
+
+
+def _prune_arm(dsn, typ, where, value):
+    """-> "REMOVED|COUNT" for `SELECT count(*) FROM where` on a generic plan."""
+    res = _transcript(dsn, [GENERIC, NO_PARALLEL, f"PREPARE pa({typ}) AS SELECT count(*) FROM {where}",
+                            f"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE pa({value})",
+                            f"EXECUTE pa({value})"])
+    if isinstance(res, str):
+        return res
+    return f"{_field(res, 'Chunk Groups Removed by Filter')}|{res[-1] if res else 'no row'}"
+
+
 @pytest.fixture(scope="module")
 def pp(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -396,12 +467,20 @@ def pp(pgc_cluster):
                                "EXECUTE nf(NULL)"])
         r["fn null text count"] = nf if isinstance(nf, str) else (nf[-1] if nf else query_error("no row"))
         r["fn null survived"] = _survived(dsn, pgc_cluster, before)
-        # Only an operand whose clause could become a scan key is evaluated; ts < 0 holds
-        # for no row, so heap and btree never call boom().
-        for key, sql in (("not keyable ne", "ts < 0 AND ts <> boom($1)"),
-                         ("not keyable expr", "ts < 0 AND ts + 0 > boom($1)")):
-            res = _transcript(dsn, [GENERIC, f"PREPARE c(int) AS SELECT count(*) FROM t WHERE {sql}", "EXECUTE c(0)"])
-            r[key] = res if isinstance(res, str) else (res[-1] if res else query_error("no row"))
+        # Only an operand whose clause could become a scan key is evaluated.
+        nonc = _value(dsn, NONC_Q)
+        r["nonc premise"] = _value(dsn, f"SELECT ('a' < 'B' COLLATE \"{nonc}\")::text || '|' || "
+                                        "('a' < 'B' COLLATE \"C\")::text")
+        _session(dsn, BOOMC + [sql.format(nonc=nonc) for sql in TK])
+        for key, where in NOT_KEYABLE:
+            r[key] = _nc_arm(dsn, where)
+        heap = []
+        for key, typ, where, value in PRUNE:
+            r[key] = _prune_arm(dsn, typ, where.format(t="tk"), value)
+            hres = _transcript(dsn, [GENERIC, f"PREPARE ha({typ}) AS SELECT count(*) FROM {where.format(t='tkh')}",
+                                     f"EXECUTE ha({value})"])
+            heap.append(hres if isinstance(hres, str) else (hres[-1] if hres else "no row"))
+        r["prune heap"] = " ".join(heap)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -621,13 +700,98 @@ def test_param_pushdown_the_backend_is_alive_after_the_null_from_a_stable_functi
 
 
 def test_param_pushdown_a_stable_operand_of_a_clause_with_no_btree_strategy_is_not_evaluated(pp, expect):
-    expect.text(pp["not keyable ne"], "0",
+    expect.text(pp["not keyable ne"], "0|0",
                 "a stable operand of a clause with no btree strategy (<>) is not evaluated (#2065)")
 
 
 def test_param_pushdown_a_stable_operand_compared_with_a_column_expression_is_not_evaluated(pp, expect):
-    expect.text(pp["not keyable expr"], "0",
+    expect.text(pp["not keyable expr"], "0|0",
                 "a stable operand compared with an expression of the column is not evaluated (#2065)")
+
+
+def test_param_pushdown_the_premise_collation_is_not_c(pp, expect):
+    expect.text(pp["nonc premise"], "true|false",
+                "premise: sn's collation orders a lower-case letter before an upper-case one, which C does not (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_like_on_a_column_whose_collation_is_not_c_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable like non-c"], "0|0",
+                "a stable operand of LIKE on a column whose collation is not C is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_with_no_btree_strategy_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc ne"], "0|0",
+                "a stable operand of date_trunc with no btree strategy (<>) is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_over_a_column_expression_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc expr"], "0|0",
+                "a stable operand of date_trunc over an expression of the column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_date_trunc_with_a_unit_from_a_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable date_trunc unit"], "0|0",
+                "a stable operand of date_trunc with a unit read from a column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_on_the_column_side_of_like_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable like reversed"], "0|0",
+                "a stable operand on the column side of LIKE is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_array_operand_of_ne_any_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable ne any"], "0|0",
+                "a stable array operand of <> ANY is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_array_operand_of_eq_all_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable eq all"], "0|0",
+                "a stable array operand of = ALL is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_range_contains_range_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable range contains"], "0|0",
+                "a stable operand of range @> range is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_under_another_collation_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable other collation"], "0|0",
+                "a stable operand compared under a collation that is not the column's is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_compared_with_another_function_of_the_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable abs"], "0|0",
+                "a stable operand compared with a function of the column other than date_trunc is not evaluated (#2065)")
+
+
+def test_param_pushdown_the_heap_copy_answers_the_five_pruning_queries(pp, expect):
+    expect.text(pp["prune heap"], "24 100 24 1000 2",
+                "the heap copy answers the five pruning queries (premise) (#2065)")
+
+
+def test_param_pushdown_a_bound_param_compared_with_date_trunc_prunes(pp, expect):
+    expect.text(pp["prune date_trunc"], "19|24",
+                "a bound parameter compared with date_trunc of a timestamp column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_param_in_like_on_a_c_column_prunes(pp, expect):
+    expect.text(pp["prune like c"], "19|100",
+                "a bound parameter in LIKE on a C-collated column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_param_that_a_range_column_overlaps_prunes(pp, expect):
+    expect.text(pp["prune range overlap"], "19|24",
+                "a bound parameter that a range column overlaps prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_text_param_compared_with_a_varchar_column_prunes(pp, expect):
+    expect.text(pp["prune varchar"], "19|1000",
+                "a bound text parameter compared with a varchar column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_array_param_of_eq_any_prunes(pp, expect):
+    expect.text(pp["prune any"], "19|2",
+                "a bound array parameter of = ANY prunes (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

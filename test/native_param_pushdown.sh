@@ -388,13 +388,105 @@ check "the backend is alive after the NULL from a stable function (#2065)" "$(su
 # The scan evaluates an operand only when its clause could become a scan key. "<>"
 # has no btree strategy, and "ts + 0" is not a bare column, so neither clause can be
 # a key; btree leaves them in its Filter and heap tests them per row. ts < 0 holds
-# for no row, so heap and btree never call boom() and count 0.
+# for no row, so heap and btree never call the operand and count 0.
+#
+# Each boomc function counts its calls in the sequence ncalls and then raises. A
+# sequence keeps its value when the query fails, so "COUNT|CALLS" shows a call even
+# where main's code swallowed the error and still counted 0 (review of 5f90e108).
+# Every function takes an int, so every arm runs EXECUTE nc(0).
+q "CREATE SEQUENCE ncalls;
+   CREATE FUNCTION boomc(int) RETURNS int LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc called'; END \$\$;
+   CREATE FUNCTION boomc_t(int) RETURNS text LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_t called'; END \$\$;
+   CREATE FUNCTION boomc_ts(int) RETURNS timestamp LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_ts called'; END \$\$;
+   CREATE FUNCTION boomc_arr(int) RETURNS int[] LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_arr called'; END \$\$;
+   CREATE FUNCTION boomc_r(int) RETURNS tsrange LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_r called'; END \$\$;" >/dev/null
+nc_arm() {	# nc_arm "TABLE WHERE ..." -> "COUNT|CALLS"; COUNT is the error line if the query raised
+	local out
+	out="$(psql_m "SET plan_cache_mode = force_generic_plan" "SET max_parallel_workers_per_gather = 0" \
+		"SELECT setval('ncalls', 1, false)" "PREPARE nc(int) AS SELECT count(*) FROM $1" "EXECUTE nc(0)" \
+		"SELECT CASE WHEN is_called THEN last_value ELSE 0 END FROM ncalls")"
+	echo "$(sed -n '5p' <<<"$out")|$(tail -1 <<<"$out")"
+}
 check "a stable operand of a clause with no btree strategy (<>) is not evaluated (#2065)" \
-	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE c1(int) AS SELECT count(*) FROM t WHERE ts < 0 AND ts <> boom(\$1)" \
-		"EXECUTE c1(0)" | tail -1)" "0"
+	"$(nc_arm "t WHERE ts < 0 AND ts <> boomc(\$1)")" "0|0"
 check "a stable operand compared with an expression of the column is not evaluated (#2065)" \
-	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE c2(int) AS SELECT count(*) FROM t WHERE ts < 0 AND ts + 0 > boom(\$1)" \
-		"EXECUTE c2(0)" | tail -1)" "0"
+	"$(nc_arm "t WHERE ts < 0 AND ts + 0 > boomc(\$1)")" "0|0"
+
+# tk holds each clause shape the scan can key, 20 groups of 2000 rows: k int, sc a
+# C-collated text, sn the same text under a collation that is not C, v varchar, tsp a
+# timestamp one hour per row from 2020-01-01, and r the hour that starts at tsp. tkh
+# is a heap copy.
+NONC="$(q "SELECT collname FROM pg_collation
+           WHERE collname IN ('en_US.utf8', 'en_US.UTF-8', 'en_US', 'und-x-icu')
+           AND collencoding IN (-1, pg_char_to_encoding(current_setting('server_encoding')))
+           ORDER BY collname = 'und-x-icu', collname LIMIT 1;")"
+check "premise: sn's collation orders a lower-case letter before an upper-case one, which C does not (#2065)" \
+	"$(q "SELECT ('a' < 'B' COLLATE \"$NONC\")::text || '|' || ('a' < 'B' COLLATE \"C\")::text;")" "true|false"
+q "SET pgcolumnar.stripe_row_limit=2000;
+   CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"$NONC\", v varchar, tsp timestamp, r tsrange)
+	USING pgcolumnar;
+   INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'),
+	timestamp '2020-01-01' + g * interval '1 hour',
+	tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour')
+	FROM generate_series(1, 40000) g;
+   CREATE TABLE tkh AS SELECT * FROM tk;" >/dev/null
+
+# Three shapes that can never be keys (review of 5f90e108, blocker 1). LIKE builds a
+# key only under the C collation; date_trunc builds one only for a btree operator and
+# a bare timestamp column.
+check "a stable operand of LIKE on a column whose collation is not C is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE sn < '' AND sn LIKE boomc_t(\$1)")" "0|0"
+check "a stable operand of date_trunc with no btree strategy (<>) is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp) <> boomc_ts(\$1)")" "0|0"
+check "a stable operand of date_trunc over an expression of the column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc('day', tsp + interval '1 hour') = boomc_ts(\$1)")" "0|0"
+check "a stable operand of date_trunc with a unit read from a column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND date_trunc(sc, tsp) = boomc_ts(\$1)")" "0|0"
+# More shapes that can never be keys (blocker 2): each one pins a branch of the test.
+check "a stable operand on the column side of LIKE is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE sc < '' AND boomc_t(\$1) LIKE sc")" "0|0"
+check "a stable array operand of <> ANY is not evaluated (#2065)" \
+	"$(nc_arm "t WHERE ts < 0 AND ts <> ANY(boomc_arr(\$1))")" "0|0"
+check "a stable array operand of = ALL is not evaluated (#2065)" \
+	"$(nc_arm "t WHERE ts < 0 AND ts = ALL(boomc_arr(\$1))")" "0|0"
+check "a stable operand of range @> range is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND r @> boomc_r(\$1)")" "0|0"
+check "a stable operand compared under a collation that is not the column's is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE sn < '' AND sn > boomc_t(\$1) COLLATE \"C\"")" "0|0"
+check "a stable operand compared with a function of the column other than date_trunc is not evaluated (#2065)" \
+	"$(nc_arm "t WHERE ts < 0 AND abs(ts) > boomc(\$1)")" "0|0"
+
+# Five shapes that are keys, each with a bound parameter: they must still prune, and
+# count what heap counts.
+prune_arm() {	# prune_arm TYPE "TABLE WHERE ..." VALUE -> "REMOVED|COUNT"
+	local out
+	out="$(psql_m "SET plan_cache_mode = force_generic_plan" "SET max_parallel_workers_per_gather = 0" \
+		"PREPARE pa($1) AS SELECT count(*) FROM $2" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE pa($3)" "EXECUTE pa($3)")"
+	echo "$(sed -n 's/.*Chunk Groups Removed by Filter: \([0-9]*\).*/\1/p' <<<"$out" | head -1)|$(tail -1 <<<"$out")"
+}
+heap_count() {	# heap_count TYPE "TABLE WHERE ..." VALUE -> the count on a generic plan
+	psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE ha($1) AS SELECT count(*) FROM $2" \
+		"EXECUTE ha($3)" | tail -1
+}
+check "the heap copy answers the five pruning queries (premise) (#2065)" \
+	"$(heap_count timestamp "tkh WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'") $(heap_count text "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tsrange "tkh WHERE r && \$1" "'[2024-07-01,2024-07-02)'") $(heap_count text "tkh WHERE v >= \$1" "'039001'") $(heap_count 'int[]' "tkh WHERE k = ANY(\$1)" "'{39500,39600}'")" \
+	"24 100 24 1000 2"
+check "a bound parameter compared with date_trunc of a timestamp column prunes (#2065)" \
+	"$(prune_arm timestamp "tk WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'")" "19|24"
+check "a bound parameter in LIKE on a C-collated column prunes (#2065)" \
+	"$(prune_arm text "tk WHERE sc LIKE \$1" "'0390%'")" "19|100"
+check "a bound parameter that a range column overlaps prunes (#2065)" \
+	"$(prune_arm tsrange "tk WHERE r && \$1" "'[2024-07-01,2024-07-02)'")" "19|24"
+check "a bound text parameter compared with a varchar column prunes (#2065)" \
+	"$(prune_arm text "tk WHERE v >= \$1" "'039001'")" "19|1000"
+check "a bound array parameter of = ANY prunes (#2065)" \
+	"$(prune_arm 'int[]' "tk WHERE k = ANY(\$1)" "'{39500,39600}'")" "19|2"
 
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 

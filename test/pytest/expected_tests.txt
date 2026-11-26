@@ -2195,4 +2195,11 @@ guard_tests 895
 # 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
 # an expression of the column, is not evaluated), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5619 tests collected after the merge of main 6f79946f (5618 before it).
-cluster_tests 5619
+# cluster_tests 5619 -> 5636 for #2065's seventeen tests from the seventh #2133 review in
+# test_native_param_pushdown.py (twelve clause shapes that can never be scan keys are not evaluated, shown by a
+# call counter: LIKE under a collation that is not C, LIKE with the operand on the column side, date_trunc with
+# <>, over an expression or with a unit from a column, <> ANY, = ALL, range @> range, another collation, another
+# function of the column; five keyable shapes with a bound parameter prune 19 of 20 groups: date_trunc, LIKE on
+# a C column, a range overlap, a varchar column, = ANY; a collation premise and a heap premise), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5636 tests collected.
+cluster_tests 5636
