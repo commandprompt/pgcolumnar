@@ -1324,10 +1324,10 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
  *		Const, is a clause pgcolumnar_clause_to_scankey could turn into a key.
  *
  * It reads the clause's shape only and calls nothing. The other side must be
- * a column of this scan (or date_trunc of one, #403), compared under the
- * column's collation, by an operator that has a btree strategy in the column
- * type's family, by an anchored LIKE, by a range operator (#1144), or by
- * `= ANY` (#704). pgcolumnar_clause_to_scankey makes the final decision once
+ * a column of this scan (or date_trunc of one with a constant unit, #403),
+ * compared under the column's collation, by an operator that has a btree
+ * strategy in the column type's family, by LIKE under the C collation, by a
+ * range operator (#1144), or by `= ANY` (#704). pgcolumnar_clause_to_scankey makes the final decision once
  * the operand is a Const; this only rules out a clause that can never be a key.
  *
  * Such a clause is not frozen at all (#2065). Evaluating its operand could
@@ -1367,9 +1367,29 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 	if (IsA(other, RelabelType))
 		other = (Node *) ((RelabelType *) other)->arg;
 
-	/* date_trunc(unit, col) compared with a value (#403) */
+	/*
+	 * date_trunc(unit, col) compared with a value (#403). As in
+	 * pgcolumnar_preimage_range_scankey, the unit must be a Const, the argument a
+	 * column of this scan, and the operator one with a btree strategy.
+	 */
 	if (IsA(clause, OpExpr) && IsA(other, FuncExpr))
-		return ((FuncExpr *) other)->funcid == F_DATE_TRUNC_TEXT_TIMESTAMP;
+	{
+		FuncExpr   *f = (FuncExpr *) other;
+		Node	   *col;
+
+		if (f->funcid != F_DATE_TRUNC_TEXT_TIMESTAMP ||
+			list_length(f->args) != 2 || !IsA(linitial(f->args), Const))
+			return false;
+		col = (Node *) lsecond(f->args);
+		if (IsA(col, RelabelType))
+			col = (Node *) ((RelabelType *) col)->arg;
+		if (!IsA(col, Var) || ((Var *) col)->varno != scanrelid ||
+			((Var *) col)->varlevelsup != 0)
+			return false;
+		tce = lookup_type_cache(TIMESTAMPOID, TYPECACHE_BTREE_OPFAMILY);
+		return OidIsValid(tce->btree_opf) &&
+			get_op_opfamily_strategy(opno, tce->btree_opf) != InvalidStrategy;
+	}
 
 	if (!IsA(other, Var))
 		return false;
@@ -1385,8 +1405,9 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 		return OidIsValid(tce->btree_opf) &&
 			get_op_opfamily_strategy(opno, tce->btree_opf) == BTEqualStrategyNumber;
 
+	/* LIKE builds a key only under the C collation (pgcolumnar_like_prefix_scankey) */
 	if (opno == OID_TEXT_LIKE_OP)
-		return varOnLeft;
+		return varOnLeft && COLUMNAR_COLLATION_IS_C(inputcollid);
 	if (type_is_range(var->vartype))
 	{
 		Oid			gistClass = GetDefaultOpClass(var->vartype, GIST_AM_OID);
