@@ -2168,4 +2168,9 @@ guard_tests 899
 # short of it and load at it; in test_parquet_import.py, the how-to's object-storage read_parquet example
 # runs. By collection over the cluster files (the complement of NO_CLUSTER): 5575 tests collected after the merge
 # of main 3dd019fe (5543 after the merge of main 6b54a65a).
-cluster_tests 5600
+# cluster_tests 5600 -> 5604 for #2093's four tests from the review of #2159 at bf3d4d82, in
+# test_parallel_copy.py: four workers load at max_parallel_workers = 0 and best-practices.md says so; every
+# page's slot figure is the sum it gives; four workers load at max_prepared_transactions = 4 and are refused
+# with SQLSTATE 55000 at 3. By collection over the cluster files (the complement of NO_CLUSTER): 5604 tests
+# collected after the merge of main 199e4aa7.
+cluster_tests 5604

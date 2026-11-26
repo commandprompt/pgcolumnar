@@ -634,11 +634,14 @@ true until the next version shipped.
   page's block. The pages, docs/best-practices.md among them, now say how many
   `max_worker_processes` slots a load needs: the worker count plus one, plus
   the server's own workers (two on PostgreSQL 15 to 19 with pgcolumnar
-  preloaded), so four workers need 7. best-practices.md no longer names
-  `max_parallel_workers`, which does not limit the load.
-  `test/parallel_copy.sh` and its twin read that figure from the pages, then
-  restart a cluster one slot short of it, where four workers fail, and at it,
-  where they load. `test/parquet_import.sh` and its twin also run the how-to's
+  preloaded), so four workers need 7. best-practices.md now says that
+  `max_parallel_workers` does not limit the load, where it said a load needs a
+  slot in it. `test/parallel_copy.sh` and its twin read that figure from the
+  pages and check that it is the sum the page gives, then restart a cluster one
+  slot short of it, where four workers fail, and at it, where they load. They
+  also load four workers at `max_parallel_workers = 0`, and at
+  `max_prepared_transactions` equal to the worker count; one below it, the load
+  is refused with SQLSTATE 55000. `test/parquet_import.sh` and its twin also run the how-to's
   object-storage `read_parquet` example, on a local file.
   The check for a postgresql.conf line in a `sql` block now also matches a
   setting name with a digit. Reported by @OffgridwithJD.

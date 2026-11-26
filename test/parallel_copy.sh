@@ -771,6 +771,24 @@ for _p in $SLOT_PAGES; do
 done
 check "every page that covers parallel_copy gives the slot rule and the same four-worker figure" \
 	"$_slot_got" "$_slot_want"
+# The figure is the sum the pages give: four loaders, one coordinator, and the
+# slots the server's own workers "hold". A page that says "hold one slot" and
+# keeps "need 7" adds up to 6, which is refused (OffgridwithJD's note on #2159).
+slot_sum() {	# slot_sum PAGE -> "ok", or the sum the page gives against its figure
+	local t n f
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	n="$(sed -nE 's/.*workers hold ([a-z]+) slots?.*/\1/p' <<<"$t")"
+	case "$n" in one) n=1 ;; two) n=2 ;; three) n=3 ;; four) n=4 ;; *) echo "no-hold"; return ;; esac
+	f="$(slot_figure "$1")"
+	[ "$((4 + 1 + n))" = "$f" ] && echo ok || echo "4+1+$n!=$f"
+}
+_sum_got="" _sum_want=""
+for _p in $SLOT_PAGES; do
+	_sum_got="$_sum_got${_sum_got:+ }$_p:$(slot_sum "$_p")"
+	_sum_want="$_sum_want${_sum_want:+ }$_p:ok"
+done
+check "every page's four-worker figure is four loaders plus a coordinator plus the slots it says the server's workers hold" \
+	"$_sum_got" "$_sum_want"
 slots_load() {	# slots_load SLOTS -> rows a four-worker load returns, or "refused"
 	[[ "$1" =~ ^[0-9]+$ ]] || { echo "no documented figure"; return; }
 	psql_admin "ALTER SYSTEM SET max_worker_processes = $1;" >/dev/null
@@ -792,6 +810,42 @@ check "four workers fail to register a loader one slot short of the documented f
 	"$(slots_load "$_short")" "refused"
 check "four workers load at the documented figure" \
 	"$(slots_load "$SLOT_FIG")" "5000"
+# conf_load NAME VALUE -> restart with NAME = VALUE (max_worker_processes stays at
+# the documented figure) and load with four workers: the row count, or the error's
+# SQLSTATE as "SQLSTATE nnnnn".
+conf_load() {
+	psql_admin "ALTER SYSTEM SET $1 = $2;" >/dev/null
+	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
+		|| { echo "restart failed"; return; }
+	local now out
+	now="$(q "SHOW $1")"
+	[ "$now" = "$2" ] || { echo "$1 is [$now], not $2"; return; }
+	psql_run "TRUNCATE t_doc;"
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -v VERBOSITY=verbose -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', 4)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+	case "$out" in
+	*"ERROR:  "[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]:*) echo "SQLSTATE $(sed -E 's/.*ERROR:  ([0-9A-Z]{5}):.*/\1/' <<<"$out")" ;;
+	*) echo "${out:-no output}" ;;
+	esac
+}
+# best-practices.md says max_parallel_workers does not limit the load. Main said a
+# load needs a slot in it, and a revert of the sentence stayed green (OffgridwithJD's
+# mutant D2 on #2159). So read the sentence, and load at max_parallel_workers = 0.
+_mpw_says="no-sentence"
+case "$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/best-practices.md")" in
+*'`max_parallel_workers` does not limit the load'*) _mpw_says="says-so" ;;
+esac
+check "best-practices.md says max_parallel_workers does not limit the load, and four workers load at max_parallel_workers = 0" \
+	"$_mpw_says $(conf_load max_parallel_workers 0)" "says-so 5000"
+psql_admin "ALTER SYSTEM RESET max_parallel_workers;" >/dev/null
+# The pages say max_prepared_transactions must be at least the worker count. The
+# guard is "max_prepared < workers" (src/columnar_parallel_copy.c). Every other
+# check runs at 8, so "<=" stayed green (OffgridwithJD's note S1 on #2159).
+check "four workers load at max_prepared_transactions = 4, the worker count" \
+	"$(conf_load max_prepared_transactions 4)" "5000"
+check "four workers are refused with SQLSTATE 55000 at max_prepared_transactions = 3" \
+	"$(conf_load max_prepared_transactions 3)" "SQLSTATE 55000"
+psql_admin "ALTER SYSTEM RESET max_prepared_transactions;" >/dev/null
 psql_admin "ALTER SYSTEM RESET max_worker_processes;" >/dev/null
 
 pgc_summary

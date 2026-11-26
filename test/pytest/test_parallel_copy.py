@@ -997,6 +997,47 @@ def _slots_load(cluster, path, slots):
             return query_error(msg)
 
 
+def _conf_load(cluster, path, name, value):
+    """-> rows a four-worker load returns after a restart with name = value, or "SQLSTATE nnnnn"."""
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        c.execute(f"ALTER SYSTEM SET {name} = {int(value)}")
+        # cluster.stop() is an immediate shutdown. Without a checkpoint, recovery
+        # replays the last load's four PREPAREs, and at max_prepared_transactions = 3
+        # the server refuses to start ("maximum number of prepared transactions reached").
+        c.execute("CHECKPOINT")
+    cluster.stop()
+    cluster.start()
+    with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+        now = c.execute(f"SHOW {name}").fetchone()[0]
+        if now != str(value):
+            return f"{name} is [{now}], not {value}"
+        c.execute("TRUNCATE t_doc")
+        try:
+            return str(c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)",
+                                 (path,)).fetchone()[0])
+        except psycopg.Error as e:
+            if e.sqlstate:
+                return f"SQLSTATE {e.sqlstate}"
+            return query_error((str(e).splitlines() or ["?"])[0])
+
+
+_HOLD = re.compile(r"workers hold (\w+) slots?")
+_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4}
+
+
+def _slot_sum(page):
+    """-> "ok" when the page's figure is 4 + 1 + the slots it says the server holds."""
+    t = " ".join((DOCS / page).read_text().split())
+    m = _HOLD.search(t)
+    if not m or m.group(1) not in _WORDS:
+        return "no-hold"
+    n, f = _WORDS[m.group(1)], _slot_figure(page)
+    return "ok" if str(4 + 1 + n) == f else f"4+1+{n}!={f}"
+
+
+_MPW_SENTENCE = "`max_parallel_workers` does not limit the load"
+
+
 @pytest.fixture(scope="module")
 def slot_loads(pgc_cluster):
     figs = {p: _slot_figure(p) for p in SLOT_PAGES}
@@ -1004,7 +1045,7 @@ def slot_loads(pgc_cluster):
     r = {"figures": (" ".join(f"{p}:{v}" for p, v in figs.items()),
                      " ".join(f"{p}:{fig if fig.isdigit() else 'a-figure'}" for p in SLOT_PAGES))}
     if not fig.isdigit():
-        r["short"] = r["at"] = "no documented figure"
+        r["short"] = r["at"] = r["mpw"] = r["mpt4"] = r["mpt3"] = "no documented figure"
         yield r
         return
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-pcslots-"))
@@ -1025,6 +1066,12 @@ def slot_loads(pgc_cluster):
             c.execute("CREATE TABLE t_doc (id int, txt text) USING pgcolumnar")
         r["short"] = _slots_load(cluster, path, int(fig) - 1)
         r["at"] = _slots_load(cluster, path, int(fig))
+        # max_worker_processes stays at the figure for the arms below.
+        r["mpw"] = _conf_load(cluster, path, "max_parallel_workers", 0)
+        with psycopg.connect(cluster.dsn(), autocommit=True) as c:
+            c.execute("ALTER SYSTEM RESET max_parallel_workers")
+        r["mpt4"] = _conf_load(cluster, path, "max_prepared_transactions", 4)
+        r["mpt3"] = _conf_load(cluster, path, "max_prepared_transactions", 3)
         yield r
     finally:
         cluster.stop()
@@ -1043,3 +1090,37 @@ def test_four_workers_fail_one_slot_short_of_the_documented_figure(slot_loads, e
 
 def test_four_workers_load_at_the_documented_figure(slot_loads, expect):
     expect.text(slot_loads["at"], "5000", "four workers load at the documented figure")
+
+
+# best-practices.md says max_parallel_workers does not limit the load. Main said a load
+# needs a slot in it, and a revert of the sentence stayed green (OffgridwithJD's mutant
+# D2 on #2159). So read the sentence, and load at max_parallel_workers = 0.
+def test_four_workers_load_at_max_parallel_workers_zero(slot_loads, expect):
+    t = " ".join((DOCS / "best-practices.md").read_text().split())
+    says = "says-so" if _MPW_SENTENCE in t else "no-sentence"
+    expect.text(f"{says} {slot_loads['mpw']}", "says-so 5000",
+                "best-practices.md says max_parallel_workers does not limit the load,"
+                " and four workers load at max_parallel_workers = 0")
+
+
+# The figure is the sum the pages give: four loaders, one coordinator, and the slots
+# the server's own workers "hold". "hold one slot" with "need 7" adds up to 6, which is
+# refused (OffgridwithJD's note on #2159).
+def test_every_slot_figure_is_the_sum_the_page_gives(expect):
+    expect.text(" ".join(f"{p}:{_slot_sum(p)}" for p in SLOT_PAGES),
+                " ".join(f"{p}:ok" for p in SLOT_PAGES),
+                "every page's four-worker figure is four loaders plus a coordinator plus the"
+                " slots it says the server's workers hold")
+
+
+# The pages say max_prepared_transactions must be at least the worker count. The guard
+# is "max_prepared < workers" (src/columnar_parallel_copy.c). Every other check runs at
+# 8, so "<=" stayed green (OffgridwithJD's note S1 on #2159).
+def test_four_workers_load_at_max_prepared_transactions_four(slot_loads, expect):
+    expect.text(slot_loads["mpt4"], "5000",
+                "four workers load at max_prepared_transactions = 4, the worker count")
+
+
+def test_four_workers_are_refused_at_max_prepared_transactions_three(slot_loads, expect):
+    expect.text(slot_loads["mpt3"], "SQLSTATE 55000",
+                "four workers are refused with SQLSTATE 55000 at max_prepared_transactions = 3")
