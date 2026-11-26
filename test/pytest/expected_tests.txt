@@ -2300,4 +2300,14 @@ guard_tests 897
 # test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
 # still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
 # mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
-cluster_tests 5741
+# cluster_tests 5741 -> 5752 for #2161's eleven tests in test_parallel_copy.py:
+# test_parallel_copy_into_an_empty_projection_loads_every_row (5 parametrized: 2 and 4 workers into a projection
+# that holds no rows yet load every row and fill the projection; 1 worker, a projection that already holds rows
+# and no projection are the controls), test_parallel_copy_records_the_empty_projections_storage_row_as_one_worker_does,
+# test_parallel_copy_into_three_empty_projections_fills_each_one,
+# test_parallel_copy_projection_committed_during_the_load_premise,
+# test_parallel_copy_projection_committed_during_the_load_fails_cleanly,
+# test_parallel_copy_trigger_into_another_empty_columnar_table_still_loads and
+# test_parallel_copy_into_an_empty_projection_leaves_nothing_behind, by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 5752

@@ -750,6 +750,29 @@ true until the next version shipped.
   no cluster and no race: a descriptor listed but gone by its readlink no
   longer hides the lock, and a pid that does not exist reads 0 of 0. The
   `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` with 2 or more workers into a table whose
+  projection holds no rows yet now loads, where it waited until
+  `statement_timeout` and rolled back (#2161). A projection's write records the
+  projection's own storage row, and a projection with no rows has none. The
+  coordinator pre-created only the table's row, so the first loader to write
+  the projection created its row under the storage-row lock, and its `PREPARE
+  TRANSACTION` kept that lock. The next loader waited for the prepared
+  transaction, and the coordinator waited for that loader before it would
+  commit any of them. A prepared transaction never waits, so PostgreSQL's
+  deadlock detector saw no cycle. The coordinator now pre-creates and commits
+  each projection's storage row with the table's, as a 1-worker load would
+  record it. A projection that commits after that, during the load, still has
+  no row: `add_projection` releases its table lock before it commits (#2215).
+  A single-table loader that reaches a storage row created after the load
+  started now fails with 55000 instead of creating it under the lock, and the
+  coordinator rolls every range back. Only the target's storages are refused:
+  a trigger that writes another columnar table still creates that table's row. A session that sets
+  `pgcolumnar.bulk_parallel_writer` by hand keeps the locked path. 2 and 4
+  workers into an empty projection, and 2 workers into three, load every row
+  and fill every projection; 1 worker, a projection that already holds rows,
+  and a table with no projection are the controls. `parallel_copy.sh` and
+  `test_parallel_copy.py`; the race with `add_projection` is forced by a
+  trigger that holds the loaders until the projection has committed.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
@@ -1101,8 +1124,8 @@ true until the next version shipped.
   and their pytest twins, cover both functions. A new check in
   `test/parallel_copy.sh`, and its twin, shows that `parallel_copy` into a table
   with a projection fills the projection. With 2 or more workers into a
-  projection that holds no rows yet, `parallel_copy` hangs, for another reason
-  (#2161).
+  projection that holds no rows yet, `parallel_copy` hung, for another reason
+  (#2161, fixed since).
 - A `pgcolumnar.parallel_copy` loader that fails now closes its file once
   (#2083). It closed the file after aborting its transaction, but the abort
   had already closed it. Each failed loader logged `fd passed to
