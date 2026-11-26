@@ -2055,4 +2055,7 @@ guard_tests 895
 # an inner SAVEPOINT and ROLLBACK TO the outer one, and after SAVEPOINT and RELEASE), by collection:
 # `cd test/pytest && PGC_PG_CONFIG=<PG18>/bin/pg_config pytest --collect-only -q`: 6384 tests collected,
 # less guard_tests 895.
-cluster_tests 5523
+# cluster_tests 5523 -> 5524 for #2082's struct-field test in test_arrow_import.py (a struct field of
+# float64, and one of decimal128(10,0), is refused for a composite (a bigint) field), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5524 tests collected.
+cluster_tests 5524

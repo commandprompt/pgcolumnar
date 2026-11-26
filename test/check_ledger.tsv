@@ -387,6 +387,8 @@ arrow_import	arrow_import	a negative nanosecond time is refused, not narrowed in
 arrow_import	arrow_import	a null-type file is refused for text, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
 arrow_import	arrow_import	a second count that overflows on scaling is refused, not wrapped	15;16;17;18;19	never	-
 arrow_import	arrow_import	a string file is refused for bigint, not called malformed (#2082)	15;16;17;18;19	2026-11-24	-
+arrow_import	arrow_import	a struct field of decimal128(10,0) is refused for a composite (a bigint) field (#2082)	15;16;17;18;19	2026-11-26	imp_check_shape: arrow_tag_fits_kind skipped for struct children only (listDepth >= 1000 at the A_STRUCT test, struct children recursed at listDepth + 1000) (src/columnar_arrow.c, #2082)
+arrow_import	arrow_import	a struct field of float64 is refused for a composite (a bigint) field (#2082)	15;16;17;18;19	2026-11-26	imp_check_shape: arrow_tag_fits_kind skipped for struct children only (listDepth >= 1000 at the A_STRUCT test, struct children recursed at listDepth + 1000) (src/columnar_arrow.c, #2082)
 arrow_import	arrow_import	a struct field's nanosecond unit is honoured at child index 1	15;16;17;18;19	2026-11-01	imp_check_shape: every Struct tag refused, over-applied (src/columnar_arrow.c, #1932)
 arrow_import	arrow_import	a time past midnight is refused	15;16;17;18;19	never	-
 arrow_import	arrow_import	a time32 in milliseconds decodes to the time it holds (#865)	15;16;17;18;19	never	-
