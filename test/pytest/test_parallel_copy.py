@@ -997,8 +997,10 @@ def _slots_load(cluster, path, slots):
             return query_error(msg)
 
 
-def _conf_load(cluster, path, name, value):
-    """-> rows a four-worker load returns after a restart with name = value, or "SQLSTATE nnnnn"."""
+def _conf_load(cluster, path, name, value, auto=False):
+    """-> rows a four-worker load returns after a restart with name = value, or "SQLSTATE nnnnn".
+
+    With auto, the load omits the worker count, so the function picks it."""
     with psycopg.connect(cluster.dsn(), autocommit=True) as c:
         c.execute(f"ALTER SYSTEM SET {name} = {int(value)}")
         # cluster.stop() is an immediate shutdown. Without a checkpoint, recovery
@@ -1013,8 +1015,9 @@ def _conf_load(cluster, path, name, value):
             return f"{name} is [{now}], not {value}"
         c.execute("TRUNCATE t_doc")
         try:
-            return str(c.execute("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)",
-                                 (path,)).fetchone()[0])
+            sql = ("SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s)" if auto
+                   else "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, %s, 4)")
+            return str(c.execute(sql, (path,)).fetchone()[0])
         except psycopg.Error as e:
             if e.sqlstate:
                 return f"SQLSTATE {e.sqlstate}"
@@ -1036,6 +1039,17 @@ def _slot_sum(page):
 
 
 _MPW_SENTENCE = "`max_parallel_workers` does not limit the load"
+_AUTO_SENTENCE = "With `workers` omitted, the worker count is half of `max_parallel_workers`"
+AUTO_PAGES = ("how-to.md", "sql-reference.md", "best-practices.md")
+_PREP_RULE = re.compile(r"`max_prepared_transactions` (to )?at least the worker count")
+
+
+def _prep_rule(page):
+    """-> "at-least", "no-rule", or "not-named" for the page's max_prepared_transactions rule."""
+    t = " ".join((DOCS / page).read_text().split())
+    if "`max_prepared_transactions`" not in t:
+        return "not-named"
+    return "at-least" if _PREP_RULE.search(t) else "no-rule"
 
 
 @pytest.fixture(scope="module")
@@ -1045,7 +1059,7 @@ def slot_loads(pgc_cluster):
     r = {"figures": (" ".join(f"{p}:{v}" for p, v in figs.items()),
                      " ".join(f"{p}:{fig if fig.isdigit() else 'a-figure'}" for p in SLOT_PAGES))}
     if not fig.isdigit():
-        r["short"] = r["at"] = r["mpw"] = r["mpt4"] = r["mpt3"] = "no documented figure"
+        r["short"] = r["at"] = r["mpw"] = r["mpt4"] = r["mpt3"] = r["auto"] = "no documented figure"
         yield r
         return
     work = pathlib.Path(tempfile.mkdtemp(prefix="pgc-pcslots-"))
@@ -1068,6 +1082,10 @@ def slot_loads(pgc_cluster):
         r["at"] = _slots_load(cluster, path, int(fig))
         # max_worker_processes stays at the figure for the arms below.
         r["mpw"] = _conf_load(cluster, path, "max_parallel_workers", 0)
+        # An auto load uses half of max_parallel_workers: four workers at 8 fit the
+        # figure, five at 10 and eight at 16 do not.
+        r["auto"] = " ".join(_conf_load(cluster, path, "max_parallel_workers", v, auto=True)
+                             for v in (8, 10, 16))
         with psycopg.connect(cluster.dsn(), autocommit=True) as c:
             c.execute("ALTER SYSTEM RESET max_parallel_workers")
         r["mpt4"] = _conf_load(cluster, path, "max_prepared_transactions", 4)
@@ -1124,3 +1142,25 @@ def test_four_workers_load_at_max_prepared_transactions_four(slot_loads, expect)
 def test_four_workers_are_refused_at_max_prepared_transactions_three(slot_loads, expect):
     expect.text(slot_loads["mpt3"], "SQLSTATE 55000",
                 "four workers are refused with SQLSTATE 55000 at max_prepared_transactions = 3")
+
+
+# With workers omitted, the count is half of max_parallel_workers, so that setting does
+# limit an auto load (OffgridwithJD's B1 on #2159 at 06fd1c10). The pages say so, and
+# at the figure an auto load loads at 8 (four workers) and is refused at 10 and 16.
+def test_an_auto_load_uses_half_of_max_parallel_workers(slot_loads, expect):
+    says = " ".join(f"{p}:{'says-so' if _AUTO_SENTENCE in ' '.join((DOCS / p).read_text().split()) else 'no-sentence'}"
+                    for p in AUTO_PAGES)
+    expect.text(f"{says} | {slot_loads['auto']}",
+                "how-to.md:says-so sql-reference.md:says-so best-practices.md:says-so"
+                " | 5000 SQLSTATE 53000 SQLSTATE 53000",
+                "the pages say an auto load uses half of max_parallel_workers, and it loads at 8"
+                " and is refused at 10 and 16")
+
+
+# Four pages say max_prepared_transactions must be "at least the worker count". Main said
+# "above", and putting that back stayed green (OffgridwithJD's B2 on #2159 at 06fd1c10).
+def test_every_page_says_at_least_the_worker_count_for_max_prepared_transactions(expect):
+    expect.text(" ".join(f"{p}:{_prep_rule(p)}" for p in SLOT_PAGES),
+                "how-to.md:at-least user-guide.md:at-least sql-reference.md:at-least"
+                " limitations.md:at-least best-practices.md:not-named",
+                "every page that states the max_prepared_transactions rule says at least the worker count")

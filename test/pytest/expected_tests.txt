@@ -2208,4 +2208,8 @@ guard_tests 899
 # the cluster files (the complement of NO_CLUSTER): 5605 tests collected; NO_CLUSTER collects guard_tests 899.
 # cluster_tests 5605 -> 5621 after the merge of main 2e3fea7a (#2087's sixteen test_iceberg_scan.py tests). By
 # collection over the cluster files (the complement of NO_CLUSTER): 5621 tests collected; NO_CLUSTER collects guard_tests 899.
-cluster_tests 5621
+# cluster_tests 5621 -> 5623 for #2093's two tests from the review of #2159 at 06fd1c10, in
+# test_parallel_copy.py: an auto load uses half of max_parallel_workers and the pages say so; every page
+# that names max_prepared_transactions says at least the worker count. By collection over the cluster
+# files (the complement of NO_CLUSTER): 5623 tests collected after the merge of main 2e3fea7a.
+cluster_tests 5623

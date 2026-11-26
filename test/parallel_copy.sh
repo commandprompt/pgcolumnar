@@ -789,6 +789,20 @@ for _p in $SLOT_PAGES; do
 done
 check "every page's four-worker figure is four loaders plus a coordinator plus the slots it says the server's workers hold" \
 	"$_sum_got" "$_sum_want"
+# Four pages say max_prepared_transactions must be "at least the worker count".
+# Main said "above", and putting that back stayed green while the boundary arms
+# below pinned only the code (OffgridwithJD's B2 on #2159 at 06fd1c10). So read
+# the rule on every page that names the setting. best-practices.md does not.
+prep_rule() {	# prep_rule PAGE -> "at-least", "no-rule", or "not-named"
+	local t
+	t="$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$1")"
+	case "$t" in *'`max_prepared_transactions`'*) ;; *) echo "not-named"; return ;; esac
+	if grep -qE '`max_prepared_transactions` (to )?at least the worker count' <<<"$t"; then echo "at-least"; else echo "no-rule"; fi
+}
+_prep_got=""
+for _p in $SLOT_PAGES; do _prep_got="$_prep_got${_prep_got:+ }$_p:$(prep_rule "$_p")"; done
+check "every page that states the max_prepared_transactions rule says at least the worker count" \
+	"$_prep_got" "how-to.md:at-least user-guide.md:at-least sql-reference.md:at-least limitations.md:at-least best-practices.md:not-named"
 slots_load() {	# slots_load SLOTS -> rows a four-worker load returns, or "refused"
 	[[ "$1" =~ ^[0-9]+$ ]] || { echo "no documented figure"; return; }
 	psql_admin "ALTER SYSTEM SET max_worker_processes = $1;" >/dev/null
@@ -813,7 +827,10 @@ check "four workers load at the documented figure" \
 # conf_load NAME VALUE -> restart with NAME = VALUE (max_worker_processes stays at
 # the documented figure) and load with four workers: the row count, or the error's
 # SQLSTATE as "SQLSTATE nnnnn".
+# A third argument "auto" omits the worker count, so the function picks it.
 conf_load() {
+	local call="'t_doc'::regclass, '$F_DOC', 4"
+	[ "${3:-}" = auto ] && call="'t_doc'::regclass, '$F_DOC'"
 	psql_admin "ALTER SYSTEM SET $1 = $2;" >/dev/null
 	pgc_pg "pg_ctl -D '$PGC_PGDATA' -l '$PGC_LOGFILE' restart -w -o '-p $PGC_PORT'" >/dev/null 2>&1 \
 		|| { echo "restart failed"; return; }
@@ -822,7 +839,7 @@ conf_load() {
 	[ "$now" = "$2" ] || { echo "$1 is [$now], not $2"; return; }
 	psql_run "TRUNCATE t_doc;"
 	out="$(env PATH="$PGC_BINDIR:$PATH" psql -X -At -v VERBOSITY=verbose -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -c "SELECT pgcolumnar.parallel_copy('t_doc'::regclass, '$F_DOC', 4)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
+		-d "$PGC_DB" -c "SELECT pgcolumnar.parallel_copy($call)" 2>&1 | grep -m1 -E '^[0-9]+$|ERROR')"
 	case "$out" in
 	*"ERROR:  "[0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z][0-9A-Z]:*) echo "SQLSTATE $(sed -E 's/.*ERROR:  ([0-9A-Z]{5}):.*/\1/' <<<"$out")" ;;
 	*) echo "${out:-no output}" ;;
@@ -837,6 +854,22 @@ case "$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/best-practices.md")" in
 esac
 check "best-practices.md says max_parallel_workers does not limit the load, and four workers load at max_parallel_workers = 0" \
 	"$_mpw_says $(conf_load max_parallel_workers 0)" "says-so 5000"
+# With workers omitted, the count is half of max_parallel_workers, so that setting
+# does limit an auto load (OffgridwithJD's B1 on #2159 at 06fd1c10). The pages say
+# so. max_worker_processes is at the figure, where four workers fit and five do
+# not: an auto load loads at max_parallel_workers = 8 (four workers) and is refused
+# for a slot at 10 (five) and at 16 (eight; max_prepared_transactions is 8).
+AUTO_PAGES="how-to.md sql-reference.md best-practices.md"
+_auto_says=""
+for _p in $AUTO_PAGES; do
+	case "$(tr -s '\n ' '  ' < "$PGC_SRCDIR/docs/$_p")" in
+	*'With `workers` omitted, the worker count is half of `max_parallel_workers`'*) _auto_says="$_auto_says${_auto_says:+ }$_p:says-so" ;;
+	*) _auto_says="$_auto_says${_auto_says:+ }$_p:no-sentence" ;;
+	esac
+done
+check "the pages say an auto load uses half of max_parallel_workers, and it loads at 8 and is refused at 10 and 16" \
+	"$_auto_says | $(conf_load max_parallel_workers 8 auto) $(conf_load max_parallel_workers 10 auto) $(conf_load max_parallel_workers 16 auto)" \
+	"how-to.md:says-so sql-reference.md:says-so best-practices.md:says-so | 5000 SQLSTATE 53000 SQLSTATE 53000"
 psql_admin "ALTER SYSTEM RESET max_parallel_workers;" >/dev/null
 # The pages say max_prepared_transactions must be at least the worker count. The
 # guard is "max_prepared < workers" (src/columnar_parallel_copy.c). Every other

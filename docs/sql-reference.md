@@ -1067,9 +1067,9 @@ preloaded, the server's own workers hold two slots, so four workers need 7. At
 the default of 8, four workers fit while no parallel query runs. A parallel query's workers take slots too. Both
 settings take effect only after a restart.
 
-When `workers` is omitted the function derives a value from the target. For a
-partitioned target it lowers `workers` to the partition count when the count is
-smaller.
+With `workers` omitted, the worker count is half of `max_parallel_workers`, at
+least 1, and both settings above must fit that figure. For a partitioned target
+the function lowers `workers` to the partition count when the count is smaller.
 
 #### Refusing a load this table has already taken
 

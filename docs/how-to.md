@@ -62,6 +62,9 @@ Set two server settings first. Both take effect only after a restart.
   workers need 7. At the default of 8, four workers fit while no parallel
   query runs. A parallel query's workers take slots too.
 
+With `workers` omitted, the worker count is half of `max_parallel_workers`, at
+least 1. Size both settings for that figure.
+
 **Tuning.** Many small commits produce many small row groups, which read less
 efficiently. Run `pgcolumnar.vacuum` after a trickle load to combine them.
 

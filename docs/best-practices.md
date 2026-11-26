@@ -37,9 +37,11 @@ server-side file across workers and scales the load into one table. It runs a
 coordinator plus the loader workers. Set `max_worker_processes` to at least the
 worker count plus one, plus the slots the server's own background workers hold.
 On PostgreSQL 15 to 19 with pgcolumnar preloaded, the server's own workers hold
-two slots, so four workers need 7. `max_parallel_workers` does not limit the
-load. A load that cannot get a slot fails with "could not register pgcolumnar
-parallel_copy loader" and moves no rows. The caller needs the
+two slots, so four workers need 7. With an explicit worker count,
+`max_parallel_workers` does not limit the load. With `workers` omitted, the
+worker count is half of `max_parallel_workers`, so size `max_worker_processes`
+for that figure. A load that cannot get a slot fails with "could not register
+pgcolumnar parallel_copy loader" and moves no rows. The caller needs the
 `pg_read_server_files` role.
 
 **Do not over-partition.** Native partitioning multiplies catalog and planning cost.
