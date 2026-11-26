@@ -396,13 +396,23 @@ def _dl_rewrite_bg(d, verb, out):
     return rt
 
 
+# how many group locks (101) the session that waits on a group lock holds, or 'none' when
+# no session waits on one
+DL_VERB_HELD = ("SELECT CASE WHEN NOT " + _waiting(101)[len("SELECT "):] + " THEN 'none' ELSE "
+                "(SELECT count(*) FROM pg_locks g WHERE g.locktype = 'advisory' "
+                "AND g.objsubid = 101 AND g.granted AND g.pid IN (SELECT w.pid FROM pg_locks w "
+                "WHERE w.locktype = 'advisory' AND w.objsubid = 101 AND NOT w.granted "
+                "AND w.pid <> pg_backend_pid()))::text END")
+
+
 def _dl_giveback(d, verb, del_id=1501, extra=True):
     """One writer deletes del_id (default 1501, group 1) and flushes it, waits until the verb
-    waits on a group lock, then updates id 5 (group 0).
-    -> {"waited", "writer", "rewrite", "after": "<del_id count> <bal of id 5>"}."""
+    waits on a group lock, reads how many group locks the verb holds, then updates id 5
+    (group 0).
+    -> {"waited", "held", "writer", "rewrite", "after": "<del_id count> <bal of id 5>"}."""
     e = _dl_make(d, extra=extra)
     if e:
-        return {"waited": e, "writer": e, "rewrite": e, "after": e}
+        return {"waited": e, "held": e, "writer": e, "rewrite": e, "after": e}
     out = {}
     rt = _dl_rewrite_bg(d, verb, out)
     try:
@@ -411,6 +421,7 @@ def _dl_giveback(d, verb, del_id=1501, extra=True):
                 w.execute(f"DELETE FROM dl WHERE id = {del_id}")
                 w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: its group's lock
                 out["waited"] = _dl_wait(d, _waiting(101))
+                out["held"] = d.q(DL_VERB_HELD)
                 w.execute("UPDATE dl SET bal = bal + 1 WHERE id = 5")
                 w.execute("SELECT count(*) FROM dl").fetchone()  # flushes: group 0's lock
                 w.commit()
@@ -582,6 +593,28 @@ def _dl_held(d, verb, writer_sqls, cls, hold, settings):
     kind = ("names-limit" if "pgcolumnar.rewrite_lock_timeout" in msg
             else "stock" if "canceling statement due to lock timeout" in msg else "other")
     return {"ms": ms, "state": state, "kind": kind, "lock_timeout": lt}
+
+
+def _dl_late(d, verb, mode):
+    """With no writer and a 1 s limit, the session sleeps 1.5 s first, in the verb's own
+    statement ("stmt") or in an earlier statement of the verb's transaction ("xact"), then
+    runs the verb. -> "ok" or the SQLSTATE."""
+    e = _dl_make(d)
+    if e:
+        return e
+    try:
+        with psycopg.connect(d.dsn, autocommit=(mode == "stmt")) as c:
+            c.execute("SET statement_timeout = '30s'")
+            c.execute("SET pgcolumnar.rewrite_lock_timeout = '1s'")
+            if mode == "stmt":
+                c.execute(f"SELECT pg_sleep(1.5) IS NULL, {verb}").fetchone()
+            else:
+                c.execute("SELECT pg_sleep(1.5)").fetchone()
+                c.execute(f"SELECT {verb}").fetchone()
+                c.commit()
+    except psycopg.Error as exc:
+        return exc.sqlstate or _err(exc)
+    return "ok"
 
 
 def _dl_finished(d, verb):
@@ -797,6 +830,10 @@ def dl(pgc_cluster):
             out[name, "unlimited_short"] = _dl_held(d, verb, DL_DELETER, 101, 4,
                                                     ("SET pgcolumnar.rewrite_lock_timeout = 0",
                                                      "SET lock_timeout = '500ms'"))
+        # the arms of the 1b2b7ceb review, in the shell's order
+        for name, verb in DL_VERBS.items():
+            out[name, "late_stmt"] = _dl_late(d, verb, "stmt")
+            out[name, "late_xact"] = _dl_late(d, verb, "xact")
         yield out
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1121,6 +1158,12 @@ def test_the_delete_in_the_last_group_and_the_update_in_group_0_took_effect(dl, 
 
 
 @pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_held_no_group_lock_while_it_waited_on_its_last_group(dl, name, expect):
+    expect.text(f"held={dl[name, 'giveback_last']['held']}", "held=0",
+                f"while the {name} waited on its busy last group, it held no group lock")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
 def test_the_rewrite_with_limit_0_under_a_lock_timeout_stops_with_the_stock_error(
         dl, name, expect):
     r = dl[name, "unlimited_short"]
@@ -1135,3 +1178,28 @@ def test_the_rewrite_with_limit_0_under_a_lock_timeout_stops_within_it(dl, name,
     expect.text("yes" if isinstance(ms, int) and ms < 2000 else f"no ({ms} ms)", "yes",
                 f"and the {name} with rewrite_lock_timeout 0 stops within that 500 ms "
                 "lock_timeout plus 1.5 s")
+
+
+# ---- no group lock held through the wait, the limit's clock starts at the call ----
+#
+# Review of #2139 at 1b2b7ceb. No group lock held: the give-back frees each group lock it
+# took in the round, not some other one. Every give-back arm's writer updates id 5, in group
+# 0, so a rewrite that freed group 0 twice and kept group 1 commits beside it; the test after
+# the last-group "took effect" test reads pg_locks while the verb waits on its busy last
+# group instead. The clock starts at the call: the deadline of
+# pgcolumnar.rewrite_lock_timeout counts from the moment the verb starts to take its locks,
+# not from the statement's or the transaction's start, which would charge the verb for
+# whatever ran before it (the daemon's compact_rewrite before its recluster, #2194).
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_after_a_sleep_in_its_own_statement_finishes(dl, name, expect):
+    expect.text(dl[name, "late_stmt"], "ok",
+                f"a {name} with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its "
+                "own statement, finishes")
+
+
+@pytest.mark.parametrize("name", list(DL_VERBS))
+def test_the_rewrite_after_a_sleep_in_its_transaction_finishes(dl, name, expect):
+    expect.text(dl[name, "late_xact"], "ok",
+                f"a {name} with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its "
+                "transaction, finishes")

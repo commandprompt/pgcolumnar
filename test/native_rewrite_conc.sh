@@ -300,9 +300,19 @@ dl_rw_wait() {
 	DL_RW=$([ "$(tail -1 "$PGC_WORKDIR/dl.rw")" = "rc=0" ] && echo ok || echo error)
 }
 
+# dl_verb_held: SQL for how many group locks (101) the session that waits on a group lock
+# holds, or 'none' when no session waits on one
+dl_verb_held() {
+	echo "CASE WHEN NOT $(dl_waiting 101) THEN 'none' ELSE (SELECT count(*) FROM pg_locks g
+	   WHERE g.locktype = 'advisory' AND g.objsubid = 101 AND g.granted AND g.pid IN
+	   (SELECT w.pid FROM pg_locks w WHERE w.locktype = 'advisory' AND w.objsubid = 101
+	    AND NOT w.granted AND w.pid <> pg_backend_pid()))::text END"
+}
+
 # dl_giveback VERB-SQL [ID] [MAKE] -> "waited=<t|f> writer=<ok|error> rewrite=<ok|error>":
 # one writer deletes ID (default 1501, group 1) and flushes it, waits until the verb waits
-# on a group lock, then updates id 5 (group 0); MAKE is dl_make's argument (default extra)
+# on a group lock, then updates id 5 (group 0); MAKE is dl_make's argument (default extra).
+# dl.w then holds "held=<n|none>": the group locks the verb held while it waited
 dl_giveback() {
 	dl_make "${3-extra}"
 	dl_rewrite_bg "$1"
@@ -312,6 +322,7 @@ DELETE FROM dl WHERE id = ${2:-1501};
 SELECT count(*) > 0 FROM dl;
 $(dl_wait_sql "$(dl_waiting 101)")
 SELECT 'waited=' || $(dl_waiting 101);
+SELECT 'held=' || $(dl_verb_held);
 UPDATE dl SET bal = bal + 1 WHERE id = 5;
 SELECT count(*) > 0 FROM dl;
 COMMIT;
@@ -457,6 +468,32 @@ DL_INSERTER="INSERT INTO dl VALUES (0, 0); SELECT count(*) FROM dl"
 
 # dl_finished VERB-SQL -> "<ok|SQLSTATE> lock_timeout=<value>": with no writer, one session
 # runs the verb with a 10 s rewrite_lock_timeout and then reads its own lock_timeout
+# dl_late VERB-SQL stmt|xact -> "<ok|SQLSTATE>": with no writer and a 1 s limit, the
+# session sleeps 1.5 s first, in the verb's own statement (stmt) or in an earlier statement
+# of the verb's transaction (xact), then runs the verb
+dl_late() {
+	dl_make
+	local out sql
+	if [ "$2" = stmt ]; then
+		sql="SET pgcolumnar.rewrite_lock_timeout = '1s';
+SELECT pg_sleep(1.5) IS NULL, $1;"
+	else
+		sql="BEGIN;
+SET pgcolumnar.rewrite_lock_timeout = '1s';
+SELECT pg_sleep(1.5);
+SELECT $1;
+COMMIT;"
+	fi
+	out="$(dlp -qAt -v VERBOSITY=verbose -v ON_ERROR_STOP=1 2>&1 <<SQL
+SET statement_timeout = '30s';
+$sql
+SQL
+)"
+	grep -q '^ERROR:' <<<"$out" && grep -o 'ERROR:  [0-9A-Z]\{5\}' <<<"$out" | head -1 | cut -c9- || echo ok
+	grep -q '^ERROR:' <<<"$out" && echo "$out" >&2
+	return 0
+}
+
 dl_finished() {
 	dl_make
 	local out
@@ -766,11 +803,38 @@ for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl',
 		"$(sed 's/^waited=[a-z]* //' <<<"$got")" "writer=ok rewrite=ok"
 	check "and the DELETE in the last group and the UPDATE in group 0 beside the $name took effect" \
 		"$(q "SELECT count(*) FILTER (WHERE id = 2501) || ' ' || max(bal) FILTER (WHERE id = 5) FROM dl;")" "0 1001"
+	check "while the $name waited on its busy last group, it held no group lock" \
+		"$(grep -o 'held=[a-z0-9]*' "$PGC_WORKDIR/dl.w" || echo held=missing)" "held=0"
 	got="$(dl_held "$verb" "$DL_DELETER" 101 4 "SET pgcolumnar.rewrite_lock_timeout = 0; SET lock_timeout = '500ms';")"
 	check "a $name with rewrite_lock_timeout 0 under a lock_timeout of 500 ms stops with the stock lock-timeout error" \
 		"$(cut -d' ' -f2-3 <<<"$got")" "55P03 stock"
 	check "and the $name with rewrite_lock_timeout 0 stops within that 500 ms lock_timeout plus 1.5 s" \
 		"$(awk '{print ($1 < 2000) ? "yes" : "no (" $1 " ms)"}' <<<"$got")" "yes"
+done
+
+# ---- no group lock held through the wait, the limit's clock starts at the call ----
+#
+# Review of #2139 at 1b2b7ceb.
+#
+#   - no group lock held: the give-back frees each group lock it took in the round, not
+#     some other one. Every give-back arm's writer updates id 5, in group 0, so a rewrite
+#     that freed group 0 twice and kept group 1 commits beside it. Instead, the arm above
+#     reads pg_locks while the verb waits on its busy last group: the waiting session must
+#     hold no granted group lock (class 101). This covers every index at once.
+#   - the clock starts at the call: pgcolumnar.rewrite_lock_timeout bounds the waiting
+#     itself, so its deadline counts from the moment the verb starts to take its locks.
+#     A deadline counted from the statement's or the transaction's start would charge the
+#     verb for whatever ran before it, such as the maintenance daemon's compact_rewrite
+#     before its recluster in one transaction (#2194). With no writer and a 1 s limit, a
+#     session sleeps 1.5 s, in the verb's own statement and in an earlier statement of its
+#     transaction, and then the verb must finish.
+
+for verb in "pgcolumnar.recluster('dl', 'id')" "pgcolumnar.compact_rewrite('dl', 0.0)"; do
+	name="${verb%%(*}"; name="${name#pgcolumnar.}"
+	check "a $name with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its own statement, finishes" \
+		"$(dl_late "$verb" stmt)" "ok"
+	check "a $name with a 1 s rewrite_lock_timeout, after 1.5 s of sleep earlier in its transaction, finishes" \
+		"$(dl_late "$verb" xact)" "ok"
 done
 
 pgc_summary

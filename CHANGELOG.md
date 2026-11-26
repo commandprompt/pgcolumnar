@@ -642,7 +642,9 @@ true until the next version shipped.
   A session that does not set the limit gets the 10 s default. The tests
   also cover a delete in `recluster`'s last group, a busy last group, which
   the verb waits on holding no group lock, and a limit of `0` under a user
-  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error.
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

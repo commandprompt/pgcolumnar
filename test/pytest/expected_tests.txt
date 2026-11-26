@@ -2192,4 +2192,9 @@ guard_tests 895
 # before it waits on a busy last group, so a writer that then updates group 0 and the rewrite both commit, and
 # with a limit of 0 a user lock_timeout ends the wait with PostgreSQL's own lock-timeout error, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5665 tests collected.
-cluster_tests 5666
+# cluster_tests 5666 -> 5672, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. While each verb waits on a busy last group it
+# holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
+# and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5672 tests collected.
+cluster_tests 5672
