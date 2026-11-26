@@ -2037,4 +2037,10 @@ guard_tests 895
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-cluster_tests 5526
+# cluster_tests 5526 -> 5536 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
+# version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
+# dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
+# 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
+# `--collect-only -q`: 5536 tests collected.
+cluster_tests 5536

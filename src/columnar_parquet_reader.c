@@ -1773,6 +1773,7 @@ typedef struct PqDataHdr
 	int			def_levels_len; /* v2 only */
 	int			rep_levels_len; /* v2 only */
 	bool		is_compressed;	/* v2 only; default true */
+	int			nseen;			/* how many times the header carried this struct */
 } PqDataHdr;
 
 /*
@@ -1924,6 +1925,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				h->compressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 5:				/* DataPageHeader (v1) */
+				v1.nseen++;
 				if (pq_page_struct(r, h, ft))
 					parse_data_page_header(r, h, &v1, false);
 				break;
@@ -1951,6 +1953,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 					break;
 				}
 			case 8:				/* DataPageHeaderV2 */
+				v2.nseen++;
 				if (pq_page_struct(r, h, ft))
 					parse_data_page_header(r, h, &v2, true);
 				break;
@@ -1966,6 +1969,13 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 	 * DICTIONARY_PAGE, as pyarrow does. Another struct in the same header is
 	 * ignored. Otherwise a second struct with num_values 0 after a valid
 	 * DataPageHeader made the page read as empty and dropped its values.
+	 *
+	 * A header that carries the page's own struct twice is refused. Each
+	 * occurrence writes into the same PqDataHdr, so a second one with only
+	 * num_values 0 would turn a page of 50 values into an empty page, and its
+	 * values would be dropped. pyarrow refuses that file. It reads a header
+	 * whose second struct is complete; this reader refuses it, which is
+	 * stricter.
 	 */
 	if (h->type == PQ_PAGE_DATA)
 		d = &v1;
@@ -1978,7 +1988,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 		h->num_values = dict_num_values;
 	if (d != NULL)
 	{
-		h->has_data_hdr = d->has_num_values;
+		h->has_data_hdr = d->has_num_values && d->nseen == 1;
 		h->num_values = d->num_values;
 		h->encoding = d->encoding;
 		h->def_levels_len = d->def_levels_len;

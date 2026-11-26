@@ -13033,6 +13033,16 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_data_page_with_only_an_empty_dictionary_header_is_rejected` | a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected |
 | `test_parquet_streaming_index_page_with_negative_compressed_size_is_rejected` | an INDEX_PAGE with a negative compressed_size is rejected |
 | `test_parquet_streaming_run_of_one_value_pages_reads` | a run of one-value pages reads (pyarrow list column, 41 pages) |
+| `test_parquet_streaming_repeated_data_page_header_is_rejected` | a repeated DataPageHeader with num_values 0 is rejected |
+| `test_parquet_streaming_repeated_data_page_v2_header_is_rejected` | a repeated DataPageHeaderV2 with num_values 0 is rejected |
+| `test_parquet_streaming_data_page_with_only_a_v2_header_is_rejected` | a DATA_PAGE with only a DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_data_page_v2_with_only_a_v1_header_is_rejected` | a DATA_PAGE_V2 with only a DataPageHeader is rejected |
+| `test_parquet_streaming_v2_count_does_not_stand_in_for_an_empty_v1_header` | a DATA_PAGE with an empty DataPageHeader and a full DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_data_page_encoding_ignores_a_data_page_v2_header` | a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHeaderV2 |
+| `test_parquet_streaming_dictionary_count_ignores_a_data_page_header` | a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader |
+| `test_parquet_streaming_empty_and_index_pages_share_one_run` | 9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run) |
+| `test_parquet_streaming_8_empty_and_8_index_pages_read` | 8 empty data pages and 8 INDEX_PAGEs in a row read |
+| `test_parquet_streaming_data_page_v2_on_a_list_column_reads` | a DATA_PAGE_V2 on a list column reads |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |

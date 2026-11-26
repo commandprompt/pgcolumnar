@@ -221,6 +221,21 @@ check "an INDEX_PAGE with a negative compressed_size is rejected" "$(ce idx_negc
 check "a run of one-value pages reads (pyarrow list column, 41 pages)" \
 	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)) FROM pgcolumnar.read_parquet('$W/alt20.parquet') AS t(ls text[]);" | tr '|' ' ')" \
 	"40 20 20"
+# a page header that repeats its own struct, a data page with only the other
+# version's struct, the encoding and the dictionary count taken by page type, the
+# run that empty data pages and other page types share, and a v2 page of a list
+check "a repeated DataPageHeader with num_values 0 is rejected" "$(ce p_dup5_nv0)" "$REFUSED"
+check "a repeated DataPageHeaderV2 with num_values 0 is rejected" "$(ce p_dup8_nv0)" "$REFUSED"
+check "a DATA_PAGE with only a DataPageHeaderV2 is rejected" "$(ce p_only8_type0)" "$REFUSED"
+check "a DATA_PAGE_V2 with only a DataPageHeader is rejected" "$(ce p_only5_type3)" "$REFUSED"
+check "a DATA_PAGE with an empty DataPageHeader and a full DataPageHeaderV2 is rejected" "$(ce p_empty5_full8)" "$REFUSED"
+check "a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHeaderV2" "$(cs p_enc_v2dict_200)" "200 19900"
+check "a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader" "$(cs dict_v1nv0)" "200 900"
+check "9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run)" "$(ce p_mixrun_9e_8i)" "$REFUSED"
+check "8 empty data pages and 8 INDEX_PAGEs in a row read" "$(cs p_mixrun_8e_8i)" "200 19900"
+check "a DATA_PAGE_V2 on a list column reads" \
+	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)), sum(ls[1]) FROM pgcolumnar.read_parquet('$W/v2_list.parquet') AS t(ls int[]);" | tr '|' ' ')" \
+	"300 200 400 30000"
 check "backend survived the crafted page areas" "$(survived "$CRASHES_MID")" "1"
 
 # the legitimate file the crafted ones were built from must still read
@@ -262,12 +277,5 @@ check "streaming: rescan under a nested loop is correct" \
 	"$(q "SET enable_hashjoin=off; SET enable_mergejoin=off;
 	      SELECT count(*) FROM outer2 o JOIN fts ON fts.id = o.k;" | tail -1)" "2"
 
-rm -f "$W/huge_sparse.parquet" "$W/zero_pages.parquet" "$W/bad_size.parquet" \
-	"$W/noise_pages.parquet" "$W/bad_offset.parquet" "$W/two_dicts.parquet" \
-	"$W/v2_levels.parquet" "$W/allnull.parquet" "$W/stream_groups.parquet" \
-	"$W/empty_data_page.parquet" "$W/one_empty_page.parquet" "$W/empty_page_run.parquet" \
-	"$W/paged.parquet" "$W/paged_req.parquet" "$W/empty_run16.parquet" \
-	"$W/empty_run17.parquet" "$W/empty_runs_10_10.parquet" "$W/nobody_v1_req.parquet" \
-	"$W/nobody_v2.parquet" "$W/nobody_v1_opt.parquet" "$W/garbage_body.parquet" \
-	"$W/index_page.parquet" "$W/index_run17.parquet" "$W/nohdr_loss.parquet" "$W/empty_page_snappy.parquet"
+rm -f "$W"/*.parquet
 pgc_summary

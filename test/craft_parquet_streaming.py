@@ -457,6 +457,139 @@ pq.write_table(pa.table({"ls": pa.array([["yy"], None] * 20, pa.list_(pa.string(
                use_dictionary=True, data_page_size=1, write_batch_size=1,
                compression="none")
 
+# Round 4 of the review.
+#
+# lf() is a long-form field header: the type, then the field id as a zigzag varint.
+# It is needed when a field id is lower than the one before it. V2FULL(nv, enc) is
+# a complete DataPageHeaderV2 struct body: {1:nv, 2:0, 3:nv, 4:enc, 5:0, 6:0}.
+def lf(t, fid):
+    return bytes([t]) + zz(fid)
+
+
+def V2FULL(nv, enc=0):
+    return (fh(1, I32) + zz(nv) + fh(1, I32) + zz(0) + fh(1, I32) + zz(nv)
+            + fh(1, I32) + zz(enc) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + STOP)
+
+
+# A header that carries the page's own struct twice. The second one holds only
+# num_values 0. Read as one struct, the page would have no values, and with the
+# footer at 150 rows ids 50..99 would be dropped with no error. pyarrow refuses both
+# files ("Couldn't deserialize thrift"), and so does the reader.
+replace_page2_header("p_dup5_nv0.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + lf(STRUCT, 5) + fh(1, I32) + zz(0) + STOP + STOP)
+replace_page2_header("p_dup8_nv0.parquet", preq, lambda n: sizes(3, n) + fh(5, STRUCT)
+                     + V2FULL(50) + lf(STRUCT, 8) + fh(1, I32) + zz(0) + STOP + STOP)
+
+# A data page that carries only a struct of the other version is refused: a
+# DATA_PAGE with only a full DataPageHeaderV2, and a DATA_PAGE_V2 with only a
+# DataPageHeader. pyarrow refuses the first ("Unknown encoding type for levels") and
+# reads the second as 150 rows with ids 50..99 dropped. p_empty5_full8 is a
+# DATA_PAGE whose own struct is empty, followed by a full DataPageHeaderV2: the v2
+# count must not stand in for the missing one.
+replace_page2_header("p_only8_type0.parquet", popt, lambda n: sizes(0, n) + fh(5, STRUCT)
+                     + V2FULL(50) + STOP)
+replace_page2_header("p_only5_type3.parquet", preq, lambda n: sizes(3, n) + V1HDR + STOP)
+replace_page2_header("p_empty5_full8.parquet", popt, lambda n: sizes(0, n) + fh(2, STRUCT)
+                     + STOP + fh(3, STRUCT) + V2FULL(50) + STOP)
+
+# A DATA_PAGE whose PLAIN DataPageHeader is followed by a DataPageHeaderV2 with
+# encoding 8 (RLE_DICTIONARY). The page's encoding comes from its own struct, so it
+# decodes as PLAIN and reads 200 rows, as pyarrow reads it.
+replace_page2_header("p_enc_v2dict_200.parquet", popt, lambda n: sizes(0, n) + V1HDR
+                     + fh(3, STRUCT) + V2FULL(50, 8) + STOP, rows=200)
+
+
+# A dictionary page's count comes from its DictionaryPageHeader only. dict_v1nv0 is a
+# pyarrow file of a REQUIRED int column with a dictionary of 10 values. A
+# DataPageHeader 5:{num_values 0, 0, 3, 3} goes into the dictionary page's header
+# after its field 7, in long form. (Placed before field 7, field 7 would set the count
+# last anyway.) The footer's data page offset and sizes grow by the inserted length.
+# pyarrow reads 200 rows, sum 900.
+def walk_ints(buf, i, t, path, out):
+    """-> offset after one compact value; records (path, start, end, type) of each
+    i32/i64 in out"""
+    if t in (5, 6):
+        _, j = varint(buf, i)
+        out.append((path, i, j))
+        return j
+    if t in (9, 10):
+        n, et = buf[i] >> 4, buf[i] & 0x0F
+        i += 1
+        if n == 15:
+            n, i = varint(buf, i)
+        for k in range(n):
+            i = walk_ints(buf, i, et, path + (k,), out)
+        return i
+    if t == 12:
+        fid = 0
+        while buf[i] != 0:
+            b = buf[i]
+            i += 1
+            if b >> 4:
+                fid += b >> 4
+            else:
+                v, i = varint(buf, i)
+                fid = v >> 1
+            i = walk_ints(buf, i, b & 0x0F, path + (fid,), out)
+        return i + 1
+    return skip_value(buf, i, t)
+
+
+def dict_v1nv0():
+    path = os.path.join(W, "dict_src.parquet")
+    pq.write_table(pa.table({"id": pa.array([i % 10 for i in range(200)], pa.int32())},
+                            schema=pa.schema([pa.field("id", pa.int32(), nullable=False)])),
+                   path, compression="none", use_dictionary=True)
+    m, _, b = parts(path)
+    md = pq.ParquetFile(path).metadata.row_group(0).column(0)
+    if not md.dictionary_page_offset or md.dictionary_page_offset - 4 != 0:
+        sys.exit(5)
+    dstart = md.dictionary_page_offset - 4
+    hend = skip_value(b, dstart, 12)
+    ins = (lf(STRUCT, 5) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
+           + fh(1, I32) + zz(3) + fh(1, I32) + zz(3) + STOP)
+    # the header must end with field 7 (the DictionaryPageHeader) and its STOP
+    if b[hend - 1] != 0:
+        sys.exit(5)
+    out = b[:hend - 1] + ins + b[hend - 1:]
+    d = len(ins)
+    ints = []
+    walk_ints(m, 0, 12, (), ints)
+    # FileMetaData.row_groups(4)[0]: columns(1)[0].meta_data(3) fields
+    # total_uncompressed_size(6), total_compressed_size(7), data_page_offset(9);
+    # the row group's total_byte_size(2) and total_compressed_size(6)
+    grow = {(4, 0, 1, 0, 3, 6), (4, 0, 1, 0, 3, 7), (4, 0, 1, 0, 3, 9), (4, 0, 2), (4, 0, 6)}
+    found = set()
+    newm, last = b"", 0
+    for p, s, e in ints:
+        if p in grow:
+            v, _ = varint(m, s)
+            v = (v >> 1) ^ -(v & 1)
+            newm += m[last:s] + zz(v + d)
+            last = e
+            found.add(p)
+    newm += m[last:]
+    # a row group's total_compressed_size is optional; the other four must be there
+    if not grow - {(4, 0, 6)} <= found:
+        sys.exit(5)
+    build("dict_v1nv0.parquet", out, newm, len(newm))
+
+
+dict_v1nv0()
+
+# Empty data pages and pages of other types share one run of at most 16 pages. 9
+# empty pages and 8 INDEX_PAGEs in a row make 17 and are refused; 8 and 8 read.
+with_pages("p_mixrun_9e_8i.parquet", popt, {1: empty_data_page() * 9 + index_page() * 8})
+with_pages("p_mixrun_8e_8i.parquet", popt, {1: empty_data_page() * 8 + index_page() * 8})
+
+# A DATA_PAGE_V2 on a repeated column carries a repetition-level length. pyarrow
+# writes this file with data page version 2.0: 300 rows, 100 of them NULL.
+pq.write_table(pa.table({"ls": pa.array([[i, i] if i % 3 else None for i in range(300)],
+                                        pa.list_(pa.int32()))}),
+               os.path.join(W, "v2_list.parquet"), data_page_version="2.0",
+               compression="none")
+
+
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
 pq.write_table(pa.table({"li": pa.array([[1, 2], None, [3], []], pa.list_(pa.int64()))}),
@@ -481,6 +614,8 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "nohdr_v2_loss_req", "negnv", "unknown_type_page", "mix_dictnv0", "mix_v2zero",
              "mix_dict0_200", "mix_v2full_200", "v2_ok_req", "nv2_missing_req",
              "dicthdr_only", "dicthdr_zero_loss", "idx_negcsz", "alt20",
+             "p_dup5_nv0", "p_dup8_nv0", "p_only8_type0", "p_only5_type3", "p_empty5_full8",
+             "p_enc_v2dict_200", "dict_v1nv0", "p_mixrun_9e_8i", "p_mixrun_8e_8i", "v2_list",
              "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

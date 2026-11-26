@@ -619,7 +619,9 @@ true until the next version shipped.
   for a DATA_PAGE, DataPageHeaderV2 for a DATA_PAGE_V2, DictionaryPageHeader for a
   dictionary page), so a second struct in the same header cannot set it to 0 and
   drop the page's values. A data page that carries only a struct of another type is
-  refused; pyarrow 23 reads it as empty, so this is stricter too.
+  refused; pyarrow 23 reads it as empty, so this is stricter too. A header that
+  carries the page's own struct twice is refused too. When the second struct is
+  complete, pyarrow 23 reads the page, so this is stricter as well.
   It refuses more than 16 pages with no values in a row, and steps over an
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
