@@ -651,6 +651,34 @@ def pcopy(pgc_cluster, server_dir):
             f"SELECT pgcolumnar.parallel_copy('t_uxd'::regclass, '{f}', 2)", timeout="10s")
         r["expression"] = db.remote_refusal(
             f"SELECT pgcolumnar.parallel_copy('t_ue'::regclass, '{f}', 2)", timeout="10s")
+        # A gist exclusion constraint, whose ranges do not overlap: the refusal
+        # must not look at the access method. A NULLS NOT DISTINCT unique index
+        # with an INCLUDE column: the refusal must not compare indnatts with
+        # indnkeyatts or read indnullsnotdistinct.
+        db.run("CREATE TABLE t_gx (id int, txt text, "
+               "EXCLUDE USING gist (int4range(id, id, '[]') WITH &&)) USING pgcolumnar; "
+               "CREATE TABLE t_inc (id int, txt text, "
+               "UNIQUE NULLS NOT DISTINCT (id) INCLUDE (txt)) USING pgcolumnar")
+        r["gist exclusion"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_gx'::regclass, '{f}', 2)", timeout="10s")
+        r["include"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_inc'::regclass, '{f}', 2)", timeout="10s")
+        # The refusal keeps its place in the order of checks: 42501 for a caller
+        # without INSERT first (#563), the #1886 refusal for a URL first, and
+        # dedup => true does not skip the calling backend's refusal.
+        db.run("DO $$ BEGIN "
+               "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pcopy_noins') THEN "
+               "CREATE ROLE pcopy_noins; END IF; END $$; "
+               "GRANT pg_read_server_files TO pcopy_noins; "
+               "GRANT USAGE ON SCHEMA pgcolumnar TO pcopy_noins; "
+               "GRANT SELECT ON t_uk TO pcopy_noins")
+        r["no insert"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2)",
+            timeout="10s", options="-c role=pcopy_noins")
+        r["unique url"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{REMOTE_S3}', 2)", timeout="10s")
+        r["unique dedup"] = db.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '{f}', 2, dedup => true)", timeout="10s")
         # An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY
         # fails on a columnar table and leaves the index invalid but ready, and a
         # ready unique index still checks every insert. The keys are distinct, so
@@ -671,8 +699,9 @@ def pcopy(pgc_cluster, server_dir):
         r["unique empty"] = db.value(
             "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui) + (SELECT count(*) FROM t_ud) "
             "+ (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd) "
-            "+ (SELECT count(*) FROM t_ue)")
-        r["exclusion empty"] = db.value("SELECT (SELECT count(*) FROM t_ux) + (SELECT count(*) FROM t_uxd)")
+            "+ (SELECT count(*) FROM t_ue) + (SELECT count(*) FROM t_inc)")
+        r["exclusion empty"] = db.value("SELECT (SELECT count(*) FROM t_ux) + (SELECT count(*) FROM t_uxd) "
+                                        "+ (SELECT count(*) FROM t_gx)")
         r["unique one worker"] = db.value(
             f"SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '{f}', 1)", timeout="30s")
         r["non-unique index"] = db.value(
@@ -1044,6 +1073,31 @@ def test_parallel_copy_refuses_a_deferrable_exclusion_constraint_table_with_two_
 def test_parallel_copy_refuses_an_expression_unique_index_table_with_two_workers(pcopy, expect):
     expect.text(pcopy["expression"], _want_unique("t_ue"),
                 "parallel_copy refuses a single table with an expression unique index and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_refuses_a_gist_exclusion_constraint_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["gist exclusion"], _want_unique("t_gx"),
+                "parallel_copy refuses a single table with a gist exclusion constraint and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_refuses_a_nulls_not_distinct_include_unique_index_table_with_two_workers(pcopy, expect):
+    expect.text(pcopy["include"], _want_unique("t_inc"),
+                "parallel_copy refuses a single table with a NULLS NOT DISTINCT unique index with an INCLUDE column and 2 workers with 0A000, not a hang (#2080)")
+
+
+def test_parallel_copy_gives_a_caller_without_insert_42501_before_the_unique_refusal(pcopy, expect):
+    expect.text(pcopy["no insert"], "42501 permission denied for table t_uk | no hint",
+                "parallel_copy gives a caller without INSERT 42501 before the unique-index refusal (#2080)")
+
+
+def test_parallel_copy_refuses_a_url_before_the_unique_refusal(pcopy, expect):
+    expect.text(pcopy["unique url"], _want_refusal("parallel_copy", REMOTE_S3),
+                "parallel_copy refuses an s3:// URL with the #1886 refusal before the unique-index refusal (#2080)")
+
+
+def test_parallel_copy_refuses_a_primary_key_table_with_dedup(pcopy, expect):
+    expect.text(pcopy["unique dedup"], _want_unique("t_uk"),
+                "parallel_copy refuses a single table with a primary key, 2 workers and dedup => true with 0A000 and the hint (#2080)")
 
 
 def test_parallel_copy_concurrently_leaves_an_invalid_ready_unique_index(pcopy, expect):

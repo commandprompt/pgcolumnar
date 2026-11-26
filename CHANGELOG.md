@@ -625,8 +625,11 @@ true until the next version shipped.
   and a late unique index with 4 workers, where no loader may insert a row.
   They also cover an invalid unique index, which a failed `CREATE UNIQUE INDEX
   CONCURRENTLY` leaves behind, and a call that leaves the worker count to its
-  default. They also cover a deferrable exclusion constraint, a unique index on
-  an expression, and a unique index on two columns.
+  default. They also cover a deferrable exclusion constraint, a gist exclusion
+  constraint, a unique index on an expression, a unique index on two columns,
+  and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
+  INSERT still gets 42501 first, a URL still gets the refusal for remote files
+  first, and `dedup => true` still gets the refusal and its hint.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

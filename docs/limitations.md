@@ -301,14 +301,15 @@ these constraints.
 - A single columnar table with a unique or exclusion index, including a primary
   key, loads with one worker only. The function refuses more workers with
   `0A000`. The workers would wait on each other's prepared transactions, so the
-  load would hang or fail with a deadlock error. Deferrable and partial unique
-  indexes count too, even a partial index that no loaded row matches. So do
-  unique indexes on expressions and on more than one column, and deferrable
-  exclusion constraints. So do
-  invalid unique indexes, such as the one a failed `CREATE UNIQUE INDEX
-  CONCURRENTLY` leaves behind: such an index still checks every insert. A
-  partitioned target with such an index is not limited: each worker loads its
-  own partitions.
+  load would hang or fail with a deadlock error. Every kind of unique or
+  exclusion index counts: deferrable, partial (even one that no loaded row
+  matches), on expressions, on more than one column, with INCLUDE columns, with
+  NULLS NOT DISTINCT, and exclusion constraints of any index type, such as gist.
+  So do invalid unique indexes, such as the one a failed `CREATE UNIQUE INDEX
+  CONCURRENTLY` leaves behind: such an index still checks every insert. A caller
+  without INSERT on the table gets `42501` first, and a URL gets the refusal for
+  remote files first. A partitioned target with such an index is not limited:
+  each worker loads its own partitions.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
