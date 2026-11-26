@@ -605,6 +605,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.export_arrow` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2085). Arrow stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, other
+  readers saw a date before year 0, and `import_arrow` refused the file. Such a
+  value now fails the export with SQLSTATE 22008, naming the table column, and
+  no file is written. For an element of an array column or a field of a
+  composite column, the error names that table column too, at any depth. A
+  timestamp before 1970, down to 4714-11-24 BC, still exports, and so does an
+  in-range timestamp inside an array or a composite. The tests check the
+  SQLSTATE and the DETAIL as well as the message.
+  docs/limitations.md. `test/arrow_export.sh` and `test_arrow_export.py`.
 - Renaming the retention column with `ALTER TABLE ... RENAME COLUMN` now
   renames it in `pgcolumnar.options` too (#2070). Before this fix,
   `ttl_column` kept the old name. `pgcolumnar.expire` then failed with

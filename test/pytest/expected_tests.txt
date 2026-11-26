@@ -2113,4 +2113,26 @@ guard_tests 895
 # test_ttl_expire.py (#2070, round 4 review of #2136: on a table that declares no sort_by or sketch_columns, a
 # rename moves ttl_column and expire does not cut on a column that takes the old name), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 5558
+# cluster_tests 5558 -> 5562 for #2085 in test_arrow_export.py: a timestamp and a timestamptz past Arrow's
+# int64 range are refused (test_a_timestamp_past_arrows_range_is_refused,
+# test_a_timestamptz_past_arrows_range_is_refused), the refused export leaves no file
+# (test_a_refused_timestamp_export_leaves_no_file), and the last value that fits still exports
+# (test_the_last_timestamp_arrow_holds_still_exports), by collection: 5402 cluster tests collected.
+# cluster_tests 5562 -> 5565 for the #2085 review in test_arrow_export.py: the last timestamp Arrow holds
+# imports back unchanged (test_the_last_timestamp_arrow_holds_imports_back_unchanged), and a timestamp[]
+# element and a composite field past the range are refused with the table column named
+# (test_a_timestamp_array_element_past_arrows_range_names_the_column,
+# test_a_timestamp_composite_field_past_arrows_range_names_the_column), by collection: 6277 tests
+# collected, less guard_tests 894.
+# cluster_tests 5565 -> 5566 for the second #2085 review in test_arrow_export.py: a timestamp before 1970
+# (1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC) still exports as a negative int64
+# (test_a_timestamp_before_1970_still_exports), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5406 tests collected.
+# cluster_tests 5566 -> 5570 for the third #2085 review in test_arrow_export.py: a timestamp two levels
+# deep is refused with the table column named, in an array of composites and in a composite's array
+# (test_a_timestamp_in_an_array_of_composites_past_arrows_range_names_the_column,
+# test_a_timestamp_array_in_a_composite_past_arrows_range_names_the_column), an in-range nested timestamp
+# still exports (test_an_in_range_nested_timestamp_still_exports), and the refusal carries its DETAIL
+# (test_the_out_of_range_timestamp_error_gives_arrows_last_value), by collection over the cluster files
+# (the complement of NO_CLUSTER, as ci.yml derives it): 5490 tests collected.
+cluster_tests 5570
