@@ -633,8 +633,9 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   the transaction on this error, as you retry one at `REPEATABLE READ`. The
   behavior is stricter than a heap at `READ COMMITTED`. A heap re-applies both
   updates transparently there; pgColumnar makes the loser retry. The same holds
-  for a row an `UPDATE` moves to another partition. On a table with a unique index,
-  an `UPDATE` serializes each row as it reaches it, not at the end of the statement.
+  for a row an `UPDATE` moves to another partition. Some tables have a unique index,
+  immediate or deferrable, or an exclusion constraint. On those, an `UPDATE`
+  serializes each row as it reaches it, not at the end of the statement.
   Two multi-row `UPDATE`s that reach shared rows in opposite orders can therefore
   deadlock. One of them then gets `deadlock_detected` (40P01), which is also
   retryable. The GUC
@@ -673,15 +674,28 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.unique_lock_buckets` sets and which defaults to 128. Keys hash into
   those buckets. Two keys that are not related can share a bucket. Such keys go
   in sequence when they do not need to, but they never fail to go in sequence
-  when they must. This applies to unique, immediate and valid
-  indexes. It includes multi-column indexes, partial indexes and expression
-  indexes. Some indexes use a single lock for the whole index
-  instead. The first is an index whose operator class does not match
+  when they must. This applies to valid unique indexes, immediate or
+  deferrable, and to exclusion constraints. It includes multi-column indexes,
+  partial indexes and expression indexes. Some indexes use a single lock for the
+  whole index instead. The first is an index whose operator class does not match
   the default equality of its key type. The second is an index whose key type has
-  no hash support. A
+  no hash support. The third is an exclusion constraint, because its operator,
+  such as `&&`, need not be equality (#2063). The lock is held until the
+  transaction ends. While one insert statement into a table with an exclusion
+  constraint runs, a second insert into that table waits for the first
+  transaction. It waits even when its row does not overlap. A row whose key holds
+  a NULL takes no lock and does not wait at that point. After the first statement
+  ends, any second insert into a pgcolumnar table waits while the first
+  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
+  order can deadlock even when no rows conflict. One of them then gets
+  `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
+  on that error. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
-  `pgcolumnar.enable_unique_insert_lock = off`.
+  `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
+  table. One statement that inserts into many partitions, each with a unique
+  index, immediate or deferrable, can fail with `out of shared memory`. Raise
+  `max_locks_per_transaction` if it does.
 
 ## Row locking
 
@@ -1047,6 +1061,20 @@ a large list, which it does not read. For the same reason it refuses a large
 binary, a large string, a binary view and a string view, at any depth (#2097).
 To import such a column, cast it to binary or string first, for example with
 pyarrow.
+`import_arrow` reads an Arrow column only into a column of the same type family.
+For example, it refuses a float64 for a `bigint` column and a string for a
+`bigint` column, with SQLSTATE 42804 (#2082). It does not convert the values.
+It reads four pairings across families. A signed int64 reads into `timestamp`
+or `timestamptz` as microseconds since 1970-01-01. A duration reads into
+`bigint` as its count; the unit is not stored. A string reads into `bytea`.
+A binary reads into `text`, `varchar`, `json` and `jsonb`. It also reads into a
+`numeric` declared without a precision or with one above 38, but not into a
+`numeric(p,s)` with `p` up to 38.
+A decimal reads only into a `numeric(p,s)` with `p` up to 38. `import_arrow`
+refuses a decimal for a `numeric` declared without a precision or with one
+above 38, with SQLSTATE 42804. To import such a column, declare the target
+as `numeric(p,s)` with `p` up to 38, or cast the column to string first.
+`import_arrow` does not read a Null-type column into any column.
 
 | Type | Arrow export | Parquet export | Arrow import | Parquet import |
 | --- | --- | --- | --- | --- |
@@ -1057,7 +1085,7 @@ pyarrow.
 | `bytea` | yes | yes | yes | yes |
 | `date`, `time`, `timestamp`, `timestamptz` | yes | yes | yes | yes |
 | `uuid` | yes | yes | yes | yes |
-| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes | yes (DECIMAL, or UINT_64) |
+| `numeric` | yes | yes (`numeric(p,s)`, `p` <= 38) | yes (decimal into `numeric(p,s)`, `p` <= 38) | yes (DECIMAL, or UINT_64) |
 | `json`, `jsonb` | yes | yes | yes | no |
 | one-dimensional array of the above | yes | yes | yes | yes |
 | composite of the above | yes | yes | yes | yes |

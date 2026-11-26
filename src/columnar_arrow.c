@@ -1143,6 +1143,9 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	uint32	   *fieldOff;
 	MemoryContext batchCtx,
 				oldCtx;
+	int		   *live;
+	Datum	   *liveValues;
+	bool	   *liveNulls;
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -1187,7 +1190,17 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 	}
 
 	tupdesc = RelationGetDescr(rel);
-	ncols = tupdesc->natts;
+
+	/*
+	 * The live columns only: output column i is attribute live[i]. A dropped
+	 * column stays in the tuple descriptor, so a table that ever lost one
+	 * still has it there (#2076).
+	 */
+	live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	ncols = 0;
+	for (i = 0; i < tupdesc->natts; i++)
+		if (!TupleDescAttr(tupdesc, i)->attisdropped)
+			live[ncols++] = i;
 	if (ncols > 16)
 	{
 		table_close(rel, AccessShareLock);
@@ -1196,19 +1209,12 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 				 errmsg("columnar.export_arrow supports at most 16 columns")));
 	}
 
-	cols = palloc0(sizeof(ArrowCol) * ncols);
+	cols = palloc0(sizeof(ArrowCol) * Max(ncols, 1));
 	for (i = 0; i < ncols; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
-		if (att->attisdropped)
-		{
-			table_close(rel, AccessShareLock);
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar.export_arrow does not support dropped columns")));
-		}
 		/* build the (possibly nested) accumulator tree for this column */
 		arrowcol_init(&cols[i], NameStr(att->attname),
 					  att->atttypid, att->atttypmod, &ok);
@@ -1270,8 +1276,11 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 									 "columnar arrow batch",
 									 ALLOCSET_DEFAULT_SIZES);
 
-	values = palloc(sizeof(Datum) * ncols);
-	nulls = palloc(sizeof(bool) * ncols);
+	/* the reader fills one slot per attribute, dropped ones included */
+	values = palloc(sizeof(Datum) * Max(tupdesc->natts, 1));
+	nulls = palloc(sizeof(bool) * Max(tupdesc->natts, 1));
+	liveValues = palloc(sizeof(Datum) * Max(ncols, 1));
+	liveNulls = palloc(sizeof(bool) * Max(ncols, 1));
 
 	snapshot = ActiveSnapshotSet() ? GetActiveSnapshot() : GetTransactionSnapshot();
 	readState = PgColumnarBeginRead(rel, snapshot, NULL, NULL, 0, NULL);
@@ -1283,6 +1292,12 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 
 		CHECK_FOR_INTERRUPTS();
 
+		for (i = 0; i < ncols; i++)
+		{
+			liveValues[i] = values[live[i]];
+			liveNulls[i] = nulls[live[i]];
+		}
+
 		/*
 		 * Cut by bytes too (#1811): write the batch before a row that would
 		 * take its buffered bytes past the cap. The batch body is built in
@@ -1292,7 +1307,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 		for (i = 0; i < ncols; i++)
 		{
 			batchBytes += arrowcol_bytes(&cols[i]);
-			rowBytes += arrowcol_value_bytes(&cols[i], values[i], nulls[i]);
+			rowBytes += arrowcol_value_bytes(&cols[i], liveValues[i], liveNulls[i]);
 		}
 		if (batchRows > 0 &&
 			batchBytes + rowBytes > (int64) pgcolumnar_export_group_bytes)
@@ -1302,7 +1317,7 @@ pgcolumnar_export_arrow(PG_FUNCTION_ARGS)
 		}
 
 		for (i = 0; i < ncols; i++)
-			arrowcol_append(&cols[i], values[i], nulls[i]);
+			arrowcol_append(&cols[i], liveValues[i], liveNulls[i]);
 		batchRows++;
 		total++;
 
@@ -1904,6 +1919,63 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
 }
 
 /*
+ * Whether a scalar Arrow type tag can be read into a scalar node of `kind`
+ * (#2082). The decode arms read the bytes in the layout of the TARGET's kind,
+ * so a file of another type family was copied bit for bit: float64 1.5 into
+ * bigint stored 4609434218613702656, and int64 7 into float8 stored 3.5e-323.
+ * When the layouts differed, the buffer-length check raised XX001 and called a
+ * valid file malformed. Four pairings across families are kept on purpose,
+ * the same four that docs/limitations.md lists:
+ *  - Int under timestamp or timestamptz reads raw microseconds. This is
+ *    long-standing behaviour with its own control in test/arrow_import.sh, and
+ *    #881 kept it. imp_apply_field still requires a signed 64-bit carrier.
+ *  - Utf8 under bytea.
+ *  - Binary under text, varchar, json, jsonb or a numeric with no precision
+ *    (or one above 38), whose node is A_UTF8. Utf8 and Binary have the same
+ *    three-buffer layout, so the bytes arrive intact in both directions, and a
+ *    Binary value read as text still passes imp_text_check and the type's
+ *    input function.
+ *  - Duration under bigint reads the signed 64-bit count, as main did. Arrow
+ *    always writes a duration as 64 bits, so no other integer width can hold
+ *    one: under int it was read at half width, storing 5,0 for 5,6.
+ * Every other tag is refused, including Interval (raw bytes into bigint
+ * before), Null (XX001 before), and LargeUtf8 and LargeBinary, whose 64-bit
+ * offsets were read as 32-bit ones: a large string ['a','b'] into text stored
+ * '' and 'a' with no error.
+ */
+static bool
+arrow_tag_fits_kind(uint8 typetag, ArrowKind kind)
+{
+	switch (typetag)
+	{
+		case ARROW_TYPE_Int:
+			return kind == A_INT16 || kind == A_INT32 || kind == A_INT64 ||
+				kind == A_TIMESTAMP || kind == A_TIMESTAMPTZ;
+		case ARROW_TYPE_FloatingPoint:
+			return kind == A_FLOAT32 || kind == A_FLOAT64;
+		case ARROW_TYPE_Bool:
+			return kind == A_BOOL;
+		case ARROW_TYPE_Utf8:
+		case ARROW_TYPE_Binary:
+			return kind == A_UTF8 || kind == A_BINARY;
+		case ARROW_TYPE_Date:
+			return kind == A_DATE32;
+		case ARROW_TYPE_Time:
+			return kind == A_TIME64;
+		case ARROW_TYPE_Timestamp:
+			return kind == A_TIMESTAMP || kind == A_TIMESTAMPTZ;
+		case ARROW_TYPE_FixedSizeBinary:
+			return kind == A_UUID;
+		case ARROW_TYPE_Decimal:
+			return kind == A_DECIMAL128;
+		case ARROW_TYPE_Duration:
+			return kind == A_INT64;
+		default:
+			return false;
+	}
+}
+
+/*
  * A nested Arrow type must have the shape of the node the target type gave it
  * (#1932). Buffer indices are assigned from the TARGET's tree, so a List, Map or
  * Struct where the target has a scalar -- or a scalar where it has an array or a
@@ -1921,6 +1993,8 @@ arrow_field_list_depth(const uint8 *meta, uint32 metaLen, uint32 field)
  * 32-bit offsets. So a large_binary b'x' imported as an empty bytea, a
  * large_string ['hi','there'] as '' and 'hi', and the views were called
  * malformed. No target reads those layouts yet, so they are refused too (#2097).
+ * A scalar tag under a scalar node must also be of a family that node can
+ * hold; see arrow_tag_fits_kind (#2082).
  */
 static void
 imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
@@ -1941,7 +2015,9 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 							 typetag == ARROW_TYPE_Utf8View);
 
 	if (fileList == (n->kind == A_LIST) && fileStruct == (n->kind == A_STRUCT) &&
-		!fileOther)
+		!fileOther &&
+		(n->kind == A_LIST || n->kind == A_STRUCT ||
+		 arrow_tag_fits_kind(typetag, n->kind)))
 		return;
 
 	if (typetag == ARROW_TYPE_List && listDepth > 0 && n->kind != A_LIST)
@@ -1955,7 +2031,7 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 			(errcode(ERRCODE_DATATYPE_MISMATCH),
 			 errmsg("Arrow column \"%s\" holds %s, which pgcolumnar.import_arrow cannot read into type %s",
 					colname, arrow_type_tag_desc(typetag),
-					format_type_be(n->typid)),
+					format_type_with_typemod(n->typid, n->atttypmod)),
 			 errdetail("The mismatched file is \"%s\".", path)));
 }
 
@@ -1980,25 +2056,21 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 		imp_check_shape(n, typetag, meta, metaLen, field, colname, path,
 						listDepth);
 		/*
-		 * Stamp a node ONLY when the file's tag matches the kind the target type
-		 * gave it. n->width is both the stride and the divisor in
-		 * imp_check_bounds, while every non-temporal decode arm memcpy's a size
-		 * fixed by its kind. Taking a width from a tag the target does not share
-		 * severs those two, and a Date-tagged field would set width 4 under an
-		 * A_INT64 node that still reads 8 bytes -- passing the bounds check and
-		 * reading off the end of the body. A temporal tag under a target that
-		 * cannot hold it is refused by name. Leaving it alone kept a pre-existing
-		 * silent corruption: measured on unpatched main, a time64 file into a date
-		 * column stored 687342-02-27 and a timestamp file into one stored
-		 * 2722128-09-17, both from the low 4 bytes of an 8-byte carrier. A
-		 * NON-temporal tag is still left alone, so an int64 file into a timestamp
-		 * column keeps working exactly as it does today.
+		 * imp_check_shape has refused every tag the node's kind cannot hold, so
+		 * each arm below reaches only a node of its own family (or, for Int, a
+		 * timestamp read as raw microseconds). That matters for the width: it
+		 * is both the stride and the divisor in imp_check_bounds, while every
+		 * non-temporal decode arm memcpy's a size fixed by its kind. Taking a
+		 * width from a tag the target does not share severs those two, and a
+		 * Date-tagged field would set width 4 under an A_INT64 node that still
+		 * reads 8 bytes -- passing the bounds check and reading off the end of
+		 * the body. Measured on main before that refusal: a time64 file into a
+		 * date column stored 687342-02-27, from the low 4 bytes of an 8-byte
+		 * carrier.
 		 */
 		switch (typetag)
 		{
 			case ARROW_TYPE_Date:
-				if (n->kind != A_DATE32)
-					imp_field_mismatch("a date", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_DU_MILLI;
 				if (n->srcUnit != ARROW_DU_DAY && n->srcUnit != ARROW_DU_MILLI)
@@ -2009,8 +2081,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		bits;
 
-					if (n->kind != A_TIME64)
-						imp_field_mismatch("a time", n->typid);
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 					n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_MILLI;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* bitWidth (i32) */
@@ -2037,17 +2107,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					int32		bits;
 					bool		isSigned;
 
-					/*
-					 * Only when the target is the same FAMILY. A file whose tag
-					 * does not match the column's family at all -- an int64 read
-					 * into a timestamp as raw microseconds -- is long-standing
-					 * accepted behaviour with its own control in
-					 * test/arrow_import.sh, and #881 is about values corrupted
-					 * WITHIN a family, not about changing that.
-					 */
-					if (n->kind != A_INT16 && n->kind != A_INT32 &&
-						n->kind != A_INT64)
-						break;
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* bitWidth */
 					bits = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* is_signed */
@@ -2058,7 +2117,8 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					 * carrier is a different width is read at the wrong offsets:
 					 * int64 into int returned 0,0,1,2 for 1,2,3,4. And every
 					 * PostgreSQL integer is signed, so a uint64 carrying a value
-					 * above 2^63 reads as negative. Both were silent.
+					 * above 2^63 reads as negative. Both were silent. A timestamp
+					 * node has width 8, so it takes only a signed int64 (#2082).
 					 */
 					if (bits != n->width * 8)
 						imp_field_mismatch("an integer of a different width",
@@ -2071,8 +2131,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int16		prec;
 
-					if (n->kind != A_FLOAT32 && n->kind != A_FLOAT64)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
 					prec = pos ? fbr_i16(meta, metaLen, pos) : 0;
 					/* 0 HALF, 1 SINGLE, 2 DOUBLE; HALF has no PostgreSQL type */
@@ -2085,8 +2143,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 				{
 					int32		bw;
 
-					if (n->kind != A_UUID)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* byteWidth */
 					bw = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					if (bw != 16)
@@ -2100,8 +2156,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					int32		fscale;
 					int32		fbits;
 
-					if (n->kind != A_DECIMAL128)
-						break;		/* cross-family: see the Int case */
 					pos = pgc_fb_field(meta, metaLen, tt, 0);	/* precision */
 					fprec = pos ? fbr_i32(meta, metaLen, pos) : 0;
 					pos = pgc_fb_field(meta, metaLen, tt, 1);	/* scale */
@@ -2135,8 +2189,6 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 					break;
 				}
 			case ARROW_TYPE_Timestamp:
-				if (n->kind != A_TIMESTAMP && n->kind != A_TIMESTAMPTZ)
-					imp_field_mismatch("a timestamp", n->typid);
 				pos = pgc_fb_field(meta, metaLen, tt, 0);	/* unit (i16) */
 				n->srcUnit = pos ? fbr_i16(meta, metaLen, pos) : ARROW_TU_SECOND;
 				if (n->srcUnit < ARROW_TU_SECOND || n->srcUnit > ARROW_TU_NANO)
@@ -2564,6 +2616,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	int64		nsTrunc = 0;	/* values that lost sub-microsecond digits */
 	bool		sawSchema = false;
 	int			i;
+	int		   *live;
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		ereport(ERROR,
@@ -2611,21 +2664,23 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 	}
 
 	tupdesc = RelationGetDescr(rel);
-	ncols = tupdesc->natts;
 
-	tops = palloc0(sizeof(ImpNode) * ncols);
+	/*
+	 * The live columns only: Arrow field i loads into attribute live[i], and a
+	 * dropped attribute is stored as null, as import_parquet does (#2076).
+	 */
+	live = palloc(sizeof(int) * Max(tupdesc->natts, 1));
+	ncols = 0;
+	for (i = 0; i < tupdesc->natts; i++)
+		if (!TupleDescAttr(tupdesc, i)->attisdropped)
+			live[ncols++] = i;
+
+	tops = palloc0(sizeof(ImpNode) * Max(ncols, 1));
 	for (i = 0; i < ncols; i++)
 	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+		Form_pg_attribute att = TupleDescAttr(tupdesc, live[i]);
 		bool		ok = true;
 
-		if (att->attisdropped)
-		{
-			table_close(rel, RowExclusiveLock);
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("columnar.import_arrow does not support dropped columns")));
-		}
 		imp_build_node(&tops[i], att->atttypid, att->atttypmod, &ok);
 		if (!ok)
 		{
@@ -2792,7 +2847,7 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 				imp_apply_field(&tops[i], meta, metaLen,
 								pgc_fb_indirect(meta, metaLen,
 												fieldsVec + 4 + (uint32) i * 4),
-								NameStr(TupleDescAttr(tupdesc, i)->attname),
+								NameStr(TupleDescAttr(tupdesc, live[i])->attname),
 								path, 0);
 			sawSchema = true;
 		}
@@ -2859,14 +2914,19 @@ pgcolumnar_import_arrow(PG_FUNCTION_ARGS)
 					CHECK_FOR_INTERRUPTS();
 					ExecClearTuple(slot);
 					oldCtx = MemoryContextSwitchTo(rowCtx);
+					for (i = 0; i < tupdesc->natts; i++)
+					{
+						slot->tts_values[i] = (Datum) 0;
+						slot->tts_isnull[i] = true;
+					}
 					for (i = 0; i < ncols; i++)
 					{
 						bool		isnull;
 
-						slot->tts_values[i] = imp_value_at(&tops[i], body, bufOff,
-														   bufLen, r, &isnull,
-														   &nsTrunc);
-						slot->tts_isnull[i] = isnull;
+						slot->tts_values[live[i]] = imp_value_at(&tops[i], body, bufOff,
+																 bufLen, r, &isnull,
+																 &nsTrunc);
+						slot->tts_isnull[live[i]] = isnull;
 					}
 					ExecStoreVirtualTuple(slot);
 					table_tuple_insert(rel, slot, cid, 0, NULL);
