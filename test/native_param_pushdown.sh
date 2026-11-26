@@ -352,6 +352,50 @@ check "with pushdown off, the runtime range still reads one chunk group (#2065)"
 	"$(sed -n 's/.*Columnar Chunk Groups Read: \([0-9]*\).*/\1/p' <<<"$RR_OFF" | head -1)" "1"
 check "the backend is alive after the runtime-range arm with pushdown off (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
 
+# A rescan of that hash join builds a new runtime range for each outer row and must
+# drop the old one. Here a subquery runs the join once per group of d2: group 1 is
+# k 8001..8200, group 2 is k 15001..15200. A scan that kept group 1's range while
+# testing group 2 pruned every group and counted 0. fh is a heap copy of f, so it
+# gives the answer heap gives.
+q "CREATE TABLE d2 (grp int, k int);
+   INSERT INTO d2 SELECT 1, g FROM generate_series(8001, 8200) g;
+   INSERT INTO d2 SELECT 2, g FROM generate_series(15001, 15200) g;
+   CREATE TABLE fh AS SELECT * FROM f;
+   ANALYZE d2; ANALYZE fh;" >/dev/null
+rescan_q() {	# rescan_q TABLE -> the two loops' "grp|count|sum", run twice in one session
+	psql_m "${JOIN_SET[@]}" \
+		"PREPARE r(int) AS SELECT g.g || '|' || (SELECT count(*)::text || '|' || coalesce(sum($1.k), 0) FROM $1 JOIN d2 ON $1.k = d2.k AND d2.grp = g.g WHERE $1.k >= same(\$1)) FROM generate_series(1, 2) g(g)" \
+		"EXECUTE r(8150)" "EXECUTE r(8150)" | grep -xE '[0-9]+\|[0-9]+\|[0-9]+' | tr '\n' ' ' | sed 's/ $//'
+}
+check "the heap copy answers the hash-join rescan (premise) (#2065)" \
+	"$(rescan_q fh)" "1|51|416925 2|200|3020100 1|51|416925 2|200|3020100"
+check "a hash-join rescan with a key frozen at the first run counts what heap counts in each loop (#2065)" \
+	"$(rescan_q f)" "1|51|416925 2|200|3020100 1|51|416925 2|200|3020100"
+check "the backend is alive after the hash-join rescan (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
+
+# A NULL that a stable function returns at the first run must be frozen as NULL too.
+# Frozen as a non-null Const, an int NULL became the key "ts >= 0", and a text NULL a
+# key that pointed at address 0, which crashed the backend.
+check "a NULL from a stable function on an int column builds no pushed-down filter (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE nfi(int) AS SELECT count(*) FROM t WHERE ts >= same(\$1)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE nfi(NULL)" \
+		| sed -n 's/.*Columnar Pushed-Down Filters: \([0-9]*\).*/\1/p' | head -1)" "0"
+check "a NULL from a stable function on a text column counts 0 (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE nf(text) AS SELECT count(*) FROM tx WHERE s >= same_t(\$1)" \
+		"EXECUTE nf(NULL)" | tail -1)" "0"
+check "the backend is alive after the NULL from a stable function (#2065)" "$(survived "$CRASHES_BEFORE")" "1"
+
+# The scan evaluates an operand only when its clause could become a scan key. "<>"
+# has no btree strategy, and "ts + 0" is not a bare column, so neither clause can be
+# a key; btree leaves them in its Filter and heap tests them per row. ts < 0 holds
+# for no row, so heap and btree never call boom() and count 0.
+check "a stable operand of a clause with no btree strategy (<>) is not evaluated (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE c1(int) AS SELECT count(*) FROM t WHERE ts < 0 AND ts <> boom(\$1)" \
+		"EXECUTE c1(0)" | tail -1)" "0"
+check "a stable operand compared with an expression of the column is not evaluated (#2065)" \
+	"$(psql_m "SET plan_cache_mode = force_generic_plan" "PREPARE c2(int) AS SELECT count(*) FROM t WHERE ts < 0 AND ts + 0 > boom(\$1)" \
+		"EXECUTE c2(0)" | tail -1)" "0"
+
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 
 pgc_summary

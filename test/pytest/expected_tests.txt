@@ -2186,4 +2186,10 @@ guard_tests 895
 # as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
 # alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
-cluster_tests 5610
+# cluster_tests 5610 -> 5618 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
+# (a heap copy answers a hash-join rescan, the columnar scan with a key frozen at the first run counts the same
+# in each loop, with the backend alive; a NULL from a stable function builds no key on an int column and counts
+# 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
+# an expression of the column, is not evaluated), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5618 tests collected.
+cluster_tests 5618

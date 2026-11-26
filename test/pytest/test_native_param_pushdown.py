@@ -145,6 +145,11 @@ JOIN_SET = ["SET plan_cache_mode = force_generic_plan", "SET enable_nestloop = o
             "SET enable_mergejoin = off", "SET max_parallel_workers_per_gather = 0"]
 JOIN_Q = "PREPARE j(int) AS SELECT count(*), sum(f.k) FROM f JOIN d ON f.k = d.k WHERE f.k >= same($1)"
 JOIN_EXPLAIN = "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE j(8150)"
+# A subquery runs the hash join once per group of d2, so each loop rescans it with a new
+# runtime range. fh is a heap copy of f.
+RESCAN_Q = ("PREPARE r(int) AS SELECT g.g || '|' || (SELECT count(*)::text || '|' || coalesce(sum({t}.k), 0) "
+            "FROM {t} JOIN d2 ON {t}.k = d2.k AND d2.grp = g.g WHERE {t}.k >= same($1)) FROM generate_series(1, 2) g(g)")
+RESCAN_WANT = "1|51|416925 2|200|3020100 1|51|416925 2|200|3020100"
 TEXT_RESCAN = ("PREPARE r(text) AS SELECT g || '|' || (SELECT count(*) FROM tx WHERE s >= same_t($1) "
                "AND s <= g::text || 'z') FROM generate_series(1, 3) g")
 
@@ -375,6 +380,28 @@ def pp(pgc_cluster):
         r["rr off skip preds"] = _field(rr_off, "Columnar Usable Skip Predicates")
         r["rr off groups read"] = _field(rr_off, "Columnar Chunk Groups Read")
         r["rr off survived"] = _survived(dsn, pgc_cluster, before)
+        _session(dsn, ["CREATE TABLE d2 (grp int, k int)",
+                       "INSERT INTO d2 SELECT 1, g FROM generate_series(8001, 8200) g",
+                       "INSERT INTO d2 SELECT 2, g FROM generate_series(15001, 15200) g",
+                       "CREATE TABLE fh AS SELECT * FROM f", "ANALYZE d2", "ANALYZE fh"])
+        for key, tbl in (("rescan heap", "fh"), ("rescan", "f")):
+            res = _transcript(dsn, JOIN_SET + [RESCAN_Q.format(t=tbl), "EXECUTE r(8150)", "EXECUTE r(8150)"])
+            r[key] = res if isinstance(res, str) else " ".join(res)
+        r["rescan survived"] = _survived(dsn, pgc_cluster, before)
+        # A NULL a stable function returns at the first run is frozen as NULL as well.
+        nfi = _transcript(dsn, [GENERIC, "PREPARE nfi(int) AS SELECT count(*) FROM t WHERE ts >= same($1)",
+                                "EXPLAIN (ANALYZE, TIMING off, SUMMARY off) EXECUTE nfi(NULL)"])
+        r["fn null int pushed"] = _field(nfi, "Columnar Pushed-Down Filters")
+        nf = _transcript(dsn, [GENERIC, "PREPARE nf(text) AS SELECT count(*) FROM tx WHERE s >= same_t($1)",
+                               "EXECUTE nf(NULL)"])
+        r["fn null text count"] = nf if isinstance(nf, str) else (nf[-1] if nf else query_error("no row"))
+        r["fn null survived"] = _survived(dsn, pgc_cluster, before)
+        # Only an operand whose clause could become a scan key is evaluated; ts < 0 holds
+        # for no row, so heap and btree never call boom().
+        for key, sql in (("not keyable ne", "ts < 0 AND ts <> boom($1)"),
+                         ("not keyable expr", "ts < 0 AND ts + 0 > boom($1)")):
+            res = _transcript(dsn, [GENERIC, f"PREPARE c(int) AS SELECT count(*) FROM t WHERE {sql}", "EXECUTE c(0)"])
+            r[key] = res if isinstance(res, str) else (res[-1] if res else query_error("no row"))
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -564,6 +591,43 @@ def test_param_pushdown_with_pushdown_off_the_runtime_range_still_reads_one_grou
 def test_param_pushdown_the_backend_is_alive_after_the_runtime_range_arm_with_pushdown_off(pp, expect):
     expect.text(pp["rr off survived"], "1",
                 "the backend is alive after the runtime-range arm with pushdown off (#2065)")
+
+
+def test_param_pushdown_the_heap_copy_answers_the_hash_join_rescan(pp, expect):
+    expect.text(pp["rescan heap"], RESCAN_WANT, "the heap copy answers the hash-join rescan (premise) (#2065)")
+
+
+def test_param_pushdown_a_hash_join_rescan_counts_what_heap_counts_in_each_loop(pp, expect):
+    expect.text(pp["rescan"], RESCAN_WANT,
+                "a hash-join rescan with a key frozen at the first run counts what heap counts in each loop (#2065)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_hash_join_rescan(pp, expect):
+    expect.text(pp["rescan survived"], "1", "the backend is alive after the hash-join rescan (#2065)")
+
+
+def test_param_pushdown_a_null_from_a_stable_function_on_an_int_column_builds_no_filter(pp, expect):
+    expect.text(pp["fn null int pushed"], "0",
+                "a NULL from a stable function on an int column builds no pushed-down filter (#2065)")
+
+
+def test_param_pushdown_a_null_from_a_stable_function_on_a_text_column_counts_zero(pp, expect):
+    expect.text(pp["fn null text count"], "0", "a NULL from a stable function on a text column counts 0 (#2065)")
+
+
+def test_param_pushdown_the_backend_is_alive_after_the_null_from_a_stable_function(pp, expect):
+    expect.text(pp["fn null survived"], "1",
+                "the backend is alive after the NULL from a stable function (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_of_a_clause_with_no_btree_strategy_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable ne"], "0",
+                "a stable operand of a clause with no btree strategy (<>) is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_operand_compared_with_a_column_expression_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable expr"], "0",
+                "a stable operand compared with an expression of the column is not evaluated (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):
