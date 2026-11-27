@@ -64,8 +64,18 @@ check "the sanitizer subset runs every suite that drives the encoding selftest" 
 # So the suite is worth running only on an instrumented build, and this subset
 # is where that happens. Named rather than derived: no property of the suite's
 # text says "only a sanitizer sees this".
+#
+# BOTH GATES, because the nightly runs test/pytest/run_san.py, not run_san.sh.
+# Reading run_san.sh alone left run_san.py free to drop the suite with this
+# check green. run_san.py is asked the same way, through its own --list-suites
+# with the override cleared; it needs no build to answer. A run_san.py that
+# cannot answer prints nothing, and the check then names it as missing.
+_san_py_suites="$(env -u PGC_SAN_SUITES python3 "$PGC_SRCDIR/test/pytest/run_san.py" --list-suites 2>/dev/null)"
+_es_missing=""
+grep -qx export_sink <<<"$_san_suites" || _es_missing="$_es_missing run_san.sh"
+grep -qx export_sink <<<"$_san_py_suites" || _es_missing="$_es_missing run_san.py"
 check "the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees" \
-	"$(grep -qx export_sink <<<"$_san_suites" && echo yes || echo no)" "yes"
+	"$(printf '%s' "${_es_missing:- none}" | sed 's/^ //')" "none"
 
 # ---- NOT a check: FSST slack coverage, and why there is no arm for it --------
 #
