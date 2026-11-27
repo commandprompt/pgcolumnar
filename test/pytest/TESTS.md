@@ -12709,7 +12709,7 @@ Every test makes one check under the shell's name, on a private database built o
 
 ## 307. test_native_param_pushdown.py: a parameterized qual prunes chunk groups, and a correlated one is never frozen
 
-The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right.
+The twin of `test/native_param_pushdown.sh`. A generic-plan prepared statement's `ts >= $1` prunes 19 of 20 monotonic chunk groups and counts what the literal counts; a second execution in the same session counts and prunes with its own value; a correlated nestloop param builds no skip predicate, and both its lower- and upper-bound answers stay right. An error raised while the scan freezes a stable operand reaches the client (#2065): a statement_timeout cancels the query, a function that raises once fails it as on heap, and no WARNING about a leaked resource or SPI stack follows. A plain EXPLAIN calls no stable operand but still pushes down a bound parameter. A scan that is set up but never run calls no stable operand: not one that LIMIT cuts off, and not one under a false one-time filter. A stable function operand, frozen when the scan first runs, still prunes 19 of 20 groups, and the scan calls it once to freeze it and then once per row its Filter tests. A PL/pgSQL record field under a false one-time filter is not fetched at scan set-up, and a PL/pgSQL variable on a generic plan still prunes 19 of 20 groups once the scan runs, read from the plan auto_explain logs. A projection scan with a key frozen at the first run uses the projection and counts what heap counts. Keys frozen at the first run prune nothing with `pgcolumnar.enable_qual_pushdown` off, two such keys both prune 19 of 20 groups (each removes groups the other keeps), and a 300 kB text key survives each rescan of a correlated subquery. The same EXPLAIN ANALYZE that shows the stable function operand pruning also counts its frozen key as pushed down. A bound varchar parameter on a text column and a bound domain parameter on an int column are pushed down under a plain EXPLAIN EXECUTE, as the int one is. A NULL bound parameter builds no key: the int one shows 0 pushed-down filters, and the text one counts 0 with the backend alive. Under a hash join, a key frozen at the first run keeps the join's runtime range after it: the answer is heap's, the scan shows three skip predicates and the range removes 11 groups; with pushdown off the range alone stays (two skip predicates, one group read); the backend is alive after each. A rescan of that join, once per group of a second table, counts what a heap copy counts in each loop. A NULL that a stable function returns builds no key: on an int column 0 pushed-down filters, on a text column a count of 0 with the backend alive. A stable operand whose clause can never be a scan key is not evaluated: a call counter shows 0 calls and the query counts 0, as heap does. The shapes are `<>`, an expression of the column, LIKE on a column whose collation is not C, LIKE with the operand on the column side, `date_trunc` with `<>`, over an expression or with a unit read from a column, `<> ANY`, `= ALL`, range `@>` range, a comparison under another collation, a function of the column other than `date_trunc`, `date_trunc` of a timestamp column against a timestamptz or date operand, to a decade or a plural unit, of a timestamp domain column or of a timestamptz column, a two-argument function shaped like `date_trunc`, a multirange that a range column overlaps, `< ANY`, and a timestamp or timestamp-domain column against a timestamptz operand, scalar or `= ANY` (the reader drops that key, #1738). Five shapes that are keys still prune 19 of 20 groups with a bound parameter and count what a heap copy counts: `date_trunc` of a timestamp column, LIKE on a C-collated column, a range overlap, a varchar column against a text parameter, and `= ANY`; so do `date_trunc(...) >=` a parameter and a range column that contains one. A bound varchar, text-domain, timestamp-domain or range-domain parameter prunes as its base type would (LIKE, `date_trunc` `=` and `>=`, `&&`), an upper-case unit (`Day`) prunes, and a timestamptz column against a timestamptz parameter prunes, as do a timestamp column against a date parameter and a date column against a timestamptz parameter, which pin that the timestamptz decline stays narrow. With a key frozen at the first run, a projection scan removes 19 groups and a hash-join rescan removes 38 over its two loops.
 
 ### Every test
 
@@ -12726,6 +12726,88 @@ Every test makes one check under the shell's name, on a private database built o
 | `test_param_pushdown_a_correlated_upper_bound_is_not_mis_pruned` | a correlated PARAM_EXEC upper bound is not mis-pruned either |
 | `test_param_pushdown_a_second_execution_counts_with_its_own_value` | a second execution in the same session counts with its own value |
 | `test_param_pushdown_a_second_execution_prunes_with_its_own_value` | and prunes with its own value too (18 of 20 removed) |
+| `test_param_pushdown_a_statement_timeout_at_scan_start_cancels` | a statement_timeout during scan start-up cancels the columnar query (#2065) |
+| `test_param_pushdown_a_stable_operand_that_raises_once_reaches_the_client` | a stable operand that raises once reaches the client, as on heap (#2065) |
+| `test_param_pushdown_no_failed_query_leaves_a_warning` | neither failed query leaves a resource or SPI-stack WARNING (#2065) |
+| `test_param_pushdown_a_plain_explain_does_not_call_a_stable_operand` | a plain EXPLAIN does not call a stable operand (#2065) |
+| `test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_param` | a plain EXPLAIN EXECUTE still pushes down a bound parameter (#2065) |
+| `test_param_pushdown_a_scan_that_limit_cuts_off_calls_no_stable_operand` | a columnar scan that LIMIT cuts off never calls its stable operand (#2065) |
+| `test_param_pushdown_a_scan_under_a_false_one_time_filter_calls_no_stable_operand` | a columnar scan under a false one-time filter never calls its stable operand (#2065) |
+| `test_param_pushdown_a_stable_function_operand_still_prunes_when_the_scan_runs` | a stable function operand still prunes when the scan runs (19 of 20 removed) (#2065) |
+| `test_param_pushdown_the_frozen_key_counts_as_pushed_down` | and the same EXPLAIN ANALYZE counts the frozen key as pushed down (#2065) |
+| `test_param_pushdown_a_stable_operand_is_called_once_to_freeze_then_once_per_row` | the scan calls a stable operand once to freeze it, then once per row the Filter tests (#2065) |
+| `test_param_pushdown_a_plpgsql_record_field_under_a_false_one_time_filter_is_not_fetched` | a PL/pgSQL record field under a false one-time filter is not fetched at scan set-up (#2065) |
+| `test_param_pushdown_auto_explain_logs_the_plan_a_plpgsql_function_ran` | auto_explain logs the plan a PL/pgSQL function ran, with its parameter (premise) (#2065) |
+| `test_param_pushdown_a_plpgsql_variable_on_a_generic_plan_prunes_when_the_scan_runs` | a PL/pgSQL variable on a generic plan prunes when the scan runs (19 of 20 removed) (#2065) |
+| `test_param_pushdown_the_projection_arm_uses_the_projection` | the projection arm's scan uses the projection (premise) (#2065) |
+| `test_param_pushdown_a_projection_scan_with_a_first_run_key_counts_what_heap_counts` | a projection scan with a key frozen at the first run counts what heap counts (#2065) |
+| `test_param_pushdown_a_first_run_key_obeys_qual_pushdown_off` | with pgcolumnar.enable_qual_pushdown off, a key frozen at the first run prunes nothing (#2065) |
+| `test_param_pushdown_two_first_run_keys_both_prune` | two keys frozen at the first run both prune (19 of 20 removed) (#2065) |
+| `test_param_pushdown_a_long_text_first_run_key_survives_each_rescan` | a long text key frozen at the first run survives each rescan (#2065) |
+| `test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_varchar_param` | a plain EXPLAIN EXECUTE still pushes down a bound varchar parameter (#2065) |
+| `test_param_pushdown_a_plain_explain_execute_still_pushes_down_a_bound_domain_param` | a plain EXPLAIN EXECUTE still pushes down a bound domain parameter (#2065) |
+| `test_param_pushdown_a_null_bound_int_param_builds_no_pushed_down_filter` | a NULL bound int parameter on a generic plan builds no pushed-down filter (#2065) |
+| `test_param_pushdown_a_null_bound_text_param_counts_zero` | a NULL bound text parameter on a generic plan counts 0 (#2065) |
+| `test_param_pushdown_the_backend_is_alive_after_the_null_text_param` | the backend is alive after the NULL text parameter (#2065) |
+| `test_param_pushdown_a_first_run_key_under_a_runtime_range_counts_what_heap_counts` | a key frozen at the first run under a hash join's runtime range counts what heap counts (#2065) |
+| `test_param_pushdown_the_scan_keeps_the_runtime_range_after_the_frozen_key` | the scan keeps the runtime range after the frozen key: three skip predicates (#2065) |
+| `test_param_pushdown_the_kept_runtime_range_still_removes_groups` | and the kept runtime range still removes groups (11 removed) (#2065) |
+| `test_param_pushdown_the_backend_is_alive_after_the_runtime_range_arm` | the backend is alive after the runtime-range arm (#2065) |
+| `test_param_pushdown_with_pushdown_off_the_scan_keeps_the_runtime_range_alone` | with pushdown off, the scan keeps the runtime range alone: two skip predicates (#2065) |
+| `test_param_pushdown_with_pushdown_off_the_runtime_range_still_reads_one_group` | with pushdown off, the runtime range still reads one chunk group (#2065) |
+| `test_param_pushdown_the_backend_is_alive_after_the_runtime_range_arm_with_pushdown_off` | the backend is alive after the runtime-range arm with pushdown off (#2065) |
+| `test_param_pushdown_the_heap_copy_answers_the_hash_join_rescan` | the heap copy answers the hash-join rescan (premise) (#2065) |
+| `test_param_pushdown_a_hash_join_rescan_counts_what_heap_counts_in_each_loop` | a hash-join rescan with a key frozen at the first run counts what heap counts in each loop (#2065) |
+| `test_param_pushdown_the_backend_is_alive_after_the_hash_join_rescan` | the backend is alive after the hash-join rescan (#2065) |
+| `test_param_pushdown_a_null_from_a_stable_function_on_an_int_column_builds_no_filter` | a NULL from a stable function on an int column builds no pushed-down filter (#2065) |
+| `test_param_pushdown_a_null_from_a_stable_function_on_a_text_column_counts_zero` | a NULL from a stable function on a text column counts 0 (#2065) |
+| `test_param_pushdown_the_backend_is_alive_after_the_null_from_a_stable_function` | the backend is alive after the NULL from a stable function (#2065) |
+| `test_param_pushdown_a_stable_operand_of_a_clause_with_no_btree_strategy_is_not_evaluated` | a stable operand of a clause with no btree strategy (<>) is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_compared_with_a_column_expression_is_not_evaluated` | a stable operand compared with an expression of the column is not evaluated (#2065) |
+| `test_param_pushdown_the_premise_collation_is_not_c` | premise: sn's collation orders a lower-case letter before an upper-case one, which C does not (#2065) |
+| `test_param_pushdown_a_stable_operand_of_like_on_a_column_whose_collation_is_not_c_is_not_evaluated` | a stable operand of LIKE on a column whose collation is not C is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_with_no_btree_strategy_is_not_evaluated` | a stable operand of date_trunc with no btree strategy (<>) is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_over_a_column_expression_is_not_evaluated` | a stable operand of date_trunc over an expression of the column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_with_a_unit_from_a_column_is_not_evaluated` | a stable operand of date_trunc with a unit read from a column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_on_the_column_side_of_like_is_not_evaluated` | a stable operand on the column side of LIKE is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_array_operand_of_ne_any_is_not_evaluated` | a stable array operand of <> ANY is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_array_operand_of_eq_all_is_not_evaluated` | a stable array operand of = ALL is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_range_contains_range_is_not_evaluated` | a stable operand of range @> range is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_under_another_collation_is_not_evaluated` | a stable operand compared under a collation that is not the column's is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_compared_with_another_function_of_the_column_is_not_evaluated` | a stable operand compared with a function of the column other than date_trunc is not evaluated (#2065) |
+| `test_param_pushdown_the_heap_copy_answers_the_five_pruning_queries` | the heap copy answers the five pruning queries (premise) (#2065) |
+| `test_param_pushdown_a_bound_param_compared_with_date_trunc_prunes` | a bound parameter compared with date_trunc of a timestamp column prunes (#2065) |
+| `test_param_pushdown_a_bound_param_in_like_on_a_c_column_prunes` | a bound parameter in LIKE on a C-collated column prunes (#2065) |
+| `test_param_pushdown_a_bound_param_that_a_range_column_overlaps_prunes` | a bound parameter that a range column overlaps prunes (#2065) |
+| `test_param_pushdown_a_bound_text_param_compared_with_a_varchar_column_prunes` | a bound text parameter compared with a varchar column prunes (#2065) |
+| `test_param_pushdown_a_bound_array_param_of_eq_any_prunes` | a bound array parameter of = ANY prunes (#2065) |
+| `test_param_pushdown_a_stable_timestamptz_operand_compared_with_date_trunc_is_not_evaluated` | a stable timestamptz operand compared with date_trunc of a timestamp column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_date_operand_compared_with_date_trunc_is_not_evaluated` | a stable date operand compared with date_trunc of a timestamp column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_to_a_decade_is_not_evaluated` | a stable operand of date_trunc to a decade is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_to_a_plural_unit_is_not_evaluated` | a stable operand of date_trunc to a plural unit (days) is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_of_a_domain_column_is_not_evaluated` | a stable operand of date_trunc of a timestamp domain column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_multirange_operand_a_range_column_overlaps_is_not_evaluated` | a stable multirange operand that a range column overlaps is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_of_date_trunc_of_a_timestamptz_column_is_not_evaluated` | a stable operand of date_trunc of a timestamptz column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_operand_compared_with_a_two_argument_function_is_not_evaluated` | a stable operand compared with a two-argument function of the column other than date_trunc is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_array_operand_of_lt_any_is_not_evaluated` | a stable array operand of < ANY is not evaluated (#2065) |
+| `test_param_pushdown_the_heap_copy_answers_the_date_trunc_ge_and_range_contains_queries` | the heap copy answers the date_trunc >= and range @> pruning queries (premise) (#2065) |
+| `test_param_pushdown_a_bound_param_that_date_trunc_is_ge_prunes` | a bound parameter that date_trunc of a timestamp column is >= prunes (#2065) |
+| `test_param_pushdown_a_bound_param_that_a_range_column_contains_prunes` | a bound parameter that a range column contains prunes (#2065) |
+| `test_param_pushdown_a_stable_timestamptz_operand_compared_with_a_timestamp_column_is_not_evaluated` | a stable timestamptz operand compared with a timestamp column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_timestamptz_array_operand_of_eq_any_on_a_timestamp_column_is_not_evaluated` | a stable timestamptz array operand of = ANY on a timestamp column is not evaluated (#2065) |
+| `test_param_pushdown_a_stable_timestamptz_operand_compared_with_a_timestamp_domain_column_is_not_evaluated` | a stable timestamptz operand compared with a timestamp domain column is not evaluated (#2065) |
+| `test_param_pushdown_the_heap_copy_answers_the_bound_domain_and_varchar_queries` | the heap copy answers the bound domain and varchar pruning queries (premise) (#2065) |
+| `test_param_pushdown_a_bound_varchar_param_in_like_on_a_c_column_prunes` | a bound varchar parameter in LIKE on a C-collated column prunes (#2065) |
+| `test_param_pushdown_a_bound_text_domain_param_in_like_on_a_c_column_prunes` | a bound text domain parameter in LIKE on a C-collated column prunes (#2065) |
+| `test_param_pushdown_a_bound_timestamp_domain_param_compared_with_date_trunc_prunes` | a bound timestamp domain parameter compared with date_trunc prunes (#2065) |
+| `test_param_pushdown_a_bound_timestamp_domain_param_that_date_trunc_is_ge_prunes` | a bound timestamp domain parameter that date_trunc is >= prunes (#2065) |
+| `test_param_pushdown_a_bound_range_domain_param_that_a_range_column_overlaps_prunes` | a bound range domain parameter that a range column overlaps prunes (#2065) |
+| `test_param_pushdown_a_bound_param_compared_with_date_trunc_to_an_upper_case_unit_prunes` | a bound parameter compared with date_trunc to an upper-case unit (Day) prunes (#2065) |
+| `test_param_pushdown_a_bound_timestamptz_param_compared_with_a_timestamptz_column_prunes` | a bound timestamptz parameter compared with a timestamptz column prunes (#2065) |
+| `test_param_pushdown_a_bound_date_param_compared_with_a_timestamp_column_prunes` | a bound date parameter compared with a timestamp column prunes (#2065) |
+| `test_param_pushdown_a_bound_timestamptz_param_compared_with_a_date_column_prunes` | a bound timestamptz parameter compared with a date column prunes (#2065) |
+| `test_param_pushdown_a_projection_scan_with_a_first_run_key_removes_groups` | a projection scan with a key frozen at the first run removes groups (#2065) |
+| `test_param_pushdown_a_hash_join_rescan_with_a_first_run_key_removes_groups_in_each_loop` | a hash-join rescan with a key frozen at the first run removes groups in each loop (#2065) |
 | `test_param_pushdown_the_backend_is_alive` | backend alive |
 
 ## 308. test_native_sort_by.py: the declared sort_by key orders the rows it says, and each refusal is its own guard's
