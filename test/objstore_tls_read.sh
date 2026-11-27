@@ -26,6 +26,9 @@
 #       SSL_ERROR_WANT_* wait loop services interrupts like the cleartext one.
 #   E   the CA in SSL_CERT_DIR alone (no SSL_CERT_FILE) carries the good read:
 #       the default verify paths honour the directory as well as the file.
+#   F   a reset on a kept-alive connection before any byte of an answer is
+#       retried once on a new connection; a reset after part of an answer is
+#       an error (#2198).
 #   No arm may crash a backend: the server log's "terminated by signal" count
 #   is read at the end, and every refusal waits for the server to answer
 #   SELECT 1 again, so a crash fails its own checks and not the next arm's.
@@ -231,6 +234,37 @@ D_ELAPSED=$(( $(date +%s) - D_START ))
 check "D: stalled TLS transfer cancelled with query_canceled" "$D_STATE" "57014"
 check "D: cancel latency bounded (<=10s)" \
 	"$([ "$D_ELAPSED" -le 10 ] 2>/dev/null && echo yes || echo "no (elapsed=${D_ELAPSED}s)")" "yes"
+wait_up
+
+# ---- arm F: a reset on a kept-alive TLS connection (#2198) -----------------
+# /rstka/ resets the second request on every connection after the client has
+# sent it, so SSL_read fails with ECONNRESET before any byte of an answer: the
+# keep-alive race, retried once on a new connection. pgc_reads reads the object
+# n times, each in its own subtransaction, and counts the reads with every row
+# and the right column sums.
+# count(*), sum(c3) and sum(c7) of the fixture: c3 = 4v and c7 = 8v for row v.
+READS_WANT="$((G * ROWS_PER_GROUP)) $(( 4 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 )) $(( 8 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 ))"
+psql_run "CREATE FUNCTION pgc_reads(url text, n int) RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE ok int := 0; bad int := 0; c text; last text := '';
+BEGIN
+  FOR i IN 1..n LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) AS t($COLDEFS)', url) INTO c;
+      IF c = '$READS_WANT' THEN ok := ok + 1; ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF;
+    EXCEPTION WHEN others THEN bad := bad + 1; last := SQLSTATE || ': ' || SQLERRM;
+    END;
+  END LOOP;
+  RETURN 'ok=' || ok || ' failed=' || bad || CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END;
+END \$f\$;"
+check "F: 30 reads over TLS from a server that resets each kept-alive connection all succeed" \
+	"$(q "SELECT pgc_reads('https://127.0.0.1:${PORT[good]}/rstka/$BUCKET/fixture.parquet', 30)")" \
+	"ok=30 failed=0"
+wait_up
+# A reset after part of a status line is not the race: it is an error.
+F_URL="https://127.0.0.1:${PORT[good]}/rsthead/$BUCKET/fixture.parquet"
+check "F: a reset over TLS after part of a status line is refused" \
+	"$(verr "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$F_URL') AS t($COLDEFS)" | sed -n 's/^ERROR:  //p' | head -1)" \
+	"08006: columnar: TLS read from \"$F_URL\" failed"
 wait_up
 
 # ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------

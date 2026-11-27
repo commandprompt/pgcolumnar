@@ -165,11 +165,15 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    # 40, not 20. The run is serial and grows with every ported twin: main took 12 to 17
-    # minutes on 2026-10-22, and seven stacked port PRs were cancelled at 20m16s. More
-    # workers (-n) would be faster, but a port race under -n 2 is known (#1635), so the
-    # budget moves first and the parallel run waits for that to be settled.
-    timeout-minutes: 40
+    # 65, not 40 (#2232). The run is serial and grows with every ported twin. On
+    # 2026-11-27 PG 17 on #2228 (run 46017483389, attempt 1) was cancelled after
+    # 40.25 minutes with every test up to 96% passing, and the nightly's PG 18 x86_64
+    # leg took 39.8 (run 46040381293). Counting the cancelled leg as at least 41
+    # minutes, 65 is at least 1.5 times the slowest job and at most twice it, which a
+    # guard test in test/pytest holds. It was 20 until seven stacked port PRs were
+    # cancelled at 20m16s. More workers (-n) would be faster, but a port race under
+    # -n 2 is known (#1635).
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -315,7 +319,7 @@ jobs:
           /tmp/pgcvenv/bin/python -c 'import duckdb; print("duckdb", duckdb.__version__)'
           export PGC_REQUIRE=pyarrow,duckdb
           # TWIN OF native_scale AT 200000 ROWS (#2018, review of #2021). The job runs
-          # close to its 40-minute limit, and the twin's default is 500000. At
+          # close to its time limit, and the twin's default is 500000. At
           # 200000 the twin still fails the two regressions it guards: the
           # allocator's missing CommandCounterIncrement and broken free-space
           # reuse. The shell suite keeps its default in the suites job.

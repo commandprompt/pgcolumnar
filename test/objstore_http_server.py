@@ -65,6 +65,31 @@
 #   /whswap/<file>   as /hswap/, with a weak ETag as /weak/ sends (#1907
 #                    review): only the length can show the overwrite.
 #
+# Resets on a kept-alive connection (#2198). "Reset" means close with
+# SO_LINGER 0, so the kernel sends RST at once and no FIN goes first.
+#   /closeka/<file>  serve normally, then close the socket at once after every
+#                    answer, with no half-close first, as a server with a short
+#                    idle timeout does. The next request on it meets a FIN or a
+#                    reset, whichever the timing gives.
+#   /rstka/<file>    answer the first request on a connection, then wait until
+#                    the next request's bytes arrive and reset without reading
+#                    them. The client has sent its request and has read nothing
+#                    of an answer, so its read fails with ECONNRESET every time.
+#   /rsthead/<file>  answer the first request on a connection; answer a later
+#                    one with part of a status line, then reset.
+#   /rstbody/<file>  answer the first request on a connection; answer a later
+#                    ranged GET with its head and half its body, then reset.
+#   /rstall/<file>   answer HEAD; reset every GET once it is read, on every
+#                    connection, so the retry on a new connection is reset too.
+#   /rstfin/<file>   answer HEAD; reset a GET that is a later request on its
+#                    connection, and close a GET that is the first request on
+#                    its connection with a FIN and no answer. The retry after
+#                    the reset meets a clean EOF.
+#
+# --reset-all resets every request, of any method and on every connection, once
+# its head is read and before any answer: a read, a LIST, a write and a REST
+# catalog request all fail on a fresh connection with ECONNRESET.
+#
 # Every HEAD and GET of an object sends ETag: "<md5 of the current bytes>", and a
 # GET whose If-Match names any other ETag is answered 412, as S3 does (#1805).
 #
@@ -91,6 +116,11 @@
 #   __part_delay__        a number of seconds: every part PUT is stored at once
 #                         and answered only after that long, so a suite can end
 #                         the client while its uploads are in progress.
+#   __listing_close__     when it exists, every ListObjectsV2 answer is
+#                         close-delimited: Connection: close, no Content-Length,
+#                         no chunking (#2198 review).
+#   __listing_reset__     with __listing_close__, that answer is cut after its
+#                         first </Contents> and the connection reset.
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
@@ -195,8 +225,10 @@ import hmac
 import io
 import os
 import re
+import select
 import socket
 import ssl
+import struct
 import sys
 import threading
 import time
@@ -277,7 +309,39 @@ class Handler(BaseHTTPRequestHandler):
         if real is not None:
             self.wfile = real
             self._real_wfile = None
-        return super().parse_request()
+        if not super().parse_request():
+            return False
+        if self.server.reset_all:
+            self._log_line()
+            self._after = "rst"
+            return False
+        return True
+
+    def handle_one_request(self):
+        # What to do with the connection once this request is handled (#2198):
+        # None, "close", "rst" or "rstnext"; a do_* method sets it.
+        self._after = None
+        super().handle_one_request()
+        self._served = getattr(self, "_served", 0) + 1
+        if self._after == "rstnext":
+            select.select([self.connection], [], [], 30)
+        if self._after in ("rst", "rstnext"):
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                       struct.pack("ii", 1, 0))
+        if self._after is not None:
+            # Close the files too: the socket closes only when the last
+            # file made from it does, and finish() would half-close first.
+            for f in (self.wfile, self.rfile):
+                try:
+                    f.close()
+                except (OSError, ValueError):
+                    pass
+            self.connection.close()
+            self.close_connection = True
+
+    def _reset_mode_later(self, mode):
+        """True when a reset mode's request is a later one on its connection."""
+        return mode in ("rsthead", "rstbody") and getattr(self, "_served", 0) > 0
 
     def handle_expect_100(self):
         # Expect: 100-continue (#1902). The stdlib answers 100 at once, before
@@ -285,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
         # the headers and refuses from them alone, so 100 is sent only when
         # the body is about to be read (_read_body), and a refusal before
         # that is the answer the client sees instead of 100.
+        if self.server.reset_all:
+            return True                  # parse_request resets it, with no 100
         root = self.server.rootdir
         if os.path.exists(os.path.join(root, "__expect_log__")):
             with open(os.path.join(root, "__expect_log__"), "a") as f:
@@ -368,7 +434,9 @@ class Handler(BaseHTTPRequestHandler):
         for prefix in ("/norange/", "/stall/", "/short/", "/trunc/", "/dropka/", "/hangup/",
                        "/swap/", "/weak/", "/swap79/", "/etag79/", "/longetag/", "/fickle/",
                        "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
-                       "/hswap/", "/vhswap/", "/whswap/"):
+                       "/hswap/", "/vhswap/", "/whswap/",
+                       "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/",
+                       "/rstfin/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -526,6 +594,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode == "dropka":
             self.close_connection = True
+        if mode == "closeka":
+            self._after = "close"
+        if mode == "rstka":
+            self._after = "rstnext"
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
@@ -549,6 +621,14 @@ class Handler(BaseHTTPRequestHandler):
         # Status hook: if <rootdir>/__listing_status__ exists, its content is an
         # HTTP status every listing is answered with, an empty body, so a harness
         # can prove a failed LIST is refused rather than read as an empty prefix.
+        #
+        # Close-delimited hooks (#2198 review): with <rootdir>/__listing_close__,
+        # every listing is answered with Connection: close and neither a
+        # Content-Length nor chunking, so its body ends at connection close (RFC
+        # 9112 section 6.3, rule 8). With <rootdir>/__listing_reset__ as well,
+        # the body is sent only up to the end of its first </Contents>, and the
+        # connection is then reset: a listing cut short must be refused, not
+        # read as a complete one with the later keys missing.
         status = os.path.join(self.server.rootdir, "__listing_status__")
         if os.path.exists(status):
             with open(status) as f:
@@ -605,6 +685,20 @@ class Handler(BaseHTTPRequestHandler):
                          % esc(k))
         parts.append("</ListBucketResult>")
         body = "".join(parts).encode()
+        if os.path.exists(os.path.join(self.server.rootdir, "__listing_close__")):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if os.path.exists(os.path.join(self.server.rootdir, "__listing_reset__")):
+                cut = body.find(b"</Contents>")
+                self.wfile.write(body[:cut + len(b"</Contents>")] if cut >= 0 else body[:len(body) // 2])
+                self.wfile.flush()
+                time.sleep(0.2)                  # margin; the bytes go out before the RST
+                self._after = "rst"
+                return
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.send_header("Content-Length", str(len(body)))
@@ -691,6 +785,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode == "dropka":
             self.close_connection = True
+        if mode == "closeka":
+            self._after = "close"
+        if mode == "rstka":
+            self._after = "rstnext"
+        if mode == "rstall":
+            self._after = "rst"
+            return
+        if mode == "rstfin":
+            self._after = "rst" if getattr(self, "_served", 0) > 0 else "close"
+            return
+        if mode == "rsthead" and self._reset_mode_later(mode):
+            self.wfile.write(b"HTTP/1.1 206 Parti")
+            self.wfile.flush()
+            time.sleep(0.2)                      # the client reads it first
+            self._after = "rst"
+            return
         etag = self._etag(local, mode)
         # /vswap/: a GET that names a version reads that version's bytes.
         data, vid = None, None
@@ -771,6 +881,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body[: n // 2])
             self.wfile.flush()
             self.close_connection = True
+            return
+        if mode == "rstbody" and self._reset_mode_later(mode):
+            self.wfile.write(body[: n // 2])
+            self.wfile.flush()
+            time.sleep(0.2)                      # the client reads it first
+            self._after = "rst"
             return
         if mode == "stall":
             self.wfile.write(body[: n // 2])
@@ -1017,6 +1133,8 @@ def main():
                          "bucket (S3 virtual-host addressing, #621)")
     ap.add_argument("--list-page-size", type=int, default=1000,
                     help="ListObjectsV2 keys per page; small values force paging")
+    ap.add_argument("--reset-all", action="store_true",
+                    help="reset every request once its head is read")
     ap.add_argument("--seed-upload", action="append", default=[],
                     help="open a multipart upload at bucket/key before serving")
     args = ap.parse_args()
@@ -1035,6 +1153,7 @@ def main():
     srv.tamper_bucket = args.tamper_bucket
     srv.vhost_base = args.virtual_host_base
     srv.list_page_size = args.list_page_size
+    srv.reset_all = args.reset_all
     srv.uploads = {}
     srv.uploads_lock = threading.Lock()
     srv.swap_gets = {}
