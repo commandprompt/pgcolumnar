@@ -605,6 +605,34 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
+  text-format file holds a backslash before a raw newline, or a `\.`
+  end-of-data line (#2084). The splitter cut the file at any newline byte. In
+  COPY text format a backslash followed by a raw newline is data inside the
+  field, so a cut there split one value into two rows: 2000 input rows stored
+  2003 with no error. A partitioned target refused the same file with
+  `invalid input syntax for type integer`. A worker whose range started after
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1921 rows instead
+  of 1000. The splitters now cut only at a newline with an even run of
+  backslashes before it. The partitioned splitter ends the load at a `\.`
+  line. A loader whose COPY stops at a `\.` line reports it, and the
+  coordinator rolls back every range after it. `file_split_offsets` uses the
+  same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 54
+  checks, including files whose values end in a backslash (an even run before
+  the newline) and a file whose rows after `\.` are invalid. They also cover
+  runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
+  and 4 lines with the key after them, a file that ends inside a continued
+  record, a `\.\r\n` marker, and which failing row the error names. And they
+  cover an escape of a byte that is not a newline (`\t`), a line made only of
+  backslashes, and a `\.` line that falls exactly on a range start. And
+  they cover a `\.` file loaded twice with dedup on, which must leave no
+  prepared transaction, and a `\.` line inside a continued record, where
+  `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
+  (refused with 22P04). And they cover a malformed marker in a partitioned
+  load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
+  newline), which must be refused with 22P04 as heap `COPY` refuses it, and
+  a `\.` line in the first range, which must end the load there.
 - The Iceberg foreign data wrapper no longer drops matching rows when an
   Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
   a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
