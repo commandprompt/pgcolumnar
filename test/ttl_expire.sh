@@ -302,11 +302,15 @@ check "set_options accepts an int retention column, so the refusal is expire's" 
 check "expire refuses a retention column that is not a time type (42804)" \
 	"$(ttl_state "SELECT pgcolumnar.expire('ttl_int');")|$(q 'SELECT count(*) FROM ttl_int')" "42804|3000"
 
-# A dropped retention column: the declaration outlives it, and expire refuses
-# rather than reading some other column.
+# A dropped retention column. Since #2070 the drop clears the declaration (see
+# ttl_dr below), but a table whose column was dropped on an older build still
+# carries the stale name. That declaration is written back by hand here, and
+# expire must refuse it rather than read some other column.
 psql_run "SELECT pgcolumnar.set_options('ttl_gone', ttl_column => 'ts', ttl_interval => '1 day');
-          ALTER TABLE ttl_gone DROP COLUMN ts;"
-check "premise: the declaration still names the dropped column" \
+          ALTER TABLE ttl_gone DROP COLUMN ts;
+          UPDATE pgcolumnar.options SET ttl_column = 'ts', ttl_interval = '1 day'
+           WHERE regclass = 'ttl_gone'::regclass;"
+check "premise: the declaration written back by hand names the dropped column, as an older build left it" \
 	"$(q "SELECT ttl_column FROM pgcolumnar.options WHERE regclass = 'ttl_gone'::regclass;")" "ts"
 check "expire refuses a retention column that no longer exists (42703)" \
 	"$(ttl_state "SELECT pgcolumnar.expire('ttl_gone');")|$(q 'SELECT count(*) FROM ttl_gone')" "42703|3000"
@@ -768,6 +772,68 @@ check_num "on a table that declares only retention, a column that takes the old 
 	"$(q "SELECT pgcolumnar.expire('ttl_rnp');")" "0"
 check_num "on a table that declares only retention, NO row inside the retention is dropped after a rename (#2070)" \
 	"$(q "SELECT count(*) FROM ttl_rnp;")" "3000"
+
+# DROP COLUMN of the retention column clears the declaration (#2070). A drop
+# frees the name, and a stale ttl_column made expire fail with 42703 until
+# another time column took the name; from then on expire cut on that column.
+# imported holds year-old values and takes the dropped name, so cutting on it
+# would retire every group. t (a prefix of ts) and ts_old (starts with ts) are
+# near misses: dropping them must leave the declaration alone.
+psql_run "CREATE TABLE ttl_dr (id int, ts timestamptz, imported timestamptz, t timestamptz, ts_old timestamptz) USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_dr', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_dr SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year'
+	  FROM generate_series(1, 3000) g;"
+ttl_decl() { q "SELECT coalesce(ttl_column::text, 'NULL') || '|' || coalesce(ttl_interval::text, 'NULL') FROM pgcolumnar.options WHERE regclass = '$1'::regclass;"; }
+# SQLSTATE and message of a refusal, or nothing when the statement succeeds
+ttl_refusal() {
+	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -Atq -v VERBOSITY=verbose -c "$1" 2>&1 \
+		| sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)/\1 \2/p' | head -1
+}
+check_num "premise: the drop fixture has several row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_dr');")" "3"
+check_num "premise: expire retires nothing on the drop fixture while every row is inside the retention" \
+	"$(q "SELECT pgcolumnar.expire('ttl_dr');")" "0"
+psql_run "ALTER TABLE ttl_dr DROP COLUMN t;"
+check "dropping a column whose name is a prefix of the retention column leaves the declaration alone (#2070)" \
+	"$(ttl_decl ttl_dr)" "ts|7 days"
+psql_run "ALTER TABLE ttl_dr DROP COLUMN ts_old;"
+check "dropping a column whose name starts with the retention column's name leaves the declaration alone (#2070)" \
+	"$(ttl_decl ttl_dr)" "ts|7 days"
+psql_run "ALTER TABLE ttl_dr DROP COLUMN ts;"
+check "DROP COLUMN of the retention column clears ttl_column and ttl_interval (#2070)" \
+	"$(ttl_decl ttl_dr)" "NULL|NULL"
+check "after the retention column is dropped, expire refuses: no retention is declared (55000)" \
+	"$(ttl_refusal "SELECT pgcolumnar.expire('ttl_dr');")|$(q 'SELECT count(*) FROM ttl_dr')" \
+	"55000 table \"ttl_dr\" has no declared retention|3000"
+psql_run "ALTER TABLE ttl_dr RENAME COLUMN imported TO ts;"
+check "a column that takes a dropped retention column's name is not used for retention (#2070)" \
+	"$(ttl_refusal "SELECT pgcolumnar.expire('ttl_dr');")|$(q 'SELECT count(*) FROM ttl_dr')" \
+	"55000 table \"ttl_dr\" has no declared retention|3000"
+
+# A TYPED table's retention column follows ALTER TYPE ... RENAME ATTRIBUTE
+# (#2177). PostgreSQL refuses ALTER TABLE ... RENAME COLUMN on a typed table, so
+# renaming through the type is the only way. As on ttl_rnp, imported_at holds
+# old values and then takes the old name.
+psql_run "CREATE TYPE ttl_te_t AS (id int, ts timestamptz, imported_at timestamptz);
+	CREATE TABLE ttl_te OF ttl_te_t USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_te', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_te SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;"
+check_num "premise: the typed-table fixture has several row groups" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = pgcolumnar.get_storage_id('ttl_te');")" "3"
+check "premise: ALTER TABLE cannot rename a typed table's column (42809)" \
+	"$(ttl_refusal "ALTER TABLE ttl_te RENAME COLUMN ts TO event_time;")" \
+	"42809 cannot rename column of typed table"
+psql_run "ALTER TYPE ttl_te_t RENAME ATTRIBUTE ts TO event_time CASCADE;"
+check "on a typed table, the retention column follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
+	"$(ttl_decl ttl_te)" "event_time|7 days"
+check_num "on a typed table, expire still runs after the retention column is renamed (#2177)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_te');")" "0"
+psql_run "ALTER TYPE ttl_te_t RENAME ATTRIBUTE imported_at TO ts CASCADE;"
+check_num "on a typed table, a column that takes the old name is not used for retention (#2177)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_te');")" "0"
+check_num "on a typed table, NO row inside the retention is dropped after a rename (#2177)" \
+	"$(q "SELECT count(*) FROM ttl_te;")" "3000"
 
 # A rename on a table that names no retention column (#2070). ttl_rniv declares
 # only an interval, so ttl_column is NULL and expire refuses it. The rename must

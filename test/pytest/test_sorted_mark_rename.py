@@ -9,8 +9,11 @@ the gate skips work it must do, and ORDER BY returns rows out of order. Asserted
 mark follows a rename, on a plain table, a partition (renamed through its parent), and
 an inheritance child; an unrelated rename leaves the storage row alone; the planner
 sorts again after a swap; the declared sort_by key follows too; and recluster's mark.
-DROP COLUMN of a sort-key column clears the mark (#2069), on a plain table, a partition
-(dropped through its parent) and a Z-order run; an unrelated drop leaves it.
+DROP COLUMN of a sort-key column clears the mark and its run extent (#2069, #2174), on a
+plain table, a partition (dropped through its parent) and a Z-order run; an unrelated drop
+leaves it. A rename onto a name that a mark left by an older build still holds clears that
+mark (#2175). ALTER TYPE ... RENAME ATTRIBUTE moves a typed table's mark and declared key,
+and its partition's mark (#2177).
 
 HOW A CALL IS READ. A vacuum_sorted call is read by the table's storage id: "noop",
 "rewrote", "call failed: ..." when the call errored, or "no reading" when a storage id
@@ -69,6 +72,27 @@ class _Db:
     def mark(self, t):
         return self.q("SELECT COALESCE(s.sorted_by::text,'-')||'/'||COALESCE(s.sorted_kind,'-') "
                       f"FROM pgcolumnar.storage s WHERE s.storage_id = pgcolumnar.get_storage_id('{t}')")
+
+    def extent(self, t):
+        """-> the run extent as sorted_from|sorted_through, '-' for NULL (#2174)."""
+        return self.q("SELECT COALESCE(s.sorted_from::text,'-')||'|'||COALESCE(s.sorted_through::text,'-') "
+                      f"FROM pgcolumnar.storage s WHERE s.storage_id = pgcolumnar.get_storage_id('{t}')")
+
+    def status(self, t):
+        """-> sort_status as sorted_groups/total_groups/sorted_rows (#2174)."""
+        return self.q(f"SELECT sorted_groups||'/'||total_groups||'/'||sorted_rows FROM pgcolumnar.sort_status('{t}')")
+
+    def stale_mark(self, t, dropped, key, *cols):
+        """Sort t on cols, drop column `dropped`, and write back the mark key/lexicographic
+        with the run's extent, as a build older than #2135 left it (#2175)."""
+        self.vsort(t, *cols)
+        e = self.q("SELECT sorted_from||','||sorted_through FROM pgcolumnar.storage "
+                   f"WHERE storage_id = pgcolumnar.get_storage_id('{t}')")
+        self.run(f"ALTER TABLE {t} DROP COLUMN {dropped}")
+        f, _, th = e.partition(",")
+        self.run(f"UPDATE pgcolumnar.storage SET sorted_by = '{{{','.join(key)}}}', sorted_kind = 'lexicographic', "
+                 f"sorted_from = {f or 'NULL'}, sorted_through = {th or 'NULL'} "
+                 f"WHERE storage_id = pgcolumnar.get_storage_id('{t}')")
 
     def storid(self, t):
         return self.q(f"SELECT pgcolumnar.get_storage_id('{t}')")
@@ -240,8 +264,11 @@ def sm(pgc_cluster):
         r["vd_t rows"] = d.rows("vd_t")
         d.vsort("vd_t", "a")
         r["vd mark before"] = d.mark("vd_t")
+        r["vd status before"] = d.status("vd_t")
         d.run("ALTER TABLE vd_t DROP COLUMN a")
         r["vd mark after"] = d.mark("vd_t")
+        r["vd extent after"] = d.extent("vd_t")
+        r["vd status after"] = d.status("vd_t")
         d.run("ALTER TABLE vd_t RENAME COLUMN b TO a")
         r["vd new a"] = d.order("vd_t", "a")
         r["vd sorts"] = d.sorts("SELECT a FROM vd_t ORDER BY a LIMIT 5")
@@ -286,6 +313,59 @@ def sm(pgc_cluster):
         d.run("ALTER TABLE vdi DROP COLUMN k")
         r["vdi mark after"] = d.mark("vdi1")
 
+        # a mark an older build left after a drop (#2175), written back by hand
+        d.run("CREATE TABLE vl_t (a int, b int) USING pgcolumnar")
+        d.run("INSERT INTO vl_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g")
+        d.stale_mark("vl_t", "a", ["a"], "a")
+        r["vl premise"] = f"{d.mark('vl_t')}|{d.status('vl_t')}"
+        d.run("ALTER TABLE vl_t RENAME COLUMN b TO a")
+        r["vl new a"] = d.order("vl_t", "a")
+        r["vl mark"], r["vl extent"] = d.mark("vl_t"), d.extent("vl_t")
+        r["vl sorts"] = d.sorts("SELECT a FROM vl_t ORDER BY a LIMIT 5")
+        r["vl answer"] = d.q("SELECT string_agg(a::text, ',') FROM (SELECT a FROM vl_t ORDER BY a LIMIT 5) x")
+
+        # the renamed column is in the stale key too: sorted on (c, a), c dropped, a -> c
+        d.run("CREATE TABLE vl_k (a int, b int, c int) USING pgcolumnar")
+        d.run("INSERT INTO vl_k SELECT g, g, (g*7919)%20000 FROM generate_series(1,20000) g")
+        d.stale_mark("vl_k", "c", ["c", "a"], "c", "a")
+        r["vl_k premise"] = f"{d.mark('vl_k')}|{d.status('vl_k')}"
+        d.run("ALTER TABLE vl_k RENAME COLUMN a TO c")
+        r["vl_k new c"] = d.order("vl_k", "c")
+        r["vl_k mark"] = d.mark("vl_k")
+        r["vl_k answer"] = d.q("SELECT string_agg(c::text, ',') FROM (SELECT c FROM vl_k ORDER BY c LIMIT 5) x")
+
+        # the stale name is the key's second: sorted on (a, b), b dropped, c -> b
+        d.run("CREATE TABLE vl_m (a int, b int, c int) USING pgcolumnar")
+        d.run("INSERT INTO vl_m SELECT (g*7919::bigint)%2000, g, (g*104729::bigint)%20000 FROM generate_series(1,20000) g")
+        d.stale_mark("vl_m", "b", ["a", "b"], "a", "b")
+        r["vl_m premise"] = f"{d.mark('vl_m')}|{d.status('vl_m')}"
+        d.run("ALTER TABLE vl_m RENAME COLUMN c TO b")
+        r["vl_m mark"] = d.mark("vl_m")
+        r["vl_m answer"] = d.q("SELECT string_agg(a||':'||b, ',') FROM (SELECT a, b FROM vl_m ORDER BY a, b LIMIT 5) x")
+
+        # a typed table, renamed through its type (#2177)
+        for sql in ["CREATE TYPE vt_ty AS (a int, b int)", "CREATE TABLE vt OF vt_ty USING pgcolumnar",
+                    "INSERT INTO vt SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g",
+                    "SELECT pgcolumnar.set_options('vt', sort_by => ARRAY['a'])"]:
+            d.run(sql)
+        d.vsort("vt")
+        r["vt mark before"] = d.mark("vt")
+        d.run("ALTER TYPE vt_ty RENAME ATTRIBUTE a TO a_old CASCADE")
+        r["vt mark"] = d.mark("vt")
+        r["vt declared"] = d.q("SELECT sort_by::text FROM pgcolumnar.options WHERE regclass = 'vt'::regclass")
+        d.run("ALTER TYPE vt_ty RENAME ATTRIBUTE b TO a CASCADE")
+        r["vt sorts"] = d.sorts("SELECT a FROM vt ORDER BY a LIMIT 5")
+        r["vt answer"] = d.q("SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt ORDER BY a LIMIT 5) x")
+        for sql in ["CREATE TYPE vtp_ty AS (k int, j int)", "CREATE TABLE vtp OF vtp_ty PARTITION BY RANGE (j)",
+                    "CREATE TABLE vtp1 PARTITION OF vtp FOR VALUES FROM (0) TO (100000) USING pgcolumnar",
+                    f"INSERT INTO vtp {LOAD}"]:
+            d.run(sql)
+        d.vsort("vtp1", "k")
+        oftype = d.q("SELECT reloftype FROM pg_class WHERE relname = 'vtp1'")
+        r["vtp premise"] = f"{oftype}/{d.mark('vtp1')}"
+        d.run("ALTER TYPE vtp_ty RENAME ATTRIBUTE k TO k_old CASCADE")
+        r["vtp mark"] = d.mark("vtp1")
+
         # a heap column drop, here and in a database without the extension: the preloaded
         # drop hook must leave heap tables alone (#2135 review, mutant M3d)
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -298,6 +378,7 @@ def sm(pgc_cluster):
         for key, db, t, n in [("heap empty", d, "vd_he", 0), ("heap full", d, "vd_hf", 1000),
                               ("nocx heap empty", nx, "vd_he", 0), ("nocx heap full", nx, "vd_hf", 1000)]:
             r[key] = _heapdrop(db, t, n)
+        r["typed heap"], r["nocx typed heap"] = _typedren(d), _typedren(nx)
 
         # recluster's mark
         d.mkz("rr_ctl")
@@ -329,6 +410,18 @@ def _heapdrop(d, t, n):
     live = d.q(f"SELECT count(*) FROM pg_attribute WHERE attrelid = '{t}'::regclass "
                "AND attnum > 0 AND NOT attisdropped")
     return f"{'rc=0' if not err else 'rc=1 ' + err}/live={live}"
+
+
+def _typedren(d):
+    """-> "rc=0/a2,b" when ALTER TYPE ... RENAME ATTRIBUTE worked on a heap typed table
+    (#2177), else the rename's error and the live column names."""
+    for sql in ["DROP TABLE IF EXISTS vt_h", "DROP TYPE IF EXISTS vt_hty", "CREATE TYPE vt_hty AS (a int, b int)",
+                "CREATE TABLE vt_h OF vt_hty", "INSERT INTO vt_h SELECT g, g FROM generate_series(1,1000) g"]:
+        d.run(sql)
+    err = d.run("ALTER TYPE vt_hty RENAME ATTRIBUTE a TO a2 CASCADE")
+    cols = d.q("SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute "
+               "WHERE attrelid = 'vt_h'::regclass AND attnum > 0 AND NOT attisdropped")
+    return f"{'rc=0' if not err else 'rc=1 ' + err}/{cols}"
 
 
 def _positive(v, yes, no):
@@ -522,8 +615,21 @@ def test_before_the_drop_the_mark_records_a(sm, expect):
     expect.text(sm["vd mark before"], "{a}/lexicographic", "premise: before the drop, the mark records key {a}")
 
 
+def test_before_the_drop_sort_status_reports_every_group_sorted(sm, expect):
+    expect.text(sm["vd status before"], "1/1/20000", "premise: before the drop, sort_status reports every group sorted")
+
+
 def test_dropping_the_sort_key_column_clears_the_mark(sm, expect):
     expect.text(sm["vd mark after"], "-/-", "DROP COLUMN of the sort-key column clears the mark")
+
+
+def test_dropping_the_sort_key_column_clears_the_run_extent(sm, expect):
+    expect.text(sm["vd extent after"], "-|-", "the drop clears the run extent too (#2174)")
+
+
+def test_after_the_key_is_dropped_sort_status_reports_no_sorted_group(sm, expect):
+    expect.text(sm["vd status after"], "0/1/0",
+                "sort_status reports no sorted group once the key column is dropped (#2174)")
 
 
 def test_the_column_that_took_the_name_is_not_ordered(sm, expect):
@@ -580,6 +686,106 @@ def test_a_drop_on_the_parent_clears_the_inheritance_childs_mark(sm, expect):
                 "the inheritance CHILD's mark is cleared by a drop issued on the parent")
 
 
+# ---- a mark an older build left after a drop (#2175) -----------------------------------
+# A build older than #2135 left the mark naming the dropped column, and nothing sweeps it
+# on upgrade. The rename that gives that name to another column must clear it.
+
+def test_vl_t_carries_an_older_builds_mark(sm, expect):
+    expect.text(sm["vl premise"], "{a}/lexicographic|1/1/20000",
+                "premise: vl_t carries the mark an older build left after the drop")
+
+
+def test_vl_t_new_a_is_not_ordered(sm, expect):
+    expect.text(sm["vl new a"], "unordered", "premise: the column that took the name a in vl_t is NOT ordered")
+
+
+def test_a_rename_onto_a_dropped_key_name_clears_an_older_builds_mark(sm, expect):
+    expect.text(sm["vl mark"], "-/-",
+                "a rename onto a dropped key column's name clears a mark an older build left (#2175)")
+
+
+def test_and_clears_that_marks_run_extent(sm, expect):
+    expect.text(sm["vl extent"], "-|-", "and clears that mark's run extent too (#2175)")
+
+
+def test_older_build_order_by_plans_a_sort(sm, expect):
+    expect.text(sm["vl sorts"], "yes", "older build: ORDER BY on the column that took the name plans a Sort (#2175)")
+
+
+def test_older_build_order_by_limit_is_right(sm, expect):
+    expect.text(sm["vl answer"], "0,1,2,3,4",
+                "THE WRONG-ANSWER ARM, older build: ORDER BY ... LIMIT returns the five smallest values (#2175)")
+
+
+def test_vl_k_carries_an_older_builds_two_column_mark(sm, expect):
+    expect.text(sm["vl_k premise"], "{c,a}/lexicographic|1/1/20000",
+                "premise: vl_k carries the mark {c,a} an older build left after dropping c")
+
+
+def test_vl_k_new_c_is_not_ordered(sm, expect):
+    expect.text(sm["vl_k new c"], "unordered", "premise: the column renamed to c in vl_k is NOT ordered")
+
+
+def test_a_rename_of_a_key_column_onto_a_stale_key_name_clears_the_mark(sm, expect):
+    expect.text(sm["vl_k mark"], "-/-", "a rename of a key column onto a stale key name clears the mark (#2175)")
+
+
+def test_stale_key_holding_both_names_order_by_limit_is_right(sm, expect):
+    expect.text(sm["vl_k answer"], "1,2,3,4,5",
+                "THE WRONG-ANSWER ARM, stale key holding both names: ORDER BY ... LIMIT returns the five"
+                " smallest values (#2175)")
+
+
+def test_vl_m_carries_an_older_builds_mark_with_a_stale_second_column(sm, expect):
+    expect.text(sm["vl_m premise"], "{a,b}/lexicographic|1/1/20000",
+                "premise: vl_m carries the mark {a,b} an older build left after dropping b")
+
+
+def test_a_rename_onto_a_stale_second_key_name_clears_the_mark(sm, expect):
+    expect.text(sm["vl_m mark"], "-/-", "a rename onto a stale name that is not the key's first clears the mark (#2175)")
+
+
+def test_stale_second_key_column_order_by_limit_is_right(sm, expect):
+    expect.text(sm["vl_m answer"], "0:0,0:2000,0:4000,0:6000,0:8000",
+                "THE WRONG-ANSWER ARM, stale second key column: ORDER BY a, b ... LIMIT returns the five"
+                " smallest pairs (#2175)")
+
+
+# ---- a typed table's column is renamed through its type (#2177) ------------------------
+
+def test_the_typed_tables_mark_records_a(sm, expect):
+    expect.text(sm["vt mark before"], "{a}/lexicographic", "premise: the typed table's mark records key {a}")
+
+
+def test_a_typed_tables_mark_follows_rename_attribute(sm, expect):
+    expect.text(sm["vt mark"], "{a_old}/lexicographic",
+                "a typed table's mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)")
+
+
+def test_a_typed_tables_declared_sort_by_follows_rename_attribute(sm, expect):
+    expect.text(sm["vt declared"], "{a_old}", "and so does its declared sort_by (#2177)")
+
+
+def test_typed_table_order_by_plans_a_sort(sm, expect):
+    expect.text(sm["vt sorts"], "yes",
+                "typed table: ORDER BY on the column that took the old name plans a Sort (#2177)")
+
+
+def test_typed_table_order_by_limit_is_right(sm, expect):
+    expect.text(sm["vt answer"], "0,1,2,3,4",
+                "THE WRONG-ANSWER ARM, typed table: ORDER BY ... LIMIT returns the five smallest values (#2177)")
+
+
+def test_the_typed_tables_partition_is_untyped_and_marked(sm, expect):
+    expect.text(sm["vtp premise"], "0/{k}/lexicographic",
+                "premise: the typed table's partition is not typed, and its mark records key {k}")
+
+
+def test_a_typed_tables_partitions_mark_follows_rename_attribute(sm, expect):
+    expect.text(sm["vtp mark"], "{k_old}/lexicographic",
+                "the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)")
+
+
 # ---- a heap column drop, with and without the extension (#2135 review, M3d) ------------
 
 def test_the_extension_is_absent_in_the_second_database(sm, expect):
@@ -606,6 +812,15 @@ def test_an_empty_heap_tables_column_drops_without_the_extension(sm, expect):
 def test_a_populated_heap_tables_column_drops_without_the_extension(sm, expect):
     expect.text(sm["nocx heap full"], "rc=0/live=1",
                 "a column of a POPULATED heap table drops, in a database without the extension")
+
+
+def test_a_heap_typed_tables_attribute_renames(sm, expect):
+    expect.text(sm["typed heap"], "rc=0/a2,b", "a HEAP typed table's attribute renames, in this database (#2177)")
+
+
+def test_a_heap_typed_tables_attribute_renames_without_the_extension(sm, expect):
+    expect.text(sm["nocx typed heap"], "rc=0/a2,b",
+                "a HEAP typed table's attribute renames, in a database without the extension (#2177)")
 
 
 # ---- recluster ---------------------------------------------------------------------------
