@@ -1856,4 +1856,71 @@ dedup_retry_probe() {	# -> "first error | retry | rows | prepared"
 }
 check "a dedup load cancelled after its rows commit still records the fingerprint: a retry of the same file returns 0 with the skip NOTICE and the table holds the file once (#2187)" \
 	"$(dedup_retry_probe)" "first 57014 | retry 0 with the skip NOTICE | 5000 rows | 0 prepared"
+# The third review of #2219. The record has no deadline: a cancelled caller stops
+# waiting once the rows commit, and the coordinator records when the lock frees.
+# B: the caller itself holds SHARE on pgcolumnar.load_fingerprint, which the
+#    record's ROW EXCLUSIVE waits for. The caller must return near its 3 s
+#    timeout, and once its ROLLBACK frees the lock the fingerprint is recorded.
+#    A watchdog cancels the caller again at 25 s, so a caller that kept waiting
+#    reads as a late return rather than hanging the suite.
+psql_run "DROP TABLE IF EXISTS t_rb, t_ra; CREATE TABLE t_rb (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_ra (id int, txt text) USING pgcolumnar;" >/dev/null
+fp_rows() {	# TABLE -> fingerprint rows recorded for it
+	q "SELECT count(*) FROM pgcolumnar.load_fingerprint WHERE relation_oid = '$1'::regclass"
+}
+no_coordinator() {
+	for _ in $(seq 300); do
+		[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")" = 0 ] && break
+		sleep 0.1
+	done
+}
+caller_lock_record_probe() {	# -> "error | time | rows | fingerprints | prepared"
+	local t0 t1 ms out wd
+	( sleep 25; q "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE application_name = 'pcopy_rb_probe'" >/dev/null ) &
+	wd=$!
+	t0=$(date +%s%N)
+	out="$(timeout -s KILL 60 env PGAPPNAME=pcopy_rb_probe PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -X -At -v VERBOSITY=verbose -c "BEGIN" \
+		-c "LOCK pgcolumnar.load_fingerprint IN SHARE MODE" -c "SET statement_timeout = '3s'" \
+		-c "SELECT pgcolumnar.parallel_copy('t_rb'::regclass, '$F', 2, dedup => true)" -c "ROLLBACK" 2>&1)"
+	t1=$(date +%s%N)
+	kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+	no_coordinator
+	ms=$(( (t1 - t0) / 1000000 ))
+	printf '%s | %s | %s rows | %s fingerprint | %s prepared\n' \
+		"$(sed -n '/^ERROR:/{s/^ERROR: *\([0-9A-Z]\{5\}\): \(.*\)$/\1 \2/p;q;}' <<<"$out")" \
+		"$([ "$ms" -lt 8000 ] && echo 'under 8 s' || echo "took $ms ms")" \
+		"$(q "SELECT count(*) FROM t_rb")" "$(fp_rows t_rb)" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "a dedup load whose caller holds SHARE on pgcolumnar.load_fingerprint returns its statement_timeout within 8 s and records the fingerprint once the caller's ROLLBACK frees the lock (#2187)" \
+	"$(caller_lock_record_probe)" \
+	"57014 canceling statement due to statement timeout | under 8 s | 5000 rows | 1 fingerprint | 0 prepared"
+# A: another session holds EXCLUSIVE on it for 16 s, longer than the caller's
+#    2 s timeout plus any grace a record might allow itself. The caller returns
+#    near 2 s, the fingerprint is recorded when the session lets go, and a dedup
+#    retry is refused.
+other_lock_record_probe() {	# -> "error | time | rows | fingerprints | retry"
+	local hp t0 t1 ms first retry
+	pcopy_psql -c "BEGIN" -c "LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE" -c "SELECT pg_sleep(16)" -c "COMMIT" >/dev/null 2>&1 &
+	hp=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 'pgcolumnar.load_fingerprint'::regclass AND mode = 'ExclusiveLock' AND granted")" = 1 ] && break
+		sleep 0.05
+	done
+	t0=$(date +%s%N)
+	first="$(PGOPTIONS='-c statement_timeout=2s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ra'::regclass, '$F', 2, dedup => true)")"
+	t1=$(date +%s%N)
+	wait "$hp"
+	no_coordinator
+	ms=$(( (t1 - t0) / 1000000 ))
+	retry="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=30s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -X -At -c "SELECT pgcolumnar.parallel_copy('t_ra'::regclass, '$F', 2, dedup => true)" 2>&1)"
+	printf '%s | %s | %s fingerprint | retry %s | %s rows\n' "${first%% | *}" \
+		"$([ "$ms" -lt 6000 ] && echo 'under 6 s' || echo "took $ms ms")" "$(fp_rows t_ra)" \
+		"$(grep -q 'skipped a load already applied to "t_ra"' <<<"$retry" && echo 'skipped' || echo "not skipped ($(tail -1 <<<"$retry"))")" \
+		"$(q "SELECT count(*) FROM t_ra")"
+}
+check "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s, records the fingerprint when the lock frees, and its retry is skipped (#2187)" \
+	"$(other_lock_record_probe)" \
+	"57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows"
 pgc_summary

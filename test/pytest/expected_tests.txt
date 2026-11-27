@@ -2502,4 +2502,8 @@ guard_tests 897
 # cluster_tests 6054 -> 6055 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
 # after its rows commit still records the fingerprint, so a retry of the same file is skipped, by collection
 # over the cluster files.
-cluster_tests 6055
+# cluster_tests 6055 -> 6057 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
+# whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
+# caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
+# over the cluster files.
+cluster_tests 6057

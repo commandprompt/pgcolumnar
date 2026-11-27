@@ -58,7 +58,6 @@
 #include "catalog/pg_authid_d.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
-#include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -82,7 +81,6 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lock.h"
-#include "storage/lmgr.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
 #include "utils/syscache.h"
@@ -578,6 +576,14 @@ typedef struct PcopyHeader
 
 	/* names this load's open locks (#2187), see "Opening the target together" */
 	uint32		open_lock_key;
+
+	/*
+	 * Set once every COMMIT PREPARED is done (#2219, third review). No prepared
+	 * transaction is left from then on, so a cancelled caller stops waiting
+	 * for the coordinator at that point; the coordinator goes on to record the
+	 * dedup fingerprint with no deadline, as before #2187.
+	 */
+	pg_atomic_uint32 committed;
 
 	/*
 	 * Opt-in load dedup (#403 item 7). dedup is what the caller asked for;
@@ -1530,8 +1536,9 @@ pcopy_rollback_prepared_quietly(const char *gid)
  * waiting until a second cancel. The cancel turns such a wait into an ERROR,
  * whose PG_CATCH below rolls the prepared loaders back. The cleanup paths, and
  * everything from the first COMMIT PREPARED to the fingerprint record, hold
- * interrupts, so the cancel cannot cut them short; the record bounds its own
- * lock wait (pcopy_record_fingerprint).
+ * interrupts, so the cancel cannot cut them short. The caller stops waiting
+ * once the commit is done (committed in the header), so a lock wait in the
+ * record does not hold it up.
  */
 static volatile sig_atomic_t pcopy_coord_got_sigterm = false;
 
@@ -1545,66 +1552,6 @@ pcopy_coord_sigterm(SIGNAL_ARGS)
 	QueryCancelPending = true;
 	SetLatch(MyLatch);
 	errno = save_errno;
-}
-
-/*
- * pcopy_record_fingerprint
- *		Record the load's fingerprint after its rows committed, with interrupts
- *		held by the caller (#2219 review).
- *
- *		The record takes ROW EXCLUSIVE on pgcolumnar.load_fingerprint. With
- *		interrupts held a lock wait could not end on a cancel, and the lock may
- *		belong to the caller of parallel_copy itself, which waits for this
- *		process. So the lock is taken conditionally, retried every 100 ms.
- *		Until the caller stops waiting (SIGTERM) it is retried without limit,
- *		as main's record waited. After that it is retried for
- *		PCOPY_RECORD_GRACE_MS more and then given up with a WARNING: the rows
- *		stay committed with no fingerprint, the direction a crash at this
- *		point also leaves.
- */
-#define PCOPY_RECORD_GRACE_MS	10000
-
-static void
-pcopy_record_fingerprint(PcopyHeader *hdr, int64 total)
-{
-	Oid			fprel;
-	TimestampTz giveup = 0;
-
-	for (;;)
-	{
-		/* the catalog lookup needs a transaction, so it is made in each one */
-		StartTransactionCommand();
-		fprel = get_relname_relid("load_fingerprint",
-								  get_namespace_oid("pgcolumnar", false));
-		if (OidIsValid(fprel) && ConditionalLockRelationOid(fprel, RowExclusiveLock))
-		{
-			PushActiveSnapshot(GetTransactionSnapshot());
-			PgColumnarRecordLoadFingerprint(hdr->relid, hdr->fingerprint,
-											PG_SHA256_DIGEST_LENGTH, total);
-			PopActiveSnapshot();
-			CommitTransactionCommand();
-			return;
-		}
-		AbortCurrentTransaction();
-		if (!OidIsValid(fprel))
-			break;
-		if (pcopy_coord_got_sigterm)
-		{
-			TimestampTz now = GetCurrentTimestamp();
-
-			if (giveup == 0)
-				giveup = TimestampTzPlusMilliseconds(now, PCOPY_RECORD_GRACE_MS);
-			else if (now >= giveup)
-				break;
-		}
-		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 100L, PG_WAIT_EXTENSION);
-		ResetLatch(MyLatch);
-	}
-	ereport(WARNING,
-			(errmsg("pgcolumnar.parallel_copy committed " INT64_FORMAT " rows but did not record the load's fingerprint",
-					total),
-			 errdetail("pgcolumnar.load_fingerprint stayed locked after the call was cancelled, so a dedup retry of the same file will load it again.")));
 }
 
 PGDLLEXPORT void
@@ -1879,6 +1826,13 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			 * cancel stops neither the loop halfway nor the record. A record
 			 * cut short by a cancel would let a dedup retry load the file a
 			 * second time, the one thing dedup promises not to do.
+			 *
+			 * The record may then wait on a lock without limit, as it did
+			 * before #2187, and it cannot be cancelled. That cannot hold up a
+			 * cancelled caller: once the loop is done this sets committed, and
+			 * the caller stops waiting there, with no prepared transaction
+			 * left. A lock the caller itself holds is released when its
+			 * transaction ends, and the record follows.
 			 */
 			HOLD_INTERRUPTS();
 			for (i = 0; i < ncommit; i++)
@@ -1887,6 +1841,8 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 				total += slots[i].rows;
 			}
 			hdr->total_rows = total;
+			pg_memory_barrier();
+			pg_atomic_write_u32(&hdr->committed, 1);
 
 			/*
 			 * Recorded AFTER the data commits, never before. A crash between the
@@ -1896,7 +1852,14 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			 * rows that were never stored.
 			 */
 			if (hdr->dedup)
-				pcopy_record_fingerprint(hdr, total);
+			{
+				StartTransactionCommand();
+				PushActiveSnapshot(GetTransactionSnapshot());
+				PgColumnarRecordLoadFingerprint(hdr->relid, hdr->fingerprint,
+												PG_SHA256_DIGEST_LENGTH, total);
+				PopActiveSnapshot();
+				CommitTransactionCommand();
+			}
 			RESUME_INTERRUPTS();
 
 			pg_atomic_write_u32(&hdr->coord_state, PCOPY_COORD_DONE);
@@ -2223,6 +2186,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->skipped_duplicate = false;
 	memset(hdr->fingerprint, 0, sizeof(hdr->fingerprint));
 	pg_atomic_init_u32(&hdr->coord_state, PCOPY_COORD_PENDING);
+	pg_atomic_init_u32(&hdr->committed, 0);
 
 	for (i = 0; i < workers; i++)
 	{
@@ -2264,9 +2228,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	 * next statement saw 1 after a statement_timeout. The wait is bounded by
 	 * the coordinator's cleanup, not by any lock: its SIGTERM raises a query
 	 * cancel, so a lock wait there -- on the target before it starts the
-	 * loaders, on pgcolumnar.load_fingerprint with dedup => true -- ends in an
-	 * ERROR and the same rollback (#2219 review). A second cancel also ends
-	 * the wait.
+	 * loaders, on pgcolumnar.load_fingerprint in the dedup check -- ends in an
+	 * ERROR and the same rollback (#2219 review). Once it has committed, the
+	 * caller stops waiting (see PG_CATCH). A second cancel also ends the wait.
 	 */
 	PG_TRY();
 	{
@@ -2279,10 +2243,28 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/*
+		 * Wait until the coordinator has exited, or until it has committed:
+		 * from then on no prepared transaction is left, and what remains is
+		 * the dedup record, which may wait on a lock this backend holds until
+		 * its transaction ends (#2219, third review). A second cancel also
+		 * ends the wait.
+		 */
 		if (coord_handle != NULL)
 		{
 			TerminateBackgroundWorker(coord_handle);
-			(void) WaitForBackgroundWorkerShutdown(coord_handle);
+			for (;;)
+			{
+				pid_t		cpid;
+
+				if (GetBackgroundWorkerPid(coord_handle, &cpid) == BGWH_STOPPED ||
+					pg_atomic_read_u32(&hdr->committed) != 0)
+					break;
+				(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+								 100L, PG_WAIT_EXTENSION);
+				ResetLatch(MyLatch);
+				CHECK_FOR_INTERRUPTS();
+			}
 		}
 		dsm_detach(seg);
 		PG_RE_THROW();

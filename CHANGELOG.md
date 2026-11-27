@@ -626,7 +626,8 @@ true until the next version shipped.
   waits on a lock the caller holds, such as on `pgcolumnar.load_fingerprint`
   with `dedup => true`; the load then rolls back. A cancel that arrives after
   the rows commit no longer stops the fingerprint record, so a dedup retry is
-  still refused. A trigger that does not fire
+  still refused; a cancelled caller stops waiting once the rows commit, and the
+  record then waits for its lock with no deadline, as before. A trigger that does not fire
   in the workers' session, such as `ENABLE REPLICA`, is not refused. New internal setting
   `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and

@@ -516,6 +516,78 @@ class _Db:
                 f"{'with' if skip else 'without'} the skip NOTICE | "
                 f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
 
+    def _fp_rows(self, table):
+        return self.value(f"SELECT count(*) FROM pgcolumnar.load_fingerprint WHERE relation_oid = '{table}'::regclass")
+
+    def caller_lock_record_probe(self, path, table):
+        """-> "error | time | rows | fingerprints | prepared": the caller holds SHARE on
+        pgcolumnar.load_fingerprint during a dedup load under a 3 s timeout, then rolls
+        back. A watchdog cancels the caller again at 25 s (#2219, third review)."""
+        out = {}
+        try:
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                pid = conn.execute("SELECT pg_backend_pid()").fetchone()[0]
+                dog = threading.Timer(25, lambda: self.value(f"SELECT pg_cancel_backend({pid})"))
+                dog.start()
+                conn.execute("BEGIN")
+                conn.execute("LOCK pgcolumnar.load_fingerprint IN SHARE MODE")
+                conn.execute("SET statement_timeout = '3s'")
+                t0 = time.monotonic()
+                try:
+                    conn.execute(f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)")
+                    out["err"] = "no error"
+                except psycopg.Error as exc:
+                    out["err"] = f"{exc.sqlstate} {exc.diag.message_primary}"
+                took = time.monotonic() - t0
+                dog.cancel()
+                conn.execute("ROLLBACK")
+        except psycopg.Error as exc:
+            return query_error(_message(exc))
+        self._no_coordinator()
+        when = "under 8 s" if took < 8 else f"took {int(took * 1000)} ms"
+        return (f"{out['err']} | {when} | {self.value(f'SELECT count(*) FROM {table}')} rows | "
+                f"{self._fp_rows(table)} fingerprint | {self.value(LEAK)} prepared")
+
+    def other_lock_record_probe(self, path, table):
+        """-> "error | time | fingerprints | retry | rows": another session holds EXCLUSIVE
+        on pgcolumnar.load_fingerprint for 16 s during a dedup load under a 2 s timeout;
+        then the same file is loaded again with dedup (#2219, third review)."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute("LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(16)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        t0 = time.monotonic()
+        first = self.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)", timeout="2s")
+        took = time.monotonic() - t0
+        holder.join()
+        self._no_coordinator()
+        notices = []
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout("30s")) as conn:
+                conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+                again = conn.execute(
+                    f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)").fetchone()[0]
+        except psycopg.Error as exc:
+            again = query_error(_message(exc))
+        skip = any(f'skipped a load already applied to "{table}"' in n for n in notices)
+        when = "under 6 s" if took < 6 else f"took {int(took * 1000)} ms"
+        return (f"{str(first).split(' | ')[0]} | {when} | {self._fp_rows(table)} fingerprint | "
+                f"retry {'skipped' if skip else f'not skipped ({again})'} | "
+                f"{self.value(f'SELECT count(*) FROM {table}')} rows")
+
     def copy_in(self, table, data):
         try:
             with psycopg.connect(self.dsn, autocommit=True) as conn:
@@ -1579,6 +1651,10 @@ def pcopy(pgc_cluster, server_dir):
         r["lost one of three"] = db.lost_one_of_three(f, "t_lost3")
         db.run("CREATE TABLE t_rec (id int, txt text) USING pgcolumnar")
         r["dedup retry"] = db.dedup_retry_probe(f, "t_rec")
+        db.run("CREATE TABLE t_rb (id int, txt text) USING pgcolumnar; "
+               "CREATE TABLE t_ra (id int, txt text) USING pgcolumnar")
+        r["record caller lock"] = db.caller_lock_record_probe(f, "t_rb")
+        r["record other lock"] = db.other_lock_record_probe(f, "t_ra")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -2627,3 +2703,20 @@ def test_parallel_copy_dedup_record_survives_a_cancel_after_commit(pcopy, expect
     expect.text(pcopy["dedup retry"], "first 57014 | retry 0 with the skip NOTICE | 5000 rows | 0 prepared",
                 "a dedup load cancelled after its rows commit still records the fingerprint: a retry of the same file"
                 " returns 0 with the skip NOTICE and the table holds the file once (#2187)")
+
+
+def test_parallel_copy_dedup_record_waits_for_the_callers_own_lock(pcopy, expect):
+    """The third review of #2219: the caller holds SHARE on pgcolumnar.load_fingerprint.
+    It must return near its timeout, and the fingerprint is recorded after its
+    ROLLBACK frees the lock."""
+    expect.text(pcopy["record caller lock"],
+                "57014 canceling statement due to statement timeout | under 8 s | 5000 rows | 1 fingerprint | 0 prepared",
+                "a dedup load whose caller holds SHARE on pgcolumnar.load_fingerprint returns its statement_timeout"
+                " within 8 s and records the fingerprint once the caller's ROLLBACK frees the lock (#2187)")
+
+
+def test_parallel_copy_dedup_record_waits_out_a_long_lock(pcopy, expect):
+    expect.text(pcopy["record other lock"],
+                "57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows",
+                "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s,"
+                " records the fingerprint when the lock frees, and its retry is skipped (#2187)")
