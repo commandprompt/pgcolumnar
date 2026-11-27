@@ -2256,4 +2256,9 @@ guard_tests 897
 # test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
 # test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
 # fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
-cluster_tests 5664
+# cluster_tests 5664 -> 5666 for #2193's review (jdatcmd at 82a1f0a5): test_a_descriptor_that_closes_mid_read_is_skipped
+# and test_a_pid_that_does_not_exist_reads_nothing in test_harness_isolation.py, 2 tests, by collection of the
+# files not in NO_CLUSTER (first counted as 5597 -> 5599; shifted by main's later growth). They need no cluster, but they test that file's
+# own _fds_on and sit beside it; the file stays cluster-bound through its other tests, so they run in the cluster
+# job. A NO_CLUSTER home would have to import one test module from another.
+cluster_tests 5666
