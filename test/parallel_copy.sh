@@ -2181,4 +2181,209 @@ check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a C
 	"$(nl_same "$NL/p5b.txt" single 'txt text, id int')" "2:ok 3:ok 4:ok"
 check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
 	"$(nl_same "$NL/p5b.txt" part 'txt text, id int')" "2:ok 3:ok 4:ok"
+
+# ---- #2188: the caller's client_encoding, and characters that hold 0x5C -------
+# COPY FROM reads a server file in the caller's client_encoding. When that is SJIS,
+# BIG5, GBK, GB18030, UHC or JOHAB (the client-only encodings) and the database is
+# not SQL_ASCII, core converts the bytes to the database encoding before it looks
+# for backslashes and newlines, so the second byte of a two-byte character is never
+# a backslash. In SJIS 83 5c is one character (U+30BD), and 83 5c 5c 0a is that
+# character and an escaped newline. parallel_copy got both halves wrong: its byte
+# scans read every 0x5c as a backslash, so they cut records in two, and its loaders
+# read the file in their own client_encoding (the database's default), not the
+# caller's, so they stored other text than COPY FROM does, or refused the file.
+# Files, rows k = 1..N, id k:
+#   sjis    (SJIS)  odd k: k TAB a k 83 5c 5c LF b LF, a character before an escaped
+#                   newline; even k: k TAB a k 5c 83 5c LF, a backslash before it
+#   big5    (BIG5)  the same with a5 5c (U+529F)
+#   sjisbs  (SJIS)  every row k TAB a k 5c 83 5c LF
+#   sjiseol (SJIS)  an LF file whose first line is 1 TAB a 83 5c 5c CR LF: the
+#                   backslash escapes the CR, so the first line ends in LF
+#   chunknl (SJIS)  line 1 puts the 83 at byte 65535, the last of the first 64 KiB
+#                   scan read, and 5c 5c LF b LF after it; then 0002 TAB x LF ...
+#   chunkcr (SJIS)  line 1 the same with 5c 5c CR LF; then LF lines
+#   gb18030 (GB18030) odd k: k TAB a 81 30 81 30 81 5c z 5c LF b LF, a four-byte
+#                   character, a two-byte one ending in 5c, a byte, an escaped
+#                   newline; even k: k TAB a b0 a1 z 5c LF y LF
+#   gbk     (GBK)   k TAB a 81 5c z 5c LF b LF
+#   sjistk  (SJIS)  a k 83 5c TAB k LF, loaded into (txt text, id int): the 5c
+#                   right before the TAB that ends the field before the key
+#   utf8txt (UTF8)  k TAB c a f c3 a9 k LF, loaded with the database's default
+#                   client_encoding set to SJIS and the caller's UTF8
+# Controls, where 0x5c after a high-bit byte IS a backslash:
+#   latin1  (LATIN1)                  k TAB a e9 5c LF b LF
+#   utf8    (UTF8)                    k TAB a c3 a9 5c LF b LF
+#   ascii   (SJIS, SQL_ASCII database) k TAB a 83 5c LF b LF: core does not convert
+#                   when the database is SQL_ASCII, so it reads 5c LF as an escaped
+#                   newline, and so must the splitters
+# Each load is compared with heap COPY FROM of the same file in the same session
+# encoding: outcome (with "worker N failed: " taken out), rows, and the row hash.
+# The scratch databases are created from template0 with the C locale.
+ENC_DB=pgc_pcopy_enc
+ENC_ASCII=pgc_pcopy_ascii
+for _d in "$ENC_DB:UTF8" "$ENC_ASCII:SQL_ASCII"; do
+	psql_admin "DROP DATABASE IF EXISTS ${_d%%:*}" >/dev/null 2>&1
+	psql_admin "CREATE DATABASE ${_d%%:*} ENCODING '${_d#*:}' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0" >/dev/null
+	PGC_DB="${_d%%:*}" psql_run "CREATE EXTENSION pgcolumnar" >/dev/null
+done
+ENC="$DATADIR/enc"; mkdir -p "$ENC"; chmod 755 "$ENC"
+enc_gen() {	# KIND N PATH: writes PATH and PATH.starts, the byte offset of every record but the first
+	LC_ALL=C awk -v kind="$1" -v n="$2" -v starts="$3.starts" 'BEGIN {
+		pad = "y"; while (length(pad) < 65530) pad = pad pad; pad = substr(pad, 1, 65530)
+		off = 0
+		for (k = 1; k <= n; k++) {
+			if (kind == "sjis" || kind == "big5") {
+				c = (kind == "sjis") ? "\203\134" : "\245\134"
+				r = (k % 2) ? sprintf("%d\ta%d%s\134\nb\n", k, k, c) : sprintf("%d\ta%d\134%s\n", k, k, c)
+			} else if (kind == "sjisbs") r = sprintf("%d\ta%d\134\203\134\n", k, k)
+			else if (kind == "sjiseol") r = (k == 1) ? "1\ta\203\134\134\r\n" : sprintf("%d\tx\n", k)
+			else if (kind == "chunknl") r = (k == 1) ? "0001\t" pad "\203\134\134\nb\n" : sprintf("%04d\tx\n", k)
+			else if (kind == "chunkcr") r = (k == 1) ? "0001\t" pad "\203\134\134\r\n" : sprintf("%04d\tx\n", k)
+			else if (kind == "gb18030") r = (k % 2) ? sprintf("%d\ta\201\060\201\060\201\134z\134\nb\n", k) : sprintf("%d\ta\260\241z\134\ny\n", k)
+			else if (kind == "gbk") r = sprintf("%d\ta\201\134z\134\nb\n", k)
+			else if (kind == "sjistk") r = sprintf("a%d\203\134\t%d\n", k, k)
+			else if (kind == "utf8txt") r = sprintf("%d\tcaf\303\251%d\n", k, k)
+			else if (kind == "latin1") r = sprintf("%d\ta\351\134\nb\n", k)
+			else if (kind == "utf8") r = sprintf("%d\ta\303\251\134\nb\n", k)
+			else if (kind == "ascii") r = sprintf("%d\ta\203\134\nb\n", k)
+			if (k > 1) print off > starts
+			printf "%s", r
+			off += length(r)
+		}
+	}' >"$3"
+	chmod 644 "$3" "$3.starts"
+}
+enc_outcome() {	# DB CLIENT_ENCODING SQL TABLE -> "SQLSTATE|message|N rows|P prepared" or "loaded|N rows|P prepared"
+	local out head
+	out="$(timeout -s KILL 120 env PATH="$PGC_BINDIR:$PATH" PGCLIENTENCODING="$2" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$1" -qtA -c "SET statement_timeout = '60s'" -c '\set VERBOSITY verbose' -c "$3" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then
+		head="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1 | sed 's/|pgcolumnar\.parallel_copy worker [0-9]* failed: /|/')"
+	else
+		head="loaded"
+	fi
+	echo "${head:-unparsed ($out)}|$(PGC_DB=$1 q "SELECT count(*) FROM $4") rows|$(PGC_DB=$1 q "SELECT count(*) FROM pg_prepared_xacts") prepared"
+}
+enc_target() {	# DB single|part -> (re)creates t_enc ($ENC_COLS, default "id int, txt text") as that target, empty
+	local ddl i lo hi cols="${ENC_COLS:-id int, txt text}"
+	if [ "$2" = single ]; then
+		PGC_DB=$1 psql_run "DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ($cols) USING pgcolumnar;" >/dev/null
+		return
+	fi
+	ddl="DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ($cols) PARTITION BY RANGE (id);"
+	for i in 0 1 2 3 4 5 6 7; do
+		if [ "$i" = 0 ]; then lo=MINVALUE; else lo=$((i * 500 + 1)); fi
+		if [ "$i" = 7 ]; then hi=MAXVALUE; else hi=$(((i + 1) * 500 + 1)); fi
+		ddl="$ddl CREATE TABLE t_enc_p$i PARTITION OF t_enc FOR VALUES FROM ($lo) TO ($hi) USING pgcolumnar;"
+	done
+	PGC_DB=$1 psql_run "$ddl" >/dev/null
+}
+enc_heap() {	# DB CLIENT_ENCODING PATH -> enc_outcome of heap COPY of PATH into a fresh h_enc
+	PGC_DB=$1 psql_run "DROP TABLE IF EXISTS h_enc; CREATE TABLE h_enc (${ENC_COLS:-id int, txt text});" >/dev/null
+	enc_outcome "$1" "$2" "COPY h_enc FROM '$3'" h_enc
+}
+enc_row() {	# DB ID -> h_enc's txt for that id, as hex bytes
+	PGC_DB=$1 q "SELECT encode(convert_to(txt, pg_encoding_to_char(encoding)), 'hex') FROM h_enc, pg_database WHERE datname = current_database() AND id = $2"
+}
+enc_same() {	# DB CLIENT_ENCODING PATH TARGET [WORKERS...] -> "W:ok" per worker count (2 3 4 by default)
+	# when the load gives heap COPY's outcome, rows and row hash, or what it gave against heap COPY
+	local db="$1" ce="$2" path="$3" tgt="$4" w heap hh got gh res=""
+	shift 4
+	heap="$(enc_heap "$db" "$ce" "$path")"; hh="$(PGC_DB=$db pgc_set_hash "SELECT * FROM h_enc")"
+	for w in ${*:-2 3 4}; do
+		enc_target "$db" "$tgt"
+		got="$(enc_outcome "$db" "$ce" "SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '$path', $w)" t_enc)"
+		gh="$(PGC_DB=$db pgc_set_hash "SELECT * FROM t_enc")"
+		if [ "$got" = "$heap" ] && [ "$gh" = "$hh" ]; then res="$res $w:ok"
+		else res="$res $w:[$got $gh] want [$heap $hh]"; fi
+	done
+	echo "${res# }"
+}
+enc_cuts() {	# CLIENT_ENCODING PATH -> "W:ok" per worker count 2, 3, 4 when every interior split
+	# offset is a record start and no range is empty, or the offsets
+	local w arr i bad res=""
+	for w in 2 3 4; do
+		read -r -a arr <<<"$(PGC_DB=$ENC_DB PGCLIENTENCODING="$1" q "SELECT array_to_string(pgcolumnar.file_split_offsets('$2', $w), ' ')")"
+		bad=""
+		[ "${#arr[@]}" = $((w + 1)) ] || bad=1
+		for i in $(seq 1 $((w - 1))); do
+			grep -qx -- "${arr[$i]:-x}" "$2.starts" || bad=1
+			[ "${arr[$i]:-0}" -gt "${arr[$((i - 1))]:-0}" ] 2>/dev/null || bad=1
+		done
+		[ "${arr[$w]:-0}" -gt "${arr[$((w - 1))]:-0}" ] 2>/dev/null || bad=1
+		if [ -z "$bad" ]; then res="$res $w:ok"; else res="$res $w:[${arr[*]}]"; fi
+	done
+	echo "${res# }"
+}
+for _f in sjis:2000 big5:2000 sjisbs:2000 sjiseol:2000 chunknl:9363 chunkcr:4000 gb18030:2000 gbk:2000 sjistk:2000 utf8txt:2000 latin1:2000 utf8:2000 ascii:2000; do
+	enc_gen "${_f%%:*}" "${_f#*:}" "$ENC/${_f%%:*}.txt"
+done
+[ "$(id -u)" = "0" ] && chown -R postgres "$ENC"
+
+check "#2188 premise: the scratch databases are UTF8 and SQL_ASCII; under client_encoding SJIS heap COPY loads 2000 rows from sjis and from sjisbs and stores sjis row 1 as 61 31 e3 82 bd 0a 62 and row 2 as 61 32 e3 82 bd; under BIG5 2000 rows from big5, row 1 61 31 e5 8a 9f 0a 62; under SJIS 2000 rows from sjistk, row 1 61 31 e3 82 bd" \
+	"$(PGC_DB=$ENC_DB q "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()") $(PGC_DB=$ENC_ASCII q "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()") $(enc_heap $ENC_DB SJIS "$ENC/sjisbs.txt" | cut -d'|' -f2) $(enc_heap $ENC_DB SJIS "$ENC/sjis.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_row $ENC_DB 2) $(enc_heap $ENC_DB BIG5 "$ENC/big5.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(ENC_COLS="txt text, id int" enc_heap $ENC_DB SJIS "$ENC/sjistk.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1)" \
+	"UTF8 SQL_ASCII 2000 rows 2000 rows 6131e382bd0a62 6132e382bd 2000 rows 6131e58a9f0a62 2000 rows 6131e382bd"
+check "#2188 premise: under client_encoding SJIS heap COPY loads 2000 rows from sjiseol and stores row 1 as 61 e3 82 bd 0d; 9363 rows from chunknl, whose bytes 65535-65538 are 83 5c 5c 0a, and 4000 from chunkcr, whose bytes 65535-65539 are 83 5c 5c 0d 0a" \
+	"$(enc_heap $ENC_DB SJIS "$ENC/sjiseol.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_heap $ENC_DB SJIS "$ENC/chunknl.txt" | cut -d'|' -f2) $(od -An -tx1 -j 65535 -N 4 "$ENC/chunknl.txt" | tr -d ' ') $(enc_heap $ENC_DB SJIS "$ENC/chunkcr.txt" | cut -d'|' -f2) $(od -An -tx1 -j 65535 -N 5 "$ENC/chunkcr.txt" | tr -d ' ')" \
+	"2000 rows 61e382bd0d 9363 rows 835c5c0a 4000 rows 835c5c0d0a"
+check "#2188 SJIS, a two-byte character whose second byte is 0x5C before an escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/sjis.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS, a two-byte character whose second byte is 0x5C before an escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/sjis.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 BIG5, a two-byte character whose second byte is 0x5C before an escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB BIG5 "$ENC/big5.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 BIG5, a two-byte character whose second byte is 0x5C before an escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB BIG5 "$ENC/big5.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS, a backslash before a two-byte character whose second byte is 0x5C, right before every newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/sjisbs.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS, a two-byte character whose second byte is 0x5C right before the TAB that ends the field before the key / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(ENC_COLS="txt text, id int" enc_same $ENC_DB SJIS "$ENC/sjistk.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS and BIG5: file_split_offsets cuts sjis, sjisbs and big5 only at record starts, with no range empty, for 2, 3 and 4 workers" \
+	"$(enc_cuts SJIS "$ENC/sjis.txt") ; $(enc_cuts SJIS "$ENC/sjisbs.txt") ; $(enc_cuts BIG5 "$ENC/big5.txt")" \
+	"2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok"
+check "#2188 SJIS, the first line's two-byte character whose second byte is 0x5C before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/sjiseol.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS, the first line's two-byte character whose second byte is 0x5C before an escaped CR, in an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/sjiseol.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 SJIS, a two-byte character split across two 64 KiB scan reads, before an escaped newline / single table, 2 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/chunknl.txt" single 2)" "2:ok"
+check "#2188 SJIS, the first line's two-byte character split across two 64 KiB scan reads, before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB SJIS "$ENC/chunkcr.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 premise: under client_encoding GB18030 heap COPY loads 2000 rows from gb18030 and stores row 1 as 61 c2 80 e4 b9 97 7a 0a 62 and row 2 as 61 e5 95 8a 7a 0a 79; under GBK 2000 rows from gbk, row 1 61 e4 b9 97 7a 0a 62" \
+	"$(enc_heap $ENC_DB GB18030 "$ENC/gb18030.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_row $ENC_DB 2) $(enc_heap $ENC_DB GBK "$ENC/gbk.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1)" \
+	"2000 rows 61c280e4b9977a0a62 61e5958a7a0a79 2000 rows 61e4b9977a0a62"
+check "#2188 GB18030, a four-byte character next to a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GB18030 "$ENC/gb18030.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 GB18030, a four-byte character next to a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GB18030 "$ENC/gb18030.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GBK "$ENC/gbk.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GBK "$ENC/gbk.txt" part)" "2:ok 3:ok 4:ok"
+
+PGC_DB=$ENC_DB psql_run "ALTER DATABASE $ENC_DB SET client_encoding = 'SJIS'" >/dev/null
+check "#2188 premise: with the database's default client_encoding set to SJIS a new session's is SJIS, and heap COPY under the caller's UTF8 loads 2000 rows from utf8txt and stores row 1 as 63 61 66 c3 a9 31" \
+	"$(PGC_DB=$ENC_DB q "SHOW client_encoding") $(enc_heap $ENC_DB UTF8 "$ENC/utf8txt.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1)" \
+	"SJIS 2000 rows 636166c3a931"
+check "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8 text / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB UTF8 "$ENC/utf8txt.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8 text / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB UTF8 "$ENC/utf8txt.txt" part)" "2:ok 3:ok 4:ok"
+PGC_DB=$ENC_DB psql_run "ALTER DATABASE $ENC_DB RESET client_encoding" >/dev/null
+
+check "#2188 premise: heap COPY loads 2000 rows each from latin1 under LATIN1, utf8 under UTF8 and, in the SQL_ASCII database, ascii under SJIS, storing row 1 as 61 c3 a9 0a 62, 61 c3 a9 0a 62 and 61 83 0a 62" \
+	"$(enc_heap $ENC_DB LATIN1 "$ENC/latin1.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_heap $ENC_DB UTF8 "$ENC/utf8.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_heap $ENC_ASCII SJIS "$ENC/ascii.txt" | cut -d'|' -f2) $(enc_row $ENC_ASCII 1)" \
+	"2000 rows 61c3a90a62 2000 rows 61c3a90a62 2000 rows 61830a62"
+check "#2188 control: LATIN1, a high-bit byte before an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB LATIN1 "$ENC/latin1.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 control: LATIN1, a high-bit byte before an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB LATIN1 "$ENC/latin1.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 control: UTF8, a two-byte character before an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB UTF8 "$ENC/utf8.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 control: UTF8, a two-byte character before an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB UTF8 "$ENC/utf8.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a newline, which COPY reads as an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_ASCII SJIS "$ENC/ascii.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a newline, which COPY reads as an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_ASCII SJIS "$ENC/ascii.txt" part)" "2:ok 3:ok 4:ok"
 pgc_summary
