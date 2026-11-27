@@ -182,6 +182,14 @@ struct PgColumnarObjHandle
 	uint64		served;			/* requests completed on this connection */
 
 	/*
+	 * The errno of the send that failed, or of the reset taken as a stale
+	 * connection, on the current connection; 0 when neither happened, as on a
+	 * clean EOF. os_connect clears it, so it names the last attempt only. The
+	 * "failed before a response" errors name it in their DETAIL (#2231).
+	 */
+	int			fail_errno;
+
+	/*
 	 * SigV4 (#393 M2). sign=false is the plain-http M1 path, byte-identical to
 	 * before. The credential strings come from the ambient environment at open
 	 * and live with the handle; the signing key is the four-HMAC derivation,
@@ -785,6 +793,7 @@ os_connect(PgColumnarObjHandle *h)
 
 	Assert(h->fd < 0);
 
+	h->fail_errno = 0;
 	os_check_endpoint_allowed(h);
 	os_reject_target_ctl(h);
 
@@ -1033,7 +1042,11 @@ os_send_all(PgColumnarObjHandle *h, const char *buf, size_t len)
 			else if (serr == SSL_ERROR_SYSCALL && errno == EINTR)
 				continue;
 			else
+			{
+				if (serr == SSL_ERROR_SYSCALL)
+					h->fail_errno = errno;
 				return false;	/* peer went away: maybe stale keep-alive */
+			}
 		}
 		return true;
 	}
@@ -1056,6 +1069,8 @@ os_send_all(PgColumnarObjHandle *h, const char *buf, size_t len)
 		}
 		if (sent < 0 && errno == EINTR)
 			continue;
+		if (sent < 0)
+			h->fail_errno = errno;
 		return false;			/* EPIPE, ECONNRESET, ... : maybe stale */
 	}
 	return true;
@@ -1120,7 +1135,10 @@ os_fill(PgColumnarObjHandle *h, bool staleOk)
 			if (serr == SSL_ERROR_SYSCALL && errno == 0)
 				return false;	/* EOF without close_notify: stale keep-alive */
 			if (staleOk && serr == SSL_ERROR_SYSCALL && errno == ECONNRESET)
+			{
+				h->fail_errno = errno;
 				return false;	/* reset before an answer: stale keep-alive */
+			}
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("columnar: TLS read from \"%s\" failed", h->url)));
@@ -1148,7 +1166,10 @@ os_fill(PgColumnarObjHandle *h, bool staleOk)
 		if (errno == EINTR)
 			continue;
 		if (staleOk && errno == ECONNRESET)
+		{
+			h->fail_errno = errno;
 			return false;		/* reset before an answer: stale keep-alive */
+		}
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("columnar: could not read from \"%s\": %m", h->url)));
@@ -1699,6 +1720,19 @@ os_sign_request(PgColumnarObjHandle *h, const char *method,
 /* ---------------------------------------------------------------- request */
 
 /*
+ * For an error raised when a connection failed before a response: a DETAIL
+ * naming the errno of the failed send or reset (#2231), or none after a clean
+ * EOF, which has no errno. Call it inside the ereport.
+ */
+static int
+os_fail_detail(const PgColumnarObjHandle *h)
+{
+	if (h->fail_errno == 0)
+		return 0;
+	return errdetail("The connection failed: %s.", strerror(h->fail_errno));
+}
+
+/*
  * The character that joins a request's own query to the path. An http(s)://
  * path keeps the URL's query string (#1785), so a second parameter joins it
  * with '&', never a second '?' (#1904). An S3 path is percent-encoded and
@@ -1766,7 +1800,8 @@ os_request(PgColumnarObjHandle *h, const char *method,
 			ereport(ERROR,
 					(errcode(ERRCODE_CONNECTION_FAILURE),
 					 errmsg("columnar: connection to \"%s\" failed before a response",
-							h->url)));
+							h->url),
+					 os_fail_detail(h)));
 	}
 
 	pfree(req.data);
@@ -2940,7 +2975,8 @@ os_write_request(PgColumnarObjHandle *h, const char *method, const char *rawQuer
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("columnar: %s to \"%s\" failed before a response",
-						method, h->url)));
+						method, h->url),
+				 os_fail_detail(h)));
 	}
 
 	if (resp->status == 403)
@@ -3763,7 +3799,8 @@ os_list_request(PgColumnarObjHandle *h, const char *rawQuery, int64 *outlen)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("columnar: LIST to \"%s\" failed before a response",
-						h->url)));
+						h->url),
+				 os_fail_detail(h)));
 	}
 
 	if (resp.status == 403)
@@ -4310,7 +4347,8 @@ objstore_http_request(const char *url, const char *method,
 		ereport(ERROR,
 				(errcode(ERRCODE_CONNECTION_FAILURE),
 				 errmsg("columnar: connection to \"%s\" failed before a response",
-						url)));
+						url),
+				 os_fail_detail(h)));
 	}
 	pfree(req.data);
 
