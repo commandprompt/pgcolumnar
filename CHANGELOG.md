@@ -650,6 +650,16 @@ true until the next version shipped.
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
   `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
   one worker.
+- A `pgcolumnar_iceberg` foreign table partitioned by `day()` or `hour()` on a
+  `timestamp` or `timestamptz` column no longer returns no rows for a query
+  such as `ts < '294276-12-31 23:59:59.999999'` (#2230). To prune, the FDW
+  moved the constant from the 2000 epoch to Iceberg's 1970 epoch with no
+  overflow check, so any constant after 294247-01-10 04:00:54.775807 wrapped to
+  a large negative bucket, and `<` or `<=` pruned every file. Such a constant
+  now does not prune, as `infinity` does not, and the query returns the rows
+  `iceberg_scan` returns, with no error. The last value that fits still prunes.
+  `year()` and `month()` were not affected. `test/iceberg_fdw.sh` and
+  `test_iceberg_fdw.py`.
 - `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
   294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit
   microseconds since 1970-01-01, and that is the last value it holds. The
@@ -820,6 +830,36 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` into a partitioned target now reads the fields up
+  to the partition key with COPY's text escapes (#2202). It refused, with 22P02
+  and 0 rows loaded, two kinds of file that `COPY FROM` loads: a backslash
+  before a raw TAB in a field before the key, which COPY reads as a TAB inside
+  the value but the key parser read as the end of the field, and a key written
+  with an escape such as `\061`, which the key parser gave to the integer input
+  function undecoded. The key parser now splits at an unescaped TAB only and
+  decodes the key as COPY does: octal, hex and `\b \f \n \r \t \v` escapes, two
+  backslashes as one, any other escaped byte as itself, and a field that is
+  exactly `\N` as NULL. No RANGE partition takes a NULL key, so that load is now
+  refused with 23514, as `COPY FROM` refuses it. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`: 58 checks. Each of 27 files is loaded by heap
+  `COPY` into a heap table partitioned the same way and by `parallel_copy` with
+  2 and 4 workers, and the outcome, the rows per partition and the rows must be
+  heap `COPY`'s: the issue's two cases, keys in octal, in hex, and with named
+  and other escaped bytes around them, a field before the key with every kind
+  of escape, an escaped backslash right before the delimiter, a `\N` key, and
+  two controls with no escapes. Seven more files catch a rule applied too
+  widely: a key `\N5` and a key whose value is `\N`, neither of them NULL;
+  escaped 8s and 9s, which are not escapes; `\x` with no hex digit, which is a
+  literal `x`; and, in a UTF8 database, keys that decode to a NUL byte or to a
+  byte that is not UTF-8, which COPY refuses with 22021. Eight more cover a
+  CR as the end of the key field, a lone backslash at the end of the file, `\x`
+  reading at most two hex digits, an uppercase hex digit, an octal escape that
+  decodes to NUL, and a row with too few fields for the key. Three more cover
+  a `\N` key in the last column, a lowercase hex digit, and a date key written
+  with escapes.
+  The key parser reads the file as characters of the caller's client_encoding,
+  as #2188's scans do, so in SJIS, BIG5, GBK or GB18030 a character whose
+  second byte is 0x5C is never read as a backslash in front of the key.
 - `pgcolumnar.parallel_copy` now reads the file in the calling session's
   `client_encoding`, as `COPY FROM` does, and its splitters step over whole
   characters in the encodings where a character's second byte can be `0x5C`
