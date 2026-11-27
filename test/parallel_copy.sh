@@ -1196,6 +1196,9 @@ check "control: parallel_copy with 4 workers still loads a partitioned table wit
 # Which worker reports first varies, so the check reads "worker N".
 pcopy_psql() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q "$@"; }
 late_unique() {	# TABLE WORKERS -> the load's refusal, with "worker N"
+	late_ddl "$1" "$2" "CREATE UNIQUE INDEX ${1}_id ON $1 (id);"
+}
+late_ddl() {	# TABLE WORKERS DDL -> the same, with DDL run in place of the index
 	local t="$1" w="$2" pid got
 	pcopy_psql >/dev/null 2>&1 <<SQL &
 BEGIN;
@@ -1203,7 +1206,7 @@ LOCK TABLE $t IN SHARE MODE;
 DO \$\$ BEGIN FOR i IN 1..200 LOOP
 	EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = '$t'::regclass AND NOT granted);
 	PERFORM pg_sleep(0.05); END LOOP; END \$\$;
-CREATE UNIQUE INDEX ${t}_id ON $t (id);
+$3
 COMMIT;
 SQL
 	pid=$!
@@ -1218,23 +1221,226 @@ SQL
 }
 psql_run "CREATE TABLE t_ur (id int, txt text) USING pgcolumnar;" >/dev/null
 ur_got="$(late_unique t_ur 2)"
+# The loader's HINT reaches the caller too (#2187): it used to read "no hint".
 check "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)" \
 	"$ur_got" \
-	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" with more than one worker, because it has a unique or exclusion index | no hint'
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY.'
 check "the late unique-index refusal loads nothing (#2080)" \
 	"$(q "SELECT count(*) FROM t_ur")" 0
 # The same with 4 workers, where every loader, not only one, must refuse. A
 # loader that skips the check would insert rows against its siblings, which
 # hangs or fails only in some runs. A row trigger that calls nextval records
 # any insert, because a sequence does not roll back: no loader may insert a row.
+# The trigger arrives with the index, after the calling backend's check, which
+# would refuse the trigger itself (#2187). Each loader checks the index first.
 psql_run "CREATE TABLE t_ur4 (id int, txt text) USING pgcolumnar;
           CREATE SEQUENCE t_ur4_rows;
           CREATE FUNCTION t_ur4_row() RETURNS trigger LANGUAGE plpgsql
-            AS \$\$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END \$\$;
-          CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row();" >/dev/null
+            AS \$\$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END \$\$;" >/dev/null
 check "parallel_copy refuses 4 workers when a unique index appears after its check, before any loader inserts a row (#2080)" \
-	"$(late_unique t_ur4 4) | $(q "SELECT CASE WHEN is_called THEN 'a loader inserted a row' ELSE 'no row inserted' END FROM t_ur4_rows")" \
-	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" with more than one worker, because it has a unique or exclusion index | no hint | no row inserted'
+	"$(late_ddl t_ur4 4 "CREATE UNIQUE INDEX t_ur4_id ON t_ur4 (id);
+		CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row();") | $(q "SELECT CASE WHEN is_called THEN 'a loader inserted a row' ELSE 'no row inserted' END FROM t_ur4_rows")" \
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY. | no row inserted'
+
+# ---- #2187: a lock queued between the loaders, a trigger, a cancel ------------
+# 1. A CREATE INDEX that queues for SHARE after the first loader has its ROW
+#    EXCLUSIVE lock, and before the others ask, used to hang the load: the first
+#    loader prepared, CREATE INDEX waited on its prepared transaction, and the
+#    others waited behind CREATE INDEX. pgcolumnar.parallel_copy_open_hold_ms
+#    holds every loader but the first before it opens the table, so the index can
+#    be queued in that gap every run; the premise reads that it was. The load
+#    must now finish, and the index build after it.
+pcopy_hold() {	# MS -> sets the loaders' hold in this database, 0 resets it
+	if [ "$1" = 0 ]; then psql_run "ALTER DATABASE \"$PGC_DB\" RESET pgcolumnar.parallel_copy_open_hold_ms;"
+	else psql_run "ALTER DATABASE \"$PGC_DB\" SET pgcolumnar.parallel_copy_open_hold_ms = $1;"; fi
+}
+LOADER="backend_type = 'pgcolumnar parallel_copy loader'"
+loaders_on() {	# TABLE -> "H held, W waiting": the loaders' locks on TABLE. A loader
+	# that has prepared holds its lock with no process (pid is null).
+	q "SELECT count(*) FILTER (WHERE l.granted) || ' held, ' || count(*) FILTER (WHERE NOT l.granted) || ' waiting'
+	   FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid)
+	   WHERE l.relation = '$1'::regclass AND (l.pid IS NULL OR a.$LOADER)"
+}
+index_mid_open() {	# TABLE WORKERS DDL -> "what was queued when DDL waited || load | ddl | rows | index valid | leak"
+	local t="$1" w="$2" lp dp seen
+	pcopy_hold 4000 >/dev/null
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal \
+		"SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $w)" >"$DATADIR/$t.load" ) &
+	lp=$!
+	for _ in $(seq 100); do
+		case "$(loaders_on "$t")" in "0 held"*|"") sleep 0.05 ;; *) break ;; esac
+	done
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal "$3" >"$DATADIR/$t.ddl" ) &
+	dp=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = '$t'::regclass AND mode = 'ShareLock' AND NOT granted")" = 1 ] && break
+		sleep 0.05
+	done
+	seen="loaders $(loaders_on "$t"), index $(q "SELECT count(*) FROM pg_locks WHERE relation = '$t'::regclass AND mode = 'ShareLock' AND NOT granted") waiting"
+	wait "$lp"; wait "$dp"
+	pcopy_hold 0 >/dev/null
+	printf '%s || %s | %s | %s | valid %s | leak %s\n' "$seen" "$(cat "$DATADIR/$t.load")" "$(cat "$DATADIR/$t.ddl")" \
+		"$(q "SELECT count(*) FROM $t")" "$(q "SELECT indisvalid FROM pg_index WHERE indexrelid = '${t}_id'::regclass")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+psql_run "CREATE TABLE t_mo (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_mo4 (id int, txt text) USING pgcolumnar;" >/dev/null
+mo_got="$(index_mid_open t_mo 2 "CREATE UNIQUE INDEX t_mo_id ON t_mo (id)")"
+check "premise: CREATE UNIQUE INDEX queued while 1 of 2 loaders held the table and the other had not asked (#2187)" \
+	"${mo_got%% || *}" "loaders 1 held, 0 waiting, index 1 waiting"
+check "parallel_copy with 2 workers finishes when CREATE UNIQUE INDEX queues between its loaders' locks, and the index builds after it (#2187)" \
+	"${mo_got#* || }" "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | leak 0"
+mo4_got="$(index_mid_open t_mo4 4 "CREATE INDEX t_mo4_id ON t_mo4 (id)")"
+check "premise: CREATE INDEX queued while 1 of 4 loaders held the table and the others had not asked (#2187)" \
+	"${mo4_got%% || *}" "loaders 1 held, 0 waiting, index 1 waiting"
+check "parallel_copy with 4 workers finishes when CREATE INDEX queues between its loaders' locks, and the index builds after it (#2187)" \
+	"${mo4_got#* || }" "no error (5000) | no error (CREATE INDEX) | 5000 | valid t | leak 0"
+
+# A loader that exits before it opens the table must not leave its siblings
+# waiting for it to open it: the load fails, it does not hang.
+psql_run "CREATE TABLE t_gone (id int, txt text) USING pgcolumnar;" >/dev/null
+gone_load() {	# -> "load | rows | leak", with the second loader terminated while it is held
+	local lp victim=""
+	pcopy_hold 4000 >/dev/null
+	( PGOPTIONS='-c statement_timeout=15s' remote_refusal \
+		"SELECT pgcolumnar.parallel_copy('t_gone'::regclass, '$F', 2)" >"$DATADIR/t_gone.load" ) &
+	lp=$!
+	for _ in $(seq 100); do
+		case "$(loaders_on t_gone)" in "1 held"*)
+			victim="$(q "SELECT pid FROM pg_stat_activity WHERE $LOADER AND pid NOT IN
+				(SELECT pid FROM pg_locks WHERE relation = 't_gone'::regclass AND pid IS NOT NULL)")"
+			[ -n "$victim" ] && break ;;
+		esac
+		sleep 0.05
+	done
+	q "SELECT pg_terminate_backend($victim)" >/dev/null
+	wait "$lp"
+	pcopy_hold 0 >/dev/null
+	printf '%s | %s | leak %s\n' "$(cat "$DATADIR/t_gone.load")" "$(q "SELECT count(*) FROM t_gone")" \
+		"$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "a loader terminated before it opens the table fails the load instead of hanging its sibling (#2187)" \
+	"$(gone_load)" \
+	"XX000 pgcolumnar.parallel_copy worker 1 failed: loader exited without reporting a result | no hint | 0 | leak 0"
+
+# 2. The caller must not get its error back while the coordinator still holds
+#    prepared transactions. A cancelled load returned at once, and the caller's
+#    own next statement saw the loaders' prepared transactions. Here the first
+#    loader's foreign-key check waits on a row another session locked, the
+#    second loader prepares, and statement_timeout cancels the load. The count
+#    is read in the caller's own backend the moment the error reaches it: a
+#    plpgsql handler catches the 57014 and counts at once, so the reading does
+#    not depend on how fast a client sends its next statement.
+psql_run "CREATE TABLE t_cx_ref (id int PRIMARY KEY);
+          INSERT INTO t_cx_ref SELECT generate_series(1, 5000);
+          CREATE TABLE t_cx (id int REFERENCES t_cx_ref, txt text) USING pgcolumnar;
+          CREATE FUNCTION t_cx_load(f text) RETURNS text LANGUAGE plpgsql AS \$\$
+          BEGIN
+            PERFORM pgcolumnar.parallel_copy('t_cx'::regclass, f, 2);
+            RETURN 'no error';
+          EXCEPTION WHEN query_canceled THEN
+            RETURN SQLSTATE || ' ' || SQLERRM || ' | same session ' || (SELECT count(*) FROM pg_prepared_xacts);
+          END \$\$;" >/dev/null
+cancelled_load() {	# -> "premise || error | prepared seen by the same session"
+	local kp lp seen="" out
+	pcopy_psql -c "BEGIN" -c "SELECT id FROM t_cx_ref WHERE id = 1 FOR UPDATE" -c "SELECT pg_sleep(10)" -c "COMMIT" >/dev/null 2>&1 &
+	kp=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 't_cx_ref'::regclass AND mode = 'RowShareLock' AND granted")" = 1 ] && break
+		sleep 0.05
+	done
+	( env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=6s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -X -At -c "SELECT t_cx_load('$F')" >"$DATADIR/t_cx.load" 2>&1 ) &
+	lp=$!
+	for _ in $(seq 100); do
+		seen="prepared $(q "SELECT count(*) FROM pg_prepared_xacts"), loaders waiting on a row $(q "SELECT count(*) FROM pg_stat_activity WHERE $LOADER AND wait_event = 'transactionid'")"
+		[ "$seen" = "prepared 1, loaders waiting on a row 1" ] && break
+		sleep 0.05
+	done
+	wait "$lp"; wait "$kp"
+	out="$(cat "$DATADIR/t_cx.load")"
+	printf '%s || %s\n' "$seen" "$out"
+}
+cx_got="$(cancelled_load)"
+check "before the cancel, one loader had prepared and the other waited on a locked row (#2187)" \
+	"${cx_got%% || *}" "prepared 1, loaders waiting on a row 1"
+check "a cancelled parallel_copy leaves no prepared transaction for the caller's next statement (#2187)" \
+	"${cx_got#* || } | after $(q "SELECT count(*) FROM pg_prepared_xacts")" \
+	"57014 canceling statement due to statement timeout | same session 0 | after 0"
+
+# 3. A trigger on INSERT can write to another table. Each loader runs it in its
+#    own prepared transaction, so the loaders waited on each other over what
+#    the trigger wrote: on main a row trigger that inserts into a table with a
+#    primary key failed the load with 40P01, and a statement trigger hung it.
+#    With more than one worker the load is now refused before it starts.
+want_trigger() {	# TABLE TRIGGER -> the refusal #2187 promises
+	printf '0A000 pgcolumnar.parallel_copy cannot load "%s" with more than one worker, because it has trigger "%s" on INSERT | Load it with workers => 1, or with COPY.\n' "$1" "$2"
+}
+psql_run "CREATE TABLE t_tgk (id int PRIMARY KEY) USING pgcolumnar;
+          CREATE FUNCTION t_tg_row() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN INSERT INTO t_tgk VALUES (NEW.id); RETURN NEW; END \$\$;
+          CREATE FUNCTION t_tg_stmt() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN INSERT INTO t_tgk SELECT -pg_backend_pid(); RETURN NULL; END \$\$;
+          CREATE TABLE t_tga (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tga_k AFTER INSERT ON t_tga FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          CREATE TABLE t_tgb (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgb_k BEFORE INSERT ON t_tgb FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          CREATE TABLE t_tgs (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgs_k AFTER INSERT ON t_tgs FOR EACH STATEMENT EXECUTE FUNCTION t_tg_stmt();" >/dev/null
+check "parallel_copy refuses a single table with an AFTER INSERT row trigger and 2 workers with 0A000, not a deadlock (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tga'::regclass, '$F', 2)")" \
+	"$(want_trigger t_tga t_tga_k)"
+check "parallel_copy refuses a single table with a BEFORE INSERT row trigger and 2 workers with 0A000, not a deadlock (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgb'::regclass, '$F', 2)")" \
+	"$(want_trigger t_tgb t_tgb_k)"
+check "parallel_copy refuses a single table with an AFTER INSERT statement trigger and 4 workers with 0A000, not a hang (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgs'::regclass, '$F', 4)")" \
+	"$(want_trigger t_tgs t_tgs_k)"
+# A trigger that writes a columnar table with no index and no storage row yet
+# hung the load instead (issue #2187, comment of 2026-11-27): the first loader
+# took that table's storage-row lock and prepared, and the second waited on it.
+psql_run "CREATE TABLE t_tgn_log (id int) USING pgcolumnar;
+          CREATE FUNCTION t_tg_fresh() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN INSERT INTO t_tgn_log VALUES (NEW.id); RETURN NEW; END \$\$;
+          CREATE TABLE t_tgn (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgn_k AFTER INSERT ON t_tgn FOR EACH ROW EXECUTE FUNCTION t_tg_fresh();" >/dev/null
+check "parallel_copy refuses a single table whose AFTER INSERT row trigger writes a fresh columnar table with no index, 2 workers, with 0A000, not a hang (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgn'::regclass, '$F', 2)") | $(q "SELECT count(*) FROM t_tgn") $(q "SELECT count(*) FROM t_tgn_log") | leak $(q "SELECT count(*) FROM pg_prepared_xacts")" \
+	"$(want_trigger t_tgn t_tgn_k) | 0 0 | leak 0"
+check "the trigger refusals load nothing, write nothing through the trigger and leave no prepared transaction (#2187)" \
+	"$(q "SELECT (SELECT count(*) FROM t_tga) || ' ' || (SELECT count(*) FROM t_tgb) || ' ' || (SELECT count(*) FROM t_tgs) || ' | ' || (SELECT count(*) FROM t_tgk)") | leak $(q "SELECT count(*) FROM pg_prepared_xacts")" \
+	"0 0 0 | 0 | leak 0"
+# A trigger created after the calling backend's check is refused by the loaders,
+# with the hint.
+psql_run "CREATE TABLE t_tgl (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses 2 workers when an INSERT trigger appears after its check, with the hint (#2187)" \
+	"$(late_ddl t_tgl 2 "CREATE TRIGGER t_tgl_k AFTER INSERT ON t_tgl FOR EACH ROW EXECUTE FUNCTION t_tg_row();") | $(q "SELECT count(*) FROM t_tgl") $(q "SELECT count(*) FROM t_tgk")" \
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_tgl" with more than one worker, because it has trigger "t_tgl_k" on INSERT | Load it with workers => 1, or with COPY. | 0 0'
+# Controls. One worker still loads, and runs the trigger. A disabled trigger, a
+# foreign key's internal triggers and a trigger on UPDATE only do not fire on
+# INSERT from these loaders, so 2 workers still load those tables.
+psql_run "CREATE TABLE t_tg1 (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tg1_k AFTER INSERT ON t_tg1 FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          CREATE TABLE t_tgd (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgd_k AFTER INSERT ON t_tgd FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          ALTER TABLE t_tgd DISABLE TRIGGER t_tgd_k;
+          CREATE TABLE t_tgf_ref (id int PRIMARY KEY);
+          INSERT INTO t_tgf_ref SELECT generate_series(1, 5000);
+          CREATE TABLE t_tgf (id int REFERENCES t_tgf_ref, txt text) USING pgcolumnar;
+          CREATE TABLE t_tgu (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgu_k AFTER UPDATE ON t_tgu FOR EACH ROW EXECUTE FUNCTION t_tg_row();" >/dev/null
+check "control: parallel_copy with 1 worker still loads a single table with an INSERT trigger, and the trigger runs (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tg1'::regclass, '$F', 1)") | $(q "SELECT count(*) FROM t_tgk")" \
+	"no error (5000) | 5000"
+check "control: parallel_copy with 2 workers still loads a single table whose INSERT trigger is disabled (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgd'::regclass, '$F', 2)") | $(q "SELECT count(*) FROM t_tgd")" \
+	"no error (5000) | 5000"
+check "control: parallel_copy with 2 workers still loads a single table with a foreign key (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgf'::regclass, '$F', 2)") | $(q "SELECT count(*) FROM t_tgf")" \
+	"no error (5000) | 5000"
+check "control: parallel_copy with 2 workers still loads a single table with an UPDATE-only trigger (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgu'::regclass, '$F', 2)") | $(q "SELECT count(*) FROM t_tgu")" \
+	"no error (5000) | 5000"
 
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
@@ -1327,6 +1533,20 @@ check "parallel_copy into a primary-key table under the caller's SHARE lock gets
 check "parallel_copy gives a caller without INSERT that holds SHARE on the table 42501 before the lock refusal (#2183)" \
 	"$(PGOPTIONS='-c role=pcopy_noins' self_lock_copy "LOCK TABLE t_lko IN SHARE MODE" t_lko)" \
 	'42501|permission denied for table t_lko'
+# The trigger refusal (#2187) keeps the same place as the unique-index one: after
+# the caller's lock refusal, whose cause holds for every worker count, and after
+# the unique-index refusal, which comes first of the two "workers => 1" refusals.
+psql_run "DROP TABLE IF EXISTS t_lkt, t_tgpk;
+          CREATE TABLE t_lkt (id int, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_lkt_k AFTER INSERT ON t_lkt FOR EACH ROW EXECUTE FUNCTION t_tg_row();
+          CREATE TABLE t_tgpk (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE TRIGGER t_tgpk_k AFTER INSERT ON t_tgpk FOR EACH ROW EXECUTE FUNCTION t_tg_row();" >/dev/null
+check "parallel_copy into a table with an INSERT trigger under the caller's SHARE lock gets the lock refusal (55000) before the trigger refusal (#2187)" \
+	"$(self_lock_copy "LOCK TABLE t_lkt IN SHARE MODE" t_lkt)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkt"'
+check "parallel_copy into a primary-key table with an INSERT trigger gets the unique-index refusal before the trigger refusal (#2187)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_tgpk'::regclass, '$F', 2)")" \
+	"$(want_unique t_tgpk)"
 # The rest of the conflict table, and the partition tree in depth (#2212 review).
 # SHARE UPDATE EXCLUSIVE is stronger than ROW EXCLUSIVE by number but does not
 # conflict with it, so the load runs; EXCLUSIVE and SHARE ROW EXCLUSIVE conflict,

@@ -605,6 +605,27 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
+  `CREATE INDEX` queues while its workers open the table, refuses a single
+  table with a trigger on INSERT, and no longer returns a cancelled load's error
+  before its prepared transactions are gone (#2187). A `CREATE INDEX` that
+  queued after one worker had its lock made the other workers queue behind it,
+  while it waited on the first worker's prepared transaction, so the load hung
+  until cancelled. Each worker now waits, in the lock manager, until every other
+  worker has the table open, and the deadlock detector lets the queued workers
+  go ahead of `CREATE INDEX`, which runs after the load. A trigger on INSERT
+  runs in each worker's prepared transaction, and when it wrote to a table with
+  a primary key the load failed with 40P01 or hung. The function now refuses
+  more than one worker for such a table with 0A000 and the hint
+  `Load it with workers => 1, or with COPY.`, before it starts any worker and
+  again in each worker. A worker's refusal now carries its HINT and DETAIL to
+  the caller. A cancelled load returned while the coordinator was still rolling
+  back, so the caller's next statement could see the prepared transactions;
+  the function now waits for the coordinator first. New internal setting
+  `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
+  docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
+  one worker.
 - `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
   text-format file holds a backslash before a raw newline, or a `\.`
   end-of-data line (#2084). The splitter cut the file at any newline byte. In

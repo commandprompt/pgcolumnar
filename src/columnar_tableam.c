@@ -4792,6 +4792,17 @@ _PG_init(void)
 							 GUC_NOT_IN_SAMPLE,
 							 NULL, NULL, NULL);
 
+	DefineCustomIntVariable("pgcolumnar.parallel_copy_open_hold_ms",
+							"Dev/test: every pgcolumnar.parallel_copy loader but the "
+							"first waits this many ms before it opens the target (#2187).",
+							"Lets a test queue a lock request between the first "
+							"loader's lock on the target and the others'.",
+							&pgcolumnar_parallel_copy_open_hold_ms,
+							0, 0, 600000,
+							PGC_SUSET,
+							GUC_UNIT_MS | GUC_NOT_IN_SAMPLE,
+							NULL, NULL, NULL);
+
 	DefineCustomBoolVariable("pgcolumnar.parallel_flush",
 							 "Dispatch the per-column stripe flush across background "
 							 "workers (#445).",

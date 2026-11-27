@@ -1047,6 +1047,10 @@ The target may be one of two kinds:
   `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
   transaction until every worker has finished. So two workers would wait on each
   other, and the load would hang or fail with a deadlock error.
+  The function also refuses more than one worker when the table has an enabled
+  trigger on INSERT, of any timing or level. Each worker runs the trigger in its
+  own prepared transaction, so writes the trigger makes could wait on another
+  worker in the same way. A foreign key's internal triggers do not count.
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric

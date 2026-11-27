@@ -2300,4 +2300,10 @@ guard_tests 897
 # test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
 # still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
 # mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
-cluster_tests 5741
+# cluster_tests 5741 -> 5760 for the 19 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
+# opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
+# statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
+# 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
+# lock refusal and after #2080's unique-index refusal (2), by collection over the cluster files.
+cluster_tests 5760

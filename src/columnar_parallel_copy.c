@@ -59,8 +59,10 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
+#include "commands/trigger.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq/pqsignal.h"
@@ -78,6 +80,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/lock.h"
 #include "storage/shm_toc.h"
 #include "storage/shmem.h"
 #include "utils/syscache.h"
@@ -298,6 +301,84 @@ pcopy_has_unique_or_exclusion_index(Relation rel)
 }
 
 /*
+ * pcopy_insert_trigger
+ *		The name of an enabled, user-defined trigger that fires on INSERT into
+ *		rel, or NULL when it has none.
+ *
+ *		parallel_copy cannot load such a single table with more than one worker
+ *		either (#2187). Each loader runs the trigger, and a trigger can write to
+ *		another table. Whatever locks those writes take, each loader keeps in
+ *		its prepared transaction until every loader has finished, so the
+ *		loaders can wait on each other just as they do over a unique index. Measured on PG 18 before this check: a BEFORE or
+ *		AFTER row trigger that inserts into a columnar table with a primary key
+ *		fails the load with 40P01; one that inserts into a heap table with a
+ *		primary key does the same when the loaders' keys overlap; an AFTER
+ *		STATEMENT trigger that inserts into a columnar table hangs until
+ *		cancelled. Nothing tells a trigger that writes from one that does not,
+ *		so every timing and level counts. Internal triggers do not: a foreign
+ *		key's take shared row locks, and 2 workers still load such a table.
+ */
+static const char *
+pcopy_insert_trigger(Relation rel)
+{
+	TriggerDesc *td = rel->trigdesc;
+	int			i;
+
+	if (td == NULL)
+		return NULL;
+	for (i = 0; i < td->numtriggers; i++)
+	{
+		Trigger    *t = &td->triggers[i];
+
+		if (!t->tgisinternal && t->tgenabled != TRIGGER_DISABLED &&
+			TRIGGER_FOR_INSERT(t->tgtype))
+			return t->tgname;
+	}
+	return NULL;
+}
+
+/*
+ * pcopy_refuse_more_workers
+ *		Raise the 2+-worker refusal for a single table with a unique or exclusion
+ *		index (#2080) or an INSERT trigger (#2187), if it has either. The calling
+ *		backend runs it before it starts any worker, and each loader runs it again
+ *		once it holds ROW EXCLUSIVE on the table. `close_lockmode` is the lock to
+ *		close rel with before raising, or NoLock to leave it open.
+ */
+static void
+pcopy_refuse_more_workers(Relation rel, LOCKMODE close_lockmode)
+{
+	char		nm[NAMEDATALEN];
+	const char *tg;
+	char		tgname[NAMEDATALEN];
+
+	strlcpy(nm, RelationGetRelationName(rel), NAMEDATALEN);
+	if (pcopy_has_unique_or_exclusion_index(rel))
+	{
+		if (close_lockmode != NoLock)
+			table_close(rel, close_lockmode);
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
+						nm),
+				 errhint("Load it with workers => 1, or with COPY.")));
+	}
+	tg = pcopy_insert_trigger(rel);
+	if (tg != NULL)
+	{
+		strlcpy(tgname, tg, NAMEDATALEN);
+		if (close_lockmode != NoLock)
+			table_close(rel, close_lockmode);
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has trigger \"%s\" on INSERT",
+						nm, tgname),
+				 errdetail("Each worker runs the trigger in its own prepared transaction, so writes the trigger makes can wait on another worker until the load is cancelled."),
+				 errhint("Load it with workers => 1, or with COPY.")));
+	}
+}
+
+/*
  * pcopy_naive_offsets
  *		Line-aligned byte offsets partitioning `path` into `workers` even ranges,
  *		for the single-table load where every worker writes the one storage and any
@@ -452,7 +533,10 @@ typedef struct PcopyWorkerSlot
 									 * end, so later ranges are not data (#2084) */
 	int			sqlerrcode;
 	char		errmsg[512];
+	char		errdetail[512];	/* the loader's DETAIL and HINT, empty if none, */
+	char		errhint[256];	/* passed on to the caller (#2187) */
 	char		gid[GIDSIZE];	/* 2PC gid the coordinator assigned this loader */
+	pg_atomic_uint32 armed;		/* 1 once the loader holds its open lock (#2187) */
 } PcopyWorkerSlot;
 
 typedef struct PcopyHeader
@@ -474,6 +558,22 @@ typedef struct PcopyHeader
 	int			failed_worker;	/* index of the first failed loader, or -1 */
 	int			coord_sqlerrcode;
 	char		coord_errmsg[512];
+	char		coord_errdetail[512];
+	char		coord_errhint[256];
+
+	/*
+	 * Opening the target (#2187). open_lock_key names this load's open locks.
+	 * lost is set by the coordinator when a loader exited without reporting, so
+	 * no sibling waits for it to open the table. launched and caller_gone are a
+	 * handshake: the coordinator sets launched before it starts any loader, the
+	 * caller sets caller_gone when it stops waiting, and each reads the other's
+	 * flag after a barrier, so either the coordinator starts no loader or the
+	 * caller waits for it to finish.
+	 */
+	uint32		open_lock_key;
+	pg_atomic_uint32 lost;
+	pg_atomic_uint32 launched;
+	pg_atomic_uint32 caller_gone;
 
 	/*
 	 * Opt-in load dedup (#403 item 7). dedup is what the caller asked for;
@@ -937,6 +1037,103 @@ pcopy_auto_workers(void)
 	return n;
 }
 
+int			pgcolumnar_parallel_copy_open_hold_ms = 0;	/* dev/test (#2187) */
+
+/*
+ * Opening the target together (#2187).
+ *
+ * A loader keeps its ROW EXCLUSIVE lock on the target in its prepared
+ * transaction, so a loader that prepares holds it until the coordinator
+ * finishes the load, which waits for every loader. A lock request that
+ * conflicts with ROW EXCLUSIVE and arrives between the loaders' requests --
+ * CREATE INDEX's SHARE, say -- queues behind the loaders that have the lock,
+ * and the loaders that do not queue behind it. The lock manager sees nothing
+ * wrong: CREATE INDEX waits on a prepared transaction, which waits on nothing
+ * it can see. Before this, the load hung until cancelled (issue #2187: 8
+ * workers, CREATE UNIQUE INDEX 61 ms in).
+ *
+ * So no loader goes past opening the target until every sibling has the
+ * target open, and it waits for each one in the lock manager. Loader i takes
+ * an exclusive lock of class PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN on (load, i)
+ * before it requests ROW EXCLUSIVE, and releases it once it has the lock. A
+ * sibling that has the target open takes the same lock in SHARE mode, so it
+ * waits until loader i has the target too. The wait-for graph is now whole:
+ * sibling -> loader i -> CREATE INDEX -> sibling. The deadlock detector finds
+ * that loader i's wait behind CREATE INDEX is only queue order, since
+ * ROW EXCLUSIVE does not conflict with the sibling's ROW EXCLUSIVE, and moves
+ * loader i ahead of CREATE INDEX in the queue. The load then finishes and
+ * CREATE INDEX runs after it, as it would after any other writer.
+ *
+ * The armed flag says loader i holds its open lock. A sibling that took the
+ * lock before loader i did would not wait at all, so it first waits, outside
+ * the lock manager, for the flag. Loader i sets it before it requests anything
+ * on the target, so that wait cannot be part of a lock cycle. A loader that
+ * fails sets its state to FAILED, and one that exits without reporting makes
+ * the coordinator set lost, so nobody waits for the flag forever.
+ */
+static void
+pcopy_open_locktag(LOCKTAG *tag, const PcopyHeader *hdr, int widx)
+{
+	SET_LOCKTAG_ADVISORY(*tag, MyDatabaseId, hdr->open_lock_key, (uint32) widx,
+						 PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN);
+}
+
+/*
+ * pcopy_hold_before_open
+ *		pgcolumnar.parallel_copy_open_hold_ms, for loaders after the first: a
+ *		test sets it to queue a lock request between the first loader's lock on
+ *		the target and the others' (#2187). Interruptible.
+ */
+static void
+pcopy_hold_before_open(int widx)
+{
+	long		remaining = (long) pgcolumnar_parallel_copy_open_hold_ms;
+
+	if (widx == 0)
+		return;
+	while (remaining > 0)
+	{
+		long		step = Min(remaining, 100L);
+
+		CHECK_FOR_INTERRUPTS();
+		(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+						 step, PG_WAIT_EXTENSION);
+		ResetLatch(MyLatch);
+		remaining -= step;
+	}
+}
+
+/*
+ * pcopy_wait_for_siblings_to_open
+ *		Return once every sibling loader has the target open, has failed, or is
+ *		gone. See "Opening the target together" above.
+ */
+static void
+pcopy_wait_for_siblings_to_open(PcopyHeader *hdr, PcopyWorkerSlot *slots, int widx)
+{
+	int			j;
+
+	for (j = 0; j < hdr->nworkers; j++)
+	{
+		LOCKTAG		tag;
+
+		if (j == widx)
+			continue;
+		while (pg_atomic_read_u32(&slots[j].armed) == 0 &&
+			   pg_atomic_read_u32(&slots[j].state) == PCOPY_PENDING &&
+			   pg_atomic_read_u32(&hdr->lost) == 0)
+		{
+			CHECK_FOR_INTERRUPTS();
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 10L, PG_WAIT_EXTENSION);
+			ResetLatch(MyLatch);
+		}
+		pcopy_open_locktag(&tag, hdr, j);
+		(void) LockAcquire(&tag, ShareLock, false, false);
+		LockRelease(&tag, ShareLock, false);
+	}
+}
+
 /*
  * pgcolumnar_parallel_copy_worker (loader)
  *		Background-worker entry: attach the DSM, connect, run core COPY over this
@@ -996,6 +1193,7 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		uint64		processed;
 		bool		ended_at_marker;
 		int			fd;
+		LOCKTAG		open_tag;
 
 		/*
 		 * An explicit transaction block (BEGIN) so we can PREPARE it: a bare
@@ -1018,26 +1216,31 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		pcopy_src.path = hdr->filename;
 		pcopy_src.eof_seen = false;
 
+		/* open the target together with the siblings (#2187), see above */
+		pcopy_hold_before_open(widx);
+		if (hdr->nworkers > 1)
+		{
+			pcopy_open_locktag(&open_tag, hdr, widx);
+			(void) LockAcquire(&open_tag, ExclusiveLock, false, false);
+			pg_atomic_write_u32(&me->armed, 1);
+		}
 		rel = table_open(hdr->relid, RowExclusiveLock);
+		if (hdr->nworkers > 1)
+			LockRelease(&open_tag, ExclusiveLock, false);
 
 		/*
-		 * The calling backend refused a unique or exclusion index under ACCESS
-		 * SHARE, which CREATE INDEX does not wait for, so one may have appeared
-		 * since (#2080). ROW EXCLUSIVE makes CREATE INDEX wait until this load
-		 * ends, so the index list read now holds for the whole load.
-		 *
-		 * This catches an index created before any loader opened the table. A
-		 * CREATE INDEX that queues for its SHARE lock after some loaders hold
-		 * ROW EXCLUSIVE makes the other loaders queue behind it, so they never
-		 * reach this check, and the load can still hang until cancelled.
+		 * The calling backend refused a unique or exclusion index, or an INSERT
+		 * trigger, under ACCESS SHARE, which neither CREATE INDEX nor CREATE
+		 * TRIGGER waits for, so one may have appeared since (#2080, #2187).
+		 * ROW EXCLUSIVE makes both wait until this load ends, so what is read
+		 * now holds for the whole load. One that queues after some loaders have
+		 * their lock waits for the load to finish: no loader reads it, and the
+		 * open lock above lets the loaders behind it go first.
 		 */
-		if (hdr->single_table && hdr->nworkers > 1 &&
-			pcopy_has_unique_or_exclusion_index(rel))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
-							RelationGetRelationName(rel)),
-					 errhint("Load it with workers => 1, or with COPY.")));
+		if (hdr->single_table && hdr->nworkers > 1)
+			pcopy_refuse_more_workers(rel, NoLock);
+		if (hdr->nworkers > 1)
+			pcopy_wait_for_siblings_to_open(hdr, slots, widx);
 		pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = "(pgcolumnar parallel_copy)";
 
@@ -1152,6 +1355,10 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		strlcpy(me->errmsg,
 				edata->message ? edata->message : "unknown error",
 				sizeof(me->errmsg));
+		strlcpy(me->errdetail, edata->detail ? edata->detail : "",
+				sizeof(me->errdetail));
+		strlcpy(me->errhint, edata->hint ? edata->hint : "",
+				sizeof(me->errhint));
 		MemoryContextSwitchTo(ecxt);
 		FlushErrorState();
 
@@ -1409,7 +1616,18 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		int64		total = 0;
 		int			ncommit = nworkers;	/* ranges that hold data */
 
-		for (i = 0; i < nworkers; i++)
+		/*
+		 * The handshake with the caller (#2187): either the caller sees
+		 * launched and waits for this coordinator to finish, or this
+		 * coordinator sees caller_gone and starts no loader, so no prepared
+		 * transaction can outlive the caller's error.
+		 */
+		pg_atomic_write_u32(&hdr->launched, 1);
+		pg_memory_barrier();
+		if (pg_atomic_read_u32(&hdr->caller_gone) != 0)
+			pcopy_coord_got_sigterm = true;
+
+		for (i = 0; i < nworkers && !pcopy_coord_got_sigterm; i++)
 		{
 			memcpy(bw.bgw_extra, &i, sizeof(int));
 			if (!RegisterDynamicBackgroundWorker(&bw, &handles[i]))
@@ -1435,9 +1653,12 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 			{
 				pid_t		pid;
 
-				if (handles[i] != NULL &&
-					GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
+				if (handles[i] == NULL)
+					continue;
+				if (GetBackgroundWorkerPid(handles[i], &pid) != BGWH_STOPPED)
 					running++;
+				else if (pg_atomic_read_u32(&slots[i].state) == PCOPY_PENDING)
+					pg_atomic_write_u32(&hdr->lost, 1);	/* see pcopy_wait_for_siblings_to_open */
 			}
 			if (running == 0 || pcopy_coord_got_sigterm)
 				break;
@@ -1613,6 +1834,10 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 					slots[failed].errmsg[0] ? slots[failed].errmsg
 					: "loader exited without reporting a result",
 					sizeof(hdr->coord_errmsg));
+			strlcpy(hdr->coord_errdetail, slots[failed].errdetail,
+					sizeof(hdr->coord_errdetail));
+			strlcpy(hdr->coord_errhint, slots[failed].errhint,
+					sizeof(hdr->coord_errhint));
 			pg_atomic_write_u32(&hdr->coord_state, PCOPY_COORD_FAILED);
 		}
 		}						/* end: not cancelled */
@@ -1801,25 +2026,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 * pgcolumnar_bulk_parallel_writer). Any record-aligned byte split is
 			 * correct -- no partition key, so no sorted-input requirement.
 			 *
-			 * Not with a unique or exclusion index and more than one worker: the
-			 * loaders would wait on each other's prepared transactions until
-			 * cancelled, or fail with a deadlock error (#2080). Each loader checks
-			 * again under its ROW EXCLUSIVE lock. A partitioned target is not
-			 * affected, because each worker loads distinct partitions, and so
-			 * distinct indexes.
+			 * Not with a unique or exclusion index (#2080), or a trigger on INSERT
+			 * (#2187), and more than one worker: the loaders would wait on each
+			 * other's prepared transactions until cancelled, or fail with a
+			 * deadlock error. Each loader checks again under its ROW EXCLUSIVE
+			 * lock. A partitioned target is not affected by the index, because
+			 * each worker loads distinct partitions, and so distinct indexes.
 			 */
-			if (workers > 1 && pcopy_has_unique_or_exclusion_index(target))
-			{
-				char		nm[NAMEDATALEN];
-
-				strlcpy(nm, RelationGetRelationName(target), NAMEDATALEN);
-				table_close(target, AccessShareLock);
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("pgcolumnar.parallel_copy cannot load \"%s\" with more than one worker, because it has a unique or exclusion index",
-								nm),
-						 errhint("Load it with workers => 1, or with COPY.")));
-			}
+			if (workers > 1)
+				pcopy_refuse_more_workers(target, AccessShareLock);
 			offs = pcopy_naive_offsets(path, workers);
 			single_table = true;
 		}
@@ -1871,6 +2086,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 												 mul_size(sizeof(PcopyWorkerSlot), workers));
 	shm_toc_insert(toc, PCOPY_KEY_WORKERS, slots);
 	dsmh = dsm_segment_handle(seg);
+	hdr->open_lock_key = (uint32) dsmh;
 
 	hdr->dbid = MyDatabaseId;
 	GetUserIdAndSecContext(&hdr->roleid, &hdr->secContext);
@@ -1884,10 +2100,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->failed_worker = -1;
 	hdr->coord_sqlerrcode = 0;
 	hdr->coord_errmsg[0] = '\0';
+	hdr->coord_errdetail[0] = '\0';
+	hdr->coord_errhint[0] = '\0';
 	hdr->dedup = dedup;
 	hdr->skipped_duplicate = false;
 	memset(hdr->fingerprint, 0, sizeof(hdr->fingerprint));
 	pg_atomic_init_u32(&hdr->coord_state, PCOPY_COORD_PENDING);
+	pg_atomic_init_u32(&hdr->lost, 0);
+	pg_atomic_init_u32(&hdr->launched, 0);
+	pg_atomic_init_u32(&hdr->caller_gone, 0);
 
 	for (i = 0; i < workers; i++)
 	{
@@ -1897,7 +2118,10 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		slots[i].ended_at_marker = false;
 		slots[i].sqlerrcode = 0;
 		slots[i].errmsg[0] = '\0';
+		slots[i].errdetail[0] = '\0';
+		slots[i].errhint[0] = '\0';
 		pg_atomic_init_u32(&slots[i].state, PCOPY_PENDING);
+		pg_atomic_init_u32(&slots[i].armed, 0);
 		/* gid unique among concurrently-prepared xacts: our pid + segment + index */
 		snprintf(slots[i].gid, GIDSIZE, "pgcolumnar/%d/%u/%d",
 				 (int) MyProcPid, (unsigned) dsmh, i);
@@ -1919,6 +2143,15 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	 * Launch the coordinator and wait. On cancellation, terminate it; the
 	 * coordinator rolls back or (if it had already decided to commit) leaves the
 	 * standard in-doubt prepared transactions for resolution.
+	 *
+	 * And wait for it to exit before raising the error (#2187). Returning at
+	 * once left the loaders' prepared transactions in pg_prepared_xacts while
+	 * the coordinator rolled them back: measured on PG 18, the caller's own
+	 * next statement saw 1 after a statement_timeout. The wait cannot hang on
+	 * a lock this backend holds: the coordinator waits on the target only
+	 * before it sets launched, and the caller waits only once it has seen
+	 * launched. Before that, caller_gone stops it from starting any loader. A
+	 * second cancel ends the wait.
 	 */
 	PG_TRY();
 	{
@@ -1931,8 +2164,14 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		pg_atomic_write_u32(&hdr->caller_gone, 1);
+		pg_memory_barrier();
 		if (coord_handle != NULL)
+		{
 			TerminateBackgroundWorker(coord_handle);
+			if (pg_atomic_read_u32(&hdr->launched) != 0)
+				(void) WaitForBackgroundWorkerShutdown(coord_handle);
+		}
 		dsm_detach(seg);
 		PG_RE_THROW();
 	}
@@ -1963,16 +2202,23 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	else
 	{
 		char		msg[512];
+		char		detail[512];
+		char		hint[256];
 		int			code = hdr->coord_sqlerrcode;
 		int			fw = hdr->failed_worker;
 
 		strlcpy(msg, hdr->coord_errmsg[0] ? hdr->coord_errmsg
 				: "coordinator exited without reporting a result", sizeof(msg));
+		strlcpy(detail, hdr->coord_errdetail, sizeof(detail));
+		strlcpy(hint, hdr->coord_errhint, sizeof(hint));
 		dsm_detach(seg);
+		/* the loader's DETAIL and HINT go with its message (#2187) */
 		if (fw >= 0)
 			ereport(ERROR,
 					(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
-					 errmsg("pgcolumnar.parallel_copy worker %d failed: %s", fw, msg)));
+					 errmsg("pgcolumnar.parallel_copy worker %d failed: %s", fw, msg),
+					 detail[0] ? errdetail_internal("%s", detail) : 0,
+					 hint[0] ? errhint("%s", hint) : 0));
 		else
 			ereport(ERROR,
 					(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
