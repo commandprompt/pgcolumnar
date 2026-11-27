@@ -2530,15 +2530,25 @@ guard_tests 897
 # whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
 # caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
 # over the cluster files.
-# cluster_tests 6118 -> 6141 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# cluster_tests 6118 -> 6126 for #2198's eight tests: six in test_objstore_http_read.py (30 reads from a server that
+# resets each kept-alive connection, 30 from one that closes at once after each answer, a reset after part of a
+# status line and after part of a body refused, a server that resets every GET refused after one retry, and that GET
+# sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
+# collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
+# cluster_tests 6126 -> 6128, still #2198, for the review of #2225 at 532b11f9: two tests in test_objstore_listing.py
+# (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
+# collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+# cluster_tests 6128 -> 6151 for #2188's twenty-three tests in test_parallel_copy.py: four premises
 # (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
 # test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
 # with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
 # test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
 # test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6141 -> 6146, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# cluster_tests 6151 -> 6156, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6146
+cluster_tests 6156
