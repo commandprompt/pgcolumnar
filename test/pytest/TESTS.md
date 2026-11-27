@@ -14952,6 +14952,8 @@ Removal proof on the module, each mutant failing at least one test here:
 
 The encoding-selftest arm fails with `got 'encode_invariants'` when that suite is taken out of the subset.
 
+The export_sink arm fails with `got 'no' want 'yes'` on main 99c46e24, where the subset left out `export_sink` (#2201). That suite's check `fatal: no backend died by a signal during the FATAL arms` is the only detector of mutant m3 from the #2142 reviews (`sink_list(snk);` moved above `AllocateFile`), and a PG 18 release build stays green under m3. On a PG 18.4 ASAN+UBSAN build, `PGC_SAN_SUITES=export_sink run_san.py` fails under m3 with `src/columnar_sink.c:108:18: runtime error: null pointer passed as argument 1` and passes without it; `run_san.sh` does the same. Selftest part 130's check of the same name reads `run_san.sh` only; `run_san.py`'s half is held here, by name and by equality with `run_san.sh`, so the shell side does not reach across harnesses (CONTEXT.md, "Tests").
+
 End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 
 - **Clean tree:** `24 suites under sanitizers, 0 failed, 0 declined`, `SANITIZER GATE PASSED`. The installed `pgcolumnar.so` carries 21 `__asan_report`/`__ubsan_handle` symbols.
@@ -14964,6 +14966,7 @@ End to end on PG18.4, built by `build_san.sh` (the nightly's version):
 | --- | --- |
 | `test_the_subset_is_the_shell_gates_subset` | `run_san.py` sanitizes the suites `run_san.sh --list-suites` names, in order |
 | `test_the_subset_runs_every_twin_that_drives_the_encoding_selftest` | selftest part 130's rule over the twins: a twin that drives `debug_encoding_selftest` is in the subset |
+| `test_the_subset_runs_export_sink` | the subset runs `export_sink`, by name: its signal check is the only detector of m3, which a release build does not see (#2201) |
 | `test_every_sanitized_suite_has_a_complete_twin` | every suite in the subset has a twin graded complete, one file per suite |
 | `test_a_suite_without_a_complete_twin_is_refused` | on fixtures: a suite whose twin is absent, or not in `COMPLETE`, is refused by name |
 | `test_a_build_without_the_sanitizer_flags_is_refused` | `-fsanitize=address,undefined` and `-fno-sanitize=function` are both required, and each missing one is named |
