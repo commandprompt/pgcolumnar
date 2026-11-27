@@ -2368,6 +2368,34 @@ insert_row:
 }
 
 /*
+ * PgColumnarStorageRowLockHeldByMe
+ *		True when this transaction holds the storage-row lock that
+ *		PgColumnarInsertNativeStorageRow takes for storageId (#2211).
+ *
+ * The writer takes it on every row-group flush, whether or not the storage row
+ * is committed already, and holds it to transaction end; only a relation
+ * created in this transaction, and a bulk loader that finds the row committed,
+ * skip it. parallel_copy's coordinator and loaders take it in their own
+ * transactions, so a caller holding it would leave them waiting on it while
+ * the caller waits on them. Reads this backend's local lock table only.
+ */
+bool
+PgColumnarStorageRowLockHeldByMe(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	SET_LOCKTAG_ADVISORY(tag, MyDatabaseId,
+						 (uint32) (storageId >> 32),
+						 (uint32) (storageId & 0xFFFFFFFF),
+						 PGCOLUMNAR_LOCKCLASS_STORAGE_ROW);
+#if PG_VERSION_NUM >= 170000
+	return LockHeldByMe(&tag, ExclusiveLock, false);
+#else
+	return LockHeldByMe(&tag, ExclusiveLock);
+#endif
+}
+
+/*
  * PgColumnarRetargetStorageRelation
  *		Point this relation's storage row at the OID that survived the rewrite.
  *

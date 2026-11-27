@@ -2256,46 +2256,100 @@ guard_tests 897
 # test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
 # test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
 # fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
-# cluster_tests 5664 -> 5667 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# cluster_tests 5664 -> 5666 for #2193's review (jdatcmd at 82a1f0a5): test_a_descriptor_that_closes_mid_read_is_skipped
+# and test_a_pid_that_does_not_exist_reads_nothing in test_harness_isolation.py, 2 tests, by collection of the
+# files not in NO_CLUSTER (first counted as 5597 -> 5599; shifted by main's later growth). They need no cluster, but they test that file's
+# own _fds_on and sit beside it; the file stays cluster-bound through its other tests, so they run in the cluster
+# job. A NO_CLUSTER home would have to import one test module from another.
+# cluster_tests 5666 -> 5676 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
+# as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
+# #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
+# files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
+# cluster_tests 5685 -> 5699 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
+# lines with the key after them, an unsorted row after continued records, a file that ends inside a
+# record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
+# NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
+# cluster_tests 5699 -> 5706 for the 7 tests the review of #2148 at 29b71633 asked for in
+# test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
+# rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
+# offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
+# ci.yml selects them: 5527 tests collected.
+# cluster_tests 5706 -> 5711 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
+# transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
+# COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
+# the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
+# cluster_tests 5711 -> 5720 for the 9 tests the review of #2148 at 33724a76 asked for in
+# test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
+# file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
+# in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
+# collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
+# cluster_tests 5720 -> 5734 for #2183's fourteen tests: test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on
+# in test_parallel_export_parquet.py (5 parametrized: an export after LOCK TABLE ... ACCESS EXCLUSIVE, after
+# TRUNCATE and after ACCESS EXCLUSIVE on one leaf is refused with 55000; under SHARE, and with ACCESS EXCLUSIVE
+# on another table, it still exports), and in test_parallel_copy.py
+# test_parallel_copy_a_lock_the_caller_holds_is_refused_not_waited_on (6 parametrized: refused after ACCESS
+# EXCLUSIVE, TRUNCATE, SHARE and ACCESS EXCLUSIVE on one partition; still loads under ROW EXCLUSIVE and with
+# ACCESS EXCLUSIVE on another table), test_parallel_copy_refusal_order_with_a_lock_the_caller_holds (2
+# parametrized: 55000 before #2080's 0A000, 42501 before 55000) and test_parallel_copy_a_refused_load_loads_nothing,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5734 -> 5741 for the #2212 review of #2183: in test_parallel_export_parquet.py one more case of
+# test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on (an export in a savepoint keeps 25001), and in
+# test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
+# still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
+# mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
+# cluster_tests 5741 -> 5755 for #2211's fourteen tests in test_parallel_copy.py: test_parallel_copy_own_write_premise,
+# test_parallel_copy_the_callers_own_write_is_refused_not_waited_on (4 parametrized: a load after an INSERT into
+# the same table with 2 workers and with 1, into a table with a committed row, and into one partition is refused
+# with 55000), test_parallel_copy_refused_after_its_own_write_loads_nothing,
+# test_parallel_copy_without_a_write_to_the_target_still_loads (3 parametrized: an INSERT into another table, and
+# no write into a single and a partitioned table, still load),
+# test_parallel_copy_own_write_refusal_names_the_last_partition_and_its_detail and
+# test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order (4 parametrized: a later partition and a
+# second-level leaf are refused naming it, 55000 before #2080's 0A000, #2183's refusal before this one), by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5755 -> 5758 for #2077 in test_native_parquet_streaming.py: a data page with no values
 # reads (test_parquet_streaming_data_page_with_no_values_reads,
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
-# cluster_tests 5667 -> 5678 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# cluster_tests 5758 -> 5769 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
 # the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-# cluster_tests 5678 -> 5685 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# cluster_tests 5769 -> 5776 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
 # pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-# cluster_tests 5685 -> 5695 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5776 -> 5786 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
 # pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
 # with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-# cluster_tests 5695 -> 5705 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5786 -> 5796 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
 # pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
 # version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
 # dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
 # 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
 # `--collect-only -q`: 5536 tests collected.
-# cluster_tests 5705 -> 5714 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# cluster_tests 5796 -> 5805 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
 # pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
 # (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
 # given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
 # collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
-# cluster_tests 5714 -> 5725 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
+# cluster_tests 5805 -> 5816 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
 # pin the refusal of a repeated num_values whose last value is not 0 (v1 and v2), of a Thrift field id
 # outside int16 (65537 and -65535, v1 and v2, and 32769 from a short-form delta), the read of an unknown
 # field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
 # dictionary page that does not reset the run of empty pages, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5725 tests collected.
-# cluster_tests 5725 -> 5730 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
+# cluster_tests 5816 -> 5821 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
 # pin that a wide long-form field id is refused, not narrowed (65537 and -65535 in a PageHeader, which
 # narrow to the page type), and the edges of the int16 range (32768 and -32769 refused, -32768 read), by
-# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5730 tests collected.
-cluster_tests 5730
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5821 tests collected.
+cluster_tests 5821
