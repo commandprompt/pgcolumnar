@@ -198,18 +198,31 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
-# lvl_q SQL -- q with a client-side bound of 60 s. A wrong walk up the schema
-# tree can loop in the backend, which then ignores statement_timeout and every
-# cancel; under the bound that reads as an empty value, a FAIL (#2146 fifth review).
+# Every statement in this arm runs under a client-side bound of 60 s: lvl_q
+# for a value, lvl_run for a statement, lvl_refusal for a refusal. A wrong walk
+# up the schema tree can loop in the backend, which then ignores
+# statement_timeout and every cancel. Under the bound a hung query is a FAIL,
+# not a hung suite (#2146 fifth and sixth reviews).
+# lvl_q SQL -- q, bounded: a hung query reads as an empty value.
 lvl_q() {
 	timeout 60 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
 		-d "$PGC_DB" -At -c "$1" 2>/dev/null || true
 }
+# lvl_run SQL -- psql_run, bounded.
+lvl_run() {
+	timeout 60 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "$1"
+}
 lvl_refusal() {
-	local out
-	if out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
-		-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -q -c "$1" 2>&1)"; then
+	local out rc=0
+	out="$(timeout 60 env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -q -c "$1" 2>&1)" || rc=$?
+	if [ "$rc" = 0 ]; then
 		echo "succeeded"
+		return
+	fi
+	if [ "$rc" = 124 ]; then
+		echo "other error: no answer in 60 s"
 		return
 	fi
 	case "$out" in
@@ -327,43 +340,43 @@ dlast = pa.array([{"a": 1, "p": {"q": {"b": 2}}}, {"a": 3, "p": None}, None, {"a
 pq.write_table(pa.table({"id": pa.array([0, 1, 2, 3], I), "s": dlast}), sys.argv[18])
 PY
 then
-	psql_run "CREATE TYPE lvl_ab AS (a int, b text);"
+	lvl_run "CREATE TYPE lvl_ab AS (a int, b text);"
 	# One line per file: each row as id:value, NULL spelled out.
 	REQ_ROWS="string_agg(id || ':' || coalesce(rl::text, 'NULL') || ':' || coalesce(rlr::text, 'NULL') || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
 	REQ_WANT='0:{}:{}:(,x) 1:{NULL}:{5}:(5,y) 2:{1,NULL}:{1,2}:(,)'
 	check "list in a nullable struct reads like pyarrow" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || coalesce(sl::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || coalesce(sl::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_STL') AS t(id int, sa int, sl bigint[]);")" \
 		'0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL} 4:NULL:NULL'
 	check "required lists and struct read like pyarrow" \
-		"$(q "SELECT $REQ_ROWS FROM pgcolumnar.read_parquet('$LVL_REQ') AS t(id int, rl int[], rlr int[], s lvl_ab);")" \
+		"$(lvl_q "SELECT $REQ_ROWS FROM pgcolumnar.read_parquet('$LVL_REQ') AS t(id int, rl int[], rlr int[], s lvl_ab);")" \
 		"$REQ_WANT"
-	psql_run "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab);"
-	psql_run "SELECT pgcolumnar.import_parquet('lvl_heap', '$LVL_REQ');"
+	lvl_run "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab);"
+	lvl_run "SELECT pgcolumnar.import_parquet('lvl_heap', '$LVL_REQ');"
 	check "required lists and struct import like pyarrow" \
-		"$(q "SELECT $REQ_ROWS FROM lvl_heap;")" "$REQ_WANT"
-	psql_run "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
-	psql_run "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab)
+		"$(lvl_q "SELECT $REQ_ROWS FROM lvl_heap;")" "$REQ_WANT"
+	lvl_run "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;"
+	lvl_run "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab)
 		SERVER lvl_srv OPTIONS (path '$LVL_REQ');"
 	check "required lists and struct read like pyarrow through the FDW" \
-		"$(q "SELECT $REQ_ROWS FROM lvl_f;")" "$REQ_WANT"
+		"$(lvl_q "SELECT $REQ_ROWS FROM lvl_f;")" "$REQ_WANT"
 	# The list inside a nullable struct, through the other two read paths.
 	STL_ROWS="string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || coalesce(sl::text, 'NULL'), ' ' ORDER BY id)"
-	psql_run "CREATE TABLE lvl_stl_heap (id int, sa int, sl bigint[]);"
-	psql_run "SELECT pgcolumnar.import_parquet('lvl_stl_heap', '$LVL_STL');"
+	lvl_run "CREATE TABLE lvl_stl_heap (id int, sa int, sl bigint[]);"
+	lvl_run "SELECT pgcolumnar.import_parquet('lvl_stl_heap', '$LVL_STL');"
 	check "list in a nullable struct imports like pyarrow" \
-		"$(q "SELECT $STL_ROWS FROM lvl_stl_heap;")" \
+		"$(lvl_q "SELECT $STL_ROWS FROM lvl_stl_heap;")" \
 		'0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL} 4:NULL:NULL'
-	psql_run "CREATE FOREIGN TABLE lvl_stl_f (id int, sa int, sl bigint[])
+	lvl_run "CREATE FOREIGN TABLE lvl_stl_f (id int, sa int, sl bigint[])
 		SERVER lvl_srv OPTIONS (path '$LVL_STL');"
 	check "list in a nullable struct reads like pyarrow through the FDW" \
-		"$(q "SELECT $STL_ROWS FROM lvl_stl_f;")" \
+		"$(lvl_q "SELECT $STL_ROWS FROM lvl_stl_f;")" \
 		'0:1:{1,2} 1:NULL:NULL 2:2:{} 3:3:{NULL} 4:NULL:NULL'
 	# A composite whose fields sit at different depths of one struct. The struct
 	# is NULL only when s is; a NULL inner is a NULL field b, not a NULL row.
-	psql_run "CREATE TYPE lvl_ii AS (a int, b int);"
+	lvl_run "CREATE TYPE lvl_ii AS (a int, b int);"
 	check "a NULL sub-struct keeps its sibling field" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_SUB') AS t(id int, s lvl_ii);")" \
 		'0:(1,2) 1:(3,) 2:NULL 3:(,4)'
 	# A composite over two top-level columns stands for no struct in the file, so
@@ -373,16 +386,16 @@ then
 		"refused: not inside one struct"
 	# The deep leaf first. The composite stands for s, the group holding both
 	# leaves, not for inner, the first leaf's parent.
-	psql_run "CREATE TYPE lvl_ba AS (b int, a int);"
+	lvl_run "CREATE TYPE lvl_ba AS (b int, a int);"
 	check "a composite finds its struct when the deep leaf comes first" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_MIR') AS t(id int, s lvl_ba);")" \
 		'0:(2,1) 1:(,3) 2:NULL 3:(4,)'
 	# One field. The composite stands for s, the field's parent, so a NULL a
 	# is (), not NULL. Over a top-level column it stands for no struct.
-	psql_run "CREATE TYPE lvl_one AS (a int);"
+	lvl_run "CREATE TYPE lvl_one AS (a int);"
 	check "a one-field composite is NULL only when its struct is" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_ONE') AS t(id int, s lvl_one, a1 int);")" \
 		'0:() 1:NULL 2:(7)'
 	check "a one-field composite over a top-level column is refused" \
@@ -391,23 +404,23 @@ then
 	# A list is NULL when the list or any parent struct is NULL, not only at
 	# the list's own level.
 	check "a list two structs deep is NULL under a NULL outer struct" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(l::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(l::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_DEEP') AS t(id int, l int[]);")" \
 		'0:NULL 1:NULL 2:NULL 3:{} 4:{1,NULL}'
 	# A composite over inner, one level down. It is NULL when inner or o is.
 	check "a composite over a nested struct is NULL only when that struct is" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_NEST') AS t(id int, x int, c lvl_ab);")" \
 		'0:NULL:NULL 1:1:NULL 2:2:(,) 3:3:(5,q)'
-	psql_run "CREATE TYPE lvl_lt AS (a bigint, b text);"
+	lvl_run "CREATE TYPE lvl_lt AS (a bigint, b text);"
 	check "a composite over a struct inside a struct reads like pyarrow" \
-		"$(q "SELECT string_agg(coalesce(c::text, 'NULL'), ' ' ORDER BY n)
+		"$(lvl_q "SELECT string_agg(coalesce(c::text, 'NULL'), ' ' ORDER BY n)
 		      FROM pgcolumnar.read_parquet('$LVL_SOS') AS t(c lvl_lt, n int);")" \
 		'(1,x) (2,y)'
 	# A composite over q, three structs down. It is NULL when q, p or o is,
 	# so every def below q's own def 3 is a NULL row, not only 0 and 2.
 	check "a composite three structs deep is NULL under every NULL parent" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_DEEP3') AS t(id int, c lvl_ii);")" \
 		'0:NULL 1:NULL 2:NULL 3:(,) 4:(1,2)'
 	# Leaves from two top-level structs, or from a struct and a top-level
@@ -421,26 +434,26 @@ then
 		"refused: not inside one struct"
 	# inner is REQUIRED, but o is not. A NULL o makes inner NULL, as it makes x.
 	check "a REQUIRED struct is NULL under a NULL parent" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_REQIN') AS t(id int, x int, c lvl_ab);")" \
 		'0:NULL:NULL 1:1:(,) 2:2:(5,q)'
 	# x binds s.a and the composite binds s.b alone. It still stands for s.
-	psql_run "CREATE TYPE lvl_b AS (b int);"
+	lvl_run "CREATE TYPE lvl_b AS (b int);"
 	check "a composite over part of a struct is NULL only when that struct is" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_PART') AS t(id int, x int, c lvl_b);")" \
 		'0:1:(2) 1:NULL:NULL 2:3:()'
 	# The composite binds s.a alone and y binds s.b after it. The next leaf is
 	# still inside s, but the composite's own leaves are, too: it stands for s.
 	check "a composite over the leading part of a struct is NULL only when that struct is" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(y::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(y::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_PRE') AS t(id int, c lvl_one, y int);")" \
 		'0:(1):2 1:NULL:NULL 2:():3'
 	# In s struct<inner struct<b>, a>, a composite over inner.b alone stands for
 	# inner, its own leaves' struct, not for s, which also holds the next leaf a.
 	# A NULL inner is a NULL composite.
 	check "a composite over a deep leaf stands for its own struct, not the next leaf's" \
-		"$(q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(a::text, 'NULL'), ' ' ORDER BY id)
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || coalesce(a::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_MIR') AS t(id int, c lvl_b, a int);")" \
 		'0:(2):1 1:NULL:3 2:NULL:NULL 3:(4):NULL'
 	# The struct that holds both leaves is two levels above each of them, or

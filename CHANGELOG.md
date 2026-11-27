@@ -621,7 +621,9 @@ true until the next version shipped.
   was NULL. A one-field composite over one top-level column is now an error
   too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
   `test_parquet_nested_import.py`, which also read composites whose leaves sit
-  two levels below their struct.
+  two levels below their struct. Every statement in their pyarrow arm runs
+  under a 60-second client-side bound, so a reader that loops fails the check
+  instead of hanging the suite.
 - `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
   LIST group such as `repeated int64 l`, as its values (#1916). It read every
   row as an empty array, `{}`, with no error. The #2079 fix above corrected

@@ -41,16 +41,22 @@ def _value(dsn, sql):
     return "" if row is None or row[0] is None else str(row[0])
 
 
-def _bounded_value(dsn, sql, seconds=60):
-    """_value with a client-side bound. A wrong walk up the schema tree can loop
-    in the backend, which then ignores statement_timeout and every cancel; under
-    the bound that reads as a failed query, not a hung run (#2146 fifth review).
-    The daemon thread is left blocked; the cluster's immediate stop ends it."""
+def _bounded(fn, dsn, sql, on_timeout, seconds=60):
+    """fn(dsn, sql) with a client-side bound. A wrong walk up the schema tree can
+    loop in the backend, which then ignores statement_timeout and every cancel;
+    under the bound that reads as on_timeout, a FAIL, not a hung run (#2146 fifth
+    and sixth reviews). The daemon thread is left blocked; the cluster's
+    immediate stop ends it."""
     out = []
-    worker = threading.Thread(target=lambda: out.append(_value(dsn, sql)), daemon=True)
+    worker = threading.Thread(target=lambda: out.append(fn(dsn, sql)), daemon=True)
     worker.start()
     worker.join(seconds)
-    return out[0] if out else query_error(f"no answer in {seconds} s")
+    return out[0] if out else on_timeout
+
+
+def _bounded_value(dsn, sql, seconds=60):
+    """_value, bounded: a hung query reads as a failed query."""
+    return _bounded(_value, dsn, sql, query_error(f"no answer in {seconds} s"), seconds)
 
 
 def _run(dsn, sql):
@@ -331,93 +337,103 @@ def _refusal(dsn, sql):
     return "succeeded"
 
 
+def _bounded_refusal(dsn, sql, seconds=60):
+    """_refusal, bounded: a hung query reads as the other error, as in the shell."""
+    return _bounded(_refusal, dsn, sql, f"other error: no answer in {seconds} s", seconds)
+
+
+def _bounded_run(dsn, sql, seconds=60):
+    """_run, bounded: a hung statement is abandoned, as a failed one is."""
+    _bounded(_run, dsn, sql, None, seconds)
+
+
 def _level_arm(ni, pa, pq):
     """Write the two files and read them every way, once, on the first test here."""
     if "levels" not in ni:
         dsn = ni["dsn"]
         stl, req = ni["dir"] / "lvl_stl.parquet", ni["dir"] / "lvl_req.parquet"
         _write_level_files(stl, req, pa, pq)
-        _run(dsn, "CREATE TYPE lvl_ab AS (a int, b text)")
-        got = {"stl read": _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_ab AS (a int, b text)")
+        got = {"stl read": _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(sa::text, 'NULL') || ':' || "
                  "coalesce(sl::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{stl}') AS t(id int, sa int, sl bigint[])")}
-        got["req read"] = _value(
+        got["req read"] = _bounded_value(
             dsn, f"SELECT {LVL_REQ_ROWS} FROM pgcolumnar.read_parquet('{req}') "
                  "AS t(id int, rl int[], rlr int[], s lvl_ab)")
-        _run(dsn, "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab)")
-        _run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_heap', '{req}')")
-        got["req import"] = _value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_heap")
-        _run(dsn, "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
-        _run(dsn, "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab) "
+        _bounded_run(dsn, "CREATE TABLE lvl_heap (id int, rl int[], rlr int[], s lvl_ab)")
+        _bounded_run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_heap', '{req}')")
+        got["req import"] = _bounded_value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_heap")
+        _bounded_run(dsn, "CREATE SERVER lvl_srv FOREIGN DATA WRAPPER pgcolumnar_parquet")
+        _bounded_run(dsn, "CREATE FOREIGN TABLE lvl_f (id int, rl int[], rlr int[], s lvl_ab) "
                   f"SERVER lvl_srv OPTIONS (path '{req}')")
-        got["req fdw"] = _value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_f")
+        got["req fdw"] = _bounded_value(dsn, f"SELECT {LVL_REQ_ROWS} FROM lvl_f")
         # The list inside a nullable struct, through the other two read paths.
-        _run(dsn, "CREATE TABLE lvl_stl_heap (id int, sa int, sl bigint[])")
-        _run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_stl_heap', '{stl}')")
-        got["stl import"] = _value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_heap")
-        _run(dsn, "CREATE FOREIGN TABLE lvl_stl_f (id int, sa int, sl bigint[]) "
+        _bounded_run(dsn, "CREATE TABLE lvl_stl_heap (id int, sa int, sl bigint[])")
+        _bounded_run(dsn, f"SELECT pgcolumnar.import_parquet('lvl_stl_heap', '{stl}')")
+        got["stl import"] = _bounded_value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_heap")
+        _bounded_run(dsn, "CREATE FOREIGN TABLE lvl_stl_f (id int, sa int, sl bigint[]) "
                   f"SERVER lvl_srv OPTIONS (path '{stl}')")
-        got["stl fdw"] = _value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_f")
+        got["stl fdw"] = _bounded_value(dsn, f"SELECT {LVL_STL_ROWS} FROM lvl_stl_f")
         sub, flat = ni["dir"] / "lvl_sub.parquet", ni["dir"] / "lvl_flat.parquet"
         _write_shape_files(sub, flat, pa, pq)
-        _run(dsn, "CREATE TYPE lvl_ii AS (a int, b int)")
-        got["sub read"] = _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_ii AS (a int, b int)")
+        got["sub read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{sub}') AS t(id int, s lvl_ii)")
-        got["flat refusal"] = _refusal(
+        got["flat refusal"] = _bounded_refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{flat}') AS t(id int, c lvl_ii)")
         more = {k: ni["dir"] / f"lvl_{k}.parquet" for k in ("mirror", "one", "deep", "nest", "sos", "deep3",
                                                                  "two", "reqin", "part", "pre",
                                                                  "twodeep", "far", "dfirst", "dlast")}
         _write_more_shape_files(more, pa, pq)
         rows = "string_agg(id || ':' || coalesce(s::text, 'NULL'), ' ' ORDER BY id)"
-        _run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
-        got["mirror read"] = _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_ba AS (b int, a int)")
+        got["mirror read"] = _bounded_value(
             dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['mirror']}') AS t(id int, s lvl_ba)")
-        _run(dsn, "CREATE TYPE lvl_one AS (a int)")
-        got["one read"] = _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_one AS (a int)")
+        got["one read"] = _bounded_value(
             dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['one']}') "
                  "AS t(id int, s lvl_one, a1 int)")
-        got["one refusal"] = _refusal(
+        got["one refusal"] = _bounded_refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['one']}') "
                  "AS t(id int, s lvl_one, c lvl_one)")
-        got["deep read"] = _value(
+        got["deep read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(l::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['deep']}') AS t(id int, l int[])")
-        got["nest read"] = _value(
+        got["nest read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || "
                  "coalesce(c::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['nest']}') AS t(id int, x int, c lvl_ab)")
-        _run(dsn, "CREATE TYPE lvl_lt AS (a bigint, b text)")
-        got["sos read"] = _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_lt AS (a bigint, b text)")
+        got["sos read"] = _bounded_value(
             dsn, "SELECT string_agg(coalesce(c::text, 'NULL'), ' ' ORDER BY n) "
                  f"FROM pgcolumnar.read_parquet('{more['sos']}') AS t(c lvl_lt, n int)")
-        got["deep3 read"] = _value(
+        got["deep3 read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['deep3']}') AS t(id int, c lvl_ii)")
-        got["two refusal"] = _refusal(
+        got["two refusal"] = _bounded_refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['two']}') AS t(id int, c lvl_ii, b int)")
-        got["struct column refusal"] = _refusal(
+        got["struct column refusal"] = _bounded_refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['two']}') AS t(id int, a int, c lvl_ii)")
         x_c_rows = ("string_agg(id || ':' || coalesce(x::text, 'NULL') || ':' || "
                     "coalesce(c::text, 'NULL'), ' ' ORDER BY id)")
-        got["reqin read"] = _value(
+        got["reqin read"] = _bounded_value(
             dsn, f"SELECT {x_c_rows} "
                  f"FROM pgcolumnar.read_parquet('{more['reqin']}') AS t(id int, x int, c lvl_ab)")
-        _run(dsn, "CREATE TYPE lvl_b AS (b int)")
-        got["part read"] = _value(
+        _bounded_run(dsn, "CREATE TYPE lvl_b AS (b int)")
+        got["part read"] = _bounded_value(
             dsn, f"SELECT {x_c_rows} "
                  f"FROM pgcolumnar.read_parquet('{more['part']}') AS t(id int, x int, c lvl_b)")
-        got["pre read"] = _value(
+        got["pre read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || "
                  "coalesce(y::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['pre']}') AS t(id int, c lvl_one, y int)")
-        got["mirror deep leaf read"] = _value(
+        got["mirror deep leaf read"] = _bounded_value(
             dsn, "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL') || ':' || "
                  "coalesce(a::text, 'NULL'), ' ' ORDER BY id) "
                  f"FROM pgcolumnar.read_parquet('{more['mirror']}') AS t(id int, c lvl_b, a int)")
-        got["twodeep refusal"] = _refusal(
+        got["twodeep refusal"] = _bounded_refusal(
             dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['twodeep']}') AS t(id int, c lvl_ii)")
         got["far read"] = _bounded_value(
             dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['far']}') AS t(id int, s lvl_ii)")
