@@ -118,6 +118,13 @@ check "cluster at REPEATABLE READ raises 40001 when a row was deleted after the 
 check "cluster at REPEATABLE READ raises 40001 when another session's compact_rewrite replaced its groups after the snapshot" \
 	"$(rs_race rs_cl_rep pgcolumnar 'REPEATABLE READ' replace "pgcolumnar.cluster('rs_cl_rep', 'v')" '' second)" \
 	"40001|$(msg rs_cl_rep)|55|1815"
+# The Hilbert verbs reach the same two rewrites with another curve (#2249 review, B2).
+check "recluster_hilbert at REPEATABLE READ raises 40001 when a row was inserted after the snapshot" \
+	"$(rs_race rs_rh_ins pgcolumnar 'REPEATABLE READ' ins "pgcolumnar.recluster_hilbert('rs_rh_ins', 'v')")" \
+	"40001|$(msg rs_rh_ins)|51|1345"
+check "cluster_hilbert at REPEATABLE READ raises 40001 when a row was inserted after the snapshot" \
+	"$(rs_race rs_ch_ins pgcolumnar 'REPEATABLE READ' ins "pgcolumnar.cluster_hilbert('rs_ch_ins', 'v')")" \
+	"40001|$(msg rs_ch_ins)|51|1345"
 check "vacuum at REPEATABLE READ raises 40001 when rows were inserted and deleted after the snapshot" \
 	"$(rs_race rs_va pgcolumnar 'REPEATABLE READ' both "pgcolumnar.vacuum('rs_va')")" \
 	"40001|$(msg rs_va)|50|1342"

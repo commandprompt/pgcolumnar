@@ -15189,6 +15189,8 @@ Each arm reads `ok|<A's count|sum after the verb>|<count|sum after commit>`, or 
 | `test_cluster_refuses_an_insert_after_the_snapshot` | `cluster` after B inserted row 70 raises 40001 |
 | `test_cluster_refuses_a_delete_after_the_snapshot` | `cluster` after B deleted row 3 raises 40001 |
 | `test_cluster_refuses_groups_another_compact_rewrite_replaced` | `cluster` after B deleted five rows of a second group and its `compact_rewrite` replaced both groups raises 40001: both snapshots list two groups, with different numbers and no deleted rows in the new ones; on main A counted 55 of the 60 rows it saw |
+| `test_recluster_hilbert_refuses_an_insert_after_the_snapshot` | `recluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
+| `test_cluster_hilbert_refuses_an_insert_after_the_snapshot` | `cluster_hilbert` after B inserted row 70 raises 40001; on main A counted 51 rows summing 1345 |
 | `test_vacuum_refuses_a_change_after_the_snapshot` | `vacuum` after B's insert and delete raises 40001 |
 | `test_vacuum_sorted_refuses_a_change_after_the_snapshot` | `vacuum_sorted` after B's insert and delete raises 40001 |
 | `test_every_verb_runs_with_nothing_changed` | control: with nothing changed, all five verbs run at REPEATABLE READ, each in its own statement, and A still counts 50 rows summing 1275 |

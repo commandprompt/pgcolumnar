@@ -157,6 +157,24 @@ def test_cluster_refuses_groups_another_compact_rewrite_replaced(pgc_cluster, pg
                 "cluster at REPEATABLE READ raises 40001 when another session's compact_rewrite replaced its groups after the snapshot")
 
 
+def test_recluster_hilbert_refuses_an_insert_after_the_snapshot(pgc_cluster, pgc_conn, expect):
+    """The Hilbert verb reaches the online rewrite with another curve (#2249 review, B2).
+    Before #2167 A counted 51|1345."""
+    expect.text(_race(pgc_cluster, pgc_conn, "rs_rh_ins", "pgcolumnar", "REPEATABLE READ", "ins",
+                      ["SELECT pgcolumnar.recluster_hilbert('rs_rh_ins', 'v')"]),
+                f"40001|{_msg('rs_rh_ins')}|51|1345",
+                "recluster_hilbert at REPEATABLE READ raises 40001 when a row was inserted after the snapshot")
+
+
+def test_cluster_hilbert_refuses_an_insert_after_the_snapshot(pgc_cluster, pgc_conn, expect):
+    """The Hilbert verb reaches the whole-table rewrite with another curve (#2249 review,
+    B2). Before #2167 A counted 51|1345."""
+    expect.text(_race(pgc_cluster, pgc_conn, "rs_ch_ins", "pgcolumnar", "REPEATABLE READ", "ins",
+                      ["SELECT pgcolumnar.cluster_hilbert('rs_ch_ins', 'v')"]),
+                f"40001|{_msg('rs_ch_ins')}|51|1345",
+                "cluster_hilbert at REPEATABLE READ raises 40001 when a row was inserted after the snapshot")
+
+
 def test_vacuum_refuses_a_change_after_the_snapshot(pgc_cluster, pgc_conn, expect):
     """Before #2167 A counted 50|1342."""
     expect.text(_race(pgc_cluster, pgc_conn, "rs_va", "pgcolumnar", "REPEATABLE READ", "both",
