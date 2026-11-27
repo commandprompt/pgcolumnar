@@ -23,7 +23,10 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-# parallel_copy prepares one transaction per worker.
+# parallel_copy prepares one transaction per worker. Every parallel_copy below loads
+# a table with a row trigger, which parallel_copy refuses with more than one worker
+# (#2187), so each runs one loader: still a coordinator and a loader bgworker, and the
+# loader still runs the trigger and prepares, which is what this suite is about.
 export PGC_EXTRA_CONF=$'max_prepared_transactions=4\nmax_worker_processes=16'
 pgc_setup "${1:-/usr/local/pg17/bin/pg_config}"
 
@@ -72,7 +75,7 @@ psql_run "CREATE TRIGGER nw_def_stamp BEFORE INSERT ON nw_def FOR EACH ROW EXECU
 # The definer: a superuser session calls it, and inside it the caller is t_nl under a
 # security-restricted context, which must hold in the workers too.
 psql_run "CREATE FUNCTION nw_definer_copy(p text) RETURNS bigint LANGUAGE sql SECURITY DEFINER
-          AS \$\$SELECT pgcolumnar.parallel_copy('nw_def'::regclass, p, 2)\$\$;"
+          AS \$\$SELECT pgcolumnar.parallel_copy('nw_def'::regclass, p, 1)\$\$;"
 psql_run "ALTER FUNCTION nw_definer_copy(text) OWNER TO t_nl;"
 psql_run "GRANT SELECT ON nw_src TO t_nl;"
 psql_run "GRANT SELECT, INSERT ON nw_dst, nw_wide, nw_esc, nw_def, nw_sw TO t_nl;"
@@ -99,7 +102,7 @@ check_num "a NOLOGIN role's parallel_export_parquet exports every row" \
 	"$(sed -n 2p <<<"$reply")" "$ROWS"
 
 # ---- parallel_copy ----------------------------------------------------------------
-reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_dst'::regclass, '$infile', 2);")"
+reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_dst'::regclass, '$infile', 1);")"
 check_num "a NOLOGIN role's parallel_copy loads every row" "$(sed -n 2p <<<"$reply")" "$ROWS"
 check "parallel_copy's workers wrote every row as the NOLOGIN role" \
 	"$(q "SELECT string_agg(DISTINCT coalesce(who, '<null>'), ',') FROM nw_dst;")" "t_nl"
@@ -108,7 +111,7 @@ check "parallel_copy's workers wrote every row as the NOLOGIN role" \
 # On PG17+ a worker that connected as the authenticated user became that user on RESET
 # ROLE, PREPAREd as it, and left the leader "permission denied to finish prepared
 # transaction" with two orphaned prepared transactions holding locks.
-reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_esc'::regclass, '$infile', 2);")"
+reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_esc'::regclass, '$infile', 1);")"
 check "a copy trigger that resets the role still writes every row as the NOLOGIN role" \
 	"$(q "SELECT count(*) || ':' || coalesce(string_agg(DISTINCT coalesce(who, '<null>'), ','), '') FROM nw_esc;")" "$ROWS:t_nl"
 check_num "and that copy leaves no prepared transaction behind" \
@@ -116,7 +119,7 @@ check_num "and that copy leaves no prepared transaction behind" \
 q "SELECT 'ROLLBACK PREPARED ' || quote_literal(gid) FROM pg_prepared_xacts" | while read -r _rb; do q "$_rb" >/dev/null; done
 
 # ---- a trigger that switches to another role is refused before it prepares ---------
-reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_sw'::regclass, '$infile', 2);")"
+reply="$(as_nl "SELECT pgcolumnar.parallel_copy('nw_sw'::regclass, '$infile', 1);")"
 check "a copy trigger that switches to another role is refused before the worker prepares" \
 	"$(grep -q 'no longer running as the role that called parallel_copy' <<<"$reply" && echo refused || echo "not refused: $(sed -n 2p <<<"$reply")")" "refused"
 check_num "and the refused copy leaves no prepared transaction behind" \
