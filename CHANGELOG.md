@@ -640,6 +640,55 @@ true until the next version shipped.
   domain parameter is frozen as the type the clause compares, so it prunes
   under LIKE, `date_trunc` and `&&` as on main.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
+- `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
+  text-format file holds a backslash before a raw newline, or a `\.`
+  end-of-data line (#2084). The splitter cut the file at any newline byte. In
+  COPY text format a backslash followed by a raw newline is data inside the
+  field, so a cut there split one value into two rows: 2000 input rows stored
+  2003 with no error. A partitioned target refused the same file with
+  `invalid input syntax for type integer`. A worker whose range started after
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1921 rows instead
+  of 1000. The splitters now cut only at a newline with an even run of
+  backslashes before it. The partitioned splitter ends the load at a `\.`
+  line. A loader whose COPY stops at a `\.` line reports it, and the
+  coordinator rolls back every range after it. `file_split_offsets` uses the
+  same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 54
+  checks, including files whose values end in a backslash (an even run before
+  the newline) and a file whose rows after `\.` are invalid. They also cover
+  runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
+  and 4 lines with the key after them, a file that ends inside a continued
+  record, a `\.\r\n` marker, and which failing row the error names. And they
+  cover an escape of a byte that is not a newline (`\t`), a line made only of
+  backslashes, and a `\.` line that falls exactly on a range start. And
+  they cover a `\.` file loaded twice with dedup on, which must leave no
+  prepared transaction, and a `\.` line inside a continued record, where
+  `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
+  (refused with 22P04). And they cover a malformed marker in a partitioned
+  load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
+  newline), which must be refused with 22P04 as heap `COPY` refuses it, and
+  a `\.` line in the first range, which must end the load there.
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
 - A local `export_parquet` or `export_arrow` that ends with FATAL no longer
   leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
   to that temp file and renames it at the end. On an error the writer removes
@@ -680,6 +729,11 @@ true until the next version shipped.
   and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
   INSERT still gets 42501 first, a URL still gets the refusal for remote files
   first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
@@ -700,6 +754,59 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
+  wait until `statement_timeout` when the calling transaction already holds,
+  on the target or one of its partitions, a lock their workers' lock conflicts
+  with, as after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` or `TRUNCATE` in the
+  same transaction (#2183). Export workers
+  open the table, or each leaf, with ACCESS SHARE; parallel_copy's coordinator and
+  loaders open the target, and the partitions they route to, with ROW EXCLUSIVE.
+  Each worker runs in its own transaction, outside the caller's lock group, and
+  the caller waits for them on a latch, so PostgreSQL's deadlock detector could
+  not see the wait. #2072 fixed the same wait in `parallel_flush` by not opening
+  the table in its workers; these workers read or write the table itself, so
+  both functions now refuse the call up front with 55000
+  (`object_not_in_prerequisite_state`), naming the lock and the relation. Only a
+  conflicting lock is refused: an export still runs under SHARE, and
+  parallel_copy still runs under ROW EXCLUSIVE or SHARE UPDATE EXCLUSIVE, or with
+  any lock on another table. `parallel_copy` checks INSERT (42501) first, then
+  this lock, then its unique-index refusal (#2080), so a caller holding SHARE on
+  a table with a primary key gets 55000. An export in a savepoint still gets
+  25001, as before. A lock on a table the loaders reach only through a foreign
+  key, a trigger or a sequence still makes `parallel_copy` wait; see
+  docs/limitations.md. `parallel_export_parquet.sh`, `parallel_copy.sh`,
+  `test_parallel_export_parquet.py` and `test_parallel_copy.py`.
+- `test_harness_isolation.py::test_control_a_plain_child_under_flock_holds_the_lock`
+  no longer fails with `got '0 held, lock free=1'` (#2193; once in CI).
+  The descriptor count read every link in `/proc/<pid>/fd` and gave up with 0
+  when one readlink failed. The control reads a `sleep` that has just started,
+  and its dynamic loader opens and closes each shared library as fd 4, so that
+  descriptor can vanish between the listing and its readlink. The count now
+  skips a descriptor that vanished, as the shell twin's `find -lname` does. The
+  lock's descriptor is inherited at fork and is never skipped, so a child that
+  does not hold the lock (`flock -o`) still fails the control. Measured on an
+  8-CPU shared dev machine at load 4.8: 88 of 2000 runs of the control's
+  command read 0 before, none of 2000 after. Two new tests pin the count with
+  no cluster and no race: a descriptor listed but gone by its readlink no
+  longer hides the lock, and a pid that does not exist reads 0 of 0. The
+  `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
+  calling transaction has already written to the target, or to one of its
+  partitions, for example with an `INSERT` earlier in the same transaction
+  (#2211). The write holds the storage-row lock that serializes a storage's first
+  writers until the transaction ends, whether or not the storage row was
+  committed already. The coordinator takes that lock to pre-create a single
+  table's storage row, and a loader takes it on its first flush into a
+  partition, each in its own transaction, while the caller waits for them on a
+  latch, so the deadlock detector could not see the wait. It hung with 1 worker
+  as with 2. Such a call is now refused up front with 55000
+  (`object_not_in_prerequisite_state`), naming the written relation, after
+  #2183's lock refusal and before #2080's unique-index refusal. Every columnar
+  partition is checked, at any depth of the partition tree. A write to
+  another table, or none, still loads. The refused, rolled-back call no longer
+  leaves a committed, empty `pgcolumnar.storage` row behind, which the
+  coordinator created once the caller's rollback released the lock.
+  `parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's
