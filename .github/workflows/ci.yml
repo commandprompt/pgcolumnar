@@ -168,7 +168,7 @@ jobs:
     # 60, not 40 (#2232). The run is serial and grows with every ported twin. On
     # 2026-11-27 the slowest of 114 passing jobs took 38.0 minutes, and PG 17 on #2228
     # was cancelled at 40 with every test up to 96% passing. 60 is at least 1.5 times
-    # the slowest measured job and at most twice it, which test_ci_cluster_timeout.py
+    # the slowest measured job and at most twice it, which a guard test in test/pytest
     # holds. It was 20 until seven stacked port PRs were cancelled at 20m16s. More
     # workers (-n) would be faster, but a port race under -n 2 is known (#1635).
     timeout-minutes: 60
