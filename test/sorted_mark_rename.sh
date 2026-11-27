@@ -35,6 +35,11 @@ markof()   { q "SELECT COALESCE(s.sorted_by::text,'-')||'/'||COALESCE(s.sorted_k
                 FROM pgcolumnar.storage s WHERE s.storage_id = pgcolumnar.get_storage_id('$1');"; }
 layout()   { q "SELECT md5(string_agg(stripeid::text||':'||fileoffset::text, ',' ORDER BY stripeid)) FROM pgcolumnar.stats('$1');"; }
 storid()   { q "SELECT pgcolumnar.get_storage_id('$1');"; }
+# the run extent, sorted_from|sorted_through, '-' for NULL (#2174)
+extentof() { q "SELECT COALESCE(s.sorted_from::text,'-')||'|'||COALESCE(s.sorted_through::text,'-')
+                FROM pgcolumnar.storage s WHERE s.storage_id = pgcolumnar.get_storage_id('$1');"; }
+# sort_status as sorted_groups/total_groups/sorted_rows (#2174)
+sstatus()  { q "SELECT sorted_groups||'/'||total_groups||'/'||sorted_rows FROM pgcolumnar.sort_status('$1');"; }
 
 # vsort ARGS -- vacuum_sorted(ARGS), keeping its error in VS_ERR. moved TABLE S0 reads
 # the call by its storage id: noop, rewrote, "call failed", or "no reading". A failed
@@ -263,8 +268,13 @@ psql_run "INSERT INTO vd_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000
 check_num "premise: vd_t loaded every row" "$(q "SELECT count(*) FROM vd_t;")" "20000"
 vsort "'vd_t','a'"
 check "premise: before the drop, the mark records key {a}" "$(markof vd_t)" "{a}/lexicographic"
+check "premise: before the drop, sort_status reports every group sorted" "$(sstatus vd_t)" "1/1/20000"
 psql_run "ALTER TABLE vd_t DROP COLUMN a;"
 check "DROP COLUMN of the sort-key column clears the mark" "$(markof vd_t)" "-/-"
+# and the run (#2174): sort_status counts the run from the extent alone, so a
+# kept extent reported the rows as sorted with no column they are sorted on
+check "the drop clears the run extent too (#2174)" "$(extentof vd_t)" "-|-"
+check "sort_status reports no sorted group once the key column is dropped (#2174)" "$(sstatus vd_t)" "0/1/0"
 psql_run "ALTER TABLE vd_t RENAME COLUMN b TO a;"
 check "premise: the column that took the name a is NOT ordered" \
 	"$([ "$(descents vd_t a)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
@@ -318,6 +328,141 @@ check "premise: the inheritance child's mark records key {k}" "$(markof vdi1)" "
 psql_run "ALTER TABLE vdi DROP COLUMN k;"
 check "the inheritance CHILD's mark is cleared by a drop issued on the parent" "$(markof vdi1)" "-/-"
 
+# ---- a mark an older build left after a drop (#2175) -----------------------
+# A build older than #2135 did not clear the mark on a drop, and nothing sweeps
+# such marks on upgrade. Each mark below is written back by hand, as such a build
+# left it. A rename that gives the dropped name to another column must clear it:
+# the rename succeeded, so the stored name was free and names the dropped column.
+psql_run "CREATE TABLE vl_t (a int, b int) USING pgcolumnar;"
+psql_run "INSERT INTO vl_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+vsort "'vl_t','a'"
+E="$(q "SELECT sorted_from||','||sorted_through FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vl_t');")"
+psql_run "ALTER TABLE vl_t DROP COLUMN a;"
+psql_run "UPDATE pgcolumnar.storage SET sorted_by = '{a}', sorted_kind = 'lexicographic',
+          sorted_from = split_part('$E', ',', 1)::bigint, sorted_through = split_part('$E', ',', 2)::bigint
+          WHERE storage_id = pgcolumnar.get_storage_id('vl_t');"
+check "premise: vl_t carries the mark an older build left after the drop" \
+	"$(markof vl_t)|$(sstatus vl_t)" "{a}/lexicographic|1/1/20000"
+psql_run "ALTER TABLE vl_t RENAME COLUMN b TO a;"
+check "premise: the column that took the name a in vl_t is NOT ordered" \
+	"$([ "$(descents vl_t a)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
+check "a rename onto a dropped key column's name clears a mark an older build left (#2175)" \
+	"$(markof vl_t)" "-/-"
+check "and clears that mark's run extent too (#2175)" "$(extentof vl_t)" "-|-"
+check "older build: ORDER BY on the column that took the name plans a Sort (#2175)" \
+	"$(sorts 'SELECT a FROM vl_t ORDER BY a LIMIT 5')" "yes"
+check "THE WRONG-ANSWER ARM, older build: ORDER BY ... LIMIT returns the five smallest values (#2175)" \
+	"$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vl_t ORDER BY a LIMIT 5) x;")" \
+	"0,1,2,3,4"
+
+# The renamed column can be IN the stale key too. vl_k is sorted on (c, a), and
+# c is dropped. Renaming a to c hits the key's a, and following that alone would
+# give {c,c}: a claim that the new c, which is in the old c's order, is sorted.
+psql_run "CREATE TABLE vl_k (a int, b int, c int) USING pgcolumnar;"
+psql_run "INSERT INTO vl_k SELECT g, g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+vsort "'vl_k','c','a'"
+E="$(q "SELECT sorted_from||','||sorted_through FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vl_k');")"
+psql_run "ALTER TABLE vl_k DROP COLUMN c;"
+psql_run "UPDATE pgcolumnar.storage SET sorted_by = '{c,a}', sorted_kind = 'lexicographic',
+          sorted_from = split_part('$E', ',', 1)::bigint, sorted_through = split_part('$E', ',', 2)::bigint
+          WHERE storage_id = pgcolumnar.get_storage_id('vl_k');"
+check "premise: vl_k carries the mark {c,a} an older build left after dropping c" \
+	"$(markof vl_k)|$(sstatus vl_k)" "{c,a}/lexicographic|1/1/20000"
+psql_run "ALTER TABLE vl_k RENAME COLUMN a TO c;"
+check "premise: the column renamed to c in vl_k is NOT ordered" \
+	"$([ "$(descents vl_k c)" -gt 0 ] && echo unordered || echo ordered)" "unordered"
+check "a rename of a key column onto a stale key name clears the mark (#2175)" "$(markof vl_k)" "-/-"
+check "THE WRONG-ANSWER ARM, stale key holding both names: ORDER BY ... LIMIT returns the five smallest values (#2175)" \
+	"$(q "SELECT string_agg(c::text, ',') FROM (SELECT c FROM vl_k ORDER BY c LIMIT 5) x;")" \
+	"1,2,3,4,5"
+
+# The stale name need not be first. vl_m is sorted on (a, b), and b is dropped:
+# a rename onto b must clear {a,b}, or ORDER BY a, b skips the Sort and returns
+# each a's rows in the old b's order.
+psql_run "CREATE TABLE vl_m (a int, b int, c int) USING pgcolumnar;"
+psql_run "INSERT INTO vl_m SELECT (g*7919::bigint)%2000, g, (g*104729::bigint)%20000 FROM generate_series(1,20000) g;"
+vsort "'vl_m','a','b'"
+E="$(q "SELECT sorted_from||','||sorted_through FROM pgcolumnar.storage WHERE storage_id = pgcolumnar.get_storage_id('vl_m');")"
+psql_run "ALTER TABLE vl_m DROP COLUMN b;"
+psql_run "UPDATE pgcolumnar.storage SET sorted_by = '{a,b}', sorted_kind = 'lexicographic',
+          sorted_from = split_part('$E', ',', 1)::bigint, sorted_through = split_part('$E', ',', 2)::bigint
+          WHERE storage_id = pgcolumnar.get_storage_id('vl_m');"
+check "premise: vl_m carries the mark {a,b} an older build left after dropping b" \
+	"$(markof vl_m)|$(sstatus vl_m)" "{a,b}/lexicographic|1/1/20000"
+psql_run "ALTER TABLE vl_m RENAME COLUMN c TO b;"
+check "a rename onto a stale name that is not the key's first clears the mark (#2175)" "$(markof vl_m)" "-/-"
+check "THE WRONG-ANSWER ARM, stale second key column: ORDER BY a, b ... LIMIT returns the five smallest pairs (#2175)" \
+	"$(q "SELECT string_agg(a||':'||b, ',') FROM (SELECT a, b FROM vl_m ORDER BY a, b LIMIT 5) x;")" \
+	"0:0,0:2000,0:4000,0:6000,0:8000"
+
+# ---- a TYPED table's column is renamed through its type (#2177) ------------
+# PostgreSQL refuses ALTER TABLE ... RENAME COLUMN on a typed table; ALTER TYPE
+# ... RENAME ATTRIBUTE ... CASCADE renames the column in every table of the type.
+# The mark and the declared sort_by must follow it as they follow RENAME COLUMN.
+psql_run "CREATE TYPE vt_ty AS (a int, b int);"
+psql_run "CREATE TABLE vt OF vt_ty USING pgcolumnar;"
+psql_run "INSERT INTO vt SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+psql_run "SELECT pgcolumnar.set_options('vt', sort_by => ARRAY['a']);"
+vsort "'vt'"
+check "premise: the typed table's mark records key {a}" "$(markof vt)" "{a}/lexicographic"
+psql_run "ALTER TYPE vt_ty RENAME ATTRIBUTE a TO a_old CASCADE;"
+check "a typed table's mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
+	"$(markof vt)" "{a_old}/lexicographic"
+check "and so does its declared sort_by (#2177)" \
+	"$(q "SELECT sort_by::text FROM pgcolumnar.options WHERE regclass = 'vt'::regclass;")" "{a_old}"
+psql_run "ALTER TYPE vt_ty RENAME ATTRIBUTE b TO a CASCADE;"
+check "typed table: ORDER BY on the column that took the old name plans a Sort (#2177)" \
+	"$(sorts 'SELECT a FROM vt ORDER BY a LIMIT 5')" "yes"
+check "THE WRONG-ANSWER ARM, typed table: ORDER BY ... LIMIT returns the five smallest values (#2177)" \
+	"$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt ORDER BY a LIMIT 5) x;")" \
+	"0,1,2,3,4"
+# A partition of a typed table is not itself typed (reloftype 0), but the
+# rename recurses into it, so the walk from each typed table must reach it.
+psql_run "CREATE TYPE vtp_ty AS (k int, j int);"
+psql_run "CREATE TABLE vtp OF vtp_ty PARTITION BY RANGE (j);"
+psql_run "CREATE TABLE vtp1 PARTITION OF vtp FOR VALUES FROM (0) TO (100000) USING pgcolumnar;"
+psql_run "INSERT INTO vtp SELECT (g*7919::bigint)%2000, (g*104729::bigint)%2000
+          FROM generate_series(1,20000) g;"
+vsort "'vtp1','k'"
+check "premise: the typed table's partition is not typed, and its mark records key {k}" \
+	"$(q "SELECT reloftype FROM pg_class WHERE relname = 'vtp1';")/$(markof vtp1)" "0/{k}/lexicographic"
+psql_run "ALTER TYPE vtp_ty RENAME ATTRIBUTE k TO k_old CASCADE;"
+check "the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
+	"$(markof vtp1)" "{k_old}/lexicographic"
+
+# TWO columnar typed tables of one type (#2237 review): the rename reaches
+# every table of the type, so both marks must follow, and ORDER BY on each must
+# sort again once another column takes the old name. Both tables are read, so
+# the check does not depend on which one pg_class returns first.
+psql_run "CREATE TYPE vt2_ty AS (a int, b int);"
+for _t in vt2a vt2b; do
+	psql_run "CREATE TABLE $_t OF vt2_ty USING pgcolumnar;"
+	psql_run "INSERT INTO $_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+	vsort "'$_t','a'"
+done
+check "premise: both typed tables of one type are marked {a}" \
+	"$(markof vt2a)|$(markof vt2b)" "{a}/lexicographic|{a}/lexicographic"
+psql_run "ALTER TYPE vt2_ty RENAME ATTRIBUTE a TO z CASCADE;"
+check "both typed tables' marks follow ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
+	"$(markof vt2a)|$(markof vt2b)" "{z}/lexicographic|{z}/lexicographic"
+psql_run "ALTER TYPE vt2_ty RENAME ATTRIBUTE b TO a CASCADE;"
+check "THE WRONG-ANSWER ARM, two typed tables: ORDER BY ... LIMIT on each returns the five smallest values (#2177)" \
+	"$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt2a ORDER BY a LIMIT 5) x;")|$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt2b ORDER BY a LIMIT 5) x;")" \
+	"0,1,2,3,4|0,1,2,3,4"
+
+# A rename onto a name that differs from a LIVE key column only in case
+# (#2237 review). "A" and a are two columns, so the stale-name test must compare
+# names exactly: the mark on "A" is true and must stay, with no Sort added.
+psql_run "CREATE TABLE vc (\"A\" int, b int) USING pgcolumnar;"
+psql_run "INSERT INTO vc SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+vsort "'vc','A'"
+check "premise: vc is marked on its upper-case column A" "$(markof vc)" "{A}/lexicographic"
+psql_run "ALTER TABLE vc RENAME COLUMN b TO a;"
+check "a rename onto a name that differs from a live key column only in case keeps the mark (#2175)" \
+	"$(markof vc)" "{A}/lexicographic"
+check "and ORDER BY on that key column still needs no Sort (#2175)" \
+	"$(sorts 'SELECT "A" FROM vc ORDER BY "A" LIMIT 5')" "no"
+
 # ---- a drop on a HEAP table succeeds, with and without the extension -------
 # The library is preloaded, so the drop hook runs for every column drop in
 # every database. Only its columnar-AM test keeps a heap table away from
@@ -360,6 +505,20 @@ check "a column of an EMPTY heap table drops, in a database without the extensio
 	"$(smr_heapdrop smr_nocx vd_he 0)" "rc=0/live=1"
 check "a column of a POPULATED heap table drops, in a database without the extension" \
 	"$(smr_heapdrop smr_nocx vd_hf 1000)" "rc=0/live=1"
+# and the type rename (#2177) leaves a HEAP typed table alone the same way
+smr_typedren() {	# smr_typedren DB -> "rc=0/a2,b" when the rename worked
+	local st
+	smr_dbrun "$1" "DROP TABLE IF EXISTS vt_h; DROP TYPE IF EXISTS vt_hty;
+	                CREATE TYPE vt_hty AS (a int, b int); CREATE TABLE vt_h OF vt_hty;
+	                INSERT INTO vt_h SELECT g, g FROM generate_series(1,1000) g;" >/dev/null
+	st="$(smr_dbrun "$1" "ALTER TYPE vt_hty RENAME ATTRIBUTE a TO a2 CASCADE;")"
+	echo "$st/$(smr_dbq "$1" "SELECT string_agg(attname, ',' ORDER BY attnum) FROM pg_attribute
+	                         WHERE attrelid = 'vt_h'::regclass AND attnum > 0 AND NOT attisdropped;")"
+}
+check "a HEAP typed table's attribute renames, in this database (#2177)" \
+	"$(smr_typedren "$PGC_DB")" "rc=0/a2,b"
+check "a HEAP typed table's attribute renames, in a database without the extension (#2177)" \
+	"$(smr_typedren smr_nocx)" "rc=0/a2,b"
 psql_admin "DROP DATABASE IF EXISTS smr_nocx;" >/dev/null 2>&1
 
 # ============================ recluster (#415) ===============================

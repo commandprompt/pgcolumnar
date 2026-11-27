@@ -2576,13 +2576,13 @@ guard_tests 900
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6243 -> 6252 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# cluster_tests 6277 -> 6286 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
 # a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
 # serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
 # same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
 # workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6252 -> 6255 for the #2250 review's three tests in test_parallel_flush_optin.py: a column under an
+# cluster_tests 6286 -> 6289 for the #2250 review's three tests in test_parallel_flush_optin.py: a column under an
 # ICU collation, and one under a libc collation, created in the same transaction flushes serially with no worker
 # failure, and a column under a collation from an earlier transaction flushes in workers, by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6255
+cluster_tests 6289
