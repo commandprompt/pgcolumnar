@@ -2232,42 +2232,66 @@ guard_tests 897
 # exports in one session each return their row count and leave no temp file; a FATAL export after a failed
 # unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
-# cluster_tests 5644 -> 5647 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# cluster_tests 5644 -> 5649 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
+# 5597 at 2e3fea7a; #2152 adds 20 tests in all, listed here and below.
+# cluster_tests 5649 -> 5652 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# (test_the_field_type_lookup_matches_the_whole_field_name,
+# test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
+# test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too).
+# cluster_tests 5652 -> 5657 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
+# test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
+# test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
+# test_bucket_pruning_works_on_an_iceberg_int_source).
+# cluster_tests 5657 -> 5658 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
+# in test_iceberg_fdw.py, from the third #2152 review, counted by collection of the cluster files (all
+# test_*.py not in NO_CLUSTER).
+# cluster_tests 5658 -> 5660 for #2086's
+# test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
+# test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
+# fourth #2152 review.
+# cluster_tests 5660 -> 5664 for #2086's test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int,
+# test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
+# test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
+# fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
+# cluster_tests 5664 -> 5667 for #2077 in test_native_parquet_streaming.py: a data page with no values
 # reads (test_parquet_streaming_data_page_with_no_values_reads,
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
-# cluster_tests 5647 -> 5658 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# cluster_tests 5667 -> 5678 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
 # the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-# cluster_tests 5658 -> 5665 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# cluster_tests 5678 -> 5685 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
 # pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-# cluster_tests 5665 -> 5675 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5685 -> 5695 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
 # pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
 # with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-# cluster_tests 5675 -> 5685 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5695 -> 5705 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
 # pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
 # version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
 # dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
 # 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
 # `--collect-only -q`: 5536 tests collected.
-# cluster_tests 5685 -> 5694 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# cluster_tests 5705 -> 5714 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
 # pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
 # (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
 # given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
 # collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
-# cluster_tests 5694 -> 5705 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
+# cluster_tests 5714 -> 5725 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
 # pin the refusal of a repeated num_values whose last value is not 0 (v1 and v2), of a Thrift field id
 # outside int16 (65537 and -65535, v1 and v2, and 32769 from a short-form delta), the read of an unknown
 # field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
 # dictionary page that does not reset the run of empty pages, by collection: every file not in
-# NO_CLUSTER, `--collect-only -q`: 5705 tests collected.
-cluster_tests 5705
+# NO_CLUSTER, `--collect-only -q`: 5725 tests collected.
+cluster_tests 5725
