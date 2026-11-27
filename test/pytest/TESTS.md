@@ -5652,24 +5652,24 @@ names the holder's pid.
 ## 63. test_native_vacuum_race.py: compaction must not drop a concurrent commit
 
 Port of `native_vacuum_race.sh` (#432). `pgcolumnar_compact_relation` used the caller's
-pre-lock statement snapshot, so a row group committed after that snapshot was invisible
-to the rewrite and was destroyed by the relfilenode swap (#295). Covered for `vacuum()`,
-`vacuum_sorted()` and `cluster()`.
+pre-lock statement snapshot, so a row group committed while it waited for its lock was
+invisible to the rewrite and was destroyed by the relfilenode swap (#295). Covered for
+`vacuum()`, `vacuum_sorted()` and `cluster()`.
 
-**The shell suite races on the clock; this one does not.** The original backgrounds a
-`psql` running `SELECT pg_sleep(5)` inside its transaction, sleeps 2 in the shell, and
-inserts during the gap — and redirects to `/dev/null` the one observation that would
-prove the race happened. If session B's snapshot were taken after A's commit, B would
-simply see all 150 rows, the maintenance call would keep them, and every check would
-pass having tested nothing.
+Session A inserts 100 rows and holds its transaction open. Session B runs one READ
+COMMITTED statement that counts the table and then calls the maintenance op. The count
+runs at once under the statement snapshot, and the op waits for its AccessExclusiveLock.
+Once B is seen waiting, A commits. No sleeps decide the order: the premise asserts that
+B's statement counted 50 and that B was waiting.
 
-The port uses two connections and no sleeps, and asserts the interleaving: B sees 50
-before A commits, and **still** sees 50 after. The second premise is the load-bearing
-one — it says A's rows are genuinely outside B's snapshot, which is the precondition for
-the defect and exactly what a timing slip destroys.
+Until #2167 this pinned B's snapshot at REPEATABLE READ before A's commit and ran the op
+inside that transaction. That is #2167's case, where the op made A's rows visible to B's
+old snapshot. The op now refuses there with 40001 (`test_rewrite_snapshot.py`), so this
+moved to the lock wait #295 describes.
 
-Removal proof: take the caller's transaction snapshot instead of a fresh post-lock one,
-and `vacuum()` destroys 100 of 150 rows — the arm reports `got 50 want 150`.
+Removal proof: read with the statement snapshot instead of a fresh post-lock one, and
+each op keeps 50 of 150 rows; the arm reports `got 50 want 150` (measured on PG 18, both
+harnesses).
 
 The three maintenance calls are driven from an inline literal loop table, because an
 f-string name would reach `compare_to_bash` as one template and could not match the
@@ -5679,7 +5679,7 @@ three literal names the shell suite states.
 
 | test | what it holds |
 | --- | --- |
-| `test_native_vacuum_race` | every arm: per maintenance call, that B pinned a snapshot of 50 and that A's commit stayed outside it, then that all 150 rows survive; and that `vacuum()` preserves the exact row set rather than only the count |
+| `test_native_vacuum_race` | every arm: per maintenance call, that B's statement counted 50 and B waited for its lock while A's transaction was open, then that all 150 rows survive; and that each op preserves the exact row set rather than only the count |
 
 ## 64. test_native_delete_vector_index.py: reading the delete vector uses its index
 
