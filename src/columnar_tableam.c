@@ -103,6 +103,7 @@ double		pgcolumnar_autovacuum_compact_threshold = 0.2;
 double		pgcolumnar_autovacuum_recluster_threshold = 0.05;
 bool		pgcolumnar_autovacuum_expire = false;
 int			pgcolumnar_maintenance_hold_ms = 0;	/* dev/test fault injection */
+int			pgcolumnar_rewrite_lock_timeout = 10000;	/* ms; 0 waits without limit (#2074) */
 int			pgcolumnar_vm_set_hold_ms = 0;	/* dev/test: #2059 second-pass race */
 
 /* pgcolumnar.objstore_s3_addressing (#621, #2091) */
@@ -5057,6 +5058,19 @@ _PG_init(void)
 							"also waits, after fixing its work set, so a test can write inside it.",
 							&pgcolumnar_maintenance_hold_ms,
 							0, 0, 600000,
+							PGC_USERSET,
+							GUC_UNIT_MS,
+							NULL, NULL, NULL);
+
+	DefineCustomIntVariable("pgcolumnar.rewrite_lock_timeout",
+							"How long recluster and compact_rewrite try to lock their row "
+							"groups before they stop with an error.",
+							"The rewrite waits for each busy lock alone and starts over, so it "
+							"never closes a deadlock with a writer, but a steady stream of writers can "
+							"keep it waiting. After this time it stops with SQLSTATE 55P03 and "
+							"changes nothing. 0 waits without limit.",
+							&pgcolumnar_rewrite_lock_timeout,
+							10000, 0, INT_MAX,
 							PGC_USERSET,
 							GUC_UNIT_MS,
 							NULL, NULL, NULL);

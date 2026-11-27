@@ -2314,61 +2314,127 @@ guard_tests 897
 # table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
 # by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
 # main 91637726).
-# cluster_tests 5756 -> 5761 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# cluster_tests 5756 -> 5760 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
+# FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
+# 6274 tests collected, less guard_tests 894.
+# cluster_tests 5760 -> 5764 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
+# over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
+# PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
+# cluster_tests 5764 -> 5770 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
+# two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
+# cluster_tests 5770 -> 5771 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
+# parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
+# collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
+# cluster_tests 5771 -> 5775 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
+# a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
+# cluster_tests 5775 -> 5777 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
+# struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
+# cluster_tests 5777 -> 5781 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
+# leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
+# cluster_tests 5781 -> 5787 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
+# rewrite both commit (three tests, each parametrized over the two verbs), by collection:
+# `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5787 -> 5793, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
+# "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
+# cluster_tests 5793 -> 5819, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
+# before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
+# with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
+# cluster_tests 5819 -> 5831, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
+# pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
+# lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
+# cluster_tests 5831 -> 5849, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
+# lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
+# inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
+# max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5555 tests collected.
+# cluster_tests 5849 -> 5856, still #2074, for the review of #2139 at b1d94859: two more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
+# 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
+# and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
+# cluster_tests 5856 -> 5866, still #2074, for the review of #2139 at 42763bd3: five more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. Each verb gives back every group lock it took
+# before it waits on a busy last group, so a writer that then updates group 0 and the rewrite both commit, and
+# with a limit of 0 a user lock_timeout ends the wait with PostgreSQL's own lock-timeout error, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5665 tests collected.
+# cluster_tests 5866 -> 5872, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. While each verb waits on a busy last group it
+# holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
+# and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5672 tests collected.
+# cluster_tests 5872 -> 5877 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
 # scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
 # SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
 # parameter), by collection: 6275 tests collected, less guard_tests 894.
-# cluster_tests 5761 -> 5764 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cluster_tests 5877 -> 5880 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
 # cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
 # still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5764 -> 5768 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# cluster_tests 5880 -> 5884 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
 # stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
 # filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
 # what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
 # 5396 tests collected.
-# cluster_tests 5768 -> 5770 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# cluster_tests 5884 -> 5886 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
 # (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
 # 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5412 tests collected.
-# cluster_tests 5770 -> 5773 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# cluster_tests 5886 -> 5889 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
 # (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
 # text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
 # ci.yml derives it): 5495 tests collected.
-# cluster_tests 5773 -> 5779 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# cluster_tests 5889 -> 5895 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
 # test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
 # domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
 # pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
-# cluster_tests 5779 -> 5786 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5895 -> 5902 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
 # (under a hash join, a key frozen at the first run counts what heap counts, keeps the runtime range after it
 # as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
 # alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
-# cluster_tests 5786 -> 5794 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
+# cluster_tests 5902 -> 5910 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
 # (a heap copy answers a hash-join rescan, the columnar scan with a key frozen at the first run counts the same
 # in each loop, with the backend alive; a NULL from a stable function builds no key on an int column and counts
 # 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
 # an expression of the column, is not evaluated), by collection over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 5619 tests collected after the merge of main 6f79946f (5618 before it).
-# cluster_tests 5794 -> 5811 for #2065's seventeen tests from the seventh #2133 review in
+# cluster_tests 5910 -> 5927 for #2065's seventeen tests from the seventh #2133 review in
 # test_native_param_pushdown.py (twelve clause shapes that can never be scan keys are not evaluated, shown by a
 # call counter: LIKE under a collation that is not C, LIKE with the operand on the column side, date_trunc with
 # <>, over an expression or with a unit from a column, <> ANY, = ALL, range @> range, another collation, another
 # function of the column; five keyable shapes with a bound parameter prune 19 of 20 groups: date_trunc, LIKE on
 # a C column, a range overlap, a varchar column, = ANY; a collation premise and a heap premise), by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5652 tests collected after the merge of main 2e3fea7a (5636 before it).
-# cluster_tests 5811 -> 5823 for #2065's twelve tests from the eighth #2133 review in
+# cluster_tests 5927 -> 5939 for #2065's twelve tests from the eighth #2133 review in
 # test_native_param_pushdown.py (nine clause shapes a key builder declines are not evaluated: date_trunc of a
 # timestamp column against a timestamptz or a date operand, to a decade or a plural unit, of a timestamp domain
 # column, of a timestamptz column, a two-argument function shaped like date_trunc, a multirange that a range
 # column overlaps, and < ANY; date_trunc >= a bound parameter and a range column that contains one prune 19 of
 # 20 groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5711 tests collected after the merge of main c756ef06 (5664 before it).
-# cluster_tests 5823 -> 5836 for #2065's thirteen tests from the ninth #2133 review in
+# cluster_tests 5939 -> 5952 for #2065's thirteen tests from the ninth #2133 review in
 # test_native_param_pushdown.py (a timestamp or timestamp-domain column against a timestamptz operand, scalar
 # or = ANY, is not evaluated; a bound varchar, text-domain, timestamp-domain or range-domain parameter prunes
 # under LIKE, date_trunc = and >=, and &&; date_trunc to an upper-case unit and a timestamptz column against a
 # timestamptz parameter prune; a projection scan and a hash-join rescan with a key frozen at the first run
 # remove groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as
-# ci.yml derives it): 5836 tests collected after the merge of main 4cdd25a1 (5724 before it).
-cluster_tests 5836
+# ci.yml derives it): 5952 tests collected after the merge of main 6094d3a6 (5724 before the merges of 4cdd25a1 and 6094d3a6).
+cluster_tests 5952
