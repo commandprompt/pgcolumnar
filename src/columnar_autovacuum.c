@@ -289,9 +289,11 @@ av_expire_one(const char *qualname)
 }
 
 /*
- * Run one maintenance verb on one table, each in its own transaction inside
- * PG_TRY: a query-cancel (the lock yield) or any error aborts just this op and
- * the caller continues to the next table.
+ * Run the due maintenance verbs on one table, all in one transaction inside
+ * PG_TRY: a query-cancel (the lock yield) or any error aborts just this table's
+ * pass and the caller continues to the next table. compact_rewrite keeps the
+ * storage-row lock to commit, so a recluster after it in this transaction can
+ * deadlock with a writer (#2194).
  */
 static void
 av_maintain_one(const char *qualname)

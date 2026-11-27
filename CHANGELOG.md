@@ -633,6 +633,71 @@ true until the next version shipped.
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
+- `read_parquet`, `import_parquet` and the Parquet foreign table now read a
+  REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
+  pyarrow does (#2079, #1916). They returned wrong values with no error: an
+  empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
+  values, a REQUIRED struct with a NULL field read as NULL, a NULL list
+  inside a present struct read as `{}`, and an empty list inside a present
+  struct read as `{NULL}`. The reader assumed that definition level 0 always
+  meant a NULL list or struct and level 1 an empty list. That holds only for a
+  nullable list or struct with no nullable parent. The reader now takes both
+  levels from the file's schema. A composite is NULL only when the struct that
+  holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
+  field. A composite over leaves that no one struct holds, such as two
+  top-level columns, is now an error: it read as NULL whenever any one field
+  was NULL. A one-field composite over one top-level column is now an error
+  too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
+  `test_parquet_nested_import.py`, which also read composites whose leaves sit
+  two levels below their struct. Every statement in their pyarrow arm runs
+  under a 60-second client-side bound, so a reader that loops fails the check
+  instead of hanging the suite.
+- `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
+  LIST group such as `repeated int64 l`, as its values (#1916). It read every
+  row as an empty array, `{}`, with no error. The #2079 fix above corrected
+  this, and `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
+  row, to pin it.
 - `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
   text-format file holds a backslash before a raw newline, or a `\.`
   end-of-data line (#2084). The splitter cut the file at any newline byte. In
