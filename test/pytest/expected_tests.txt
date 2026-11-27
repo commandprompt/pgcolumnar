@@ -2310,4 +2310,8 @@ guard_tests 897
 # test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order (4 parametrized: a later partition and a
 # second-level leaf are refused naming it, 55000 before #2080's 0A000, #2183's refusal before this one), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 5755
+# cluster_tests 5755 -> 5756 for #2200's test in test_parallel_copy.py (parallel_copy refuses a single
+# table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
+# by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
+# main 91637726).
+cluster_tests 5756

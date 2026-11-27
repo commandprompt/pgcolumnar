@@ -15,7 +15,9 @@ Both functions read local files only, so both refuse an object-storage URL with
 check and before it checks the target's kind, so a heap target gets 0A000. The
 refusal covers s3a:// and s3n:// too, in any case (#1918). parallel_copy refuses more
 than one worker for a single table with a unique index, which used to hang or fail
-with a deadlock error (#2080). Each loader checks again under its own lock.
+with a deadlock error (#2080). Each loader checks again under its own lock. On
+PostgreSQL 18 and later that covers a temporal primary key, whose one index is both
+unique and exclusion (#2200); the test declines before 18, which has no WITHOUT OVERLAPS.
 
 THREE FIXES THE SHELL SHARES. The per-range loads are compared with the generator
 that wrote the file, not with a single columnar COPY of it, which shares every defect
@@ -1079,6 +1081,30 @@ def pcopy(pgc_cluster, server_dir):
         inserted = db.value("SELECT CASE WHEN is_called THEN 'a loader inserted a row' "
                             "ELSE 'no row inserted' END FROM t_ur4_rows")
         r["unique late 4"] = f"{late4} | {inserted}"
+        # ---- #2200: a temporal primary key is a unique AND an exclusion index ----
+        # PostgreSQL 18's PRIMARY KEY (id, during WITHOUT OVERLAPS) builds one index
+        # with indisunique and indisexclusion both true. With the refusal testing
+        # `indisunique != indisexclusion`, every other test here passed and this load
+        # of distinct keys hung until its statement_timeout (57014). The file has a
+        # third column, so the rows fit: a load that is not refused would run. The int
+        # key part needs btree_gist; without it the table is never made and the test
+        # reads that failure. WITHOUT OVERLAPS does not exist before 18.
+        r["major"] = db.value("SELECT current_setting('server_version_num')::int / 10000")
+        if isinstance(r["major"], int) and r["major"] >= 18:
+            tpk = _server_file(db, d, "temporal_pk.txt",
+                               "SELECT g, 'host_'||g, daterange(date '2020-01-01' + g, date '2020-01-01' + g + 1) "
+                               "FROM generate_series(1, 5000) g")
+            try:
+                with psycopg.connect(db.dsn, autocommit=True) as conn:
+                    conn.execute("CREATE EXTENSION IF NOT EXISTS btree_gist; "
+                                 "CREATE TABLE t_utp (id int, txt text, during daterange, "
+                                 "PRIMARY KEY (id, during WITHOUT OVERLAPS)) USING pgcolumnar")
+            except psycopg.Error as exc:
+                r["temporal pk"] = f"setup failed: {exc.sqlstate} {_message(exc)}"
+            else:
+                refusal = db.remote_refusal(
+                    f"SELECT pgcolumnar.parallel_copy('t_utp'::regclass, '{tpk}', 2)", timeout="10s")
+                r["temporal pk"] = f"{refusal} | {db.value('SELECT count(*) FROM t_utp')} rows"
 
         # ---- #2092: a load into a table with a projection fills the projection ----
         r["projection"] = " ".join(_projection_load(db, f, w, pre) for w, pre in ((1, 0), (2, 1000)))
@@ -1814,6 +1840,29 @@ def test_parallel_copy_refuses_a_late_unique_index_in_every_loader(pcopy, expect
                 'with more than one worker, because it has a unique or exclusion index | no hint | no row inserted',
                 "parallel_copy refuses 4 workers when a unique index appears after its check, "
                 "before any loader inserts a row (#2080)")
+
+
+def test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers(pcopy, expect):
+    """A temporal primary key's index is both unique and exclusion (#2200). WITHOUT
+    OVERLAPS arrived in PostgreSQL 18, so the test declines before it, as the shell
+    records a SKIP under the same name."""
+    major = pcopy["major"]
+    if not isinstance(major, int):
+        # An unreadable major fails the test rather than being taken for an old one.
+        expect.text(f"unreadable server major [{major}]", "a server major to gate on",
+                    "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) "
+                    "and 2 workers with 0A000 and the hint, and loads nothing (#2200)")
+        return
+    if major < 18:
+        expect.cannot_run(
+            "UNSUPPORTED_MAJOR",
+            f"WITHOUT OVERLAPS arrived in PostgreSQL 18; this server is {major}",
+            name="parallel_copy refuses a single table with a temporal primary key (unique and exclusion) "
+                 "and 2 workers with 0A000 and the hint, and loads nothing (#2200)")
+        return
+    expect.text(pcopy["temporal pk"], f"{_want_unique('t_utp')} | 0 rows",
+                "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) "
+                "and 2 workers with 0A000 and the hint, and loads nothing (#2200)")
 
 
 # ---- #2092: a load into a table with a projection --------------------------------
