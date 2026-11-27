@@ -196,7 +196,7 @@ def pqs(pgc_cluster, server_dir):
                           ("a v2run16", "a_v2run16"), ("a other8x2 200", "a_other8x2_200"),
                           ("a other5x2 v2 200", "a_other5x2_v2_200"),
                           ("e oth8 r1 200", "e_oth8_r1_200"), ("e oth5 r1 v2 200", "e_oth5_r1_v2_200"),
-                          ("x fid32767 v1", "x_fid32767_v1_200")):
+                          ("x fid32767 v1", "x_fid32767_v1_200"), ("b unkm32768 v1", "b_unkm32768_v1_200")):
             r[key] = _rows(dsn, f"SELECT count(*), sum(id) FROM "
                                 f"pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)", sep=" ")
         for key, name in (("empty run", "empty_page_run"), ("run17", "empty_run17"),
@@ -215,7 +215,9 @@ def pqs(pgc_cluster, server_dir):
                           ("e r1v1 50 10 110", "e_r1v1_50_10_110"), ("e r1v2 50 10 110", "e_r1v2_50_10_110"),
                           ("x fid65537 v1", "x_fid65537_v1_150"), ("x fid65537 v2", "x_fid65537_v2_req150"),
                           ("x fidm65535 v1", "x_fidm65535_v1_150"), ("x fidm65535 v2", "x_fidm65535_v2_req150"),
-                          ("x fid32769 short v1", "x_fid32769_short_v1_200"), ("x run16 dict 16", "x_run16_dict_16")):
+                          ("x fid32769 short v1", "x_fid32769_short_v1_200"), ("x run16 dict 16", "x_run16_dict_16"),
+                          ("y ph65537 type", "y_ph65537_type_150"), ("y phm65535 type", "y_phm65535_type_150"),
+                          ("b unk32768 v1", "b_unk32768_v1_200"), ("b unkm32769 v1", "b_unkm32769_v1_200")):
             r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
         r["alt20"] = _rows(dsn, f"SELECT count(*), count(ls), sum(cardinality(ls)) FROM "
                                 f"pgcolumnar.read_parquet('{w}/alt20.parquet') AS t(ls text[])", sep=" ")
@@ -822,6 +824,46 @@ def test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run(request,
     if r is not None:
         expect.text(_got(r, "x run16 dict 16"), REFUSED,
                     "16 empty data pages, a dictionary page and 16 more are rejected (one run)")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_65537_is_rejected(request, expect):
+    """narrowed to field 1 (the page type), the page would be stepped over and ids 50..99 lost"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y ph65537 type"), REFUSED,
+                    "a PageHeader with long-form field id 65537 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_minus_65535_is_rejected(request, expect):
+    """narrowed to field 1 (the page type), the page would be stepped over and ids 50..99 lost"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y phm65535 type"), REFUSED,
+                    "a PageHeader with long-form field id -65535 is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_unknown_field_id_32768_is_rejected(request, expect):
+    """32768 is one past int16"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "b unk32768 v1"), REFUSED,
+                    "a DataPageHeader with an unknown field id 32768 is rejected")
+
+
+def test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32768_reads(request, expect):
+    """-32768 is the smallest int16; an unknown field with it is skipped"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "b unkm32768 v1"), "200 19900",
+                    "a DataPageHeader with an unknown field id -32768 reads")
+
+
+def test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32769_is_rejected(request, expect):
+    """-32769 is one below int16"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "b unkm32769 v1"), REFUSED,
+                    "a DataPageHeader with an unknown field id -32769 is rejected")
 
 
 def test_parquet_streaming_data_page_v2_on_a_list_column_reads(request, expect):

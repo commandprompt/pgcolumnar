@@ -2294,4 +2294,8 @@ guard_tests 897
 # field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
 # dictionary page that does not reset the run of empty pages, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5725 tests collected.
-cluster_tests 5725
+# cluster_tests 5725 -> 5730 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
+# pin that a wide long-form field id is refused, not narrowed (65537 and -65535 in a PageHeader, which
+# narrow to the page type), and the edges of the int16 range (32768 and -32769 refused, -32768 read), by
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5730 tests collected.
+cluster_tests 5730

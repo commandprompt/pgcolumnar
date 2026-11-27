@@ -257,6 +257,12 @@ check "a DataPageHeader with an unknown field id 32767 reads" "$(cs x_fid32767_v
 check "a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads" "$(cs e_oth8_r1_200)" "200 19900"
 check "a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads" "$(cs e_oth5_r1_v2_200)" "200 19900"
 check "16 empty data pages, a dictionary page and 16 more are rejected (one run)" "$(ce x_run16_dict_16)" "$REFUSED"
+# a wide long-form id is refused, not narrowed, and the edges of the int16 range
+check "a PageHeader with long-form field id 65537 is rejected" "$(ce y_ph65537_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -65535 is rejected" "$(ce y_phm65535_type_150)" "$REFUSED"
+check "a DataPageHeader with an unknown field id 32768 is rejected" "$(ce b_unk32768_v1_200)" "$REFUSED"
+check "a DataPageHeader with an unknown field id -32768 reads" "$(cs b_unkm32768_v1_200)" "200 19900"
+check "a DataPageHeader with an unknown field id -32769 is rejected" "$(ce b_unkm32769_v1_200)" "$REFUSED"
 check "a DATA_PAGE_V2 on a list column reads" \
 	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)), sum(ls[1]) FROM pgcolumnar.read_parquet('$W/v2_list.parquet') AS t(ls int[]);" | tr '|' ' ')" \
 	"300 200 400 30000"

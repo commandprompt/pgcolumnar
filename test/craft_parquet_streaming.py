@@ -685,6 +685,24 @@ EMPTY_DICT = (fh(1, I32) + zz(2) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0)
               + fh(4, STRUCT) + fh(1, I32) + zz(0) + fh(1, I32) + zz(0) + STOP + STOP)
 with_pages("x_run16_dict_16.parquet", popt, {1: empty_data_page() * 16 + EMPTY_DICT + empty_data_page() * 16})
 
+# Round 7 of the review.
+#
+# A wide long-form id must be refused as corrupt, not narrowed. Page 2's PageHeader
+# ends with a long-form field 65537 (or -65535) of type I32 holding 1. Narrowed to
+# int16, as pyarrow does, either id is field 1, the page type, so the page would
+# become an INDEX_PAGE and be stepped over: with the footer at 150 rows, ids 50..99
+# would be dropped with no error. pyarrow reads both files that way.
+for fid, tag in ((65537, "65537"), (-65535, "m65535")):
+    replace_page2_header("y_ph%s_type_150.parquet" % tag, popt, lambda n, f=fid: sizes(0, n)
+                         + V1HDR + lf(I32, f) + zz(1) + STOP)
+
+# The edges of the int16 range, as an unknown field in page 2's DataPageHeader after
+# its known fields: -32768 is in range and reads; 32768 and -32769 are refused.
+# pyarrow reads all three (it narrows the two wide ids to -32768 and 32767).
+for fid, tag in ((32768, "32768"), (-32768, "m32768"), (-32769, "m32769")):
+    replace_page2_header("b_unk%s_v1_200.parquet" % tag, popt, lambda n, f=fid: sizes(0, n)
+                         + fh(2, STRUCT) + V1FULL + lf(I32, f) + zz(0) + STOP + STOP, rows=200)
+
 
 # #2077 acceptance: a dictionary-encoded list<int64> column, snappy, small pages, so a
 # compressed empty data page is in the chunk. pyarrow reads it as {1,2} NULL {3} {}.
@@ -717,6 +735,8 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "e_r1v1_50_10_110", "e_r1v2_50_10_110", "x_fid65537_v1_150", "x_fid65537_v2_req150",
              "x_fidm65535_v1_150", "x_fidm65535_v2_req150", "e_oth8_r1_200", "e_oth5_r1_v2_200",
              "x_fid32769_short_v1_200", "x_fid32767_v1_200", "x_run16_dict_16",
+             "y_ph65537_type_150", "y_phm65535_type_150", "b_unk32768_v1_200", "b_unkm32768_v1_200",
+             "b_unkm32769_v1_200",
              "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):
         sys.exit(6)

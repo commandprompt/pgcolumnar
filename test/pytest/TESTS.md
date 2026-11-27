@@ -13186,6 +13186,11 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_data_page_whose_v2_header_repeats_num_values_reads` | a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads |
 | `test_parquet_streaming_data_page_v2_whose_v1_header_repeats_num_values_reads` | a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads |
 | `test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run` | 16 empty data pages, a dictionary page and 16 more are rejected (one run) |
+| `test_parquet_streaming_page_header_with_long_form_field_id_65537_is_rejected` | a PageHeader with long-form field id 65537 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_65535_is_rejected` | a PageHeader with long-form field id -65535 is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_32768_is_rejected` | a DataPageHeader with an unknown field id 32768 is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32768_reads` | a DataPageHeader with an unknown field id -32768 reads |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32769_is_rejected` | a DataPageHeader with an unknown field id -32769 is rejected |
 | `test_parquet_streaming_data_page_v2_on_a_list_column_reads` | a DATA_PAGE_V2 on a list column reads |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
