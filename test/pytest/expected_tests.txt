@@ -2511,15 +2511,34 @@ guard_tests 897
 # test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
 # test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
 # over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6088 tests collected`, after merging main at 6d40a3d4.
-# cluster_tests 6088 -> 6111 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# cluster_tests 6088 -> 6108 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
+# opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
+# statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
+# 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
+# lock refusal, after #2080's unique-index refusal and after #2211's own-write refusal (3), by collection
+# over the cluster files.
+# cluster_tests 6108 -> 6115 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
+# caller's lock on pgcolumnar.load_fingerprint and a coordinator behind another session's SHARE lock each return
+# their statement_timeout promptly, a late trigger's DETAIL, an ENABLE ALWAYS trigger refused, an ENABLE REPLICA
+# trigger loaded, the hold setting refused to a non-superuser, and one lost loader of 3 failing the load
+# promptly, by collection over the cluster files.
+# cluster_tests 6115 -> 6116 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
+# after its rows commit still records the fingerprint, so a retry of the same file is skipped, by collection
+# over the cluster files.
+# cluster_tests 6116 -> 6118 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
+# whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
+# caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
+# over the cluster files.
+# cluster_tests 6118 -> 6141 for #2188's twenty-three tests in test_parallel_copy.py: four premises
 # (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
 # test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
 # with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
 # test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
 # test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6111 -> 6116, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# cluster_tests 6141 -> 6146, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6116
+cluster_tests 6146
