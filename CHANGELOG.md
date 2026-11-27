@@ -633,6 +633,41 @@ true until the next version shipped.
   INDEX_PAGE or a page of an unknown type. In every file
   tested, pyarrow wrote at most one empty page in a row.
   `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
+- A pgcolumnar scan no longer loses an error raised while it evaluates a stable
+  `WHERE` operand, such as `x > stable_func($1)` (#2065). The scan caught the
+  error and threw it away without a subtransaction. So a `statement_timeout` or
+  query cancel that fired there was lost and the query returned rows, a function
+  that raised once returned a count where heap fails, and the failed call's
+  plancache, snapshot and SPI state leaked as WARNINGs. The error now reaches the
+  client. The scan now evaluates such an operand when it first runs, not while
+  the plan is set up, as a btree index scan evaluates its runtime keys, and it
+  evaluates it once. A scan that never runs, such as an `Append` arm that
+  `LIMIT` cuts off or a branch under a false one-time filter, calls nothing. That
+  includes a PL/pgSQL variable: the scan no longer fetches it at set-up, where a
+  record field that was not assigned raised. Such a variable still drives
+  chunk-group skipping: the scan freezes it when it first runs. One
+  consequence: any scan that runs now raises the operand's error, even when no
+  row would pass the rest of the `WHERE` clause or the table is empty. Heap,
+  which calls the operand once per row it tests, returns no rows there. This
+  covers an operand made only of parameters too, such as `x > 10 / $1` with
+  `$1 = 0`. A plain `EXPLAIN` no longer calls the operand; it still reports a
+  bound parameter of a prepared statement as pushed down. Keys frozen at the
+  first run obey `pgcolumnar.enable_qual_pushdown = off`, all of them are
+  tested when there are several, and a long text key survives a rescan.
+  A bound parameter that is NULL builds no key, a varchar or domain parameter
+  is pushed down like any other bound parameter, and `EXPLAIN ANALYZE`
+  counts a key frozen at the first run as pushed down. Under a hash join,
+  the keys frozen at the first run keep the join's runtime range, also
+  when the join is rescanned. The scan evaluates only an operand whose
+  clause could become a scan key: a clause such as `x <> f($1)`,
+  `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`,
+  `date_trunc('decade', x) = f($1)`, `x LIKE f($1)` under a collation that
+  is not C, `r && f($1)` with a multirange, or a timestamp column against
+  a timestamptz `f($1)` stays in the Filter, as on heap and btree, so its
+  operand is never called when no row reaches it. A bound varchar or
+  domain parameter is frozen as the type the clause compares, so it prunes
+  under LIKE, `date_trunc` and `&&` as on main.
+  `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
   with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
   two locks to commit: the delete-vector lock of each row group it deletes
