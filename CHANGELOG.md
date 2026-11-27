@@ -282,6 +282,15 @@ true until the next version shipped.
 
 ### Changed
 
+- `test/parallel_copy.sh` and `test_parallel_copy.py` pin two edges of the
+  unique-index refusal for 2 or more workers (#2209). A heap table with a primary
+  key gets `42809` before that refusal: the heap fixture now has a primary key.
+  A missing file on a table with a primary key gets the refusal, `0A000`, not
+  `58P01`, because the refusal comes before the file is opened. With 1 worker the
+  same call gets `58P01`. Before this, moving the refusal above the check of the
+  target's kind, or after the file is opened, passed both suites.
+  docs/limitations.md states that order. The third edge in #2209, the loader's
+  hint, already reaches the caller since #2187. Test-only.
 - The user documentation is brought up to date with the changes since 1.0-alpha4,
   after an audit of every `[Unreleased]` entry against the docs and the code.
   Stale statements corrected: the release and PGXN versions and the native format

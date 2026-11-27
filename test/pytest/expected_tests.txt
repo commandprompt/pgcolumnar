@@ -2571,4 +2571,9 @@ guard_tests 900
 # the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
 # each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
 # not name, as ci.yml selects them.
-cluster_tests 6239
+# cluster_tests 6239 -> 6243 for #2209's four tests in test_parallel_copy.py: a premise that the heap target has a
+# primary key, that heap target with 2 workers gets 42809 before the unique-index refusal, a missing file into a
+# primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
+# call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6243
