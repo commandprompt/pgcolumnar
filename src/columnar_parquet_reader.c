@@ -3292,6 +3292,13 @@ typedef struct ImpTop
  * leaf it binds (#2079). The bound leaves are consecutive in schema order, so
  * the group that holds the first and the last holds all of them. Returns the
  * group's index in elems; 0, the root, means no struct holds them all.
+ *
+ * Every walk stops at the root (#2218). The root's parent is -1, so a walk that
+ * went one step past it would read elems[-1] and loop or crash, and a looping
+ * backend ignores statement_timeout and cancel. walk_schema and
+ * parse_file_metadata set parent and tree_depth so that no file can send a walk
+ * past the root; the stop makes a later mistake in either field give a wrong
+ * answer or a refusal instead.
  */
 static int
 pq_struct_of_leaves(PqFile *pf, int first, int last)
@@ -3299,16 +3306,16 @@ pq_struct_of_leaves(PqFile *pf, int first, int last)
 	int			x = pf->elems[(int) (pf->leaves[first].sc - pf->elems)].parent;
 	int			y = pf->elems[(int) (pf->leaves[last].sc - pf->elems)].parent;
 
-	while (pf->elems[x].tree_depth > pf->elems[y].tree_depth)
+	while (x > 0 && y > 0 && pf->elems[x].tree_depth > pf->elems[y].tree_depth)
 		x = pf->elems[x].parent;
-	while (pf->elems[y].tree_depth > pf->elems[x].tree_depth)
+	while (x > 0 && y > 0 && pf->elems[y].tree_depth > pf->elems[x].tree_depth)
 		y = pf->elems[y].parent;
-	while (x != y)
+	while (x > 0 && y > 0 && x != y)
 	{
 		x = pf->elems[x].parent;
 		y = pf->elems[y].parent;
 	}
-	return x;
+	return (x > 0 && y > 0) ? x : 0;
 }
 
 /*

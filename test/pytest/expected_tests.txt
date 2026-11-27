@@ -2499,15 +2499,27 @@ guard_tests 897
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-# cluster_tests 6071 -> 6094 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# cluster_tests 6071 -> 6085 for #2160 in test_parquet_export.py: 14 tests on a third module fixture. A
+# timestamp, a timestamptz, a timestamp[] element and a composite field past Parquet's int64 range are refused
+# with SQLSTATE 22008 and the table column named; the refused export leaves no file; the last value that fits
+# still exports and read_parquet reads it back; a timestamp before 1970 and in-range nested timestamps still
+# export; the refusal carries its DETAIL; and parallel_export_parquet and tier_partition refuse the same way and
+# leave nothing behind. By collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 6085 tests collected, against 6071 on main at 75f3b9d6.
+# cluster_tests 6085 -> 6088 for #2218 and #2197 in test_parquet_nested_import.py:
+# test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused,
+# test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
+# test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6088 tests collected`, after merging main at 6d40a3d4.
+# cluster_tests 6088 -> 6111 for #2188's twenty-three tests in test_parallel_copy.py: four premises
 # (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
 # test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
 # with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
 # test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
 # test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6094 -> 6099, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# cluster_tests 6111 -> 6116, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6099
+cluster_tests 6116
