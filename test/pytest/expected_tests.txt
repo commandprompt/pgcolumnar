@@ -2384,4 +2384,9 @@ guard_tests 897
 # target reads the fields up to the key with COPY's text escapes: a premise over the nine files' heap COPY,
 # and 18 cases, nine files by 2 and 4 workers, each against heap COPY's outcome, rows per partition and
 # rows), by collection of the files NO_CLUSTER does not name, as ci.yml selects them.
-cluster_tests 5891
+# cluster_tests 5891 -> 5906, still #2202, for the coordinator's review of e3fa6a95: a second premise and 14
+# more cases in test_parallel_copy.py, seven files by 2 and 4 workers, that catch a decoder rule applied too
+# widely (a key that only starts with \N, a key whose value is \N, escaped 8 and 9, \x with no hex digit, and
+# a key that decodes to a NUL or a non-UTF-8 byte in a UTF8 database), by collection of the files NO_CLUSTER
+# does not name, as ci.yml selects them.
+cluster_tests 5906

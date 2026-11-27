@@ -47,6 +47,7 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_parallel_copy"
+DB_UTF8 = "pgc_parallel_copy_utf8"
 GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, {n}) g"
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
@@ -476,11 +477,22 @@ def _own_write_copy(dsn, setup, table, path):
     return f"none|{row[0] if row else None}"
 
 
-def _esc_reading(db, sql, table):
+def _esc_reading(db, sql, table, msg=False):
     """-> "outcome | rows per partition bound | hash of the rows with their bound" once
     `sql` has loaded the RANGE-partitioned `table` (#2202). The outcome is db.outcome()'s:
-    "N rows", or the SQLSTATE `sql` raised."""
-    outcome = db.outcome(sql, table)
+    "N rows", or the SQLSTATE `sql` raised. With `msg`, an error's outcome is
+    "SQLSTATE: primary message"."""
+    if msg:
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=30s") as conn:
+                conn.execute(sql)
+            n = db.value(f"SELECT count(*) FROM {table}")
+            outcome = f"{n} rows" if isinstance(n, int) else n
+        except psycopg.Error as exc:
+            outcome = (f"{exc.sqlstate}: {exc.diag.message_primary}" if exc.sqlstate
+                       else query_error(_message(exc)))
+    else:
+        outcome = db.outcome(sql, table)
     placed = db.value("SELECT coalesce(string_agg(b || '=' || n, ', ' ORDER BY b), 'no rows') "
                       "FROM (SELECT pg_get_expr(c.relpartbound, c.oid) AS b, count(*) AS n "
                       f"FROM {table} x JOIN pg_class c ON c.oid = x.tableoid GROUP BY 1) s")
@@ -1017,6 +1029,63 @@ def pcopy(pgc_cluster, server_dir):
             + [str(db.value("SELECT count(*) FROM h_esctab WHERE t = 'a' || chr(9) || 'b' || id")),
                esc_files["esctab"][1][:4].hex(), esc_files["octkey"][1][:4].hex()])
 
+        # Over-applied rules (review of the first version): each of these files loads,
+        # or fails, the way heap COPY does only if the decoder applies its rules no wider
+        # than COPY. nulkey and highbit load in a database created with ENCODING 'UTF8',
+        # so the encoding check does not depend on the cluster's locale. The shell lists
+        # what each file holds. For nprefkey and bsnkey the outcome also carries the
+        # error's message: a key read as NULL by mistake reaches core COPY in a loader,
+        # which refuses it with the same SQLSTATE behind "worker N failed:".
+
+        def row1200(key):
+            return b"".join(key + b"\tx1200\n" if i == 1200 else b"%d\tx%d\n" % (i, i) for i in range(1, 2001))
+
+        over_files = {
+            "nprefkey": ("kt", row1200(b"\\N5")),
+            "bsnkey": ("kt", row1200(b"\\\\N")),
+            "escother": ("kt", b"".join(b"".join(b"\\" + bytes([c]) if c in b"89" else bytes([c]) for c in b"%d" % i)
+                                        + b"\tx%d\n" % i for i in range(1, 2001))),
+            "hexlit": ("tk", b"".join(b"a%d\\x\t%d\n" % (i, i) if i % 2 else b"a%d\\xg\t%d\n" % (i, i)
+                                      for i in range(1, 2001))),
+            "hexlitkey": ("kt", row1200(b"1200\\x")),
+            "nulkey": ("kt", row1200(b"\\x00")),
+            "highbit": ("kt", row1200(b"1200\\351")),
+        }
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
+            a.execute(f"CREATE DATABASE {DB_UTF8} ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
+        udb = _Db(pgc_cluster.dsn(dbname=DB_UTF8))
+        udb.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        over_db = {k: (udb if k in ("nulkey", "highbit") else db) for k in over_files}
+        for key, (shape, body) in over_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in over_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}",
+                                                 msg=key in ("nprefkey", "bsnkey"))
+        for key in over_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}", msg=key in ("nprefkey", "bsnkey"))
+        r["2202 premise 2"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("escother", "hexlit", "nprefkey", "bsnkey", "hexlitkey", "nulkey", "highbit")]
+            + [str(db.value("SELECT count(*) FROM h_hexlit "
+                            "WHERE t = 'a' || id || CASE WHEN id % 2 = 1 THEN 'x' ELSE 'xg' END")),
+               str(udb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                             "WHERE datname = current_database()"))])
+
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
@@ -1252,6 +1321,7 @@ def pcopy(pgc_cluster, server_dir):
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
 
 
 # ---- the splitter ---------------------------------------------------------------
@@ -1842,7 +1912,44 @@ KEY_ESCAPES = (
                   " outcome, rows per partition and rows == heap COPY's"),
     ("plaintk 4", "#2202 control, plain keys, key last / partitioned, 4 workers:"
                   " outcome, rows per partition and rows == heap COPY's"),
+    ("nprefkey 2", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("nprefkey 4", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 2", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 4", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("escother 2", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("escother 4", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 2", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 4", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlitkey 2", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 2 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("hexlitkey 4", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 4 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("nulkey 2", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("nulkey 4", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 2", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 4", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
 )
+
+
+def test_parallel_copy_over_applied_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 2"],
+                '2000 rows 2000 rows 22P02: invalid input syntax for type integer: "N5" '
+                '22P02: invalid input syntax for type integer: "\\N" 22P02 22021 22021 2000 UTF8',
+                "premise: heap COPY loads escother and hexlit 2000 rows each, refuses nprefkey with 22P02 on N5,"
+                " bsnkey with 22P02 on backslash N, hexlitkey with 22P02 and nulkey and highbit with 22021; hexlit's"
+                " t is a<id>x or a<id>xg; the database nulkey and highbit load in is UTF8 (#2202)")
 
 
 @pytest.mark.parametrize("key,name", KEY_ESCAPES, ids=[k for k, _ in KEY_ESCAPES])
