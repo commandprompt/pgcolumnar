@@ -1748,19 +1748,24 @@ proves a port free and returns it, and nothing held the port until the caller bo
 it, so two pickers that started from the same port were both given it. In CI
 `iceberg_rest_scan` and `iceberg_rest_vended` both got 31732, and the scan got HTTP 401
 from the other suite's REST fixture (#2165). `pgc_pick_free_port` (test/portlib.sh)
-and `pick_port` now take one lock per user and reserve the port they return, as a file
-named for the port in one shared directory. A pick skips a reserved port: one whose
-reservation names a process that still runs, at any age, or one reserved less than
-120 s ago by a process that has gone. Each arm starts every picker at the same port and binds nothing until all
-have picked, so on main every arm is red. Each pick also sleeps a second between its
-probe and its reservation (`PGC_PORT_PICK_DELAY`), so the arms fail without the lock
-as well. The pickers reserve in a directory of the test's own.
+and `pick_port` now keep one reservation protocol, stated in both files: an exclusive
+`flock` on `<dir>/lock` from the first probe to the reservation; a file `<dir>/<port>`
+holding `<picker pid> <epoch>`; `<dir>` is `PGC_PORT_RESERVE_DIR`, else
+`${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>`. These arms drive `pick_port` only. The shell
+picker has the same arms in selftest 660, and neither harness runs the other's picker
+(CONTEXT.md, "Tests"; #2208's first version did, and reddened the harness inventory).
+Where an arm needs another picker, it plays one by the protocol: it holds the lock, or
+writes a reservation file itself. The collision arm starts every picker at the same
+port and binds nothing until all have picked, and each pick sleeps a second between its
+probe and its reservation (`PGC_PORT_PICK_DELAY`), so it fails without the lock as well.
+The pickers reserve in a directory of the test's own.
 
 | test | what it asserts | how it fails |
 | --- | --- | --- |
-| `test_four_shell_suites_picking_from_one_seed_get_four_ports` | premise: two shell pickers that share no reservations take one port; four shell pickers at once with one seed get four ports, and all four bind | main: four times one port; the reservation skip, its write or the lock removed, or the age test inverted, gives one port |
-| `test_two_twin_runs_picking_one_slot_get_two_ports` | premise: two twin pickers alone take one port; two processes asking `pick_port(27)` for gw0 at once get two ports, and both bind | main, or the twin's reservation skip or lock removed: one port |
-| `test_a_shell_suite_and_a_twin_never_share_a_port` | premise: the shell's seed 54 and the twin's slot 27 take one port alone; picking at once they get two, and both bind; with `PGC_PORT_RESERVE_DIR` unset, `pick_port` and portlib.sh reserve in the same directory | main: one port; the twin naming another default directory fails the last arm |
+| `test_four_twin_runs_picking_one_slot_get_four_ports` | premise: two twin pickers alone take one port; four processes asking `pick_port(27)` for gw0 at once get four ports, and all four bind | main, or the reservation skip, its write or the lock removed: one port |
+| `test_a_pick_waits_for_a_picker_that_holds_the_lock` | premise: `pick_port` alone takes a port; with the test holding `<dir>/lock` (at least 3 s, and three times an unblocked pick) and reserving that port before it lets go, the pick waits and takes another | the lock removed, or taken on another file: the pick returns at once with the port |
+| `test_a_pick_reserves_its_port_naming_its_picker` | the port's reservation file holds the picker's pid and the time, and its mtime is the time | the file never written, or pid and time swapped |
+| `test_pick_port_reserves_in_the_stated_directory_by_default` | with `PGC_PORT_RESERVE_DIR` unset, `port_reserve_dir()` is `/tmp/pgcolumnar-ports-<uid>`, and `$TMPDIR/pgcolumnar-ports-<uid>` when `TMPDIR` is set | another default name, or `TMPDIR` ignored |
 
 ### How long a reservation holds
 
@@ -1768,15 +1773,15 @@ A suite that stops and restarts its own server on the port it picked (vended's
 restart, the pg_upgrade cycles, crash recovery, replication) leaves the port unbound
 for a moment, possibly more than 120 s after the pick. So a reservation holds while the
 process it names runs, at any age, and the 120 s limit applies only once that process
-has gone (review of #2208). Each arm learns the port a picker takes alone, rewrites that
-port's reservation with an owner and an age, and asks again in the same directory; both
-the shell picker and `pick_port` are asked. A gone owner is `pid_max + 1`.
+has gone (review of #2208). Each arm learns the port `pick_port` takes alone, rewrites
+that port's reservation with an owner and an age, and asks again in the same directory.
+A gone owner is `pid_max + 1`. Selftest 660 has the same three arms for the shell picker.
 
 | test | what it asserts | how it fails |
 | --- | --- | --- |
-| `test_a_dead_pickers_reservation_holds_for_sixty_seconds` | a reservation 60 s old whose picker has gone moves both pickers off its port | the shell limit cut to 5 s, or the Python limit to 2 s or 1 s: that picker takes the port |
-| `test_a_dead_pickers_reservation_lapses_after_the_limit` | a reservation 121 s old whose picker has gone moves neither picker | either limit raised to 200 s, or either picker holding any reservation that names an owner: that picker moves |
-| `test_a_live_pickers_reservation_holds_at_any_age` | a reservation an hour old whose picker (this test's process) still runs moves both pickers | either picker ignoring a live owner: that picker takes the port |
+| `test_a_dead_pickers_reservation_holds_for_sixty_seconds` | a reservation 60 s old whose picker has gone moves the pick off its port | the limit cut to 2 s, or the age test inverted: the pick takes the port |
+| `test_a_dead_pickers_reservation_lapses_after_the_limit` | a reservation 121 s old whose picker has gone does not | the limit raised to 200 s, or any reservation that names an owner held: the pick moves |
+| `test_a_live_pickers_reservation_holds_at_any_age` | a reservation an hour old whose picker (this test's process) still runs moves the pick | a live owner ignored: the pick takes the port |
 
 ### A fixture that never says READY stops the run
 

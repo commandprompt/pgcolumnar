@@ -170,6 +170,15 @@ pgc_port_free() {
 # directory another user owns would deny every pick. PGC_PORT_RESERVE_DIR
 # moves it, for a test that wants its own, and PGC_PORT_PICK_DELAY (seconds)
 # sleeps between the probe and the reservation, to test the lock.
+#
+# THE PROTOCOL, which both pickers keep and each harness tests against on its own
+# (selftest 660 here, test_runshape.py for pick_port; neither runs the other's
+# picker, CONTEXT.md "Tests"):
+#   the directory is PGC_PORT_RESERVE_DIR, else ${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>;
+#   a pick holds an exclusive flock on <dir>/lock from its first probe to its
+#   reservation;
+#   a reservation is the file <dir>/<port>, holding "<picker pid> <epoch seconds>";
+#   it holds while that pid runs, and for 120 s after its mtime once the pid has gone.
 PGC_PORT_RESERVE_TTL=120
 
 pgc_port_reserve_dir() {

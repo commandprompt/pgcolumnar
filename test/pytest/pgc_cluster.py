@@ -133,6 +133,15 @@ def worker_slot(worker_id=None):
 # The reservation outlives the gap between the pick and the bind; after the bind
 # the probe sees the port busy. Same directory, same file per port, same mtime age,
 # same lock as portlib.sh, so the two harnesses honour each other's picks.
+#
+# THE PROTOCOL, which both pickers keep and each harness tests against on its own
+# (test_runshape.py for pick_port, selftest 660 for the shell's; neither runs the other's
+# picker, CONTEXT.md "Tests"):
+#   the directory is PGC_PORT_RESERVE_DIR, else ${TMPDIR:-/tmp}/pgcolumnar-ports-<uid>;
+#   a pick holds an exclusive flock on <dir>/lock from its first probe to its
+#   reservation;
+#   a reservation is the file <dir>/<port>, holding "<picker pid> <epoch seconds>";
+#   it holds while that pid runs, and for 120 s after its mtime once the pid has gone.
 PORT_RESERVE_TTL = 120
 
 

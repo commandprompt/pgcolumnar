@@ -956,10 +956,14 @@ true until the next version shipped.
   exits, one that says READY late and one that never says it. Measured with both suites forced onto one port at once:
   before, both picked 29768, the vended S3 fixture failed with `Address
   already in use` and the scan failed 6 checks; after, they picked 29769 and
-  29768 and both passed (128 and 18 checks). Nine new tests in
-  `test_runshape.py`: three on the pickers, three on how long a reservation
-  holds (60 s and 121 s for a picker that has gone, any age for one that
-  runs), and the three READY waits above.
+  29768 and both passed (128 and 18 checks). Each harness tests its own
+  picker against the reservation protocol, which both files state, and
+  neither runs the other's: selftest 660 for the shell picker and seven tests
+  in `test_runshape.py` for `pick_port`, with the same arms (four pickers at
+  once from one start get four ports; a pick waits for a picker that holds the
+  lock; the reservation names the picker's pid and the time; the default
+  directory; a reservation holds 60 s but not 121 s after a picker that has
+  gone, and at any age while it runs).
 - `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
   wait until `statement_timeout` when the calling transaction already holds,
   on the target or one of its partitions, a lock their workers' lock conflicts

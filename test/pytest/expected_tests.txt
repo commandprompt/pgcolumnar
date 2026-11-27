@@ -380,7 +380,13 @@
 # three on how long a port reservation holds (60 s and 121 s for a gone picker, any age for a live one), by
 # collection over NO_CLUSTER (906 when written, on main e000e095).
 # Both restated on main 3d2277c1 by the merge of it.
-guard_tests 908
+# guard_tests 908 -> 909 for #2165's harness independence (jdatcmd on #2208: CI red in test_harness_deps.py),
+# by collection over NO_CLUSTER on main 3d2277c1: 909 tests collected. test_runshape.py no longer runs the
+# shell picker; it tests pick_port alone against the reservation protocol, and selftest 660 does the same for
+# the shell. Two tests out (four shell pickers from one seed; a shell suite and a twin), three in (a pick waits
+# for a picker that holds the lock; the reservation names the picker's pid and the time; the default
+# directory), and the twin collision arm now runs four pickers rather than two (renamed).
+guard_tests 909
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
