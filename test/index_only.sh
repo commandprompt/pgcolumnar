@@ -433,4 +433,135 @@ check "delete over three row groups between vacuum's two steps: the delete commi
 check "delete over three row groups between vacuum's two steps: no target block all-visible after vacuum" "$vm_after" "0"
 check "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row" "$vm_ios" "0"
 
+
+# ---------------------------------------------------------------------------
+# Phase 8 (#2169): an AFTER STATEMENT trigger of a DELETE or UPDATE reads the
+# table through an index-only scan after a VACUUM ran inside the statement.
+# The writer's delete marks are still only in its memory, so the VACUUM sets
+# the blocks all-visible again, and the trigger fires before the writer's
+# ExecutorEnd writes the marks. The trigger must still not count the rows its
+# statement deleted. Heap is the answer: each scenario runs on a heap table too.
+#
+# 20,000 rows are one row group. The targets are ids 500, 1000, ..., 19500, 39
+# rows in 39 blocks (id g is in block g / 291). The writer pauses on its last
+# target, 19500, on advisory lock 2169, which session H holds: a CASE, so the
+# pause comes after the 38 earlier marks. The trigger joins a heap list of the
+# target ids, so the table is not the first entry of its query's range table.
+# The "exc" variant reads inside an EXCEPTION block, a subtransaction that does
+# not own the writer's marks, and then fails, so the block rolls back: the
+# marks written under it must still reach the catalog at the writer's end.
+# ---------------------------------------------------------------------------
+echo "-- phase 8: an AFTER trigger reads through an index-only scan after a vacuum inside its statement (#2169)"
+psql_run "CREATE TABLE tr_ids (id int); INSERT INTO tr_ids SELECT g FROM generate_series(500, 19500, 500) g;"
+psql_run "CREATE TABLE tr_log (tbl text, n bigint, ios bool);"
+psql_run "CREATE FUNCTION tr_count() RETURNS trigger LANGUAGE plpgsql AS \$\$
+DECLARE
+	sql text := format('SELECT count(*) FROM tr_ids k JOIN %I t ON t.id = k.id', TG_TABLE_NAME);
+	n bigint;
+	pl text;
+	ios bool := false;
+BEGIN
+	IF TG_ARGV[0] = 'exc' THEN
+		BEGIN
+			EXECUTE sql INTO n;
+			PERFORM 1 / 0;
+		EXCEPTION WHEN division_by_zero THEN
+			NULL;
+		END;
+	ELSE
+		EXECUTE sql INTO n;
+	END IF;
+	FOR pl IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+		ios := ios OR pl LIKE '%Index Only Scan%';
+	END LOOP;
+	INSERT INTO tr_log VALUES (TG_TABLE_NAME, n, ios);
+	RETURN NULL;
+END \$\$;"
+
+H_IN="$PGC_WORKDIR/sessH8.in"; H_OUT="$PGC_WORKDIR/sessH8.out"
+mkfifo "$H_IN"; : > "$H_OUT"
+env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -At -f "$H_IN" >> "$H_OUT" 2>&1 &
+H_PID=$!
+exec 9> "$H_IN"
+
+# tr_race TABLE AM VARIANT DML: load TABLE with access method AM, index and
+# vacuum it, add the trigger (VARIANT is its argument), run DML paused on its
+# last target, vacuum TABLE meanwhile, then let DML finish and commit. Sets
+# tr_before, tr_paused, tr_set, tr_written, tr_n, tr_ios and tr_after. A
+# writer that times out prints its error, which then shows in tr_written.
+tr_race() {
+	local tbl="$1" am="$2" variant="$3" dml="$4" i wpid tgt
+	tgt="SELECT DISTINCT id / 291 AS b FROM tr_ids"
+	psql_run "CREATE TABLE $tbl (id int, pad int) USING $am;"
+	psql_run "INSERT INTO $tbl SELECT g, g FROM generate_series(1, 20000) g;"
+	psql_run "CREATE INDEX ${tbl}_id ON $tbl (id);"
+	psql_run "VACUUM $tbl;"
+	psql_run "CREATE TRIGGER ${tbl}_tr AFTER DELETE OR UPDATE ON $tbl FOR EACH STATEMENT EXECUTE FUNCTION tr_count('$variant');"
+	tr_before="$(q "SELECT bool_and(pgcolumnar.vm_is_visible('$tbl', b)) FROM ($tgt) s;")"
+
+	h_send "SELECT 'H_LOCKED_$tbl' FROM pg_advisory_lock(2169);"
+	h_wait "H_LOCKED_$tbl" || true
+	env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=60s' \
+		psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -At -c "$dml" \
+		> "$PGC_WORKDIR/$tbl.writer.out" 2>&1 &
+	wpid=$!
+	tr_paused="no"
+	for i in $(seq 1 200); do
+		if [ "$(q "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND objid = 2169 AND NOT granted;")" = "1" ]; then
+			tr_paused="yes"; break
+		fi
+		sleep 0.1
+	done
+	psql_run "VACUUM $tbl;"
+	tr_set="$(q "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('$tbl', b)) FROM ($tgt) s;")"
+	h_send "SELECT 'H_UNLOCKED_$tbl' FROM pg_advisory_unlock(2169);"
+	h_wait "H_UNLOCKED_$tbl" || true
+	wait "$wpid" 2>/dev/null || true
+	tr_written="$(cat "$PGC_WORKDIR/$tbl.writer.out")"
+	tr_n="$(q "SELECT n FROM tr_log WHERE tbl = '$tbl';")"
+	tr_ios="$(q "SELECT ios FROM tr_log WHERE tbl = '$tbl';")"
+	tr_after="$(q "SELECT count(*) FROM tr_ids k JOIN $tbl t ON t.id = k.id;")"
+}
+
+# the DML: every 500th id below 20000, pausing on the last before marking it
+pause_on_last="CASE WHEN id % 500 <> 0 OR id >= 20000 THEN false
+	WHEN id = 19500 THEN pg_advisory_lock_shared(2169)::text = '' ELSE true END"
+
+tr_race trd_h heap plain "DELETE FROM trd_h WHERE $pause_on_last"
+hd_written="$tr_written" hd_n="$tr_n" hd_ios="$tr_ios" hd_after="$tr_after"
+tr_race trd pgcolumnar plain "DELETE FROM trd WHERE $pause_on_last"
+check "an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger of a delete during vacuum: the writer deleted 39 rows, as heap did" "$tr_written|$hd_written" "DELETE 39|DELETE 39"
+check "an AFTER trigger of a delete during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$hd_ios" "t|t"
+check "an AFTER trigger of a delete during vacuum: the trigger counts none of the deleted rows, as heap does" "$tr_n|$hd_n" "0|0"
+check "an AFTER trigger of a delete during vacuum: after commit none of them is counted, as on heap" "$tr_after|$hd_after" "0|0"
+
+tr_race tru_h heap plain "UPDATE tru_h SET pad = -pad WHERE $pause_on_last"
+hu_written="$tr_written" hu_n="$tr_n" hu_ios="$tr_ios" hu_after="$tr_after"
+tr_race tru pgcolumnar plain "UPDATE tru SET pad = -pad WHERE $pause_on_last"
+check "an AFTER trigger of an update during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger of an update during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger of an update during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger of an update during vacuum: the writer updated 39 rows, as heap did" "$tr_written|$hu_written" "UPDATE 39|UPDATE 39"
+check "an AFTER trigger of an update during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$hu_ios" "t|t"
+check "an AFTER trigger of an update during vacuum: the trigger counts each updated row once, as heap does" "$tr_n|$hu_n" "39|39"
+check "an AFTER trigger of an update during vacuum: after commit each is counted once, as on heap" "$tr_after|$hu_after" "39|39"
+
+tr_race tre_h heap exc "DELETE FROM tre_h WHERE $pause_on_last"
+he_written="$tr_written" he_n="$tr_n" he_ios="$tr_ios" he_after="$tr_after"
+tr_race tre pgcolumnar exc "DELETE FROM tre WHERE $pause_on_last"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: every target block all-visible before the writer starts" "$tr_before" "t"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: vacuum ran while the writer was paused" "$tr_paused" "yes"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the vacuum set all 39 target blocks again" "$tr_set" "39"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the writer deleted 39 rows, as heap did" "$tr_written|$he_written" "DELETE 39|DELETE 39"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap" "$tr_ios|$he_ios" "t|t"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does" "$tr_n|$he_n" "0|0"
+check "an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap" "$tr_after|$he_after" "0|0"
+
+exec 9>&-
+wait "$H_PID" 2>/dev/null || true
+
 pgc_summary

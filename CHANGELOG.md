@@ -605,6 +605,19 @@ true until the next version shipped.
 
 ### Fixed
 
+- An AFTER trigger of a DELETE or UPDATE that reads the table through an
+  index-only scan no longer counts rows its own statement deleted, when a
+  VACUUM ran during the statement (#2169). The writer keeps its delete marks in
+  memory until the statement ends. A VACUUM cannot see them, so it set the
+  blocks all-visible again, and AFTER triggers fire before the statement's end
+  writes the marks. #2059 fixed the result after commit, not inside the
+  statement. Measured on main: a DELETE of 39 rows saw 38 of them in its trigger
+  (heap 0), and an UPDATE of 39 rows saw 77 (heap 39). Each statement now
+  writes this backend's marks for every table it names before it starts, as a
+  sequential scan already did for its own table. A VACUUM then sees the marks,
+  and the write clears any bit it set. The tests also read inside an EXCEPTION
+  block that rolls back, and check that the marks still reach the catalog.
+  `test/index_only.sh` and `test_index_only.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

@@ -11,7 +11,8 @@ scan, rows committed after it, even after a VACUUM.
 A VACUUM that runs while a DELETE or UPDATE is still inside its statement does not
 leave the changed block all-visible after the writer commits (#2059), nor does one
 whose set comes after a DELETE that committed during its pause
-(pgcolumnar.vm_set_hold_ms).
+(pgcolumnar.vm_set_hold_ms). And an AFTER trigger of a DELETE or UPDATE, reading
+through an index-only scan after such a VACUUM, counts what heap counts (#2169).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The planner settings are set on that database, as the
@@ -209,6 +210,98 @@ def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None):
     r[f"{tag} ios"] = _ios(dsn, ios)
 
 
+# #2169: the trigger function of phase 8. It counts the target ids through an
+# index-only scan of the table that fired it, joined to a heap list of the ids so
+# the table is not the first entry of the query's range table, and logs the count
+# and whether the plan holds an Index Only Scan. With the argument 'exc' it reads
+# inside an EXCEPTION block that then fails, so the block's subtransaction, which
+# does not own the writer's marks, rolls back.
+TR_COUNT = """CREATE FUNCTION tr_count() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    sql text := format('SELECT count(*) FROM tr_ids k JOIN %I t ON t.id = k.id', TG_TABLE_NAME);
+    n bigint;
+    pl text;
+    ios bool := false;
+BEGIN
+    IF TG_ARGV[0] = 'exc' THEN
+        BEGIN
+            EXECUTE sql INTO n;
+            PERFORM 1 / 0;
+        EXCEPTION WHEN division_by_zero THEN
+            NULL;
+        END;
+    ELSE
+        EXECUTE sql INTO n;
+    END IF;
+    FOR pl IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+        ios := ios OR pl LIKE '%Index Only Scan%';
+    END LOOP;
+    INSERT INTO tr_log VALUES (TG_TABLE_NAME, n, ios);
+    RETURN NULL;
+END $$"""
+
+# Every 500th id below 20000: 39 rows in 39 blocks of one row group. The CASE
+# pauses on the last target, 19500, after the 38 earlier marks, on advisory lock
+# 2169, which the holder connection takes first.
+PAUSE_ON_LAST = ("CASE WHEN id % 500 <> 0 OR id >= 20000 THEN false "
+                 "WHEN id = 19500 THEN pg_advisory_lock_shared(2169)::text = '' ELSE true END")
+TR_TGT = "SELECT DISTINCT id / 291 AS b FROM tr_ids"
+
+
+def _tr_race(dsn, r, tag, tbl, am, variant, verb):
+    """#2169: VACUUM while a DELETE or UPDATE of `tbl` is paused on its last target.
+
+    Its AFTER STATEMENT trigger then fires before the writer's ExecutorEnd writes
+    the marks, and counts the targets through an index-only scan. Records, under
+    `tag`: the VM bits of the target blocks before the writer and after the VACUUM,
+    whether the writer was seen waiting, its command tag, the trigger's count and
+    plan, and the count after commit.
+    """
+    _run(dsn, f"CREATE TABLE {tbl} (id int, pad int) USING {am}; "
+              f"INSERT INTO {tbl} SELECT g, g FROM generate_series(1, 20000) g; "
+              f"CREATE INDEX {tbl}_id ON {tbl} (id);")
+    _run(dsn, f"VACUUM {tbl}")
+    _run(dsn, f"CREATE TRIGGER {tbl}_tr AFTER DELETE OR UPDATE ON {tbl} "
+              f"FOR EACH STATEMENT EXECUTE FUNCTION tr_count('{variant}')")
+    r[f"{tag} before"] = _value(dsn, f"SELECT bool_and(pgcolumnar.vm_is_visible('{tbl}', b)) FROM ({TR_TGT}) s")
+    dml = (f"DELETE FROM {tbl} WHERE {PAUSE_ON_LAST}" if verb == "DELETE"
+           else f"UPDATE {tbl} SET pad = -pad WHERE {PAUSE_ON_LAST}")
+    out = {}
+    r[f"{tag} paused"] = "no"
+    try:
+        with psycopg.connect(dsn, autocommit=True) as holder, \
+                psycopg.connect(dsn, autocommit=True) as writer:
+            holder.execute("SELECT pg_advisory_lock(2169)")
+            writer.execute("SET statement_timeout = '60s'")
+
+            def write():
+                try:
+                    cur = writer.execute(dml)
+                    out["written"] = f"{verb} {cur.rowcount}"
+                except psycopg.Error as exc:
+                    out["written"] = query_error(_message(exc))
+
+            t = threading.Thread(target=write)
+            t.start()
+            for _ in range(200):
+                if _value(dsn, "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                               "AND objid = 2169 AND NOT granted") == "1":
+                    r[f"{tag} paused"] = "yes"
+                    break
+                time.sleep(0.1)
+            _run(dsn, f"VACUUM {tbl}")
+            r[f"{tag} set"] = _value(
+                dsn, f"SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('{tbl}', b)) FROM ({TR_TGT}) s")
+            holder.execute("SELECT pg_advisory_unlock(2169)")
+            t.join(90)
+    except psycopg.Error as exc:
+        r[f"{tag} paused"] = query_error(_message(exc))
+    r[f"{tag} written"] = out.get("written", "writer did not finish")
+    r[f"{tag} n"] = _value(dsn, f"SELECT n FROM tr_log WHERE tbl = '{tbl}'")
+    r[f"{tag} ios"] = _value(dsn, f"SELECT ios FROM tr_log WHERE tbl = '{tbl}'")
+    r[f"{tag} after"] = _value(dsn, f"SELECT count(*) FROM tr_ids k JOIN {tbl} t ON t.id = k.id")
+
+
 @pytest.fixture(scope="module")
 def io(pgc_cluster):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -304,6 +397,14 @@ def io(pgc_cluster):
                 _vis("vr_mid2", 514))
         _vm_mid(dsn, r, "midm", "vr_midm", 400000, "DELETE FROM vr_midm WHERE id % 5000 = 0 AND id < 400000",
                 _tgt_all("vr_midm"), _tgt_stale("vr_midm"), _tgt_ios("vr_midm"))
+        _run(dsn, "CREATE TABLE tr_ids (id int); "
+                  "INSERT INTO tr_ids SELECT g FROM generate_series(500, 19500, 500) g; "
+                  "CREATE TABLE tr_log (tbl text, n bigint, ios bool);")
+        _run(dsn, TR_COUNT)
+        for tag, tbl, variant, verb in (("trd", "trd", "plain", "DELETE"), ("tru", "tru", "plain", "UPDATE"),
+                                        ("tre", "tre", "exc", "DELETE")):
+            _tr_race(dsn, r, tag + " heap", tbl + "_h", "heap", variant, verb)
+            _tr_race(dsn, r, tag, tbl, "pgcolumnar", variant, verb)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -629,3 +730,105 @@ def test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_v
 def test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["midm ios"], "0",
                 "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_trigger_of_delete_during_vacuum_every_target_block_all_visible_before(io, expect):
+    expect.text(io["trd before"], "t",
+                "an AFTER trigger of a delete during vacuum: every target block all-visible before the writer starts")
+
+
+def test_trigger_of_delete_during_vacuum_vacuum_ran_while_writer_paused(io, expect):
+    expect.text(io["trd paused"], "yes", "an AFTER trigger of a delete during vacuum: vacuum ran while the writer was paused")
+
+
+def test_trigger_of_delete_during_vacuum_vacuum_set_all_39_target_blocks_again(io, expect):
+    expect.text(io.get("trd set", "not reached"), "39",
+                "an AFTER trigger of a delete during vacuum: the vacuum set all 39 target blocks again")
+
+
+def test_trigger_of_delete_during_vacuum_writer_deleted_39_rows(io, expect):
+    expect.text(f"{io['trd written']}|{io['trd heap written']}", "DELETE 39|DELETE 39",
+                "an AFTER trigger of a delete during vacuum: the writer deleted 39 rows, as heap did")
+
+
+def test_trigger_of_delete_during_vacuum_trigger_read_through_index_only_scan(io, expect):
+    expect.text(f"{io['trd ios']}|{io['trd heap ios']}", "t|t",
+                "an AFTER trigger of a delete during vacuum: the trigger read through an index-only scan, as on heap")
+
+
+def test_trigger_of_delete_during_vacuum_trigger_count_matches_heap(io, expect):
+    expect.text(f"{io['trd n']}|{io['trd heap n']}", "0|0",
+                "an AFTER trigger of a delete during vacuum: the trigger counts none of the deleted rows, as heap does")
+
+
+def test_trigger_of_delete_during_vacuum_count_after_commit_matches_heap(io, expect):
+    expect.text(f"{io['trd after']}|{io['trd heap after']}", "0|0",
+                "an AFTER trigger of a delete during vacuum: after commit none of them is counted, as on heap")
+
+
+def test_trigger_of_update_during_vacuum_every_target_block_all_visible_before(io, expect):
+    expect.text(io["tru before"], "t",
+                "an AFTER trigger of an update during vacuum: every target block all-visible before the writer starts")
+
+
+def test_trigger_of_update_during_vacuum_vacuum_ran_while_writer_paused(io, expect):
+    expect.text(io["tru paused"], "yes", "an AFTER trigger of an update during vacuum: vacuum ran while the writer was paused")
+
+
+def test_trigger_of_update_during_vacuum_vacuum_set_all_39_target_blocks_again(io, expect):
+    expect.text(io.get("tru set", "not reached"), "39",
+                "an AFTER trigger of an update during vacuum: the vacuum set all 39 target blocks again")
+
+
+def test_trigger_of_update_during_vacuum_writer_updated_39_rows(io, expect):
+    expect.text(f"{io['tru written']}|{io['tru heap written']}", "UPDATE 39|UPDATE 39",
+                "an AFTER trigger of an update during vacuum: the writer updated 39 rows, as heap did")
+
+
+def test_trigger_of_update_during_vacuum_trigger_read_through_index_only_scan(io, expect):
+    expect.text(f"{io['tru ios']}|{io['tru heap ios']}", "t|t",
+                "an AFTER trigger of an update during vacuum: the trigger read through an index-only scan, as on heap")
+
+
+def test_trigger_of_update_during_vacuum_trigger_count_matches_heap(io, expect):
+    expect.text(f"{io['tru n']}|{io['tru heap n']}", "39|39",
+                "an AFTER trigger of an update during vacuum: the trigger counts each updated row once, as heap does")
+
+
+def test_trigger_of_update_during_vacuum_count_after_commit_matches_heap(io, expect):
+    expect.text(f"{io['tru after']}|{io['tru heap after']}", "39|39",
+                "an AFTER trigger of an update during vacuum: after commit each is counted once, as on heap")
+
+
+def test_trigger_in_exception_block_during_vacuum_every_target_block_all_visible_before(io, expect):
+    expect.text(io["tre before"], "t",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: every target block all-visible before the writer starts")
+
+
+def test_trigger_in_exception_block_during_vacuum_vacuum_ran_while_writer_paused(io, expect):
+    expect.text(io["tre paused"], "yes", "an AFTER trigger reading in an EXCEPTION block during vacuum: vacuum ran while the writer was paused")
+
+
+def test_trigger_in_exception_block_during_vacuum_vacuum_set_all_39_target_blocks_again(io, expect):
+    expect.text(io.get("tre set", "not reached"), "39",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: the vacuum set all 39 target blocks again")
+
+
+def test_trigger_in_exception_block_during_vacuum_writer_deleted_39_rows(io, expect):
+    expect.text(f"{io['tre written']}|{io['tre heap written']}", "DELETE 39|DELETE 39",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: the writer deleted 39 rows, as heap did")
+
+
+def test_trigger_in_exception_block_during_vacuum_trigger_read_through_index_only_scan(io, expect):
+    expect.text(f"{io['tre ios']}|{io['tre heap ios']}", "t|t",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger read through an index-only scan, as on heap")
+
+
+def test_trigger_in_exception_block_during_vacuum_trigger_count_matches_heap(io, expect):
+    expect.text(f"{io['tre n']}|{io['tre heap n']}", "0|0",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: the trigger counts none of the deleted rows, as heap does")
+
+
+def test_trigger_in_exception_block_during_vacuum_count_after_commit_matches_heap(io, expect):
+    expect.text(f"{io['tre after']}|{io['tre heap after']}", "0|0",
+                "an AFTER trigger reading in an EXCEPTION block during vacuum: after commit none of them is counted, as on heap")
