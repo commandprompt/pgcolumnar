@@ -16,7 +16,10 @@ in time, sends the body, a late 100 is passed over, and 417 sends the request ag
 without Expect. A wait that runs out stops Expect for the handle's later writes, so a
 multipart export to a store that ignores it sends it on one part only, and a 200 to the
 headers alone still gets the body (#1903 review). Each kind of store is a hook file of
-the shell's fixture.
+the shell's fixture. E (#2231): a request that failed on a fresh connection before any
+byte of an answer lost the socket error; the error must name the errno in its DETAIL,
+for a read, a LIST, a write and a REST catalog request, over http and https, against two
+fixtures that reset every request (--reset-all).
 
 One SigV4 fixture with a refused bucket, the same fixture again over https with a
 certificate the postmaster trusts through SSL_CERT_FILE (made by the openssl CLI, as the
@@ -89,6 +92,21 @@ def _refusal(dsn, sql, setup=()):
         hint = exc.diag.message_hint
         return f"{exc.sqlstate}: {exc.diag.message_primary} | " + \
             (f"HINT: {hint}" if hint else "no hint")
+    return query_error("no error: the statement completed")
+
+
+def _refusal_detail(dsn, sql):
+    """The shell's refusal_detail: -> "SQLSTATE: message | DETAIL: detail" ("| no detail"
+    without one) for the error `sql` raises, or a query_error() when it ran."""
+    try:
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
+            conn.execute(sql).fetchall()
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        detail = exc.diag.message_detail
+        return f"{exc.sqlstate}: {exc.diag.message_primary} | " + \
+            (f"DETAIL: {detail}" if detail else "no detail")
     return query_error("no error: the statement completed")
 
 
@@ -206,12 +224,28 @@ def ea(pgc_cluster):
         stdout=open(tlsout, "w"), stderr=subprocess.STDOUT))
     _ready(tlsout)
 
+    # two fixtures that reset every request once its head is read (#2231)
+    rst_port, rsttls_port = pick_port(38), pick_port(39)
+    rstouts = [work / "rst.out", work / "rsttls.out"]
+    procs.append(subprocess.Popen(
+        [sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+         "--port", str(rst_port), "--log", str(work / "rst.log"), "--reset-all"],
+        stdout=open(rstouts[0], "w"), stderr=subprocess.STDOUT))
+    _ready(rstouts[0])
+    procs.append(subprocess.Popen(
+        [sys.executable, str(TEST / "objstore_http_server.py"), "--dir", str(work),
+         "--port", str(rsttls_port), "--log", str(work / "rsttls.log"), "--reset-all",
+         "--tls-cert", str(pki / "srv.pem"), "--tls-key", str(pki / "srv.key")],
+        stdout=open(rstouts[1], "w"), stderr=subprocess.STDOUT))
+    _ready(rstouts[1])
+
     datadir = work / "data"
     datadir.mkdir()
     log = str(work / "server.log")
     cluster = Cluster(pgc_cluster.pg_config, "advice", datadir, pick_port(45))
     r = {"up": sum(o.read_text(errors="replace").count("READY") for o in outs if o.is_file()),
-         "tls up": tlsout.read_text(errors="replace").count("READY") if tlsout.is_file() else 0}
+         "tls up": tlsout.read_text(errors="replace").count("READY") if tlsout.is_file() else 0,
+         "rst up": sum(o.read_text(errors="replace").count("READY") for o in rstouts if o.is_file())}
     try:
         cluster.initdb()
         with open(datadir / "postgresql.conf", "a") as fh:
@@ -400,6 +434,29 @@ def ea(pgc_cluster):
         r["late denied"] = _refusal(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
                                          f"'s3://{DENIED}/late.parquet')")
         hook.unlink()
+
+        # E: a reset before any answer names the errno (#2231)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            for name, ep in (("ea_rst", f"http://127.0.0.1:{rst_port}"),
+                             ("ea_rsttls", f"https://127.0.0.1:{rsttls_port}")):
+                c.execute(f"CREATE SERVER {name} FOREIGN DATA WRAPPER pgcolumnar_parquet "
+                          f"OPTIONS (endpoint '{ep}', region '{REGION}')")
+                c.execute(f"CREATE USER MAPPING FOR postgres SERVER {name} "
+                          f"OPTIONS (access_key_id '{AKID}', secret_access_key '{SECRET}')")
+                c.execute(f"CREATE FOREIGN TABLE {name}_one (id int8) SERVER {name} "
+                          f"OPTIONS (path 's3://{BUCKET}/small.parquet')")
+            c.execute("CREATE FOREIGN TABLE ea_rst_glob (id int8) SERVER ea_rst "
+                      f"OPTIONS (path 's3://{BUCKET}/sm*.parquet')")
+        r["rst read"] = _refusal_detail(dsn, "SELECT count(*) FROM ea_rst_one")
+        r["rsttls read"] = _refusal_detail(dsn, "SELECT count(*) FROM ea_rsttls_one")
+        r["rst list"] = _refusal_detail(dsn, "SELECT count(*) FROM ea_rst_glob")
+        r["rst put"] = _refusal_detail(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                                            f"'s3://{BUCKET}/rst.parquet', 'ea_rst')")
+        r["rsttls put"] = _refusal_detail(dsn, "SELECT pgcolumnar.export_parquet('ea_mid', "
+                                               f"'s3://{BUCKET}/rst.parquet', 'ea_rsttls')")
+        r["rst rest"] = _refusal_detail(dsn, "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan("
+                                             f"'http://127.0.0.1:{rst_port}','db','t') {ICE_COLS}")
+        r["rst port"] = rst_port
         r["survived"] = _survived(dsn, log, crashes0)
         r["port"] = s3_port
         yield r
@@ -667,6 +724,69 @@ def test_a_refusal_after_the_expect_wait_keeps_the_403_over_http(ea, expect):
                 f'28000: columnar: access to "s3://{DENIED}/late.parquet" was denied '
                 f"(HTTP 403: SignatureDoesNotMatch) | HINT: {ENV_HINT}",
                 "mid-size export refused after the Expect wait ran out (http): the 403 and its hint survive")
+
+
+def test_the_reset_fixtures_are_up(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(str(ea["rst up"]), "2", "premise: the two fixtures that reset every request are up")
+
+
+RESET_DETAIL = "DETAIL: The connection failed: Connection reset by peer."
+PIPE_DETAIL = "DETAIL: The connection failed: Broken pipe."
+
+
+def test_a_read_over_http_reset_before_any_answer_names_the_errno(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rst read"],
+                f'08006: columnar: connection to "s3://{BUCKET}/small.parquet" failed before a '
+                f"response | {RESET_DETAIL}",
+                "E: a read over http reset before any answer names the errno")
+
+
+def test_a_read_over_https_reset_before_any_answer_names_the_errno(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rsttls read"],
+                f'08006: columnar: connection to "s3://{BUCKET}/small.parquet" failed before a '
+                f"response | {RESET_DETAIL}",
+                "E: a read over https reset before any answer names the errno")
+
+
+def test_a_glob_whose_list_is_reset_names_the_errno(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rst list"],
+                f'08006: columnar: LIST to "s3://{BUCKET}/" failed before a response | {RESET_DETAIL}',
+                "E: a glob whose LIST is reset before any answer names the errno")
+
+
+def test_a_mid_size_export_over_http_reset_names_the_errno_of_the_send(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rst put"],
+                f'08006: columnar: PUT to "s3://{BUCKET}/rst.parquet" failed before a response '
+                f"| {PIPE_DETAIL}",
+                "E: a mid-size export over http reset before any answer names the errno of the send")
+
+
+def test_a_mid_size_export_over_https_reset_names_the_errno_of_the_send(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rsttls put"],
+                f'08006: columnar: PUT to "s3://{BUCKET}/rst.parquet" failed before a response '
+                f"| {PIPE_DETAIL}",
+                "E: a mid-size export over https reset before any answer names the errno of the send")
+
+
+def test_a_rest_catalog_request_reset_names_the_errno(ea, expect):
+    if _declined(ea, expect):
+        return
+    expect.text(ea["rst rest"],
+                f'08006: columnar: connection to "http://127.0.0.1:{ea["rst port"]}/v1/config" '
+                f"failed before a response | {RESET_DETAIL}",
+                "E: a REST catalog request reset before any answer names the errno")
 
 
 def test_the_server_survived_the_refusals(ea, expect):
