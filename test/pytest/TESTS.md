@@ -13255,6 +13255,13 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run` | 16 empty data pages, a dictionary page and 16 more are rejected (one run) |
 | `test_parquet_streaming_page_header_with_long_form_field_id_65537_is_rejected` | a PageHeader with long-form field id 65537 is rejected |
 | `test_parquet_streaming_page_header_with_long_form_field_id_minus_65535_is_rejected` | a PageHeader with long-form field id -65535 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_32768_is_rejected` | a PageHeader with long-form field id 32768 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_32769_is_rejected` | a PageHeader with long-form field id -32769 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_2147483648_is_rejected` | a PageHeader with long-form field id 2147483648 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_4294967297_is_rejected` | a PageHeader with long-form field id 4294967297 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967295_is_rejected` | a PageHeader with long-form field id -4294967295 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967297_is_rejected` | a PageHeader with long-form field id -4294967297 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_1099511627777_is_rejected` | a PageHeader with long-form field id 1099511627777 is rejected |
 | `test_parquet_streaming_data_page_header_with_unknown_field_id_32768_is_rejected` | a DataPageHeader with an unknown field id 32768 is rejected |
 | `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32768_reads` | a DataPageHeader with an unknown field id -32768 reads |
 | `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32769_is_rejected` | a DataPageHeader with an unknown field id -32769 is rejected |

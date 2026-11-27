@@ -260,6 +260,13 @@ check "16 empty data pages, a dictionary page and 16 more are rejected (one run)
 # a wide long-form id is refused, not narrowed, and the edges of the int16 range
 check "a PageHeader with long-form field id 65537 is rejected" "$(ce y_ph65537_type_150)" "$REFUSED"
 check "a PageHeader with long-form field id -65535 is rejected" "$(ce y_phm65535_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 32768 is rejected" "$(ce y_ph32768_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -32769 is rejected" "$(ce y_phm32769_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 2147483648 is rejected" "$(ce y_ph2147483648_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 4294967297 is rejected" "$(ce y_ph4294967297_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -4294967295 is rejected" "$(ce y_phm4294967295_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -4294967297 is rejected" "$(ce y_phm4294967297_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 1099511627777 is rejected" "$(ce y_ph1099511627777_type_150)" "$REFUSED"
 check "a DataPageHeader with an unknown field id 32768 is rejected" "$(ce b_unk32768_v1_200)" "$REFUSED"
 check "a DataPageHeader with an unknown field id -32768 reads" "$(cs b_unkm32768_v1_200)" "200 19900"
 check "a DataPageHeader with an unknown field id -32769 is rejected" "$(ce b_unkm32769_v1_200)" "$REFUSED"

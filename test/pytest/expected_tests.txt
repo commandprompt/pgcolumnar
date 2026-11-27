@@ -2422,4 +2422,8 @@ guard_tests 897
 # pin that a wide long-form field id is refused, not narrowed (65537 and -65535 in a PageHeader, which
 # narrow to the page type), and the edges of the int16 range (32768 and -32769 refused, -32768 read), by
 # collection: every file not in NO_CLUSTER, `--collect-only -q`: 5938 tests collected.
-cluster_tests 5938
+# cluster_tests 5938 -> 5945 for #2077's eighth review round in test_native_parquet_streaming.py: 7 tests
+# pin that a wide long-form field id in a PageHeader is refused whatever width a narrowing reader would
+# use (32768, -32769, 2^31, 2^32+1, 1-2^32, -(2^32+1) and 2^40+1), by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5945 tests collected.
+cluster_tests 5945

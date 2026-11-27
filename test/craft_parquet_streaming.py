@@ -692,7 +692,16 @@ with_pages("x_run16_dict_16.parquet", popt, {1: empty_data_page() * 16 + EMPTY_D
 # int16, as pyarrow does, either id is field 1, the page type, so the page would
 # become an INDEX_PAGE and be stepped over: with the footer at 150 rows, ids 50..99
 # would be dropped with no error. pyarrow reads both files that way.
-for fid, tag in ((65537, "65537"), (-65535, "m65535")):
+#
+# The same layout for every narrowing width at once (int16, uint16, int32, uint32).
+# 65537 and -65535 are field 1 in 16 bits; 2^32+1, 1-2^32 and 2^40+1 are field 1 in 32
+# bits (2^32+1 in 16 bits too). 32768, -32769, 2^31 and -(2^32+1) narrow to no known
+# field, so a narrowing reader would read the page and 150 rows with no error. The
+# reader refuses each id.
+WIDE_IDS = ((65537, "65537"), (-65535, "m65535"), (32768, "32768"), (-32769, "m32769"),
+            (2**31, "2147483648"), (2**32 + 1, "4294967297"), (1 - 2**32, "m4294967295"),
+            (-(2**32 + 1), "m4294967297"), (2**40 + 1, "1099511627777"))
+for fid, tag in WIDE_IDS:
     replace_page2_header("y_ph%s_type_150.parquet" % tag, popt, lambda n, f=fid: sizes(0, n)
                          + V1HDR + lf(I32, f) + zz(1) + STOP)
 
@@ -736,6 +745,9 @@ for name in ("zero_pages", "bad_size", "noise_pages", "bad_offset", "two_dicts",
              "x_fidm65535_v1_150", "x_fidm65535_v2_req150", "e_oth8_r1_200", "e_oth5_r1_v2_200",
              "x_fid32769_short_v1_200", "x_fid32767_v1_200", "x_run16_dict_16",
              "y_ph65537_type_150", "y_phm65535_type_150", "b_unk32768_v1_200", "b_unkm32768_v1_200",
+             "y_ph32768_type_150", "y_phm32769_type_150", "y_ph2147483648_type_150",
+             "y_ph4294967297_type_150", "y_phm4294967295_type_150", "y_phm4294967297_type_150",
+             "y_ph1099511627777_type_150",
              "b_unkm32769_v1_200",
              "empty_page_snappy", "stream_groups"):
     if not os.path.exists(os.path.join(W, name + ".parquet")):

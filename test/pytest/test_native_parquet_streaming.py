@@ -217,6 +217,13 @@ def pqs(pgc_cluster, server_dir):
                           ("x fidm65535 v1", "x_fidm65535_v1_150"), ("x fidm65535 v2", "x_fidm65535_v2_req150"),
                           ("x fid32769 short v1", "x_fid32769_short_v1_200"), ("x run16 dict 16", "x_run16_dict_16"),
                           ("y ph65537 type", "y_ph65537_type_150"), ("y phm65535 type", "y_phm65535_type_150"),
+                          ("y ph32768 type", "y_ph32768_type_150"),
+                          ("y phm32769 type", "y_phm32769_type_150"),
+                          ("y ph2147483648 type", "y_ph2147483648_type_150"),
+                          ("y ph4294967297 type", "y_ph4294967297_type_150"),
+                          ("y phm4294967295 type", "y_phm4294967295_type_150"),
+                          ("y phm4294967297 type", "y_phm4294967297_type_150"),
+                          ("y ph1099511627777 type", "y_ph1099511627777_type_150"),
                           ("b unk32768 v1", "b_unk32768_v1_200"), ("b unkm32769 v1", "b_unkm32769_v1_200")):
             r[key] = _errcode(dsn, f"SELECT * FROM pgcolumnar.read_parquet('{w}/{name}.parquet') AS t(id int)")
         r["alt20"] = _rows(dsn, f"SELECT count(*), count(ls), sum(cardinality(ls)) FROM "
@@ -840,6 +847,62 @@ def test_parquet_streaming_page_header_with_long_form_field_id_minus_65535_is_re
     if r is not None:
         expect.text(_got(r, "y phm65535 type"), REFUSED,
                     "a PageHeader with long-form field id -65535 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_32768_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y ph32768 type"), REFUSED,
+                    "a PageHeader with long-form field id 32768 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_minus_32769_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y phm32769 type"), REFUSED,
+                    "a PageHeader with long-form field id -32769 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_2147483648_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y ph2147483648 type"), REFUSED,
+                    "a PageHeader with long-form field id 2147483648 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_4294967297_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y ph4294967297 type"), REFUSED,
+                    "a PageHeader with long-form field id 4294967297 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967295_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y phm4294967295 type"), REFUSED,
+                    "a PageHeader with long-form field id -4294967295 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967297_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y phm4294967297 type"), REFUSED,
+                    "a PageHeader with long-form field id -4294967297 is rejected")
+
+
+def test_parquet_streaming_page_header_with_long_form_field_id_1099511627777_is_rejected(request, expect):
+    """a wide id is refused, whatever width a narrowing reader would use"""
+    r = _readings(request, expect)
+    if r is not None:
+        expect.text(_got(r, "y ph1099511627777 type"), REFUSED,
+                    "a PageHeader with long-form field id 1099511627777 is rejected")
 
 
 def test_parquet_streaming_data_page_header_with_unknown_field_id_32768_is_rejected(request, expect):
