@@ -605,6 +605,15 @@ true until the next version shipped.
 
 ### Fixed
 
+- A lazy VACUUM no longer clears the all-visible bits of clean blocks that an
+  earlier VACUUM had set, when a DELETE commits while it runs (#2170). Its
+  second pass (#2059) cleared every block of its first list that had left the
+  all-visible row groups. That list works by row group, so a delete of one row
+  took the bits of every block in the group, and index-only scans fetched those
+  blocks again until the next VACUUM. Results stayed correct. The second pass
+  now clears only the bits this VACUUM flipped from 0 to 1. A bit that was
+  already set is left to the writer, which clears its own rows' blocks after it
+  writes them. `test/index_only.sh` and `test_index_only.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

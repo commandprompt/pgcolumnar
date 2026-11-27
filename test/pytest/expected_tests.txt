@@ -2564,4 +2564,8 @@ guard_tests 899
 # export over http and over https, and a REST catalog request reset before any answer each name the errno), by
 # collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
-cluster_tests 6181
+# cluster_tests 6181 -> 6189 for #2170's eight tests in test_index_only.py (test_2170_*): three premises, the
+# deleted blocks cleared, the clean blocks an earlier VACUUM set and the blocks this VACUUM set in a clean
+# group keeping their bits, and two index-only counts, by collection of that file (68 on main 3d2277c1, 76
+# here) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6189

@@ -11,7 +11,8 @@ scan, rows committed after it, even after a VACUUM.
 A VACUUM that runs while a DELETE or UPDATE is still inside its statement does not
 leave the changed block all-visible after the writer commits (#2059), nor does one
 whose set comes after a DELETE that committed during its pause
-(pgcolumnar.vm_set_hold_ms).
+(pgcolumnar.vm_set_hold_ms). That VACUUM's second pass clears only the bits it
+flipped itself, so clean blocks an earlier VACUUM set keep theirs (#2170).
 
 ON A PRIVATE DATABASE, built once by a module fixture in the shell's order; each test
 asserts one reading (#1339). The planner settings are set on that database, as the
@@ -165,17 +166,20 @@ def _vm_race(dsn, r, tag, tbl, rows, dml, before, after, ios):
     r[f"race {tag} ios"] = _ios(dsn, ios)
 
 
-def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None):
+def _vm_mid(dsn, r, tag, tbl, rows, dml, before, after, ios, clean=None, setup=None):
     """#2059: a DELETE commits between VACUUM's first computation and its set.
 
     pgcolumnar.vm_set_hold_ms pauses the VACUUM in that window. The writer's own
     clears then run before the set, so only VACUUM's second computation can clear
     the bits. `before`, `after`, `ios` and the optional `clean` are queries run
-    before the hold and after the VACUUM.
+    before the hold and after the VACUUM; the optional `setup` runs after the
+    load's VACUUM, before `before`.
     """
     held = ("SELECT count(*) FROM pg_stat_activity "
             f"WHERE query = 'VACUUM {tbl}' AND wait_event_type = 'Extension'")
     _load(dsn, tbl, rows)
+    if setup is not None:
+        _run(dsn, setup)
     r[f"{tag} before"] = _value(dsn, before)
     out = {}
     try:
@@ -304,6 +308,22 @@ def io(pgc_cluster):
                 _vis("vr_mid2", 514))
         _vm_mid(dsn, r, "midm", "vr_midm", 400000, "DELETE FROM vr_midm WHERE id % 5000 = 0 AND id < 400000",
                 _tgt_all("vr_midm"), _tgt_stale("vr_midm"), _tgt_ios("vr_midm"))
+        # #2170: group 1 (rows 1..20000, blocks 1..67) is set by the load's VACUUM;
+        # a second INSERT starts group 2 at row 150001, blocks 516..583, not yet set.
+        # The DELETE takes blocks 1 and 5 of group 1 during the hold. Only the bits
+        # this VACUUM flipped and that left the second computation are cleared.
+        keep = "SELECT count(*) FILTER (WHERE pgcolumnar.vm_is_visible('vr_keep', b)) FROM ({}) t"
+        g1 = "SELECT b FROM generate_series(1, 67) b"
+        g2 = "SELECT b FROM generate_series(516, 583) b"
+        dele = "id BETWEEN 300 AND 400 OR id BETWEEN 1500 AND 1600"
+        _vm_mid(dsn, r, "keep", "vr_keep", 20000, f"DELETE FROM vr_keep WHERE {dele}",
+                f"SELECT ({keep.format(g1)}) || '|' || ({keep.format(g2)})",
+                keep.format("SELECT b FROM (VALUES (1), (5)) v(b)"),
+                f"SELECT count(*) FROM vr_keep WHERE {dele}",
+                keep.format("SELECT b FROM generate_series(1, 67) b WHERE b NOT IN (1, 5)"),
+                "INSERT INTO vr_keep SELECT g, g FROM generate_series(20001, 40000) g")
+        r["keep fresh"] = _value(dsn, keep.format(g2))
+        r["keep all"] = _ios(dsn, "SELECT count(*) FROM vr_keep WHERE id BETWEEN 1 AND 40000")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -629,3 +649,43 @@ def test_delete_over_three_row_groups_between_vacuum_steps_no_target_block_all_v
 def test_delete_over_three_row_groups_between_vacuum_steps_index_only_scan_returns_no_deleted_row(io, expect):
     expect.text(io["midm ios"], "0",
                 "delete over three row groups between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_2170_premise_group_1_set_group_2_not_yet_set_before_hold(io, expect):
+    expect.text(io["keep before"], "67|0",
+                "#2170 premise: delete between vacuum's two steps: group 1 set and group 2 not yet set before the hold")
+
+
+def test_2170_premise_vacuum_paused_before_its_set(io, expect):
+    expect.text(io["keep held"], "yes",
+                "#2170 premise: delete between vacuum's two steps: vacuum paused before its set")
+
+
+def test_2170_premise_delete_committed_while_paused(io, expect):
+    expect.text(io.get("keep still", "not reached"), "yes",
+                "#2170 premise: delete between vacuum's two steps: the delete committed while vacuum was paused")
+
+
+def test_2170_blocks_1_and_5_not_all_visible_after(io, expect):
+    expect.text(io["keep after"], "0",
+                "#2170 delete between vacuum's two steps: blocks 1 and 5 not all-visible after vacuum")
+
+
+def test_2170_clean_blocks_set_before_hold_keep_their_bits(io, expect):
+    expect.text(io["keep clean"], "65",
+                "#2170 delete between vacuum's two steps: the 65 clean blocks set before the hold keep their bits")
+
+
+def test_2170_blocks_this_vacuum_set_in_clean_group_keep_their_bits(io, expect):
+    expect.text(io["keep fresh"], "68",
+                "#2170 delete between vacuum's two steps: the 68 blocks this vacuum set in the clean group keep their bits")
+
+
+def test_2170_index_only_scan_returns_no_deleted_row(io, expect):
+    expect.text(io["keep ios"], "0",
+                "#2170 delete between vacuum's two steps: index-only scan returns no deleted row")
+
+
+def test_2170_index_only_count_of_every_id_matches_live_rows(io, expect):
+    expect.text(io["keep all"], "39798",
+                "#2170 delete between vacuum's two steps: index-only count of every id matches the 39798 live rows")
