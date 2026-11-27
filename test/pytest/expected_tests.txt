@@ -2286,32 +2286,60 @@ guard_tests 897
 # file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
 # in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
 # collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
-# cluster_tests 5720 -> 5724 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5720 -> 5734 for #2183's fourteen tests: test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on
+# in test_parallel_export_parquet.py (5 parametrized: an export after LOCK TABLE ... ACCESS EXCLUSIVE, after
+# TRUNCATE and after ACCESS EXCLUSIVE on one leaf is refused with 55000; under SHARE, and with ACCESS EXCLUSIVE
+# on another table, it still exports), and in test_parallel_copy.py
+# test_parallel_copy_a_lock_the_caller_holds_is_refused_not_waited_on (6 parametrized: refused after ACCESS
+# EXCLUSIVE, TRUNCATE, SHARE and ACCESS EXCLUSIVE on one partition; still loads under ROW EXCLUSIVE and with
+# ACCESS EXCLUSIVE on another table), test_parallel_copy_refusal_order_with_a_lock_the_caller_holds (2
+# parametrized: 55000 before #2080's 0A000, 42501 before 55000) and test_parallel_copy_a_refused_load_loads_nothing,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5734 -> 5741 for the #2212 review of #2183: in test_parallel_export_parquet.py one more case of
+# test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on (an export in a savepoint keeps 25001), and in
+# test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
+# still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
+# mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
+# cluster_tests 5741 -> 5755 for #2211's fourteen tests in test_parallel_copy.py: test_parallel_copy_own_write_premise,
+# test_parallel_copy_the_callers_own_write_is_refused_not_waited_on (4 parametrized: a load after an INSERT into
+# the same table with 2 workers and with 1, into a table with a committed row, and into one partition is refused
+# with 55000), test_parallel_copy_refused_after_its_own_write_loads_nothing,
+# test_parallel_copy_without_a_write_to_the_target_still_loads (3 parametrized: an INSERT into another table, and
+# no write into a single and a partitioned table, still load),
+# test_parallel_copy_own_write_refusal_names_the_last_partition_and_its_detail and
+# test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order (4 parametrized: a later partition and a
+# second-level leaf are refused naming it, 55000 before #2080's 0A000, #2183's refusal before this one), by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 5755 -> 5756 for #2200's test in test_parallel_copy.py (parallel_copy refuses a single
+# table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
+# by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
+# main 91637726).
+# cluster_tests 5756 -> 5760 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5724 -> 5728 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5760 -> 5764 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5728 -> 5734 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5764 -> 5770 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5734 -> 5735 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5770 -> 5771 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-# cluster_tests 5735 -> 5739 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# cluster_tests 5771 -> 5775 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-# cluster_tests 5739 -> 5741 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# cluster_tests 5775 -> 5777 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
 # #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
 # struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
-# cluster_tests 5741 -> 5745 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# cluster_tests 5777 -> 5781 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
 # #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
 # leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
-cluster_tests 5745
+cluster_tests 5781

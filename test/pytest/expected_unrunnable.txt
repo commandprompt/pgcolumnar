@@ -64,6 +64,12 @@
 16 test_tier_partition.py::test_tier_partition_moves_a_virtual_generated_column
 17 test_tier_partition.py::test_tier_partition_moves_a_virtual_generated_column
 
+# PostgreSQL 15 to 17: WITHOUT OVERLAPS arrived in PostgreSQL 18, so there is no
+# temporal primary key for parallel_copy to refuse (#2200); the shell records a SKIP.
+15 test_parallel_copy.py::test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers
+16 test_parallel_copy.py::test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers
+17 test_parallel_copy.py::test_parallel_copy_refuses_a_temporal_primary_key_table_with_two_workers
+
 # PostgreSQL 15 to 17: virtual generated columns arrived in PostgreSQL 18, so the
 # virtual arm of test_generated_columns.py declines, as the shell records its skip.
 15 test_generated_columns.py::test_virtual_generated_row_count

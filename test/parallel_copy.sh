@@ -1236,6 +1236,41 @@ check "parallel_copy refuses 4 workers when a unique index appears after its che
 	"$(late_unique t_ur4 4) | $(q "SELECT CASE WHEN is_called THEN 'a loader inserted a row' ELSE 'no row inserted' END FROM t_ur4_rows")" \
 	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" with more than one worker, because it has a unique or exclusion index | no hint | no row inserted'
 
+# ---- #2200: a temporal primary key is a unique AND an exclusion index ---------
+# PostgreSQL 18's PRIMARY KEY (id, during WITHOUT OVERLAPS) builds one index with
+# indisunique and indisexclusion both true, the one shape no table above has. So
+# the refusal must not test that exactly one of the two flags is set: with
+# `indisunique != indisexclusion` every check above passed, and this load of
+# distinct keys hung until its statement_timeout (57014). The file carries a
+# third column, so the rows fit the table: a load that is not refused would run.
+# The int key part needs btree_gist, which test/temporal.sh needs too. A missing
+# btree_gist fails this check on 18 and later (#448: a box that cannot run it has
+# not passed it). WITHOUT OVERLAPS does not exist before 18, so the check is a
+# SKIP there. The major is asserted first, so an unreadable one fails the check
+# rather than being taken for an old one.
+if ! pgc_is_number "${PGC_MAJOR:-}"; then
+	check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+		"unreadable server major [${PGC_MAJOR:-<none>}]" "a server major to gate on"
+elif [ "$PGC_MAJOR" -ge 18 ]; then
+	F_TPK="$DATADIR/temporal_pk.txt"
+	psql_run "COPY (SELECT g, 'host_'||g, daterange(date '2020-01-01' + g, date '2020-01-01' + g + 1)
+	                FROM generate_series(1, 5000) g) TO '$F_TPK' WITH (FORMAT text);" >/dev/null
+	tpk_setup="$(remote_refusal "CREATE EXTENSION IF NOT EXISTS btree_gist;
+	    CREATE TABLE t_utp (id int, txt text, during daterange,
+	      PRIMARY KEY (id, during WITHOUT OVERLAPS)) USING pgcolumnar;")"
+	if [ "${tpk_setup#no error (}" = "$tpk_setup" ]; then
+		check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" "setup failed: $tpk_setup" "$(want_unique t_utp) | 0 rows"
+	else
+		check "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+			"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_utp'::regclass, '$F_TPK', 2)") | $(q "SELECT count(*) FROM t_utp") rows" \
+			"$(want_unique t_utp) | 0 rows"
+	fi
+else
+	check_skip "parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200)" \
+		"SKIP  parallel_copy refuses a single table with a temporal primary key (unique and exclusion) and 2 workers with 0A000 and the hint, and loads nothing (#2200) (PostgreSQL $PGC_MAJOR has no WITHOUT OVERLAPS; 18 added it)" \
+		"PostgreSQL $PGC_MAJOR has no WITHOUT OVERLAPS"
+fi
+
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
 # a projection at statement end with no active snapshot. It does not: on main's
@@ -1259,4 +1294,184 @@ check "parallel_copy into a table with a projection fills the projection, leaves
 	"$_proj_got | leak $(q "SELECT count(*) FROM pg_prepared_xacts") | survived $(survived "$CRASHES_BEFORE")" \
 	"w1:5000/5000/5000 w2:5000/6000/6000 | leak 0 | survived 1"
 
+# ---- #2183: a lock the caller holds is refused, not waited on ------------------
+# The coordinator and the loaders open the target with ROW EXCLUSIVE in their own
+# transactions, and the loaders route rows into its partitions. They are not in
+# the caller's lock group, and the caller waits for them on a latch, so the
+# deadlock detector cannot see the wait: after LOCK TABLE ... IN ACCESS EXCLUSIVE
+# MODE, TRUNCATE, or LOCK TABLE ... IN SHARE MODE in the caller's transaction, the
+# load waited until statement_timeout. It is now refused up front with 55000,
+# naming the lock and the relation. A lock ROW EXCLUSIVE does not conflict with
+# (ROW EXCLUSIVE on the target, ACCESS EXCLUSIVE on another table) must still
+# load, and a lock on one partition is refused like one on the table.
+# Every run gets a 5s statement_timeout, so the old wait reads 57014, not a hang.
+#
+# self_lock_copy SETUP TABLE [WORKERS] -> "SQLSTATE|message" of the first ERROR, or
+# "none|<rows returned>" when BEGIN; SETUP; parallel_copy of F into TABLE with WORKERS
+# (default 2); COMMIT ran.
+psql_run "DROP TABLE IF EXISTS t_lkc, t_lkc_other;
+          CREATE TABLE t_lkc (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_lkc_other (a int);" >/dev/null
+mkpart t_lkp 4
+self_lock_copy() {
+	local out rc
+	out="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 \
+		-c "SET statement_timeout = '5s'" -c '\set VERBOSITY verbose' \
+		-c "BEGIN; $1; SELECT pgcolumnar.parallel_copy('$2'::regclass, '$F', ${3:-2}); COMMIT;" 2>&1)"
+	rc=$?
+	if grep -q '^ERROR:' <<<"$out"; then
+		sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1
+	elif [ "$rc" -eq 0 ]; then
+		echo "none|$(tail -1 <<<"$out")"
+	else
+		echo "no reading (psql exit $rc: $(head -1 <<<"$out"))"
+	fi
+}
+LKC_REFUSED='55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lkc"'
+check "parallel_copy after LOCK TABLE IN ACCESS EXCLUSIVE MODE in the same transaction is refused with 55000, not waited on (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN ACCESS EXCLUSIVE MODE" t_lkc)" "$LKC_REFUSED"
+check "parallel_copy after TRUNCATE in the same transaction is refused with 55000, not waited on (#2183)" \
+	"$(self_lock_copy "TRUNCATE t_lkc" t_lkc)" "$LKC_REFUSED"
+check "parallel_copy after LOCK TABLE IN SHARE MODE in the same transaction is refused with 55000, not waited on (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN SHARE MODE" t_lkc)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkc"'
+check "parallel_copy after LOCK TABLE IN ROW EXCLUSIVE MODE in the same transaction still loads (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN ROW EXCLUSIVE MODE" t_lkc)" "none|5000"
+check "parallel_copy while the transaction holds ACCESS EXCLUSIVE on another table still loads (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc_other IN ACCESS EXCLUSIVE MODE" t_lkc)" "none|5000"
+check "parallel_copy into a partitioned table after LOCK TABLE on one partition IN ACCESS EXCLUSIVE MODE is refused with 55000 (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkp_p2 IN ACCESS EXCLUSIVE MODE" t_lkp)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lkp_p2"'
+check "parallel_copy refused for a lock the caller holds loads nothing and leaves no prepared transaction (#2183)" \
+	"$(q "SELECT count(*) FROM t_lkc") rows, $(q "SELECT count(*) FROM t_lkp") partitioned rows, $(q "SELECT count(*) FROM pg_prepared_xacts") prepared" \
+	"10000 rows, 0 partitioned rows, 0 prepared"
+# The order of the refusals (#2183 with #2080). parallel_copy checks, in order:
+# INSERT (42501), row-level security, a remote URL (0A000), then the caller's own
+# lock (55000), and only then a unique index with more than one worker (0A000).
+# The lock refusal comes before the unique-index one because its cause holds for
+# every worker count: the unique-index hint says "workers => 1", and with that a
+# caller holding SHARE would only reach the lock refusal next. A caller without
+# INSERT still gets 42501 first, whatever lock it holds. pcopy_noins holds
+# UPDATE on t_lko, which is enough to LOCK it IN SHARE MODE, and no INSERT.
+psql_run "DROP TABLE IF EXISTS t_lko;
+          CREATE TABLE t_lko (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          GRANT SELECT, UPDATE ON t_lko TO pcopy_noins;" >/dev/null
+check "parallel_copy into a primary-key table under the caller's SHARE lock gets the lock refusal (55000) before the unique-index refusal (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lko IN SHARE MODE" t_lko)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lko"'
+check "parallel_copy gives a caller without INSERT that holds SHARE on the table 42501 before the lock refusal (#2183)" \
+	"$(PGOPTIONS='-c role=pcopy_noins' self_lock_copy "LOCK TABLE t_lko IN SHARE MODE" t_lko)" \
+	'42501|permission denied for table t_lko'
+# The rest of the conflict table, and the partition tree in depth (#2212 review).
+# SHARE UPDATE EXCLUSIVE is stronger than ROW EXCLUSIVE by number but does not
+# conflict with it, so the load runs; EXCLUSIVE and SHARE ROW EXCLUSIVE conflict,
+# and each refusal names its mode. LOCK TABLE ONLY locks the parent alone, and
+# t_lk2 has a partitioned partition t_lk2_a, so both the mid level and a
+# second-level leaf must be checked.
+psql_run "DROP TABLE IF EXISTS t_lk2 CASCADE;
+          CREATE TABLE t_lk2 (id int, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_lk2_a PARTITION OF t_lk2 FOR VALUES FROM (MINVALUE) TO (2501) PARTITION BY RANGE (id);
+          CREATE TABLE t_lk2_a1 PARTITION OF t_lk2_a FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar;
+          CREATE TABLE t_lk2_a2 PARTITION OF t_lk2_a FOR VALUES FROM (1251) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_lk2_b PARTITION OF t_lk2 FOR VALUES FROM (2501) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+check "parallel_copy after LOCK TABLE IN SHARE UPDATE EXCLUSIVE MODE in the same transaction still loads (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN SHARE UPDATE EXCLUSIVE MODE" t_lkc)" "none|5000"
+check "parallel_copy after LOCK TABLE IN EXCLUSIVE MODE in the same transaction is refused with 55000, naming ExclusiveLock (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN EXCLUSIVE MODE" t_lkc)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ExclusiveLock on "t_lkc"'
+check "parallel_copy after LOCK TABLE IN SHARE ROW EXCLUSIVE MODE in the same transaction is refused with 55000, naming ShareRowExclusiveLock (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lkc IN SHARE ROW EXCLUSIVE MODE" t_lkc)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareRowExclusiveLock on "t_lkc"'
+check "parallel_copy into a partitioned table after LOCK TABLE ONLY the parent IN SHARE MODE is refused with 55000, naming the parent (#2183)" \
+	"$(self_lock_copy "LOCK TABLE ONLY t_lkp IN SHARE MODE" t_lkp)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lkp"'
+check "parallel_copy into a two-level partitioned table after LOCK TABLE ONLY the mid level IN ACCESS EXCLUSIVE MODE is refused with 55000, naming it (#2183)" \
+	"$(self_lock_copy "LOCK TABLE ONLY t_lk2_a IN ACCESS EXCLUSIVE MODE" t_lk2)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_lk2_a"'
+check "parallel_copy into a two-level partitioned table after LOCK TABLE on a second-level leaf IN SHARE MODE is refused with 55000, naming it (#2183)" \
+	"$(self_lock_copy "LOCK TABLE t_lk2_a1 IN SHARE MODE" t_lk2)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds ShareLock on "t_lk2_a1"'
+
+# ---- #2211: the caller's own write to the target is refused, not waited on -----
+# The first writer of a columnar storage takes a transaction-scoped advisory lock
+# on that storage (PGCOLUMNAR_LOCKCLASS_STORAGE_ROW) on every flush and holds it to
+# transaction end, whether or not the storage row is committed already. After an
+# INSERT into the target in the caller's transaction, the coordinator (single
+# table, which pre-creates the storage row) or the loader routing rows into the
+# written partition waited on that lock, and the caller waited on them on a latch,
+# so the load waited until statement_timeout (57014) with 1 worker or 2. It is now
+# refused up front with 55000, naming the written relation. A write to another
+# table, and no write, must still load. The refused, rolled-back loads leave no
+# rows, no prepared transaction, and no committed storage row behind: the
+# coordinator used to create and commit one once the caller's rollback let it.
+psql_run "DROP TABLE IF EXISTS t_ownw, t_ownw1, t_ownw_other;
+          CREATE TABLE t_ownw (id int, txt text) USING pgcolumnar;
+          CREATE TABLE t_ownw1 (id int, txt text) USING pgcolumnar;
+          INSERT INTO t_ownw1 VALUES (-1, 'committed');
+          CREATE TABLE t_ownw_other (id int, txt text) USING pgcolumnar;" >/dev/null
+mkpart t_ownp 4
+check "premise: the table written in the #2211 checks has no storage row before them, and the table with one committed row has one" \
+	"$(q "SELECT count(*) FILTER (WHERE relation_oid = 't_ownw'::regclass) || '/' || count(*) FILTER (WHERE relation_oid = 't_ownw1'::regclass) FROM pgcolumnar.storage")" "0/1"
+check "parallel_copy after an INSERT into the same table in the same transaction is refused with 55000, not waited on (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownw VALUES (0, 'pre')" t_ownw)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw"'
+check "parallel_copy with workers => 1 after an INSERT into the same table in the same transaction is refused with 55000 (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownw VALUES (0, 'pre')" t_ownw 1)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw"'
+check "parallel_copy after an INSERT into a table that already has a committed row is refused with 55000 (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownw1 VALUES (0, 'pre')" t_ownw1)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownw1"'
+check "parallel_copy into a partitioned table after an INSERT that reached one partition is refused with 55000, naming the partition (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownp VALUES (0, 'pre')" t_ownp)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p0"'
+check "parallel_copy refused after the transaction's own INSERT loads nothing and leaves no prepared transaction and no storage row (#2211)" \
+	"$(q "SELECT (SELECT count(*) FROM t_ownw) || ' rows, ' || (SELECT count(*) FROM t_ownw1) || ' rows, ' || (SELECT count(*) FROM t_ownp) || ' partitioned rows, ' || (SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 't_ownw'::regclass) || ' storage rows, ' || (SELECT count(*) FROM pg_prepared_xacts) || ' prepared'")" \
+	"0 rows, 1 rows, 0 partitioned rows, 0 storage rows, 0 prepared"
+check "parallel_copy after an INSERT into another columnar table in the same transaction still loads (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownw_other VALUES (0, 'pre')" t_ownw)" "none|5000"
+check "parallel_copy in a transaction that wrote nothing still loads (#2211)" \
+	"$(self_lock_copy "SELECT 1" t_ownw1)" "none|5000"
+check "parallel_copy into a partitioned table in a transaction that wrote nothing still loads (#2211)" \
+	"$(self_lock_copy "SELECT 1" t_ownp)" "none|5000"
+# Which partition, and in what order (#2214 review). The refusal must name the
+# partition the write reached wherever it sits in the tree: the last of four (S4
+# above writes the first), a later one written directly, and a leaf one level
+# down in t_lk2. own_write_copy also returns the DETAIL, which names the same
+# relation. The refusal sits after #2183's lock refusal and before #2080's
+# unique-index refusal: a primary-key table with the caller's own INSERT and 2
+# workers gets 55000, not 0A000, and a caller that took ACCESS EXCLUSIVE and then
+# wrote gets #2183's message.
+#
+# own_write_copy SETUP TABLE -> "SQLSTATE|message|DETAIL" of the first ERROR, or
+# what self_lock_copy returns when there is none.
+own_write_copy() {
+	local out
+	out="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 \
+		-c "SET statement_timeout = '5s'" -c '\set VERBOSITY verbose' \
+		-c "BEGIN; $1; SELECT pgcolumnar.parallel_copy('$2'::regclass, '$F', 2); COMMIT;" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then
+		echo "$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1)|$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	else
+		self_lock_copy "$1" "$2"
+	fi
+}
+psql_run "DROP TABLE IF EXISTS t_ownu;
+          CREATE TABLE t_ownu (id int PRIMARY KEY, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy into a partitioned table after an INSERT that reached its last partition is refused with 55000, naming that partition in the message and the DETAIL (#2211)" \
+	"$(own_write_copy "INSERT INTO t_ownp VALUES (4000, 'x')" t_ownp)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p3"|The write holds the lock that serializes the first writers of "t_ownp_p3" until this transaction ends, and the background workers take that lock in their own transactions, so they would wait for this transaction to end.'
+check "parallel_copy into a partitioned table after a direct INSERT into a later partition is refused with 55000, naming it (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownp_p2 VALUES (3000, 'x')" t_ownp)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownp_p2"'
+check "parallel_copy into a two-level partitioned table after an INSERT that reached a second-level leaf is refused with 55000, naming the leaf (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_lk2 VALUES (2000, 'x')" t_lk2)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_lk2_a2"'
+check "parallel_copy into a primary-key table after the caller's own INSERT with 2 workers gets the #2211 refusal (55000) before the unique-index refusal (#2211)" \
+	"$(self_lock_copy "INSERT INTO t_ownu VALUES (0, 'pre')" t_ownu)" \
+	'55000|pgcolumnar.parallel_copy cannot run after this transaction has written to "t_ownu"'
+check "parallel_copy after LOCK TABLE IN ACCESS EXCLUSIVE MODE and an INSERT into the same table gets the #2183 lock refusal first (#2211)" \
+	"$(self_lock_copy "LOCK TABLE t_ownw IN ACCESS EXCLUSIVE MODE; INSERT INTO t_ownw VALUES (0, 'pre')" t_ownw)" \
+	'55000|pgcolumnar.parallel_copy cannot run while this transaction holds AccessExclusiveLock on "t_ownw"'
 pgc_summary
