@@ -2506,4 +2506,9 @@ guard_tests 897
 # export; the refusal carries its DETAIL; and parallel_export_parquet and tier_partition refuse the same way and
 # leave nothing behind. By collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 6085 tests collected, against 6071 on main at 75f3b9d6.
-cluster_tests 6085
+# cluster_tests 6085 -> 6088 for #2218 and #2197 in test_parquet_nested_import.py:
+# test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused,
+# test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
+# test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6088 tests collected`, after merging main at 6d40a3d4.
+cluster_tests 6088
