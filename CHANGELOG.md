@@ -633,6 +633,42 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
 - `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
   single columnar table with a unique index or primary key (#2080). With 2 or
   more workers the load either waited until cancelled or failed with 40P01
@@ -678,6 +714,20 @@ true until the next version shipped.
   each refusal check matches the message that names the field (`field "qty"`,
   or `field "k"` for the equality delete), so a message that names the wrong
   field fails it.
+- `test_harness_isolation.py::test_control_a_plain_child_under_flock_holds_the_lock`
+  no longer fails with `got '0 held, lock free=1'` (#2193; once in CI).
+  The descriptor count read every link in `/proc/<pid>/fd` and gave up with 0
+  when one readlink failed. The control reads a `sleep` that has just started,
+  and its dynamic loader opens and closes each shared library as fd 4, so that
+  descriptor can vanish between the listing and its readlink. The count now
+  skips a descriptor that vanished, as the shell twin's `find -lname` does. The
+  lock's descriptor is inherited at fork and is never skipped, so a child that
+  does not hold the lock (`flock -o`) still fails the control. Measured on an
+  8-CPU shared dev machine at load 4.8: 88 of 2000 runs of the control's
+  command read 0 before, none of 2000 after. Two new tests pin the count with
+  no cluster and no race: a descriptor listed but gone by its readlink no
+  longer hides the lock, and a pid that does not exist reads 0 of 0. The
+  `flock -F` check's own descriptor count skips a vanished descriptor too.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

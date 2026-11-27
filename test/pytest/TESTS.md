@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-89 literal matches and 0 missing (#1818's twelve included).
+125 literal matches and 0 missing (#1818's twelve and #2086's thirty-one included).
 
 | test | asserts |
 | --- | --- |
@@ -4545,6 +4545,26 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_a_timestamp_0_hour_partition_keeps_a_row_that_rounds_into_range` | typmod: ts >= 01:00 on timestamp(0) returns id 1, stored at 00:59:59.7, and id 2 |
 | `test_a_varchar_2_bucket_partition_keeps_a_row_stored_with_trailing_spaces` | typmod: region = 'eu' on a bucket-partitioned varchar(2) returns ids 1 and 3 |
 | `test_a_timestamp_6_hour_partition_still_prunes` | typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1) |
+| `test_a_decimal_9_read_as_int_is_not_pruned_on_its_bounds` | #2086: `decimal(9,2)` stored as Parquet INT32 and declared `int` returns both unscaled values; `d = 20000000` returns id 2, as `iceberg_scan` does, and `d > 15000000` counts 1. Iceberg writes a decimal's bounds big-endian, so reading them as an integer's prunes the file |
+| `test_a_decimal_18_read_as_bigint_is_not_pruned_on_its_bounds` | #2086: `decimal(18,2)` stored as INT64 and declared `bigint`: `d = 20000000` and `d >= 15000000` each return id 2 |
+| `test_a_refused_decimal_declaration_is_refused_with_a_filter_too` | #2086: `bigint` over an INT32 decimal is refused (42804) by a full scan, and by a filtered scan, which must not prune every file and return nothing |
+| `test_a_bucket_partition_on_a_decimal_read_as_int_is_not_pruned` | #2086: `bucket[8]` on a decimal declared `int` returns id 1 for `d = 10000000` and id 2 for `d = 20000000`; Iceberg hashes a decimal's bytes, not a long |
+| `test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too` | #2086: a `bigint` column over the same bucketed decimal is refused (42804) by `d = 20000000`, which must not be bucket-pruned with a long's hash and return nothing |
+| `test_the_long_column_beside_a_decimal_still_prunes` | #2086's control: `id = 5` on the `long` column of the same file still prunes it on min/max (Files Pruned: 1) |
+| `test_the_field_type_lookup_matches_the_whole_field_name` | #2086: in `pfx` the `long` field `d_x` comes before the decimal `d`; `d = 20000000` returns id 2. A lookup that matched the name `d` as a prefix would read `d` as a long and prune its file |
+| `test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds` | #2086: a `bool` column over an Iceberg `boolean`: `b > false` prunes the all-false file (Files Pruned: 1) and returns ids 3 and 4 |
+| `test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `int` is refused (42804) by a full scan, and by `b < true`, which must not prune on the int's bounds and return nothing |
+| `test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column` | #2086: in `pfx2` the `long` field `d` comes before the decimal `d_x`; `d_x = 20000000` returns id 2. A lookup that compared only the field name's length would read `d_x` as a long and prune its file |
+| `test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too` | #2086: a `bool` column over an Iceberg `long` is refused (42804) by `b < true`, which must not prune on the long's bounds and return nothing |
+| `test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `smallint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1), and `b = 8` returns id 8 |
+| `test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: an `int` column over an Iceberg `boolean` is refused (42804) by a full scan, and by `b = 5`, which must not prune on the boolean's bounds and return nothing |
+| `test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too` | #2086: a `smallint` column over an Iceberg `boolean` is refused (42804) by `b = 5`, which must not prune on the boolean's bounds and return nothing |
+| `test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds` | #2086: a `bigint` column over an Iceberg `int`: `b > 8` prunes the file (Files Pruned: 1) |
+| `test_bucket_pruning_works_on_an_iceberg_int_source` | #2086: `bucket[8]` of an Iceberg `int` declared `int`: `k = 5` prunes 4 of 5 files (Files Pruned: 4; bounds alone prune 3) and returns 5 |
+| `test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int` | #2086: the same `bucket[8]` of an Iceberg `int` declared `bigint`: `k = 5` prunes 4 of 5 files (Files Pruned: 4) |
+| `test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too` | #2086: a `text` column over the same Iceberg `int` is refused (42804) by `k = 'a'`, which must not be bucket-pruned with an int's hash and return nothing |
+| `test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too` | #2086: a `name` column over the same Iceberg `int` is refused (42804) by `k = 'a'::text`, which must not be bucket-pruned and return nothing |
+| `test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field` | #2086: `two` is partitioned by `bucket[2]` of a decimal, then `bucket[4]` of an `int` `k`. The decimal field is skipped, and `k = 5` still prunes 3 of 4 files (Files Pruned: 3; bounds alone prune 1) and returns `5:1.00` |
 | `test_an_unknown_table_option_is_refused` | the validator, by SQLSTATE `HV00D` rather than by message text |
 | `test_a_plan_with_no_pruning_marker_is_not_read_as_zero` | a plan that never mentions `Files Pruned` is not read as 0; needs no server |
 
@@ -10223,7 +10243,7 @@ Every test reads one value from a module fixture that builds a private database 
 
 ## 238. test_export_sink.py: the export byte sink checks every write and never leaves a partial file under the final name
 
-The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains.
+The twin of `test/export_sink.sh` (#394 step 1). No fwrite remains in either export file; parquet and arrow exports of 40,000 rows import back hash-equal to the source with no `*.tmp.*` debris; and with `pgcolumnar.sink_fail_after` injecting the error a full disk raises, each export fails 53100, nothing exists at its final path, a failed re-export leaves the previous good file intact, and no temp file remains. An export that ends with FATAL also leaves no temp file (#2075): `exit_on_error` turns the injected error into a FATAL exit, which skips the writers' error handler, and the directory is read only after the backend has left `pg_stat_activity`. Each target holds a good file first, and the FATAL re-export must leave it intact. Two more exports end a transaction with FATAL: one after two finished exports, one after a failed export rolled back to a savepoint. Neither leaves a temp file. Three more exports fail away from Write: one whose rename fails (a non-empty directory at the final name) ends with FATAL and leaves no temp file, and so does one whose flush fails (its temp name is a symlink to `/dev/full`); one whose rename fails and one whose temp file cannot be opened (a missing parent directory) are rolled back to a savepoint before a FATAL export, which leaves no temp file, and the failed rename's own temp file is gone after the rollback. One more export, whose Abort cannot unlink its stale temp file (a read-only directory), is rolled back to a savepoint before a FATAL export, which leaves no temp file. One session runs 25 exports: each returns its row count, the session survives, and no temp file remains. The server log shows no backend killed by a signal, and no AddressSanitizer report, during the FATAL arms.
 
 ### Every test
 
@@ -10247,6 +10267,30 @@ Every test reads one value from a module fixture that builds a private database 
 | `test_inject_nothing_exists_at_the_arrow_final_path` | inject: nothing exists at the arrow FINAL path |
 | `test_inject_no_arrow_temp_debris` | inject: no arrow temp debris |
 | `test_after_reset_exports_work_again` | after RESET, exports work again |
+| `test_fatal_the_export_ends_its_backend_with_fatal[parquet]` | fatal: the parquet export ends its backend with FATAL |
+| `test_fatal_the_export_ends_its_backend_with_fatal[arrow]` | fatal: the arrow export ends its backend with FATAL |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[parquet]` | fatal: a FATAL re-export leaves the previous parquet file intact |
+| `test_fatal_a_fatal_re_export_leaves_the_previous_file_intact[arrow]` | fatal: a FATAL re-export leaves the previous arrow file intact |
+| `test_fatal_no_temp_file_after_a_fatal_exit[parquet]` | fatal: no parquet temp file after a FATAL exit |
+| `test_fatal_no_temp_file_after_a_fatal_exit[arrow]` | fatal: no arrow temp file after a FATAL exit |
+| `test_fatal_after_finished_exports_in_one_transaction_ends_with_fatal` | fatal: a FATAL export after two finished exports in one transaction ends with FATAL |
+| `test_fatal_no_temp_file_after_finished_exports_in_one_transaction` | fatal: no temp file after a FATAL export that followed finished exports |
+| `test_fatal_after_a_failed_export_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_rolled_back_export` | fatal: no temp file after a FATAL export that followed a rolled-back export |
+| `test_fatal_no_backend_died_by_a_signal_during_the_fatal_arms` | fatal: no backend died by a signal during the FATAL arms |
+| `test_fatal_an_export_whose_rename_fails_ends_its_backend_with_fatal` | fatal: an export whose rename fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_rename` | fatal: no temp file after a FATAL at the rename |
+| `test_fatal_an_export_whose_flush_fails_ends_its_backend_with_fatal` | fatal: an export whose flush fails ends its backend with FATAL |
+| `test_fatal_no_temp_file_after_a_fatal_at_the_flush` | fatal: no temp file after a FATAL at the flush |
+| `test_fatal_after_a_failed_rename_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_rename` | fatal: no temp file after a FATAL export that followed a failed rename |
+| `test_fatal_no_temp_file_after_a_failed_rename_rolled_back_to_a_savepoint` | fatal: no temp file after a failed rename rolled back to a savepoint |
+| `test_fatal_25_exports_in_one_session_each_return_their_row_count` | fatal: 25 exports in one session each return their row count |
+| `test_fatal_no_temp_file_after_25_exports_in_one_session` | fatal: no temp file after 25 exports in one session |
+| `test_fatal_after_a_failed_unlink_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_unlink` | fatal: no temp file after a FATAL export that followed a failed unlink |
+| `test_fatal_after_a_failed_open_rolled_back_to_a_savepoint_ends_with_fatal` | fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL |
+| `test_fatal_no_temp_file_after_a_failed_open` | fatal: no temp file after a FATAL export that followed a failed open |
 
 ## 239. test_groupagg_table_sizing.py: the vectorized grouped aggregate sizes its table from the estimate, bounded
 
@@ -14434,13 +14478,18 @@ Every test reads one value from a module fixture that runs the whole scenario on
 
 ## 354. test_harness_isolation.py: a run is not disturbed by other sessions on a shared machine
 
-The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name but one. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. The same holds when the harness's process took the lock itself as `flock -F`, where it holds the only descriptor. The session must record the library digest it starts with, and a copy of the library changed after that must be reported with both digests. An inner session through the real conftest, whose test changes the library the session recorded, must end failed and name the change. One shell check has no twin: a suite that sets `set -e` before it loads lib.sh must still load it under `flock`. Only lib.sh can show that, and a twin would have to source it, so it is declared shell-only in `test_compare_to_bash.py`. The library change is made on a copy; the shared library is never touched.
+The twin of `test/harness_isolation.sh` (#1915), every check by the shell's name but one. A cluster that this harness starts in a process run under `flock(1)` must not hold the lock after that process exits, and another run must be able to take the lock while the cluster runs. A control shows that a plain child under `flock` does hold it, so the measurement can see a leak. The descriptor count skips a descriptor that closes between the listing of `/proc/<pid>/fd` and its readlink, as the shell's `find -lname` does. The control reads a `sleep` whose dynamic loader is still opening and closing its libraries, and one such vanished descriptor used to make the whole count 0 and fail the control (#2193; 88 of 2000 runs of the control's command on an 8-CPU shared dev machine at load 4.8, a rate of that machine and not of the test). Two tests pin the count without a cluster or a race, and belong to this harness alone because the shell's count has no readlink step: with this process holding a lock and its descriptor listing carrying one extra descriptor whose readlink raises ENOENT, the lock must still read 1 held and the total more than 0; and a pid above `pid_max` must read 0 of 0. The `flock -F` check's own count, which runs in a child script, skips a vanished descriptor the same way. A lock the harness's own process took must stay held while the harness starts a cluster, and that cluster must not hold it. The same holds when the harness's process took the lock itself as `flock -F`, where it holds the only descriptor. The session must record the library digest it starts with, and a copy of the library changed after that must be reported with both digests. An inner session through the real conftest, whose test changes the library the session recorded, must end failed and name the change. One shell check has no twin: a suite that sets `set -e` before it loads lib.sh must still load it under `flock`. Only lib.sh can show that, and a twin would have to source it, so it is declared shell-only in `test_compare_to_bash.py`. The library change is made on a copy; the shared library is never touched.
 
 ### Every test
 
 | test | check |
 | --- | --- |
 | `test_control_a_plain_child_under_flock_holds_the_lock` | control: a child of a plain shell under flock holds the lock |
+| `test_a_descriptor_that_closes_mid_read_is_skipped` | premise: fd 999 is not really open, so only the patch lists it |
+| `test_a_descriptor_that_closes_mid_read_is_skipped` | a descriptor that closes mid-read does not hide the lock's |
+| `test_a_descriptor_that_closes_mid_read_is_skipped` | and the other descriptors are still counted |
+| `test_a_pid_that_does_not_exist_reads_nothing` | premise: the pid has no /proc entry |
+| `test_a_pid_that_does_not_exist_reads_nothing` | a pid that does not exist reads (0, 0) |
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | premise: the postmaster outlives the flock command that started it |
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | a postmaster started under a held lock holds no descriptor on it |
 | `test_a_cluster_started_under_a_held_lock_does_not_hold_it` | another run takes that lock while the postmaster runs |

@@ -83,8 +83,10 @@ extern void PgColumnarIcebergIdentityPartMap(const char *path,
 											 int32 *out_specid);
 
 /*
- * Per-column current-schema field ids (0 when absent), length tupdesc->natts,
- * for FDW metrics pruning keyed by field id. palloc'd in the current context.
+ * Per-column current-schema field ids, length tupdesc->natts, for FDW metrics
+ * pruning keyed by field id. 0 when absent, or when the field's bounds cannot be
+ * read as the column's type (a decimal under an int column, #2086). palloc'd in
+ * the current context.
  */
 extern int *PgColumnarIcebergColumnFieldIds(const char *path,
 											const PgColumnarObjStoreConfig *cfg,

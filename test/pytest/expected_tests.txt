@@ -2212,29 +2212,78 @@ guard_tests 897
 # without INSERT gets 42501, an s3:// URL gets the #1886 refusal, and dedup => true still gets the refusal and
 # its hint; collected for that file: 121. restate.py shifts the numbers in these #2080 lines at each merge of
 # main. By collection over the cluster files after the merge of main 199e4aa7: 5603 tests collected.
-# cluster_tests 5620 -> 5630 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# cluster_tests 5620 -> 5626 for #2075's FATAL-exit arm in test_export_sink.py (an export ended by FATAL
+# leaves no temp file): three functions, each parametrized over parquet and arrow, 6 tests, by collection:
+# `cd test/pytest && PYTHONPATH=. pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5626 -> 5631 for the #2142 review of #2075 in test_export_sink.py: the two "nothing exists at
+# the FINAL path" tests become "a FATAL re-export leaves the previous file intact", and five tests are new (a
+# FATAL export after finished exports and after a savepoint rollback in one transaction, each with no temp
+# file, and no backend killed by a signal), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5395 tests collected.
+# cluster_tests 5631 -> 5637 for the third #2142 review of #2075 in test_export_sink.py: six tests are new (an
+# export whose rename fails ends with FATAL and leaves no temp file; a FATAL export after a failed rename and
+# after a failed open, each rolled back to a savepoint, ends with FATAL and leaves no temp file), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5495 tests collected.
+# cluster_tests 5637 -> 5640 for the fourth #2142 review of #2075 in test_export_sink.py: three tests are new (an
+# export whose flush fails ends with FATAL and leaves no temp file; a failed rename rolled back to a savepoint
+# leaves no temp file), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5507 tests collected.
+# cluster_tests 5640 -> 5644 for the fifth #2142 review of #2075 in test_export_sink.py: four tests are new (25
+# exports in one session each return their row count and leave no temp file; a FATAL export after a failed
+# unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
+# cluster_tests 5644 -> 5649 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
+# 5597 at 2e3fea7a; #2152 adds 20 tests in all, listed here and below.
+# cluster_tests 5649 -> 5652 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# (test_the_field_type_lookup_matches_the_whole_field_name,
+# test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
+# test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too).
+# cluster_tests 5652 -> 5657 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
+# test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
+# test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
+# test_bucket_pruning_works_on_an_iceberg_int_source).
+# cluster_tests 5657 -> 5658 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
+# in test_iceberg_fdw.py, from the third #2152 review, counted by collection of the cluster files (all
+# test_*.py not in NO_CLUSTER).
+# cluster_tests 5658 -> 5660 for #2086's
+# test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
+# test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
+# fourth #2152 review.
+# cluster_tests 5660 -> 5664 for #2086's test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int,
+# test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
+# test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
+# fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
+# cluster_tests 5664 -> 5666 for #2193's review (jdatcmd at 82a1f0a5): test_a_descriptor_that_closes_mid_read_is_skipped
+# and test_a_pid_that_does_not_exist_reads_nothing in test_harness_isolation.py, 2 tests, by collection of the
+# files not in NO_CLUSTER (first counted as 5597 -> 5599; shifted by main's later growth). They need no cluster, but they test that file's
+# own _fds_on and sit beside it; the file stays cluster-bound through its other tests, so they run in the cluster
+# job. A NO_CLUSTER home would have to import one test module from another.
+# cluster_tests 5666 -> 5676 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
 # end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
 # as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
 # #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
 # files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
-# cluster_tests 5639 -> 5653 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# cluster_tests 5685 -> 5699 for the 14 tests the review of #2148 at 7a40d479 asked for in
 # test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
 # lines with the key after them, an unsorted row after continued records, a file that ends inside a
 # record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
 # NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
-# cluster_tests 5653 -> 5660 for the 7 tests the review of #2148 at 29b71633 asked for in
+# cluster_tests 5699 -> 5706 for the 7 tests the review of #2148 at 29b71633 asked for in
 # test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
 # rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
 # offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
 # ci.yml selects them: 5527 tests collected.
-# cluster_tests 5660 -> 5665 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# cluster_tests 5706 -> 5711 for the 5 tests the review of #2148 at 7e71ab06 asked for in
 # test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
 # transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
 # COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
 # the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
-# cluster_tests 5665 -> 5674 for the 9 tests the review of #2148 at 33724a76 asked for in
+# cluster_tests 5711 -> 5720 for the 9 tests the review of #2148 at 33724a76 asked for in
 # test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
 # file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
 # in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
 # collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
-cluster_tests 5674
+cluster_tests 5720

@@ -1557,6 +1557,30 @@ export_sink	export_sink	arrow export succeeds through the sink	15;16;17;18;19	ne
 export_sink	export_sink	arrow round-trip hash-matches the source	15;16;17;18;19	2026-10-21	the sink's finish never renames the temp file to the final name
 export_sink	export_sink	census: zero fwrite remain in columnar_arrow.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_arrow.c
 export_sink	export_sink	census: zero fwrite remain in columnar_parquet.c	15;16;17;18;19	2026-10-21	an unchecked fwrite returns to columnar_parquet.c
+export_sink	export_sink	fatal: 25 exports in one session each return their row count	15;16;17;18;19	2026-11-26	sink_list without sink_exit_registered = true, so each export registers the exit callbacks again until before_shmem_exit runs out of slots (#2142 review 5, R1)
+export_sink	export_sink	fatal: a FATAL export after a failed export rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after a failed open rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after a failed rename rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after a failed unlink rolled back to a savepoint ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL export after two finished exports in one transaction ends with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: a FATAL re-export leaves the previous arrow file intact	15;16;17;18;19	2026-11-24	the exit callback also unlinks the final path, deleting a good file on a FATAL re-export (#2142 review, c2)
+export_sink	export_sink	fatal: a FATAL re-export leaves the previous parquet file intact	15;16;17;18;19	2026-11-24	the exit callback also unlinks the final path, deleting a good file on a FATAL re-export (#2142 review, c2)
+export_sink	export_sink	fatal: an export whose flush fails ends its backend with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: an export whose rename fails ends its backend with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: no arrow temp file after a FATAL exit	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no backend died by a signal during the FATAL arms	15;16;17;18;19	2026-11-26	PgColumnarSinkAbort unlists the sink only when its unlink succeeded, so a failed unlink leaves a freed sink listed for the exit callback (#2142 review 5, N13);PgColumnarSinkFinish leaves a finished local sink listed, so the exit callback walks its freed node (#2142 review, b2)
+export_sink	export_sink	fatal: no parquet temp file after a FATAL exit	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after 25 exports in one session	15;16;17;18;19	2026-11-26	sink_list without sink_exit_registered = true, so each export registers the exit callbacks again until before_shmem_exit runs out of slots (#2142 review 5, R1)
+export_sink	export_sink	fatal: no temp file after a FATAL at the flush	15;16;17;18;19	2026-11-26	PgColumnarSinkFinish unlists the sink in its flush-failure branch, so a FATAL at the flush leaves the temp file (#2142 review 4, N12);local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL at the rename	15;16;17;18;19	2026-11-26	PgColumnarSinkFinish unlists the sink before durable_rename, so a FATAL at the rename leaves the temp file (#2142 review 3, m2);local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a failed open	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a failed rename	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a failed unlink	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed a rolled-back export	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a FATAL export that followed finished exports	15;16;17;18;19	2026-11-26	local sinks never listed for the FATAL-exit unlink, so a FATAL exit leaves the temp file (#2075)
+export_sink	export_sink	fatal: no temp file after a failed rename rolled back to a savepoint	15;16;17;18;19	2026-11-25	PgColumnarSinkAbort unlinks the temp file only while it is open, so an ERROR at the rename leaves it (#2142 review 4, nit)
+export_sink	export_sink	fatal: the arrow export ends its backend with FATAL	15;16;17;18;19	never	-
+export_sink	export_sink	fatal: the parquet export ends its backend with FATAL	15;16;17;18;19	never	-
 export_sink	export_sink	inject: a failed re-export leaves the previous parquet file intact	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
 export_sink	export_sink	inject: arrow export fails inside write_record_batch (53100)	15;16;17;18;19	2026-10-21	pgcolumnar.sink_fail_after never injects a failing write
 export_sink	export_sink	inject: no arrow temp debris	15;16;17;18;19	2026-10-21	the sink's abort leaves its temp file behind
@@ -3388,9 +3412,34 @@ iceberg_fdw	iceberg_fdw	amount > 25 prunes the eu file by metrics (Files Pruned:
 iceberg_fdw	iceberg_fdw	amount > 25 still returns the right rows	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	amount >= 200 truncate-prunes 2 files	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	an unknown table option is refused (FDW_INVALID_OPTION_NAME)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bool: a full scan of an Iceberg int declared bool is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg int declared bool is refused the same way, not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm returns !forBucket, so any Iceberg type prunes on bool bounds (#2152 review, c4)
+iceberg_fdw	iceberg_fdw	bool: b < true on an Iceberg long declared bool is refused (42804), not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm also accepts an Iceberg long (#2152 review, note b)
+iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the BOOLOID arm of ice_field_prunes_as_column_type returns false, so bool pruning is off (#2152 review, c3)
+iceberg_fdw	iceberg_fdw	bool: b > false on an Iceberg boolean returns ids 3 and 4	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bucket: k = 'a' on a name column over an Iceberg int is refused (42804), not empty	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the gate's default arm returns true, so a name column over an Iceberg int is bucket-pruned (#2152 review, X6)
+iceberg_fdw	iceberg_fdw	bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the text arm drops its Iceberg string check (returns forBucket alone) (#2152 review, A18)
+iceberg_fdw	iceberg_fdw	bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files (Files Pruned: 3)	15;16;17;18;19	2026-11-26	columnar_iceberg.c: a gated bucket source returns from PgColumnarIcebergBucketMap instead of break, dropping every bucket field (#2152 review, X3)
+iceberg_fdw	iceberg_fdw	bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	bucket: k = 5 on a bigint over bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int arm refuses an Iceberg int for an int8 column (#2152 review, X1)
+iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm takes an Iceberg int only when not bucketing (!forBucket &&) (#2152 review, M9)
+iceberg_fdw	iceberg_fdw	bucket: k = 5 on bucket[8] of an Iceberg int returns 5	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamp: boundary read matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz prunes the Mar-01 file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	day()-on-timestamptz: boundary read matches iceberg_scan	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: a full scan of decimal(9,2) read as bigint is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: count where d > 15000000 on decimal(9,2) read as int is 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2	15;16;17;18;19	2026-11-25	columnar_iceberg.c: ice_field_type_is matches a field name by prefix (#2152 review, d1)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int arm returns true for a bigint bucket source before its Iceberg int/long check (#2152 review, N12)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d = 20000000 on decimal(9,2) read as int returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2	15;16;17;18;19	2026-11-24	main d52f6e8c: the FDW reads a decimal's big-endian bounds and bucket as an int's (#2086)
+iceberg_fdw	iceberg_fdw	decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2	15;16;17;18;19	2026-11-25	columnar_iceberg.c: ice_field_type_is drops the name-length compare, so a field d stands in for d_x (#2152 review, d2)
+iceberg_fdw	iceberg_fdw	decimal: dec9 read as int returns both unscaled values (premise)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt < 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt < 2020-01-02 returns id 1	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	dt = 2020-01-02 day-prunes 2 files	15;16;17;18;19	never	-
@@ -3413,6 +3462,12 @@ iceberg_fdw	iceberg_fdw	id > 4 prunes by metrics not bucket, correctly (Files Pr
 iceberg_fdw	iceberg_fdw	id > 4 still returns the right rows	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci prunes only the us file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	identity: region = 'EU' COLLATE ice_ci returns the eu rows	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: a full scan of an Iceberg boolean declared int is refused (42804)	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int2 arm returns true before its Iceberg int/long check (#2152 review, N3)
+iceberg_fdw	iceberg_fdw	int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty	15;16;17;18;19	2026-11-25	columnar_iceberg.c: the int arm also accepts an Iceberg boolean (#2152 review, note a)
+iceberg_fdw	iceberg_fdw	int: b = 8 on a smallint over an Iceberg int returns id 8	15;16;17;18;19	never	-
+iceberg_fdw	iceberg_fdw	int: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)	15;16;17;18;19	2026-11-26	columnar_iceberg.c: the int arm refuses an Iceberg int for an int8 column (#2152 review, X1)
+iceberg_fdw	iceberg_fdw	int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)	15;16;17;18;19	2026-11-25	columnar_iceberg.c: case INT2OID dropped from the gate (#2152 review, note c)
 iceberg_fdw	iceberg_fdw	month()-on-date prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	month()-on-date: boundary read matches iceberg_scan	15;16;17;18;19	never	-
 iceberg_fdw	iceberg_fdw	month()-on-timestamptz prunes the Jan file (Files Pruned: 1)	15;16;17;18;19	never	-
