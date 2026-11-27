@@ -561,6 +561,13 @@ than the base table, the planner scans the projection instead. See
 Declares a projection on `rel` named `name`, storing `columns`, sorted on
 `sort_key`. When you add the projection, pgColumnar fills it with the rows that exist.
 
+It takes a SHARE lock on `rel` and holds it until the transaction ends, as
+`CREATE INDEX` does (#2215). Writes from other sessions wait for that
+transaction, and it waits for theirs, so every row reaches the projection. Reads
+do not wait. `pgcolumnar.parallel_copy` into `rel` later in the same transaction
+is refused with `55000`, because its workers could not see the uncommitted
+projection. Load with `COPY` in that transaction, or commit first.
+
 ```sql
 SELECT pgcolumnar.add_projection(
     'events', 'events_by_customer',
@@ -572,6 +579,12 @@ SELECT pgcolumnar.add_projection(
 
 Drops a projection and frees its storage. It also removes the declaration, so a
 later rebuild does not create the projection again.
+
+It takes a SHARE ROW EXCLUSIVE lock on `rel` and holds it until the transaction
+ends (#2215). Writes from other sessions wait for that transaction, so none of
+them writes into the storage being freed. Reads do not wait. As after
+`add_projection`, `pgcolumnar.parallel_copy` into `rel` later in the same
+transaction is refused with `55000`.
 
 ```sql
 SELECT pgcolumnar.drop_projection('events', 'events_by_customer');

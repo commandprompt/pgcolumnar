@@ -210,12 +210,26 @@ void
 PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid, LOCKMODE workerlock)
 {
 	LOCKMODE	held;
+	const char *hint;
 
 	for (held = MaxLockMode; held > NoLock; held--)
 	{
 		if (!DoLockModesConflict(held, workerlock) ||
 			!CheckRelationOidLockedByMe(relid, held, false))
 			continue;
+
+		/*
+		 * pgcolumnar.add_projection and drop_projection hold SHARE and SHARE ROW
+		 * EXCLUSIVE to transaction end (#2215), so they are a cause too, but only
+		 * for workers whose lock conflicts with them: parallel_copy's, not
+		 * export's.
+		 */
+		hint = DoLockModesConflict(ShareLock, workerlock)
+			? "Run it in a transaction that does not hold that lock, for example "
+			  "before the LOCK TABLE, TRUNCATE, pgcolumnar.add_projection or "
+			  "pgcolumnar.drop_projection, or after COMMIT."
+			: "Run it in a transaction that does not hold that lock, for example "
+			  "before the LOCK TABLE or TRUNCATE, or after COMMIT.";
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("%s cannot run while this transaction holds %s on \"%s\"",
@@ -226,9 +240,7 @@ PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid, LOCKMODE worker
 						   "to end.",
 						   GetLockmodeName(DEFAULT_LOCKMETHOD, workerlock),
 						   get_rel_name(relid)),
-				 errhint("Run it in a transaction that does not hold that lock, "
-						 "for example before the LOCK TABLE or TRUNCATE, or after "
-						 "COMMIT.")));
+				 errhint("%s", hint)));
 	}
 }
 

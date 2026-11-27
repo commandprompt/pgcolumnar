@@ -331,8 +331,10 @@ these constraints.
 - The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
   or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
   refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
-  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
-  would wait for the caller until the statement timed out.
+  locks, and so do `pgcolumnar.add_projection`, `pgcolumnar.drop_projection`,
+  and `pgcolumnar.rebuild_projections` when it materializes a projection (#2215). The workers take ROW EXCLUSIVE in
+  their own transactions, so they would wait for the caller until the statement
+  timed out. They also could not see a projection the caller added or dropped.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
 - The check covers only the target and its partitions. The load still waits

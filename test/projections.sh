@@ -472,6 +472,147 @@ psql_run "INSERT INTO dt2 SELECT g, g FROM generate_series(200, 300) g;"
 check "control: a drop in its own transaction never left one" \
 	"$(proj_orphans dt2)" "0"
 
+# ---- projection DDL holds its lock to transaction end (#2215) ----------------
+#
+# add_projection opened the table with SHARE and released it at the end of the
+# function, before its transaction committed. A writer in another session then
+# went ahead at once, could not see the uncommitted projection, and its rows never
+# reached it: once add_projection committed, a projection scan answered without
+# them. drop_projection took SHARE UPDATE EXCLUSIVE, which no writer waits for, so
+# a writer during an open drop still saw the projection and wrote row groups into
+# the storage being dropped, which nothing named after the drop committed. A
+# metadata-only ALTER TABLE that materializes a declared projection
+# (PgColumnarRerecordProjectionsAfterRewrite) released its SHARE the same way.
+# Each now keeps its lock until its transaction ends.
+#
+# Each case holds the DDL's transaction open in a background session until this
+# script releases it, and runs the other session's statement with a 1s
+# lock_timeout: 55P03 means it waited on a lock, "ok" means it went ahead. The
+# holder waits for its release row under a 30s statement_timeout, and every psql
+# under a 60s kill, so nothing here can hang the suite.
+psql_run "CREATE TABLE pjl_go (name text);" >/dev/null
+# pjl_mk NAME -> a table of ids 1..1000, stored out of id order (389 is prime to
+# 1000, so g*389 mod 1000 visits each residue once), so a projection sorted on id
+# is what plans for an id range
+pjl_mk() {
+	psql_run "CREATE TABLE $1 (id int, txt text) USING pgcolumnar;
+		SELECT pgcolumnar.set_options('$1', stripe_row_limit => 1000, chunk_group_row_limit => 500);
+		INSERT INTO $1 SELECT (g * 389) % 1000 + 1, 'r'||g FROM generate_series(0, 999) g;" >/dev/null
+}
+pjl_psql() { timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -qtA "$@"; }
+# pjl_hold NAME SQL: run SQL in an open transaction in the background, as
+# application_name pjl_NAME, until pjl_release NAME
+pjl_hold() {
+	pjl_psql -c "SET application_name = 'pjl_$1'" -c "SET statement_timeout = '30s'" -c "BEGIN" -c "$2" \
+		-c "DO \$\$ BEGIN WHILE NOT EXISTS (SELECT 1 FROM pjl_go WHERE name = '$1') LOOP PERFORM pg_sleep(0.05); END LOOP; END \$\$" \
+		-c "COMMIT" >"$PGC_WORKDIR/pjl_$1.out" 2>&1 &
+	eval "pjl_pid_$1=$!"
+}
+# pjl_open NAME -> "yes" once pjl_NAME is in its open transaction, past the DDL
+# (it has an xid and runs the release poll), polled for up to 10s, else "no".
+# Deliberately not the lock it holds: that is what the arms measure, and a
+# premise that read it would go red with them.
+pjl_open() {
+	local i
+	for i in $(seq 1 200); do
+		[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE application_name = 'pjl_$1'
+		         AND backend_xid IS NOT NULL AND query LIKE 'DO %'")" = 1 ] && { echo yes; return; }
+		sleep 0.05
+	done
+	echo no
+}
+pjl_release() { psql_run "INSERT INTO pjl_go VALUES ('$1');" >/dev/null; eval "wait \$pjl_pid_$1"; }
+# pjl_try SQL -> the SQLSTATE SQL failed with under a 1s lock_timeout, or "ok N"
+# with its last output line
+pjl_try() {
+	local out
+	out="$(pjl_psql -v ON_ERROR_STOP=1 -c "SET lock_timeout = '1s'" -c '\set VERBOSITY verbose' -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then
+		sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\):.*$/\1/p' <<<"$out" | head -1
+	else
+		echo "ok $(tail -1 <<<"$out")"
+	fi
+}
+# pjl_answers TABLE -> "table N|projection N|plan P|on N|off N" for ids 951..1100,
+# which spans the stored-out-of-order rows, so the projection plans for it
+pjl_answers() {
+	psql_run "ANALYZE $1;" >/dev/null
+	local qy="SELECT count(*) FROM $1 WHERE id BETWEEN 951 AND 1100"
+	printf 'table %s|projection %s|plan %s|on %s|off %s\n' "$(q "SELECT count(*) FROM $1")" \
+		"$(q "SELECT count(*) FROM pgcolumnar.read_projection('$1', 'p')")" \
+		"$(q "SET pgcolumnar.enable_projection_scan = on; EXPLAIN (COSTS OFF) $qy" | grep -c 'Columnar Projection: p$')" \
+		"$(q "SET pgcolumnar.enable_projection_scan = on; $qy" | tail -1)" \
+		"$(q "SET pgcolumnar.enable_projection_scan = off; $qy" | tail -1)"
+}
+PJL_INS="INSERT INTO %s SELECT g, 'n'||g FROM generate_series(1001, 1100) g"
+
+# add_projection open; another session SELECTs, then INSERTs; then, after the
+# commit, the same INSERT again. Before the fix the first INSERT went in and missed the
+# projection, so the table held 1200 rows and the projection 1100.
+pjl_mk pjl_a
+pjl_hold a "SELECT pgcolumnar.add_projection('pjl_a', 'p', columns => ARRAY['id'], sort_key => ARRAY['id'])"
+pjl_a_open="$(pjl_open a)"
+pjl_a_sel="$(pjl_try "SELECT count(*) FROM pjl_a")"
+pjl_a_ins="$(pjl_try "$(printf "$PJL_INS" pjl_a)")"
+pjl_a_open="$pjl_a_open $(pjl_open a)"
+pjl_release a
+psql_run "$(printf "$PJL_INS" pjl_a);" >/dev/null
+# drop_projection open; another session INSERTs. Before the fix it went in, into
+# the projection's storage, which the drop then left behind.
+pjl_mk pjl_d
+psql_run "SELECT pgcolumnar.add_projection('pjl_d', 'p', columns => ARRAY['id'], sort_key => ARRAY['id']);" >/dev/null
+pjl_d_ps="$(q "SELECT proj_storage_id FROM pgcolumnar.projection WHERE storage_id = pgcolumnar.get_storage_id('pjl_d') AND name = 'p'")"
+pjl_hold d "SELECT pgcolumnar.drop_projection('pjl_d', 'p')"
+pjl_d_open="$(pjl_open d)"
+pjl_d_ins="$(pjl_try "$(printf "$PJL_INS" pjl_d)")"
+pjl_d_open="$pjl_d_open $(pjl_open d)"
+pjl_release d
+# A metadata-only ALTER TABLE (SET STATISTICS takes SHARE UPDATE EXCLUSIVE, which
+# a writer does not wait for) on a table whose declared projection has no storage
+# materializes it under SHARE; another session INSERTs.
+pjl_mk pjl_r
+psql_run "INSERT INTO pgcolumnar.projection_declaration VALUES ('pjl_r'::regclass, 'p', ARRAY['id'], ARRAY['id']);" >/dev/null
+pjl_hold r "ALTER TABLE pjl_r ALTER COLUMN id SET STATISTICS 200"
+pjl_r_open="$(pjl_open r)"
+pjl_r_ins="$(pjl_try "$(printf "$PJL_INS" pjl_r)")"
+pjl_r_open="$pjl_r_open $(pjl_open r)"
+pjl_release r
+psql_run "$(printf "$PJL_INS" pjl_r);" >/dev/null
+# The other direction, which was already right: a writer's open transaction makes
+# add_projection wait.
+pjl_mk pjl_w
+pjl_hold w "$(printf "$PJL_INS" pjl_w)"
+pjl_w_open="$(pjl_open w)"
+pjl_w_add="$(pjl_try "SELECT pgcolumnar.add_projection('pjl_w', 'p', columns => ARRAY['id'], sort_key => ARRAY['id'])")"
+pjl_w_open="$pjl_w_open $(pjl_open w)"
+pjl_release w
+
+check "#2215 premise: add_projection's session had its transaction open before and after the other session's statements" \
+	"$pjl_a_open" "yes yes"
+check "a SELECT from another session still runs while add_projection's transaction is open (#2215)" \
+	"$pjl_a_sel" "ok 1000"
+check "an INSERT from another session waits for add_projection's transaction to end, not written past the uncommitted projection (#2215)" \
+	"$pjl_a_ins" "55P03"
+check "after add_projection commits, the projection holds every row and answers as the table does with projection scans on and off (#2215)" \
+	"$(pjl_answers pjl_a)" "table 1100|projection 1100|plan 1|on 150|off 150"
+check "#2215 premise: drop_projection's session had its transaction open before and after the other session's INSERT" \
+	"$pjl_d_open" "yes yes"
+check "an INSERT from another session waits for drop_projection's transaction to end, not written into the storage being dropped (#2215)" \
+	"$pjl_d_ins" "55P03"
+check "after drop_projection commits, no row group is left in the dropped projection's storage (#2215)" \
+	"$(q "SELECT count(*) FROM pgcolumnar.row_group WHERE storage_id = ${pjl_d_ps:-0}") row groups, $(q "SELECT count(*) FROM pjl_d") rows" \
+	"0 row groups, 1000 rows"
+check "#2215 premise: the ALTER TABLE's session had its transaction open before and after the other session's INSERT" \
+	"$pjl_r_open" "yes yes"
+check "an INSERT from another session waits for an ALTER TABLE that materialized a declared projection, until its transaction ends (#2215)" \
+	"$pjl_r_ins" "55P03"
+check "after that ALTER TABLE commits, the projection holds every row and answers as the table does with projection scans on and off (#2215)" \
+	"$(pjl_answers pjl_r)" "table 1100|projection 1100|plan 1|on 150|off 150"
+check "#2215 premise: the writer's session had its transaction open before and after add_projection" \
+	"$pjl_w_open" "yes yes"
+check "add_projection waits for a writer's open transaction in another session (#2215)" \
+	"$pjl_w_add" "55P03"
+
 # ---- a sort key with no ordering is refused (#1341) --------------------------
 #
 # add_projection does not check the sort column's type. The writer does, when it

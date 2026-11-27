@@ -2499,4 +2499,15 @@ guard_tests 897
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-cluster_tests 6071
+# cluster_tests 6071 -> 6084, #2215: test_parallel_copy_projection_ddl_premise,
+# test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
+# test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
+# test_parallel_copy_refused_after_projection_ddl_loads_nothing,
+# test_parallel_copy_issue_sequence_answers_the_same_with_projection_scans_on_and_off,
+# test_parallel_copy_into_a_committed_projection_answers_the_same_with_projection_scans_on_and_off and
+# test_add_projection_holds_its_lock_until_its_transaction_ends,
+# test_drop_projection_holds_its_lock_until_its_transaction_ends,
+# test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
+# test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6084
