@@ -30,7 +30,9 @@
  *
  * Independent MIT implementation. References only the public PostgreSQL API
  * (server-file access, the COPY BeginCopyFrom interface, the background-worker and
- * two-phase-commit APIs, and the role check used by COPY FROM file). No
+ * two-phase-commit APIs, and the role check used by COPY FROM file), plus one field
+ * of the installed commands/copyfrom_internal.h: a loader sets the COPY state's
+ * eol_type, so its range keeps the file's newline style (#2189). No
  * core/TimescaleDB/Citus/DuckDB/pg_background source consulted.
  *
  *-------------------------------------------------------------------------
@@ -63,6 +65,7 @@
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "commands/trigger.h"
+#include "commands/copyfrom_internal.h"	/* EolType, CopyFromStateData.eol_type */
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq/pqsignal.h"
@@ -256,6 +259,67 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 
 	pfree(buf);
 	return offs;
+}
+
+/*
+ * pcopy_file_eol_type
+ *		The newline style of the file's first line, decided as core COPY FROM
+ *		decides it (#2189): by the first newline or carriage return that no
+ *		backslash escapes. "\r\n" is EOL_CRNL, a "\r" followed by anything else
+ *		EOL_CR, and "\n" EOL_NL. EOL_UNKNOWN when the file has no such byte.
+ *
+ *		COPY FROM takes the style from the first line and refuses every later
+ *		line ending, and an end-of-data marker line, whose style differs (22P04).
+ *		Each loader runs core COPY over its own range, so a loader whose range
+ *		does not start the file took the style from its own first line, and a
+ *		change of style at its range start loaded. The loaders now start core
+ *		COPY with this style instead, and core refuses such a file with its own
+ *		SQLSTATE and message. A backslash escapes the byte after it whatever it
+ *		is, as in core's CopyReadLineText and in pcopy_line_offsets.
+ */
+static int
+pcopy_file_eol_type(const char *path)
+{
+	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
+	int			fd = pcopy_open_regular_file(path, NULL);
+	int			eol = EOL_UNKNOWN;
+	bool		escaped = false;
+	bool		after_cr = false;	/* the previous byte was an unescaped \r */
+
+	while (eol == EOL_UNKNOWN)
+	{
+		int			got = (int) read(fd, buf, COLUMNAR_SPLIT_SCAN_CHUNK);
+		int			j;
+
+		if (got < 0)
+			ereport(ERROR,
+					(errcode_for_file_access(),
+					 errmsg("could not read file \"%s\": %m", path)));
+		if (got == 0)
+		{
+			/* a \r that is the file's last byte ends its line, as EOL_CR */
+			if (after_cr)
+				eol = EOL_CR;
+			break;
+		}
+		for (j = 0; j < got && eol == EOL_UNKNOWN; j++)
+		{
+			if (after_cr)
+				eol = (buf[j] == '\n') ? EOL_CRNL : EOL_CR;
+			else if (buf[j] == '\\')
+				escaped = !escaped;
+			else if (escaped)
+				escaped = false;	/* this byte is escaped: data */
+			else if (buf[j] == '\n')
+				eol = EOL_NL;
+			else if (buf[j] == '\r')
+				after_cr = true;
+		}
+		CHECK_FOR_INTERRUPTS();
+	}
+	CloseTransientFile(fd);
+	pfree(buf);
+	return eol;
 }
 
 /*
@@ -565,6 +629,7 @@ typedef struct PcopyHeader
 								 * coordinator pre-creates the storage row and loaders
 								 * set pgcolumnar_bulk_parallel_writer */
 	char		filename[MAXPGPATH];
+	int			eol_type;		/* EolType of the file's first line (#2189) */
 	/* coordinator -> function result channel */
 	pg_atomic_uint32 coord_state;	/* PcopyCoordState */
 	int64		total_rows;		/* valid when coord_state == PCOPY_COORD_DONE */
@@ -1306,6 +1371,16 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 		PushActiveSnapshot(GetTransactionSnapshot());
 		cstate = BeginCopyFrom(pstate, rel, NULL, NULL, false,
 							   pcopy_range_read, NIL, options);
+
+		/*
+		 * A range that does not start the file continues it, so core COPY must
+		 * hold its lines to the newline style of the file's first line, as one
+		 * COPY FROM of the whole file does (#2189). Left to itself it would take
+		 * the style from the range's first line, and load a file that changes
+		 * style, or has a \.\r\n line in an LF file, at the range start.
+		 */
+		if (me->start_off > 0 && hdr->eol_type != EOL_UNKNOWN)
+			cstate->eol_type = (EolType) hdr->eol_type;
 		processed = CopyFrom(cstate);
 		ended_at_marker = !pcopy_src.eof_seen;
 		EndCopyFrom(cstate);
@@ -1952,6 +2027,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	bool		dedup;
 	bool		single_table = false;
 	int64	   *offs;
+	int			eol_type;
 	shm_toc_estimator est;
 	Size		segsize;
 	dsm_segment *seg;
@@ -2151,6 +2227,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 						workers, max_prepared),
 				 errhint("Atomic parallel_copy prepares one transaction per worker; raise max_prepared_transactions (requires a restart) or reduce workers.")));
 
+	/* the newline style every range is held to, read before any worker starts */
+	eol_type = pcopy_file_eol_type(path);
+
 	/* lay out one DSM segment: control header + per-worker slot array */
 	shm_toc_initialize_estimator(&est);
 	shm_toc_estimate_chunk(&est, sizeof(PcopyHeader));
@@ -2176,6 +2255,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->nworkers = workers;
 	hdr->single_table = single_table;
 	strlcpy(hdr->filename, path, sizeof(hdr->filename));
+	hdr->eol_type = eol_type;
 	hdr->total_rows = 0;
 	hdr->failed_worker = -1;
 	hdr->coord_sqlerrcode = 0;

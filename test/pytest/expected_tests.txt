@@ -2487,23 +2487,35 @@ guard_tests 897
 # pin that a wide long-form field id in a PageHeader is refused whatever width a narrowing reader would
 # use (32768, -32769, 2^31, 2^32+1, 1-2^32, -(2^32+1) and 2^40+1), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5945 tests collected.
-# cluster_tests 6027 -> 6047 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# cluster_tests 6027 -> 6059 for #2189's thirty-two tests in test_parallel_copy.py (restated on main 5fae8e3d; 5872
+# -> 5904 on 6094d3a6): five premises (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files,
+# _crlf_to_lf_files, _control_markers and _control_rows),
+# test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it (18 parametrized:
+# a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a single table and
+# a partitioned one, refused with heap COPY's SQLSTATE and message) and
+# test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6059 -> 6071, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
+# and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
+# compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it).
+# cluster_tests 6071 -> 6091 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
 # queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
 # opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
 # statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
 # 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
 # lock refusal, after #2080's unique-index refusal and after #2211's own-write refusal (3), by collection
 # over the cluster files.
-# cluster_tests 6047 -> 6054 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
+# cluster_tests 6091 -> 6098 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
 # caller's lock on pgcolumnar.load_fingerprint and a coordinator behind another session's SHARE lock each return
 # their statement_timeout promptly, a late trigger's DETAIL, an ENABLE ALWAYS trigger refused, an ENABLE REPLICA
 # trigger loaded, the hold setting refused to a non-superuser, and one lost loader of 3 failing the load
 # promptly, by collection over the cluster files.
-# cluster_tests 6054 -> 6055 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
+# cluster_tests 6098 -> 6099 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
 # after its rows commit still records the fingerprint, so a retry of the same file is skipped, by collection
 # over the cluster files.
-# cluster_tests 6055 -> 6057 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
+# cluster_tests 6099 -> 6101 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
 # whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
 # caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
 # over the cluster files.
-cluster_tests 6057
+cluster_tests 6101

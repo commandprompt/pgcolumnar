@@ -1923,4 +1923,262 @@ other_lock_record_probe() {	# -> "error | time | rows | fingerprints | retry"
 check "a dedup load cancelled while another session holds load_fingerprint for 16 s returns within 6 s, records the fingerprint when the lock frees, and its retry is skipped (#2187)" \
 	"$(other_lock_record_probe)" \
 	"57014 canceling statement due to statement timeout | under 6 s | 1 fingerprint | retry skipped | 5000 rows"
+
+# ---- #2189: every range keeps the file's newline style -----------------------
+# COPY FROM takes the newline style (LF or CRLF) from the file's first line and
+# refuses any later line ending that differs with 22P04. Each loader ran core
+# COPY over its own byte range, so a range that started where the style changed
+# took the new style from its own first line, and the load went through:
+#   mark<W>.txt: an LF file with \.\r\n at the start of a range ("end-of-copy
+#     marker does not match previous newline style");
+#   lfcr<W>.txt / crlf<W>.txt: LF lines, then CRLF lines (and the reverse) from
+#     the start of a range ("literal carriage return found in data" / "literal
+#     newline found in data").
+# W is the worker count, 2, 3 or 4; each file puts its event on a range start of
+# both the single-table split and the partitioned one, at the range the check
+# names. The marker cannot start a partitioned range: the partitioned splitter
+# ends the last range at the marker line, so that loader has seen the lines
+# before it, and those checks passed before the fix too.
+# The refusal must be heap COPY's on the same file: its SQLSTATE and message,
+# after parallel_copy's "worker N failed: ", with 0 rows and no prepared
+# transaction. The controls load as heap COPY does: a consistent LF file, a
+# consistent CRLF file, \.\r\n at a range start in a CRLF file, \.\n in the middle
+# of a range, and a CRLF file whose first record holds an escaped LF, which is
+# data and not the first line's ending, and ends in an escaped backslash (an even
+# run of 2, so the CR after it is the line's ending).
+nl_gen() {	# KIND N S PATH: rows 1..N of "%04d\tx", the KIND's event at row S
+	awk -v kind="$1" -v n="$2" -v s="$3" 'BEGIN {
+		for (k = 1; k <= n; k++) {
+			if (k == s && (kind == "mark" || kind == "crmark")) printf "\\.\r\n"
+			if (k == s && kind == "midmark") printf "\\.\n"
+			eol = "\n"
+			if ((kind == "lfcr" && k >= s) || (kind == "crlf" && k < s) || kind == "crmark" || kind == "crall" || kind == "esc") eol = "\r\n"
+			if (kind == "esc" && k == 1) printf "0001\ta\\\nb\\\\\r\n"
+			else printf "%04d\tx%s", k, eol
+		}
+	}' >"$4"
+	chmod 644 "$4"
+}
+nl_target() {	# single|part [COLS] -> (re)creates t_nl as that target, empty; COLS defaults to "id int, txt text"
+	local ddl i lo hi cols="${2:-id int, txt text}"
+	if [ "$1" = single ]; then
+		psql_run "DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ($cols) USING pgcolumnar;" >/dev/null
+		return
+	fi
+	ddl="DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ($cols) PARTITION BY RANGE (id);"
+	for i in 0 1 2 3 4 5 6 7; do
+		if [ "$i" = 0 ]; then lo=MINVALUE; else lo=$((i * 500 + 1)); fi
+		if [ "$i" = 7 ]; then hi=MAXVALUE; else hi=$(((i + 1) * 500 + 1)); fi
+		ddl="$ddl CREATE TABLE t_nl_p$i PARTITION OF t_nl FOR VALUES FROM ($lo) TO ($hi) USING pgcolumnar;"
+	done
+	psql_run "$ddl" >/dev/null
+}
+nl_outcome() {	# SQL TABLE -> "SQLSTATE|message|N rows|P prepared" when SQL failed, else "loaded|N rows|P prepared"
+	local out head
+	out="$(timeout -s KILL 120 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -c "SET statement_timeout = '60s'" -c '\set VERBOSITY verbose' -c "$1" 2>&1)"
+	if grep -q '^ERROR:' <<<"$out"; then
+		head="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1|\2/p' <<<"$out" | head -1)"
+	else
+		head="loaded"
+	fi
+	echo "${head:-unparsed ($out)}|$(q "SELECT count(*) FROM $2") rows|$(q "SELECT count(*) FROM pg_prepared_xacts") prepared"
+}
+nl_heap() {	# PATH -> nl_outcome of heap COPY of PATH into a fresh h_nl
+	psql_run "DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl (id int, txt text);" >/dev/null
+	nl_outcome "COPY h_nl FROM '$1'" h_nl
+}
+nl_at() {	# PATH WORKERS BYTE -> the index of BYTE among the file's split offsets, or "none (offsets)"
+	local arr i
+	read -r -a arr <<<"$(offsets_of "$1" "$2")"
+	for i in $(seq 1 $(($2 - 1))); do
+		[ "${arr[$i]:-x}" = "$3" ] && { echo "$i"; return; }
+	done
+	echo "none (${arr[*]})"
+}
+nl_refused() {	# PATH TARGET WORKERS RANGE -> "ok", or what the load gave against what heap COPY gives
+	local heap got want
+	heap="$(nl_heap "$1")"
+	nl_target "$2"
+	got="$(nl_outcome "SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '$1', $3)" t_nl)"
+	want="${heap%%|*}|pgcolumnar.parallel_copy worker $4 failed: ${heap#*|}"
+	if [ "$got" = "$want" ]; then echo ok; else echo "got [$got] want [$want]"; fi
+}
+nl_loads() {	# PATH TARGET -> "W:ok" per worker count 2, 3, 4, or what it gave against heap COPY
+	local w heap hh got gh res=""
+	heap="$(nl_heap "$1")"; hh="$(pgc_set_hash "SELECT * FROM h_nl")"
+	for w in 2 3 4; do
+		nl_target "$2"
+		got="$(nl_outcome "SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '$1', $w)" t_nl)"
+		gh="$(pgc_set_hash "SELECT * FROM t_nl")"
+		if [ "$got" = "$heap" ] && [ "$gh" = "$hh" ]; then res="$res $w:ok"
+		else res="$res $w:[$got $gh] want [$heap $hh]"; fi
+	done
+	echo "${res# }"
+}
+NL="$DATADIR/nl"; mkdir -p "$NL"; chmod 755 "$NL"
+nl_gen mark 3998 2001 "$NL/mark2.txt"; nl_gen mark 3748 2501 "$NL/mark3.txt"; nl_gen mark 3332 2501 "$NL/mark4.txt"
+nl_gen lfcr 3749 2001 "$NL/lfcr2.txt"; nl_gen lfcr 3593 2501 "$NL/lfcr3.txt"; nl_gen lfcr 3228 2501 "$NL/lfcr4.txt"
+nl_gen crlf 3212 1501 "$NL/crlf2.txt"; nl_gen crlf 3142 2001 "$NL/crlf3.txt"; nl_gen crlf 3451 2501 "$NL/crlf4.txt"
+nl_gen crmark 3998 2001 "$NL/crmark2.txt"; nl_gen crmark 3748 2501 "$NL/crmark3.txt"; nl_gen crmark 3332 2501 "$NL/crmark4.txt"
+nl_gen lf 4000 0 "$NL/lf.txt"; nl_gen crall 4000 0 "$NL/crall.txt"
+nl_gen midmark 4000 1234 "$NL/midmark.txt"; nl_gen esc 4000 0 "$NL/esc.txt"
+[ "$(id -u)" = "0" ] && chown -R postgres "$NL"
+
+_M='22P04|end-of-copy marker does not match previous newline style|0 rows|0 prepared'
+_CR='22P04|literal carriage return found in data|0 rows|0 prepared'
+_NLM='22P04|literal newline found in data|0 rows|0 prepared'
+check "#2189 premise: heap COPY refuses mark2, mark3 and mark4 with 22P04 'end-of-copy marker does not match previous newline style', and the marker line is split offset 1 of 2, 2 of 3 and 3 of 4" \
+	"$(nl_heap "$NL/mark2.txt") @$(nl_at "$NL/mark2.txt" 2 14000) ; $(nl_heap "$NL/mark3.txt") @$(nl_at "$NL/mark3.txt" 3 17500) ; $(nl_heap "$NL/mark4.txt") @$(nl_at "$NL/mark4.txt" 4 17500)" \
+	"$_M @1 ; $_M @2 ; $_M @3"
+check "#2189 premise: heap COPY refuses lfcr2, lfcr3 and lfcr4 with 22P04 'literal carriage return found in data', and the first CRLF line is split offset 1 of 2, 2 of 3 and 3 of 4" \
+	"$(nl_heap "$NL/lfcr2.txt") @$(nl_at "$NL/lfcr2.txt" 2 14000) ; $(nl_heap "$NL/lfcr3.txt") @$(nl_at "$NL/lfcr3.txt" 3 17500) ; $(nl_heap "$NL/lfcr4.txt") @$(nl_at "$NL/lfcr4.txt" 4 17500)" \
+	"$_CR @1 ; $_CR @2 ; $_CR @3"
+check "#2189 premise: heap COPY refuses crlf2, crlf3 and crlf4 with 22P04 'literal newline found in data', and the first LF line is split offset 1 of 2, 2 of 3 and 3 of 4" \
+	"$(nl_heap "$NL/crlf2.txt") @$(nl_at "$NL/crlf2.txt" 2 12000) ; $(nl_heap "$NL/crlf3.txt") @$(nl_at "$NL/crlf3.txt" 3 16000) ; $(nl_heap "$NL/crlf4.txt") @$(nl_at "$NL/crlf4.txt" 4 20000)" \
+	"$_NLM @1 ; $_NLM @2 ; $_NLM @3"
+check "#2189 premise: the \.\r\n line of crmark2, crmark3 and crmark4 is split offset 1 of 2, 2 of 3 and 3 of 4, and midmark's \.\n line is no split offset for 2, 3 or 4 workers" \
+	"$(nl_at "$NL/crmark2.txt" 2 16000) $(nl_at "$NL/crmark3.txt" 3 20000) $(nl_at "$NL/crmark4.txt" 4 20000) $(nl_at "$NL/midmark.txt" 2 8631 | cut -c1-4) $(nl_at "$NL/midmark.txt" 3 8631 | cut -c1-4) $(nl_at "$NL/midmark.txt" 4 8631 | cut -c1-4)" \
+	"1 2 3 none none none"
+
+check "#2189 \.\r\n at the start of range 1 of 2 in an LF file / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark2.txt" single 2 1)" ok
+check "#2189 \.\r\n at the start of range 2 of 3 in an LF file / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark3.txt" single 3 2)" ok
+check "#2189 \.\r\n at the start of range 3 of 4 in an LF file / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark4.txt" single 4 3)" ok
+check "#2189 \.\r\n in an LF file, 2 workers / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark2.txt" part 2 1)" ok
+check "#2189 \.\r\n in an LF file, 3 workers / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark3.txt" part 3 2)" ok
+check "#2189 \.\r\n in an LF file, 4 workers / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/mark4.txt" part 4 3)" ok
+check "#2189 LF to CRLF at the start of range 1 of 2 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr2.txt" single 2 1)" ok
+check "#2189 LF to CRLF at the start of range 2 of 3 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr3.txt" single 3 2)" ok
+check "#2189 LF to CRLF at the start of range 3 of 4 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr4.txt" single 4 3)" ok
+check "#2189 LF to CRLF at the start of range 1 of 2 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr2.txt" part 2 1)" ok
+check "#2189 LF to CRLF at the start of range 2 of 3 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr3.txt" part 3 2)" ok
+check "#2189 LF to CRLF at the start of range 3 of 4 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/lfcr4.txt" part 4 3)" ok
+check "#2189 CRLF to LF at the start of range 1 of 2 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf2.txt" single 2 1)" ok
+check "#2189 CRLF to LF at the start of range 2 of 3 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf3.txt" single 3 2)" ok
+check "#2189 CRLF to LF at the start of range 3 of 4 / single table: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf4.txt" single 4 3)" ok
+check "#2189 CRLF to LF at the start of range 1 of 2 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf2.txt" part 2 1)" ok
+check "#2189 CRLF to LF at the start of range 2 of 3 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf3.txt" part 3 2)" ok
+check "#2189 CRLF to LF at the start of range 3 of 4 / partitioned: refused with heap COPY's SQLSTATE and message, 0 rows, no prepared transaction" \
+	"$(nl_refused "$NL/crlf4.txt" part 4 3)" ok
+
+check "#2189 control: a consistent LF file / single table, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/lf.txt" single)" "2:ok 3:ok 4:ok"
+check "#2189 control: a consistent LF file / partitioned, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/lf.txt" part)" "2:ok 3:ok 4:ok"
+check "#2189 control: a consistent CRLF file / single table, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/crall.txt" single)" "2:ok 3:ok 4:ok"
+check "#2189 control: a consistent CRLF file / partitioned, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/crall.txt" part)" "2:ok 3:ok 4:ok"
+_crm=""
+for _w in 2 3 4; do
+	_h="$(nl_heap "$NL/crmark$_w.txt")"; _hh="$(pgc_set_hash "SELECT * FROM h_nl")"; nl_target single
+	_g="$(nl_outcome "SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '$NL/crmark$_w.txt', $_w)" t_nl)"
+	if [ "$_g $(pgc_set_hash "SELECT * FROM t_nl")" = "$_h $_hh" ]; then _crm="$_crm $_w:ok"; else _crm="$_crm $_w:[$_g] want [$_h]"; fi
+done
+check "#2189 control: \.\r\n at a range start in a CRLF file / single table, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"${_crm# }" "2:ok 3:ok 4:ok"
+check "#2189 control: \.\n in the middle of a range in an LF file / single table, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/midmark.txt" single)" "2:ok 3:ok 4:ok"
+check "#2189 control: \.\n in the middle of a range in an LF file / partitioned, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/midmark.txt" part)" "2:ok 3:ok 4:ok"
+check "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / single table, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/esc.txt" single)" "2:ok 3:ok 4:ok"
+check "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / partitioned, 2, 3 and 4 workers: loads heap COPY's rows" \
+	"$(nl_loads "$NL/esc.txt" part)" "2:ok 3:ok 4:ok"
+check "#2189 premise: heap COPY loads 4000 rows from lf, crall, esc, 1233 from midmark, and 2000, 2500 and 2500 from crmark2, crmark3 and crmark4" \
+	"$(for _f in lf crall esc midmark crmark2 crmark3 crmark4; do nl_heap "$NL/$_f.txt" | cut -d'|' -f2 | tr '\n' ' '; done | sed 's/ $//')" \
+	"4000 rows 4000 rows 4000 rows 1233 rows 2000 rows 2500 rows 2500 rows"
+
+# ---- #2189, review of #2221: the first-line scan, probe by probe --------------
+# pcopy_file_eol_type reads the file in COLUMNAR_SPLIT_SCAN_CHUNK (64 KiB) reads.
+# Five mutants of it passed every check above; each probe below tells one apart
+# from the fix, compared with heap COPY on the same file:
+#   P1 (m06, one chunk read): a CRLF first line of 65537 bytes, then LF lines,
+#      which COPY refuses;
+#   P2 (m07, the CR flag reset per chunk): the first line's CR is byte 65535,
+#      the last of the first read, and its LF byte 65536, the first of the next;
+#   P3 (m08, a backslash does not escape a CR): an escaped CR on the first line
+#      of an LF file;
+#   P4 (m11, the escape flag reset per chunk): a backslash at byte 65535 escapes
+#      the CR at byte 65536, in an LF file;
+#   P5 (m09, the scan starts at byte 1): a CRLF file whose first line is empty
+#      (one text column), and P5b, whose first byte is a backslash escaping a CR
+#      (text before the key, so a partitioned target can take it too).
+# Keys go 0100, 0200, ... 4000 in p3 and p5b. In p1, p2 and p4 they go 0100, then
+# 0600, 0700, ... 4400, so the long line 1 is alone in the first partition and a
+# partitioned load starts range 1 at line 2, as the single-table split does.
+nl_probe() {	# KIND PATH: one probe file, 40 rows
+	awk -v kind="$1" 'BEGIN {
+		pad = "y"; while (length(pad) < 65530) pad = pad pad; pad = substr(pad, 1, 65530)
+		if (kind == "p1" || kind == "p2") printf "0100\t%s\r\n", pad
+		if (kind == "p3") printf "0100\tx\\\r\n"
+		if (kind == "p4") printf "0100\t%s\\\rz\n", pad
+		if (kind == "p5") { printf "\r\n"; for (k = 1; k <= 40; k++) printf "a\r\n"; exit }
+		if (kind == "p5b") { printf "\\\r\t0100\r\n"; for (k = 2; k <= 40; k++) printf "x\t%04d\r\n", k * 100; exit }
+		for (k = 2; k <= 40; k++) printf "%04d\tx%s", (kind == "p3" ? k : k + 4) * 100, (kind == "p2" ? "\r\n" : "\n")
+	}' >"$2"
+	chmod 644 "$2"
+}
+nl_same() {	# PATH TARGET COLS -> "W:ok" per worker count 2, 3, 4 when the load gives heap COPY's outcome,
+	# message (after "worker N failed: ") and rows, or what it gave against heap COPY
+	local w heap hh got gh res=""
+	psql_run "DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ($3);" >/dev/null
+	heap="$(nl_outcome "COPY h_nl FROM '$1'" h_nl)"; hh="$(pgc_set_hash "SELECT * FROM h_nl")"
+	for w in 2 3 4; do
+		nl_target "$2" "$3"
+		got="$(nl_outcome "SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '$1', $w)" t_nl | sed 's/|pgcolumnar\.parallel_copy worker [0-9]* failed: /|/')"
+		gh="$(pgc_set_hash "SELECT * FROM t_nl")"
+		if [ "$got" = "$heap" ] && [ "$gh" = "$hh" ]; then res="$res $w:ok"
+		else res="$res $w:[$got $gh] want [$heap $hh]"; fi
+	done
+	echo "${res# }"
+}
+for _p in p1 p2 p3 p4 p5 p5b; do nl_probe "$_p" "$NL/$_p.txt"; done
+[ "$(id -u)" = "0" ] && chown -R postgres "$NL"
+_probe_heap() {	# PATH COLS -> heap COPY's outcome
+	psql_run "DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ($2);" >/dev/null
+	nl_outcome "COPY h_nl FROM '$1'" h_nl
+}
+check "#2189 premise: COLUMNAR_SPLIT_SCAN_CHUNK is 65536; p1 and p2 hold 0d 0a at bytes 65535-65536 and p4 5c 0d; heap COPY refuses p1 with 22P04 'literal newline found in data' and loads 40 rows from p2, p3, p4, p5b and 41 from p5" \
+	"$(grep -c '^#define COLUMNAR_SPLIT_SCAN_CHUNK 65536$' "$PGC_SRCDIR/src/columnar_parallel_copy.c") $(od -An -tx1 -j 65535 -N 2 "$NL/p1.txt" | tr -d ' ') $(od -An -tx1 -j 65535 -N 2 "$NL/p2.txt" | tr -d ' ') $(od -An -tx1 -j 65535 -N 2 "$NL/p4.txt" | tr -d ' ') ; $(_probe_heap "$NL/p1.txt" 'id int, txt text') ; $(for _p in p2 p3 p4; do _probe_heap "$NL/$_p.txt" 'id int, txt text' | cut -d'|' -f2 | tr '\n' ' '; done)$(_probe_heap "$NL/p5b.txt" 'txt text, id int' | cut -d'|' -f2) $(_probe_heap "$NL/p5.txt" 't text' | cut -d'|' -f2)" \
+	"1 0d0a 0d0a 5c0d ; 22P04|literal newline found in data|0 rows|0 prepared ; 40 rows 40 rows 40 rows 40 rows 41 rows"
+check "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p1.txt" single 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p1.txt" part 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the next, a CRLF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p2.txt" single 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the next, a CRLF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p2.txt" part 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P3, an escaped CR on the first line of an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p3.txt" single 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P3, an escaped CR on the first line of an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p3.txt" part 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the next, an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p4.txt" single 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the next, an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p4.txt" part 'id int, txt text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P5, a CRLF file whose first line is empty / single table of one text column, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p5.txt" single 't text')" "2:ok 3:ok 4:ok"
+check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p5b.txt" single 'txt text, id int')" "2:ok 3:ok 4:ok"
+check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows" \
+	"$(nl_same "$NL/p5b.txt" part 'txt text, id int')" "2:ok 3:ok 4:ok"
 pgc_summary
