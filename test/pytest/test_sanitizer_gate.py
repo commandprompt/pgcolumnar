@@ -63,6 +63,7 @@ def test_the_subset_runs_export_sink(expect):
     expect.text("yes" if "export_sink" in run_san.SUITES else "no", "yes",
                 "the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees")
 
+
 def test_every_sanitized_suite_has_a_complete_twin(expect):
     files, refused = run_san.twin_files(run_san.SUITES)
     expect.text(" ".join(refused) or "none", "none",

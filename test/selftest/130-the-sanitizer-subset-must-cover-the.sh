@@ -65,17 +65,15 @@ check "the sanitizer subset runs every suite that drives the encoding selftest" 
 # is where that happens. Named rather than derived: no property of the suite's
 # text says "only a sanitizer sees this".
 #
-# BOTH GATES, because the nightly runs test/pytest/run_san.py, not run_san.sh.
-# Reading run_san.sh alone left run_san.py free to drop the suite with this
-# check green. run_san.py is asked the same way, through its own --list-suites
-# with the override cleared; it needs no build to answer. A run_san.py that
-# cannot answer prints nothing, and the check then names it as missing.
-_san_py_suites="$(env -u PGC_SAN_SUITES python3 "$PGC_SRCDIR/test/pytest/run_san.py" --list-suites 2>/dev/null)"
-_es_missing=""
-grep -qx export_sink <<<"$_san_suites" || _es_missing="$_es_missing run_san.sh"
-grep -qx export_sink <<<"$_san_py_suites" || _es_missing="$_es_missing run_san.py"
+# run_san.sh ONLY. The nightly runs test/pytest/run_san.py, and its half is
+# asserted on the pytest side: test_sanitizer_gate.py requires export_sink in
+# run_san.SUITES by name (test_the_subset_runs_export_sink) and requires that
+# list to equal run_san.sh --list-suites (test_the_subset_is_the_shell_gates_subset).
+# This part does not reach across to run_san.py, because CONTEXT.md, "Tests",
+# says the two harnesses "must not call, import or reference each other", and
+# running another harness's file is a reference by its counting rule.
 check "the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees" \
-	"$(printf '%s' "${_es_missing:- none}" | sed 's/^ //')" "none"
+	"$(grep -qx export_sink <<<"$_san_suites" && echo yes || echo no)" "yes"
 
 # ---- NOT a check: FSST slack coverage, and why there is no arm for it --------
 #
