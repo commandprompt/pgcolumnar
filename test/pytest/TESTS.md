@@ -6821,7 +6821,7 @@ restored byte-identical.
 | test | what it pins |
 | --- | --- |
 | `test_expire_retires_expired_groups_and_keeps_the_straddling_one` | the feature, and the straddling group that constrains it |
-| `test_expire_refuses_what_it_cannot_honour` | #1341: a non-owner holding DELETE (`42501`), a retention column that is not a time type (`42804`) and a dropped one (`42703`) are refused with every row still there, on tables whose rows are all past retention; the owner's `expire` is the control that retires them |
+| `test_expire_refuses_what_it_cannot_honour` | #1341: a non-owner holding DELETE (`42501`), a retention column that is not a time type (`42804`) and a dropped one, written back by hand as an older build left it since #2070 clears it on the drop (`42703`), are refused with every row still there, on tables whose rows are all past retention; the owner's `expire` is the control that retires them |
 | `test_a_half_declaration_is_no_retention` | #1341: a retention column without an interval, or an interval without a column, is accepted by `set_options` and refused by `expire` with `55000`, every aged row kept |
 | `test_a_null_retention_value_keeps_its_group` | a live NULL the maximum cannot speak for |
 | `test_an_index_only_scan_does_not_return_retired_rows` | the visibility-map bits over a group `expire` removed |
@@ -6834,9 +6834,12 @@ restored byte-identical.
 | `test_a_no_op_expire_reads_the_extent_not_every_zone_map` | #1310: with the retention column's extent (#1304 option 5) past the cutoff, a no-op `expire` makes 0 zone-map scans where it made one per group; the same groups retire with or without the extent; aged rows written in `expire`'s own transaction retire; a column left with only NULLs needs no reads. Counted in a fresh connection, with the test schema's `search_path` carried over. Seen red first: 40 scans |
 | `test_the_retention_column_follows_a_rename` | #2070: `ALTER TABLE ... RENAME COLUMN` carries the new name into `ttl_column`; renaming `t` (a prefix of `ts`), `"TS"` (a case variant), `ts_old` (starts with `ts`), `old_ts` (ends with `ts`) or `tx` (same first letter and length) leaves it `ts`; the table also declares `sort_by` and `sketch_columns`, so renaming a column held only there leaves `ttl_column` alone and `expire` retires nothing, and renaming `ts` moves `sort_by` and `ttl_column` together; `expire` still runs and returns 0, and a column that later takes the old name, holding values two years old, retires no group and drops no row. Seen red first: `ttl_column` stayed `ts` |
 | `test_the_retention_column_follows_a_rename_on_a_retention_only_table` | #2070: on a table that declares only `ttl_column` and `ttl_interval`, with no `sort_by` or `sketch_columns`, renaming `ts` moves `ttl_column` to `event_at`, `expire` still runs and returns 0, and a column that then takes the old name, holding values a year old, retires no group and drops no row. On `ttl_ren` the `sort_by` update writes the catalog row on its own, so only this table shows that the `ttl_column` update asks for the write itself. Seen red first under the #2136 review's mutant M2a (the ttl block's `any = true` removed): `ttl_column` stayed `ts` |
+| `test_dropping_the_retention_column_clears_the_declaration` | #2070: `DROP COLUMN` of the retention column clears `ttl_column` and `ttl_interval`; dropping `t` (a prefix of `ts`), `ts_old` (starts with `ts`) or `"TS"` (differs only in case) leaves them; after the drop `expire` refuses with `55000` and its message, and still does after a year-old column takes the dropped name, every row kept |
+| `test_the_retention_column_follows_rename_attribute_on_a_typed_table` | #2177: on a typed table, where `ALTER TABLE ... RENAME COLUMN` is refused (`42809`), `ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE` moves `ttl_column`; `expire` still runs, a year-old column that takes the old name is not cut on, and every row is kept |
+| `test_the_retention_column_follows_rename_attribute_on_every_typed_table` | #2177, #2237 review: with two columnar typed tables of one type, `ALTER TYPE ... RENAME ATTRIBUTE` moves `ttl_column` on both, and neither `expire` cuts on the column that then takes the old name |
 | `test_a_rename_leaves_a_null_retention_column_null` | #2070: renaming a column on a table that declares only an interval leaves `ttl_column` NULL, and `expire` still refuses it with `55000`, every year-old row kept. Seen red first under the #2136 review's mutant M3c (`!isnull &&` -> `isnull \|\|`): `ttl_column` became `created_at` |
 
-The shell twin is `test/ttl_expire.sh`, 104 checks since the #2136 review, all in the mutation ledger. The two halves share no code:
+The shell twin is `test/ttl_expire.sh`, 120 checks since #2174, all in the mutation ledger. The two halves share no code:
 different tables, different row counts, different retention windows, and the
 refusals asserted by SQLSTATE here (`55000` for no declared retention, `22023` for
 a non-positive interval) where the shell greps its message.
@@ -7299,7 +7302,7 @@ Written red first: on main the fixture raises `unrecognized configuration parame
 | `test_the_switch_exists_and_is_off_by_default` | the launcher runs; the switch reads `off` while the daemon is `on`; a manual `expire` on the same fixture retires its two aged groups |
 | `test_with_the_switch_off_the_daemon_expires_nothing` | the daemon compacts a deleted-heavy table in the window, so it is running passes, and the aged table keeps all 2000 aged rows |
 | `test_with_the_switch_on_the_daemon_expires_only_what_aged` | the aged rows go; the 500 fresh rows stay; a table with no retention keeps every row and is never named in a skipped line; the log names what was retired; later passes that retire nothing write no LOG line for the table |
-| `test_a_failing_expire_does_not_undo_the_compaction` | `expire` on a table whose retention column was dropped fails with `42703`, and the compaction due on that table still lands |
+| `test_a_failing_expire_does_not_undo_the_compaction` | `expire` on a table whose retention column was dropped fails with `42703`, and the compaction due on that table still lands. Since #2070 the drop clears the declaration, so the stale name an older build left is written back by hand first |
 | `test_the_daemon_yields_the_lock_it_holds_inside_expire` | the worker holds ShareUpdateExclusiveLock inside `expire`; a session's ACCESS EXCLUSIVE is granted within 8 s of a 30 s hold, and the log shows the cancel |
 | `test_a_table_dropped_mid_pass_is_skipped_and_the_pass_goes_on` | while the worker holds `ex_hold`, `ex_gone` is dropped; after the cancel the same pass logs `ex_gone` as skipped and still expires `ex_after` |
 | `test_the_daemon_cuts_a_date_retention_at_its_databases_time_zone` | one row group per day: the first surviving day is the daemon's cutoff in the server's TimeZone, then in a changed one after a reload, and in a database-level TimeZone, which overrides the server's; two zones 25 hours apart, read before and after the passes so a midnight between cannot flake it |
@@ -9366,7 +9369,7 @@ A module fixture on a private database builds the tables in the shell's order; e
 
 ## 208. test_sorted_mark_rename.py: a table's ordering mark follows a column rename
 
-The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child. The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review). On a private database, with serial planning as the shell's cluster runs.
+The pytest twin of `test/sorted_mark_rename.sh` (ported for #1341), every check by the shell's name. pgcolumnar.storage records the key a table is ordered on by column name, and vacuum_sorted's gate (#760) and the planner both trust it. Swapping two columns' names must move the mark, or the gate skips work it must do and ORDER BY returns rows out of order (#778, #779). Dropping a sort-key column must clear the mark, because another column can then take the dropped name by a RENAME that writes no rows (#2069), on a plain table, a partition and an inheritance child, and the drop clears the run extent too, so sort_status reports no sorted group (#2174). A mark an older build left naming a dropped column is cleared by the rename that gives the name to another column, wherever the stale name sits in the key (#2175). ALTER TYPE ... RENAME ATTRIBUTE moves a typed table's mark and declared key, and its partition's mark (#2177). The drop hook runs for every column drop, so a heap table's column must still drop, in this database and in a second one without the extension (#2135 review), and so must a heap typed table's attribute rename. On a private database, with serial planning as the shell's cluster runs.
 
 ### Every test
 
@@ -9415,7 +9418,10 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_a_bare_vacuum_sorted_is_a_no_op` | and a bare vacuum_sorted() is a no-op, not a rewrite on a different key |
 | `test_vd_t_loaded_every_row` | premise: vd_t loaded every row |
 | `test_before_the_drop_the_mark_records_a` | premise: before the drop, the mark records key {a} |
+| `test_before_the_drop_sort_status_reports_every_group_sorted` | premise: before the drop, sort_status reports every group sorted |
 | `test_dropping_the_sort_key_column_clears_the_mark` | DROP COLUMN of the sort-key column clears the mark |
+| `test_dropping_the_sort_key_column_clears_the_run_extent` | the drop clears the run extent too (#2174) |
+| `test_after_the_key_is_dropped_sort_status_reports_no_sorted_group` | sort_status reports no sorted group once the key column is dropped (#2174) |
 | `test_the_column_that_took_the_name_is_not_ordered` | premise: the column that took the name a is NOT ordered |
 | `test_after_a_drop_and_rename_order_by_plans_a_sort` | after the drop and a rename onto the name, ORDER BY plans a Sort |
 | `test_after_a_drop_and_rename_order_by_limit_is_right` | THE WRONG-ANSWER ARM: ORDER BY ... LIMIT returns the five smallest values |
@@ -9429,12 +9435,40 @@ A module fixture runs the shell's steps in order. A vacuum_sorted call is read b
 | `test_dropping_one_zorder_column_clears_the_mark` | dropping one Z-order column clears the mark |
 | `test_the_inheritance_childs_mark_records_k` | premise: the inheritance child's mark records key {k} |
 | `test_a_drop_on_the_parent_clears_the_inheritance_childs_mark` | the inheritance CHILD's mark is cleared by a drop issued on the parent |
+| `test_vl_t_carries_an_older_builds_mark` | premise: vl_t carries the mark an older build left after the drop |
+| `test_vl_t_new_a_is_not_ordered` | premise: the column that took the name a in vl_t is NOT ordered |
+| `test_a_rename_onto_a_dropped_key_name_clears_an_older_builds_mark` | a rename onto a dropped key column's name clears a mark an older build left (#2175) |
+| `test_and_clears_that_marks_run_extent` | and clears that mark's run extent too (#2175) |
+| `test_older_build_order_by_plans_a_sort` | older build: ORDER BY on the column that took the name plans a Sort (#2175) |
+| `test_older_build_order_by_limit_is_right` | THE WRONG-ANSWER ARM, older build: ORDER BY ... LIMIT returns the five smallest values (#2175) |
+| `test_vl_k_carries_an_older_builds_two_column_mark` | premise: vl_k carries the mark {c,a} an older build left after dropping c |
+| `test_vl_k_new_c_is_not_ordered` | premise: the column renamed to c in vl_k is NOT ordered |
+| `test_a_rename_of_a_key_column_onto_a_stale_key_name_clears_the_mark` | a rename of a key column onto a stale key name clears the mark (#2175) |
+| `test_stale_key_holding_both_names_order_by_limit_is_right` | THE WRONG-ANSWER ARM, stale key holding both names: ORDER BY ... LIMIT returns the five smallest values (#2175) |
+| `test_vl_m_carries_an_older_builds_mark_with_a_stale_second_column` | premise: vl_m carries the mark {a,b} an older build left after dropping b |
+| `test_a_rename_onto_a_stale_second_key_name_clears_the_mark` | a rename onto a stale name that is not the key's first clears the mark (#2175) |
+| `test_stale_second_key_column_order_by_limit_is_right` | THE WRONG-ANSWER ARM, stale second key column: ORDER BY a, b ... LIMIT returns the five smallest pairs (#2175) |
+| `test_the_typed_tables_mark_records_a` | premise: the typed table's mark records key {a} |
+| `test_a_typed_tables_mark_follows_rename_attribute` | a typed table's mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_a_typed_tables_declared_sort_by_follows_rename_attribute` | and so does its declared sort_by (#2177) |
+| `test_typed_table_order_by_plans_a_sort` | typed table: ORDER BY on the column that took the old name plans a Sort (#2177) |
+| `test_typed_table_order_by_limit_is_right` | THE WRONG-ANSWER ARM, typed table: ORDER BY ... LIMIT returns the five smallest values (#2177) |
+| `test_the_typed_tables_partition_is_untyped_and_marked` | premise: the typed table's partition is not typed, and its mark records key {k} |
+| `test_a_typed_tables_partitions_mark_follows_rename_attribute` | the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_both_typed_tables_of_one_type_are_marked` | premise: both typed tables of one type are marked {a} |
+| `test_both_typed_tables_marks_follow_rename_attribute` | both typed tables' marks follow ALTER TYPE ... RENAME ATTRIBUTE (#2177) |
+| `test_two_typed_tables_order_by_limit_is_right_on_each` | THE WRONG-ANSWER ARM, two typed tables: ORDER BY ... LIMIT on each returns the five smallest values (#2177) |
+| `test_vc_is_marked_on_upper_a` | premise: vc is marked on its upper-case column A |
+| `test_a_case_only_rename_onto_a_live_key_name_keeps_the_mark` | a rename onto a name that differs from a live key column only in case keeps the mark (#2175) |
+| `test_after_a_case_only_rename_order_by_needs_no_sort` | and ORDER BY on that key column still needs no Sort (#2175) |
 | `test_the_extension_is_absent_in_the_second_database` | premise: the extension is absent in the second database |
 | `test_the_library_is_loaded_in_the_second_database` | premise: and the library is loaded there, so its drop hook runs |
 | `test_an_empty_heap_tables_column_drops` | a column of an EMPTY heap table drops, in this database |
 | `test_a_populated_heap_tables_column_drops` | a column of a POPULATED heap table drops, in this database |
 | `test_an_empty_heap_tables_column_drops_without_the_extension` | a column of an EMPTY heap table drops, in a database without the extension |
 | `test_a_populated_heap_tables_column_drops_without_the_extension` | a column of a POPULATED heap table drops, in a database without the extension |
+| `test_a_heap_typed_tables_attribute_renames` | a HEAP typed table's attribute renames, in this database (#2177) |
+| `test_a_heap_typed_tables_attribute_renames_without_the_extension` | a HEAP typed table's attribute renames, in a database without the extension (#2177) |
 | `test_rr_ctl_loaded_every_row` | premise: rr_ctl loaded every row |
 | `test_the_first_recluster_does_real_work` | premise: the first recluster does real work |
 | `test_a_repeat_recluster_is_a_no_op` | CONTROL: a repeat recluster on the same key is a no-op, so the gate fires |

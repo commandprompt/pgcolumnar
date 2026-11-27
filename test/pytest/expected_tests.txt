@@ -2591,4 +2591,4 @@ guard_tests 910
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6243
+cluster_tests 6277
