@@ -96,6 +96,12 @@ typedef struct PgColumnarCustomScanState
 	Bitmapset  *projectedColumns;	/* 0-based; NULL means all columns */
 	ScanKey		scanKeys;
 	int			nScanKeys;
+	/*
+	 * A stable operand that needs a call to evaluate, such as "x > f($1)", is
+	 * frozen when the scan first runs, not at Begin (#2065). This says one is
+	 * still waiting.
+	 */
+	bool		keysPending;
 	int			nProjected;			/* for EXPLAIN */
 	int			nTotalColumns;
 
@@ -288,6 +294,47 @@ pgcolumnar_commute_strategy(StrategyNumber s)
 	}
 }
 
+
+/*
+ * The date_trunc units pgcolumnar_preimage_range_scankey can key, with the width
+ * of one bucket. The step for `month` is not a fixed number of seconds, so it is
+ * an interval applied by calendar arithmetic. Units not listed are DECLINED
+ * rather than approximated: date_trunc accepts more (microseconds, decade,
+ * century, millennium, plurals), and each would need its own entry proved first.
+ * pgcolumnar_operand_keyable reads the same table (#2065), so the two cannot
+ * disagree about which units are keys.
+ */
+static const struct
+{
+	const char *unit;
+	const char *step;
+}			pgcolumnar_date_trunc_units[] = {
+	{"second", "1 second"},
+	{"minute", "1 minute"},
+	{"hour", "1 hour"},
+	{"day", "1 day"},
+	{"week", "1 week"},
+	{"month", "1 month"},
+	{"quarter", "3 months"},
+	{"year", "1 year"},
+};
+
+/*
+ * The step for `unit`, or NULL when the table does not list it. The comparison
+ * is case-insensitive because date_trunc's own is.
+ */
+static const char *
+pgcolumnar_date_trunc_step(text *unit)
+{
+	char	   *unitStr = text_to_cstring(unit);
+	int			i;
+
+	for (i = 0; i < (int) lengthof(pgcolumnar_date_trunc_units); i++)
+		if (pg_strcasecmp(unitStr, pgcolumnar_date_trunc_units[i].unit) == 0)
+			return pgcolumnar_date_trunc_units[i].step;
+	return NULL;
+}
+
 /*
  * pgcolumnar_preimage_range_scankey
  *		Rewrite `f(col) OP const` into a bound on col, for a function whose
@@ -466,43 +513,13 @@ pgcolumnar_preimage_range_scankey(OpExpr *op, Index scanrelid, TupleDesc tupdesc
 	 */
 
 	/*
-	 * hi is where the NEXT bucket starts, so the step is one unit wide.
-	 *
-	 * This IS a table of unit names, and it is the honest way to do it: the
-	 * step for `month` is not a fixed number of seconds, so it has to be
-	 * expressed as an interval and applied by the calendar arithmetic that
-	 * knows about month lengths. Units not listed here are DECLINED rather than
-	 * approximated -- `date_trunc` accepts more of them (microseconds, decade,
-	 * century, millennium), and each would need its own entry proved before it
-	 * could be trusted.
-	 *
-	 * The comparison is case-insensitive because date_trunc's own is.
+	 * hi is where the NEXT bucket starts, so the step is one unit wide. The
+	 * step comes from the table pgcolumnar_date_trunc_units, which declines a
+	 * unit it does not list.
 	 */
 	{
-		static const struct
-		{
-			const char *unit;
-			const char *step;
-		}			units[] = {
-			{"second", "1 second"},
-			{"minute", "1 minute"},
-			{"hour", "1 hour"},
-			{"day", "1 day"},
-			{"week", "1 week"},
-			{"month", "1 month"},
-			{"quarter", "3 months"},
-			{"year", "1 year"},
-		};
-		char	   *unitStr = text_to_cstring(unit);
-		const char *stepStr = NULL;
-		int			i;
+		const char *stepStr = pgcolumnar_date_trunc_step(unit);
 
-		for (i = 0; i < (int) (sizeof(units) / sizeof(units[0])); i++)
-			if (pg_strcasecmp(unitStr, units[i].unit) == 0)
-			{
-				stepStr = units[i].step;
-				break;
-			}
 		if (stepStr == NULL)
 			return 0;
 
@@ -1231,41 +1248,227 @@ pgcolumnar_operand_unstable_walker(Node *node, void *ctx)
 }
 
 /*
- * Evaluate a scan-key operand to a Const, guarded. Returns NULL if evaluation
- * raises (e.g. a stable function that errors, or a param not yet bound under a
- * plain EXPLAIN), so the caller leaves the clause as-is rather than turning a
- * scan that might otherwise prune the operand away into an error.
+ * Make a Const of type `typ` holding `d`, copied into the current memory context.
  */
 static Node *
-pgcolumnar_try_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
+pgcolumnar_make_frozen_const(Node *expr, Datum d, bool isnull)
 {
-	Node	   *result = NULL;
-	MemoryContext oldcxt = CurrentMemoryContext;
+	Oid			typ = exprType(expr);
+	int16		typlen;
+	bool		typbyval;
 
-	PG_TRY();
-	{
-		ExprState  *es = ExecInitExpr((Expr *) expr, ps);
-		bool		isnull;
-		Datum		d = ExecEvalExprSwitchContext(es, econtext, &isnull);
-		Oid			typ = exprType(expr);
-		int16		typlen;
-		bool		typbyval;
+	get_typlenbyval(typ, &typlen, &typbyval);
+	if (!isnull && !typbyval)
+		d = datumCopy(d, typbyval, typlen);
+	return (Node *) makeConst(typ, exprTypmod(expr), exprCollation(expr),
+							  (int) typlen, isnull ? (Datum) 0 : d,
+							  isnull, typbyval);
+}
 
-		get_typlenbyval(typ, &typlen, &typbyval);
-		if (!isnull && !typbyval)
-			d = datumCopy(d, typbyval, typlen);
-		result = (Node *) makeConst(typ, exprTypmod(expr), exprCollation(expr),
-									(int) typlen, isnull ? (Datum) 0 : d,
-									isnull, typbyval);
-	}
-	PG_CATCH();
+/*
+ * Evaluate a scan-key operand to a Const. Called only when the scan first runs.
+ *
+ * An error raised here propagates (#2065). This used to catch it with PG_TRY
+ * and FlushErrorState, with no subtransaction, so nothing released what the
+ * failed call held: a statement_timeout or cancel that fired here was lost, the
+ * query ran on, and the call's plancache, snapshot and SPI state leaked. A
+ * btree index scan also evaluates its runtime keys unguarded, when it first
+ * runs or rescans, and never while the plan is only being set up.
+ */
+static Node *
+pgcolumnar_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
+{
+	ExprState  *es = ExecInitExpr((Expr *) expr, ps);
+	bool		isnull;
+	Datum		d = ExecEvalExprSwitchContext(es, econtext, &isnull);
+
+	return pgcolumnar_make_frozen_const(expr, d, isnull);
+}
+
+/*
+ * At Begin, freeze only a bare PARAM_EXTERN whose value is bound, and read that
+ * value directly. Begin runs for every plan node, including one that never runs
+ * (an Append arm that LIMIT cuts off, a branch under a false one-time filter)
+ * and under a plain EXPLAIN, so it must call nothing: a stable function would
+ * run its side effects, or raise, where heap calls nothing. An unbound
+ * parameter (EXPLAIN (GENERIC_PLAN)) is left as it is. Returns NULL when the
+ * operand is not frozen.
+ *
+ * A parameter list with a paramFetch hook is not read here either: the hook is
+ * a call. PL/pgSQL's evaluates the variable, and for a record field that is not
+ * assigned, or whose record changed type under a cached plan, it raises. Such
+ * an operand waits for the first run, like a function call does.
+ */
+static Node *
+pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
+{
+	Node	   *bare = expr;
+	Param	   *param;
+	ParamListInfo params = ps->state->es_param_list_info;
+	ParamExternData *prm;
+
+	if (IsA(bare, RelabelType))
+		bare = (Node *) ((RelabelType *) bare)->arg;
+	if (!IsA(bare, Param) || ((Param *) bare)->paramkind != PARAM_EXTERN)
+		return NULL;
+	param = (Param *) bare;
+	if (params == NULL || param->paramid <= 0 || param->paramid > params->numParams)
+		return NULL;
+	/*
+	 * This guard is also what keeps the read below in bounds. PL/pgSQL builds
+	 * its list with makeParamList(0) and then sets numParams to its datum
+	 * count, so params[] has no storage behind it, and paramFetch is the only
+	 * way to read a value. No test can see an out-of-bounds read here: the
+	 * ptype check below usually rejects the garbage. Do not remove the guard.
+	 */
+	if (params->paramFetch != NULL)
+		return NULL;
+	prm = &params->params[param->paramid - 1];
+	if (prm->ptype != param->paramtype)
+		return NULL;
+
+	/*
+	 * The Const takes the type of `expr`, the RelabelType if there is one: a
+	 * varchar or domain parameter is frozen as the type the clause compares
+	 * (text, timestamp, tsrange), as the first-run path freezes it. The LIKE,
+	 * date_trunc and range key builders accept only that exact type (#2065).
+	 */
+	return pgcolumnar_make_frozen_const(expr, prm->value, prm->isnull);
+}
+
+/*
+ * pgcolumnar_operand_keyable
+ *		Whether `clause`, with its operand number `argno` (0 or 1) replaced by a
+ *		Const, is a clause pgcolumnar_clause_to_scankey could turn into a key.
+ *
+ * It reads the clause's shape only and calls nothing. The other side must be
+ * a column of this scan (or date_trunc of one with a constant unit, #403),
+ * compared under the column's collation, by an operator that has a btree
+ * strategy in the column type's family, by LIKE under the C collation, by a
+ * range operator (#1144), or by `= ANY` (#704); and it is not a timestamp
+ * column against a timestamptz value, which the reader drops (#1738).
+ * pgcolumnar_clause_to_scankey makes the final decision once
+ * the operand is a Const; this only rules out a clause that can never be a key.
+ *
+ * Such a clause is not frozen at all (#2065). Evaluating its operand could
+ * never prune anything, and an error it raised would fail a query that heap and
+ * btree answer: they test `ts <> f($1)` or `ts + 0 > f($1)` per row, in the
+ * Filter, and never call f() when no row reaches that clause.
+ */
+static bool
+pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
+						   TupleDesc tupdesc)
+{
+	Node	   *other;
+	Node	   *operand;
+	Oid			opno;
+	Oid			inputcollid;
+	Var		   *var;
+	TypeCacheEntry *tce;
+	bool		varOnLeft = (argno == 1);
+
+	if (IsA(clause, ScalarArrayOpExpr))
 	{
-		MemoryContextSwitchTo(oldcxt);
-		FlushErrorState();
-		result = NULL;
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+
+		if (!saop->useOr || argno != 1)
+			return false;
+		other = (Node *) linitial(saop->args);
+		operand = (Node *) lsecond(saop->args);
+		opno = saop->opno;
+		inputcollid = saop->inputcollid;
 	}
-	PG_END_TRY();
-	return result;
+	else
+	{
+		OpExpr	   *op = (OpExpr *) clause;
+
+		other = (Node *) list_nth(op->args, 1 - argno);
+		operand = (Node *) list_nth(op->args, argno);
+		opno = op->opno;
+		inputcollid = op->inputcollid;
+	}
+	if (IsA(other, RelabelType))
+		other = (Node *) ((RelabelType *) other)->arg;
+
+	/*
+	 * date_trunc(unit, col) compared with a value (#403). As in
+	 * pgcolumnar_preimage_range_scankey: the unit is a Const that its table
+	 * lists, the argument is a timestamp column of this scan (not a domain over
+	 * timestamp, which reaches here inside a RelabelType and so is no Var), the
+	 * operand is a timestamp too, and the operator has a btree strategy.
+	 */
+	if (IsA(clause, OpExpr) && IsA(other, FuncExpr))
+	{
+		FuncExpr   *f = (FuncExpr *) other;
+		Const	   *unitCon;
+		Node	   *col;
+
+		if (f->funcid != F_DATE_TRUNC_TEXT_TIMESTAMP ||
+			list_length(f->args) != 2 || !IsA(linitial(f->args), Const))
+			return false;
+		unitCon = (Const *) linitial(f->args);
+		if (unitCon->constisnull ||
+			pgcolumnar_date_trunc_step(DatumGetTextPP(unitCon->constvalue)) == NULL)
+			return false;
+		col = (Node *) lsecond(f->args);
+		if (!IsA(col, Var) || ((Var *) col)->varno != scanrelid ||
+			((Var *) col)->varlevelsup != 0 ||
+			exprType(operand) != TIMESTAMPOID)
+			return false;
+		tce = lookup_type_cache(TIMESTAMPOID, TYPECACHE_BTREE_OPFAMILY);
+		return OidIsValid(tce->btree_opf) &&
+			get_op_opfamily_strategy(opno, tce->btree_opf) != InvalidStrategy;
+	}
+
+	if (!IsA(other, Var))
+		return false;
+	var = (Var *) other;
+	if (var->varno != scanrelid || var->varlevelsup != 0 ||
+		var->varattno < 1 || var->varattno > tupdesc->natts)
+		return false;
+	if (inputcollid != TupleDescAttr(tupdesc, var->varattno - 1)->attcollation)
+		return false;
+
+	/*
+	 * The reader drops a key that compares a timestamp column with a
+	 * timestamptz value (#1738), whatever the value, so such a key never prunes.
+	 * For `= ANY` the value's type is the array's element type. A domain column
+	 * over timestamp reaches here as a Var of the domain type.
+	 */
+	{
+		Oid			argType = exprType(operand);
+
+		if (IsA(clause, ScalarArrayOpExpr))
+			argType = get_element_type(argType);
+		if (argType == TIMESTAMPTZOID &&
+			getBaseType(var->vartype) == TIMESTAMPOID)
+			return false;
+	}
+
+	tce = lookup_type_cache(var->vartype, TYPECACHE_BTREE_OPFAMILY);
+	if (IsA(clause, ScalarArrayOpExpr))
+		return OidIsValid(tce->btree_opf) &&
+			get_op_opfamily_strategy(opno, tce->btree_opf) == BTEqualStrategyNumber;
+
+	/* LIKE builds a key only under the C collation (pgcolumnar_like_prefix_scankey) */
+	if (opno == OID_TEXT_LIKE_OP)
+		return varOnLeft && COLUMNAR_COLLATION_IS_C(inputcollid);
+	if (type_is_range(var->vartype))
+	{
+		Oid			gistClass = GetDefaultOpClass(var->vartype, GIST_AM_OID);
+		Oid			gistFamily = OidIsValid(gistClass)
+			? get_opclass_family(gistClass) : InvalidOid;
+		StrategyNumber rstrat = OidIsValid(gistFamily)
+			? get_op_opfamily_strategy(opno, gistFamily) : InvalidStrategy;
+
+		/* && keys only against the column's own range type, not a multirange */
+		if ((rstrat == RTOverlapStrategyNumber &&
+			 exprType(operand) == var->vartype) ||
+			(rstrat == RTContainsElemStrategyNumber && varOnLeft))
+			return true;
+	}
+	return OidIsValid(tce->btree_opf) &&
+		get_op_opfamily_strategy(opno, tce->btree_opf) != InvalidStrategy;
 }
 
 /*
@@ -1281,9 +1484,17 @@ pgcolumnar_try_eval_const(Node *expr, PlanState *ps, ExprContext *econtext)
  * stable one is exact, and the executor still re-applies the original qual to
  * every surviving row. Returns the qual unchanged when no expression context is
  * available yet.
+ *
+ * With `evaluate` false (Begin), only a bound parameter is frozen; see
+ * pgcolumnar_bound_param_const. `*pending` is then set when an operand that
+ * could be frozen was left for the first run. With `evaluate` true (the first
+ * run), every such operand is evaluated, and an error it raises propagates.
+ * Either way, only an operand whose clause could become a scan key is touched;
+ * see pgcolumnar_operand_keyable.
  */
 static List *
-pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
+pgcolumnar_stabilize_quals(List *qual, PlanState *ps, bool evaluate,
+						   bool *pending, Index scanrelid, TupleDesc tupdesc)
 {
 	ExprContext *econtext;
 	List	   *out = NIL;
@@ -1300,6 +1511,7 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
 		List	   *newargs = NIL;
 		ListCell   *alc;
 		bool		changed = false;
+		int			argno = 0;
 
 		/*
 		 * The same freeze serves `col = ANY($1)` (#704): the array argument of
@@ -1323,14 +1535,18 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
 		{
 			Node	   *arg = (Node *) lfirst(alc);
 			Node	   *bare = arg;
+			int			thisarg = argno++;
 
 			if (IsA(bare, RelabelType))
 				bare = (Node *) ((RelabelType *) bare)->arg;
 			if (!IsA(bare, Const) &&
 				!pgcolumnar_operand_unstable_walker(arg, NULL) &&
-				!contain_volatile_functions(arg))
+				!contain_volatile_functions(arg) &&
+				pgcolumnar_operand_keyable(clause, thisarg, scanrelid, tupdesc))
 			{
-				Node	   *c = pgcolumnar_try_eval_const(arg, ps, econtext);
+				Node	   *c = evaluate
+					? pgcolumnar_eval_const(arg, ps, econtext)
+					: pgcolumnar_bound_param_const(arg, ps);
 
 				if (c != NULL)
 				{
@@ -1338,6 +1554,8 @@ pgcolumnar_stabilize_quals(List *qual, PlanState *ps)
 					changed = true;
 					continue;
 				}
+				if (pending != NULL)
+					*pending = true;
 			}
 			newargs = lappend(newargs, arg);
 		}
@@ -3510,6 +3728,37 @@ pgcolumnar_chosen_projection(CustomScan *cscan)
 }
 
 /*
+ * pgcolumnar_projection_keys
+ *		Translate the pushed-down scan keys to the projection's attnums. A key
+ *		on a column the projection does not store is dropped.
+ */
+static ScanKey
+pgcolumnar_projection_keys(PgColumnarCustomScanState *cstate, int *nProjKeys)
+{
+	ScanKey		projKeys = NULL;
+	int			i;
+
+	*nProjKeys = 0;
+	if (cstate->nScanKeys <= 0)
+		return NULL;
+	projKeys = palloc0(sizeof(ScanKeyData) * cstate->nScanKeys);
+	for (i = 0; i < cstate->nScanKeys; i++)
+	{
+		AttrNumber	baseAtt = cstate->scanKeys[i].sk_attno;
+
+		if (baseAtt >= 1 && baseAtt <= cstate->nTotalColumns &&
+			cstate->projColMap[baseAtt - 1] > 0)
+		{
+			projKeys[*nProjKeys] = cstate->scanKeys[i];
+			projKeys[*nProjKeys].sk_attno =
+				(AttrNumber) (cstate->projColMap[baseAtt - 1] + 1);
+			(*nProjKeys)++;
+		}
+	}
+	return projKeys;
+}
+
+/*
  * pgcolumnar_setup_projection_scan
  *		Open a read on the named projection's storage with a synthetic
  *		[rownumber, cols...] descriptor, build the base<->projection column map,
@@ -3568,23 +3817,7 @@ pgcolumnar_setup_projection_scan(PgColumnarCustomScanState *cstate, Relation rel
 		TupleDescCopyEntry(projTupdesc, i + 2, tableDesc,
 						   (AttrNumber) proj->columns[i]);
 
-	if (cstate->nScanKeys > 0)
-	{
-		projKeys = palloc0(sizeof(ScanKeyData) * cstate->nScanKeys);
-		for (i = 0; i < cstate->nScanKeys; i++)
-		{
-			AttrNumber	baseAtt = cstate->scanKeys[i].sk_attno;
-
-			if (baseAtt >= 1 && baseAtt <= cstate->nTotalColumns &&
-				cstate->projColMap[baseAtt - 1] > 0)
-			{
-				projKeys[nProjKeys] = cstate->scanKeys[i];
-				projKeys[nProjKeys].sk_attno =
-					(AttrNumber) (cstate->projColMap[baseAtt - 1] + 1);
-				nProjKeys++;
-			}
-		}
-	}
+	projKeys = pgcolumnar_projection_keys(cstate, &nProjKeys);
 
 	cstate->readState = PgColumnarBeginReadWithStorage(rel, snapshot,
 													 proj->projStorageId,
@@ -3784,12 +4017,18 @@ PgColumnarBeginCustomScan(CustomScanState *node, EState *estate, int eflags)
 	cstate->projectedColumns =
 		pgcolumnar_projected_columns(cscan, tupdesc->natts, &cstate->nProjected);
 	/*
-	 * Freeze stable parameters (e.g. "col >= $1" from a prepared statement) into
+	 * Freeze bound parameters (e.g. "col >= $1" from a prepared statement) into
 	 * Consts so they drive chunk-group skipping; a plain Const qual is unchanged.
+	 * An operand that needs a call, such as "col >= f($1)", waits for the first
+	 * run (#2065); see pgcolumnar_freeze_pending_keys.
 	 */
+	cstate->keysPending = false;
 	cstate->scanKeys =
 		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
-														   &node->ss.ps),
+														   &node->ss.ps, false,
+														   &cstate->keysPending,
+														   cscan->scan.scanrelid,
+														   tupdesc),
 							  cscan->scan.scanrelid,
 							  tupdesc, &cstate->nScanKeys);
 
@@ -3943,9 +4182,57 @@ PgColumnarScanRecheck(ScanState *ss, TupleTableSlot *slot)
 	return true;
 }
 
+/*
+ * pgcolumnar_freeze_pending_keys
+ *		Evaluate the stable operands Begin left alone, rebuild the scan keys, and
+ *		give them to the reader before it reads anything (#2065).
+ *
+ *		This runs when the scan first runs, as a btree index scan evaluates its
+ *		runtime keys in ExecIndexScan and not in ExecInitIndexScan. A scan that is
+ *		set up but never run calls nothing. An error from the operand propagates;
+ *		the transaction abort releases what the failed call held. The operands are
+ *		stable and hold no PARAM_EXEC, so a rescan needs no second freeze.
+ */
+static void
+pgcolumnar_freeze_pending_keys(PgColumnarCustomScanState *cstate)
+{
+	CustomScanState *node = &cstate->css;
+	CustomScan *cscan = (CustomScan *) node->ss.ps.plan;
+	MemoryContext oldcxt = MemoryContextSwitchTo(node->ss.ps.state->es_query_cxt);
+
+	cstate->scanKeys =
+		PgColumnarBuildScanKeys(pgcolumnar_stabilize_quals(cscan->scan.plan.qual,
+														   &node->ss.ps, true,
+														   NULL,
+														   cscan->scan.scanrelid,
+														   RelationGetDescr(node->ss.ss_currentRelation)),
+							  cscan->scan.scanrelid,
+							  RelationGetDescr(node->ss.ss_currentRelation),
+							  &cstate->nScanKeys);
+	if (cstate->readState != NULL)
+	{
+		if (cstate->projScan)
+		{
+			int			nProjKeys;
+			ScanKey		projKeys = pgcolumnar_projection_keys(cstate, &nProjKeys);
+
+			PgColumnarReadSetScanKeys(cstate->readState, nProjKeys, projKeys);
+		}
+		else
+			PgColumnarReadSetScanKeys(cstate->readState, cstate->nScanKeys,
+									  cstate->scanKeys);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	cstate->keysPending = false;
+}
+
 static TupleTableSlot *
 PgColumnarExecCustomScan(CustomScanState *node)
 {
+	PgColumnarCustomScanState *cstate = (PgColumnarCustomScanState *) node;
+
+	if (cstate->keysPending)
+		pgcolumnar_freeze_pending_keys(cstate);
 	return ExecScan(&node->ss,
 					(ExecScanAccessMtd) PgColumnarScanNext,
 					(ExecScanRecheckMtd) PgColumnarScanRecheck);

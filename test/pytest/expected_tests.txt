@@ -2380,15 +2380,123 @@ guard_tests 897
 # holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
 # and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5672 tests collected.
-# cluster_tests 5872 -> 5904 for #2189's thirty-two tests in test_parallel_copy.py: five premises
-# (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files, _crlf_to_lf_files, _control_markers and
-# _control_rows), test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it
-# (18 parametrized: a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a
-# single table and a partitioned one, refused with heap COPY's SQLSTATE and message) and
+# cluster_tests 5872 -> 5877 for #2065's five tests in test_native_param_pushdown.py (a statement_timeout at
+# scan start cancels the query, a stable operand that raises once reaches the client, no leaked-resource or
+# SPI-stack WARNING, a plain EXPLAIN calls no stable operand, a plain EXPLAIN EXECUTE still pushes down a bound
+# parameter), by collection: 6275 tests collected, less guard_tests 894.
+# cluster_tests 5877 -> 5880 for #2065's three more tests in test_native_param_pushdown.py (a scan that LIMIT
+# cuts off calls no stable operand, nor does one under a false one-time filter, and a stable function operand
+# still prunes when the scan runs), by collection: 6278 tests collected, less guard_tests 894.
+# cluster_tests 5880 -> 5884 for #2065's four tests from the #2133 review in test_native_param_pushdown.py (a
+# stable operand is called once to freeze it then once per row, a PL/pgSQL record field under a false one-time
+# filter is not fetched at scan set-up, the projection arm uses the projection, and that projection scan counts
+# what heap counts), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it):
+# 5396 tests collected.
+# cluster_tests 5884 -> 5886 for #2065's two tests from the second #2133 review in test_native_param_pushdown.py
+# (auto_explain logs the plan a PL/pgSQL function ran, and a PL/pgSQL variable on a generic plan prunes 19 of
+# 20 groups when the scan runs), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it): 5412 tests collected.
+# cluster_tests 5886 -> 5889 for #2065's three tests from the third #2133 review in test_native_param_pushdown.py
+# (keys frozen at the first run obey pgcolumnar.enable_qual_pushdown off, two such keys both prune, and a long
+# text key survives each rescan), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it): 5495 tests collected.
+# cluster_tests 5889 -> 5895 for #2065's six tests from our own mutant hunt and the fourth review on #2133 in
+# test_native_param_pushdown.py (the frozen key counts as pushed down, a bound varchar parameter and a bound
+# domain parameter are each pushed down under a plain EXPLAIN EXECUTE, a NULL bound int parameter builds no
+# pushed-down filter, a NULL bound text parameter counts 0, and the backend is alive after it), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5508 tests collected.
+# cluster_tests 5895 -> 5902 for #2065's seven tests from the fifth #2133 review in test_native_param_pushdown.py
+# (under a hash join, a key frozen at the first run counts what heap counts, keeps the runtime range after it
+# as three skip predicates, and the range removes 11 groups, with the backend alive; with pushdown off the range
+# alone stays as two skip predicates and reads one group, with the backend alive), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5525 tests collected.
+# cluster_tests 5902 -> 5910 for #2065's eight tests from the sixth #2133 review in test_native_param_pushdown.py
+# (a heap copy answers a hash-join rescan, the columnar scan with a key frozen at the first run counts the same
+# in each loop, with the backend alive; a NULL from a stable function builds no key on an int column and counts
+# 0 on a text column, with the backend alive; a stable operand of a clause that can never be a scan key, <> or
+# an expression of the column, is not evaluated), by collection over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 5619 tests collected after the merge of main 6f79946f (5618 before it).
+# cluster_tests 5910 -> 5927 for #2065's seventeen tests from the seventh #2133 review in
+# test_native_param_pushdown.py (twelve clause shapes that can never be scan keys are not evaluated, shown by a
+# call counter: LIKE under a collation that is not C, LIKE with the operand on the column side, date_trunc with
+# <>, over an expression or with a unit from a column, <> ANY, = ALL, range @> range, another collation, another
+# function of the column; five keyable shapes with a bound parameter prune 19 of 20 groups: date_trunc, LIKE on
+# a C column, a range overlap, a varchar column, = ANY; a collation premise and a heap premise), by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5652 tests collected after the merge of main 2e3fea7a (5636 before it).
+# cluster_tests 5927 -> 5939 for #2065's twelve tests from the eighth #2133 review in
+# test_native_param_pushdown.py (nine clause shapes a key builder declines are not evaluated: date_trunc of a
+# timestamp column against a timestamptz or a date operand, to a decade or a plural unit, of a timestamp domain
+# column, of a timestamptz column, a two-argument function shaped like date_trunc, a multirange that a range
+# column overlaps, and < ANY; date_trunc >= a bound parameter and a range column that contains one prune 19 of
+# 20 groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5711 tests collected after the merge of main c756ef06 (5664 before it).
+# cluster_tests 5939 -> 5952 for #2065's thirteen tests from the ninth #2133 review in
+# test_native_param_pushdown.py (a timestamp or timestamp-domain column against a timestamptz operand, scalar
+# or = ANY, is not evaluated; a bound varchar, text-domain, timestamp-domain or range-domain parameter prunes
+# under LIKE, date_trunc = and >=, and &&; date_trunc to an upper-case unit and a timestamptz column against a
+# timestamptz parameter prune; a projection scan and a hash-join rescan with a key frozen at the first run
+# remove groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it): 5952 tests collected after the merge of main 6094d3a6 (5724 before the merges of 4cdd25a1 and 6094d3a6).
+# cluster_tests 5952 -> 5954 for #2065's two tests from the tenth #2133 review in test_native_param_pushdown.py
+# (a bound date parameter on a timestamp column and a bound timestamptz parameter on a date column each prune
+# 19 of 20 groups), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 5954 tests collected.
+# cluster_tests 5954 -> 5957 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# reads (test_parquet_streaming_data_page_with_no_values_reads,
+# test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
+# (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
+# cluster_tests 5957 -> 5968 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
+# REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
+# over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
+# by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
+# cluster_tests 5968 -> 5975 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
+# DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
+# struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
+# cluster_tests 5975 -> 5985 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
+# with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
+# DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
+# run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
+# 5509 tests collected.
+# cluster_tests 5985 -> 5995 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
+# version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
+# dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
+# 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
+# `--collect-only -q`: 5536 tests collected.
+# cluster_tests 5995 -> 6004 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
+# (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
+# given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
+# cluster_tests 6004 -> 6015 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
+# pin the refusal of a repeated num_values whose last value is not 0 (v1 and v2), of a Thrift field id
+# outside int16 (65537 and -65535, v1 and v2, and 32769 from a short-form delta), the read of an unknown
+# field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
+# dictionary page that does not reset the run of empty pages, by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5725 tests collected.
+# cluster_tests 6015 -> 6020 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
+# pin that a wide long-form field id is refused, not narrowed (65537 and -65535 in a PageHeader, which
+# narrow to the page type), and the edges of the int16 range (32768 and -32769 refused, -32768 read), by
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5938 tests collected.
+# cluster_tests 6020 -> 6027 for #2077's eighth review round in test_native_parquet_streaming.py: 7 tests
+# pin that a wide long-form field id in a PageHeader is refused whatever width a narrowing reader would
+# use (32768, -32769, 2^31, 2^32+1, 1-2^32, -(2^32+1) and 2^40+1), by collection: every file not in
+# NO_CLUSTER, `--collect-only -q`: 5945 tests collected.
+# cluster_tests 6027 -> 6059 for #2189's thirty-two tests in test_parallel_copy.py (restated on main 5fae8e3d; 5872
+# -> 5904 on 6094d3a6): five premises (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files,
+# _crlf_to_lf_files, _control_markers and _control_rows),
+# test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it (18 parametrized:
+# a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a single table and
+# a partitioned one, refused with heap COPY's SQLSTATE and message) and
 # test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 5904 -> 5916, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
+# cluster_tests 6059 -> 6071, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-cluster_tests 5916
+cluster_tests 6071
