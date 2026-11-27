@@ -1061,6 +1061,354 @@ check "#2084 end-of-data marker in the first range / single table, 4 workers: re
 check "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak" \
 	"$(q "SELECT count(*) FROM pg_prepared_xacts")" 0
 
+# ---- #2202: the key parser reads COPY escapes as COPY does ---------------------
+# The partitioned splitter reads the fields up to the partition key itself, so it
+# must split and decode them as core COPY's text format does, with the delimiter
+# (TAB) and NULL marker (\N) the loaders use: a backslash escapes the byte after
+# it, so a backslash and a raw TAB are a TAB inside the value, not a field end;
+# \NNN (octal), \xHH (hex) and \b \f \n \r \t \v decode; two backslashes are one;
+# any other escaped byte is itself; and a field that is exactly \N is NULL. Before
+# the fix the parser split at every TAB byte and gave the raw key text to the
+# integer input function, so these loads failed with 22P02.
+#
+# Each file is loaded by heap COPY into a heap table partitioned the same way,
+# and by parallel_copy with 2 and 4 workers. The reading is the outcome (row
+# count or SQLSTATE), the rows per partition bound, and a hash of the rows with
+# their bound, and it must be heap COPY's.
+#   esctab   (t, id)  t = a, backslash, TAB, b<i>              the issue's case 1
+#   octkey   (id, t)  every key digit as \0NN                  the issue's case 2
+#   hexkey   (id, t)  every key digit as \x3N
+#   namedkey (id, t)  \t<i>, <i>\n, \v<i>\f, \r<i>, backslash-space <i>, \+<i>
+#   escfield (t, id)  t holds \101 \x41 \b \f \n \r \t \v, two backslashes, a
+#                     backslash and a TAB, and \N inside a longer value; every
+#                     7th t is exactly \N (NULL)
+#   bsbs     (t, id)  odd rows: t ends in two backslashes right before the
+#                     delimiter; even rows: three backslashes, a TAB, then b
+#   nullkey  (id, t)  row 1200's key is \N: COPY refuses it with 23514, since
+#                     no RANGE partition takes NULL and a DEFAULT one is refused
+#   plainkt, plaintk  controls, no escapes
+F_ESCTAB="$DATADIR/esctab.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a\\\tb%d\t%d\n", i, i }' >"$F_ESCTAB"
+F_OCTKEY="$DATADIR/octkey.txt"
+awk 'function oct(n,   s, k, d) { s = ""; n = n ""; for (k = 1; k <= length(n); k++) { d = substr(n, k, 1) + 0; s = s (d < 8 ? "\\06" d : "\\07" (d - 8)) } return s }
+     BEGIN { for (i = 1; i <= 2000; i++) printf "%s\tx%d\n", oct(i), i }' >"$F_OCTKEY"
+F_HEXKEY="$DATADIR/hexkey.txt"
+awk 'function hex(n,   s, k) { s = ""; n = n ""; for (k = 1; k <= length(n); k++) s = s "\\x3" substr(n, k, 1); return s }
+     BEGIN { for (i = 1; i <= 2000; i++) printf "%s\tx%d\n", hex(i), i }' >"$F_HEXKEY"
+F_NAMEDKEY="$DATADIR/namedkey.txt"
+awk 'BEGIN { split("\\t%d|%d\\n|\\v%d\\f|\\r%d|\\ %d|\\+%d", fm, "|");
+             for (i = 1; i <= 2000; i++) { printf fm[i % 6 + 1], i; printf "\tx%d\n", i } }' >"$F_NAMEDKEY"
+F_ESCFIELD="$DATADIR/escfield.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++)
+               if (i % 7 == 0) printf "\\N\t%d\n", i;
+               else printf "o\\101h\\x41n\\b\\f\\n\\r\\t\\v\\\\s\\\tq\\N%d\t%d\n", i, i }' >"$F_ESCFIELD"
+F_BSBS="$DATADIR/bsbs.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++)
+               if (i % 2) printf "a%d\\\\\t%d\n", i, i; else printf "a%d\\\\\\\tb\t%d\n", i, i }' >"$F_BSBS"
+F_NULLKEY="$DATADIR/nullkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\N\tnull\n"; else printf "%d\tx%d\n", i, i }' >"$F_NULLKEY"
+F_PLAINKT="$DATADIR/plainkt.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "%d\tx%d\n", i, i }' >"$F_PLAINKT"
+F_PLAINTK="$DATADIR/plaintk.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a%d\t%d\n", i, i }' >"$F_PLAINTK"
+chmod 644 "$F_ESCTAB" "$F_OCTKEY" "$F_HEXKEY" "$F_NAMEDKEY" "$F_ESCFIELD" "$F_BSBS" "$F_NULLKEY" "$F_PLAINKT" "$F_PLAINTK"
+mkesc() {	# NAME "COLUMNS" AM -> NAME, RANGE-partitioned on id at 500, 1000 and 1500, partitions USING AM
+	psql_run "DROP TABLE IF EXISTS $1 CASCADE;
+	          CREATE TABLE $1 ($2) PARTITION BY RANGE (id);
+	          CREATE TABLE $1_a PARTITION OF $1 FOR VALUES FROM (MINVALUE) TO (500) USING $3;
+	          CREATE TABLE $1_b PARTITION OF $1 FOR VALUES FROM (500) TO (1000) USING $3;
+	          CREATE TABLE $1_c PARTITION OF $1 FOR VALUES FROM (1000) TO (1500) USING $3;
+	          CREATE TABLE $1_d PARTITION OF $1 FOR VALUES FROM (1500) TO (MAXVALUE) USING $3;" >/dev/null
+}
+for _e in esctab:tk octkey:kt hexkey:kt namedkey:kt escfield:tk bsbs:tk nullkey:kt plainkt:kt plaintk:tk; do
+	case "${_e#*:}" in kt) _cols="id int, t text" ;; *) _cols="t text, id int" ;; esac
+	mkesc "h_${_e%%:*}" "$_cols" heap
+	mkesc "t_${_e%%:*}" "$_cols" pgcolumnar
+done
+esc_msg_outcome() {	# SQL TABLE -> "SQLSTATE: primary message" of the error SQL raised, or "N rows"
+	local out o
+	out="$(env PGOPTIONS='-c statement_timeout=30s' PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -qtA -c '\set VERBOSITY verbose' -c "$1" 2>&1)"
+	o="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): \(.*\)$/\1: \2/p' <<<"$out" | head -1)"
+	if [ -n "$o" ]; then echo "$o"; else echo "$(q "SELECT count(*) FROM $2") rows"; fi
+}
+esc_reading() {	# SQL TABLE [msg] -> "outcome | rows per partition bound | hash of the rows with their bound";
+	# with msg, an error's outcome carries its primary message too (esc_msg_outcome)
+	local o
+	if [ "${3:-}" = msg ]; then o="$(esc_msg_outcome "$1" "$2")"; else o="$(outcome_of "$1" "$2")"; fi
+	echo "$o | $(q "SELECT coalesce(string_agg(b || '=' || n, ', ' ORDER BY b), 'no rows')
+	                FROM (SELECT pg_get_expr(c.relpartbound, c.oid) AS b, count(*) AS n
+	                      FROM $2 x JOIN pg_class c ON c.oid = x.tableoid GROUP BY 1) s") | $(pgc_set_hash "SELECT pg_get_expr(c.relpartbound, c.oid) AS b, x.* FROM $2 x JOIN pg_class c ON c.oid = x.tableoid")"
+}
+esc_pcopy() {	# NAME FILE WORKERS [msg] -> esc_reading of a parallel_copy of FILE into an emptied t_NAME
+	psql_run "TRUNCATE t_$1" >/dev/null
+	esc_reading "SELECT pgcolumnar.parallel_copy('t_$1'::regclass, '$2', $3)" "t_$1" "${4:-}"
+}
+for _e in esctab octkey hexkey namedkey escfield bsbs nullkey plainkt plaintk; do
+	_f="$DATADIR/$_e.txt"
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$_f'" "h_$_e")"
+done
+check "premise: heap COPY loads esctab, octkey, hexkey, namedkey, escfield, bsbs, plainkt and plaintk 2000 rows each and refuses nullkey with 23514; esctab's t is a, TAB, b<id> on every row; the files start 61 5c 09 62 (esctab) and 5c 30 36 31 (octkey) (#2202)" \
+	"$(for _e in esctab octkey hexkey namedkey escfield bsbs plainkt plaintk nullkey; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(q "SELECT count(*) FROM h_esctab WHERE t = 'a' || chr(9) || 'b' || id") $(od -An -tx1 -N 4 "$F_ESCTAB" | tr -d ' ') $(od -An -tx1 -N 4 "$F_OCTKEY" | tr -d ' ')" \
+	"2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 23514 2000 615c0962 5c303631"
+check "#2202 a backslash before a raw TAB in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy esctab "$F_ESCTAB" 2)" "$ESC_HEAP_esctab"
+check "#2202 a backslash before a raw TAB in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy esctab "$F_ESCTAB" 4)" "$ESC_HEAP_esctab"
+check "#2202 a key written in octal escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy octkey "$F_OCTKEY" 2)" "$ESC_HEAP_octkey"
+check "#2202 a key written in octal escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy octkey "$F_OCTKEY" 4)" "$ESC_HEAP_octkey"
+check "#2202 a key written in hex escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexkey "$F_HEXKEY" 2)" "$ESC_HEAP_hexkey"
+check "#2202 a key written in hex escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexkey "$F_HEXKEY" 4)" "$ESC_HEAP_hexkey"
+check "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy namedkey "$F_NAMEDKEY" 2)" "$ESC_HEAP_namedkey"
+check "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy namedkey "$F_NAMEDKEY" 4)" "$ESC_HEAP_namedkey"
+check "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escfield "$F_ESCFIELD" 2)" "$ESC_HEAP_escfield"
+check "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escfield "$F_ESCFIELD" 4)" "$ESC_HEAP_escfield"
+check "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsbs "$F_BSBS" 2)" "$ESC_HEAP_bsbs"
+check "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsbs "$F_BSBS" 4)" "$ESC_HEAP_bsbs"
+check "#2202 a NULL marker key / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkey "$F_NULLKEY" 2)" "$ESC_HEAP_nullkey"
+check "#2202 a NULL marker key / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkey "$F_NULLKEY" 4)" "$ESC_HEAP_nullkey"
+check "#2202 control, plain keys, key first / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plainkt "$F_PLAINKT" 2)" "$ESC_HEAP_plainkt"
+check "#2202 control, plain keys, key first / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plainkt "$F_PLAINKT" 4)" "$ESC_HEAP_plainkt"
+check "#2202 control, plain keys, key last / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plaintk "$F_PLAINTK" 2)" "$ESC_HEAP_plaintk"
+check "#2202 control, plain keys, key last / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy plaintk "$F_PLAINTK" 4)" "$ESC_HEAP_plaintk"
+
+# Over-applied rules, from the review of the first version: each file below loads,
+# or fails, the way heap COPY does only if the decoder applies its rules no wider
+# than COPY. The checks compare the same reading as above.
+#   nprefkey  (id, t)  row 1200's key is \N5: not the NULL marker, so COPY reads
+#                      "N5" and refuses it with 22P02
+#   bsnkey    (id, t)  row 1200's key is two backslashes and N: the value \N,
+#                      not NULL, so 22P02 again
+# For these two the outcome also carries the error's message. A key read as NULL
+# by mistake stays in its range, and core COPY in the loader then refuses the row
+# with the same SQLSTATE, so only the message, which a loader's error carries
+# behind "pgcolumnar.parallel_copy worker N failed:", tells the two apart.
+#   escother  (id, t)  every 8 and 9 in a key written as a backslash and the digit:
+#                      not an escape, so the digit itself, and every row loads
+#   hexlit    (t, id)  t ends in \x right before the delimiter (odd rows) or holds
+#                      \xg (even rows): \x with no hex digit is a literal x, and
+#                      it does not take the TAB after it
+#   hexlitkey (id, t)  row 1200's key ends in \x: a literal x, so 22P02, not the
+#                      22021 a NUL would give
+#   nulkey    (id, t)  row 1200's key is \x00, a NUL byte: COPY refuses it with
+#                      22021
+#   highbit   (id, t)  row 1200's key ends in \351, a lone 0xE9 byte, which is not
+#                      UTF-8: COPY refuses it with 22021
+# nulkey and highbit load in a database created with ENCODING 'UTF8', so the
+# encoding check does not depend on the cluster's locale.
+F_NPREFKEY="$DATADIR/nprefkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\N5\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_NPREFKEY"
+F_BSNKEY="$DATADIR/bsnkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\\\N\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_BSNKEY"
+F_ESCOTHER="$DATADIR/escother.txt"
+awk 'function esc(n,   s, k, c) { s = ""; n = n ""; for (k = 1; k <= length(n); k++) { c = substr(n, k, 1); s = s (c == "8" || c == "9" ? "\\" c : c) } return s }
+     BEGIN { for (i = 1; i <= 2000; i++) printf "%s\tx%d\n", esc(i), i }' >"$F_ESCOTHER"
+F_HEXLIT="$DATADIR/hexlit.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i % 2) printf "a%d\\x\t%d\n", i, i; else printf "a%d\\xg\t%d\n", i, i }' >"$F_HEXLIT"
+F_HEXLITKEY="$DATADIR/hexlitkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "1200\\x\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXLITKEY"
+F_NULKEY="$DATADIR/nulkey.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x00\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_NULKEY"
+F_HIGHBIT="$DATADIR/highbit.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "1200\\351\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HIGHBIT"
+chmod 644 "$F_NPREFKEY" "$F_BSNKEY" "$F_ESCOTHER" "$F_HEXLIT" "$F_HEXLITKEY" "$F_NULKEY" "$F_HIGHBIT"
+ESC_UTF8=pgc_pcopy_utf8
+psql_admin "DROP DATABASE IF EXISTS $ESC_UTF8" >/dev/null 2>&1
+psql_admin "CREATE DATABASE $ESC_UTF8 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0" >/dev/null
+PGC_DB=$ESC_UTF8 psql_run "CREATE EXTENSION pgcolumnar" >/dev/null
+for _e in nprefkey:kt bsnkey:kt escother:kt hexlit:tk hexlitkey:kt nulkey:kt:u highbit:kt:u; do
+	case "$_e" in *:kt*) _cols="id int, t text" ;; *) _cols="t text, id int" ;; esac
+	_n="${_e%%:*}"; _db="$PGC_DB"; case "$_e" in *:u) _db="$ESC_UTF8" ;; esac
+	PGC_DB="$_db" mkesc "h_$_n" "$_cols" heap
+	PGC_DB="$_db" mkesc "t_$_n" "$_cols" pgcolumnar
+done
+for _e in escother hexlit hexlitkey; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+for _e in nprefkey bsnkey; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e" msg)"
+done
+for _e in nulkey highbit; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(PGC_DB=$ESC_UTF8 esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+check "premise: heap COPY loads escother and hexlit 2000 rows each, refuses nprefkey with 22P02 on N5, bsnkey with 22P02 on backslash N, hexlitkey with 22P02 and nulkey and highbit with 22021; hexlit's t is a<id>x or a<id>xg; the database nulkey and highbit load in is UTF8 (#2202)" \
+	"$(for _e in escother hexlit nprefkey bsnkey hexlitkey nulkey highbit; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(q "SELECT count(*) FROM h_hexlit WHERE t = 'a' || id || CASE WHEN id % 2 = 1 THEN 'x' ELSE 'xg' END") $(PGC_DB=$ESC_UTF8 q "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()")" \
+	'2000 rows 2000 rows 22P02: invalid input syntax for type integer: "N5" 22P02: invalid input syntax for type integer: "\N" 22P02 22021 22021 2000 UTF8'
+check "#2202 a key that starts with the NULL marker but is longer (\N5) / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nprefkey "$F_NPREFKEY" 2 msg)" "$ESC_HEAP_nprefkey"
+check "#2202 a key that starts with the NULL marker but is longer (\N5) / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nprefkey "$F_NPREFKEY" 4 msg)" "$ESC_HEAP_nprefkey"
+check "#2202 a key whose decoded value is backslash N, not the NULL marker / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsnkey "$F_BSNKEY" 2 msg)" "$ESC_HEAP_bsnkey"
+check "#2202 a key whose decoded value is backslash N, not the NULL marker / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bsnkey "$F_BSNKEY" 4 msg)" "$ESC_HEAP_bsnkey"
+check "#2202 a key with escaped digits 8 and 9, which are not escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escother "$F_ESCOTHER" 2)" "$ESC_HEAP_escother"
+check "#2202 a key with escaped digits 8 and 9, which are not escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy escother "$F_ESCOTHER" 4)" "$ESC_HEAP_escother"
+check "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlit "$F_HEXLIT" 2)" "$ESC_HEAP_hexlit"
+check "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlit "$F_HEXLIT" 4)" "$ESC_HEAP_hexlit"
+check "#2202 a key that ends in a hex escape with no hex digit / partitioned, 2 workers: outcome (22P02), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlitkey "$F_HEXLITKEY" 2)" "$ESC_HEAP_hexlitkey"
+check "#2202 a key that ends in a hex escape with no hex digit / partitioned, 4 workers: outcome (22P02), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlitkey "$F_HEXLITKEY" 4)" "$ESC_HEAP_hexlitkey"
+check "#2202 a key that decodes to a NUL byte, in a UTF8 database / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy nulkey "$F_NULKEY" 2)" "$ESC_HEAP_nulkey"
+check "#2202 a key that decodes to a NUL byte, in a UTF8 database / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy nulkey "$F_NULKEY" 4)" "$ESC_HEAP_nulkey"
+check "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy highbit "$F_HIGHBIT" 2)" "$ESC_HEAP_highbit"
+check "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy highbit "$F_HIGHBIT" 4)" "$ESC_HEAP_highbit"
+
+# Six more decoder rules, from jdatcmd's review of 19bb9309 (mutants M04-M07, M10
+# and M13 there). Same reading as above.
+#   crtk     (t, id)  CR-only line ends: CR ends the key field, and the file has
+#                     no LF at all
+#   barecr   (t, id)  row 1200 is a, TAB, 1200, a raw CR, junk: COPY refuses the
+#                     raw CR with 22P04, and the key is 1200, not 1200junk
+#   bseof    (t, id)  the last row, 2000, ends in a lone backslash with no newline
+#                     after it: COPY drops the backslash
+#   hex3     (id, t)  row 1200's key is \x31200: \x reads two hex digits, \x31 is
+#                     1, and the key is 1200
+#   hexspc   (id, t)  row 1200's key is \x201200\x20: a space each side
+#   oct400   (id, t)  row 1200's key is 12\400: \400 is 0x100 & 0xFF, a NUL, so
+#                     22021 (in the UTF8 database), not a key of 12
+#   hexupper (id, t)  row 1200's key is \x2B1200, +1200: an uppercase hex digit
+#   toofew   (t, id)  row 1200 is just a, with no key field: COPY refuses it with
+#                     22P04, and so must the splitter, not read an empty key
+F_CRTK="$DATADIR/crtk.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a%d\t%d\r", i, i }' >"$F_CRTK"
+F_BARECR="$DATADIR/barecr.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\t1200\rjunk\n"; else printf "a%d\t%d\n", i, i }' >"$F_BARECR"
+F_BSEOF="$DATADIR/bseof.txt"
+awk 'BEGIN { for (i = 1; i < 2000; i++) printf "a%d\t%d\n", i, i; printf "a2000\t2000\\" }' >"$F_BSEOF"
+F_HEX3="$DATADIR/hex3.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x31200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEX3"
+F_HEXSPC="$DATADIR/hexspc.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x201200\\x20\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXSPC"
+F_OCT400="$DATADIR/oct400.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "12\\400\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_OCT400"
+F_HEXUPPER="$DATADIR/hexupper.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x2B1200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXUPPER"
+F_TOOFEW="$DATADIR/toofew.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\n"; else printf "a%d\t%d\n", i, i }' >"$F_TOOFEW"
+chmod 644 "$F_CRTK" "$F_BARECR" "$F_BSEOF" "$F_HEX3" "$F_HEXSPC" "$F_OCT400" "$F_HEXUPPER" "$F_TOOFEW"
+for _e in crtk:tk barecr:tk bseof:tk hex3:kt hexspc:kt oct400:kt:u hexupper:kt toofew:tk; do
+	case "$_e" in *:kt*) _cols="id int, t text" ;; *) _cols="t text, id int" ;; esac
+	_n="${_e%%:*}"; _db="$PGC_DB"; case "$_e" in *:u) _db="$ESC_UTF8" ;; esac
+	PGC_DB="$_db" mkesc "h_$_n" "$_cols" heap
+	PGC_DB="$_db" mkesc "t_$_n" "$_cols" pgcolumnar
+done
+for _e in crtk barecr bseof hex3 hexspc hexupper toofew; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+printf -v ESC_HEAP_oct400 '%s' "$(PGC_DB=$ESC_UTF8 esc_reading "COPY h_oct400 FROM '$F_OCT400'" h_oct400)"
+check "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in 30 5c (#2202)" \
+	"$(for _e in crtk bseof hex3 hexspc hexupper barecr toofew oct400; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(tr -cd '\n' <"$F_CRTK" | wc -c) $(tail -c 2 "$F_BSEOF" | od -An -tx1 | tr -d ' ')" \
+	"2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 22P04 22P04 22021 0 305c"
+check "#2202 CR-only line ends / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy crtk "$F_CRTK" 2)" "$ESC_HEAP_crtk"
+check "#2202 CR-only line ends / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy crtk "$F_CRTK" 4)" "$ESC_HEAP_crtk"
+check "#2202 a raw CR in the middle of the key's line / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy barecr "$F_BARECR" 2)" "$ESC_HEAP_barecr"
+check "#2202 a raw CR in the middle of the key's line / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy barecr "$F_BARECR" 4)" "$ESC_HEAP_barecr"
+check "#2202 a lone backslash at the end of the file, after the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bseof "$F_BSEOF" 2)" "$ESC_HEAP_bseof"
+check "#2202 a lone backslash at the end of the file, after the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bseof "$F_BSEOF" 4)" "$ESC_HEAP_bseof"
+check "#2202 a hex escape followed by a third hex digit in the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hex3 "$F_HEX3" 2)" "$ESC_HEAP_hex3"
+check "#2202 a hex escape followed by a third hex digit in the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hex3 "$F_HEX3" 4)" "$ESC_HEAP_hex3"
+check "#2202 a key between two hex-escaped spaces / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexspc "$F_HEXSPC" 2)" "$ESC_HEAP_hexspc"
+check "#2202 a key between two hex-escaped spaces / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexspc "$F_HEXSPC" 4)" "$ESC_HEAP_hexspc"
+check "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy oct400 "$F_OCT400" 2)" "$ESC_HEAP_oct400"
+check "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy oct400 "$F_OCT400" 4)" "$ESC_HEAP_oct400"
+check "#2202 a key with an uppercase hex escape / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexupper "$F_HEXUPPER" 2)" "$ESC_HEAP_hexupper"
+check "#2202 a key with an uppercase hex escape / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexupper "$F_HEXUPPER" 4)" "$ESC_HEAP_hexupper"
+check "#2202 a row with too few fields for the key / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy toofew "$F_TOOFEW" 2)" "$ESC_HEAP_toofew"
+check "#2202 a row with too few fields for the key / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy toofew "$F_TOOFEW" 4)" "$ESC_HEAP_toofew"
+
+# Two more, from jdatcmd's re-review at 960286e1 (M15 and M16 there).
+#   nullkeylast (t, id)  row 1200 is a, TAB, \N: the NULL marker in the last
+#                        column, ended by the LF, so 23514 as for nullkey
+#   hexlower    (id, t)  row 1200's key is \x2b1200, +1200: a lowercase hex digit
+#   dateesc     (id date, t)  keys are 2020-01-01 plus 1..2000 days; row 1200's
+#                        key has its dashes written \055 and \x2d. Partitioned on
+#                        the date at plus 500, 1000 and 1500 days. The server
+#                        writes it as tab-delimited CSV, which leaves backslashes
+#                        alone.
+F_NULLKEYLAST="$DATADIR/nullkeylast.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\t\\N\n"; else printf "a%d\t%d\n", i, i }' >"$F_NULLKEYLAST"
+F_HEXLOWER="$DATADIR/hexlower.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x2b1200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXLOWER"
+F_DATEESC="$DATADIR/dateesc.txt"
+psql_run "COPY (SELECT CASE WHEN g = 1200 THEN to_char(d, 'YYYY') || '\\055' || to_char(d, 'MM') || '\\x2d' || to_char(d, 'DD')
+                            ELSE to_char(d, 'YYYY-MM-DD') END, 'x' || g
+                FROM (SELECT g, date '2020-01-01' + g AS d FROM generate_series(1, 2000) g) s ORDER BY g)
+          TO '$F_DATEESC' WITH (FORMAT csv, DELIMITER E'\\t')" >/dev/null
+chmod 644 "$F_NULLKEYLAST" "$F_HEXLOWER"
+mkesc h_nullkeylast "t text, id int" heap
+mkesc t_nullkeylast "t text, id int" pgcolumnar
+mkesc h_hexlower "id int, t text" heap
+mkesc t_hexlower "id int, t text" pgcolumnar
+for _am in h:heap t:pgcolumnar; do
+	_t="${_am%%:*}_dateesc"; _u="${_am#*:}"
+	psql_run "DROP TABLE IF EXISTS $_t CASCADE;
+	          CREATE TABLE $_t (id date, t text) PARTITION BY RANGE (id);
+	          CREATE TABLE ${_t}_a PARTITION OF $_t FOR VALUES FROM (MINVALUE) TO ('2021-05-15') USING $_u;
+	          CREATE TABLE ${_t}_b PARTITION OF $_t FOR VALUES FROM ('2021-05-15') TO ('2022-09-27') USING $_u;
+	          CREATE TABLE ${_t}_c PARTITION OF $_t FOR VALUES FROM ('2022-09-27') TO ('2024-02-09') USING $_u;
+	          CREATE TABLE ${_t}_d PARTITION OF $_t FOR VALUES FROM ('2024-02-09') TO (MAXVALUE) USING $_u;" >/dev/null
+done
+for _e in nullkeylast hexlower dateesc; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+check "premise: heap COPY loads hexlower and dateesc 2000 rows each and refuses nullkeylast with 23514; dateesc.txt's line 1200 is 2023, 5c 30 35 35, 04, 5c 78 32 64, 15, and heap COPY reads it as 2023-04-15; the date bounds are 500, 1000 and 1500 days after 2020-01-01 (#2202)" \
+	"$(for _e in hexlower dateesc nullkeylast; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(sed -n '1200p' "$F_DATEESC" | cut -f1 | tr -d '\n' | od -An -tx1 | tr -d ' \n') $(q "SELECT count(*) FROM h_dateesc WHERE id = date '2023-04-15'") $(q "SELECT (date '2021-05-15' - date '2020-01-01') || ' ' || (date '2022-09-27' - date '2020-01-01') || ' ' || (date '2024-02-09' - date '2020-01-01')")" \
+	"2000 rows 2000 rows 23514 323032335c30353530345c7832643135 1 500 1000 1500"
+check "#2202 a NULL marker key in the last column / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkeylast "$F_NULLKEYLAST" 2)" "$ESC_HEAP_nullkeylast"
+check "#2202 a NULL marker key in the last column / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkeylast "$F_NULLKEYLAST" 4)" "$ESC_HEAP_nullkeylast"
+check "#2202 a key with a lowercase hex escape / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlower "$F_HEXLOWER" 2)" "$ESC_HEAP_hexlower"
+check "#2202 a key with a lowercase hex escape / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlower "$F_HEXLOWER" 4)" "$ESC_HEAP_hexlower"
+check "#2202 a date key written with octal and lowercase hex escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy dateesc "$F_DATEESC" 2)" "$ESC_HEAP_dateesc"
+check "#2202 a date key written with octal and lowercase hex escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy dateesc "$F_DATEESC" 4)" "$ESC_HEAP_dateesc"
+
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on

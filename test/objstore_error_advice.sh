@@ -28,6 +28,10 @@
 #      once per part; a 2xx before the body still gets the body (#1903 review).
 #      A 2xx before the body with no length and no chunked framing ends at
 #      connection close, so it is not taken as the write's answer (#1903 merge).
+#   E  a request that failed on a fresh connection before any byte of an answer
+#      said only "failed before a response", and lost the socket error (#2231).
+#      The error now names the errno in its DETAIL, for a read, a LIST, a write
+#      and a REST catalog request, over http and https.
 #
 # Facet A (s3://<bucket>/_ in prefix and glob errors) is #1869's fix and its
 # arms are in test/objstore_export_open_uploads.sh.
@@ -149,6 +153,23 @@ PIDS="$PIDS $!"
 ready "$PGC_WORKDIR/tls.out"
 check "premise: the https SigV4 fixture is up" \
 	"$(grep -c READY "$PGC_WORKDIR/tls.out" 2>/dev/null)" "1"
+
+# Two fixtures that reset every request once its head is read (#2231), one
+# over http and one over https.
+RST_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PGC_WORKDIR" --port "$RST_PORT" --log "$PGC_WORKDIR/rst.log" --reset-all \
+	> "$PGC_WORKDIR/rst.out" 2>&1 &
+PIDS="$PIDS $!"
+ready "$PGC_WORKDIR/rst.out"
+RSTTLS_PORT="$(pgc_pick_free_port "$PGC_AUX_PORT_LO" "$PGC_AUX_PORT_HI")"
+python3 "$(dirname "${BASH_SOURCE[0]}")/objstore_http_server.py" \
+	--dir "$PGC_WORKDIR" --port "$RSTTLS_PORT" --log "$PGC_WORKDIR/rsttls.log" --reset-all \
+	--tls-cert "$PKI/srv.pem" --tls-key "$PKI/srv.key" > "$PGC_WORKDIR/rsttls.out" 2>&1 &
+PIDS="$PIDS $!"
+ready "$PGC_WORKDIR/rsttls.out"
+check "premise: the two fixtures that reset every request are up" \
+	"$(cat "$PGC_WORKDIR/rst.out" "$PGC_WORKDIR/rsttls.out" 2>/dev/null | grep -c READY)" "2"
 
 # The postmaster's environment holds the fixture's RIGHT key.
 pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1
@@ -342,6 +363,59 @@ check "mid-size export refused after the Expect wait ran out (http): the 403 and
 	"$(refusal "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$DENIED/late.parquet')")" \
 	"28000: columnar: access to \"s3://$DENIED/late.parquet\" was denied (HTTP 403: SignatureDoesNotMatch) | HINT: Check the AWS_* credential environment of the server process."
 rm -f "$PGC_WORKDIR/__deny_delay__"
+
+# ---- E: a reset before any answer names the errno (#2231) --------------------
+# refusal_detail SQL -> "SQLSTATE: message | DETAIL: detail" ("| no detail"
+# when it has none), or "no error (first line of output)".
+refusal_detail() {
+	local out st msg det
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -qtA 2>&1 <<SQLEOF
+\\set VERBOSITY verbose
+$1;
+SQLEOF
+)"
+	st="$(sed -n 's/^ERROR:  \([0-9A-Z]\{5\}\): .*/\1/p' <<<"$out" | head -1)"
+	msg="$(sed -n 's/^ERROR:  [0-9A-Z]\{5\}: //p' <<<"$out" | head -1)"
+	det="$(sed -n 's/^DETAIL:  //p' <<<"$out" | head -1)"
+	if [ -n "$st" ]; then
+		echo "$st: $msg | ${det:+DETAIL: }${det:-no detail}"
+	else
+		echo "no error ($(head -1 <<<"$out"))"
+	fi
+}
+psql_run "CREATE SERVER ea_rst FOREIGN DATA WRAPPER pgcolumnar_parquet
+            OPTIONS (endpoint 'http://127.0.0.1:$RST_PORT', region '$REGION');
+          CREATE USER MAPPING FOR postgres SERVER ea_rst
+            OPTIONS (access_key_id '$AKID', secret_access_key '$SECRET');
+          CREATE SERVER ea_rsttls FOREIGN DATA WRAPPER pgcolumnar_parquet
+            OPTIONS (endpoint 'https://127.0.0.1:$RSTTLS_PORT', region '$REGION');
+          CREATE USER MAPPING FOR postgres SERVER ea_rsttls
+            OPTIONS (access_key_id '$AKID', secret_access_key '$SECRET');
+          CREATE FOREIGN TABLE ea_rst_one (id int8) SERVER ea_rst OPTIONS (path 's3://$BUCKET/small.parquet');
+          CREATE FOREIGN TABLE ea_rsttls_one (id int8) SERVER ea_rsttls OPTIONS (path 's3://$BUCKET/small.parquet');
+          CREATE FOREIGN TABLE ea_rst_glob (id int8) SERVER ea_rst OPTIONS (path 's3://$BUCKET/sm*.parquet');" >/dev/null
+RESET_DETAIL="DETAIL: The connection failed: Connection reset by peer."
+check "E: a read over http reset before any answer names the errno" \
+	"$(refusal_detail "SELECT count(*) FROM ea_rst_one")" \
+	"08006: columnar: connection to \"s3://$BUCKET/small.parquet\" failed before a response | $RESET_DETAIL"
+check "E: a read over https reset before any answer names the errno" \
+	"$(refusal_detail "SELECT count(*) FROM ea_rsttls_one")" \
+	"08006: columnar: connection to \"s3://$BUCKET/small.parquet\" failed before a response | $RESET_DETAIL"
+check "E: a glob whose LIST is reset before any answer names the errno" \
+	"$(refusal_detail "SELECT count(*) FROM ea_rst_glob")" \
+	"08006: columnar: LIST to \"s3://$BUCKET/\" failed before a response | $RESET_DETAIL"
+# A mid-size export sends Expect and waits for an answer to its headers; the
+# reset ends the wait, and the body's send is what fails.
+check "E: a mid-size export over http reset before any answer names the errno of the send" \
+	"$(refusal_detail "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$BUCKET/rst.parquet', 'ea_rst')")" \
+	"08006: columnar: PUT to \"s3://$BUCKET/rst.parquet\" failed before a response | DETAIL: The connection failed: Broken pipe."
+check "E: a mid-size export over https reset before any answer names the errno of the send" \
+	"$(refusal_detail "SELECT pgcolumnar.export_parquet('ea_mid', 's3://$BUCKET/rst.parquet', 'ea_rsttls')")" \
+	"08006: columnar: PUT to \"s3://$BUCKET/rst.parquet\" failed before a response | DETAIL: The connection failed: Broken pipe."
+check "E: a REST catalog request reset before any answer names the errno" \
+	"$(refusal_detail "SELECT count(*) FROM pgcolumnar.iceberg_rest_scan('http://127.0.0.1:$RST_PORT','db','t') AS t(id bigint, region text, amount int)")" \
+	"08006: columnar: connection to \"http://127.0.0.1:$RST_PORT/v1/config\" failed before a response | $RESET_DETAIL"
 
 check "the server survived the refusals" "$(survived "$crashes0")" "1"
 

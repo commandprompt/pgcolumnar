@@ -18,6 +18,9 @@ than one worker for a single table with a unique index, which used to hang or fa
 with a deadlock error (#2080). Each loader checks again under its own lock. On
 PostgreSQL 18 and later that covers a temporal primary key, whose one index is both
 unique and exclusion (#2200); the test declines before 18, which has no WITHOUT OVERLAPS.
+Into a partitioned target, the key parser reads the fields up to the key with COPY's
+text escapes, so files whose key or earlier fields hold escapes give heap COPY's outcome
+and rows with 2 and 4 workers (#2202).
 
 #2187. A CREATE INDEX that queues between the loaders' locks on the table must not
 hang the load: pgcolumnar.parallel_copy_open_hold_ms holds every loader but the first
@@ -47,6 +50,7 @@ ON A PRIVATE DATABASE, built in the shell's order by a module fixture. Prepared
 transactions are counted in that database only, so another file's leftover cannot
 redden this one.
 """
+import datetime
 import os
 import pathlib
 import random
@@ -60,6 +64,7 @@ import pytest
 from pgc_vacuity import query_error
 
 DB = "pgc_parallel_copy"
+DB_UTF8 = "pgc_parallel_copy_utf8"
 GEN_F = "SELECT g AS id, 'host_'||(g%97)||'_x'||g AS txt FROM generate_series(1, {n}) g"
 GEN_BIG = "SELECT g AS id, 'h'||g||'_'||repeat('x', 70000) AS txt FROM generate_series(1, 20) g"
 GEN_NONL = "SELECT g AS id, 'r'||g AS txt FROM generate_series(1,1000) g"
@@ -853,6 +858,30 @@ def _own_write_copy(dsn, setup, table, path):
     return f"none|{row[0] if row else None}"
 
 
+def _esc_reading(db, sql, table, msg=False):
+    """-> "outcome | rows per partition bound | hash of the rows with their bound" once
+    `sql` has loaded the RANGE-partitioned `table` (#2202). The outcome is db.outcome()'s:
+    "N rows", or the SQLSTATE `sql` raised. With `msg`, an error's outcome is
+    "SQLSTATE: primary message"."""
+    if msg:
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, options="-c statement_timeout=30s") as conn:
+                conn.execute(sql)
+            n = db.value(f"SELECT count(*) FROM {table}")
+            outcome = f"{n} rows" if isinstance(n, int) else n
+        except psycopg.Error as exc:
+            outcome = (f"{exc.sqlstate}: {exc.diag.message_primary}" if exc.sqlstate
+                       else query_error(_message(exc)))
+    else:
+        outcome = db.outcome(sql, table)
+    placed = db.value("SELECT coalesce(string_agg(b || '=' || n, ', ' ORDER BY b), 'no rows') "
+                      "FROM (SELECT pg_get_expr(c.relpartbound, c.oid) AS b, count(*) AS n "
+                      f"FROM {table} x JOIN pg_class c ON c.oid = x.tableoid GROUP BY 1) s")
+    rows = db.set_hash(f"SELECT pg_get_expr(c.relpartbound, c.oid) AS b, x.* FROM {table} x "
+                       "JOIN pg_class c ON c.oid = x.tableoid")
+    return f"{outcome} | {placed} | {rows}"
+
+
 def _nl_bytes(kind, n, s):
     """Rows 1..n of "%04d\\tx" with `kind`'s event at row s (#2189): mark and crmark put
     \\.\\r\\n before row s and midmark \\.\\n; lfcr ends rows from s on in CRLF, crlf the
@@ -1569,6 +1598,197 @@ def pcopy(pgc_cluster, server_dir):
         r["2084 eodearly hash want"] = db.set_hash("SELECT * FROM h_eodearly")
         r["2084 eodearly leak"] = db.value(LEAK)
 
+        # ---- #2202: the key parser reads COPY escapes as COPY does ---------------
+        # The partitioned splitter reads the fields up to the key itself, so it must
+        # split and decode them as core COPY's text format does: a backslash and a raw
+        # TAB are a TAB in the value, \NNN, \xHH and \b \f \n \r \t \v decode, two
+        # backslashes are one, any other escaped byte is itself, and a field that is
+        # exactly \N is NULL. Each file is loaded by heap COPY into a heap table
+        # partitioned the same way and by parallel_copy with 2 and 4 workers, and the
+        # outcome, the rows per partition bound and the rows with their bound must
+        # agree. The shell lists the files.
+        named = (b"\\t%d", b"%d\\n", b"\\v%d\\f", b"\\r%d", b"\\ %d", b"\\+%d")
+        esc_files = {
+            "esctab": ("tk", b"".join(b"a\\\tb%d\t%d\n" % (i, i) for i in range(1, 2001))),
+            "octkey": ("kt", b"".join(b"".join(b"\\%03o" % c for c in b"%d" % i) + b"\tx%d\n" % i
+                                      for i in range(1, 2001))),
+            "hexkey": ("kt", b"".join(b"".join(b"\\x%02x" % c for c in b"%d" % i) + b"\tx%d\n" % i
+                                      for i in range(1, 2001))),
+            "namedkey": ("kt", b"".join(named[i % 6] % i + b"\tx%d\n" % i for i in range(1, 2001))),
+            "escfield": ("tk", b"".join(b"\\N\t%d\n" % i if i % 7 == 0 else
+                                        b"o\\101h\\x41n\\b\\f\\n\\r\\t\\v\\\\s\\\tq\\N%d\t%d\n" % (i, i)
+                                        for i in range(1, 2001))),
+            "bsbs": ("tk", b"".join(b"a%d\\\\\t%d\n" % (i, i) if i % 2 else b"a%d\\\\\\\tb\t%d\n" % (i, i)
+                                    for i in range(1, 2001))),
+            "nullkey": ("kt", b"".join(b"\\N\tnull\n" if i == 1200 else b"%d\tx%d\n" % (i, i)
+                                       for i in range(1, 2001))),
+            "plainkt": ("kt", b"".join(b"%d\tx%d\n" % (i, i) for i in range(1, 2001))),
+            "plaintk": ("tk", b"".join(b"a%d\t%d\n" % (i, i) for i in range(1, 2001))),
+        }
+        esc_paths = {}
+        for key, (shape, body) in esc_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                db.run(f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                       f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                       f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                       f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                       f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key, path in esc_paths.items():
+            r[f"2202 {key} heap"] = _esc_reading(db, f"COPY h_{key} FROM '{path}'", f"h_{key}")
+        for key, path in esc_paths.items():
+            for w in (2, 4):
+                db.run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    db, f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{path}', {w})", f"t_{key}")
+        r["2202 premise"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("esctab", "octkey", "hexkey", "namedkey", "escfield", "bsbs", "plainkt", "plaintk", "nullkey")]
+            + [str(db.value("SELECT count(*) FROM h_esctab WHERE t = 'a' || chr(9) || 'b' || id")),
+               esc_files["esctab"][1][:4].hex(), esc_files["octkey"][1][:4].hex()])
+
+        # Over-applied rules (review of the first version): each of these files loads,
+        # or fails, the way heap COPY does only if the decoder applies its rules no wider
+        # than COPY. nulkey and highbit load in a database created with ENCODING 'UTF8',
+        # so the encoding check does not depend on the cluster's locale. The shell lists
+        # what each file holds. For nprefkey and bsnkey the outcome also carries the
+        # error's message: a key read as NULL by mistake reaches core COPY in a loader,
+        # which refuses it with the same SQLSTATE behind "worker N failed:".
+
+        def row1200(key):
+            return b"".join(key + b"\tx1200\n" if i == 1200 else b"%d\tx%d\n" % (i, i) for i in range(1, 2001))
+
+        over_files = {
+            "nprefkey": ("kt", row1200(b"\\N5")),
+            "bsnkey": ("kt", row1200(b"\\\\N")),
+            "escother": ("kt", b"".join(b"".join(b"\\" + bytes([c]) if c in b"89" else bytes([c]) for c in b"%d" % i)
+                                        + b"\tx%d\n" % i for i in range(1, 2001))),
+            "hexlit": ("tk", b"".join(b"a%d\\x\t%d\n" % (i, i) if i % 2 else b"a%d\\xg\t%d\n" % (i, i)
+                                      for i in range(1, 2001))),
+            "hexlitkey": ("kt", row1200(b"1200\\x")),
+            "nulkey": ("kt", row1200(b"\\x00")),
+            "highbit": ("kt", row1200(b"1200\\351")),
+        }
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
+            a.execute(f"CREATE DATABASE {DB_UTF8} ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
+        udb = _Db(pgc_cluster.dsn(dbname=DB_UTF8))
+        udb.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        over_db = {k: (udb if k in ("nulkey", "highbit") else db) for k in over_files}
+        for key, (shape, body) in over_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in over_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}",
+                                                 msg=key in ("nprefkey", "bsnkey"))
+        for key in over_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}", msg=key in ("nprefkey", "bsnkey"))
+        r["2202 premise 2"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("escother", "hexlit", "nprefkey", "bsnkey", "hexlitkey", "nulkey", "highbit")]
+            + [str(db.value("SELECT count(*) FROM h_hexlit "
+                            "WHERE t = 'a' || id || CASE WHEN id % 2 = 1 THEN 'x' ELSE 'xg' END")),
+               str(udb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                             "WHERE datname = current_database()"))])
+
+        # Six more decoder rules, from jdatcmd's review of 19bb9309 (M04-M07, M10 and
+        # M13 there). oct400 loads in the UTF8 database. The shell lists the files.
+
+        def tk_row1200(row):
+            return b"".join(row if i == 1200 else b"a%d\t%d\n" % (i, i) for i in range(1, 2001))
+
+        more_files = {
+            "crtk": ("tk", b"".join(b"a%d\t%d\r" % (i, i) for i in range(1, 2001))),
+            "barecr": ("tk", tk_row1200(b"a\t1200\rjunk\n")),
+            "bseof": ("tk", b"".join(b"a%d\t%d\n" % (i, i) for i in range(1, 2000)) + b"a2000\t2000\\"),
+            "hex3": ("kt", row1200(b"\\x31200")),
+            "hexspc": ("kt", row1200(b"\\x201200\\x20")),
+            "oct400": ("kt", row1200(b"12\\400")),
+            "hexupper": ("kt", row1200(b"\\x2B1200")),
+            "toofew": ("tk", tk_row1200(b"a\n")),
+        }
+        for key in more_files:
+            over_db[key] = udb if key == "oct400" else db
+        for key, (shape, body) in more_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in more_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in more_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}")
+        r["2202 premise 3"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("crtk", "bseof", "hex3", "hexspc", "hexupper", "barecr", "toofew", "oct400")]
+            + [str(more_files["crtk"][1].count(b"\n")), more_files["bseof"][1][-2:].hex()])
+
+        # Two more, from jdatcmd's re-review at 960286e1 (M15 and M16 there): a \N key in
+        # the last column, a lowercase hex digit, and a date key whose row 1200 writes its
+        # dashes as \055 and \x2d, partitioned at 500, 1000 and 1500 days after 2020-01-01.
+        day0 = datetime.date(2020, 1, 1)
+
+        def date_key(i):
+            k = (day0 + datetime.timedelta(days=i)).isoformat().encode()
+            return k[:4] + b"\\055" + k[5:7] + b"\\x2d" + k[8:] if i == 1200 else k
+
+        last_files = {
+            "nullkeylast": ("t text, id int", tk_row1200(b"a\t\\N\n")),
+            "hexlower": ("id int, t text", row1200(b"\\x2b1200")),
+            "dateesc": ("id date, t text", b"".join(date_key(i) + b"\tx%d\n" % i for i in range(1, 2001))),
+        }
+        for key, (cols, body) in last_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            b = ("'2021-05-15'", "'2022-09-27'", "'2024-02-09'") if key == "dateesc" else ("500", "1000", "1500")
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                db.run(f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                       f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO ({b[0]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM ({b[0]}) TO ({b[1]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM ({b[1]}) TO ({b[2]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM ({b[2]}) TO (MAXVALUE) USING {am}")
+        for key in last_files:
+            r[f"2202 {key} heap"] = _esc_reading(db, f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in last_files:
+            for w in (2, 4):
+                db.run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    db, f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})", f"t_{key}")
+        r["2202 premise 4"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in ("hexlower", "dateesc", "nullkeylast")]
+            + [last_files["dateesc"][1].split(b"\n")[1199].split(b"\t")[0].hex(),
+               str(db.value("SELECT count(*) FROM h_dateesc WHERE id = date '2023-04-15'")),
+               " ".join(str((datetime.date.fromisoformat(x) - day0).days)
+                        for x in ("2021-05-15", "2022-09-27", "2024-02-09"))])
+
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
@@ -2064,6 +2284,7 @@ def pcopy(pgc_cluster, server_dir):
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {DB_UTF8} WITH (FORCE)")
             a.execute(f"DROP DATABASE IF EXISTS {ENC_DB} WITH (FORCE)")
             a.execute(f"DROP DATABASE IF EXISTS {ENC_ASCII} WITH (FORCE)")
 
@@ -2604,6 +2825,161 @@ def test_parallel_copy_marker_in_the_first_range_loads_heap_copys_values(pcopy, 
 def test_parallel_copy_marker_in_the_first_range_leaves_no_prepared_transaction(pcopy, expect):
     expect.num(pcopy["2084 eodearly leak"], 0,
                "#2084 end-of-data marker in the first range / single table, 4 workers: no prepared-transaction leak")
+
+# ---- #2202: the key parser reads COPY escapes as COPY does ------------------------
+# Each file is loaded by heap COPY into a heap table partitioned the same way and by
+# parallel_copy with 2 and 4 workers; the outcome, the rows per partition bound and the
+# rows with their bound must be heap COPY's. The fixture and the shell list the files.
+
+def test_parallel_copy_key_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise"],
+                "2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 23514 2000 "
+                "615c0962 5c303631",
+                "premise: heap COPY loads esctab, octkey, hexkey, namedkey, escfield, bsbs, plainkt and plaintk"
+                " 2000 rows each and refuses nullkey with 23514; esctab's t is a, TAB, b<id> on every row; the files"
+                " start 61 5c 09 62 (esctab) and 5c 30 36 31 (octkey) (#2202)")
+
+
+KEY_ESCAPES = (
+    ("esctab 2", "#2202 a backslash before a raw TAB in the field before the key / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("esctab 4", "#2202 a backslash before a raw TAB in the field before the key / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("octkey 2", "#2202 a key written in octal escapes / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("octkey 4", "#2202 a key written in octal escapes / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("hexkey 2", "#2202 a key written in hex escapes / partitioned, 2 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("hexkey 4", "#2202 a key written in hex escapes / partitioned, 4 workers:"
+                 " outcome, rows per partition and rows == heap COPY's"),
+    ("namedkey 2", "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 2 workers:"
+                   " outcome, rows per partition and rows == heap COPY's"),
+    ("namedkey 4", "#2202 a key with named escapes and escaped plain bytes around it / partitioned, 4 workers:"
+                   " outcome, rows per partition and rows == heap COPY's"),
+    ("escfield 2", "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key"
+                   " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("escfield 4", "#2202 octal, hex and named escapes, an escaped TAB and NULL markers in the field before the key"
+                   " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bsbs 2", "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned,"
+               " 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bsbs 4", "#2202 an escaped backslash right before the delimiter in the field before the key / partitioned,"
+               " 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("nullkey 2", "#2202 a NULL marker key / partitioned, 2 workers: outcome (23514), rows per partition and rows"
+                  " == heap COPY's"),
+    ("nullkey 4", "#2202 a NULL marker key / partitioned, 4 workers: outcome (23514), rows per partition and rows"
+                  " == heap COPY's"),
+    ("plainkt 2", "#2202 control, plain keys, key first / partitioned, 2 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plainkt 4", "#2202 control, plain keys, key first / partitioned, 4 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plaintk 2", "#2202 control, plain keys, key last / partitioned, 2 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("plaintk 4", "#2202 control, plain keys, key last / partitioned, 4 workers:"
+                  " outcome, rows per partition and rows == heap COPY's"),
+    ("nprefkey 2", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("nprefkey 4", "#2202 a key that starts with the NULL marker but is longer (\\N5)"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 2", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 2 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("bsnkey 4", "#2202 a key whose decoded value is backslash N, not the NULL marker"
+     " / partitioned, 4 workers: outcome (22P02 and its message), rows per partition and rows == heap COPY's"),
+    ("escother 2", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("escother 4", "#2202 a key with escaped digits 8 and 9, which are not escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 2", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlit 4", "#2202 a hex escape with no hex digit, before the delimiter, in the field before the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlitkey 2", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 2 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("hexlitkey 4", "#2202 a key that ends in a hex escape with no hex digit"
+     " / partitioned, 4 workers: outcome (22P02), rows per partition and rows == heap COPY's"),
+    ("nulkey 2", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("nulkey 4", "#2202 a key that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 2", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("highbit 4", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("crtk 2", "#2202 CR-only line ends"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("crtk 4", "#2202 CR-only line ends"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("barecr 2", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("barecr 4", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("bseof 2", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bseof 4", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 2", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 4", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 2", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 4", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("oct400 2", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("oct400 4", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("hexupper 2", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexupper 4", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("toofew 2", "#2202 a row with too few fields for the key"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("toofew 4", "#2202 a row with too few fields for the key"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 2", "#2202 a NULL marker key in the last column"
+     " / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 4", "#2202 a NULL marker key in the last column"
+     " / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("hexlower 2", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlower 4", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 2", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 4", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+)
+
+
+def test_parallel_copy_over_applied_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 2"],
+                '2000 rows 2000 rows 22P02: invalid input syntax for type integer: "N5" '
+                '22P02: invalid input syntax for type integer: "\\N" 22P02 22021 22021 2000 UTF8',
+                "premise: heap COPY loads escother and hexlit 2000 rows each, refuses nprefkey with 22P02 on N5,"
+                " bsnkey with 22P02 on backslash N, hexlitkey with 22P02 and nulkey and highbit with 22021; hexlit's"
+                " t is a<id>x or a<id>xg; the database nulkey and highbit load in is UTF8 (#2202)")
+
+
+def test_parallel_copy_review_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 3"],
+                "2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 22P04 22P04 22021 0 305c",
+                "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr"
+                " and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in"
+                " 30 5c (#2202)")
+
+
+def test_parallel_copy_rereview_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 4"], "2000 rows 2000 rows 23514 323032335c30353530345c7832643135 1 500 1000 1500",
+                "premise: heap COPY loads hexlower and dateesc 2000 rows each and refuses nullkeylast with 23514;"
+                " dateesc.txt's line 1200 is 2023, 5c 30 35 35, 04, 5c 78 32 64, 15, and heap COPY reads it as"
+                " 2023-04-15; the date bounds are 500, 1000 and 1500 days after 2020-01-01 (#2202)")
+
+
+@pytest.mark.parametrize("key,name", KEY_ESCAPES, ids=[k for k, _ in KEY_ESCAPES])
+def test_parallel_copy_reads_key_escapes_as_heap_copy_does(pcopy, expect, key, name):
+    expect.text(pcopy[f"2202 {key}"], pcopy[f"2202 {key.split()[0]} heap"], name)
+
 
 # ---- #2080: a single table with a unique index needs one worker --------------------
 

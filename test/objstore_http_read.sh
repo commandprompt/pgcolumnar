@@ -704,6 +704,27 @@ check "C: the refusal of an overwrite between two reads names the earlier read o
 	"$(detail_of "$(printf "$TWO_READS" fhswapdet fhswapdet)")" \
 	"An earlier read of the object in this statement saw ETag \"E\" and $HSWAPDET_LEN bytes; this read sees ETag \"E\" and $HSWAPDET_LEN bytes."
 
+# The errno of a connection that failed before a response (#2231). The error
+# names the errno of the last attempt in its DETAIL; a clean EOF has none.
+# /rstall/ resets the GET on the kept-alive connection and again on the new one.
+RST_ONE="SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('%s') AS t($COLDEFS)"
+check "C: the refusal after a reset on the retry names the errno in its DETAIL" \
+	"$(detail_of "$(printf "$RST_ONE" "$BASE/rstall/fixture.parquet")")" \
+	"The connection failed: Connection reset by peer."
+check "C: a server that hangs up on a fresh connection gives no errno in the DETAIL" \
+	"$(detail_of "SELECT count(*) FROM fhangup")" "no DETAIL"
+# /rstfin/ resets the GET on the kept-alive connection, then closes the retry's
+# new connection with a FIN and no answer: the reset belongs to the first
+# attempt, so the error of the last one names no errno.
+: > "$HTTP_LOG"
+check "C: a reset and then a clean close on the retry are refused" \
+	"$(refusal_of "$(printf "$RST_ONE" "$BASE/rstfin/fixture.parquet")" "failed before a response")" \
+	"08006: failed before a response"
+check_num "C: and that GET after the reset was sent twice" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "2"
+check "C: a reset and then a clean close on the retry name no errno of the earlier attempt" \
+	"$(detail_of "$(printf "$RST_ONE" "$BASE/rstfin/fixture.parquet")")" "no DETAIL"
+
 # A versioned overwrite that changes the length (#1907 second review): the
 # second read asks for the first read's version, so it must also take that
 # version's length, not the length of the new object its HEAD saw.
