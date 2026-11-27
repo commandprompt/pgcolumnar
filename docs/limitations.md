@@ -1358,6 +1358,32 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   carries a second, wrong-typed header struct as well as its own. Then pgColumnar
   refuses a page that pyarrow might read. The footer is not checked this way: the
   reader still reads a footer field by its id alone.
+- The reader reads a data page that holds no values (#2077). It decodes the page
+  like any other, so it reads such a page where pyarrow 23 reads it and refuses
+  it where pyarrow refuses it. For example, a v1 page of a nullable column with
+  no body is refused, because it has no definition-level length. The reader also
+  refuses a data page whose DataPageHeader is missing, empty, or has no
+  `num_values`, and a data page with a negative `num_values`. For a DATA_PAGE_V2
+  with no header at all, this is stricter than pyarrow 23, which reads the page
+  as empty and drops its values. A page's count comes only from the header
+  struct of its own type. A DATA_PAGE uses its DataPageHeader, a DATA_PAGE_V2
+  its DataPageHeaderV2, and a dictionary page its DictionaryPageHeader. A struct
+  of another type in the same header is ignored. A data page that
+  carries only a struct of another type is refused, where pyarrow 23 reads it as
+  empty. A header that carries the page's own struct twice is refused. pyarrow 23
+  reads such a page when the second struct is complete. A struct that gives its
+  own `num_values` twice is refused too, whatever its last value, where pyarrow
+  23 keeps the last value. A page header with a Thrift field id outside the
+  int16 range is refused as corrupt. pyarrow 23 narrows such an id
+  to 16 bits, so 65537 reads as field 1.
+  The reader refuses more than 16 pages with no values in a row in one column
+  chunk, DATA_PAGE and DATA_PAGE_V2 alike. A dictionary page does not end a run.
+  An INDEX_PAGE, or a page type the reader
+  does not know, counts as a page with no values and is stepped over. These
+  refusals raise SQLSTATE XX001. The run limit stops a crafted file from making
+  the reader walk a large area a few bytes at a time. In the files tested,
+  pyarrow wrote at most one empty page in a row. pyarrow 23 itself stops reading
+  a chunk at a run of two or more empty data pages.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

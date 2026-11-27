@@ -632,6 +632,69 @@ true until the next version shipped.
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
   `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
   one worker.
+- `read_parquet` and the Parquet foreign table now read a file that holds a data
+  page with no values (#2077). Such a page is valid, and pyarrow writes one for a
+  dictionary-encoded list column when it flushes pages often. The reader refused
+  every data page with no values, so the whole read failed with `could not decode
+  Parquet column 0 in row group 0`. The reader now decodes such a page like any
+  other, so it reads and refuses the same empty pages pyarrow 23 does. It refuses
+  a data page whose DataPageHeader is missing, empty, or has no `num_values`,
+  which would otherwise drop that page's values, so a zero-filled area stays a
+  fast refusal. For a DATA_PAGE_V2 with no header at all this is stricter than
+  pyarrow 23, which reads the page as empty. It refuses a negative `num_values`.
+  A page's count comes only from the header struct of its own type (DataPageHeader
+  for a DATA_PAGE, DataPageHeaderV2 for a DATA_PAGE_V2, DictionaryPageHeader for a
+  dictionary page), so a second struct in the same header cannot set it to 0 and
+  drop the page's values. A data page that carries only a struct of another type is
+  refused; pyarrow 23 reads it as empty, so this is stricter too. A header that
+  carries the page's own struct twice is refused too. When the second struct is
+  complete, pyarrow 23 reads the page, so this is stricter as well. A struct that
+  gives its own `num_values` twice is refused, whatever its last value; pyarrow 23
+  keeps the last value, which can drop the page's values. A page header with a
+  Thrift field id outside the int16 range is refused as corrupt. Before,
+  the reader kept such an id whole and skipped the field, while pyarrow 23 narrows
+  it (65537 reads as field 1): a crafted header could hide a `num_values` 50 behind
+  id 65537, and the page's values were dropped with no error.
+  It refuses more than 16 pages with no values in a row, of either data page
+  version (a dictionary page does not end a run), and steps over an
+  INDEX_PAGE or a page of an unknown type. In every file
+  tested, pyarrow wrote at most one empty page in a row.
+  `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
+- A pgcolumnar scan no longer loses an error raised while it evaluates a stable
+  `WHERE` operand, such as `x > stable_func($1)` (#2065). The scan caught the
+  error and threw it away without a subtransaction. So a `statement_timeout` or
+  query cancel that fired there was lost and the query returned rows, a function
+  that raised once returned a count where heap fails, and the failed call's
+  plancache, snapshot and SPI state leaked as WARNINGs. The error now reaches the
+  client. The scan now evaluates such an operand when it first runs, not while
+  the plan is set up, as a btree index scan evaluates its runtime keys, and it
+  evaluates it once. A scan that never runs, such as an `Append` arm that
+  `LIMIT` cuts off or a branch under a false one-time filter, calls nothing. That
+  includes a PL/pgSQL variable: the scan no longer fetches it at set-up, where a
+  record field that was not assigned raised. Such a variable still drives
+  chunk-group skipping: the scan freezes it when it first runs. One
+  consequence: any scan that runs now raises the operand's error, even when no
+  row would pass the rest of the `WHERE` clause or the table is empty. Heap,
+  which calls the operand once per row it tests, returns no rows there. This
+  covers an operand made only of parameters too, such as `x > 10 / $1` with
+  `$1 = 0`. A plain `EXPLAIN` no longer calls the operand; it still reports a
+  bound parameter of a prepared statement as pushed down. Keys frozen at the
+  first run obey `pgcolumnar.enable_qual_pushdown = off`, all of them are
+  tested when there are several, and a long text key survives a rescan.
+  A bound parameter that is NULL builds no key, a varchar or domain parameter
+  is pushed down like any other bound parameter, and `EXPLAIN ANALYZE`
+  counts a key frozen at the first run as pushed down. Under a hash join,
+  the keys frozen at the first run keep the join's runtime range, also
+  when the join is rescanned. The scan evaluates only an operand whose
+  clause could become a scan key: a clause such as `x <> f($1)`,
+  `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`,
+  `date_trunc('decade', x) = f($1)`, `x LIKE f($1)` under a collation that
+  is not C, `r && f($1)` with a multirange, or a timestamp column against
+  a timestamptz `f($1)` stays in the Filter, as on heap and btree, so its
+  operand is never called when no row reaches it. A bound varchar or
+  domain parameter is frozen as the type the clause compares, so it prunes
+  under LIKE, `date_trunc` and `&&` as on main.
+  `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
   with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
   two locks to commit: the delete-vector lock of each row group it deletes
