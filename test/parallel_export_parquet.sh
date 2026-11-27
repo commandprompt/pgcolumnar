@@ -545,6 +545,16 @@ check "parallel_export_parquet while the transaction holds ACCESS EXCLUSIVE on a
 check "parallel_export_parquet of a partitioned table after LOCK TABLE on one leaf IN ACCESS EXCLUSIVE MODE is refused with 55000 (#2183)" \
 	"$(self_lock_export "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE" t_part "$PGC_WORKDIR/lk_leaf")" \
 	'55000|pgcolumnar.parallel_export_parquet cannot run while this transaction holds AccessExclusiveLock on "t_p1"'
+# The HINT names the statements that take such a lock. Its add_projection and
+# drop_projection clause is parallel_copy's alone (#2215): their SHARE and SHARE
+# ROW EXCLUSIVE do not conflict with the export workers' ACCESS SHARE, so naming
+# them here would point at a cause that cannot be one (#2226 review).
+lk_hint="$(timeout -s KILL 60 env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" \
+	-U postgres -d "$PGC_DB" -qtA -v ON_ERROR_STOP=1 -c "SET statement_timeout = '5s'" \
+	-c "BEGIN; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE; SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '$PGC_WORKDIR/lk_hint', 2); COMMIT;" 2>&1)"
+check "parallel_export_parquet refused after LOCK TABLE IN ACCESS EXCLUSIVE MODE gives a HINT that does not name add_projection or drop_projection (#2215)" \
+	"$(sed -n 's/^HINT:  //p' <<<"$lk_hint" | head -1)" \
+	'Run it in a transaction that does not hold that lock, for example before the LOCK TABLE or TRUNCATE, or after COMMIT.'
 # An export can never run in a subtransaction: ExportSnapshot refuses it with
 # 25001 before any worker starts. The lock refusal must not hide that error behind
 # a 55000 whose hint cannot help (#2212 review).

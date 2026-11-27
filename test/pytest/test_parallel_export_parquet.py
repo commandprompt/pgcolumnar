@@ -422,6 +422,16 @@ def pep(pgc_cluster, server_dir):
                 ("lk leaf", "LOCK TABLE t_p1 IN ACCESS EXCLUSIVE MODE", "t_part"),
                 ("lk subx", "SAVEPOINT s; LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE", "t_lk")):
             r[key] = _self_lock_export(dsn, setup, table, w / key.replace(" ", "_"))
+        # the HINT of the ACCESS EXCLUSIVE refusal (#2215, #2226 review)
+        try:
+            with psycopg.connect(dsn) as conn:
+                conn.execute("SET statement_timeout = '5s'")
+                conn.execute("LOCK TABLE t_lk IN ACCESS EXCLUSIVE MODE")
+                conn.execute(f"SELECT pgcolumnar.parallel_export_parquet('t_lk'::regclass, '{w / 'lk_hint'}', 2)")
+                conn.commit()
+            r["lk hint"] = "no error"
+        except psycopg.Error as exc:
+            r["lk hint"] = (exc.diag.message_hint or "no hint") if exc.sqlstate else _err(exc)
 
         r["up"] = _survived(pgc_cluster, db, before)
         yield r
@@ -697,3 +707,14 @@ def test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on(pep, expect, k
     statement_timeout; it is now refused with 55000, by SQLSTATE and message. A lock
     the workers do not conflict with still exports the committed rows."""
     expect.text(_shown(pep[key]), want, name)
+
+
+def test_pexport_lock_refusal_hint_does_not_name_the_projection_functions(pep, expect):
+    """#2215, #2226 review: the refusal's add_projection and drop_projection clause is
+    parallel_copy's alone. Their SHARE and SHARE ROW EXCLUSIVE do not conflict with the
+    export workers' ACCESS SHARE, so export's HINT must not name them."""
+    expect.text(_shown(pep["lk hint"]),
+                "Run it in a transaction that does not hold that lock, for example before the LOCK TABLE or"
+                " TRUNCATE, or after COMMIT.",
+                "parallel_export_parquet refused after LOCK TABLE IN ACCESS EXCLUSIVE MODE gives a HINT that does"
+                " not name add_projection or drop_projection (#2215)")

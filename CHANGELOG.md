@@ -621,9 +621,14 @@ true until the next version shipped.
   names the two functions, at any worker count; `rebuild_projections`, which calls
   `add_projection`, is refused the same way. A metadata-only `ALTER TABLE` that
   materializes a declared projection also keeps its SHARE lock to transaction end.
-  Reads do not wait for any of them. docs/sql-reference.md and
-  docs/limitations.md. `test/parallel_copy.sh`, `test/projections.sh`,
-  `test_parallel_copy.py` and `test_projections.py`.
+  Reads do not wait for any of them. `parallel_export_parquet`'s HINT is
+  unchanged, because its workers' ACCESS SHARE conflicts with neither function.
+  Like `CREATE INDEX`, two transactions that each add a projection and then
+  write to the other's table can now deadlock, which PostgreSQL detects.
+  docs/sql-reference.md and docs/limitations.md, which also notes a hang that
+  the deadlock detector cannot see, between `parallel_copy` and another
+  session's SHARE lock on the target. `test/parallel_copy.sh`,
+  `test/projections.sh`, `test/parallel_export_parquet.sh` and their twins.
 
 - `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
   294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit

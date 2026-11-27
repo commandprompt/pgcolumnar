@@ -2517,4 +2517,7 @@ guard_tests 897
 # test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
 # test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6098
+# cluster_tests 6098 -> 6099, still #2215, for the review of #2226 at d49f08e1:
+# test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6099

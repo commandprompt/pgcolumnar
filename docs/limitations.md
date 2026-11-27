@@ -331,18 +331,29 @@ these constraints.
 - The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
   or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
   refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
-  locks, and so do `pgcolumnar.add_projection`, `pgcolumnar.drop_projection`,
-  and `pgcolumnar.rebuild_projections` when it materializes a projection (#2215). The workers take ROW EXCLUSIVE in
-  their own transactions, so they would wait for the caller until the statement
-  timed out. They also could not see a projection the caller added or dropped.
+  locks. So do `pgcolumnar.add_projection` and `pgcolumnar.drop_projection`, and
+  `pgcolumnar.rebuild_projections` when it materializes a projection (#2215). The
+  workers take ROW EXCLUSIVE in their own transactions, so they would wait for
+  the caller until the statement timed out. They also could not see a projection
+  the caller added or dropped.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
-- The check covers only the target and its partitions. The load still waits
-  until `statement_timeout` when the calling transaction locks another table
-  the loaders need. One example is a table the target references through a
-  foreign key. Others are a table a trigger on the target writes to, and a
-  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
+- The check covers the target, its partitions, and its inheritance children. A
+  lock on an inheritance child that is not a partition is refused too, although
+  the workers never lock that child.
+- The check covers no other table. The load still waits until
+  `statement_timeout` when the calling transaction locks another table the
+  loaders need. One example is a table the target references through a foreign
+  key. Others are a table a trigger on the target writes to, and a sequence a
+  trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
   `parallel_copy` before taking such locks, or after `COMMIT`.
+- The workers can wait for a lock that another session holds on the target.
+  That is an ordinary wait, unless the other session then waits for a lock the
+  caller holds. The caller waits for its workers on a latch, so the deadlock
+  detector does not see that cycle. Both sessions then wait until
+  `statement_timeout` ends one of them. The other session's lock can come from
+  `pgcolumnar.add_projection`, `CREATE INDEX` or `LOCK TABLE ... IN SHARE MODE`.
+  The workers do not inherit the caller's `lock_timeout`.
 - The calling transaction must not have written to the target or to one of its
   partitions, for example with an earlier `INSERT`. The function refuses such a
   call with `55000` (#2211). The write holds a lock on the table's storage until

@@ -568,6 +568,10 @@ do not wait. `pgcolumnar.parallel_copy` into `rel` later in the same transaction
 is refused with `55000`, because its workers could not see the uncommitted
 projection. Load with `COPY` in that transaction, or commit first.
 
+Like `CREATE INDEX`, two transactions that each add a projection and then write
+to the other's table can deadlock. PostgreSQL detects the deadlock and rolls one
+of them back.
+
 ```sql
 SELECT pgcolumnar.add_projection(
     'events', 'events_by_customer',
