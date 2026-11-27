@@ -2542,4 +2542,15 @@ guard_tests 898
 # (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
 # collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-cluster_tests 6128
+# cluster_tests 6128 -> 6151 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
+# test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
+# with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
+# test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
+# test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6151 -> 6156, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
+# GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6156
