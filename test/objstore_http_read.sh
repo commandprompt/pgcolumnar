@@ -14,7 +14,10 @@
 #      the URL and produce no rows; a Range-ignoring server is an error, never a
 #      silent whole-object read; a short 206 body and EOF mid-body are refused;
 #      a keep-alive connection the server dropped is retried once, and a fresh
-#      connection the server hangs up on is not; an object overwritten
+#      connection the server hangs up on is not; a reset before any byte of an
+#      answer on a kept-alive connection is retried once too, a reset after
+#      part of an answer is refused, and a server that resets every GET is
+#      refused after one retry (#2198); an object overwritten
 #      mid-read is refused, a weak ETag or one longer than 79 characters is not
 #      used as a pin, and a server whose ETag changes per request is refused
 #      (#1805). With pgcolumnar.objstore_pin_reads off, that server is read
@@ -397,6 +400,49 @@ check "C: a server that hangs up on a fresh connection is refused" \
 	"$(refusal_of "SELECT count(*) FROM fhangup" "failed before a response")" "08006: failed before a response"
 check_num "C: and that fresh connection is not retried (one request logged)" \
 	"$(wc -l < "$HTTP_LOG" | tr -d ' ')" "1"
+# A reset on a kept-alive connection (#2198). The server closed the
+# connection, and the client's next request on it met a reset (RST) before any
+# byte of an answer. That is the keep-alive race as much as a clean EOF is, and
+# is retried once on a new connection. pgc_reads reads the object n times, each
+# in its own subtransaction, and counts the reads that returned every row.
+psql_run "CREATE FUNCTION pgc_reads(url text, n int) RETURNS text LANGUAGE plpgsql AS \$f\$
+DECLARE ok int := 0; bad int := 0; c int8; last text := '';
+BEGIN
+  FOR i IN 1..n LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM pgcolumnar.read_parquet(%L) AS t($COLDEFS)', url) INTO c;
+      IF c = $((G * ROWS_PER_GROUP)) THEN ok := ok + 1; ELSE bad := bad + 1; last := 'rows=' || c; END IF;
+    EXCEPTION WHEN others THEN bad := bad + 1; last := SQLSTATE || ': ' || SQLERRM;
+    END;
+  END LOOP;
+  RETURN 'ok=' || ok || ' failed=' || bad || CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END;
+END \$f\$;"
+# /rstka/ resets the second request on every connection after the client has
+# sent it, so each read meets the reset: no timing decides it.
+check "C: 30 reads from a server that resets each kept-alive connection all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/rstka/fixture.parquet', 30)" "@@")" \
+	"no error: ok=30 failed=0"
+# /closeka/ closes at once after each answer, with no half-close, as the issue
+# reports a server doing: the next request meets a FIN or a reset by timing.
+check "C: 30 reads from a server that closes at once after each answer all succeed" \
+	"$(refusal_of "SET statement_timeout = '60s'; SELECT pgc_reads('$BASE/closeka/fixture.parquet', 30)" "@@")" \
+	"no error: ok=30 failed=0"
+# A reset after part of an answer has arrived is not the race: the request may
+# have been served, so it is an error, never a retry.
+check "C: a reset after part of a status line is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rsthead/fixture.parquet') AS t($COLDEFS)" "Connection reset by peer")" \
+	"08006: Connection reset by peer"
+check "C: a reset after part of a body is refused" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rstbody/fixture.parquet') AS t($COLDEFS)" "Connection reset by peer")" \
+	"08006: Connection reset by peer"
+# /rstall/ resets every GET, so the retry is reset too. One retry, then the
+# error: the GET is sent twice, on the kept-alive connection and on a new one.
+: > "$HTTP_LOG"
+check "C: a server that resets every GET is refused after one retry" \
+	"$(refusal_of "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$BASE/rstall/fixture.parquet') AS t($COLDEFS)" "failed before a response")" \
+	"08006: failed before a response"
+check_num "C: and that GET was sent twice" \
+	"$(awk '$1 == "GET"' "$HTTP_LOG" | wc -l | tr -d ' ')" "2"
 
 # An object overwritten between two ranged GETs of one read (#1805). Without a
 # pin the footer comes from the old object and later chunks from the new one,

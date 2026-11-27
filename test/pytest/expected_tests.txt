@@ -2499,4 +2499,10 @@ guard_tests 897
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-cluster_tests 6071
+# cluster_tests 6071 -> 6079 for #2198's eight tests: six in test_objstore_http_read.py (30 reads from a server that
+# resets each kept-alive connection, 30 from one that closes at once after each answer, a reset after part of a
+# status line and after part of a body refused, a server that resets every GET refused after one retry, and that GET
+# sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
+# collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
+cluster_tests 6079

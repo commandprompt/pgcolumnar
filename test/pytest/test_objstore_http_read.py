@@ -13,7 +13,9 @@ C  A REFUSAL IS NOT ANY ERROR. Many guards share 08006 and 08P01, so each refusa
    carry its own guard's SQLSTATE AND message: an unreachable port, a 404, a server
    that ignores Range, a short 206 body, EOF mid-body, and a fresh connection the
    server hangs up on (asked once, never retried). A keep-alive connection the server
-   dropped is the one failure that is retried, and the read equals the local one. An
+   dropped is the one failure that is retried, and the read equals the local one; so
+   is a reset before any byte of an answer on a kept-alive connection, once, while a
+   reset after part of an answer is refused (#2198). An
    object overwritten between two ranged GETs is refused, and a weak ETag is never
    sent as If-Match (#1805). Two reads of one object in one statement read one
    version (#1894); one s3 key on two endpoints is two objects; the pin lasts one
@@ -497,6 +499,20 @@ def ohr(pgc_cluster):
                       "EXCEPTION WHEN division_by_zero THEN NULL; END; "
                       "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
                       "CLOSE c; RETURN s; END $f$")
+            # pgc_reads(url, n), as the shell's (#2198): read url n times, each
+            # in its own EXCEPTION block, and count the reads with every row
+            c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_reads(url text, n int) RETURNS text "
+                      "LANGUAGE plpgsql AS $f$ "
+                      "DECLARE ok int := 0; bad int := 0; c int8; last text := ''; BEGIN "
+                      "FOR i IN 1..n LOOP BEGIN "
+                      "EXECUTE format('SELECT count(*) FROM pgcolumnar.read_parquet(%L) "
+                      f"AS t({COLDEFS})', url) INTO c; "
+                      f"IF c = {G * ROWS_PER_GROUP} THEN ok := ok + 1; "
+                      "ELSE bad := bad + 1; last := 'rows=' || c; END IF; "
+                      "EXCEPTION WHEN others THEN bad := bad + 1; "
+                      "last := SQLSTATE || ': ' || SQLERRM; END; END LOOP; "
+                      "RETURN 'ok=' || ok || ' failed=' || bad || "
+                      "CASE WHEN bad > 0 THEN ' last=' || last ELSE '' END; END $f$")
             # pgc_catch_state(stmt, state, n), as the shell's (#2158 review):
             # run stmt n times, each in its own EXCEPTION block, and count the
             # errors whose SQLSTATE is state
@@ -568,6 +584,20 @@ def ohr(pgc_cluster):
         pathlib.Path(hlog).write_text("")
         r["C hangup"] = _refusal(dsn, "SELECT count(*) FROM fhangup", "failed before a response")
         r["C hangup asked"] = _count(hlog)
+        # #2198: a reset on a kept-alive connection, as the shell's
+        reads = "SET statement_timeout = '60s'; SELECT pgc_reads('%s', 30)"
+        one = ("SET statement_timeout = '20s'; SELECT count(*) FROM "
+               f"pgcolumnar.read_parquet('%s') AS t({COLDEFS})")
+        r["C rstka"] = _one_message(dsn, reads % f"{base}/rstka/fixture.parquet", "@@")
+        r["C closeka"] = _one_message(dsn, reads % f"{base}/closeka/fixture.parquet", "@@")
+        r["C rsthead"] = _one_message(dsn, one % f"{base}/rsthead/fixture.parquet",
+                                      "Connection reset by peer")
+        r["C rstbody"] = _one_message(dsn, one % f"{base}/rstbody/fixture.parquet",
+                                      "Connection reset by peer")
+        pathlib.Path(hlog).write_text("")
+        r["C rstall"] = _one_message(dsn, one % f"{base}/rstall/fixture.parquet",
+                                     "failed before a response")
+        r["C rstall gets"] = _count(hlog, lambda f: f[0] == "GET")
         _await_server(dsn)
         r["C swap"] = _refusal(dsn, SWAP_SQL, "changed while it was being read")
         _await_server(dsn)
@@ -895,6 +925,47 @@ def test_a_fresh_connection_is_not_retried(ohr, expect):
     if _declined(ohr, expect):
         return
     expect.num(ohr["C hangup asked"], 1, "C: and that fresh connection is not retried (one request logged)")
+
+
+def test_reads_from_a_server_that_resets_each_kept_alive_connection_all_succeed(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstka"], "no error: ok=30 failed=0",
+                "C: 30 reads from a server that resets each kept-alive connection all succeed")
+
+
+def test_reads_from_a_server_that_closes_at_once_after_each_answer_all_succeed(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C closeka"], "no error: ok=30 failed=0",
+                "C: 30 reads from a server that closes at once after each answer all succeed")
+
+
+def test_a_reset_after_part_of_a_status_line_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rsthead"], "08006: Connection reset by peer",
+                "C: a reset after part of a status line is refused")
+
+
+def test_a_reset_after_part_of_a_body_is_refused(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstbody"], "08006: Connection reset by peer",
+                "C: a reset after part of a body is refused")
+
+
+def test_a_server_that_resets_every_get_is_refused_after_one_retry(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.text(ohr["C rstall"], "08006: failed before a response",
+                "C: a server that resets every GET is refused after one retry")
+
+
+def test_the_get_a_server_resets_every_time_is_sent_twice(ohr, expect):
+    if _declined(ohr, expect):
+        return
+    expect.num(ohr["C rstall gets"], 2, "C: and that GET was sent twice")
 
 
 def test_the_overwrite_pair_has_one_byte_length(ohr, expect):
