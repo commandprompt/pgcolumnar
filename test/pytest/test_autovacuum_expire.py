@@ -185,6 +185,11 @@ def run(ax, pgc_cluster):
     ax.execute("INSERT INTO ex_bad SELECT g, now(), g FROM generate_series(1, 20000) g")
     ax.execute("DELETE FROM ex_bad WHERE (id * 2654435761)::bigint % 100 < 40")
     ax.execute("ALTER TABLE ex_bad DROP COLUMN ts")
+    # Since #2070 the drop clears the declaration, so the daemon would never run
+    # expire here. A table whose retention column was dropped on an older build
+    # still names it: write that back, so expire fails (42703) as this arm needs.
+    ax.execute("UPDATE pgcolumnar.options SET ttl_column = 'ts', ttl_interval = '1 day'"
+               " WHERE regclass = 'ex_bad'::regclass")
     st["bad_state"] = _sqlstate(ax, "SELECT pgcolumnar.expire('ex_bad')")
     _reload(ax, pgcolumnar__autovacuum_expire="on")
     st["bad_dead"] = _until(lambda: _dead(ax, "ex_bad"), 0)
