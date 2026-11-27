@@ -1753,6 +1753,10 @@ check "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a C
 #   chunknl (SJIS)  line 1 puts the 83 at byte 65535, the last of the first 64 KiB
 #                   scan read, and 5c 5c LF b LF after it; then 0002 TAB x LF ...
 #   chunkcr (SJIS)  line 1 the same with 5c 5c CR LF; then LF lines
+#   gb18030 (GB18030) odd k: k TAB a 81 30 81 30 81 5c z 5c LF b LF, a four-byte
+#                   character, a two-byte one ending in 5c, a byte, an escaped
+#                   newline; even k: k TAB a b0 a1 z 5c LF y LF
+#   gbk     (GBK)   k TAB a 81 5c z 5c LF b LF
 #   sjistk  (SJIS)  a k 83 5c TAB k LF, loaded into (txt text, id int): the 5c
 #                   right before the TAB that ends the field before the key
 #   utf8txt (UTF8)  k TAB c a f c3 a9 k LF, loaded with the database's default
@@ -1786,6 +1790,8 @@ enc_gen() {	# KIND N PATH: writes PATH and PATH.starts, the byte offset of every
 			else if (kind == "sjiseol") r = (k == 1) ? "1\ta\203\134\134\r\n" : sprintf("%d\tx\n", k)
 			else if (kind == "chunknl") r = (k == 1) ? "0001\t" pad "\203\134\134\nb\n" : sprintf("%04d\tx\n", k)
 			else if (kind == "chunkcr") r = (k == 1) ? "0001\t" pad "\203\134\134\r\n" : sprintf("%04d\tx\n", k)
+			else if (kind == "gb18030") r = (k % 2) ? sprintf("%d\ta\201\060\201\060\201\134z\134\nb\n", k) : sprintf("%d\ta\260\241z\134\ny\n", k)
+			else if (kind == "gbk") r = sprintf("%d\ta\201\134z\134\nb\n", k)
 			else if (kind == "sjistk") r = sprintf("a%d\203\134\t%d\n", k, k)
 			else if (kind == "utf8txt") r = sprintf("%d\tcaf\303\251%d\n", k, k)
 			else if (kind == "latin1") r = sprintf("%d\ta\351\134\nb\n", k)
@@ -1860,7 +1866,7 @@ enc_cuts() {	# CLIENT_ENCODING PATH -> "W:ok" per worker count 2, 3, 4 when ever
 	done
 	echo "${res# }"
 }
-for _f in sjis:2000 big5:2000 sjisbs:2000 sjiseol:2000 chunknl:9363 chunkcr:4000 sjistk:2000 utf8txt:2000 latin1:2000 utf8:2000 ascii:2000; do
+for _f in sjis:2000 big5:2000 sjisbs:2000 sjiseol:2000 chunknl:9363 chunkcr:4000 gb18030:2000 gbk:2000 sjistk:2000 utf8txt:2000 latin1:2000 utf8:2000 ascii:2000; do
 	enc_gen "${_f%%:*}" "${_f#*:}" "$ENC/${_f%%:*}.txt"
 done
 [ "$(id -u)" = "0" ] && chown -R postgres "$ENC"
@@ -1894,6 +1900,17 @@ check "#2188 SJIS, a two-byte character split across two 64 KiB scan reads, befo
 	"$(enc_same $ENC_DB SJIS "$ENC/chunknl.txt" single 2)" "2:ok"
 check "#2188 SJIS, the first line's two-byte character split across two 64 KiB scan reads, before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
 	"$(enc_same $ENC_DB SJIS "$ENC/chunkcr.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 premise: under client_encoding GB18030 heap COPY loads 2000 rows from gb18030 and stores row 1 as 61 c2 80 e4 b9 97 7a 0a 62 and row 2 as 61 e5 95 8a 7a 0a 79; under GBK 2000 rows from gbk, row 1 61 e4 b9 97 7a 0a 62" \
+	"$(enc_heap $ENC_DB GB18030 "$ENC/gb18030.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1) $(enc_row $ENC_DB 2) $(enc_heap $ENC_DB GBK "$ENC/gbk.txt" | cut -d'|' -f2) $(enc_row $ENC_DB 1)" \
+	"2000 rows 61c280e4b9977a0a62 61e5958a7a0a79 2000 rows 61e4b9977a0a62"
+check "#2188 GB18030, a four-byte character next to a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GB18030 "$ENC/gb18030.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 GB18030, a four-byte character next to a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GB18030 "$ENC/gb18030.txt" part)" "2:ok 3:ok 4:ok"
+check "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GBK "$ENC/gbk.txt" single)" "2:ok 3:ok 4:ok"
+check "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
+	"$(enc_same $ENC_DB GBK "$ENC/gbk.txt" part)" "2:ok 3:ok 4:ok"
 
 PGC_DB=$ENC_DB psql_run "ALTER DATABASE $ENC_DB SET client_encoding = 'SJIS'" >/dev/null
 check "#2188 premise: with the database's default client_encoding set to SJIS a new session's is SJIS, and heap COPY under the caller's UTF8 loads 2000 rows from utf8txt and stores row 1 as 63 61 66 c3 a9 31" \

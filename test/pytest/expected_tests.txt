@@ -2506,4 +2506,8 @@ guard_tests 897
 # test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
 # test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6094
+# cluster_tests 6094 -> 6099, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
+# GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+cluster_tests 6099

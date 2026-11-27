@@ -608,7 +608,9 @@ def _enc_rows(kind, n):
     escaped newline and its even rows a backslash before 83 5c, big5 the same with
     a5 5c, sjisbs a backslash before 83 5c right before every newline, sjiseol a
     first line 83 5c 5c CR LF, chunknl and chunkcr the 83 at byte 65535 with 5c 5c LF
-    and 5c 5c CR LF after it, sjistk 83 5c right before the TAB that ends the field
+    and 5c 5c CR LF after it, gb18030 a four-byte character (81 30 81 30) and 81 5c
+    then z and an escaped newline (odd rows) or b0 a1 then z and an escaped newline
+    (even rows), gbk 81 5c then z and an escaped newline, sjistk 83 5c right before the TAB that ends the field
     before the key (a (txt text, id int) table), utf8txt UTF-8 text, and the controls latin1, utf8 and
     ascii a high-bit byte, a two-byte character and 83 before a backslash and LF."""
     pad = b"y" * 65530
@@ -625,6 +627,11 @@ def _enc_rows(kind, n):
             r = b"0001\t" + pad + b"\x83\x5c\x5c\nb\n" if k == 1 else b"%04d\tx\n" % k
         elif kind == "chunkcr":
             r = b"0001\t" + pad + b"\x83\x5c\x5c\r\n" if k == 1 else b"%04d\tx\n" % k
+        elif kind == "gb18030":
+            r = (b"%d\ta\x81\x30\x81\x30\x81\x5cz\\\nb\n" % k if k % 2
+                 else b"%d\ta\xb0\xa1z\\\ny\n" % k)
+        elif kind == "gbk":
+            r = b"%d\ta\x81\x5cz\\\nb\n" % k
         elif kind == "sjistk":
             r = b"a%d\x83\x5c\t%d\n" % (k, k)
         elif kind == "utf8txt":
@@ -1509,7 +1516,7 @@ def pcopy(pgc_cluster, server_dir):
         adb.run("CREATE EXTENSION pgcolumnar")
         ef, erows = {}, {}
         for kind, n in (("sjis", 2000), ("big5", 2000), ("sjisbs", 2000), ("sjiseol", 2000), ("chunknl", 9363),
-                        ("chunkcr", 4000), ("sjistk", 2000), ("utf8txt", 2000), ("latin1", 2000), ("utf8", 2000), ("ascii", 2000)):
+                        ("chunkcr", 4000), ("gb18030", 2000), ("gbk", 2000), ("sjistk", 2000), ("utf8txt", 2000), ("latin1", 2000), ("utf8", 2000), ("ascii", 2000)):
             erows[kind] = _enc_rows(kind, n)
             ef[kind] = d / f"enc_{kind}.txt"
             ef[kind].write_bytes(b"".join(erows[kind]))
@@ -1541,6 +1548,12 @@ def pcopy(pgc_cluster, server_dir):
                 ("chunknl single", "SJIS", "chunknl", "single", (2,)),
                 ("chunkcr single", "SJIS", "chunkcr", "single", (2, 3, 4))):
             r[f"2188 {key}"] = _enc_same(edb, ce, ef[kind], target, workers)
+        r["2188 premise gb18030 gbk"] = " ".join([
+            rows_of(edb, "GB18030", "gb18030"), _enc_rowhex(edb, 1), _enc_rowhex(edb, 2),
+            rows_of(edb, "GBK", "gbk"), _enc_rowhex(edb, 1)])
+        for kind, ce in (("gb18030", "GB18030"), ("gbk", "GBK")):
+            for target in ("single", "part"):
+                r[f"2188 {kind} {target}"] = _enc_same(edb, ce, ef[kind], target)
         r["2188 sjistk part"] = _enc_same(edb, "SJIS", ef["sjistk"], "part", cols="txt text, id int")
         r["2188 cuts"] = " ; ".join([_enc_cuts(edb, "SJIS", ef["sjis"], erows["sjis"]),
                                      _enc_cuts(edb, "SJIS", ef["sjisbs"], erows["sjisbs"]),
@@ -2617,7 +2630,24 @@ def test_parallel_copy_encoding_premise_first_line_and_chunk_files(pcopy, expect
                 " chunkcr, whose bytes 65535-65539 are 83 5c 5c 0d 0a")
 
 
+def test_parallel_copy_encoding_premise_gb18030_and_gbk(pcopy, expect):
+    expect.text(pcopy["2188 premise gb18030 gbk"], "2000 rows 61c280e4b9977a0a62 61e5958a7a0a79 2000 rows 61e4b9977a0a62",
+                "#2188 premise: under client_encoding GB18030 heap COPY loads 2000 rows from gb18030 and stores row 1"
+                " as 61 c2 80 e4 b9 97 7a 0a 62 and row 2 as 61 e5 95 8a 7a 0a 79; under GBK 2000 rows from gbk, row 1"
+                " 61 e4 b9 97 7a 0a 62")
+
+
 ENC_LOADS = (
+    ("2188 gb18030 single", "2:ok 3:ok 4:ok", "#2188 GB18030, a four-byte character next to a two-byte character"
+     " whose second byte is 0x5C, then a byte and an escaped newline / single table, 2, 3 and 4 workers: heap"
+     " COPY's outcome, rows and content"),
+    ("2188 gb18030 part", "2:ok 3:ok 4:ok", "#2188 GB18030, a four-byte character next to a two-byte character"
+     " whose second byte is 0x5C, then a byte and an escaped newline / partitioned, 2, 3 and 4 workers: heap"
+     " COPY's outcome, rows and content"),
+    ("2188 gbk single", "2:ok 3:ok 4:ok", "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte"
+     " and an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 gbk part", "2:ok 3:ok 4:ok", "#2188 GBK, a two-byte character whose second byte is 0x5C, then a byte"
+     " and an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
     ("2188 sjis single", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C before an"
      " escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's"
      " outcome, rows and content"),
