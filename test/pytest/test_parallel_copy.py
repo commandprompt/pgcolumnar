@@ -692,9 +692,10 @@ class _Db:
 
     def dk_early(self, path, target, locked):
         """-> (what the caller waited on, "load | rows | prepared"): another session holds
-        SHARE on `locked` for 3 s, with no cycle; the caller has no lock_timeout."""
+        SHARE on `locked` for 6 s, with no cycle; the caller has no lock_timeout. The
+        reading must hold for a second after it is first seen."""
         self.run(f"TRUNCATE {target}")
-        holder = self._holder(locked, 3)
+        holder = self._holder(locked, 6)
         out = {}
 
         def load():
@@ -707,30 +708,29 @@ class _Db:
                 out["load"] = (f"{exc.sqlstate} {exc.diag.message_primary} | {exc.diag.message_hint or 'no hint'}"
                                if exc.sqlstate else query_error(_message(exc)))
 
+        def sample():
+            return self.value(
+                "SELECT 'caller ' || coalesce((SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') "
+                "FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'), '') || ', workers ' || "
+                "(SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%')")
+
         t = threading.Thread(target=load)
         t.start()
+        want = "caller Lock:relation, workers 0"
         seen = None
         for _ in range(40):
-            wait = self.value("SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') "
-                              "FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'")
-            workers = self.value("SELECT count(*) FROM pg_stat_activity "
-                                 "WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")
-            seen = f"caller {wait if isinstance(wait, str) else ''}, workers {workers}"
-            if seen == "caller Lock:relation, workers 0":
+            seen = sample()
+            if seen == want:
                 break
             time.sleep(0.05)
-        if seen == "caller Lock:relation, workers 0":
-            # and it stays so for a second: no worker starts while the caller waits
-            for _ in range(20):
-                time.sleep(0.05)
-                wait = self.value("SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') "
-                                  "FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'")
-                workers = self.value("SELECT count(*) FROM pg_stat_activity "
-                                     "WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")
-                now = f"caller {wait if isinstance(wait, str) else ''}, workers {workers}"
+        if seen == want:
+            t1 = time.monotonic()
+            while time.monotonic() - t1 < 1.0:
+                now = sample()
                 if now != seen:
                     seen = f"then {now}"
                     break
+                time.sleep(0.05)
         t.join()
         holder.join()
         return seen, (f"{out.get('load', 'no result')} | {self.value(f'SELECT count(*) FROM {target}')} rows | "

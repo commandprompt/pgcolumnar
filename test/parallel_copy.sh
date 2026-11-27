@@ -2363,26 +2363,32 @@ check "the caller's lock_timeout of 1 s ends a parallel_copy that waits for anot
 check "the caller's lock_timeout of 1 s ends a parallel_copy that waits for another session's SHARE on a partition with 55P03 within 4 s (#2229)" \
 	"$(dk_lock_timeout t_dlp t_dlp_2)" "55P03 canceling statement due to lock timeout | under 4 s | 0 rows | 0 prepared"
 dk_early() {	# TARGET LOCKED -> "what the caller waited on || load | rows | prepared": another
-	# session holds SHARE on LOCKED for 3 s, with no cycle; the caller has no lock_timeout
-	local seen="" lp
+	# session holds SHARE on LOCKED for 6 s, with no cycle; the caller has no lock_timeout
+	local seen="" lp t1 now
 	psql_run "TRUNCATE $1" >/dev/null
-	dk_hold "$2" 3
+	dk_hold "$2" 6
 	( PGAPPNAME=pcopy_dk_e PGOPTIONS='-c statement_timeout=15s' remote_refusal \
 		"SELECT pgcolumnar.parallel_copy('$1'::regclass, '$F', 2)" >"$DATADIR/dk_e.out" ) &
 	lp=$!
+	dk_seen() {	# one query: the caller's wait and the number of parallel_copy workers
+		q "SELECT 'caller ' || coalesce((SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '')
+		     FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'), '') || ', workers ' ||
+		     (SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%')"
+	}
 	for _ in $(seq 40); do
-		seen="caller $(q "SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'"), workers $(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")"
+		seen="$(dk_seen)"
 		case "$seen" in "caller Lock:relation, workers 0") break ;; esac
 		sleep 0.05
 	done
-	# and it stays so for a second: no worker starts while the caller waits (a
-	# caller that locked after starting the coordinator could read the first
-	# sample before the coordinator had started)
+	# and it stays so for a second, well inside the 6 s hold: no worker starts while
+	# the caller waits (a caller that locked after starting the coordinator could
+	# read the first sample before the coordinator had started)
 	if [ "$seen" = "caller Lock:relation, workers 0" ]; then
-		for _ in $(seq 20); do
-			sleep 0.05
-			local now="caller $(q "SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'"), workers $(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")"
+		t1=$(date +%s%N)
+		while [ $(( ($(date +%s%N) - t1) / 1000000 )) -lt 1000 ]; do
+			now="$(dk_seen)"
 			[ "$now" = "$seen" ] || { seen="then $now"; break; }
+			sleep 0.05
 		done
 	fi
 	wait "$lp"; wait
