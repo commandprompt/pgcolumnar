@@ -372,7 +372,9 @@
 # guard_tests 897 -> 899 for #2232's test_ci_cluster_timeout.py, two tests (the reader on a fixture, and both
 # workflows' pytest-cluster timeouts within 1.5 to 2 times the slowest measured job), by collection over
 # NO_CLUSTER: 899 tests collected.
-guard_tests 899
+# guard_tests 899 -> 900 for #2201's test_the_subset_runs_export_sink in test_sanitizer_gate.py: the sanitizer
+# subset runs export_sink, by collection over NO_CLUSTER: 900 tests collected.
+guard_tests 900
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2543,4 +2545,4 @@ guard_tests 899
 # (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
 # collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-cluster_tests 6215
+cluster_tests 6273

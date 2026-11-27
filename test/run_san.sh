@@ -47,7 +47,7 @@ SUITES="${PGC_SAN_SUITES:-smoke native_writer native_roundtrip native_encoding \
 	native_zonemap write_fsst_compressed write_minmax_fastpath encode_effort \
 	encode_invariants \
 	native_dml native_skip native_fetch_position native_fetch_cache \
-	arrow_import arrow_export parquet_import parquet_export native_read_parquet \
+	arrow_import arrow_export parquet_import parquet_export export_sink native_read_parquet \
 	native_parquet_schema hardening corruption differential fuzz_arrow fuzz_parquet}"
 
 # --list-suites: print the subset, one name per line, and exit. Answered before
