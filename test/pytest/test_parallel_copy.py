@@ -39,6 +39,7 @@ transactions are counted in that database only, so another file's leftover canno
 redden this one.
 """
 import os
+import pathlib
 import random
 import re
 import threading
@@ -510,12 +511,12 @@ def _nl_bytes(kind, n, s):
     return bytes(out)
 
 
-def _nl_target(db, kind):
+def _nl_target(db, kind, cols="id int, txt text"):
     """(Re)creates t_nl, empty, as a single columnar table or 8 range partitions of 500 ids."""
     if kind == "single":
-        db.run("DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl (id int, txt text) USING pgcolumnar")
+        db.run(f"DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ({cols}) USING pgcolumnar")
         return
-    ddl = "DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl (id int, txt text) PARTITION BY RANGE (id);"
+    ddl = f"DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl ({cols}) PARTITION BY RANGE (id);"
     for i in range(8):
         lo = "MINVALUE" if i == 0 else i * 500 + 1
         hi = "MAXVALUE" if i == 7 else (i + 1) * 500 + 1
@@ -556,6 +557,41 @@ def _nl_loads(db, path, target, workers=(2, 3, 4)):
     for w in workers:
         _nl_target(db, target)
         got = db.nl_outcome(f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {w})", "t_nl")
+        gh = db.set_hash("SELECT * FROM t_nl")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
+
+
+def _nl_probe_bytes(kind):
+    """One #2189 review probe file, 40 rows; keys go 0100, 0200, ... 4000 in p3 and p5b,
+    and 0100, then 0600, 0700, ... 4400 in p1, p2 and p4. The shell
+    gives the layout: p1/p2 put the first line's CR at byte 65535 and its LF at
+    65536, the edge of the first 64 KiB scan read, p4 a backslash at 65535 and a CR
+    at 65536, p3 an escaped CR on line 1, p5 an empty first line, and p5b a first
+    byte that is a backslash escaping a CR."""
+    pad = b"y" * 65530
+    if kind == "p5":
+        return b"\r\n" + b"a\r\n" * 40
+    if kind == "p5b":
+        return b"\\\r\t0100\r\n" + b"".join(b"x\t%04d\r\n" % (k * 100) for k in range(2, 41))
+    first = {"p1": b"0100\t" + pad + b"\r\n", "p2": b"0100\t" + pad + b"\r\n",
+             "p3": b"0100\tx\\\r\n", "p4": b"0100\t" + pad + b"\\\rz\n"}[kind]
+    eol = b"\r\n" if kind == "p2" else b"\n"
+    step = 0 if kind == "p3" else 4
+    return first + b"".join(b"%04d\tx" % ((k + step) * 100) + eol for k in range(2, 41))
+
+
+def _nl_same(db, path, target, cols):
+    """-> "W:ok" per worker count 2, 3, 4 when the load gives heap COPY's outcome,
+    message (after "worker N failed: ") and rows; else what it gave against heap COPY."""
+    db.run(f"DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ({cols})")
+    heap = db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl")
+    hh = db.set_hash("SELECT * FROM h_nl")
+    res = []
+    for w in (2, 3, 4):
+        _nl_target(db, target, cols)
+        got = re.sub(r"\|pgcolumnar\.parallel_copy worker \d+ failed: ", "|", str(db.nl_outcome(
+            f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {w})", "t_nl")))
         gh = db.set_hash("SELECT * FROM t_nl")
         res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
     return " ".join(res)
@@ -1308,6 +1344,33 @@ def pcopy(pgc_cluster, server_dir):
         r["2189 premise heap rows"] = " ".join(
             str(_nl_heap(db, nl[name])).split("|")[1] for name in
             ("lf", "crall", "esc", "midmark", "crmark2", "crmark3", "crmark4"))
+
+        # ---- #2189, review of #2221: the first-line scan, probe by probe --------------
+        pr = {}
+        for kind in ("p1", "p2", "p3", "p4", "p5", "p5b"):
+            pr[kind] = d / f"nl_{kind}.txt"
+            pr[kind].write_bytes(_nl_probe_bytes(kind))
+            os.chmod(pr[kind], 0o644)
+
+        def probe_heap(path, cols):
+            db.run(f"DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl ({cols})")
+            return str(db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl"))
+        src = (pathlib.Path(__file__).resolve().parents[2] / "src" / "columnar_parallel_copy.c").read_text()
+        raw = {k: _read(pr[k]) for k in ("p1", "p2", "p4")}
+        r["2189 probe premise"] = (
+            f"{sum(1 for ln in src.splitlines() if ln == '#define COLUMNAR_SPLIT_SCAN_CHUNK 65536')} "
+            + " ".join(raw[k][65535:65537].hex() if isinstance(raw[k], bytes) else str(raw[k]) for k in raw)
+            + f" ; {probe_heap(pr['p1'], 'id int, txt text')} ; "
+            + " ".join([probe_heap(pr[k], "id int, txt text").split("|")[1] for k in ("p2", "p3", "p4")]
+                       + [probe_heap(pr["p5b"], "txt text, id int").split("|")[1],
+                          probe_heap(pr["p5"], "t text").split("|")[1]]))
+        for kind, target, cols in (("p1", "single", "id int, txt text"), ("p1", "part", "id int, txt text"),
+                                   ("p2", "single", "id int, txt text"), ("p2", "part", "id int, txt text"),
+                                   ("p3", "single", "id int, txt text"), ("p3", "part", "id int, txt text"),
+                                   ("p4", "single", "id int, txt text"), ("p4", "part", "id int, txt text"),
+                                   ("p5", "single", "t text"),
+                                   ("p5b", "single", "txt text, id int"), ("p5b", "part", "txt text, id int")):
+            r[f"2189 probe {kind} {target}"] = _nl_same(db, pr[kind], target, cols)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -2290,4 +2353,54 @@ def test_parallel_copy_a_consistent_newline_style_still_loads(pcopy, expect, key
     start, \\.\\n in the middle of a range, and a CRLF file whose first record holds an
     escaped LF, which does not end the first line, and ends in an escaped backslash, an
     even run, so the CR after it does."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2189, review of #2221: the first-line scan, probe by probe -------------------
+
+def test_parallel_copy_newline_probe_premise(pcopy, expect):
+    """The probes depend on the 64 KiB scan read: the source defines it as 65536, and
+    the bytes either side of offset 65536 are the CR and LF (p1, p2) or the backslash
+    and CR (p4). Heap COPY refuses p1 and loads the others."""
+    expect.text(pcopy["2189 probe premise"],
+                "1 0d0a 0d0a 5c0d ; 22P04|literal newline found in data|0 rows|0 prepared ; "
+                "40 rows 40 rows 40 rows 40 rows 41 rows",
+                "#2189 premise: COLUMNAR_SPLIT_SCAN_CHUNK is 65536; p1 and p2 hold 0d 0a at bytes 65535-65536 and"
+                " p4 5c 0d; heap COPY refuses p1 with 22P04 'literal newline found in data' and loads 40 rows from"
+                " p2, p3, p4, p5b and 41 from p5")
+
+
+NL_PROBES = (
+    ("2189 probe p1 single", "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines /"
+     " single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p1 part", "#2189 probe P1, a CRLF first line longer than one 64 KiB scan read, then LF lines /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p2 single", "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the"
+     " next, a CRLF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p2 part", "#2189 probe P2, the first line's CR ends one 64 KiB scan read and its LF starts the"
+     " next, a CRLF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p3 single", "#2189 probe P3, an escaped CR on the first line of an LF file / single table, 2, 3"
+     " and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p3 part", "#2189 probe P3, an escaped CR on the first line of an LF file / partitioned, 2, 3 and"
+     " 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p4 single", "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the"
+     " next, an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p4 part", "#2189 probe P4, a backslash ending one 64 KiB scan read escapes a CR starting the"
+     " next, an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5 single", "#2189 probe P5, a CRLF file whose first line is empty / single table of one text"
+     " column, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5b single", "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+    ("2189 probe p5b part", "#2189 probe P5b, a CRLF file whose first byte is a backslash escaping a CR /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, message and rows"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_PROBES, ids=[k[11:].replace(" ", "-") for k, _ in NL_PROBES])
+def test_parallel_copy_newline_probe_matches_heap_copy(pcopy, expect, key, name):
+    """#2189, review of #2221: five mutants of the first-line scan passed every other
+    check (one 64 KiB read only, the CR flag or the escape flag reset per read, a
+    backslash that does not escape a CR, a scan that starts at byte 1). Each probe
+    file tells one apart: the load must give heap COPY's outcome, its message after
+    "worker N failed: ", and its rows, with 2, 3 and 4 workers."""
     expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)

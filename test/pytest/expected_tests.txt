@@ -2387,4 +2387,8 @@ guard_tests 897
 # single table and a partitioned one, refused with heap COPY's SQLSTATE and message) and
 # test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
 # cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 5904
+# cluster_tests 5904 -> 5916, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
+# and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
+# compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it).
+cluster_tests 5916

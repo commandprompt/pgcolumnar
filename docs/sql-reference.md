@@ -1034,7 +1034,7 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
-Every worker holds its range to the newline style (LF or CRLF) of the file's
+Every worker holds its range to the newline style (LF, CRLF or CR) of the file's
 first line, as `COPY FROM` does. A file that changes style is refused with
 `22P04` wherever the split falls. So is a `\.\r\n` end-of-data line in a file
 with LF line ends (#2189).
