@@ -409,6 +409,7 @@ behaviour, the source of that number is named.
 - [361. test_architecture_map.py: the module map names every source file and every catalog](#361-test_architecture_mappy-the-module-map-names-every-source-file-and-every-catalog)
 - [362. test_objstore_chunked_framing.py: a chunk size that wraps the response bound is refused, and the backend survives](#362-test_objstore_chunked_framingpy-a-chunk-size-that-wraps-the-response-bound-is-refused-and-the-backend-survives)
 - [363. test_arrow_import_encoding.py: import_arrow refuses text that is not valid in the database encoding](#363-test_arrow_import_encodingpy-import_arrow-refuses-text-that-is-not-valid-in-the-database-encoding)
+- [364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time](#364-test_ci_cluster_timeoutpy-the-pytest-cluster-jobs-have-a-timeout-with-room-above-their-measured-time)
 
 ## 1. How to read a test in here
 
@@ -15076,3 +15077,24 @@ Each refusal reads `<what import_arrow returned, or SQLSTATE message>|<rows stor
 | `test_json_targets_refuse_invalid_utf8_too` | parametrized by `json` and `jsonb`: invalid bytes inside a JSON string are refused with 22021. On main before the fix both imported 3 rows |
 | `test_valid_json_still_imports` | control, parametrized by `json` and `jsonb`: valid JSON holding multibyte UTF-8 imports and reads back |
 | `test_a_nul_byte_is_refused_not_cut` | a value holding a NUL byte is refused with 22021 naming `0x00`. On main before the fix both rows imported |
+
+## 364. test_ci_cluster_timeout.py: the pytest cluster jobs have a timeout with room above their measured time
+
+The `pytest-cluster` job in `ci.yml` and in `nightly.yml` runs the cluster half of the corpus serially under `timeout-minutes` (#2232). At 40 minutes, PG 17 on #2228 (run 46017483389, attempt 1) was cancelled with every test up to 96% passing. On 2026-11-27 the slowest of 114 passing ci.yml cluster jobs took 38.0 minutes, and the nightly's legs took up to 37.5.
+
+The rule, on both workflows: the job's own timeout is at least 1.5 times the slowest measured job (57 minutes) and at most twice it (76 minutes). The measurement is `MEASURED_MAX_MINUTES` in the file, with its source beside it. Only the job-level key counts: not a comment, not a step's timeout, not the next job's.
+
+Removal proof, each failing a test here:
+
+- main's 40 in `ci.yml`: `got '40 < 57' want 'yes'`;
+- `nightly.yml` alone left at 40: `nightly.yml: ... got '40 < 57'`;
+- 56 in `ci.yml`: `got '56 < 57'`; 90 in `ci.yml`: `got '90 > 76'`;
+- the job's timeout commented out, with a step carrying `timeout-minutes: 60`: `premise: ci.yml's pytest-cluster job has a timeout: got 'False'`;
+- the reader matching any indentation: `got '5' want 'None'`; the reader not stopping at the next job: `got '15' want 'None'`.
+
+### Every test
+
+| test | what it holds |
+| --- | --- |
+| `test_the_reader_takes_only_the_jobs_own_timeout` | on a fixture: the job-level `timeout-minutes` is read; a comment, a step's timeout and the next job's are not; a job without one, and a missing job, read as none |
+| `test_each_cluster_job_timeout_has_its_margin` | `ci.yml` and `nightly.yml`: the pytest-cluster job's timeout is between 1.5 and 2 times `MEASURED_MAX_MINUTES` |

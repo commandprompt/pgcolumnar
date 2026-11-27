@@ -165,11 +165,13 @@ jobs:
   pytest-cluster:
     name: pytest (cluster tests, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
-    # 40, not 20. The run is serial and grows with every ported twin: main took 12 to 17
-    # minutes on 2026-10-22, and seven stacked port PRs were cancelled at 20m16s. More
-    # workers (-n) would be faster, but a port race under -n 2 is known (#1635), so the
-    # budget moves first and the parallel run waits for that to be settled.
-    timeout-minutes: 40
+    # 60, not 40 (#2232). The run is serial and grows with every ported twin. On
+    # 2026-11-27 the slowest of 114 passing jobs took 38.0 minutes, and PG 17 on #2228
+    # was cancelled at 40 with every test up to 96% passing. 60 is at least 1.5 times
+    # the slowest measured job and at most twice it, which test_ci_cluster_timeout.py
+    # holds. It was 20 until seven stacked port PRs were cancelled at 20m16s. More
+    # workers (-n) would be faster, but a port race under -n 2 is known (#1635).
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -315,7 +317,7 @@ jobs:
           /tmp/pgcvenv/bin/python -c 'import duckdb; print("duckdb", duckdb.__version__)'
           export PGC_REQUIRE=pyarrow,duckdb
           # TWIN OF native_scale AT 200000 ROWS (#2018, review of #2021). The job runs
-          # close to its 40-minute limit, and the twin's default is 500000. At
+          # close to its time limit, and the twin's default is 500000. At
           # 200000 the twin still fails the two regressions it guards: the
           # allocator's missing CommandCounterIncrement and broken free-space
           # reuse. The shell suite keeps its default in the suites job.
