@@ -598,7 +598,10 @@ hex_digit_value(char c)
  *		Read one field of a COPY text-format line at p, as core COPY's text
  *		attribute reader does with the delimiter and NULL marker the loaders use
  *		(TAB and \N, the defaults) (#2202). The field ends at an unescaped TAB, at
- *		a CR or LF, or at the end of the string. A backslash escapes the byte after
+ *		a CR or LF, or at a NUL byte: the end of the buffer, or a raw NUL in the
+ *		line, which core refuses before it reads any field (22021), so a row
+ *		that holds one is refused here with a different SQLSTATE than COPY's
+ *		(jdatcmd's review of #2220). A backslash escapes the byte after
  *		it, whatever that byte is: a backslash and a raw TAB are a TAB inside the
  *		value, not the end of the field. \NNN (1-3 octal digits), \xH and \xHH
  *		(hex), and \b \f \n \r \t \v decode; any other escaped byte, a second

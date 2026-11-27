@@ -1267,6 +1267,85 @@ check "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database 
 check "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's" \
 	"$(PGC_DB=$ESC_UTF8 esc_pcopy highbit "$F_HIGHBIT" 4)" "$ESC_HEAP_highbit"
 
+# Six more decoder rules, from jdatcmd's review of 19bb9309 (mutants M04-M07, M10
+# and M13 there). Same reading as above.
+#   crtk     (t, id)  CR-only line ends: CR ends the key field, and the file has
+#                     no LF at all
+#   barecr   (t, id)  row 1200 is a, TAB, 1200, a raw CR, junk: COPY refuses the
+#                     raw CR with 22P04, and the key is 1200, not 1200junk
+#   bseof    (t, id)  the last row, 2000, ends in a lone backslash with no newline
+#                     after it: COPY drops the backslash
+#   hex3     (id, t)  row 1200's key is \x31200: \x reads two hex digits, \x31 is
+#                     1, and the key is 1200
+#   hexspc   (id, t)  row 1200's key is \x201200\x20: a space each side
+#   oct400   (id, t)  row 1200's key is 12\400: \400 is 0x100 & 0xFF, a NUL, so
+#                     22021 (in the UTF8 database), not a key of 12
+#   hexupper (id, t)  row 1200's key is \x2B1200, +1200: an uppercase hex digit
+#   toofew   (t, id)  row 1200 is just a, with no key field: COPY refuses it with
+#                     22P04, and so must the splitter, not read an empty key
+F_CRTK="$DATADIR/crtk.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) printf "a%d\t%d\r", i, i }' >"$F_CRTK"
+F_BARECR="$DATADIR/barecr.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\t1200\rjunk\n"; else printf "a%d\t%d\n", i, i }' >"$F_BARECR"
+F_BSEOF="$DATADIR/bseof.txt"
+awk 'BEGIN { for (i = 1; i < 2000; i++) printf "a%d\t%d\n", i, i; printf "a2000\t2000\\" }' >"$F_BSEOF"
+F_HEX3="$DATADIR/hex3.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x31200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEX3"
+F_HEXSPC="$DATADIR/hexspc.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x201200\\x20\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXSPC"
+F_OCT400="$DATADIR/oct400.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "12\\400\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_OCT400"
+F_HEXUPPER="$DATADIR/hexupper.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x2B1200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXUPPER"
+F_TOOFEW="$DATADIR/toofew.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\n"; else printf "a%d\t%d\n", i, i }' >"$F_TOOFEW"
+chmod 644 "$F_CRTK" "$F_BARECR" "$F_BSEOF" "$F_HEX3" "$F_HEXSPC" "$F_OCT400" "$F_HEXUPPER" "$F_TOOFEW"
+for _e in crtk:tk barecr:tk bseof:tk hex3:kt hexspc:kt oct400:kt:u hexupper:kt toofew:tk; do
+	case "$_e" in *:kt*) _cols="id int, t text" ;; *) _cols="t text, id int" ;; esac
+	_n="${_e%%:*}"; _db="$PGC_DB"; case "$_e" in *:u) _db="$ESC_UTF8" ;; esac
+	PGC_DB="$_db" mkesc "h_$_n" "$_cols" heap
+	PGC_DB="$_db" mkesc "t_$_n" "$_cols" pgcolumnar
+done
+for _e in crtk barecr bseof hex3 hexspc hexupper toofew; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+printf -v ESC_HEAP_oct400 '%s' "$(PGC_DB=$ESC_UTF8 esc_reading "COPY h_oct400 FROM '$F_OCT400'" h_oct400)"
+check "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in 30 5c (#2202)" \
+	"$(for _e in crtk bseof hex3 hexspc hexupper barecr toofew oct400; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(tr -cd '\n' <"$F_CRTK" | wc -c) $(tail -c 2 "$F_BSEOF" | od -An -tx1 | tr -d ' ')" \
+	"2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 22P04 22P04 22021 0 305c"
+check "#2202 CR-only line ends / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy crtk "$F_CRTK" 2)" "$ESC_HEAP_crtk"
+check "#2202 CR-only line ends / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy crtk "$F_CRTK" 4)" "$ESC_HEAP_crtk"
+check "#2202 a raw CR in the middle of the key's line / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy barecr "$F_BARECR" 2)" "$ESC_HEAP_barecr"
+check "#2202 a raw CR in the middle of the key's line / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy barecr "$F_BARECR" 4)" "$ESC_HEAP_barecr"
+check "#2202 a lone backslash at the end of the file, after the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bseof "$F_BSEOF" 2)" "$ESC_HEAP_bseof"
+check "#2202 a lone backslash at the end of the file, after the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy bseof "$F_BSEOF" 4)" "$ESC_HEAP_bseof"
+check "#2202 a hex escape followed by a third hex digit in the key / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hex3 "$F_HEX3" 2)" "$ESC_HEAP_hex3"
+check "#2202 a hex escape followed by a third hex digit in the key / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hex3 "$F_HEX3" 4)" "$ESC_HEAP_hex3"
+check "#2202 a key between two hex-escaped spaces / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexspc "$F_HEXSPC" 2)" "$ESC_HEAP_hexspc"
+check "#2202 a key between two hex-escaped spaces / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexspc "$F_HEXSPC" 4)" "$ESC_HEAP_hexspc"
+check "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy oct400 "$F_OCT400" 2)" "$ESC_HEAP_oct400"
+check "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's" \
+	"$(PGC_DB=$ESC_UTF8 esc_pcopy oct400 "$F_OCT400" 4)" "$ESC_HEAP_oct400"
+check "#2202 a key with an uppercase hex escape / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexupper "$F_HEXUPPER" 2)" "$ESC_HEAP_hexupper"
+check "#2202 a key with an uppercase hex escape / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexupper "$F_HEXUPPER" 4)" "$ESC_HEAP_hexupper"
+check "#2202 a row with too few fields for the key / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy toofew "$F_TOOFEW" 2)" "$ESC_HEAP_toofew"
+check "#2202 a row with too few fields for the key / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy toofew "$F_TOOFEW" 4)" "$ESC_HEAP_toofew"
+
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on

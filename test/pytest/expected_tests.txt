@@ -2389,4 +2389,8 @@ guard_tests 897
 # widely (a key that only starts with \N, a key whose value is \N, escaped 8 and 9, \x with no hex digit, and
 # a key that decodes to a NUL or a non-UTF-8 byte in a UTF8 database), by collection of the files NO_CLUSTER
 # does not name, as ci.yml selects them.
-cluster_tests 5906
+# cluster_tests 5906 -> 5923, still #2202, for jdatcmd's review of #2220 at 19bb9309: a third premise and 16
+# more cases in test_parallel_copy.py, eight files by 2 and 4 workers, one per decoder mutant that survived
+# (CR as a field end, a lone trailing backslash, \x reads at most two hex digits, an octal NUL, an uppercase hex
+# digit, a row with too few fields), by collection of the files NO_CLUSTER does not name, as ci.yml selects them.
+cluster_tests 5923

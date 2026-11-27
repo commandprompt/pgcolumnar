@@ -1086,6 +1086,49 @@ def pcopy(pgc_cluster, server_dir):
                str(udb.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
                              "WHERE datname = current_database()"))])
 
+        # Six more decoder rules, from jdatcmd's review of 19bb9309 (M04-M07, M10 and
+        # M13 there). oct400 loads in the UTF8 database. The shell lists the files.
+
+        def tk_row1200(row):
+            return b"".join(row if i == 1200 else b"a%d\t%d\n" % (i, i) for i in range(1, 2001))
+
+        more_files = {
+            "crtk": ("tk", b"".join(b"a%d\t%d\r" % (i, i) for i in range(1, 2001))),
+            "barecr": ("tk", tk_row1200(b"a\t1200\rjunk\n")),
+            "bseof": ("tk", b"".join(b"a%d\t%d\n" % (i, i) for i in range(1, 2000)) + b"a2000\t2000\\"),
+            "hex3": ("kt", row1200(b"\\x31200")),
+            "hexspc": ("kt", row1200(b"\\x201200\\x20")),
+            "oct400": ("kt", row1200(b"12\\400")),
+            "hexupper": ("kt", row1200(b"\\x2B1200")),
+            "toofew": ("tk", tk_row1200(b"a\n")),
+        }
+        for key in more_files:
+            over_db[key] = udb if key == "oct400" else db
+        for key, (shape, body) in more_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            cols = "id int, t text" if shape == "kt" else "t text, id int"
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                over_db[key].run(
+                    f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                    f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO (500) USING {am}; "
+                    f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM (500) TO (1000) USING {am}; "
+                    f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM (1000) TO (1500) USING {am}; "
+                    f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM (1500) TO (MAXVALUE) USING {am}")
+        for key in more_files:
+            r[f"2202 {key} heap"] = _esc_reading(over_db[key], f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in more_files:
+            for w in (2, 4):
+                over_db[key].run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    over_db[key], f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})",
+                    f"t_{key}")
+        r["2202 premise 3"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in
+             ("crtk", "bseof", "hex3", "hexspc", "hexupper", "barecr", "toofew", "oct400")]
+            + [str(more_files["crtk"][1].count(b"\n")), more_files["bseof"][1][-2:].hex()])
+
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
@@ -1940,6 +1983,38 @@ KEY_ESCAPES = (
      " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
     ("highbit 4", "#2202 a key that decodes to a byte that is not UTF-8, in a UTF8 database"
      " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("crtk 2", "#2202 CR-only line ends"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("crtk 4", "#2202 CR-only line ends"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("barecr 2", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("barecr 4", "#2202 a raw CR in the middle of the key's line"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("bseof 2", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("bseof 4", "#2202 a lone backslash at the end of the file, after the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 2", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hex3 4", "#2202 a hex escape followed by a third hex digit in the key"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 2", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexspc 4", "#2202 a key between two hex-escaped spaces"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("oct400 2", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 2 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("oct400 4", "#2202 a key with an octal escape that decodes to a NUL byte, in a UTF8 database"
+     " / partitioned, 4 workers: outcome (22021), rows per partition and rows == heap COPY's"),
+    ("hexupper 2", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexupper 4", "#2202 a key with an uppercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("toofew 2", "#2202 a row with too few fields for the key"
+     " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("toofew 4", "#2202 a row with too few fields for the key"
+     " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
 )
 
 
@@ -1950,6 +2025,14 @@ def test_parallel_copy_over_applied_escape_files_load_with_heap_copy(pcopy, expe
                 "premise: heap COPY loads escother and hexlit 2000 rows each, refuses nprefkey with 22P02 on N5,"
                 " bsnkey with 22P02 on backslash N, hexlitkey with 22P02 and nulkey and highbit with 22021; hexlit's"
                 " t is a<id>x or a<id>xg; the database nulkey and highbit load in is UTF8 (#2202)")
+
+
+def test_parallel_copy_review_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 3"],
+                "2000 rows 2000 rows 2000 rows 2000 rows 2000 rows 22P04 22P04 22021 0 305c",
+                "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr"
+                " and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in"
+                " 30 5c (#2202)")
 
 
 @pytest.mark.parametrize("key,name", KEY_ESCAPES, ids=[k for k, _ in KEY_ESCAPES])
