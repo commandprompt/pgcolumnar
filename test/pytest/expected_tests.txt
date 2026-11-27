@@ -2314,11 +2314,82 @@ guard_tests 897
 # table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
 # by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
 # main 91637726).
-# cluster_tests 5756 -> 5776 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# cluster_tests 5756 -> 5760 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
+# FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
+# 6274 tests collected, less guard_tests 894.
+# cluster_tests 5760 -> 5764 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
+# over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
+# PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
+# cluster_tests 5764 -> 5770 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
+# two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
+# cluster_tests 5770 -> 5771 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
+# parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
+# collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
+# cluster_tests 5771 -> 5775 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
+# a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
+# cluster_tests 5775 -> 5777 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
+# struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
+# cluster_tests 5777 -> 5781 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
+# leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
+# cluster_tests 5781 -> 5787 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
+# rewrite both commit (three tests, each parametrized over the two verbs), by collection:
+# `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5787 -> 5793, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
+# "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
+# cluster_tests 5793 -> 5819, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
+# before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
+# with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
+# cluster_tests 5819 -> 5831, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
+# pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
+# lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
+# cluster_tests 5831 -> 5849, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
+# lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
+# inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
+# max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5555 tests collected.
+# cluster_tests 5849 -> 5856, still #2074, for the review of #2139 at b1d94859: two more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
+# 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
+# and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
+# cluster_tests 5856 -> 5866, still #2074, for the review of #2139 at 42763bd3: five more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. Each verb gives back every group lock it took
+# before it waits on a busy last group, so a writer that then updates group 0 and the rewrite both commit, and
+# with a limit of 0 a user lock_timeout ends the wait with PostgreSQL's own lock-timeout error, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5665 tests collected.
+# cluster_tests 5866 -> 5872, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. While each verb waits on a busy last group it
+# holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
+# and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5672 tests collected.
+# cluster_tests 5872 -> 5892 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
 # queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
 # opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
 # statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
 # 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
 # lock refusal, after #2080's unique-index refusal and after #2211's own-write refusal (3), by collection
 # over the cluster files.
-cluster_tests 5776
+# cluster_tests 5892 -> 5899 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
+# caller's lock on pgcolumnar.load_fingerprint and a coordinator behind another session's SHARE lock each return
+# their statement_timeout promptly, a late trigger's DETAIL, an ENABLE ALWAYS trigger refused, an ENABLE REPLICA
+# trigger loaded, the hold setting refused to a non-superuser, and one lost loader of 3 failing the load
+# promptly, by collection over the cluster files.
+cluster_tests 5899

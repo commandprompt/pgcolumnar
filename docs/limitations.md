@@ -321,11 +321,10 @@ these constraints.
   either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
   default `session_replication_role`. One worker still runs the trigger for every
   row.
-- The function does not look inside CHECK constraints or column defaults. One
-  whose VOLATILE function writes to another table, such as a table with a primary
-  key, can make the workers wait on each other the same way, and the load ends at
-  `statement_timeout` or with a deadlock error. Load such a table with
-  `workers => 1`.
+- The function does not look inside CHECK constraints or column defaults. Some
+  of them call a VOLATILE function that writes to another table. Then the workers
+  can wait on each other the same way, until `statement_timeout` or a deadlock
+  error. Load such a table with `workers => 1`.
 - A `CREATE INDEX` that starts while the workers open the table waits until the
   load ends. It used to be able to hang the load.
 - For a partitioned target the file must be sorted ascending by the partition
@@ -748,6 +747,29 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
+- Two writers can deadlock on one table with no maintenance running (#2184). A
+  writer holds two locks to commit. One is the delete lock of each row group it
+  deletes from. The other is the table's storage-row lock, which every flush of
+  new rows takes. It
+  can take them in either order. A transaction that deletes, scans and then
+  inserts takes the delete lock first; one that inserts, scans and then deletes
+  takes the storage-row lock first. When two such transactions meet, one gets
+  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
+  do not queue behind them. Before it writes, a rewrite needs the storage-row lock
+  and every row group's delete lock at once. It waits for each busy lock alone,
+  holding none, and tries again, so it never closes a deadlock with a writer. It
+  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  stream of short delete transactions can keep one lock busy at every try. After
+  `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
+  `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
+  its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
+  its row groups wait for it to commit.
+- Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
+  transaction. The first verb keeps the storage-row lock until commit. A second
+  verb in the same transaction then waits for a busy row group while it holds that
+  lock, and a writer can get 40P01. The maintenance daemon runs both verbs in one
+  transaction when both are due on a table, so it can meet this case (#2194).
 
 ## Row locking
 
