@@ -443,7 +443,7 @@ check "C both different-group deletes survived (ids 1,5 gone)" \
 # ---------------------------------------------------------------------------
 # lks APP CLASS -> that session's advisory locks of CLASS, "(waiting)" if not granted, or <none>
 lks() {
-	ctl_q "SELECT coalesce(string_agg(l.mode || CASE WHEN l.granted THEN '' ELSE '(waiting)' END, ',' ORDER BY l.mode), '<none>') FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = '$1' AND l.locktype = 'advisory' AND l.objsubid = $2;"
+	ctl_q "SELECT coalesce(string_agg(l.mode || CASE WHEN l.granted THEN '' ELSE '(waiting)' END, ',' ORDER BY l.mode || CASE WHEN l.granted THEN '' ELSE '(waiting)' END), '<none>') FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = '$1' AND l.locktype = 'advisory' AND l.objsubid = $2;"
 }
 # poll (bounded) until the session's queued sentinel appeared or it waits on a lock
 wait_settled() {  # name application_name label
@@ -566,6 +566,156 @@ check "F a third writer's INSERT, with a 2 s lock_timeout, commits while the sec
 send_wait s2 f_commit "COMMIT;"
 check "F all three INSERTs took effect" \
 	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t6;")" "1,2,3"
+
+# G: writers of unrelated rows that share a row-identity bucket (class 104). Once
+# writers stopped waiting for each other on 102, two transactions that each ran a
+# DELETE and then an UPDATE of their own rows deadlocked in concurrent_diff: each
+# flush took its rows' buckets, held to commit, and the second flush of each
+# waited for a bucket the other's first flush held. A flush now takes a bucket
+# only if it is free; the chunk-group locks it already holds are what make a
+# writer of the same rows finish first. s1 deletes 39999 rows, so it holds every
+# bucket, and s2 then deletes rows of another row group.
+ctl_q "CREATE TABLE t7 (id int) USING pgcolumnar;" >/dev/null
+ctl_q "INSERT INTO t7 SELECT g FROM generate_series(1,40000) g;" >/dev/null
+ctl_q "INSERT INTO t7 SELECT g FROM generate_series(40001,40004) g;" >/dev/null
+# buckets APP -> that session's granted row-identity locks / row_lock_buckets
+buckets() {
+	ctl_q "SELECT count(*) || '/' || current_setting('pgcolumnar.row_lock_buckets') FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = '$1' AND l.locktype = 'advisory' AND l.objsubid = 104 AND l.granted;"
+}
+mark="$(err_mark)"
+send_wait s1 g_begin "BEGIN;"
+send_wait s1 g_del "DELETE FROM t7 WHERE id BETWEEN 2 AND 40000; SELECT count(*) FROM t7;"
+check "G s1's DELETE of 39999 rows takes every row-identity bucket, all free, and holds them" \
+	"$(buckets cc_s1)" "1024/1024"
+send_wait s2 g_del "BEGIN; SET LOCAL lock_timeout = '2s'; DELETE FROM t7 WHERE id = 40001; SELECT count(*) FROM t7;"
+check "G s2's DELETE in another row group, with a 2 s lock_timeout, returns holding its group lock and no bucket" \
+	"$(errs_since "$mark")/$(lks cc_s2 101)/$(lks cc_s2 104)" "0/ExclusiveLock/<none>"
+send_wait s1 g_upd "UPDATE t7 SET id = 0 WHERE id = 1; SELECT count(*) FROM t7;"
+send_wait s2 g_upd "UPDATE t7 SET id = 40000 WHERE id = 40002; SELECT count(*) FROM t7;"
+send_wait s1 g_commit "COMMIT;"
+send_wait s2 g_commit "COMMIT;"
+check "G both deleting-then-updating transactions commit" \
+	"$(errs_since "$mark")" "0"
+check "G both DELETEs and both UPDATEs took effect" \
+	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t7;")" "0,40000,40003,40004"
+
+# H: what serializes two writers of one row now is the chunk-group lock, taken for
+# every group of the flush before the same-row check. s2's UPDATE marks a row of
+# each of two groups; the second is the row s1 updated and has not committed.
+# s2 must wait for s1 before it checks, or it finds no committed conflict, and
+# both new versions of that row survive.
+ctl_q "CREATE TABLE t8 (id int) USING pgcolumnar;" >/dev/null
+ctl_q "INSERT INTO t8 SELECT g FROM generate_series(1,4) g;" >/dev/null
+ctl_q "INSERT INTO t8 SELECT g FROM generate_series(5,8) g;" >/dev/null
+send_wait s2 h_verbose "\\set VERBOSITY verbose"
+mark="$(err_mark)"
+send_wait s1 h_upd "BEGIN; UPDATE t8 SET id = -6 WHERE id = 6; SELECT count(*) FROM t8;"
+send s2 "UPDATE t8 SET id = id + 100 WHERE id IN (2, 6);"
+send s2 "\\echo <<h_upd2>>"
+wait_blocked cc_s2 || true
+check "premise: H s2's UPDATE waits on a group lock while s1 is open" \
+	"$(lks cc_s2 101)" "ExclusiveLock,ExclusiveLock(waiting)"
+send_wait s1 h_commit "COMMIT;"
+wait_sentinel s2 h_upd2
+check "H once s1 commits, s2's UPDATE of the same row fails with serialization_failure" \
+	"$(errs_since "$mark")/$(grep -c 'ERROR:  40001: columnar: could not serialize access due to concurrent update or delete of the same row' "$WORKDIR/s2.out")" "1/1"
+check "H the row s1 updated has one version, and s2 changed nothing" \
+	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t8;")" "-6,1,2,3,4,5,7,8"
+
+# I: two first writers at REPEATABLE READ. The second waits for the first to
+# insert the storage row; once it has committed, the re-check under the lock must
+# read the latest committed state, not the transaction's snapshot, which predates
+# that row, or the second inserts the row again and fails with 23505 on
+# storage_pkey.
+ctl_q "CREATE TABLE t9 (id int) USING pgcolumnar;" >/dev/null
+check "premise: I t9 has no storage row before its first write" \
+	"$(ctl_q "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 't9'::regclass;")" "0"
+mark="$(err_mark)"
+send_wait s1 i_begin "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM t9;"
+send_wait s2 i_begin "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM t9;"
+send_wait s1 i_ins "INSERT INTO t9 VALUES (1); SELECT count(*) FROM t9;"
+send s2 "INSERT INTO t9 VALUES (2); SELECT count(*) FROM t9;"
+send s2 "\\echo <<i_ins2>>"
+wait_blocked cc_s2 || true
+check "premise: I the second first writer waits on the storage-row lock" \
+	"$(lks cc_s2 102)" "ExclusiveLock(waiting)"
+send_wait s1 i_commit "COMMIT;"
+wait_sentinel s2 i_ins2
+send_wait s2 i_commit "COMMIT;"
+check "I a second first writer at REPEATABLE READ commits once the first has, and the table has one storage row" \
+	"$(errs_since "$mark")/$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t9;")/$(ctl_q "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 't9'::regclass;")" \
+	"0/1,2/1"
+
+# J: the workload of concurrent_diff and of #2251, bounded. Six writers, five
+# rounds each; a round is one transaction on its own 3000 ids: an INSERT of them
+# (or, in the second table, rows already there), a DELETE of id % 7 = 0 and an
+# UPDATE of id % 5 = 0. No row is shared, so no transaction may fail. Each
+# statement runs under a 60 s statement_timeout and lock_timeout.
+J_W=6; J_R=5; J_N=3000; J_ALL=$((J_W * J_R * J_N))
+ctl_q "CREATE TABLE tj_ins (id int, v bigint) USING pgcolumnar;" >/dev/null
+ctl_q "CREATE TABLE tj_pre (id int, v bigint) USING pgcolumnar;" >/dev/null
+# one row group per round's ids, so writers share no group lock (class 101) and
+# only buckets (class 104): a group shared by all would queue them on its lock
+ctl_q "SELECT pgcolumnar.set_options('tj_pre', chunk_group_row_limit => 1000, stripe_row_limit => $J_N);" >/dev/null
+ctl_q "INSERT INTO tj_pre SELECT g, g FROM generate_series(1, $J_ALL) g;" >/dev/null
+j_run() {  # table insert(0|1) -> failed transactions over all writers and rounds
+	local t="$1" ins="$2" w r lo hi pids=()
+	for w in $(seq 0 $((J_W - 1))); do
+		(
+			for r in $(seq 0 $((J_R - 1))); do
+				lo=$(( (w * J_R + r) * J_N + 1 )); hi=$(( lo + J_N - 1 ))
+				{
+					echo "BEGIN; SET LOCAL statement_timeout = '60s'; SET LOCAL lock_timeout = '60s';"
+					[ "$ins" = 1 ] && echo "INSERT INTO $t SELECT g, g FROM generate_series($lo, $hi) g;"
+					echo "DELETE FROM $t WHERE id BETWEEN $lo AND $hi AND id % 7 = 0;"
+					echo "UPDATE $t SET v = v + 1 WHERE id BETWEEN $lo AND $hi AND id % 5 = 0;"
+					echo "COMMIT;"
+				} > "$WORKDIR/j.$t.$w.$r.sql"
+				run_pg "$PSQL -f '$WORKDIR/j.$t.$w.$r.sql'" >/dev/null 2>>"$WORKDIR/j.$t.$w.err" ||
+					echo x >> "$WORKDIR/j.$t.$w.failed"
+			done
+		) &
+		pids+=($!)
+	done
+	for w in "${pids[@]}"; do wait "$w"; done
+	cat "$WORKDIR"/j."$t".*.failed 2>/dev/null | wc -l | tr -d ' '
+}
+# the rows and sums the rounds leave, computed from the ids alone
+J_WANT="$(ctl_q "SELECT count(*) || ' ' || sum(g + CASE WHEN g % 5 = 0 THEN 1 ELSE 0 END) FROM generate_series(1, $J_ALL) g WHERE g % 7 <> 0;")"
+check "J six writers that each insert, delete and update their own rows, five rounds: no transaction fails" \
+	"$(j_run tj_ins 1)" "0"
+check "J and their rows are what the rounds leave" \
+	"$(ctl_q "SELECT count(*) || ' ' || sum(v) FROM tj_ins;")" "$J_WANT"
+check "J six writers that each delete and update their own existing rows, five rounds: no transaction fails (#2251)" \
+	"$(j_run tj_pre 0)" "0"
+check "J and those rows are what the rounds leave" \
+	"$(ctl_q "SELECT count(*) || ' ' || sum(v) FROM tj_pre;")" "$J_WANT"
+
+# K: a rewrite in a transaction that has written to the table, while another
+# writer is open. Each holds the storage-row lock in ShareLock; a rewrite that
+# waited for ExclusiveLock there, holding the relation's
+# ShareUpdateExclusiveLock, deadlocked with the other doing the same. It refuses
+# at once instead, and once no other writer is open the same rewrite runs.
+send_wait s1 k_verbose "\\set VERBOSITY verbose"
+for verb in "recluster:pgcolumnar.recluster('%T', 'id')" "compact_rewrite:pgcolumnar.compact_rewrite('%T', 0.0)"; do
+	vname="${verb%%:*}"; t="tk_$vname"; call="${verb#*:}"; call="${call//%T/$t}"
+	ctl_q "CREATE TABLE $t (id int) USING pgcolumnar;" >/dev/null
+	ctl_q "SELECT pgcolumnar.set_options('$t', stripe_row_limit => 1000);" >/dev/null
+	ctl_q "INSERT INTO $t SELECT g FROM generate_series(1,3000) g;" >/dev/null
+	ctl_q "DELETE FROM $t WHERE id % 2 = 0;" >/dev/null
+	mark="$(err_mark)"
+	send_wait s1 "k_ins_$vname" "BEGIN; INSERT INTO $t VALUES (0); SELECT count(*) FROM $t;"
+	send_wait s2 "k_ins_$vname" "BEGIN; INSERT INTO $t VALUES (-1); SELECT count(*) FROM $t;"
+	send s1 "SELECT $call;"
+	send s1 "\\echo <<k_rw_$vname>>"
+	wait_settled s1 cc_s1 "k_rw_$vname"
+	check "K $vname after s1's own INSERT, while s2's INSERT is open, refuses at once with 55P03" \
+		"$(grep -c "<<k_rw_$vname>>" "$WORKDIR/s1.out")/$(grep -c "ERROR:  55P03: cannot rewrite table \"$t\" while another open transaction has written to it" "$WORKDIR/s1.out")" "1/1"
+	send_wait s1 "k_rb_$vname" "ROLLBACK;"
+	send_wait s2 "k_rw_$vname" "SELECT $call; COMMIT;"
+	check "K once s1 has rolled back, s2's $vname after its own INSERT commits, and the rows are kept" \
+		"$(errs_since "$mark")/$(ctl_q "SELECT count(*) || ' ' || count(*) FILTER (WHERE id IN (0,-1)) FROM $t;")" "1/1501 1"
+done
 
 send s1 "\\q"
 send s2 "\\q"

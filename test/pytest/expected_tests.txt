@@ -2574,4 +2574,8 @@ guard_tests 900
 # cluster_tests 6239 -> 6259 for #2184's twenty tests in test_concurrency.py (scenarios D, E and F: two writers'
 # chunk-group and storage-row locks form no cycle), restated on main 728d4217, by collection over the cluster files
 # (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6259
+# cluster_tests 6259 -> 6277 for eighteen more tests in test_concurrency.py (#2184 review, #2251): scenarios G to K,
+# writers of unrelated rows sharing row-identity buckets, the same row on the chunk-group locks, two first writers at
+# REPEATABLE READ, six writers of their own rows over five rounds, and a rewrite after a write (2 parametrized x 2),
+# by collection of that file (28 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6277

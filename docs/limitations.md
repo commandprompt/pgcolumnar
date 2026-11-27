@@ -97,7 +97,8 @@ produce a NULL where a value exists, unless the native format version also
 changes with it.
 
 **Do not downgrade the extension below the version that wrote a table.** After
-1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. It
+1.0-alpha5 writes to a table, 1.0-alpha4 refuses that table on every path. A
+write includes a `DELETE` alone (#2184): a delete raises the stamp too. It
 reports an error rather than a wrong answer. Upgrading is safe and needs no
 conversion. A newer build reads every descriptor version it has ever written.
 Both guards are pinned by `test/native_format.sh`.
@@ -693,9 +694,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `pgcolumnar.enable_row_update_lock` (default on) controls this serialization.
   The GUC `pgcolumnar.row_lock_buckets` (default 1024) bounds the held locks per
   storage, so a bulk update cannot exhaust the lock table. Unrelated rows may
-  share a bucket, which only makes them wait when they need not. For the same
-  reason, two multi-statement transactions can rarely deadlock, even on disjoint
-  rows. This happens when their bucketed locks collide in opposite statement order.
+  share a bucket. At the end of a statement a writer skips a bucket another
+  transaction holds. It waits only on the row groups it deletes from, so writers
+  of disjoint row groups never wait for each other there (#2184). An `UPDATE` on a
+  table with a unique index waits on each row's bucket as it reaches it. So two
+  multi-statement transactions that run such `UPDATE`s can rarely deadlock, even
+  on disjoint rows, when their buckets collide in opposite statement order.
   Retry resolves it, as with any serialization failure.
 - `SERIALIZABLE` works on columnar tables: a write skew between two serializable
   transactions fails one of them with `serialization_failure` (40001), as on a
@@ -744,8 +748,10 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
-- Writers to one table do not deadlock on pgColumnar's own table locks (#2184).
-  A writer holds the delete lock of each row group it deletes from until
+- Two plain writers to one table, transactions that only insert, delete and
+  update, do not deadlock on pgColumnar's own table locks (#2184, #2251). A
+  rewrite verb in a transaction that has written to the table is the
+  exception below. A writer holds the delete lock of each row group it deletes from until
   commit. It also holds the table's storage-row lock, which every flush of new
   rows takes. Writers share the storage-row lock, so a transaction that inserts and
   then deletes, and one that deletes and then inserts, both commit. The first write
@@ -762,6 +768,12 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
   its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
   its row groups wait for it to commit.
+- A `pgcolumnar.recluster` or `pgcolumnar.compact_rewrite` in a transaction that
+  has already written to the table does not wait for the storage-row lock. It
+  stops at once with SQLSTATE `55P03` while another writer of the table is open,
+  and changes nothing. Waiting there could deadlock with that writer if it ran a
+  rewrite too (#2184). Before, the other writer's `INSERT`
+  waited instead. Run a rewrite in a transaction of its own.
 - Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
   transaction. The first verb keeps the storage-row lock until commit. A second
   verb in the same transaction then waits for a busy row group while it holds that

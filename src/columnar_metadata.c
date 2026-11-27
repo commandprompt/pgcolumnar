@@ -1932,6 +1932,34 @@ PgColumnarUnlockStorageRow(uint64 storageId)
 	LockRelease(&tag, ExclusiveLock, false);
 }
 
+/*
+ * PgColumnarConditionalLockStorageRow / PgColumnarStorageRowShareHeldByMe
+ *		For a rewrite in a transaction that has written to the table: it holds
+ *		the storage-row lock in ShareLock, and must not wait for ExclusiveLock
+ *		(see lock_rewrite_groups in columnar_vacuum.c, #2184).
+ */
+bool
+PgColumnarConditionalLockStorageRow(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+	return LockAcquire(&tag, ExclusiveLock, false, true) != LOCKACQUIRE_NOT_AVAIL;
+}
+
+bool
+PgColumnarStorageRowShareHeldByMe(uint64 storageId)
+{
+	LOCKTAG		tag;
+
+	storage_row_lock_tag(&tag, storageId);
+#if PG_VERSION_NUM >= 170000
+	return LockHeldByMe(&tag, ShareLock, false);
+#else
+	return LockHeldByMe(&tag, ShareLock);
+#endif
+}
+
 void
 PgColumnarUpsertDeleteVector(uint64 storageId, DeleteVectorMetadata *rm)
 {
