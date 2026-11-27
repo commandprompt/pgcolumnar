@@ -605,6 +605,46 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
 - `read_parquet`, `import_parquet` and the Parquet foreign table now read a
   REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
   pyarrow does (#2079, #1916). They returned wrong values with no error: an

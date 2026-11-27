@@ -2342,4 +2342,42 @@ guard_tests 897
 # #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
 # leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
-cluster_tests 5781
+# cluster_tests 5781 -> 5787 for #2074 in test_native_rewrite_conc.py: an online recluster and compact_rewrite
+# take the storage-row lock before the chunk-group locks, so a single-row UPDATE from an open writer and the
+# rewrite both commit (three tests, each parametrized over the two verbs), by collection:
+# `PGC_PG_CONFIG=... pytest --collect-only -q`: 6276 tests collected, less guard_tests 894.
+# cluster_tests 5787 -> 5793, still #2074: three more tests, each parametrized over the two verbs. A writer that
+# deleted and scanned (holding the chunk-group lock) and then inserts must also commit beside each rewrite, and
+# "that UPDATE took effect" is now one check per verb, by collection: 6282 tests collected, less guard_tests 894.
+# cluster_tests 5793 -> 5819, still #2074, for the review of #2139 at 630f63e3: thirteen more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The rewrite gives back its group locks
+# before it waits and the busy group's lock after, counts a lock its own transaction holds as taken, and stops
+# with 55P03 within pgcolumnar.rewrite_lock_timeout under steady deletes and behind a writer that stays open,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5422 tests collected.
+# cluster_tests 5819 -> 5831, still #2074, for the review of #2139 at 2fe1d31f: six more tests in
+# test_native_rewrite_conc.py, each parametrized over the two verbs. The verb stops within
+# pgcolumnar.rewrite_lock_timeout behind an inserter that holds the storage-row lock, gives the session's
+# lock_timeout back after success and after 55P03, and yields to a shorter user lock_timeout, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5448 tests collected.
+# cluster_tests 5831 -> 5849, still #2074, for the review of #2139 at 686aed4e: eight more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and two for compact_rewrite alone. A longer user
+# lock_timeout does not replace the limit, a paused rewrite also holds the storage-row lock and a writer that
+# inserts and then deletes beside it commits, a limit of 0 waits without a limit, and compact_rewrite with
+# max_groups 1 locks one group, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5555 tests collected.
+# cluster_tests 5849 -> 5856, still #2074, for the review of #2139 at b1d94859: two more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs, and three alone. A fresh session shows the
+# 10 s default of pgcolumnar.rewrite_lock_timeout, each verb run with no SET stops with 55P03 after 9 to 12 s,
+# and a delete in the last group of a paused recluster stops at its group lock and is not undone, by
+# collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5570 tests collected.
+# cluster_tests 5856 -> 5866, still #2074, for the review of #2139 at 42763bd3: five more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. Each verb gives back every group lock it took
+# before it waits on a busy last group, so a writer that then updates group 0 and the rewrite both commit, and
+# with a limit of 0 a user lock_timeout ends the wait with PostgreSQL's own lock-timeout error, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5665 tests collected.
+# cluster_tests 5866 -> 5872, still #2074, for the review of #2139 at 1b2b7ceb: three more tests in
+# test_native_rewrite_conc.py parametrized over the two verbs. While each verb waits on a busy last group it
+# holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
+# and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it): 5672 tests collected.
+cluster_tests 5872
