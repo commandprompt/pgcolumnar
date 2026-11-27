@@ -2564,4 +2564,9 @@ guard_tests 899
 # export over http and over https, and a REST catalog request reset before any answer each name the errno), by
 # collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
-cluster_tests 6181
+# cluster_tests 6181 -> 6189, #2246: eight tests in test_objstore_tls_read.py (30 reads from a server that closes
+# each kept-alive TLS connection without close_notify; the server closed one on each read; and, for an EOF after
+# half a body, an EOF on a fresh connection and a TLS record error on a kept-alive connection, the refusal and the
+# GET count), by collection of that file (31 on main 3d2277c1, 39 here) and over the cluster files (the complement
+# of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6189

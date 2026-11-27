@@ -29,6 +29,12 @@
 #   F   a reset on a kept-alive connection before any byte of an answer is
 #       retried once on a new connection; a reset after part of an answer is
 #       an error (#2198).
+#   G   a kept-alive TLS connection the server closes with a FIN and no
+#       close_notify, before any byte of an answer, is retried once on a new
+#       connection; OpenSSL 3 reports that as SSL_ERROR_SSL with the reason
+#       SSL_R_UNEXPECTED_EOF_WHILE_READING (#2246). The same EOF after half a
+#       body, the same EOF on a fresh connection, and a TLS error of another
+#       reason on a kept-alive connection each fail 08006 and are not retried.
 #   No arm may crash a backend: the server log's "terminated by signal" count
 #   is read at the end, and every refusal waits for the server to answer
 #   SELECT 1 again, so a crash fails its own checks and not the next arm's.
@@ -266,6 +272,41 @@ check "F: a reset over TLS after part of a status line is refused" \
 	"$(verr "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$F_URL') AS t($COLDEFS)" | sed -n 's/^ERROR:  //p' | head -1)" \
 	"08006: columnar: TLS read from \"$F_URL\" failed"
 wait_up
+
+# ---- arm G: a FIN with no close_notify on a kept-alive TLS connection (#2246)
+# /finka/ reads the second request on every connection and closes with no
+# answer and no close_notify, logging FINKA for each: the keep-alive race that
+# OpenSSL 3 reports as an unexpected EOF. Each read takes the one reconnect.
+G_FIN0="$(grep -c '^FINKA' "$LOG")"
+check "G: 30 reads over TLS from a server that closes each kept-alive connection without close_notify all succeed" \
+	"$(verr "SET statement_timeout = '120s'; SELECT pgc_reads('https://127.0.0.1:${PORT[good]}/finka/$BUCKET/fixture.parquet', 30)")" \
+	"ok=30 failed=0"
+check "G: the server closed a kept-alive connection with no answer on each of the 30 reads" \
+	"$(G_FIN1="$(grep -c '^FINKA' "$LOG")"; [ $((G_FIN1 - G_FIN0)) -ge 30 ] && echo yes || echo "no ($((G_FIN1 - G_FIN0)) closes)")" "yes"
+wait_up
+# g_arm <label> <mode> <SQLSTATE: message> <GETs>: one read through /<mode>/
+# fails with exactly that error, after exactly that many GETs of the object.
+g_arm() {
+	local label="$1" mode="$2" want="$3" gets="$4" url g0 g1 got
+	url="https://127.0.0.1:${PORT[good]}/$mode/$BUCKET/fixture.parquet"
+	g0="$(grep -c "^GET /$mode/" "$LOG")"
+	got="$(verr "SET statement_timeout = '20s'; SELECT count(*) FROM pgcolumnar.read_parquet('$url') AS t($COLDEFS)" | sed -n 's/^ERROR:  //p' | head -1)"
+	g1="$(grep -c "^GET /$mode/" "$LOG")"
+	wait_up
+	check "G: $label is refused" "$got" "${want//@URL@/$url}"
+	check_num "G: $label sent $gets GET" "$((g1 - g0))" "$gets"
+}
+# Half a body, then the EOF: a body cut short is an error, never retried.
+g_arm "an EOF over TLS after half a body" finbody \
+	'08006: columnar: TLS read from "@URL@" failed' 1
+# HEAD says Connection: close, so the GET goes on a new connection, which the
+# server closes unanswered: that is the server's answer, and is not retried.
+g_arm "an EOF over TLS on a fresh connection" finfresh \
+	'08006: columnar: connection to "@URL@" failed before a response' 1
+# Bytes that are not a TLS record: SSL_ERROR_SSL for another reason, which no
+# reconnect can fix, so it is not taken for the keep-alive race.
+g_arm "a TLS record error on a kept-alive connection" garbka \
+	'08006: columnar: TLS read from "@URL@" failed' 1
 
 # ---- arm E: the CA from SSL_CERT_DIR alone ---------------------------------
 pgc_pg "pg_ctl -D '$PGC_PGDATA' stop -m fast -w" >/dev/null 2>&1

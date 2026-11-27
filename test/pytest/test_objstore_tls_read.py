@@ -56,6 +56,13 @@ REFUSED = {
     "self-signed": ("fself", "selfsigned", "self-signed certificate"),
 }
 CRASH = "terminated by signal"
+# G (#2246): label -> (server mode, the error with {url} for its URL, GETs sent)
+G_REFUSED = {
+    "an EOF over TLS after half a body": ("finbody", '08006: columnar: TLS read from "{url}" failed', 1),
+    "an EOF over TLS on a fresh connection": (
+        "finfresh", '08006: columnar: connection to "{url}" failed before a response', 1),
+    "a TLS record error on a kept-alive connection": ("garbka", '08006: columnar: TLS read from "{url}" failed', 1),
+}
 
 
 def _message(exc):
@@ -321,6 +328,26 @@ def otr(pgc_cluster, server_dir):
         r["F rsthead"] = f"{got['state']}: {got['message']}"
         _wait_up(dsn)
 
+        # G (#2246): a FIN with no close_notify on a kept-alive TLS connection, as
+        # the shell's arm G.
+        fin0 = _count(tlslog, "FINKA")
+        r["G finka"] = _one(dsn, f"SELECT pgc_reads('{url('good', 'finka/')}', 30)")
+        fin1 = _count(tlslog, "FINKA")
+        r["G finka closes"] = fin1 - fin0 if isinstance(fin0, int) and isinstance(fin1, int) \
+            else query_error(f"FINKA count unreadable: {fin0} -> {fin1}")
+        _wait_up(dsn)
+        for label, (mode, _, _) in G_REFUSED.items():
+            u = url("good", f"{mode}/")
+            g0 = _count(tlslog, f"GET /{mode}/")
+            got = _refusal(dsn, "SET statement_timeout = '20s'",
+                           f"SELECT count(*) FROM pgcolumnar.read_parquet('{u}') AS t({COLDEFS})")
+            g1 = _count(tlslog, f"GET /{mode}/")
+            _wait_up(dsn)
+            r[f"G {label}"] = {
+                "url": u, "error": f"{got['state']}: {got['message']}",
+                "gets": g1 - g0 if isinstance(g0, int) and isinstance(g1, int)
+                else query_error(f"GET count unreadable: {g0} -> {g1}")}
+
         _restart(cluster, datadir, log, {"SSL_CERT_DIR": str(pki / "cadir")})
         r["E count"] = _one(dsn, "SELECT count(*) FROM fgood")
 
@@ -440,6 +467,37 @@ def test_a_reset_over_tls_after_part_of_a_status_line_is_refused(otr, expect):
         return
     expect.text(otr["F rsthead"], f'08006: columnar: TLS read from "{otr["F rsthead url"]}" failed',
                 "F: a reset over TLS after part of a status line is refused")
+
+
+def test_reads_over_tls_from_a_server_that_closes_each_kept_alive_connection_all_succeed(otr, expect):
+    if _declined(otr, expect):
+        return
+    expect.text(otr["G finka"], "ok=30 failed=0",
+                "G: 30 reads over TLS from a server that closes each kept-alive connection without close_notify "
+                "all succeed")
+
+
+def test_the_server_closed_a_kept_alive_connection_on_each_read(otr, expect):
+    if _declined(otr, expect):
+        return
+    got = "yes" if isinstance(otr["G finka closes"], int) and otr["G finka closes"] >= 30 \
+        else f"no ({otr['G finka closes']} closes)"
+    expect.text(got, "yes", "G: the server closed a kept-alive connection with no answer on each of the 30 reads")
+
+
+@pytest.mark.parametrize("label", list(G_REFUSED))
+def test_the_eof_or_tls_error_is_refused(otr, expect, label):
+    if _declined(otr, expect):
+        return
+    got = otr[f"G {label}"]
+    expect.text(got["error"], G_REFUSED[label][1].format(url=got["url"]), f"G: {label} is refused")
+
+
+@pytest.mark.parametrize("label", list(G_REFUSED))
+def test_the_eof_or_tls_error_sent_one_get(otr, expect, label):
+    if _declined(otr, expect):
+        return
+    expect.num(otr[f"G {label}"]["gets"], G_REFUSED[label][2], f"G: {label} sent {G_REFUSED[label][2]} GET")
 
 
 def test_ssl_cert_dir_alone_trusts_the_ca(otr, expect):

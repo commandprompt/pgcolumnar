@@ -86,6 +86,21 @@
 #                    its connection with a FIN and no answer. The retry after
 #                    the reset meets a clean EOF.
 #
+# Closes with a FIN and no TLS close_notify (#2246). Python's SSLSocket.close()
+# sends none, so over TLS the client's SSL_read meets an unexpected EOF, which
+# OpenSSL 3 reports as SSL_ERROR_SSL rather than SSL_ERROR_SYSCALL.
+#   /finka/<file>    answer the first request on a connection; read a later GET,
+#                    then close with no answer, and log "FINKA - -" for it.
+#   /finbody/<file>  answer the first request on a connection; answer a later
+#                    ranged GET with its head and half its body, then close.
+#   /finfresh/<file> answer HEAD with Connection: close and close; read every
+#                    GET, then close with no answer. Each GET is the first
+#                    request on its connection.
+#   /garbka/<file>   answer the first request on a connection; answer a later
+#                    GET with bytes that are not a TLS record, written to the
+#                    raw socket, then close. The client's SSL_read fails with
+#                    SSL_ERROR_SSL for a reason other than an unexpected EOF.
+#
 # --reset-all resets every request, of any method and on every connection, once
 # its head is read and before any answer: a read, a LIST, a write and a REST
 # catalog request all fail on a fresh connection with ECONNRESET.
@@ -341,7 +356,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _reset_mode_later(self, mode):
         """True when a reset mode's request is a later one on its connection."""
-        return mode in ("rsthead", "rstbody") and getattr(self, "_served", 0) > 0
+        return mode in ("rsthead", "rstbody", "finka", "finbody", "garbka") and \
+            getattr(self, "_served", 0) > 0
 
     def handle_expect_100(self):
         # Expect: 100-continue (#1902). The stdlib answers 100 at once, before
@@ -436,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
                        "/vswap/", "/lenswap/", "/vnull/", "/vlong/", "/vdeny/",
                        "/hswap/", "/vhswap/", "/whswap/",
                        "/closeka/", "/rstka/", "/rsthead/", "/rstbody/", "/rstall/",
-                       "/rstfin/"):
+                       "/rstfin/", "/finka/", "/finbody/", "/finfresh/", "/garbka/"):
             if path.startswith(prefix):
                 mode = prefix.strip("/")
                 path = "/" + path[len(prefix):]
@@ -598,9 +614,13 @@ class Handler(BaseHTTPRequestHandler):
             self._after = "close"
         if mode == "rstka":
             self._after = "rstnext"
+        if mode == "finfresh":
+            self._after = "close"
         self.send_response(200)
         self.send_header("Content-Length", str(size))
         self.send_header("Accept-Ranges", "bytes")
+        if mode == "finfresh":
+            self.send_header("Connection", "close")
         if mode != "lenswap":
             self.send_header("ETag", self._etag(local, mode))
         if mode in VERSIONED:
@@ -795,6 +815,19 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "rstfin":
             self._after = "rst" if getattr(self, "_served", 0) > 0 else "close"
             return
+        if mode == "finfresh":
+            self._after = "close"
+            return
+        if mode == "finka" and self._reset_mode_later(mode):
+            with open(self.server.reqlog, "a") as f:
+                f.write("FINKA - -\n")
+            self._after = "close"
+            return
+        if mode == "garbka" and self._reset_mode_later(mode):
+            self.wfile.flush()
+            os.write(self.connection.fileno(), b"HTTP/1.1 206 Partial Content\r\n\r\n")
+            self._after = "close"
+            return
         if mode == "rsthead" and self._reset_mode_later(mode):
             self.wfile.write(b"HTTP/1.1 206 Parti")
             self.wfile.flush()
@@ -887,6 +920,12 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
             time.sleep(0.2)                      # the client reads it first
             self._after = "rst"
+            return
+        if mode == "finbody" and self._reset_mode_later(mode):
+            self.wfile.write(body[: n // 2])
+            self.wfile.flush()
+            time.sleep(0.2)                      # the client reads it first
+            self._after = "close"
             return
         if mode == "stall":
             self.wfile.write(body[: n // 2])

@@ -605,6 +605,22 @@ true until the next version shipped.
 
 ### Fixed
 
+- A remote read over `https://` now retries a kept-alive connection that the
+  server closed without a TLS `close_notify`, as a plain `http://` read does
+  (#2246). Since #2225 the reader retries once, on a new connection, when a
+  kept-alive connection ends before any byte of an answer. OpenSSL 3 reports a
+  TLS connection that ends with no `close_notify` as an unexpected EOF
+  (`SSL_ERROR_SSL`), not as `SSL_ERROR_SYSCALL` with errno 0, so over TLS the
+  read failed with 08006 `TLS read from ... failed`. A load balancer or store
+  that drops idle connections this way hit that error. The reader now takes
+  that EOF, and only that reason, as the stale keep-alive case when no byte of
+  an answer has arrived. The same EOF on a fresh connection now fails with
+  08006 `failed before a response`, as it does over plain TCP. An EOF in the
+  middle of an answer, and any other TLS error, still fail with `TLS read from
+  ... failed` and are not retried. A build against an OpenSSL without
+  `SSL_R_UNEXPECTED_EOF_WHILE_READING` is unchanged. `test/objstore_tls_read.sh`
+  and `test_objstore_tls_read.py`.
+
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error
