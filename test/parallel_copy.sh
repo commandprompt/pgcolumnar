@@ -679,6 +679,193 @@ check "control: file_split_offsets still splits a local path that holds s3a:// p
 check "control: parallel_copy still loads a local path that holds s3a:// past its start (#1918)" \
 	"$(q "SELECT pgcolumnar.parallel_copy('t_rem'::regclass, '$LOCAL_S3A', 2)")" 5000
 
+# ---- #2080: a single table with a unique index needs one worker ------------
+# Each loader keeps its unique-key locks in a prepared transaction until every
+# loader has finished, so two loaders of one table with a unique index waited on
+# each other, even with distinct keys: the load hung or failed with 40P01.
+# parallel_copy now refuses that load up front. statement_timeout turns the old
+# hang into 57014, a red the check can read. The controls: 1 worker, and a non-unique index, still load.
+want_unique() {	# TABLE -> the refusal #2080 promises
+	printf '0A000 pgcolumnar.parallel_copy cannot load "%s" with more than one worker, because it has a unique or exclusion index | Load it with workers => 1, or with COPY.\n' "$1"
+}
+# t_uk gets a second, non-unique index after its primary key, so the refusal
+# must find the unique index even when it is not the last one in the list.
+# t_ui gets a non-unique index before its unique one, so the refusal must also
+# find the unique index when it is not the first one. t_ui's unique index has
+# two key columns, so the refusal must not count only one-column indexes.
+psql_run "CREATE TABLE t_uk (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE INDEX t_uk_txt ON t_uk (txt);
+          CREATE TABLE t_ui (id int, txt text) USING pgcolumnar;
+          CREATE INDEX t_ui_txt ON t_ui (txt);
+          CREATE UNIQUE INDEX t_ui_id ON t_ui (id, txt);
+          CREATE TABLE t_uk1 (id int PRIMARY KEY, txt text) USING pgcolumnar;
+          CREATE TABLE t_nu (id int, txt text) USING pgcolumnar;
+          CREATE INDEX t_nu_id ON t_nu (id);" >/dev/null
+check "parallel_copy refuses a single table with a primary key and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$F', 2)")" \
+	"$(want_unique t_uk)"
+check "parallel_copy refuses a single table with a unique index and 4 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ui'::regclass, '$F', 4)")" \
+	"$(want_unique t_ui)"
+# An exclusion constraint has indisunique false and indisexclusion true. Its
+# keys are distinct, so a load that is not refused would succeed: the check reads
+# the refusal, not a hang.
+psql_run "CREATE TABLE t_ux (id int, txt text, EXCLUDE USING btree (id WITH =)) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses a single table with an exclusion constraint and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ux'::regclass, '$F', 2)")" \
+	"$(want_unique t_ux)"
+# A deferrable unique index and a partial unique index are refused too. The
+# loaders take the per-key unique lock for a partial index's matching rows, and
+# every row here matches. Columnar's own unique-lock set skips deferrable
+# indexes, but a deferrable unique table with duplicate keys hung on main too.
+# The keys are distinct, so a deferrable load that is not refused would succeed.
+psql_run "CREATE TABLE t_ud (id int UNIQUE DEFERRABLE INITIALLY DEFERRED, txt text) USING pgcolumnar;
+          CREATE TABLE t_up (id int, txt text) USING pgcolumnar;
+          CREATE UNIQUE INDEX t_up_id ON t_up (id) WHERE id >= 0;" >/dev/null
+check "parallel_copy refuses a single table with a deferrable unique index and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ud'::regclass, '$F', 2)")" \
+	"$(want_unique t_ud)"
+check "parallel_copy refuses a single table with a partial unique index and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_up'::regclass, '$F', 2)")" \
+	"$(want_unique t_up)"
+# A deferrable exclusion constraint is refused too: indisunique is false and
+# indimmediate is false, so only indisexclusion catches it. Columnar's own
+# unique-lock set skips indexes that are not immediate, so a refusal that copied
+# that filter would let this load run. An expression unique index is refused
+# too: the loaders hash its key into their unique locks, so two loaders wait on
+# each other even with distinct keys. The keys are distinct, so a load that is
+# not refused would succeed or hang, and either is red.
+psql_run "CREATE TABLE t_uxd (id int, txt text,
+            EXCLUDE USING btree (id WITH =) DEFERRABLE INITIALLY DEFERRED) USING pgcolumnar;
+          CREATE TABLE t_ue (id int, txt text) USING pgcolumnar;
+          CREATE UNIQUE INDEX t_ue_id ON t_ue ((id + 0));" >/dev/null
+check "parallel_copy refuses a single table with a deferrable exclusion constraint and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uxd'::regclass, '$F', 2)")" \
+	"$(want_unique t_uxd)"
+check "parallel_copy refuses a single table with an expression unique index and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ue'::regclass, '$F', 2)")" \
+	"$(want_unique t_ue)"
+# A gist exclusion constraint is refused like a btree one: the refusal must not
+# look at the index's access method. The ranges are distinct and do not overlap.
+# A unique index with an INCLUDE column and NULLS NOT DISTINCT is refused too: the
+# refusal must not compare indnatts with indnkeyatts or read indnullsnotdistinct.
+psql_run "CREATE TABLE t_gx (id int, txt text,
+            EXCLUDE USING gist (int4range(id, id, '[]') WITH &&)) USING pgcolumnar;
+          CREATE TABLE t_inc (id int, txt text,
+            UNIQUE NULLS NOT DISTINCT (id) INCLUDE (txt)) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses a single table with a gist exclusion constraint and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_gx'::regclass, '$F', 2)")" \
+	"$(want_unique t_gx)"
+check "parallel_copy refuses a single table with a NULLS NOT DISTINCT unique index with an INCLUDE column and 2 workers with 0A000, not a hang (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_inc'::regclass, '$F', 2)")" \
+	"$(want_unique t_inc)"
+# The refusal keeps its place in the order of checks. A caller without INSERT
+# gets 42501 first (#563), a URL gets the #1886 refusal first, and dedup => true
+# does not skip the calling backend's refusal or its hint.
+psql_run "DO \$\$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pcopy_noins') THEN
+              CREATE ROLE pcopy_noins; END IF; END \$\$;
+          GRANT pg_read_server_files TO pcopy_noins;
+          GRANT USAGE ON SCHEMA pgcolumnar TO pcopy_noins;
+          GRANT SELECT ON t_uk TO pcopy_noins;" >/dev/null
+check "parallel_copy gives a caller without INSERT 42501 before the unique-index refusal (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s -c role=pcopy_noins' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$F', 2)")" \
+	"42501 permission denied for table t_uk | no hint"
+check "parallel_copy refuses an s3:// URL with the #1886 refusal before the unique-index refusal (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$REMOTE_S3', 2)")" \
+	"$(want_refusal parallel_copy "$REMOTE_S3")"
+check "parallel_copy refuses a single table with a primary key, 2 workers and dedup => true with 0A000 and the hint (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uk'::regclass, '$F', 2, dedup => true)")" \
+	"$(want_unique t_uk)"
+# An invalid unique index counts too. CREATE UNIQUE INDEX CONCURRENTLY fails on
+# a columnar table and leaves the index invalid but ready, and a ready unique
+# index still checks every insert, so two loaders would wait on each other. The
+# keys are distinct, so a load that is not refused would succeed. CONCURRENTLY
+# cannot run in a transaction block, so it runs as a statement of its own.
+psql_run "CREATE TABLE t_uv (id int, txt text) USING pgcolumnar;" >/dev/null
+q "CREATE UNIQUE INDEX CONCURRENTLY t_uv_id ON t_uv (id)" >/dev/null
+check "premise: CREATE UNIQUE INDEX CONCURRENTLY leaves a columnar table an invalid, ready unique index (#2080)" \
+	"$(q "SELECT concat_ws('|', indisunique, indisvalid, indisready) FROM pg_index WHERE indrelid = 't_uv'::regclass")" "t|f|t"
+check "parallel_copy refuses a single table with an invalid unique index and 2 workers with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_uv'::regclass, '$F', 2)")" \
+	"$(want_unique t_uv)"
+# The default worker count is more than one here: max_parallel_workers=4 gives
+# 2. The calling backend must refuse it with its hint, not leave it to a loader.
+psql_run "CREATE TABLE t_ukd (id int PRIMARY KEY, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy refuses a single table with a primary key and the default worker count with 0A000 (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=10s -c max_parallel_workers=4' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ukd'::regclass, '$F')")" \
+	"$(want_unique t_ukd)"
+check "the unique-index refusal loads nothing (#2080)" \
+	"$(q "SELECT (SELECT count(*) FROM t_uk) + (SELECT count(*) FROM t_ui) + (SELECT count(*) FROM t_ud)
+	         + (SELECT count(*) FROM t_up) + (SELECT count(*) FROM t_uv) + (SELECT count(*) FROM t_ukd)
+	         + (SELECT count(*) FROM t_ue) + (SELECT count(*) FROM t_inc)")" 0
+check "the exclusion-constraint refusal loads nothing (#2080)" \
+	"$(q "SELECT (SELECT count(*) FROM t_ux) + (SELECT count(*) FROM t_uxd) + (SELECT count(*) FROM t_gx)")" 0
+check "control: parallel_copy with 1 worker still loads a single table with a primary key (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_uk1'::regclass, '$F', 1)")" 5000
+check "control: parallel_copy with 2 workers still loads a single table with a non-unique index (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' q "SELECT pgcolumnar.parallel_copy('t_nu'::regclass, '$F', 2)")" 5000
+# A partitioned target keeps more than one worker even with a primary key: each
+# worker loads distinct partitions, so distinct indexes. Its parent's index is
+# unique, so a refusal that also covered partitioned targets would refuse this.
+psql_run "CREATE TABLE t_ppk (id int PRIMARY KEY, txt text) PARTITION BY RANGE (id);
+          CREATE TABLE t_ppk_1 PARTITION OF t_ppk FOR VALUES FROM (MINVALUE) TO (1251) USING pgcolumnar;
+          CREATE TABLE t_ppk_2 PARTITION OF t_ppk FOR VALUES FROM (1251) TO (2501) USING pgcolumnar;
+          CREATE TABLE t_ppk_3 PARTITION OF t_ppk FOR VALUES FROM (2501) TO (3751) USING pgcolumnar;
+          CREATE TABLE t_ppk_4 PARTITION OF t_ppk FOR VALUES FROM (3751) TO (MAXVALUE) USING pgcolumnar;" >/dev/null
+check "control: parallel_copy with 4 workers still loads a partitioned table with a primary key (#2080)" \
+	"$(PGOPTIONS='-c statement_timeout=30s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_ppk'::regclass, '$F', 4)") | $(q "SELECT count(*) FROM t_ppk")" \
+	"no error (5000) | 5000"
+
+# A unique index created after the calling backend's check, but before the loaders
+# open the table, must be refused too: the check runs under AccessShareLock, which
+# CREATE INDEX does not wait for. A second session holds SHARE on t_ur, which lets
+# the check pass but stops the coordinator at its ROW EXCLUSIVE lock. No loader
+# has started yet. Once the coordinator waits, the session creates the unique
+# index and commits, and the loaders then open a table that has it.
+# Which worker reports first varies, so the check reads "worker N".
+pcopy_psql() { env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" -X -At -q "$@"; }
+late_unique() {	# TABLE WORKERS -> the load's refusal, with "worker N"
+	local t="$1" w="$2" pid got
+	pcopy_psql >/dev/null 2>&1 <<SQL &
+BEGIN;
+LOCK TABLE $t IN SHARE MODE;
+DO \$\$ BEGIN FOR i IN 1..200 LOOP
+	EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE relation = '$t'::regclass AND NOT granted);
+	PERFORM pg_sleep(0.05); END LOOP; END \$\$;
+CREATE UNIQUE INDEX ${t}_id ON $t (id);
+COMMIT;
+SQL
+	pid=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = '$t'::regclass AND mode = 'ShareLock' AND granted")" = 1 ] && break
+		sleep 0.1
+	done
+	got="$(PGOPTIONS='-c statement_timeout=20s' remote_refusal "SELECT pgcolumnar.parallel_copy('$t'::regclass, '$F', $w)" \
+		| sed 's/worker [0-9]* failed/worker N failed/')"
+	wait "$pid"
+	printf '%s\n' "$got"
+}
+psql_run "CREATE TABLE t_ur (id int, txt text) USING pgcolumnar;" >/dev/null
+ur_got="$(late_unique t_ur 2)"
+check "parallel_copy refuses 2 workers when a unique index appears after its check, not a hang (#2080)" \
+	"$ur_got" \
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur" with more than one worker, because it has a unique or exclusion index | no hint'
+check "the late unique-index refusal loads nothing (#2080)" \
+	"$(q "SELECT count(*) FROM t_ur")" 0
+# The same with 4 workers, where every loader, not only one, must refuse. A
+# loader that skips the check would insert rows against its siblings, which
+# hangs or fails only in some runs. A row trigger that calls nextval records
+# any insert, because a sequence does not roll back: no loader may insert a row.
+psql_run "CREATE TABLE t_ur4 (id int, txt text) USING pgcolumnar;
+          CREATE SEQUENCE t_ur4_rows;
+          CREATE FUNCTION t_ur4_row() RETURNS trigger LANGUAGE plpgsql
+            AS \$\$ BEGIN PERFORM nextval('t_ur4_rows'); RETURN NEW; END \$\$;
+          CREATE TRIGGER t_ur4_row BEFORE INSERT ON t_ur4 FOR EACH ROW EXECUTE FUNCTION t_ur4_row();" >/dev/null
+check "parallel_copy refuses 4 workers when a unique index appears after its check, before any loader inserts a row (#2080)" \
+	"$(late_unique t_ur4 4) | $(q "SELECT CASE WHEN is_called THEN 'a loader inserted a row' ELSE 'no row inserted' END FROM t_ur4_rows")" \
+	'0A000 pgcolumnar.parallel_copy worker N failed: pgcolumnar.parallel_copy cannot load "t_ur4" with more than one worker, because it has a unique or exclusion index | no hint | no row inserted'
+
 # ---- #2092: a load into a table with a projection fills the projection ---------
 # #2092 asked whether parallel_copy shares the import functions' crash: they wrote
 # a projection at statement end with no active snapshot. It does not: on main's
