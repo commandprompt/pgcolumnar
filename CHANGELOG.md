@@ -605,6 +605,23 @@ true until the next version shipped.
 
 ### Fixed
 
+- Two writers to one table no longer deadlock on the chunk-group and
+  storage-row locks (#2184). A writer holds the chunk-group lock of each row
+  group it deletes from and the storage-row lock, which every flush of new
+  rows took exclusively, both to commit, in whatever order its statements run.
+  A transaction that inserted and then deleted in a group, and one that deleted
+  in that group and then inserted, each waited for the other, and one failed
+  with `deadlock detected` (40P01). A writer whose table's storage row is
+  current now holds the storage-row lock in share mode, so writers do not wait
+  for each other on it. The first write to a table and a write that raises an
+  earlier build's format stamp still take it exclusively, and so do
+  `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite`, which still wait for
+  every open writer. A `DELETE` that finds an earlier build's stamp raises it
+  before it takes a chunk-group lock. As a result, a second `INSERT` into a
+  table no longer waits for an open transaction that inserted into it.
+  docs/limitations.md. `test/concurrency.sh` and `test_concurrency.py`,
+  scenarios D, E and F.
+
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

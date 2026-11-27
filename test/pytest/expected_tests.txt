@@ -2551,4 +2551,4 @@ guard_tests 897
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-cluster_tests 6156
+cluster_tests 6176

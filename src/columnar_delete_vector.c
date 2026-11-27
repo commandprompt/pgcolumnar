@@ -356,6 +356,9 @@ delete_vector_flush_buffer(DeleteVectorBuffer *buf, bool keep)
 		pushedSnapshot = true;
 	}
 
+	/* before any lock below: see PgColumnarRaiseStorageRowBeforeDelete (#2184) */
+	PgColumnarRaiseStorageRowBeforeDelete(buf->storageId);
+
 	/*
 	 * issue #5: before writing the delete marks, serialize the rows being flushed
 	 * as deleted against concurrent writers of the same rows, taking their

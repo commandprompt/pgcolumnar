@@ -428,6 +428,145 @@ check "C both different-group deletes survived (ids 1,5 gone)" \
 	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t3;")" \
 	"2,3,4,6,7,8"
 
+# ---------------------------------------------------------------------------
+# Scenarios D, E and F (#2184): a writer's two lock classes form no cycle.
+#
+# A writer holds the chunk-group lock (class 101) of each group it deletes from,
+# and the storage-row lock (class 102), which every flush of new rows takes, both
+# to commit, in whatever order its statements run. When 102 was exclusive, a
+# transaction that inserted and then deleted in group g, and one that deleted in
+# g and then inserted, each waited for the other, and one got 40P01. Now a writer
+# whose storage row is current holds 102 in ShareLock, which other writers share,
+# and only a writer that inserts or raises the storage row holds it exclusively.
+# A delete raises an earlier build's stamp before it takes a group lock (E), so
+# no transaction waits on 102 while it holds a 101 of the same table.
+# ---------------------------------------------------------------------------
+# lks APP CLASS -> that session's advisory locks of CLASS, "(waiting)" if not granted, or <none>
+lks() {
+	ctl_q "SELECT coalesce(string_agg(l.mode || CASE WHEN l.granted THEN '' ELSE '(waiting)' END, ',' ORDER BY l.mode), '<none>') FROM pg_locks l JOIN pg_stat_activity a USING (pid) WHERE a.application_name = '$1' AND l.locktype = 'advisory' AND l.objsubid = $2;"
+}
+# poll (bounded) until the session's queued sentinel appeared or it waits on a lock
+wait_settled() {  # name application_name label
+	local name="$1" app="$2" label="$3" i=0
+	while ! grep -q "<<$label>>" "$WORKDIR/$name.out" 2>/dev/null; do
+		[ "$(ctl_q "SELECT count(*) FROM pg_stat_activity WHERE application_name='$app' AND wait_event_type='Lock';")" = "1" ] && return 0
+		sleep 0.05; i=$((i + 1))
+		if [ "$i" -ge 1200 ]; then
+			wait_timeout "a bounded wait for a session to finish or block completed" "$app"
+			return 1
+		fi
+	done
+	return 0
+}
+# ERROR lines in both session outputs so far; both files only grow, so the
+# difference from a mark taken at a scenario's start is that scenario's errors
+err_mark() {
+	local all
+	all="$(printf '%s\n%s\n' "$(cat "$WORKDIR/s1.out")" "$(cat "$WORKDIR/s2.out")")"
+	grep -c 'ERROR' <<<"$all" || true
+}
+errs_since() { echo $(( $(err_mark) - $1 )); }
+
+# D: the steps of #2184, on a table whose storage row is current.
+ctl_q "CREATE TABLE t4 (id int) USING pgcolumnar;" >/dev/null
+ctl_q "INSERT INTO t4 SELECT g FROM generate_series(1,8) g;" >/dev/null
+mark="$(err_mark)"
+send_wait s1 d_begin "BEGIN;"
+send_wait s1 d_ins "INSERT INTO t4 VALUES (0); SELECT count(*) FROM t4;"
+check "D an INSERT and a scan leave s1 holding the storage-row lock in ShareLock only" \
+	"$(lks cc_s1 102)" "ShareLock"
+send_wait s2 d_begin "BEGIN;"
+send_wait s2 d_del "DELETE FROM t4 WHERE id = 6; SELECT count(*) FROM t4;"
+check "premise: D s2's DELETE holds the group lock of the row it deleted" \
+	"$(lks cc_s2 101)" "ExclusiveLock"
+check "D that DELETE, on a table whose storage row is current, takes no storage-row lock" \
+	"$(lks cc_s2 102)" "<none>"
+send s1 "DELETE FROM t4 WHERE id = 5; SELECT count(*) FROM t4;"
+send s1 "\\echo <<d_del1>>"
+wait_blocked cc_s1 || true
+check "premise: D s1's DELETE in that group waits on s2's group lock" \
+	"$(lks cc_s1 101)" "ExclusiveLock(waiting)"
+# Exclusive, s2's INSERT waited on s1, and the deadlock detector ended s1.
+send_wait s2 d_ins "INSERT INTO t4 VALUES (-1); SELECT count(*) FROM t4;"
+check "D s2's INSERT after its DELETE returns while s1 still waits on s2's group lock" \
+	"$(lks cc_s1 101)" "ExclusiveLock(waiting)"
+send_wait s2 d_commit "COMMIT;"
+wait_sentinel s1 d_del1
+send_wait s1 d_commit "COMMIT;"
+check "D the inserting-then-deleting and the deleting-then-inserting transactions both commit" \
+	"$(errs_since "$mark")" "0"
+check "D both DELETEs and both INSERTs took effect" \
+	"$(ctl_q "SELECT count(*) FILTER (WHERE id IN (5,6)) || ' ' || count(*) FILTER (WHERE id IN (0,-1)) FROM t4;")" \
+	"0 2"
+
+# E: the same two shapes on a table an earlier build stamped. The INSERT raises
+# the stamp and holds 102 exclusively; the DELETE must wait for it before it
+# takes its group lock, or the two close the same cycle once.
+ctl_q "CREATE TABLE t5 (id int) USING pgcolumnar;" >/dev/null
+ctl_q "INSERT INTO t5 SELECT g FROM generate_series(1,8) g;" >/dev/null
+ctl_q "UPDATE pgcolumnar.storage SET format_version = 1 WHERE relation_oid = 't5'::regclass;" >/dev/null
+check "premise: E t5's storage row carries an earlier build's stamp" \
+	"$(ctl_q "SELECT format_version FROM pgcolumnar.storage WHERE relation_oid = 't5'::regclass;")" "1"
+mark="$(err_mark)"
+send_wait s1 e_begin "BEGIN;"
+send_wait s1 e_ins "INSERT INTO t5 VALUES (0); SELECT count(*) FROM t5;"
+check "E s1's INSERT raised the stamp and holds the storage-row lock in ExclusiveLock" \
+	"$(lks cc_s1 102)" "ExclusiveLock"
+send_wait s2 e_begin "BEGIN;"
+send s2 "DELETE FROM t5 WHERE id = 6; SELECT count(*) FROM t5;"
+send s2 "\\echo <<e_del2>>"
+wait_settled s2 cc_s2 e_del2
+check "E a DELETE first in its transaction waits on the raiser's storage-row lock before it takes a group lock" \
+	"$(lks cc_s2 102)/$(lks cc_s2 101)" "ExclusiveLock(waiting)/<none>"
+send s1 "DELETE FROM t5 WHERE id = 5; SELECT count(*) FROM t5;"
+send s1 "\\echo <<e_del1>>"
+wait_settled s1 cc_s1 e_del1
+check "E the raiser's DELETE in the waiting deleter's group returns at once" \
+	"$(grep -c '<<e_del1>>' "$WORKDIR/s1.out")/$(lks cc_s1 101)" "1/ExclusiveLock"
+send s1 "COMMIT;"
+send s1 "\\echo <<e_c1>>"
+wait_sentinel s2 e_del2
+check "E once the raiser commits, the deleter holds its group lock and no storage-row lock" \
+	"$(lks cc_s2 102)/$(lks cc_s2 101)" "<none>/ExclusiveLock"
+send s2 "INSERT INTO t5 VALUES (-1); SELECT count(*) FROM t5;"
+send s2 "COMMIT;"
+send s2 "\\echo <<e_c2>>"
+wait_sentinel s1 e_c1
+wait_sentinel s2 e_c2
+check "E the raising and the deleting transactions both commit" \
+	"$(errs_since "$mark")" "0"
+check "E both DELETEs and both INSERTs took effect, and the stamp is raised" \
+	"$(ctl_q "SELECT count(*) FILTER (WHERE id IN (5,6)) || ' ' || count(*) FILTER (WHERE id IN (0,-1)) FROM t5;") $(ctl_q "SELECT format_version FROM pgcolumnar.storage WHERE relation_oid = 't5'::regclass;")" \
+	"0 2 2"
+
+# F: two first writers of a table with no storage row. The second waits for the
+# first to insert the row; once it has, the second keeps only ShareLock, so a
+# third writer does not wait for it.
+ctl_q "CREATE TABLE t6 (id int) USING pgcolumnar;" >/dev/null
+check "premise: F t6 has no storage row before its first write" \
+	"$(ctl_q "SELECT count(*) FROM pgcolumnar.storage WHERE relation_oid = 't6'::regclass;")" "0"
+mark="$(err_mark)"
+send_wait s1 f_begin "BEGIN;"
+send_wait s1 f_ins "INSERT INTO t6 VALUES (1); SELECT count(*) FROM t6;"
+check "F the first writer holds the storage-row lock in ExclusiveLock" \
+	"$(lks cc_s1 102)" "ExclusiveLock"
+send_wait s2 f_begin "BEGIN;"
+send s2 "INSERT INTO t6 VALUES (2); SELECT count(*) FROM t6;"
+send s2 "\\echo <<f_ins2>>"
+wait_blocked cc_s2 || true
+check "F a second first writer waits on the storage-row lock" \
+	"$(lks cc_s2 102)" "ExclusiveLock(waiting)"
+send_wait s1 f_commit "COMMIT;"
+wait_sentinel s2 f_ins2
+check "F once the first writer commits, the second holds the storage-row lock in ShareLock only" \
+	"$(lks cc_s2 102)" "ShareLock"
+send_wait s1 f_ins3 "BEGIN; SET LOCAL lock_timeout = '2s'; INSERT INTO t6 VALUES (3); SELECT count(*) FROM t6; COMMIT;"
+check "F a third writer's INSERT, with a 2 s lock_timeout, commits while the second is open" \
+	"$(ctl_q "SELECT count(*) FROM t6 WHERE id = 3;")/$(errs_since "$mark")" "1/0"
+send_wait s2 f_commit "COMMIT;"
+check "F all three INSERTs took effect" \
+	"$(ctl_q "SELECT string_agg(id::text, ',' ORDER BY id) FROM t6;")" "1,2,3"
+
 send s1 "\\q"
 send s2 "\\q"
 

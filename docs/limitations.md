@@ -735,31 +735,28 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   transaction ends. While one insert statement into a table with an exclusion
   constraint runs, a second insert into that table waits for the first
   transaction. It waits even when its row does not overlap. A row whose key holds
-  a NULL takes no lock and does not wait at that point. After the first statement
-  ends, any second insert into a pgcolumnar table waits while the first
-  transaction is open. That holds for any key, with or without an index. So two transactions that insert into two pgcolumnar tables in opposite
-  order can deadlock even when no rows conflict. One of them then gets
-  `deadlock_detected` (40P01). On heap both would commit. Retry the transaction
-  on that error. A
+  a NULL takes no lock and does not wait at that point. Inserts of different
+  keys into one table do not wait for each other (#2184). Before, a second
+  insert waited while the first transaction was open. A
   true conflict on the same key can appear as a deadlock abort and not as a
   `unique_violation`. Both results refuse the duplicate. Turn the serialization off with
   `pgcolumnar.enable_unique_insert_lock = off`. The locks use the shared lock
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
-- Two writers can deadlock on one table with no maintenance running (#2184). A
-  writer holds two locks to commit. One is the delete lock of each row group it
-  deletes from. The other is the table's storage-row lock, which every flush of
-  new rows takes. It
-  can take them in either order. A transaction that deletes, scans and then
-  inserts takes the delete lock first; one that inserts, scans and then deletes
-  takes the storage-row lock first. When two such transactions meet, one gets
-  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- Writers to one table do not deadlock on pgColumnar's own table locks (#2184).
+  A writer holds the delete lock of each row group it deletes from until
+  commit. It also holds the table's storage-row lock, which every flush of new
+  rows takes. Writers share the storage-row lock, so a transaction that inserts and
+  then deletes, and one that deletes and then inserts, both commit. The first write
+  to a table takes it alone. So do the write that raises an earlier build's
+  format stamp and the two rewrite verbs below. A
+  `DELETE` that finds the stamp of an earlier build raises it first, before it
+  takes any delete lock.
 - `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
   do not queue behind them. Before it writes, a rewrite needs the storage-row lock
   and every row group's delete lock at once. It waits for each busy lock alone,
-  holding none, and tries again, so it never closes a deadlock with a writer. It
-  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  holding none, and tries again, so it never closes a deadlock with a writer. A steady
   stream of short delete transactions can keep one lock busy at every try. After
   `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
   `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
