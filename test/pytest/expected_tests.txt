@@ -2530,4 +2530,14 @@ guard_tests 897
 # whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
 # caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
 # over the cluster files.
-cluster_tests 6118
+# cluster_tests 6118 -> 6126 for #2198's eight tests: six in test_objstore_http_read.py (30 reads from a server that
+# resets each kept-alive connection, 30 from one that closes at once after each answer, a reset after part of a
+# status line and after part of a body refused, a server that resets every GET refused after one retry, and that GET
+# sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
+# collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
+# cluster_tests 6126 -> 6128, still #2198, for the review of #2225 at 532b11f9: two tests in test_objstore_listing.py
+# (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
+# collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+cluster_tests 6128
