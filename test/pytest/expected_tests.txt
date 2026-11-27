@@ -2499,4 +2499,9 @@ guard_tests 897
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-cluster_tests 6071
+# cluster_tests 6071 -> 6074 for #2218 and #2197 in test_parquet_nested_import.py:
+# test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused,
+# test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
+# test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6074 tests collected`.
+cluster_tests 6074
