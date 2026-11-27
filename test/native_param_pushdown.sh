@@ -428,11 +428,12 @@ NONC="$(q "SELECT collname FROM pg_collation
 check "premise: sn's collation orders a lower-case letter before an upper-case one, which C does not (#2065)" \
 	"$(q "SELECT ('a' < 'B' COLLATE \"$NONC\")::text || '|' || ('a' < 'B' COLLATE \"C\")::text;")" "true|false"
 q "SET pgcolumnar.stripe_row_limit=2000;
-   CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"$NONC\", v varchar, tsp timestamp, r tsrange)
-	USING pgcolumnar;
+   CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"$NONC\", v varchar, tsp timestamp, r tsrange,
+	tsz timestamptz) USING pgcolumnar;
    INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'),
 	timestamp '2020-01-01' + g * interval '1 hour',
-	tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour')
+	tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour'),
+	timestamptz '2020-01-01 00:00+00' + g * interval '1 hour'
 	FROM generate_series(1, 40000) g;
    CREATE TABLE tkh AS SELECT * FROM tk;" >/dev/null
 
@@ -532,6 +533,62 @@ check "a bound parameter that date_trunc of a timestamp column is >= prunes (#20
 	"$(prune_arm timestamp "tk WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'")" "19|569"
 check "a bound parameter that a range column contains prunes (#2065)" \
 	"$(prune_arm timestamp "tk WHERE r @> \$1" "'2024-07-01 00:30'")" "19|1"
+
+# A timestamp column compared with a timestamptz value never prunes: the reader drops
+# that key whatever the value (#1738). So its operand must not be called either
+# (review of ff1fc62f, blocker 1).
+q "CREATE FUNCTION boomc_tstzarr(int) RETURNS timestamptz[] LANGUAGE plpgsql STABLE AS \$\$
+	BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION 'boomc_tstzarr called'; END \$\$;" >/dev/null
+check "a stable timestamptz operand compared with a timestamp column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND tsp > boomc_tstz(\$1)")" "0|0"
+check "a stable timestamptz array operand of = ANY on a timestamp column is not evaluated (#2065)" \
+	"$(nc_arm "tk WHERE tsp < '2000-01-01' AND tsp = ANY(boomc_tstzarr(\$1))")" "0|0"
+check "a stable timestamptz operand compared with a timestamp domain column is not evaluated (#2065)" \
+	"$(nc_arm "tz WHERE tsd < '2000-01-01' AND tsd > boomc_tstz(\$1)")" "0|0"
+
+# A bound parameter of a domain type, or varchar, reaches the scan inside a
+# RelabelType. Its frozen Const must take the relabelled type, as main's did, or the
+# LIKE, date_trunc and range key builders, which need an exact type, decline it
+# (review of ff1fc62f, the attacker's blocker A). A timestamptz column with a
+# timestamptz parameter still prunes, and date_trunc reads its unit in any case.
+q "CREATE DOMAIN tdom AS text; CREATE DOMAIN rdom AS tsrange;" >/dev/null
+check "the heap copy answers the bound domain and varchar pruning queries (premise) (#2065)" \
+	"$(heap_count varchar "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tdom "tkh WHERE sc LIKE \$1" "'0390%'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'") $(heap_count tsdom "tkh WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'") $(heap_count rdom "tkh WHERE r && \$1" "'[2024-07-01,2024-07-02)'") $(heap_count timestamp "tkh WHERE date_trunc('Day', tsp) = \$1" "'2024-07-01'") $(heap_count timestamptz "tkh WHERE tsz >= \$1" "'2024-07-01 00:00+00'")" \
+	"100 100 24 569 24 24 569"
+check "a bound varchar parameter in LIKE on a C-collated column prunes (#2065)" \
+	"$(prune_arm varchar "tk WHERE sc LIKE \$1" "'0390%'")" "19|100"
+check "a bound text domain parameter in LIKE on a C-collated column prunes (#2065)" \
+	"$(prune_arm tdom "tk WHERE sc LIKE \$1" "'0390%'")" "19|100"
+check "a bound timestamp domain parameter compared with date_trunc prunes (#2065)" \
+	"$(prune_arm tsdom "tk WHERE date_trunc('day', tsp) = \$1" "'2024-07-01'")" "19|24"
+check "a bound timestamp domain parameter that date_trunc is >= prunes (#2065)" \
+	"$(prune_arm tsdom "tk WHERE date_trunc('day', tsp) >= \$1" "'2024-07-01'")" "19|569"
+check "a bound range domain parameter that a range column overlaps prunes (#2065)" \
+	"$(prune_arm rdom "tk WHERE r && \$1" "'[2024-07-01,2024-07-02)'")" "19|24"
+check "a bound parameter compared with date_trunc to an upper-case unit (Day) prunes (#2065)" \
+	"$(prune_arm timestamp "tk WHERE date_trunc('Day', tsp) = \$1" "'2024-07-01'")" "19|24"
+check "a bound timestamptz parameter compared with a timestamptz column prunes (#2065)" \
+	"$(prune_arm timestamptz "tk WHERE tsz >= \$1" "'2024-07-01 00:00+00'")" "19|569"
+
+# The projection and rescan arms above check answers; these check that the keys
+# frozen at the first run still prune there (the attacker's surviving mutants). The
+# rescan arm reads "Chunk Groups Read|Removed by Filter|Runtime Filter Groups Removed"
+# for f.k >= same(19500), a key that removes more than either loop's runtime range.
+# prsc's rows are in random order, so its groups cannot prune; prsk holds the same
+# rows in k order, so its projection's groups can.
+q "CREATE TABLE prsk (k int, payload text) USING pgcolumnar;
+   SELECT pgcolumnar.set_options('prsk', chunk_group_row_limit => 1000, stripe_row_limit => 1000);
+   INSERT INTO prsk SELECT k, 'p' || k FROM generate_series(1, 20000) k;
+   SELECT pgcolumnar.add_projection('prsk', 'bykk', ARRAY['k'], ARRAY['k']);
+   ANALYZE prsk;" >/dev/null
+check "a projection scan with a key frozen at the first run removes groups (#2065)" \
+	"$(psql_m "${PROJ_SET[@]}" "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) SELECT count(*), sum(k) FROM prsk WHERE k >= 100 AND k <= same(900)" \
+		| grep -E 'Columnar Projection: bykk|Chunk Groups Removed by Filter' | sed 's/.*: //' | tr '\n' '|' | sed 's/|$//')" "bykk|19"
+check "a hash-join rescan with a key frozen at the first run removes groups in each loop (#2065)" \
+	"$(psql_m "${JOIN_SET[@]}" \
+		"PREPARE r(int) AS SELECT g.g || '|' || (SELECT count(*)::text || '|' || coalesce(sum(f.k), 0) FROM f JOIN d2 ON f.k = d2.k AND d2.grp = g.g WHERE f.k >= same(\$1)) FROM generate_series(1, 2) g(g)" \
+		"EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE r(19500)" \
+		| grep -E 'Chunk Groups Removed by Filter|Runtime Filter Groups Removed|Chunk Groups Read' | sed 's/.*: //' | tr '\n' '|' | sed 's/|$//')" "0|40|1"
 
 check "backend alive" "$(survived "$CRASHES_BEFORE")" "1"
 

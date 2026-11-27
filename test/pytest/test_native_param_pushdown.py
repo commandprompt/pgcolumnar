@@ -222,7 +222,8 @@ BOOMC = ["CREATE SEQUENCE ncalls"] + [
     BEGIN PERFORM nextval('ncalls'); RAISE EXCEPTION '{name} called'; END $$"""
     for name, rettype in (("boomc", "int"), ("boomc_t", "text"), ("boomc_ts", "timestamp"),
                           ("boomc_arr", "int[]"), ("boomc_r", "tsrange"), ("boomc_tstz", "timestamptz"),
-                          ("boomc_date", "date"), ("boomc_mr", "tsmultirange"))]
+                          ("boomc_date", "date"), ("boomc_mr", "tsmultirange"),
+                          ("boomc_tstzarr", "timestamptz[]"))]
 # tz holds a timestamp domain column and a timestamptz column; no row matches its
 # "< 2000-01-01" filters.
 TZ = ["CREATE DOMAIN tsdom AS timestamp",
@@ -240,10 +241,11 @@ NONC_Q = ("SELECT collname FROM pg_collation "
 # tk holds each clause shape the scan can key, 20 groups of 2000 rows. tkh is a heap copy.
 TK = ["SET pgcolumnar.stripe_row_limit = 2000",
       "CREATE TABLE tk (k int, sc text COLLATE \"C\", sn text COLLATE \"{nonc}\", v varchar, tsp timestamp, "
-      "r tsrange) USING pgcolumnar",
+      "r tsrange, tsz timestamptz) USING pgcolumnar",
       "INSERT INTO tk SELECT g, lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), lpad(g::text, 6, '0'), "
       "timestamp '2020-01-01' + g * interval '1 hour', "
-      "tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour') "
+      "tsrange(timestamp '2020-01-01' + g * interval '1 hour', timestamp '2020-01-01' + (g + 1) * interval '1 hour'), "
+      "timestamptz '2020-01-01 00:00+00' + g * interval '1 hour' "
       "FROM generate_series(1, 40000) g",
       "CREATE TABLE tkh AS SELECT * FROM tk"]
 # Clauses that can never be scan keys: ts < 0, tsp < '2000-01-01' and sc/sn < '' hold
@@ -271,6 +273,10 @@ NOT_KEYABLE = (
     ("not keyable range multirange", "tk WHERE tsp < '2000-01-01' AND r && boomc_mr($1)"),
     ("not keyable date_trunc tstz column", "tz WHERE tsz < '2000-01-01' AND date_trunc('day', tsz) = boomc_tstz($1)"),
     ("not keyable two-argument function", "tk WHERE k < 0 AND trunc_k('day', k) = boomc_ts($1)"),
+    # review of ff1fc62f: the reader drops a timestamp column against a timestamptz value (#1738)
+    ("not keyable tstz scalar", "tk WHERE tsp < '2000-01-01' AND tsp > boomc_tstz($1)"),
+    ("not keyable tstz any", "tk WHERE tsp < '2000-01-01' AND tsp = ANY(boomc_tstzarr($1))"),
+    ("not keyable tstz domain column", "tz WHERE tsd < '2000-01-01' AND tsd > boomc_tstz($1)"),
     ("not keyable lt any", "tk WHERE k < 0 AND k < ANY(boomc_arr($1))"),
 )
 # Clauses that are keys, each with a bound parameter: (key, type, where on {t}, value).
@@ -281,6 +287,27 @@ PRUNE = (
     ("prune varchar", "text", "{t} WHERE v >= $1", "'039001'"),
     ("prune any", "int[]", "{t} WHERE k = ANY($1)", "'{39500,39600}'"),
 )
+# A bound parameter of a domain type, or varchar, reaches the scan inside a RelabelType;
+# its frozen Const must take the relabelled type (review of ff1fc62f, attacker's blocker A).
+DOMAINS = ["CREATE DOMAIN tdom AS text", "CREATE DOMAIN rdom AS tsrange"]
+PRUNE3 = (
+    ("prune varchar like", "varchar", "{t} WHERE sc LIKE $1", "'0390%'"),
+    ("prune tdom like", "tdom", "{t} WHERE sc LIKE $1", "'0390%'"),
+    ("prune tsdom date_trunc", "tsdom", "{t} WHERE date_trunc('day', tsp) = $1", "'2024-07-01'"),
+    ("prune tsdom date_trunc ge", "tsdom", "{t} WHERE date_trunc('day', tsp) >= $1", "'2024-07-01'"),
+    ("prune rdom overlap", "rdom", "{t} WHERE r && $1", "'[2024-07-01,2024-07-02)'"),
+    ("prune date_trunc upper unit", "timestamp", "{t} WHERE date_trunc('Day', tsp) = $1", "'2024-07-01'"),
+    ("prune tstz column", "timestamptz", "{t} WHERE tsz >= $1", "'2024-07-01 00:00+00'"),
+)
+# prsc's rows are in random order, so its groups cannot prune; prsk holds the same rows
+# in k order, so its projection's groups can.
+PRSK = ["CREATE TABLE prsk (k int, payload text) USING pgcolumnar",
+        "SELECT pgcolumnar.set_options('prsk', chunk_group_row_limit => 1000, stripe_row_limit => 1000)",
+        "INSERT INTO prsk SELECT k, 'p' || k FROM generate_series(1, 20000) k",
+        "SELECT pgcolumnar.add_projection('prsk', 'bykk', ARRAY['k'], ARRAY['k'])",
+        "ANALYZE prsk"]
+PRSK_EXPLAIN = ("EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) "
+                "SELECT count(*), sum(k) FROM prsk WHERE k >= 100 AND k <= same(900)")
 PRUNE2 = (
     ("prune date_trunc ge", "timestamp", "{t} WHERE date_trunc('day', tsp) >= $1", "'2024-07-01'"),
     ("prune range contains", "timestamp", "{t} WHERE r @> $1", "'2024-07-01 00:30'"),
@@ -512,6 +539,31 @@ def pp(pgc_cluster):
                                      f"EXECUTE ha({value})"])
             heap.append(hres if isinstance(hres, str) else (hres[-1] if hres else "no row"))
         r["prune heap 2"] = " ".join(heap)
+        _session(dsn, DOMAINS)
+        heap = []
+        for key, typ, where, value in PRUNE3:
+            r[key] = _prune_arm(dsn, typ, where.format(t="tk"), value)
+            hres = _transcript(dsn, [GENERIC, f"PREPARE ha({typ}) AS SELECT count(*) FROM {where.format(t='tkh')}",
+                                     f"EXECUTE ha({value})"])
+            heap.append(hres if isinstance(hres, str) else (hres[-1] if hres else "no row"))
+        r["prune heap 3"] = " ".join(heap)
+        # The projection and rescan arms check answers; these check that the keys frozen
+        # at the first run still prune there.
+        _session(dsn, PRSK)
+        pk = _transcript(dsn, PROJ_SET + [PRSK_EXPLAIN])
+        if isinstance(pk, str):
+            r["proj removed"] = pk
+        else:
+            proj = "bykk" if any("Columnar Projection: bykk" in line for line in pk) else "no projection"
+            r["proj removed"] = f"{proj}|{_field(pk, 'Chunk Groups Removed by Filter')}"
+        # "Chunk Groups Read|Removed by Filter|Runtime Filter Groups Removed" for
+        # f.k >= same(19500), a key that removes more than either loop's runtime range.
+        rs = _transcript(dsn, JOIN_SET + [RESCAN_Q.format(t="f"),
+                                          "EXPLAIN (ANALYZE, TIMING off, SUMMARY off, COSTS off) EXECUTE r(19500)"])
+        r["rescan removed"] = rs if isinstance(rs, str) else "|".join(
+            _field([line], label) for line in rs
+            for label in ("Columnar Chunk Groups Read", "Chunk Groups Removed by Filter",
+                          "Runtime Filter Groups Removed") if label in line)
         r["survived"] = _survived(dsn, pgc_cluster, before)
         yield r
     finally:
@@ -883,6 +935,71 @@ def test_param_pushdown_a_bound_param_that_date_trunc_is_ge_prunes(pp, expect):
 def test_param_pushdown_a_bound_param_that_a_range_column_contains_prunes(pp, expect):
     expect.text(pp["prune range contains"], "19|1",
                 "a bound parameter that a range column contains prunes (#2065)")
+
+
+def test_param_pushdown_a_stable_timestamptz_operand_compared_with_a_timestamp_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable tstz scalar"], "0|0",
+                "a stable timestamptz operand compared with a timestamp column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_timestamptz_array_operand_of_eq_any_on_a_timestamp_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable tstz any"], "0|0",
+                "a stable timestamptz array operand of = ANY on a timestamp column is not evaluated (#2065)")
+
+
+def test_param_pushdown_a_stable_timestamptz_operand_compared_with_a_timestamp_domain_column_is_not_evaluated(pp, expect):
+    expect.text(pp["not keyable tstz domain column"], "0|0",
+                "a stable timestamptz operand compared with a timestamp domain column is not evaluated (#2065)")
+
+
+def test_param_pushdown_the_heap_copy_answers_the_bound_domain_and_varchar_queries(pp, expect):
+    expect.text(pp["prune heap 3"], "100 100 24 569 24 24 569",
+                "the heap copy answers the bound domain and varchar pruning queries (premise) (#2065)")
+
+
+def test_param_pushdown_a_bound_varchar_param_in_like_on_a_c_column_prunes(pp, expect):
+    expect.text(pp["prune varchar like"], "19|100",
+                "a bound varchar parameter in LIKE on a C-collated column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_text_domain_param_in_like_on_a_c_column_prunes(pp, expect):
+    expect.text(pp["prune tdom like"], "19|100",
+                "a bound text domain parameter in LIKE on a C-collated column prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_timestamp_domain_param_compared_with_date_trunc_prunes(pp, expect):
+    expect.text(pp["prune tsdom date_trunc"], "19|24",
+                "a bound timestamp domain parameter compared with date_trunc prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_timestamp_domain_param_that_date_trunc_is_ge_prunes(pp, expect):
+    expect.text(pp["prune tsdom date_trunc ge"], "19|569",
+                "a bound timestamp domain parameter that date_trunc is >= prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_range_domain_param_that_a_range_column_overlaps_prunes(pp, expect):
+    expect.text(pp["prune rdom overlap"], "19|24",
+                "a bound range domain parameter that a range column overlaps prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_param_compared_with_date_trunc_to_an_upper_case_unit_prunes(pp, expect):
+    expect.text(pp["prune date_trunc upper unit"], "19|24",
+                "a bound parameter compared with date_trunc to an upper-case unit (Day) prunes (#2065)")
+
+
+def test_param_pushdown_a_bound_timestamptz_param_compared_with_a_timestamptz_column_prunes(pp, expect):
+    expect.text(pp["prune tstz column"], "19|569",
+                "a bound timestamptz parameter compared with a timestamptz column prunes (#2065)")
+
+
+def test_param_pushdown_a_projection_scan_with_a_first_run_key_removes_groups(pp, expect):
+    expect.text(pp["proj removed"], "bykk|19",
+                "a projection scan with a key frozen at the first run removes groups (#2065)")
+
+
+def test_param_pushdown_a_hash_join_rescan_with_a_first_run_key_removes_groups_in_each_loop(pp, expect):
+    expect.text(pp["rescan removed"], "0|40|1",
+                "a hash-join rescan with a key frozen at the first run removes groups in each loop (#2065)")
 
 
 def test_param_pushdown_the_backend_is_alive(pp, expect):

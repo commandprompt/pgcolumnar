@@ -2282,4 +2282,11 @@ guard_tests 897
 # column overlaps, and < ANY; date_trunc >= a bound parameter and a range column that contains one prune 19 of
 # 20 groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5711 tests collected after the merge of main c756ef06 (5664 before it).
-cluster_tests 5711
+# cluster_tests 5711 -> 5724 for #2065's thirteen tests from the ninth #2133 review in
+# test_native_param_pushdown.py (a timestamp or timestamp-domain column against a timestamptz operand, scalar
+# or = ANY, is not evaluated; a bound varchar, text-domain, timestamp-domain or range-domain parameter prunes
+# under LIKE, date_trunc = and >=, and &&; date_trunc to an upper-case unit and a timestamptz column against a
+# timestamptz parameter prune; a projection scan and a hash-join rescan with a key frozen at the first run
+# remove groups; a heap premise), by collection over the cluster files (the complement of NO_CLUSTER, as
+# ci.yml derives it): 5724 tests collected.
+cluster_tests 5724
