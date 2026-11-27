@@ -2576,9 +2576,9 @@ guard_tests 900
 # primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
 # call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6243 -> 6281 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
+# cluster_tests 6277 -> 6315 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
 # scenarios D to K, two writers' chunk-group and storage-row locks form no cycle, writers of unrelated rows sharing
 # row-identity buckets, the same row on the chunk-group locks, two first writers at REPEATABLE READ, six writers of
 # their own rows over five rounds (#2251), and a rewrite after a write), restated on main 0da8ea00, by collection over
 # the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6281
+cluster_tests 6315
