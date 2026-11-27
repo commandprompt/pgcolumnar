@@ -11,6 +11,10 @@ a row trigger inside the copy worker records that role, not the authenticated us
 flush encodes every column in a worker; and the server log holds no refused login for
 the role beyond the one the premise provoked.
 
+Each copy runs one worker, because every copy target has a row trigger, which
+parallel_copy refuses with more than one worker (#2187). One worker is still a
+coordinator and a loader bgworker that runs the trigger and prepares.
+
 ON A PRIVATE DATABASE, with the role created for this module and dropped after.
 """
 import re
@@ -132,7 +136,7 @@ def nw(pgc_cluster, server_dir):
             conn.execute("CREATE TRIGGER nw_def_stamp BEFORE INSERT ON nw_def "
                          "FOR EACH ROW EXECUTE FUNCTION nw_reset_stamp()")
             conn.execute("CREATE FUNCTION nw_definer_copy(p text) RETURNS bigint LANGUAGE sql "
-                         "SECURITY DEFINER AS $$SELECT pgcolumnar.parallel_copy('nw_def'::regclass, p, 2)$$")
+                         "SECURITY DEFINER AS $$SELECT pgcolumnar.parallel_copy('nw_def'::regclass, p, 1)$$")
             conn.execute(f"ALTER FUNCTION nw_definer_copy(text) OWNER TO {ROLE}")
             conn.execute(f"GRANT SELECT, INSERT ON nw_dst, nw_wide, nw_esc, nw_def, nw_sw TO {ROLE}")
 
@@ -146,7 +150,7 @@ def nw(pgc_cluster, server_dir):
 
         _, took, _ = _as_nl(dsn, "SELECT 1")
         export, _, _ = _as_nl(dsn, f"SELECT pgcolumnar.parallel_export_parquet('nw_src'::regclass, '{outdir}', 2)")
-        copy, _, _ = _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_dst'::regclass, '{infile}', 2)")
+        copy, _, _ = _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_dst'::regclass, '{infile}', 1)")
         _, _, flush = _as_nl(dsn, f"INSERT INTO nw_wide SELECT g, g, g FROM generate_series(1, {ROWS}) g",
                              settings=("SET pgcolumnar.parallel_flush = on",
                                        "SET client_min_messages = debug1"))
@@ -154,11 +158,11 @@ def nw(pgc_cluster, server_dir):
         flushed = _one(dsn, "SELECT count(*) FROM nw_wide")
 
         stamped = "count(*) || ':' || coalesce(string_agg(DISTINCT coalesce(who, '<null>'), ','), '')"
-        _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_esc'::regclass, '{infile}', 2)")
+        _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_esc'::regclass, '{infile}', 1)")
         esc = _one(dsn, f"SELECT {stamped} FROM nw_esc")
         esc_prepared = _one(dsn, "SELECT count(*) FROM pg_prepared_xacts")
         _rollback_prepared(dsn)
-        switched, _, _ = _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_sw'::regclass, '{infile}', 2)")
+        switched, _, _ = _as_nl(dsn, f"SELECT pgcolumnar.parallel_copy('nw_sw'::regclass, '{infile}', 1)")
         sw_prepared = _one(dsn, "SELECT count(*) FROM pg_prepared_xacts")
         _rollback_prepared(dsn)
         _one(dsn, f"SELECT nw_definer_copy('{infile}')")
