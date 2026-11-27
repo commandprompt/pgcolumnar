@@ -2256,32 +2256,62 @@ guard_tests 897
 # test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
 # test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
 # fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
-# cluster_tests 5664 -> 5668 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
+# cluster_tests 5664 -> 5666 for #2193's review (jdatcmd at 82a1f0a5): test_a_descriptor_that_closes_mid_read_is_skipped
+# and test_a_pid_that_does_not_exist_reads_nothing in test_harness_isolation.py, 2 tests, by collection of the
+# files not in NO_CLUSTER (first counted as 5597 -> 5599; shifted by main's later growth). They need no cluster, but they test that file's
+# own _fds_on and sit beside it; the file stays cluster-bound through its other tests, so they run in the cluster
+# job. A NO_CLUSTER home would have to import one test module from another.
+# cluster_tests 5666 -> 5676 for #2084's ten tests in test_parallel_copy.py (an escaped newline and a \.
+# end-of-data line, into a single table and a partitioned target, load what heap COPY loads; first counted
+# as 5376 -> 5386 on the branch of #2148 before main moved), and 5408 -> 5417 for the nine tests the review of
+# #2148 asked for (an even backslash run before a newline, and invalid rows after \.), by collection of the
+# files NO_CLUSTER does not name, as ci.yml selects them: 5417 tests collected.
+# cluster_tests 5685 -> 5699 for the 14 tests the review of #2148 at 7a40d479 asked for in
+# test_parallel_copy.py (#2084: backslash runs of 3 and across a 64 KiB read, records of 3 and 4
+# lines with the key after them, an unsorted row after continued records, a file that ends inside a
+# record, a \.\r\n marker, the first failing row named, and a premise), by collection of the files
+# NO_CLUSTER does not name, as ci.yml selects them: 5511 tests collected.
+# cluster_tests 5699 -> 5706 for the 7 tests the review of #2148 at 29b71633 asked for in
+# test_parallel_copy.py (#2084: an escape of a byte that is not a newline before an escaped newline,
+# rows and values, and its pinned offsets; a \. line on a range start, rows and values, and its pinned
+# offsets; and a premise for both files), by collection of the files NO_CLUSTER does not name, as
+# ci.yml selects them: 5527 tests collected.
+# cluster_tests 5706 -> 5711 for the 5 tests the review of #2148 at 7e71ab06 asked for in
+# test_parallel_copy.py (#2084: the end-of-data marker file loaded twice with dedup on, no prepared
+# transaction left and the rows loaded once; a \. line inside a continued record, partitioned, heap
+# COPY's outcome and values, and a premise that pins heap COPY's outcome per major), by collection of
+# the files NO_CLUSTER does not name, as ci.yml selects them: 5600 tests collected.
+# cluster_tests 5711 -> 5720 for the 9 tests the review of #2148 at 33724a76 asked for in
+# test_parallel_copy.py (#2084: a partitioned load of a malformed end-of-data marker, \.\r\n in an LF
+# file and \. at the end with no newline, heap COPY's outcome and nothing left behind for each; a \. line
+# in the first range, rows, values and no prepared transaction; and a premise for each fixture), by
+# collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5634 tests collected.
+# cluster_tests 5720 -> 5724 for #2079's four tests in test_parquet_nested_import.py (a list inside a nullable
 # struct, and REQUIRED lists and a REQUIRED struct, read like pyarrow through read_parquet, import_parquet and the
 # FDW), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config PYTHONPATH=. pytest --collect-only -q`:
 # 6274 tests collected, less guard_tests 894.
-# cluster_tests 5668 -> 5672 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
+# cluster_tests 5724 -> 5728 for four more #2079 tests in test_parquet_nested_import.py (the list inside a
 # nullable struct through import_parquet and the FDW, a NULL sub-struct keeping its sibling field, and a composite
 # over top-level columns refused), by collection: `cd test/pytest && PGC_PG_CONFIG=<pg18>/bin/pg_config
 # PYTHONPATH=. pytest --collect-only -q`: 6278 tests collected, less guard_tests 894.
-# cluster_tests 5672 -> 5678 for six more #2079 tests in test_parquet_nested_import.py, from the second
+# cluster_tests 5728 -> 5734 for six more #2079 tests in test_parquet_nested_import.py, from the second
 # review of #2146 (a composite whose deep leaf comes first, a one-field composite and its top-level refusal, a list
 # two nullable structs deep, a composite over a nested struct, and the sos.parquet struct-in-a-struct shape), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5412 tests collected.
-# cluster_tests 5678 -> 5679 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
+# cluster_tests 5734 -> 5735 for test_a_composite_three_structs_deep_is_null_under_every_null_parent in
 # test_parquet_nested_import.py (#2079, our own re-check of #2146: a composite over o.p.q is NULL under any NULL
 # parent), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 5458 tests
 # collected. The twolevel read joins test_native_parquet_schema.py's existing read test, so it adds no test.
-# cluster_tests 5679 -> 5683 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
+# cluster_tests 5735 -> 5739 for four more #2079 tests in test_parquet_nested_import.py, from the third review of
 # #2146 (a composite over two top-level structs refused, a composite over a struct and a top-level column refused,
 # a REQUIRED struct under a NULL parent, and a composite over part of a struct), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5504 tests collected after the merge of main f898249c.
-# cluster_tests 5683 -> 5685 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
+# cluster_tests 5739 -> 5741 for two more #2079 tests in test_parquet_nested_import.py, from the fourth review of
 # #2146 (a composite over the leading part of a struct, and a composite over a deep leaf that stands for its own
 # struct, not the next leaf's), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5508 tests collected. The empty twolevel row changes an existing test, so it adds no test.
-# cluster_tests 5685 -> 5689 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
+# cluster_tests 5741 -> 5745 for four more #2079 tests in test_parquet_nested_import.py, from the fifth review of
 # #2146 (a composite over two structs two levels down refused, and a composite whose struct is two levels above both
 # leaves, above the first leaf only, or above the last leaf only), by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it): 5580 tests collected after the merge of main 3dd019fe.
-cluster_tests 5689
+cluster_tests 5745
