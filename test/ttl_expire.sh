@@ -779,9 +779,11 @@ check_num "on a table that declares only retention, NO row inside the retention 
 # imported holds year-old values and takes the dropped name, so cutting on it
 # would retire every group. t (a prefix of ts) and ts_old (starts with ts) are
 # near misses: dropping them must leave the declaration alone.
-psql_run "CREATE TABLE ttl_dr (id int, ts timestamptz, imported timestamptz, t timestamptz, ts_old timestamptz) USING pgcolumnar;
+# "TS" differs from ts only in case (#2237 review): a different column, whose
+# drop must leave the declaration alone.
+psql_run "CREATE TABLE ttl_dr (id int, ts timestamptz, imported timestamptz, t timestamptz, ts_old timestamptz, \"TS\" timestamptz) USING pgcolumnar;
 	SELECT pgcolumnar.set_options('ttl_dr', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
-	INSERT INTO ttl_dr SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year'
+	INSERT INTO ttl_dr SELECT g, now(), now() - interval '1 year', now() - interval '1 year', now() - interval '1 year', now() - interval '1 year'
 	  FROM generate_series(1, 3000) g;"
 ttl_decl() { q "SELECT coalesce(ttl_column::text, 'NULL') || '|' || coalesce(ttl_interval::text, 'NULL') FROM pgcolumnar.options WHERE regclass = '$1'::regclass;"; }
 # SQLSTATE and message of a refusal, or nothing when the statement succeeds
@@ -799,6 +801,9 @@ check "dropping a column whose name is a prefix of the retention column leaves t
 	"$(ttl_decl ttl_dr)" "ts|7 days"
 psql_run "ALTER TABLE ttl_dr DROP COLUMN ts_old;"
 check "dropping a column whose name starts with the retention column's name leaves the declaration alone (#2070)" \
+	"$(ttl_decl ttl_dr)" "ts|7 days"
+psql_run "ALTER TABLE ttl_dr DROP COLUMN \"TS\";"
+check "dropping a column whose name differs from the retention column only in case leaves the declaration alone (#2070)" \
 	"$(ttl_decl ttl_dr)" "ts|7 days"
 psql_run "ALTER TABLE ttl_dr DROP COLUMN ts;"
 check "DROP COLUMN of the retention column clears ttl_column and ttl_interval (#2070)" \
@@ -834,6 +839,25 @@ check_num "on a typed table, a column that takes the old name is not used for re
 	"$(q "SELECT pgcolumnar.expire('ttl_te');")" "0"
 check_num "on a typed table, NO row inside the retention is dropped after a rename (#2177)" \
 	"$(q "SELECT count(*) FROM ttl_te;")" "3000"
+
+# TWO columnar typed tables of one type (#2237 review): ALTER TYPE ... RENAME
+# ATTRIBUTE must move ttl_column on every table of the type, not only the first
+# pg_class returns. Both are read, and both keep every row once an old-valued
+# column takes the old name.
+psql_run "CREATE TYPE ttl_te2_t AS (id int, ts timestamptz, imported_at timestamptz);
+	CREATE TABLE ttl_te2a OF ttl_te2_t USING pgcolumnar;
+	CREATE TABLE ttl_te2b OF ttl_te2_t USING pgcolumnar;
+	SELECT pgcolumnar.set_options('ttl_te2a', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
+	SELECT pgcolumnar.set_options('ttl_te2b', stripe_row_limit => 1000, ttl_column => 'ts', ttl_interval => '7 days');
+	INSERT INTO ttl_te2a SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;
+	INSERT INTO ttl_te2b SELECT g, now(), now() - interval '1 year' FROM generate_series(1, 3000) g;
+	ALTER TYPE ttl_te2_t RENAME ATTRIBUTE ts TO event_time CASCADE;"
+check "on two typed tables of one type, the retention column follows ALTER TYPE ... RENAME ATTRIBUTE on both (#2177)" \
+	"$(ttl_decl ttl_te2a) / $(ttl_decl ttl_te2b)" "event_time|7 days / event_time|7 days"
+psql_run "ALTER TYPE ttl_te2_t RENAME ATTRIBUTE imported_at TO ts CASCADE;"
+check "on two typed tables of one type, neither expire cuts on the column that takes the old name, and every row is kept (#2177)" \
+	"$(q "SELECT pgcolumnar.expire('ttl_te2a');"):$(q 'SELECT count(*) FROM ttl_te2a') $(q "SELECT pgcolumnar.expire('ttl_te2b');"):$(q 'SELECT count(*) FROM ttl_te2b')" \
+	"0:3000 0:3000"
 
 # A rename on a table that names no retention column (#2070). ttl_rniv declares
 # only an interval, so ttl_column is NULL and expire refuses it. The rename must

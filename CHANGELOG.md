@@ -625,7 +625,8 @@ true until the next version shipped.
   only rename there, and it was ignored. `expire` then failed with 42703, and
   once another column took the old name it cut on that column and retired rows
   inside the retention. A stale mark made `ORDER BY` on the column that took the
-  name skip the Sort. Partitions of a typed table are covered too.
+  name skip the Sort. Every columnar table of the type is covered, and their
+  partitions too.
 - `DROP COLUMN` of the retention column now clears `ttl_column` and
   `ttl_interval` (#2070). The declaration used to keep the dropped name:
   `expire` failed with 42703, and once another time column took the name it

@@ -366,6 +366,29 @@ def sm(pgc_cluster):
         d.run("ALTER TYPE vtp_ty RENAME ATTRIBUTE k TO k_old CASCADE")
         r["vtp mark"] = d.mark("vtp1")
 
+        # two columnar typed tables of one type (#2237 review): both must follow
+        d.run("CREATE TYPE vt2_ty AS (a int, b int)")
+        for t in ("vt2a", "vt2b"):
+            d.run(f"CREATE TABLE {t} OF vt2_ty USING pgcolumnar")
+            d.run(f"INSERT INTO {t} SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g")
+            d.vsort(t, "a")
+        r["vt2 premise"] = f"{d.mark('vt2a')}|{d.mark('vt2b')}"
+        d.run("ALTER TYPE vt2_ty RENAME ATTRIBUTE a TO z CASCADE")
+        r["vt2 marks"] = f"{d.mark('vt2a')}|{d.mark('vt2b')}"
+        d.run("ALTER TYPE vt2_ty RENAME ATTRIBUTE b TO a CASCADE")
+        r["vt2 answers"] = "|".join(
+            d.q(f"SELECT string_agg(a::text, ',') FROM (SELECT a FROM {t} ORDER BY a LIMIT 5) x")
+            for t in ("vt2a", "vt2b"))
+
+        # a rename onto a name that differs from a live key column only in case (#2237 review)
+        d.run('CREATE TABLE vc ("A" int, b int) USING pgcolumnar')
+        d.run("INSERT INTO vc SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g")
+        d.vsort("vc", "A")
+        r["vc premise"] = d.mark("vc")
+        d.run("ALTER TABLE vc RENAME COLUMN b TO a")
+        r["vc mark"] = d.mark("vc")
+        r["vc sorts"] = d.sorts('SELECT "A" FROM vc ORDER BY "A" LIMIT 5')
+
         # a heap column drop, here and in a database without the extension: the preloaded
         # drop hook must leave heap tables alone (#2135 review, mutant M3d)
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -784,6 +807,35 @@ def test_the_typed_tables_partition_is_untyped_and_marked(sm, expect):
 def test_a_typed_tables_partitions_mark_follows_rename_attribute(sm, expect):
     expect.text(sm["vtp mark"], "{k_old}/lexicographic",
                 "the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)")
+
+
+def test_both_typed_tables_of_one_type_are_marked(sm, expect):
+    expect.text(sm["vt2 premise"], "{a}/lexicographic|{a}/lexicographic",
+                "premise: both typed tables of one type are marked {a}")
+
+
+def test_both_typed_tables_marks_follow_rename_attribute(sm, expect):
+    expect.text(sm["vt2 marks"], "{z}/lexicographic|{z}/lexicographic",
+                "both typed tables' marks follow ALTER TYPE ... RENAME ATTRIBUTE (#2177)")
+
+
+def test_two_typed_tables_order_by_limit_is_right_on_each(sm, expect):
+    expect.text(sm["vt2 answers"], "0,1,2,3,4|0,1,2,3,4",
+                "THE WRONG-ANSWER ARM, two typed tables: ORDER BY ... LIMIT on each returns the five"
+                " smallest values (#2177)")
+
+
+def test_vc_is_marked_on_upper_a(sm, expect):
+    expect.text(sm["vc premise"], "{A}/lexicographic", "premise: vc is marked on its upper-case column A")
+
+
+def test_a_case_only_rename_onto_a_live_key_name_keeps_the_mark(sm, expect):
+    expect.text(sm["vc mark"], "{A}/lexicographic",
+                "a rename onto a name that differs from a live key column only in case keeps the mark (#2175)")
+
+
+def test_after_a_case_only_rename_order_by_needs_no_sort(sm, expect):
+    expect.text(sm["vc sorts"], "no", "and ORDER BY on that key column still needs no Sort (#2175)")
 
 
 # ---- a heap column drop, with and without the extension (#2135 review, M3d) ------------

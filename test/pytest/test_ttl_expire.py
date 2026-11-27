@@ -1040,15 +1040,16 @@ def test_dropping_the_retention_column_clears_the_declaration(pgc_conn, expect):
     another time column took the name, and from then on `expire` cut on that column.
     `loaded` holds old values and takes the dropped name, so cutting on it would
     retire every group. `t` (a prefix of `ts`) and `ts_old` (starts with `ts`) are
-    near misses whose drop must leave the declaration alone.
+    near misses whose drop must leave the declaration alone, and so is `"TS"`, which
+    differs only in case (#2237 review).
     """
     with pgc_conn.cursor() as cur:
         cur.execute("CREATE TABLE ttl_drop (id int, ts timestamptz, loaded timestamptz, t timestamptz,"
-                    " ts_old timestamptz) USING pgcolumnar")
+                    ' ts_old timestamptz, "TS" timestamptz) USING pgcolumnar')
         cur.execute(f"SELECT pgcolumnar.set_options('ttl_drop', stripe_row_limit => {GROUP},"
                     " ttl_column => 'ts', ttl_interval => '10 days')")
         cur.execute("INSERT INTO ttl_drop SELECT g, now(), now() - interval '2 years',"
-                    " now() - interval '2 years', now() - interval '2 years'"
+                    " now() - interval '2 years', now() - interval '2 years', now() - interval '2 years'"
                     f" FROM generate_series(1, {4 * GROUP}) g")
     expect.num(_groups(pgc_conn, "ttl_drop"), 4, "premise: the drop fixture has several row groups")
     expect.num(_one(pgc_conn, "SELECT pgcolumnar.expire('ttl_drop')"), 0,
@@ -1061,6 +1062,11 @@ def test_dropping_the_retention_column_clears_the_declaration(pgc_conn, expect):
         cur.execute("ALTER TABLE ttl_drop DROP COLUMN ts_old")
     expect.text(_decl(pgc_conn, "ttl_drop"), "ts|10 days",
                 "dropping a column whose name starts with the retention column's name"
+                " leaves the declaration alone (#2070)")
+    with pgc_conn.cursor() as cur:
+        cur.execute('ALTER TABLE ttl_drop DROP COLUMN "TS"')
+    expect.text(_decl(pgc_conn, "ttl_drop"), "ts|10 days",
+                "dropping a column whose name differs from the retention column only in case"
                 " leaves the declaration alone (#2070)")
     with pgc_conn.cursor() as cur:
         cur.execute("ALTER TABLE ttl_drop DROP COLUMN ts")
@@ -1108,6 +1114,34 @@ def test_the_retention_column_follows_rename_attribute_on_a_typed_table(pgc_conn
                "on a typed table, a column that takes the old name is not used for retention (#2177)")
     expect.num(_one(pgc_conn, "SELECT count(*) FROM ttl_typed"), 4 * GROUP,
                "on a typed table, NO row inside the retention is dropped after a rename (#2177)")
+
+
+def test_the_retention_column_follows_rename_attribute_on_every_typed_table(pgc_conn, expect):
+    """ALTER TYPE ... RENAME ATTRIBUTE moves `ttl_column` on every columnar table of the
+    type, not only the first one pg_class returns (#2237 review). Both are read."""
+    with pgc_conn.cursor() as cur:
+        cur.execute("CREATE TYPE ttl_two_t AS (id int, ts timestamptz, loaded timestamptz)")
+        for t in ("ttl_two_a", "ttl_two_b"):
+            cur.execute(f"CREATE TABLE {t} OF ttl_two_t USING pgcolumnar")
+            cur.execute(f"SELECT pgcolumnar.set_options('{t}', stripe_row_limit => {GROUP},"
+                        " ttl_column => 'ts', ttl_interval => '10 days')")
+            cur.execute(f"INSERT INTO {t} SELECT g, now(), now() - interval '2 years'"
+                        f" FROM generate_series(1, {2 * GROUP}) g")
+        cur.execute("ALTER TYPE ttl_two_t RENAME ATTRIBUTE ts TO event_at CASCADE")
+    expect.text(f"{_decl(pgc_conn, 'ttl_two_a')} / {_decl(pgc_conn, 'ttl_two_b')}",
+                "event_at|10 days / event_at|10 days",
+                "on two typed tables of one type, the retention column follows ALTER TYPE ... RENAME ATTRIBUTE"
+                " on both (#2177)")
+    with pgc_conn.cursor() as cur:
+        cur.execute("ALTER TYPE ttl_two_t RENAME ATTRIBUTE loaded TO ts CASCADE")
+    readings = []
+    for t in ("ttl_two_a", "ttl_two_b"):
+        retired = _one(pgc_conn, "SELECT pgcolumnar.expire(%s::regclass)", (t,))
+        readings.append(f"{retired}:{_one(pgc_conn, f'SELECT count(*) FROM {t}')}")
+    got = " ".join(readings)
+    expect.text(got, f"0:{2 * GROUP} 0:{2 * GROUP}",
+                "on two typed tables of one type, neither expire cuts on the column that takes the old name,"
+                " and every row is kept (#2177)")
 
 
 def test_a_rename_leaves_a_null_retention_column_null(pgc_conn, expect):

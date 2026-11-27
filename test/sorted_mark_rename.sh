@@ -430,6 +430,39 @@ psql_run "ALTER TYPE vtp_ty RENAME ATTRIBUTE k TO k_old CASCADE;"
 check "the PARTITION of a typed table: its mark follows ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
 	"$(markof vtp1)" "{k_old}/lexicographic"
 
+# TWO columnar typed tables of one type (#2237 review): the rename reaches
+# every table of the type, so both marks must follow, and ORDER BY on each must
+# sort again once another column takes the old name. Both tables are read, so
+# the check does not depend on which one pg_class returns first.
+psql_run "CREATE TYPE vt2_ty AS (a int, b int);"
+for _t in vt2a vt2b; do
+	psql_run "CREATE TABLE $_t OF vt2_ty USING pgcolumnar;"
+	psql_run "INSERT INTO $_t SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+	vsort "'$_t','a'"
+done
+check "premise: both typed tables of one type are marked {a}" \
+	"$(markof vt2a)|$(markof vt2b)" "{a}/lexicographic|{a}/lexicographic"
+psql_run "ALTER TYPE vt2_ty RENAME ATTRIBUTE a TO z CASCADE;"
+check "both typed tables' marks follow ALTER TYPE ... RENAME ATTRIBUTE (#2177)" \
+	"$(markof vt2a)|$(markof vt2b)" "{z}/lexicographic|{z}/lexicographic"
+psql_run "ALTER TYPE vt2_ty RENAME ATTRIBUTE b TO a CASCADE;"
+check "THE WRONG-ANSWER ARM, two typed tables: ORDER BY ... LIMIT on each returns the five smallest values (#2177)" \
+	"$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt2a ORDER BY a LIMIT 5) x;")|$(q "SELECT string_agg(a::text, ',') FROM (SELECT a FROM vt2b ORDER BY a LIMIT 5) x;")" \
+	"0,1,2,3,4|0,1,2,3,4"
+
+# A rename onto a name that differs from a LIVE key column only in case
+# (#2237 review). "A" and a are two columns, so the stale-name test must compare
+# names exactly: the mark on "A" is true and must stay, with no Sort added.
+psql_run "CREATE TABLE vc (\"A\" int, b int) USING pgcolumnar;"
+psql_run "INSERT INTO vc SELECT g, (g*7919)%20000 FROM generate_series(1,20000) g;"
+vsort "'vc','A'"
+check "premise: vc is marked on its upper-case column A" "$(markof vc)" "{A}/lexicographic"
+psql_run "ALTER TABLE vc RENAME COLUMN b TO a;"
+check "a rename onto a name that differs from a live key column only in case keeps the mark (#2175)" \
+	"$(markof vc)" "{A}/lexicographic"
+check "and ORDER BY on that key column still needs no Sort (#2175)" \
+	"$(sorts 'SELECT "A" FROM vc ORDER BY "A" LIMIT 5')" "no"
+
 # ---- a drop on a HEAP table succeeds, with and without the extension -------
 # The library is preloaded, so the drop hook runs for every column drop in
 # every database. Only its columnar-AM test keeps a heap table away from
