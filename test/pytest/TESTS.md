@@ -4506,7 +4506,7 @@ the tool grades THIS tree.
 ## 37. test_iceberg_fdw.py: the Iceberg FDW's pruning surface
 
 Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` reports
-125 literal matches and 0 missing (#1818's twelve and #2086's thirty-one included).
+138 literal matches and 0 missing (#1818's twelve, #2086's thirty-one and #2230's thirteen included).
 
 | test | asserts |
 | --- | --- |
@@ -4538,6 +4538,9 @@ Ports `test/iceberg_fdw.sh`, every check name one for one: `compare_to_bash.py` 
 | `test_the_year_table_reads_whole_and_keeps_the_boundary_file` | the boundary case stated alone |
 | `test_a_year_equality_prunes_to_one_file` | an equality narrows to the constant's own bucket |
 | `test_a_year_on_date_equality_prunes_to_one_file` | the same on a date column |
+| `test_a_constant_past_the_epoch_shift_limit_does_not_prune_every_file` | #2230: on `day()` and `hour()` over `timestamp` and `timestamptz`, `ts < '294276-12-31 23:59:59.999999'` returns `iceberg_scan`'s three rows. Before the fix the epoch shift wrapped and the FDW pruned every file |
+| `test_day_and_hour_pruning_stop_exactly_at_the_epoch_shift_limit` | #2230: `<=` the first overflowing microsecond (`294247-01-10 04:00:54.775808`) prunes no file, and `>` the last safe one still prunes all three, so the guard is the overflow and not a margin below it |
+| `test_a_constant_on_the_left_past_the_epoch_shift_limit_keeps_every_row` | #2230: the same overflow written `'294276-12-31 23:59:59.999999' > ts` returns ids 1,2,3 |
 | `test_an_hour_partition_over_a_naive_source_read_as_timestamptz_keeps_its_rows` | #1706: `byhour` (a naive source) declared `timestamptz` in New York returns `iceberg_scan`'s rows; its hour cells are wall times, so the FDW must not prune on them |
 | `test_an_hour_partition_over_a_timestamptz_source_read_as_timestamp_keeps_its_rows` | #1706: the reverse, `byhour_tz` declared `timestamp` |
 | `test_a_varchar_1_iceberg_foreign_column_refuses_a_longer_value` | typmod: a varchar(1) Iceberg foreign column refuses 'eu' (22001) |
