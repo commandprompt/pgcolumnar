@@ -402,6 +402,21 @@ check "a LIST that returns HTTP 500 is refused, not read as an empty prefix" \
 		"returned HTTP 500" " by the HTTP status check")" "08006 by the HTTP status check"
 rm -f "$PGC_WORKDIR/__listing_status__"
 
+# ---- a close-delimited listing (#2198 review) -------------------------------
+# A LIST answer may end at connection close, with no Content-Length and no
+# chunking. A reset in the middle of that body is not its end: the keys after
+# the cut would be missing, and the read would return part of the prefix with no
+# error. It is refused (08006), and the same answer sent whole still reads.
+touch "$PGC_WORKDIR/__listing_close__"
+check "a listing whose answer ends at connection close reads every object" \
+	"$(qe "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" | tr '|' ' ')" \
+	"12 192"
+touch "$PGC_WORKDIR/__listing_reset__"
+check "a listing whose close-delimited answer is reset mid-body is refused, with no partial result" \
+	"$(refusal_of "SET statement_timeout='10s'; SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('s3://$BUCKET/lst/') AS t(id int8)" \
+		"Connection reset by peer" " by the reset")" "08006 by the reset"
+rm -f "$PGC_WORKDIR/__listing_reset__" "$PGC_WORKDIR/__listing_close__"
+
 # ---- #1902: a file that does not match the declared columns is named ---------
 # Each read binds every file against the declared columns and refuses the first
 # that does not match. The refusal names that file in its DETAIL, so a prefix of

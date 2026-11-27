@@ -369,7 +369,10 @@
 # guard_tests 895 -> 897 for test_sanitizer_gate.py's nightly reader on stand-in jobs and its derived guard
 # that every sanitizer-job step running the instrumented prefix sets detect_leaks=0 (#2195), by collection
 # over NO_CLUSTER: 897 tests collected.
-guard_tests 897
+# guard_tests 897 -> 899 for #2232's test_ci_cluster_timeout.py, two tests (the reader on a fixture, and both
+# workflows' pytest-cluster timeouts within 1.5 to 2 times the slowest measured job), by collection over
+# NO_CLUSTER: 899 tests collected.
+guard_tests 899
 
 # The complement: tests that need the driver and a throwaway cluster. Until #1016 these ran
 # in no CI job at all -- a quarter of the corpus, green when somebody ran them by hand and
@@ -2506,7 +2509,63 @@ guard_tests 897
 # export; the refusal carries its DETAIL; and parallel_export_parquet and tier_partition refuse the same way and
 # leave nothing behind. By collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it): 6085 tests collected, against 6071 on main at 75f3b9d6.
-# cluster_tests 6085 -> 6098, #2215: test_parallel_copy_projection_ddl_premise,
+# cluster_tests 6085 -> 6088 for #2218 and #2197 in test_parquet_nested_import.py:
+# test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused,
+# test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
+# test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6088 tests collected`, after merging main at 6d40a3d4.
+# cluster_tests 6088 -> 6108 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
+# opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
+# statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
+# 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
+# lock refusal, after #2080's unique-index refusal and after #2211's own-write refusal (3), by collection
+# over the cluster files.
+# cluster_tests 6108 -> 6115 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
+# caller's lock on pgcolumnar.load_fingerprint and a coordinator behind another session's SHARE lock each return
+# their statement_timeout promptly, a late trigger's DETAIL, an ENABLE ALWAYS trigger refused, an ENABLE REPLICA
+# trigger loaded, the hold setting refused to a non-superuser, and one lost loader of 3 failing the load
+# promptly, by collection over the cluster files.
+# cluster_tests 6115 -> 6116 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
+# after its rows commit still records the fingerprint, so a retry of the same file is skipped, by collection
+# over the cluster files.
+# cluster_tests 6116 -> 6118 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
+# whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
+# caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
+# over the cluster files.
+# cluster_tests 6118 -> 6126 for #2198's eight tests: six in test_objstore_http_read.py (30 reads from a server that
+# resets each kept-alive connection, 30 from one that closes at once after each answer, a reset after part of a
+# status line and after part of a body refused, a server that resets every GET refused after one retry, and that GET
+# sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
+# collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
+# cluster_tests 6126 -> 6128, still #2198, for the review of #2225 at 532b11f9: two tests in test_objstore_listing.py
+# (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
+# collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+# cluster_tests 6128 -> 6151 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
+# test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
+# with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
+# test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
+# test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6151 -> 6156, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
+# GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6156 -> 6169 for #2230's thirteen tests in test_iceberg_fdw.py: four oracle reads of `< the largest
+# timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
+# limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6169 -> 6181, #2231: five tests in test_objstore_http_read.py (the refusal after a reset on the
+# retry names the errno; a hang-up and a reset followed by a clean close name none) and seven in
+# test_objstore_error_advice.py (the reset fixtures are up; a read over http and over https, a LIST, a mid-size
+# export over http and over https, and a REST catalog request reset before any answer each name the errno), by
+# collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 6168 tests collected after the merge of origin/main 36ba4cd4.
+# cluster_tests 6181 -> 6194, #2215 (6085 -> 6098 on 9c00d23e, restated on main 3d2277c1 by merge):
+# test_parallel_copy_projection_ddl_premise,
 # test_parallel_copy_after_projection_ddl_in_the_same_transaction_is_refused (4 parametrized),
 # test_parallel_copy_refused_after_projection_ddl_names_it_in_the_hint,
 # test_parallel_copy_refused_after_projection_ddl_loads_nothing,
@@ -2517,7 +2576,7 @@ guard_tests 897
 # test_alter_table_that_materializes_a_projection_holds_its_lock_until_its_transaction_ends and
 # test_add_projection_waits_for_a_writers_open_transaction, by collection over the cluster files (the
 # complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6098 -> 6099, still #2215, for the review of #2226 at d49f08e1:
+# cluster_tests 6194 -> 6195, still #2215, for the review of #2226 at d49f08e1:
 # test_pexport_lock_refusal_hint_does_not_name_the_projection_functions in test_parallel_export_parquet.py, by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6099
+cluster_tests 6195

@@ -194,7 +194,10 @@ LVL_ARMS=("list in a nullable struct reads like pyarrow"
 	"a composite over two structs two levels down is refused"
 	"a composite finds a struct two levels above both its leaves"
 	"a composite finds its struct when a leaf two levels down comes first"
-	"a composite finds its struct when a leaf two levels down comes last")
+	"a composite finds its struct when a leaf two levels down comes last"
+	"a composite over a top-level column and then a struct is refused"
+	"a composite whose first attribute was dropped is NULL when its struct is"
+	"a composite whose last attribute was dropped is NULL when its struct is")
 # refused SQL -> "refused: not inside one struct", "succeeded", or the other error.
 # The refusal counts only with SQLSTATE 42804 (datatype_mismatch), which psql
 # prints before the message under VERBOSITY verbose.
@@ -474,6 +477,28 @@ then
 		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
 		      FROM pgcolumnar.read_parquet('$LVL_DLAST') AS t(id int, c lvl_ii);")" \
 		'0:(1,2) 1:(3,) 2:NULL 3:(,)'
+	# The first leaf is top-level (id) and the last is inside s, so the walk
+	# from the first leaf starts at the root. It must stop there and refuse,
+	# not step past the root (#2218).
+	check "a composite over a top-level column and then a struct is refused" \
+		"$(lvl_refusal "SELECT * FROM pgcolumnar.read_parquet('$LVL_ONE') AS t(c lvl_ii, a1 int);")" \
+		"refused: not inside one struct"
+	# A dropped attribute binds no leaf, so the struct NULL test never sees it.
+	# Every live field must still mark the composite NULL, not only field 0 or
+	# the last field: s struct<a, b> read through (z, a, b) with z dropped, and
+	# through (a, b, z) with z dropped (#2197).
+	lvl_run "CREATE TYPE lvl_dropfirst AS (z int, a int, b int);"
+	lvl_run "ALTER TYPE lvl_dropfirst DROP ATTRIBUTE z;"
+	check "a composite whose first attribute was dropped is NULL when its struct is" \
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_PART') AS t(id int, c lvl_dropfirst);")" \
+		'0:(1,2) 1:NULL 2:(3,)'
+	lvl_run "CREATE TYPE lvl_droplast AS (a int, b int, z int);"
+	lvl_run "ALTER TYPE lvl_droplast DROP ATTRIBUTE z;"
+	check "a composite whose last attribute was dropped is NULL when its struct is" \
+		"$(lvl_q "SELECT string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)
+		      FROM pgcolumnar.read_parquet('$LVL_PART') AS t(id int, c lvl_droplast);")" \
+		'0:(1,2) 1:NULL 2:(3,)'
 else
 	rc=$?
 	if [ "$rc" = 3 ]; then

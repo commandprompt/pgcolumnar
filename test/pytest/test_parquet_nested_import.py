@@ -441,6 +441,23 @@ def _level_arm(ni, pa, pq):
             dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['dfirst']}') AS t(id int, s lvl_ba)")
         got["dlast read"] = _bounded_value(
             dsn, f"SELECT {rows} FROM pgcolumnar.read_parquet('{more['dlast']}') AS t(id int, s lvl_ii)")
+        # The first leaf is top-level (id) and the last is inside s: the walk
+        # from the first leaf starts at the root and must stop there (#2218).
+        got["root first refusal"] = _bounded_refusal(
+            dsn, f"SELECT * FROM pgcolumnar.read_parquet('{more['one']}') AS t(c lvl_ii, a1 int)")
+        # A dropped attribute binds no leaf, so the struct NULL test never sees
+        # it. Every live field must still mark the composite NULL (#2197).
+        c_rows = "string_agg(id || ':' || coalesce(c::text, 'NULL'), ' ' ORDER BY id)"
+        _bounded_run(dsn, "CREATE TYPE lvl_dropfirst AS (z int, a int, b int)")
+        _bounded_run(dsn, "ALTER TYPE lvl_dropfirst DROP ATTRIBUTE z")
+        got["dropfirst read"] = _bounded_value(
+            dsn, f"SELECT {c_rows} FROM pgcolumnar.read_parquet('{more['part']}') "
+                 "AS t(id int, c lvl_dropfirst)")
+        _bounded_run(dsn, "CREATE TYPE lvl_droplast AS (a int, b int, z int)")
+        _bounded_run(dsn, "ALTER TYPE lvl_droplast DROP ATTRIBUTE z")
+        got["droplast read"] = _bounded_value(
+            dsn, f"SELECT {c_rows} FROM pgcolumnar.read_parquet('{more['part']}') "
+                 "AS t(id int, c lvl_droplast)")
         ni["levels"] = got
     return ni["levels"]
 
@@ -726,3 +743,45 @@ def test_a_composite_finds_its_struct_when_a_leaf_two_levels_down_comes_last(ni,
     if got is not None:
         expect.text(got["dlast read"], "0:(1,2) 1:(3,) 2:NULL 3:(,)",
                     "a composite finds its struct when a leaf two levels down comes last")
+
+
+def test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused(ni, expect):
+    # lvl_one holds id, s struct<a>, a1: a composite (a, b) binds id, then s.a.
+    # The walk from id starts at the root and must stop there (#2218).
+    pa = expect.require_module(
+        "pyarrow", name="a composite over a top-level column and then a struct is refused")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite over a top-level column and then a struct is refused") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["root first refusal"], "refused: not inside one struct",
+                    "a composite over a top-level column and then a struct is refused")
+
+
+def test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is(ni, expect):
+    # s struct<a, b> read through (z, a, b) with z dropped: field 0 binds no leaf,
+    # so a NULL s must be seen through a or b (#2197).
+    pa = expect.require_module(
+        "pyarrow", name="a composite whose first attribute was dropped is NULL when its struct is")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite whose first attribute was dropped is NULL when its struct is") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["dropfirst read"], "0:(1,2) 1:NULL 2:(3,)",
+                    "a composite whose first attribute was dropped is NULL when its struct is")
+
+
+def test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is(ni, expect):
+    # s struct<a, b> read through (a, b, z) with z dropped: the last field binds
+    # no leaf, so a NULL s must be seen through a or b (#2197).
+    pa = expect.require_module(
+        "pyarrow", name="a composite whose last attribute was dropped is NULL when its struct is")
+    pq = expect.require_module(
+        "pyarrow.parquet",
+        name="a composite whose last attribute was dropped is NULL when its struct is") if pa else None
+    got = _levels_or_decline(ni, pa, pq)
+    if got is not None:
+        expect.text(got["droplast read"], "0:(1,2) 1:NULL 2:(3,)",
+                    "a composite whose last attribute was dropped is NULL when its struct is")
