@@ -1199,16 +1199,16 @@ def _strip_fixtures(pa, out):
     st = _strip_module()
     report = {}
 
-    def write(name, arr, path=(0,)):
+    def write(name, arr, path=(0,), slots=(3,)):
         t = pa.table({"v": arr, "n": pa.array(range(len(arr)), pa.int32())})
         sink = pa.BufferOutputStream()
         with pa.ipc.new_stream(sink, t.schema) as w:
             w.write_table(t)
-        data = st.strip(sink.getvalue().to_pybytes(), list(path))
+        data = st.strip(sink.getvalue().to_pybytes(), list(path), slots)
         f = out / f"{name}.arrows"
         f.write_bytes(data)
         f.chmod(0o644)
-        report[name] = st.describe(data, list(path))
+        report[name] = st.describe(data, list(path), 5 in slots)
 
     write("st_f64", pa.array([1.5, -2.25], pa.float64()))
     write("st_i64", pa.array([5, 6], pa.int64()))
@@ -1227,6 +1227,14 @@ def _strip_fixtures(pa, out):
     write("st_list", pa.array([[1, 2], [3]], pa.list_(pa.int64())))
     write("st_struct", pa.array([{"a": 1}, {"a": 2}], pa.struct([("a", pa.int64())])))
     write("st_null", pa.array([None, None], pa.null()))
+    # the review of #2224: a field with no tag either, a struct child, a map
+    # value, a column other than the first, and a list with no children vector
+    write("st_notag", pa.array([1.5, -2.25], pa.float64()), (0,), (2, 3))
+    write("st_skid", pa.array([{"a": 1.5}, {"a": -2.25}], pa.struct([("a", pa.float64())])), (0, 0))
+    write("st_mval", pa.array([[("k", 1.5)]], pa.map_(pa.string(), pa.float64())), (0, 0, 1))
+    write("st_ncol", pa.array([5, 6], pa.int64()), (1,))
+    write("st_nokids", pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (5,))
+    write("st_nokids_nt", pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (3, 5))
     return report
 
 
@@ -1370,3 +1378,67 @@ def test_a_null_field_with_no_type_table_is_refused_by_type(pgc_conn, server_dir
                 'tag=1 type=absent|42804 Arrow column "v" holds a null, which pgcolumnar.import_arrow cannot read'
                 " into type text|0",
                 "import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)")
+
+
+# The review of #2224 found three rewrites of the fix that every check above
+# passes, each storing the bit patterns again: tag NONE read as nothing to check,
+# the checks skipped under a struct (which holds a map's value too), and only the
+# first column checked. And a list field with no children vector never had its
+# element checked: list<float64> imported into bigint[] as bit patterns.
+
+def test_a_field_with_neither_tag_nor_type_table_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column"
+            " with 42804 (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_notag", "bigint"),
+                'tag=0 type=absent|42804 Arrow column "v" holds an unknown Arrow type, which pgcolumnar.import_arrow'
+                " cannot read into type bigint|0",
+                "import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column"
+                " with 42804 (#2186)")
+
+
+def test_a_struct_child_or_map_value_with_no_type_table_is_refused(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit"
+            " patterns (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    conn = pgc_conn
+    _run(conn, "DROP TYPE IF EXISTS st_s CASCADE", "CREATE TYPE st_s AS (a bigint)",
+         "DROP TYPE IF EXISTS st_kv CASCADE", "CREATE TYPE st_kv AS (k text, v bigint)")
+    refused = ('tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read'
+               " into type bigint|0")
+    expect.text(_st_import(conn, server_dir, rep, "st_skid", "st_s") + " / "
+                + _st_import(conn, server_dir, rep, "st_mval", "st_kv[]"),
+                refused + " / " + refused,
+                "import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit"
+                " patterns (#2186)")
+
+
+def test_a_second_column_with_no_type_table_is_malformed(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a second column with no type table as malformed with XX001, naming that column"
+            " (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_ncol", "bigint"),
+                'tag=2 type=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "n" holds an integer with no'
+                " type table|0",
+                "import_arrow refuses a second column with no type table as malformed with XX001, naming that column"
+                " (#2186)")
+
+
+def test_a_list_field_with_no_children_vector_is_malformed(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a list field with no children vector as malformed with XX001, with or without a"
+            " type table (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    nokids = 'XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0'
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_nokids", "bigint[]") + " / "
+                + _st_import(pgc_conn, server_dir, rep, "st_nokids_nt", "bigint[]"),
+                f"tag=12 type=present children=absent|{nokids} / tag=12 type=absent children=absent|{nokids}",
+                "import_arrow refuses a list field with no children vector as malformed with XX001, with or without a"
+                " type table (#2186)")

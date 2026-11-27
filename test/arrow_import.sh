@@ -1483,14 +1483,14 @@ out = sys.argv[1]
 spec = importlib.util.spec_from_file_location("arrow_strip_type", sys.argv[2])
 st = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(st)
-def write(name, arr, path=(0,)):
+def write(name, arr, path=(0,), slots=(3,)):
     t = pa.table({'v': arr, 'n': pa.array(range(len(arr)), pa.int32())})
     sink = pa.BufferOutputStream()
     with ipc.new_stream(sink, t.schema) as w:
         w.write_table(t)
-    data = st.strip(sink.getvalue().to_pybytes(), list(path))
+    data = st.strip(sink.getvalue().to_pybytes(), list(path), slots)
     open(os.path.join(out, name + '.arrows'), 'wb').write(data)
-    print(name, st.describe(data, list(path)))
+    print(name, st.describe(data, list(path), 5 in slots))
 write('st_f64', pa.array([1.5, -2.25], pa.float64()))
 write('st_i64', pa.array([5, 6], pa.int64()))
 write('st_ts', pa.array([0, 1000000], pa.timestamp('us')))
@@ -1508,6 +1508,14 @@ write('st_bool', pa.array([True, False], pa.bool_()))
 write('st_list', pa.array([[1, 2], [3]], pa.list_(pa.int64())))
 write('st_struct', pa.array([{'a': 1}, {'a': 2}], pa.struct([('a', pa.int64())])))
 write('st_null', pa.array([None, None], pa.null()))
+# the review of #2224: a field with no tag either, a struct child, a map value,
+# a column other than the first, and a list with no children vector
+write('st_notag', pa.array([1.5, -2.25], pa.float64()), (0,), (2, 3))
+write('st_skid', pa.array([{'a': 1.5}, {'a': -2.25}], pa.struct([('a', pa.float64())])), (0, 0))
+write('st_mval', pa.array([[('k', 1.5)]], pa.map_(pa.string(), pa.float64())), (0, 0, 1))
+write('st_ncol', pa.array([5, 6], pa.int64()), (1,))
+write('st_nokids', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (5,))
+write('st_nokids_nt', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (3, 5))
 PY
 	chmod 644 "$PGC_WORKDIR"/st_*.arrows
 	psql_run "CREATE TYPE st_kv AS (k text, v bigint); CREATE TYPE st_s AS (a bigint);"
@@ -1547,6 +1555,25 @@ PY
 	check "import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)" \
 		"$(st_import st_null text)" \
 		'tag=1 type=absent|42804 Arrow column "v" holds a null, which pgcolumnar.import_arrow cannot read into type text|0'
+	# The review of #2224 found three rewrites of the fix that the checks above
+	# all pass, each storing the bit patterns again: tag NONE read as nothing to
+	# check, the checks skipped under a struct (which holds a map's value too),
+	# and only the first column checked. And a list field with no children
+	# vector never had its element checked at all, with or without a type table:
+	# list<float64> imported into bigint[] as bit patterns. pyarrow refuses that
+	# file ("List must have exactly 1 child field"); so does import_arrow now.
+	check "import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)" \
+		"$(st_import st_notag bigint)" \
+		'tag=0 type=absent|42804 Arrow column "v" holds an unknown Arrow type, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)" \
+		"$(st_import st_skid st_s) / $(st_import st_mval 'st_kv[]')" \
+		'tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0 / tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read into type bigint|0'
+	check "import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)" \
+		"$(st_import st_ncol bigint)" \
+		'tag=2 type=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "n" holds an integer with no type table|0'
+	check "import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)" \
+		"$(st_import st_nokids 'bigint[]') / $(st_import st_nokids_nt 'bigint[]')" \
+		'tag=12 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0 / tag=12 type=absent children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0'
 else
 	for _ai_st in \
 			"import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored as bit patterns (#2186)" \
@@ -1557,7 +1584,11 @@ else
 			"import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as malformed with XX001 (#2186)" \
 			"import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one with XX001 (#2186)" \
 			"control: a string, binary, boolean, list or struct field with no type table still imports, with its values (#2186)" \
-			"import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)"; do
+			"import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)" \
+			"import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)" \
+			"import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)" \
+			"import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)" \
+			"import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)"; do
 		check_skip "$_ai_st" \
 			"SKIP  $_ai_st (pyarrow not available)" \
 			"pyarrow not available"

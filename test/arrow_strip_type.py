@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 #
 # Remove one Arrow field's `type` table from an Arrow IPC stream, keeping its
-# `type_type` tag (#2186).
+# `type_type` tag (#2186). It can also remove the tag itself, or the field's
+# `children` vector.
 #
 # import_arrow once checked a field's tag against the target column only when
 # the field had a type table. A file whose tag says FloatingPoint but which has
@@ -15,7 +16,8 @@
 # longer than one) to the chosen Field table. A FlatBuffers table finds its
 # fields through a vtable, and a slot whose vtable entry is 0 is absent. The
 # helper copies that Field's vtable to the end of the Schema metadata, zeroes
-# slot 3 (`type`) in the copy, and points the Field at the copy. It never edits
+# slot 3 (`type`) in the copy, and points the Field at the copy. Asked to, it
+# zeroes slot 2 (`type_type`) or slot 5 (`children`) in the copy as well. It never edits
 # a vtable in place, because pyarrow shares one vtable between identical
 # tables, and an edit there would strip the type of other fields too. The
 # metadata length grows by the padded copy. The Schema message has no body, so
@@ -25,10 +27,13 @@
 # tag and whether a type table is still present. A caller compares that report
 # with what it expects, so a patch that missed is caught by the check itself.
 #
-# Usage:  python3 test/arrow_strip_type.py IN OUT PATH
+# Usage:  python3 test/arrow_strip_type.py IN OUT PATH [SLOTS]
 #         PATH is field indices joined by '.', such as 0 (the first top-level
 #         field) or 0.0 (the first child of the first field).
-# Prints: "tag=<type_type> type=<present|absent>" for the chosen field.
+#         SLOTS is the Field slots to zero, joined by ',': 3 (the default) for
+#         the type table, 2,3 for the tag too, 5 for the children vector.
+# Prints: "tag=<type_type> type=<present|absent>" for the chosen field, then
+#         " children=<present|absent>" when slot 5 was among SLOTS.
 #
 import struct
 import sys
@@ -89,26 +94,32 @@ def _schema_frame(data):
     return 8, _i32(data, 4)
 
 
-def describe(data, path):
-    """-> 'tag=<type_type> type=<present|absent>' for the field `path` names."""
+def describe(data, path, children=False):
+    """-> 'tag=<type_type> type=<present|absent>' for the field `path` names, and
+    ' children=<present|absent>' after it when `children` is true."""
     start, mlen = _schema_frame(data)
     meta = data[start:start + mlen]
     tab = _field(meta, path)
     tp = _slot(meta, tab, FIELD_TYPE_TYPE)
     tag = meta[tp] if tp else 0
-    return "tag=%d type=%s" % (tag, "present" if _slot(meta, tab, FIELD_TYPE) else "absent")
+    out = "tag=%d type=%s" % (tag, "present" if _slot(meta, tab, FIELD_TYPE) else "absent")
+    if children:
+        out += " children=%s" % ("present" if _slot(meta, tab, FIELD_CHILDREN) else "absent")
+    return out
 
 
-def strip(data, path):
-    """-> `data` with the `type` table of the field `path` names removed."""
+def strip(data, path, slots=(FIELD_TYPE,)):
+    """-> `data` with the Field slots `slots` (by default only `type`) of the
+    field `path` names removed."""
     start, mlen = _schema_frame(data)
     meta = bytearray(data[start:start + mlen])
     tab = _field(meta, path)
     vt = _vtable(meta, tab)
     size = _u16(meta, vt)
     copy = bytearray(meta[vt:vt + size])
-    if 4 + 2 * FIELD_TYPE < size:
-        struct.pack_into("<H", copy, 4 + 2 * FIELD_TYPE, 0)
+    for slot in slots:
+        if 4 + 2 * slot < size:
+            struct.pack_into("<H", copy, 4 + 2 * slot, 0)
     # the copy goes at the end, 8-byte aligned, as Arrow pads metadata
     newvt = len(meta)
     meta += copy
@@ -120,14 +131,15 @@ def strip(data, path):
 
 
 def main():
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: arrow_strip_type.py IN OUT PATH")
+    if len(sys.argv) not in (4, 5):
+        raise SystemExit("usage: arrow_strip_type.py IN OUT PATH [SLOTS]")
     path = [int(x) for x in sys.argv[3].split(".")]
+    slots = [int(x) for x in sys.argv[4].split(",")] if len(sys.argv) == 5 else [FIELD_TYPE]
     with open(sys.argv[1], "rb") as f:
-        data = strip(f.read(), path)
+        data = strip(f.read(), path, slots)
     with open(sys.argv[2], "wb") as f:
         f.write(data)
-    print(describe(data, path))
+    print(describe(data, path, FIELD_CHILDREN in slots))
 
 
 if __name__ == "__main__":

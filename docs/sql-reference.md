@@ -994,9 +994,11 @@ does not read into a `numeric(p,s)` with `p` up to 38. A `LargeUtf8`,
 The reader checks a field's type against the target column even when the
 field has no type table (#2186). Such a field is refused with `42804` if the
 column cannot hold its type. It is refused as a damaged file, with `XX001`, if
-its type has parameters the reader needs. Those types are integer, float,
-decimal, date, time, timestamp, duration, fixed-size binary and map. A string, binary, boolean, list or struct field with no type table still
-imports. pyarrow does not write such files.
+its type has parameters in the Arrow schema. Those types are integer, float,
+decimal, date, time, timestamp, duration, fixed-size binary and map. A string,
+binary, boolean, list or struct field with no type table still imports. A list,
+map or struct field with no child fields is refused with `XX001` too. pyarrow
+does not write such files.
 
 A `Decimal` column reads only into a `numeric(p,s)` with `p` up to 38. It is
 refused with `42804` for a `numeric` declared without a precision or with one

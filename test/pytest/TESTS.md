@@ -7498,6 +7498,10 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_list_element_with_no_type_table_is_refused` | (#2186) `import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one with XX001 (#2186)`; unpatched, both imported 2 rows |
 | `test_a_parameterless_field_with_no_type_table_still_imports` | (#2186) the control: `control: a string, binary, boolean, list or struct field with no type table still imports, with its values (#2186)`, each by its stored values |
 | `test_a_null_field_with_no_type_table_is_refused_by_type` | (#2186) `import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)`; unpatched, XX001 "too few buffers for the schema" |
+| `test_a_field_with_neither_tag_nor_type_table_is_refused_by_type` | (#2186, review of #2224) `import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)`; unpatched, 2 rows imported, and the `none` mutant (tag NONE read as nothing to check) imports them too |
+| `test_a_struct_child_or_map_value_with_no_type_table_is_refused` | (#2186, review of #2224) `import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)`, both in one check; unpatched, both imported |
+| `test_a_second_column_with_no_type_table_is_malformed` | (#2186, review of #2224) `import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)`; unpatched, 2 rows imported |
+| `test_a_list_field_with_no_children_vector_is_malformed` | (#2186, review of #2224) `import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)`; unpatched, both imported 2 rows |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 

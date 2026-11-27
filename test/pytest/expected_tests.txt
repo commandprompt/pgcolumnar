@@ -2510,4 +2510,7 @@ guard_tests 897
 # refused for bigint (42804) and malformed for float8 (XX001), int64, timestamp and decimal malformed, the other
 # parameterised tags malformed, a list element with no type table, the parameterless control and the null field,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6094 collected.
-cluster_tests 6094
+# cluster_tests 6094 -> 6098 for the review of #2224 (#2186): four tests in test_arrow_import.py, a field with
+# neither tag nor type table, a struct child and a map value, a second column, and a list with no children vector,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6098 collected.
+cluster_tests 6098

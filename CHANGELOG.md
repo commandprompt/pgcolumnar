@@ -1275,9 +1275,11 @@ true until the next version shipped.
   -4611123068473966592, with no error. Now a type the column cannot hold is
   refused with SQLSTATE 42804, with or without a type table. A field with no
   type table is refused as a damaged file (XX001) when its type has parameters
-  the reader needs, such as a bit width, a unit or a scale. A string, binary,
-  boolean, list or struct field with no type table still imports. pyarrow does
-  not write such files and refuses to read them. docs/sql-reference.md.
+  in Schema.fbs, such as a bit width, a unit or a scale. A string, binary,
+  boolean, list or struct field with no type table still imports. A list, map
+  or struct field with no children vector is refused with XX001 too: a
+  list<float64> with none imported into `bigint[]` as bit patterns. pyarrow
+  does not write such files and refuses to read them. docs/sql-reference.md.
   `test/arrow_import.sh` and `test_arrow_import.py`, with the new fixture
   builder `test/arrow_strip_type.py`.
 - `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the

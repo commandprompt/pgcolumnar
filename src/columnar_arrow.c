@@ -2053,14 +2053,16 @@ imp_check_shape(ImpNode *n, uint8 typetag, const uint8 *meta, uint32 metaLen,
 }
 
 /*
- * Whether a type tag's Schema.fbs table carries parameters (#2186): a bit
- * width, a unit, a scale, a byte width or a sort flag. A field with such a tag
- * but no `type` table is malformed, because the reader would have to guess the
- * parameters, and it once took them from the target column instead. The other
- * tags the reader accepts (Utf8, Binary, Bool, List, Struct) have empty tables,
- * so a field without one still gives the reader all it needs. Interval, Union
- * and FixedSizeList have parameters too, but imp_check_shape refuses them under
- * every node first.
+ * Whether a type tag's Schema.fbs table has parameters (#2186): a bit width, a
+ * unit, a scale, a byte width or a sort flag. A field with such a tag but no
+ * `type` table is malformed. The reader needs the parameters of Int,
+ * FloatingPoint, Decimal, Date, Time, Timestamp and FixedSizeBinary, and it
+ * once took them from the target column instead. It never reads a Duration's
+ * unit or a Map's keysSorted, but Schema.fbs gives both a table with fields,
+ * and pyarrow refuses either without one. The other tags the reader accepts
+ * (Utf8, Binary, Bool, List, Struct) have empty tables, so a field without one
+ * still gives the reader all it needs. Interval, Union and FixedSizeList have
+ * parameters too, but imp_check_shape refuses them under every node first.
  */
 static bool
 arrow_tag_has_params(uint8 typetag)
@@ -2264,9 +2266,17 @@ imp_apply_field(ImpNode *n, const uint8 *meta, uint32 metaLen, uint32 field,
 		uint32		cnt;
 		int			i;
 
+		/*
+		 * A list, map or struct field with no children vector is malformed:
+		 * it once returned here, so a list<float64> element was never checked
+		 * and imported into bigint[] as bit patterns (#2186, review of #2224).
+		 */
 		pos = pgc_fb_field(meta, metaLen, field, 5);
 		if (pos == 0)
-			return;
+			ereport(ERROR,
+					(errcode(ERRCODE_DATA_CORRUPTED),
+					 errmsg("columnar: malformed Arrow IPC file: Arrow column \"%s\" holds %s with no child fields",
+							colname, arrow_type_tag_desc(typetag))));
 		vec = pgc_fb_indirect(meta, metaLen, pos);
 		cnt = fbr_u32(meta, metaLen, vec);
 		if (cnt != (uint32) n->nchildren)
