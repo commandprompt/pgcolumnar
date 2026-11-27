@@ -1057,7 +1057,10 @@ The target may be one of two kinds:
   function refuses more than one worker with `0A000`. Load such a table with
   `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
   transaction until every worker has finished. So two workers would wait on each
-  other, and the load would hang or fail with a deadlock error.
+  other, and the load would hang or fail with a deadlock error. The refusal
+  comes before the function opens the file, so a missing file gets `0A000`,
+  not `58P01` (#2209). A heap table gets `42809` before the refusal, even
+  with a primary key.
   The function also refuses more than one worker when the table has an enabled
   trigger on INSERT, of any timing or level. Each worker runs the trigger in its
   own prepared transaction, so writes the trigger makes could wait on another

@@ -2571,11 +2571,14 @@ guard_tests 900
 # the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
 # each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
 # not name, as ci.yml selects them.
-# cluster_tests 6239 -> 6259 for #2184's twenty tests in test_concurrency.py (scenarios D, E and F: two writers'
-# chunk-group and storage-row locks form no cycle), restated on main 728d4217, by collection over the cluster files
-# (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 6259 -> 6277 for eighteen more tests in test_concurrency.py (#2184 review, #2251): scenarios G to K,
-# writers of unrelated rows sharing row-identity buckets, the same row on the chunk-group locks, two first writers at
-# REPEATABLE READ, six writers of their own rows over five rounds, and a rewrite after a write (2 parametrized x 2),
-# by collection of that file (28 -> 46) and over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6277
+# cluster_tests 6239 -> 6243 for #2209's four tests in test_parallel_copy.py: a premise that the heap target has a
+# primary key, that heap target with 2 workers gets 42809 before the unique-index refusal, a missing file into a
+# primary-key table with 2 workers gets the 0A000 refusal before the file is opened, and the control that the same
+# call with 1 worker gets 58P01, by collection of that file (307 on main bd082bdc, 311 here) and over the cluster
+# files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6243 -> 6281 for #2184's thirty-eight tests in test_concurrency.py (8 -> 46 by collection of that file:
+# scenarios D to K, two writers' chunk-group and storage-row locks form no cycle, writers of unrelated rows sharing
+# row-identity buckets, the same row on the chunk-group locks, two first writers at REPEATABLE READ, six writers of
+# their own rows over five rounds (#2251), and a rewrite after a write), restated on main 0da8ea00, by collection over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6281
