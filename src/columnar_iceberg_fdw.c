@@ -939,10 +939,11 @@ ice_floordiv(int64 a, int64 b)
 }
 
 /*
- * Map a PostgreSQL timestamp (micros from 2000) to the integer partition bucket
- * an Iceberg `kind` transform stores, all from the 1970 epoch in UTC. Returns
- * false for a non-finite timestamp (infinity), or one too late to move to the
- * 1970 epoch in int64 (#2230), which has no bucket and must not prune. year()/month() decompose the calendar; day()/hour() are floors of the
+ * Map a PostgreSQL timestamp (micros from 2000) to the integer partition
+ * bucket an Iceberg `kind` transform stores, all from the 1970 epoch in UTC.
+ * Returns false for a non-finite timestamp (infinity), or one too late to move
+ * to the 1970 epoch in int64 (#2230), which has no bucket and must not prune.
+ * year()/month() decompose the calendar; day()/hour() are floors of the
  * elapsed micros.
  */
 static bool
