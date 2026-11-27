@@ -1253,6 +1253,19 @@ true until the next version shipped.
   Arrow type, at any depth. A plain binary or string column imports as before.
   Reading these types is a separate feature. docs/limitations.md.
   `test/arrow_import.sh` and `test_arrow_import.py`.
+- `pgcolumnar.import_arrow` no longer imports a field with no type table
+  without checking its type (#2186). It checked a field's type against the
+  target column only when the field had a type table. So a crafted file whose
+  field said float64 but had no type table imported into a `bigint` column as
+  bit patterns: 1.5 and -2.25 were stored as 4609434218613702656 and
+  -4611123068473966592, with no error. Now a type the column cannot hold is
+  refused with SQLSTATE 42804, with or without a type table. A field with no
+  type table is refused as a damaged file (XX001) when its type has parameters
+  the reader needs, such as a bit width, a unit or a scale. A string, binary,
+  boolean, list or struct field with no type table still imports. pyarrow does
+  not write such files and refuses to read them. docs/sql-reference.md.
+  `test/arrow_import.sh` and `test_arrow_import.py`, with the new fixture
+  builder `test/arrow_strip_type.py`.
 - `pgcolumnar.import_arrow` and `pgcolumnar.import_parquet` no longer abort the
   backend on a table that has a projection (#2092). The import writes the
   projection's rows when its statement ends. An import is a `SELECT`, so its

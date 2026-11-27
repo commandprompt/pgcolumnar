@@ -2499,4 +2499,8 @@ guard_tests 897
 # and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
 # compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
 # it).
-cluster_tests 6071
+# cluster_tests 6071 -> 6080 for #2186's nine tests in test_arrow_import.py: a float64 field with no type table
+# refused for bigint (42804) and malformed for float8 (XX001), int64, timestamp and decimal malformed, the other
+# parameterised tags malformed, a list element with no type table, the parameterless control and the null field,
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6080 collected.
+cluster_tests 6080

@@ -991,6 +991,13 @@ reads into `bytea`. A `Binary` column reads into `text`, `varchar`, `json`,
 does not read into a `numeric(p,s)` with `p` up to 38. A `LargeUtf8`,
 `LargeBinary` or `Null` column is refused for every target.
 
+The reader checks a field's type against the target column even when the
+field has no type table (#2186). Such a field is refused with `42804` if the
+column cannot hold its type. It is refused as a damaged file, with `XX001`, if
+its type has parameters the reader needs. Those types are integer, float,
+decimal, date, time, timestamp, duration, fixed-size binary and map. A string, binary, boolean, list or struct field with no type table still
+imports. pyarrow does not write such files.
+
 A `Decimal` column reads only into a `numeric(p,s)` with `p` up to 38. It is
 refused with `42804` for a `numeric` declared without a precision or with one
 above 38. Declare the target as `numeric(p,s)` with `p` up to 38, or cast the

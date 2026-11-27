@@ -13,6 +13,7 @@ file lives in `server_dir`, because the backend opens it.
 """
 import decimal
 import os
+import pathlib
 import re
 import struct
 import threading
@@ -1169,3 +1170,203 @@ def test_a_binary_or_string_file_still_imports_with_its_values(pgc_conn, server_
                 "1|1|78 / 2|2|hi,there",
                 "control: a binary and a string file still import into bytea and text, with their values"
                 " (#2097)")
+
+
+# #2186: the schema walk ran its type checks only when a field had a `type` table.
+# A field whose tag said FloatingPoint but whose table was absent passed no check,
+# so float64 1.5 and -2.25 imported into bigint as 4609434218613702656 and
+# -4611123068473966592, at the top level and as a list element. pyarrow never
+# writes such a file, so test/arrow_strip_type.py builds each fixture from a
+# pyarrow file, keeping the tag, and reports tag and table so a patch that missed
+# fails the check. A tag the column cannot hold is now refused with 42804, table or
+# not; a tag whose table carries parameters the reader needs is refused as
+# malformed with XX001. One test per check, with the shell's names.
+
+def _strip_module():
+    import importlib.util
+    path = pathlib.Path(__file__).resolve().parents[1] / "arrow_strip_type.py"
+    spec = importlib.util.spec_from_file_location("arrow_strip_type", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _strip_fixtures(pa, out):
+    """#2186's files, as the shell writes them: a column `v` beside an int32 `n`
+    counting from 0, with `v`'s type table (or, for st_lf64 and st_li64, its list
+    element's) removed. -> {fixture: "tag=<type_type> type=<present|absent>"}."""
+    import datetime
+    st = _strip_module()
+    report = {}
+
+    def write(name, arr, path=(0,)):
+        t = pa.table({"v": arr, "n": pa.array(range(len(arr)), pa.int32())})
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, t.schema) as w:
+            w.write_table(t)
+        data = st.strip(sink.getvalue().to_pybytes(), list(path))
+        f = out / f"{name}.arrows"
+        f.write_bytes(data)
+        f.chmod(0o644)
+        report[name] = st.describe(data, list(path))
+
+    write("st_f64", pa.array([1.5, -2.25], pa.float64()))
+    write("st_i64", pa.array([5, 6], pa.int64()))
+    write("st_ts", pa.array([0, 1000000], pa.timestamp("us")))
+    write("st_dec", pa.array([decimal.Decimal("1.25"), decimal.Decimal("-3.75")], pa.decimal128(10, 2)))
+    write("st_d32", pa.array([datetime.date(2000, 1, 1)], pa.date32()))
+    write("st_t64", pa.array([datetime.time(1, 2, 3)], pa.time64("us")))
+    write("st_fsb", pa.array([b"0123456789abcdef"], pa.binary(16)))
+    write("st_dur", pa.array([5, 6], pa.duration("us")))
+    write("st_map", pa.array([[("k", 1)]], pa.map_(pa.string(), pa.int64())))
+    write("st_lf64", pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0, 0))
+    write("st_li64", pa.array([[1, 2], [3]], pa.list_(pa.int64())), (0, 0))
+    write("st_utf8", pa.array(["hi", "there"], pa.string()))
+    write("st_bin", pa.array([b"x", b"yz"], pa.binary()))
+    write("st_bool", pa.array([True, False], pa.bool_()))
+    write("st_list", pa.array([[1, 2], [3]], pa.list_(pa.int64())))
+    write("st_struct", pa.array([{"a": 1}, {"a": 2}], pa.struct([("a", pa.int64())])))
+    write("st_null", pa.array([None, None], pa.null()))
+    return report
+
+
+def _strip_pa(expect, name, out):
+    """-> #2186's patch report, with its fixtures written to `out`, or None after
+    declining by `name` because pyarrow is absent."""
+    pa = expect.require_module("pyarrow", name=name)
+    if pa is None:
+        return None
+    return _strip_fixtures(pa, out)
+
+
+def _st_import(conn, out, report, fixture, pgtype, table=None):
+    """-> "<patch report>|<import result or 'SQLSTATE message'>|<rows stored>", as
+    the shell's st_import."""
+    t = table or f"st_t_{fixture}"
+    _run(conn, f"CREATE TABLE {t} (v {pgtype}, n int) USING pgcolumnar")
+    got = _outcome(conn, f"SELECT pgcolumnar.import_arrow('{t}', '{out / (fixture + '.arrows')}')")
+    return f"{report[fixture]}|{got}|{_one(conn, f'SELECT count(*) FROM {t}')}"
+
+
+def _st_corrupt(tag, desc):
+    return (f'tag={tag} type=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds {desc}'
+            " with no type table|0")
+
+
+def test_a_float64_field_with_no_type_table_is_refused_for_bigint(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored"
+            " as bit patterns (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_f64", "bigint"),
+                'tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read'
+                " into type bigint|0",
+                "import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored"
+                " as bit patterns (#2186)")
+
+
+def test_a_float64_field_with_no_type_table_is_malformed_for_float8(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a float64 field with no type table for a float8 column as malformed with XX001"
+            " (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_f64", "float8", "st_t_st_f64_f8"),
+                _st_corrupt(3, "a float"),
+                "import_arrow refuses a float64 field with no type table for a float8 column as malformed with XX001"
+                " (#2186)")
+
+def test_an_int64_field_with_no_type_table_is_malformed(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses an int64 field with no type table as malformed with XX001 (#2186)"
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_i64", "bigint"), _st_corrupt(2, "an integer"),
+                "import_arrow refuses an int64 field with no type table as malformed with XX001 (#2186)")
+
+def test_a_timestamp_field_with_no_type_table_is_malformed(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a timestamp field with no type table as malformed with XX001 (#2186)"
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_ts", "timestamp"), _st_corrupt(10, "a timestamp"),
+                "import_arrow refuses a timestamp field with no type table as malformed with XX001 (#2186)")
+
+def test_a_decimal_field_with_no_type_table_is_malformed(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a decimal field with no type table as malformed with XX001 (#2186)"
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_dec", "numeric(10,2)"), _st_corrupt(7, "a decimal"),
+                "import_arrow refuses a decimal field with no type table as malformed with XX001 (#2186)")
+
+
+def test_every_other_parameterised_field_with_no_type_table_is_malformed(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as"
+            " malformed with XX001 (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    conn = pgc_conn
+    _run(conn, "DROP TYPE IF EXISTS st_kv CASCADE", "CREATE TYPE st_kv AS (k text, v bigint)")
+    got = " / ".join(_st_import(conn, server_dir, rep, f, t) for f, t in
+                     (("st_d32", "date"), ("st_t64", "time"), ("st_fsb", "uuid"), ("st_dur", "bigint"),
+                      ("st_map", "st_kv[]")))
+    want = " / ".join(_st_corrupt(tag, desc) for tag, desc in
+                      ((8, "a date"), (9, "a time"), (15, "a fixed-size binary"), (18, "a duration"),
+                       (17, "a map")))
+    expect.text(got, want,
+                "import_arrow refuses a date, time, fixed-size binary, duration or map field with no type table as"
+                " malformed with XX001 (#2186)")
+
+def test_a_list_element_with_no_type_table_is_refused(pgc_conn, server_dir, expect):
+    name = ("import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one"
+            " with XX001 (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_lf64", "bigint[]") + " / "
+                + _st_import(pgc_conn, server_dir, rep, "st_li64", "bigint[]"),
+                'tag=3 type=absent|42804 Arrow column "v" holds a float, which pgcolumnar.import_arrow cannot read'
+                " into type bigint|0 / " + _st_corrupt(2, "an integer"),
+                "import_arrow refuses a list element with no type table: a float64 one with 42804 and an int64 one"
+                " with XX001 (#2186)")
+
+
+def test_a_parameterless_field_with_no_type_table_still_imports(pgc_conn, server_dir, expect):
+    """#2186's control: a tag whose Schema.fbs table is empty gives the reader
+    nothing it needs, so a string, binary, boolean, list or struct field with no
+    type table still imports, with its values. (pyarrow 23's own reader refuses
+    all of them; see the PR.)"""
+    name = ("control: a string, binary, boolean, list or struct field with no type table still imports, with its"
+            " values (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    conn = pgc_conn
+    _run(conn, "DROP TYPE IF EXISTS st_s CASCADE", "CREATE TYPE st_s AS (a bigint)")
+
+    def vals(fixture, pgtype):
+        got = _st_import(conn, server_dir, rep, fixture, pgtype)
+        return f"{got}|{_one(conn, f'SELECT string_agg(v::text, chr(59) ORDER BY n) FROM st_t_{fixture}')}"
+
+    expect.text(" / ".join(vals(f, t) for f, t in
+                           (("st_utf8", "text"), ("st_bin", "bytea"), ("st_bool", "bool"),
+                            ("st_list", "bigint[]"), ("st_struct", "st_s"))),
+                "tag=5 type=absent|2|2|hi;there / tag=4 type=absent|2|2|\\x78;\\x797a / "
+                "tag=6 type=absent|2|2|true;false / tag=12 type=absent|2|2|{1,2};{3} / "
+                "tag=13 type=absent|2|2|(1);(2)",
+                "control: a string, binary, boolean, list or struct field with no type table still imports, with its"
+                " values (#2186)")
+
+
+def test_a_null_field_with_no_type_table_is_refused_by_type(pgc_conn, server_dir, expect):
+    name = "import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)"
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    expect.text(_st_import(pgc_conn, server_dir, rep, "st_null", "text"),
+                'tag=1 type=absent|42804 Arrow column "v" holds a null, which pgcolumnar.import_arrow cannot read'
+                " into type text|0",
+                "import_arrow refuses a null field with no type table with 42804, as it does with one (#2186)")
