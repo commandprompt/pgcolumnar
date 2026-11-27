@@ -2487,4 +2487,16 @@ guard_tests 897
 # pin that a wide long-form field id in a PageHeader is refused whatever width a narrowing reader would
 # use (32768, -32769, 2^31, 2^32+1, 1-2^32, -(2^32+1) and 2^40+1), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5945 tests collected.
-cluster_tests 6027
+# cluster_tests 6027 -> 6059 for #2189's thirty-two tests in test_parallel_copy.py (restated on main 5fae8e3d; 5872
+# -> 5904 on 6094d3a6): five premises (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files,
+# _crlf_to_lf_files, _control_markers and _control_rows),
+# test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it (18 parametrized:
+# a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a single table and
+# a partitioned one, refused with heap COPY's SQLSTATE and message) and
+# test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6059 -> 6071, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
+# and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
+# compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it).
+cluster_tests 6071
