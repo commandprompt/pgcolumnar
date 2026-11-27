@@ -14491,6 +14491,20 @@ Each value comparison needs the generator's ids on both sides and the file's row
 | `test_parallel_export_parquet_writes_a_dropped_first_column_and_composites_after_it` | parallel_export_parquet writes the same table, every row (#2143 second review); the parallel exporter's check counts the leaves too |
 | `test_export_parquet_writes_one_live_column_beside_60_dropped_ones` | export_parquet writes the one live column of a table with 60 dropped text columns, every value (#2143 second review); the reader fills one slot per attribute, so a row buffer sized by the live columns overruns |
 | `test_a_row_group_cut_on_a_table_with_a_dropped_column` | a row group is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make groups of 6,6,6,6,6,6,4 (#1811, #2143 review) |
+| `test_a_timestamp_past_parquets_range_is_refused` | a timestamp one microsecond past 294247-01-10 04:00:54.775807 fails with SQLSTATE 22008 and `a value in column "ts" is out of range for a Parquet timestamp`, rather than being written as a wrapped negative value (#2160); a third module fixture on its own database |
+| `test_a_refused_parquet_timestamp_export_leaves_no_file` | and that refused export leaves no file at the target path (#2160) |
+| `test_a_timestamptz_past_parquets_range_is_refused` | a timestamptz of 294276-12-31 23:59:59.999999+00 fails the same way (#2160) |
+| `test_the_last_timestamp_parquet_holds_still_exports` | 294247-01-10 04:00:54.775807 in a timestamp and a timestamptz column still exports, and pyarrow reads it as int64 9223372036854775807 (#2160) |
+| `test_read_parquet_reads_the_last_timestamp_back_unchanged` | and `read_parquet` reads that last timestamp back unchanged, in timestamp and timestamptz (#2160) |
+| `test_a_timestamp_before_1970_still_exports_to_parquet` | 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC still export, as int64 -1 and -210866803200000000, so the range check refuses only past the top (#2160) |
+| `test_a_timestamp_array_element_past_parquets_range_names_the_column` | a timestamp[] element past the range fails with SQLSTATE 22008, and the error names the table column, not the Parquet leaf "element" (#2160) |
+| `test_a_timestamp_composite_field_past_parquets_range_names_the_column` | a timestamp field of a composite column past the range fails with SQLSTATE 22008, and the error names the table column, not the field (#2160) |
+| `test_an_in_range_nested_timestamp_still_exports_to_parquet` | an in-range timestamp inside an array or a composite still exports: -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2160) |
+| `test_the_out_of_range_parquet_timestamp_error_gives_parquets_last_value` | and the refusal's DETAIL gives Parquet's last timestamp, 294247-01-10 04:00:54.775807 (#2160) |
+| `test_parallel_export_parquet_refuses_a_timestamp_past_parquets_range` | parallel_export_parquet fails the same way, with SQLSTATE 22008 and the table column named; its workers write through the same encoder (#2160) |
+| `test_a_refused_parallel_export_leaves_no_part_file` | and the refused parallel export leaves no Parquet part file in its directory (#2160) |
+| `test_tier_partition_refuses_a_timestamp_past_parquets_range` | tier_partition fails the same way, with SQLSTATE 22008 and the table column named; before the fix it moved the partition and the parent could no longer be read (#2160) |
+| `test_a_refused_tier_partition_leaves_the_partition_in_place` | and the refused tier_partition leaves the partition a pgcolumnar table, the parent reads its timestamp back unchanged, and no file is left (#2160) |
 
 ## 346. test_planner_choice_quality.py: the planner's chosen plan is not far slower than the plans it declined
 
