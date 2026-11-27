@@ -803,6 +803,25 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` now reads the file in the calling session's
+  `client_encoding`, as `COPY FROM` does, and its splitters step over whole
+  characters in the encodings where a character's second byte can be `0x5C`
+  (#2188). The loaders read the file in their own `client_encoding`, the
+  database's or the role's default, so a UTF8 session with the database
+  default set to SJIS stored `café` as `636166efbe83efbda9` where `COPY FROM`
+  stores `636166c3a9`, and a session in SJIS with a UTF8 default was refused
+  with 22021. The splitters and the first-line scan read every `0x5C` as a
+  backslash, so in SJIS `83 5c 5c 0a`, one character and an escaped newline,
+  was cut into two records: 2002 to 2004 rows with 3, 5, 6, 7 or 8 workers
+  where `COPY FROM` loads 2000. Each loader
+  now starts core `COPY` with `ENCODING` set to the caller's
+  `client_encoding`, and every scan (`file_split_offsets` too) shares one
+  reader that steps over a character's trailing bytes with
+  `pg_encoding_mblen` when the encoding is client-only (SJIS, SHIFT_JIS_2004,
+  BIG5, GBK, GB18030, UHC, JOHAB) and the database is not `SQL_ASCII`. That is
+  when core converts the file before it looks for backslashes; in a
+  `SQL_ASCII` database core reads raw bytes and so do the scans.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.parallel_copy` now refuses a file that changes newline style,
   as `COPY FROM` does, wherever the split falls (#2189). `COPY FROM` takes LF
   or CRLF from the file's first line and refuses any later line ending, or a
