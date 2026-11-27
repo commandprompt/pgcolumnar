@@ -2754,4 +2754,130 @@ check "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c bef
 	"$(enc_same $ENC_ASCII SJIS "$ENC/ascii.txt" single)" "2:ok 3:ok 4:ok"
 check "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a newline, which COPY reads as an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content" \
 	"$(enc_same $ENC_ASCII SJIS "$ENC/ascii.txt" part)" "2:ok 3:ok 4:ok"
+# ---- #2222: a row core COPY refuses before it reads a value ------------------
+# The partitioned splitter reads every row's key before any loader runs. Core COPY
+# checks three things before it reads any column's value: the encoding of the raw
+# bytes (a NUL is never valid), the end-of-data marker \., and the number of
+# fields. A row that breaks one of them used to be refused by the splitter, on its
+# key, with a different SQLSTATE and message than COPY gives. Now the splitter
+# leaves such a row in the current range, and that range's loader raises core's
+# own error. Each file below is 2000 rows, kt (id TAB x<id>) or tk (a<id> TAB id),
+# with row 1200 replaced, and is compared with heap COPY of the same file in the
+# UTF8 database ($ENC_DB): outcome (SQLSTATE and message, with "worker N failed: "
+# taken out), rows, prepared transactions and row hash, with 1, 2 and 4 workers.
+#   bseol   tk  a TAB 1200 backslash LF: the record goes on into row 1201, so it
+#               has 3 fields (22P04 extra data)
+#   extragk kt  1200x TAB x TAB extra: 3 fields, and the key is not a number
+#   eodkey  kt  1200\. TAB x: \. inside the key (22P04)
+#   mbraw   kt  12, a raw c3, 00: not UTF-8 (22021)
+#   mbsplit kt  1200\xc3, then a raw a9: not UTF-8 (22021)
+#   nulpre  tk  a NUL b TAB 1200: a raw NUL before the key (22021)
+#   nulkey  kt  12 NUL 00: a raw NUL inside the key, whose 12 is out of order (22021)
+#   toofew  tk  a: 1 field (22P04 missing data for column "id")
+#   eodgk   kt  12x TAB foo\. LF: PG 17 and older end the line at \., so they
+#               read the key and refuse it (22P02); PG 18 refuses the \. (22P04)
+#
+# The rule must not fire on a row COPY loads. Each control below is a file COPY
+# loads whole, sorted but for one row, key 0, in place of row 1200, which has the
+# shape named. The splitter must read that row's key and refuse the order (22000);
+# a row it wrongly left for core would load instead. 1 worker.
+#   cesctab  0 TAB a backslash TAB b: an escaped TAB is not a field end
+#   cbsdot   0 TAB a, two backslashes, .b: an escaped backslash before a dot is
+#            not \.
+#   ccont    0 TAB a backslash LF b: one record over two lines
+#   clatin1  0 TAB caf e9 under client_encoding LATIN1: valid there, not in UTF8
+#   cgen     plain, into a table with a stored generated column, which COPY skips
+#   cdrop    plain, into a table with a dropped column
+#   ceodlf   0 TAB x\. LF: PG 17 and older end the line at the \. and load the
+#            row, so the splitter must read its key; PG 18 refuses the \., and
+#            the outcome is heap COPY's
+#   ceodcrlf the same in a file with CRLF line ends, the row ending x\. CR LF
+MAL="$DATADIR/mal"; mkdir -p "$MAL"; chmod 755 "$MAL"
+mal_gen() {	# NAME kt|ktcrlf|tk ROW: writes $MAL/NAME.txt, 2000 rows of the shape with row 1200 printf ROW
+	local f="$MAL/$1.txt" fmt
+	case "$2" in kt) fmt='%d\tx%d\n' ;; ktcrlf) fmt='%d\tx%d\r\n' ;; *) fmt='a%d\t%d\n' ;; esac
+	{ awk -v fmt="$fmt" 'BEGIN { for (i = 1; i < 1200; i++) printf fmt, i, i }'
+	  printf "$3"
+	  awk -v fmt="$fmt" 'BEGIN { for (i = 1201; i <= 2000; i++) printf fmt, i, i }'; } >"$f"
+	chmod 644 "$f"
+}
+mal_gen bseol tk 'a\t1200\\\n'
+mal_gen extragk kt '1200x\tx\textra\n'
+mal_gen eodkey kt '1200\\.\tx\n'
+mal_gen mbraw kt '12\xc300\tx\n'
+mal_gen mbsplit kt '1200\\xc3\xa9\tx\n'
+mal_gen nulpre tk 'a\x00b\t1200\n'
+mal_gen nulkey kt '12\x0000\tx\n'
+mal_gen toofew tk 'a\n'
+mal_gen eodgk kt '12x\tfoo\\.\n'
+mal_gen cesctab kt '0\ta\\\tb\n'
+mal_gen cbsdot kt '0\ta\\\\.b\n'
+mal_gen ccont kt '0\ta\\\nb\n'
+mal_gen clatin1 kt '0\tcaf\xe9\n'
+mal_gen cplain kt '0\tx\n'
+mal_gen ceodlf kt '0\tx\\.\n'
+mal_gen ceodcrlf ktcrlf '0\tx\\.\r\n'
+[ "$(id -u)" = "0" ] && chown -R postgres "$MAL"
+mal_cols() {	# kt|tk -> the column list for that shape
+	if [ "$1" = kt ]; then echo "id int, txt text"; else echo "txt text, id int"; fi
+}
+mal_order() {	# CLIENT_ENCODING PATH [SQL] -> enc_outcome of a 1-worker load of PATH into t_enc,
+	# 8 partitions of $ENC_COLS, after SQL (run on the new t_enc)
+	enc_target "$ENC_DB" part
+	[ -n "${3:-}" ] && PGC_DB=$ENC_DB psql_run "$3" >/dev/null
+	enc_outcome "$ENC_DB" "$1" "SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '$2', 1)" t_enc
+}
+if [ "${_srv:-0}" -ge 180000 ]; then _eodgk_want="22P04"; else _eodgk_want="22P02"; fi
+_mal_heap=""
+for _m in bseol:tk extragk:kt eodkey:kt mbraw:kt mbsplit:kt nulpre:tk nulkey:kt toofew:tk eodgk:kt; do
+	_mal_heap="$_mal_heap $(ENC_COLS="$(mal_cols "${_m#*:}")" enc_heap "$ENC_DB" UTF8 "$MAL/${_m%%:*}.txt" | cut -d'|' -f1)"
+done
+check "#2222 premise: heap COPY in a UTF8 database refuses bseol, extragk and eodkey with 22P04, mbraw, mbsplit, nulpre and nulkey with 22021, toofew with 22P04, and eodgk with 22P02 on PG 17 and older and 22P04 on PG 18 and newer; the database is UTF8 and nulkey's row 1200 is 31 32 00 30 30" \
+	"${_mal_heap# } $(PGC_DB=$ENC_DB q "SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()") $(od -An -tx1 -j "$(( $(head -n 1199 "$MAL/nulkey.txt" | wc -c) ))" -N 5 "$MAL/nulkey.txt" | tr -d ' ')" \
+	"22P04 22P04 22P04 22021 22021 22021 22021 22P04 $_eodgk_want UTF8 3132003030"
+check "#2222 a record that runs on into the next line and so has an extra field, its key unreadable / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/bseol.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 an extra field and a key that is not a number / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/extragk.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 an end-of-data marker inside the key / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/eodkey.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 a raw byte that is not UTF-8 inside the key / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/mbraw.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 a hex escape then a raw byte that is not UTF-8 in the key / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/mbsplit.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 a raw NUL in the field before the key / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/nulpre.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 a raw NUL inside the key, before which the key is out of order / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/nulkey.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 a row with too few fields to reach the key / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(ENC_COLS="txt text, id int" enc_same "$ENC_DB" UTF8 "$MAL/toofew.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+check "#2222 an end-of-data marker then LF after the last field, the key not a number / partitioned, 1, 2 and 4 workers: heap COPY's outcome, message, rows and content" \
+	"$(enc_same "$ENC_DB" UTF8 "$MAL/eodgk.txt" part 1 2 4)" "1:ok 2:ok 4:ok"
+
+if [ "${_srv:-0}" -ge 180000 ]; then _ceodlf_heap="22P04"; else _ceodlf_heap="loaded"; fi
+_mal_c=""
+for _m in cesctab:UTF8 cbsdot:UTF8 ccont:UTF8 clatin1:LATIN1 cplain:UTF8; do
+	_mal_c="$_mal_c $(enc_heap "$ENC_DB" "${_m#*:}" "$MAL/${_m%%:*}.txt" | cut -d'|' -f1,2) $(enc_row "$ENC_DB" 0)"
+done
+_mal_c="$_mal_c $(enc_heap "$ENC_DB" UTF8 "$MAL/ceodlf.txt" | cut -d'|' -f1) $(enc_heap "$ENC_DB" UTF8 "$MAL/ceodcrlf.txt" | cut -d'|' -f1)"
+check "#2222 premise: heap COPY loads cesctab, cbsdot, ccont, clatin1 (under LATIN1) and cplain 2000 rows each, storing row 0's txt as 61 09 62, 61 5c 2e 62, 61 0a 62, 63 61 66 c3 a9 and 78; on ceodlf and ceodcrlf it loads on PG 17 and older and refuses with 22P04 on PG 18 and newer" \
+	"${_mal_c# }" "loaded|2000 rows 610962 loaded|2000 rows 615c2e62 loaded|2000 rows 610a62 loaded|2000 rows 636166c3a9 loaded|2000 rows 78 $_ceodlf_heap $_ceodlf_heap"
+_mal_sorted="22000|input file is not sorted ascending by the partition key|0 rows|0 prepared"
+check "#2222 control: an escaped TAB in the field after the key, on a row out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(mal_order UTF8 "$MAL/cesctab.txt")" "$_mal_sorted"
+check "#2222 control: an escaped backslash before a dot, on a row out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(mal_order UTF8 "$MAL/cbsdot.txt")" "$_mal_sorted"
+check "#2222 control: a record over two lines, out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(mal_order UTF8 "$MAL/ccont.txt")" "$_mal_sorted"
+check "#2222 control: a byte valid in the caller's LATIN1 but not in the UTF8 database, on a row out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(mal_order LATIN1 "$MAL/clatin1.txt")" "$_mal_sorted"
+check "#2222 control: a stored generated column, which COPY skips, and a row out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(ENC_COLS="id int, txt text, g int GENERATED ALWAYS AS (id * 2) STORED" mal_order UTF8 "$MAL/cplain.txt")" "$_mal_sorted"
+check "#2222 control: a dropped column, which COPY skips, and a row out of order / partitioned, 1 worker: the splitter reads the key and refuses the order (22000)" \
+	"$(ENC_COLS="id int, gone int, txt text" mal_order UTF8 "$MAL/cplain.txt" "ALTER TABLE t_enc DROP COLUMN gone")" "$_mal_sorted"
+if [ "${_srv:-0}" -ge 180000 ]; then _ceodlf_want="22P04|end-of-copy marker is not alone on its line|0 rows|0 prepared"; else _ceodlf_want="$_mal_sorted"; fi
+check "#2222 control: an end-of-data marker then LF after the last field, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04" \
+	"$(mal_order UTF8 "$MAL/ceodlf.txt")" "$_ceodlf_want"
+check "#2222 control: an end-of-data marker then CR LF after the last field, in a file with CRLF line ends, on a row out of order / partitioned, 1 worker: on PG 17 and older, where COPY loads the row, the splitter reads the key and refuses the order (22000); on PG 18, COPY's 22P04" \
+	"$(mal_order UTF8 "$MAL/ceodcrlf.txt")" "$_ceodlf_want"
 pgc_summary
