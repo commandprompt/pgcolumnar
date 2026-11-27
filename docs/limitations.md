@@ -1313,10 +1313,10 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   reads such a page when the second struct is complete. A struct that gives its
   own `num_values` twice is refused too, whatever its last value, where pyarrow
   23 keeps the last value. A page header with a Thrift field id outside the
-  int16 range is refused as corrupt; pyarrow 23 narrows such an id
+  int16 range is refused as corrupt. pyarrow 23 narrows such an id
   to 16 bits, so 65537 reads as field 1.
   The reader refuses more than 16 pages with no values in a row in one column
-  chunk, DATA_PAGE and DATA_PAGE_V2 alike; a dictionary page does not end a run.
+  chunk, DATA_PAGE and DATA_PAGE_V2 alike. A dictionary page does not end a run.
   An INDEX_PAGE, or a page type the reader
   does not know, counts as a page with no values and is stepped over. These
   refusals raise SQLSTATE XX001. The run limit stops a crafted file from making
