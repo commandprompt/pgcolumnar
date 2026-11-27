@@ -413,7 +413,11 @@ q "CREATE TABLE ty_c (x int, y int);
    CREATE TABLE tyn (a int, b int, r ty_n) USING pgcolumnar;
    CREATE TABLE tyr (a int, b int, r ty_r) USING pgcolumnar;
    CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar;
-   CREATE TABLE tye (a int, b int) USING pgcolumnar;" >/dev/null
+   CREATE TABLE tye (a int, b int) USING pgcolumnar;
+   CREATE TABLE tyk (a int, b int) USING pgcolumnar;
+   CREATE TABLE tyl (a int, b int) USING pgcolumnar;
+   CREATE COLLATION ty_co (provider = icu, locale = 'und');
+   CREATE TABLE tyo (a int, b int, s text COLLATE ty_co) USING pgcolumnar;" >/dev/null
 TYG="FROM generate_series(1,20000) g"
 TYSERIAL="serial, no split line, 20000 rows, sum 200010000"
 TYWORKERS="parallel, every column in workers, 20000 rows, sum 200010000"
@@ -434,6 +438,17 @@ check_text "a parallel flush of a multirange-over-composite column whose table t
 # failed on it, so a flush that hands its columns back still reads red.
 check_text "a parallel flush of a column whose type the same transaction created runs serially, with no worker failure (#2182)" \
 	"$(typeflush tye "CREATE TYPE ty_e AS ENUM ('x', 'y'); ALTER TABLE tye ADD COLUMN e ty_e" "INSERT INTO tye SELECT g, g, 'x' $TYG" "a")" "$TYSERIAL"
+# A collation created in the inserting transaction is just as invisible to a worker,
+# which compares and hashes a text column under it: it failed with "cache lookup
+# failed for collation" and its columns were redone serially (#2250 review). Both
+# providers. The control: a collation created in an earlier transaction still flushes
+# in workers.
+check_text "a parallel flush of a column whose ICU collation the same transaction created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tyk "CREATE COLLATION ty_ck (provider = icu, locale = 'und'); ALTER TABLE tyk ADD COLUMN s text COLLATE ty_ck" "INSERT INTO tyk SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
+check_text "a parallel flush of a column whose libc collation the same transaction created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tyl "CREATE COLLATION ty_cl (provider = libc, locale = 'C'); ALTER TABLE tyl ADD COLUMN s text COLLATE ty_cl" "INSERT INTO tyl SELECT g, g, 'v' || g $TYG" "a")" "$TYSERIAL"
+check_text "a parallel flush of a column whose non-default collation an earlier transaction created flushes every column in workers (#2182)" \
+	"$(typeflush tyo "TRUNCATE tyo" "INSERT INTO tyo SELECT g, g, 'v' || g $TYG" "a")" "$TYWORKERS"
 # The controls: a composite whose table this transaction does not lock, or holds
 # only in a mode ACCESS SHARE does not conflict with, still flushes in workers. The
 # TRUNCATE of the columnar table itself holds ACCESS EXCLUSIVE on it, which #2072

@@ -622,9 +622,9 @@ true until the next version shipped.
   over it, or a composite with it as a field. Each flush worker reads the type
   cache, which opens a composite's table with ACCESS SHARE. The workers are not
   in the inserting backend's lock group, so they waited on its lock, as in
-  #2072. A column whose type was created in the same transaction no longer
-  makes a worker fail with a WARNING. The backend now flushes such a row group
-  serially, which stores the same bytes. A worker runs on its own snapshot, so
+  #2072. A column whose type or collation was created in the same
+  transaction no longer makes a worker fail with a WARNING. The backend now
+  flushes such a row group serially, which stores the same bytes. A worker runs on its own snapshot, so
   it cannot see what the transaction changed under the lock, such as an
   attribute added to the composite; that is why the flush does not join the
   workers to the backend's lock group instead. `parallel_flush_optin.sh` arm 8

@@ -580,7 +580,11 @@ def ty(pgc_cluster):
                     "CREATE TABLE tyn (a int, b int, r ty_n) USING pgcolumnar",
                     "CREATE TABLE tyr (a int, b int, r ty_r) USING pgcolumnar",
                     "CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar",
-                    "CREATE TABLE tye (a int, b int) USING pgcolumnar"):
+                    "CREATE TABLE tye (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tyk (a int, b int) USING pgcolumnar",
+                    "CREATE TABLE tyl (a int, b int) USING pgcolumnar",
+                    "CREATE COLLATION ty_co (provider = icu, locale = 'und')",
+                    "CREATE TABLE tyo (a int, b int, s text COLLATE ty_co) USING pgcolumnar"):
             d.run(ddl)
         rng = "ty_r(row(g, g)::ty_c, row(g + 1, g)::ty_c)"
         r = {
@@ -600,6 +604,16 @@ def ty(pgc_cluster):
                                       "tym", "(lower(r)).x"),
             "new type": _type_flush(d, ["CREATE TYPE ty_e AS ENUM ('x', 'y')", "ALTER TABLE tye ADD COLUMN e ty_e"],
                                     f"INSERT INTO tye SELECT g, g, 'x' {TY_G}", "tye", "a"),
+            # A collation created in the transaction is just as invisible to a worker
+            # (#2250 review), with either provider; one from an earlier transaction is not.
+            "new icu collation": _type_flush(d, ["CREATE COLLATION ty_ck (provider = icu, locale = 'und')",
+                                                 "ALTER TABLE tyk ADD COLUMN s text COLLATE ty_ck"],
+                                             f"INSERT INTO tyk SELECT g, g, 'v' || g {TY_G}", "tyk", "a"),
+            "new libc collation": _type_flush(d, ["CREATE COLLATION ty_cl (provider = libc, locale = 'C')",
+                                                  "ALTER TABLE tyl ADD COLUMN s text COLLATE ty_cl"],
+                                              f"INSERT INTO tyl SELECT g, g, 'v' || g {TY_G}", "tyl", "a"),
+            "old collation": _type_flush(d, ["TRUNCATE tyo"], f"INSERT INTO tyo SELECT g, g, 'v' || g {TY_G}",
+                                         "tyo", "a"),
             "unlocked": _type_flush(d, ["TRUNCATE tyc"],
                                     f"INSERT INTO tyc SELECT g, g, row(g, g)::ty_c {TY_G}", "tyc", "(r).x"),
             "share": _type_flush(d, ["TRUNCATE tyc", "LOCK TABLE ty_c IN SHARE MODE"],
@@ -653,6 +667,25 @@ def test_type_a_type_created_in_the_transaction_is_serial(ty, expect):
     expect.text(ty["new type"], TY_SERIAL,
                 "a parallel flush of a column whose type the same transaction created runs serially, with "
                 "no worker failure (#2182)")
+
+
+def test_type_an_icu_collation_created_in_the_transaction_is_serial(ty, expect):
+    expect.text(ty["new icu collation"], TY_SERIAL,
+                "a parallel flush of a column whose ICU collation the same transaction created runs serially, "
+                "with no worker failure (#2182)")
+
+
+def test_type_a_libc_collation_created_in_the_transaction_is_serial(ty, expect):
+    expect.text(ty["new libc collation"], TY_SERIAL,
+                "a parallel flush of a column whose libc collation the same transaction created runs serially, "
+                "with no worker failure (#2182)")
+
+
+def test_type_an_earlier_collation_flushes_in_workers(ty, expect):
+    # A control: only a collation this transaction created keeps the flush serial.
+    expect.text(ty["old collation"], TY_WORKERS,
+                "a parallel flush of a column whose non-default collation an earlier transaction created flushes "
+                "every column in workers (#2182)")
 
 
 def test_type_an_unlocked_composite_flushes_in_workers(ty, expect):

@@ -3397,9 +3397,37 @@ pflush_type_needs_backend(Oid typid)
 }
 
 /*
+ * pflush_collation_is_mine
+ *		True if this transaction wrote collid's pg_collation row (#2182, #2250
+ *		review). A worker compares and hashes the column under it on its own
+ *		snapshot, where such a collation does not exist: the worker failed with
+ *		"cache lookup failed for collation", logged a WARNING, and its columns
+ *		were redone serially.
+ */
+static bool
+pflush_collation_is_mine(Oid collid)
+{
+	HeapTuple	tup;
+	bool		mine;
+
+	tup = SearchSysCache1(COLLOID, ObjectIdGetDatum(collid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for collation %u", collid);
+	mine = TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tup->t_data));
+	ReleaseSysCache(tup);
+	return mine;
+}
+
+/*
  * pflush_columns_need_backend
  *		True if any live column's type needs the backend (#2182), see
- *		pflush_type_needs_backend.
+ *		pflush_type_needs_backend, or its collation was created in this
+ *		transaction.
+ *
+ *		Only the column's own collation is checked. A composite field's
+ *		collation changes only under ACCESS EXCLUSIVE on the composite's table,
+ *		and a range's or a domain's collation is fixed when the type is created,
+ *		which the pg_type test covers.
  */
 static bool
 pflush_columns_need_backend(PgColumnarWriteState *writeState)
@@ -3410,7 +3438,12 @@ pflush_columns_need_backend(PgColumnarWriteState *writeState)
 	{
 		Form_pg_attribute att = TupleDescAttr(writeState->tupdesc, c);
 
-		if (!att->attisdropped && pflush_type_needs_backend(att->atttypid))
+		if (att->attisdropped)
+			continue;
+		if (pflush_type_needs_backend(att->atttypid))
+			return true;
+		if (OidIsValid(att->attcollation) &&
+			pflush_collation_is_mine(att->attcollation))
 			return true;
 	}
 	return false;
