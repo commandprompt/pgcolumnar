@@ -328,6 +328,19 @@ these constraints.
   final commit step can leave some ranges committed and some prepared. This is
   the ordinary two-phase-commit in-doubt case. A DBA resolves it from
   `pg_prepared_xacts`.
+- The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
+  or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
+  refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
+  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
+  would wait for the caller until the statement timed out.
+  `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
+  or on one of its leaf partitions.
+- The check covers only the target and its partitions. The load still waits
+  until `statement_timeout` when the calling transaction locks another table
+  the loaders need. One example is a table the target references through a
+  foreign key. Others are a table a trigger on the target writes to, and a
+  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
+  `parallel_copy` before taking such locks, or after `COMMIT`.
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
