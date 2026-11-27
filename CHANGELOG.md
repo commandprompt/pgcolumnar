@@ -605,6 +605,285 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
+  `CREATE INDEX` queues while its workers open the table, refuses a single
+  table with a trigger on INSERT, and no longer returns a cancelled load's error
+  before its prepared transactions are gone (#2187). A `CREATE INDEX` that
+  queued after one worker had its lock made the other workers queue behind it,
+  while it waited on the first worker's prepared transaction, so the load hung
+  until cancelled. Each worker now waits, in the lock manager, until every other
+  worker has the table open, and the deadlock detector lets the queued workers
+  go ahead of `CREATE INDEX`, which runs after the load. A trigger on INSERT
+  runs in each worker's prepared transaction, and when it wrote to a table with
+  a primary key the load failed with 40P01 or hung. The function now refuses
+  more than one worker for such a table with 0A000 and the hint
+  `Load it with workers => 1, or with COPY.`, before it starts any worker and
+  again in each worker. A worker's refusal now carries its HINT and DETAIL to
+  the caller. A cancelled load returned while the coordinator was still rolling
+  back, so the caller's next statement could see the prepared transactions;
+  the function now waits for the coordinator first. The coordinator's SIGTERM
+  now also cancels its lock waits, so that wait ends even when the coordinator
+  waits on a lock the caller holds, such as on `pgcolumnar.load_fingerprint`
+  with `dedup => true`; the load then rolls back. A cancel that arrives after
+  the rows commit no longer stops the fingerprint record, so a dedup retry is
+  still refused; a cancelled caller stops waiting once the rows commit, and the
+  record then waits for its lock with no deadline, as before. A trigger that does not fire
+  in the workers' session, such as `ENABLE REPLICA`, is not refused. New internal setting
+  `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
+  docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
+  one worker.
+- A `pgcolumnar_iceberg` foreign table partitioned by `day()` or `hour()` on a
+  `timestamp` or `timestamptz` column no longer returns no rows for a query
+  such as `ts < '294276-12-31 23:59:59.999999'` (#2230). To prune, the FDW
+  moved the constant from the 2000 epoch to Iceberg's 1970 epoch with no
+  overflow check, so any constant after 294247-01-10 04:00:54.775807 wrapped to
+  a large negative bucket, and `<` or `<=` pruned every file. Such a constant
+  now does not prune, as `infinity` does not, and the query returns the rows
+  `iceberg_scan` returns, with no error. The last value that fits still prunes.
+  `year()` and `month()` were not affected. `test/iceberg_fdw.sh` and
+  `test_iceberg_fdw.py`.
+- `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, and
+  readers saw a date before year 0. `tier_partition` writes through the same
+  code, so it moved such a partition and left a parent that could no longer be
+  read. Such a value now fails the export with SQLSTATE 22008, naming the table
+  column, also for an element of an array column or a field of a composite
+  column, and no file is written. `parallel_export_parquet` and
+  `tier_partition` fail the same way; a refused `tier_partition` leaves the
+  partition as it was. A timestamp before 1970 still exports, and so does the
+  last value that fits. This is the Parquet twin of #2085.
+  docs/limitations.md. `test/parquet_export.sh` and `test_parquet_export.py`.
+- `read_parquet` and the Parquet foreign table now read a file that holds a data
+  page with no values (#2077). Such a page is valid, and pyarrow writes one for a
+  dictionary-encoded list column when it flushes pages often. The reader refused
+  every data page with no values, so the whole read failed with `could not decode
+  Parquet column 0 in row group 0`. The reader now decodes such a page like any
+  other, so it reads and refuses the same empty pages pyarrow 23 does. It refuses
+  a data page whose DataPageHeader is missing, empty, or has no `num_values`,
+  which would otherwise drop that page's values, so a zero-filled area stays a
+  fast refusal. For a DATA_PAGE_V2 with no header at all this is stricter than
+  pyarrow 23, which reads the page as empty. It refuses a negative `num_values`.
+  A page's count comes only from the header struct of its own type (DataPageHeader
+  for a DATA_PAGE, DataPageHeaderV2 for a DATA_PAGE_V2, DictionaryPageHeader for a
+  dictionary page), so a second struct in the same header cannot set it to 0 and
+  drop the page's values. A data page that carries only a struct of another type is
+  refused; pyarrow 23 reads it as empty, so this is stricter too. A header that
+  carries the page's own struct twice is refused too. When the second struct is
+  complete, pyarrow 23 reads the page, so this is stricter as well. A struct that
+  gives its own `num_values` twice is refused, whatever its last value; pyarrow 23
+  keeps the last value, which can drop the page's values. A page header with a
+  Thrift field id outside the int16 range is refused as corrupt. Before,
+  the reader kept such an id whole and skipped the field, while pyarrow 23 narrows
+  it (65537 reads as field 1): a crafted header could hide a `num_values` 50 behind
+  id 65537, and the page's values were dropped with no error.
+  It refuses more than 16 pages with no values in a row, of either data page
+  version (a dictionary page does not end a run), and steps over an
+  INDEX_PAGE or a page of an unknown type. In every file
+  tested, pyarrow wrote at most one empty page in a row.
+  `test/native_parquet_streaming.sh` and `test_native_parquet_streaming.py`.
+- A pgcolumnar scan no longer loses an error raised while it evaluates a stable
+  `WHERE` operand, such as `x > stable_func($1)` (#2065). The scan caught the
+  error and threw it away without a subtransaction. So a `statement_timeout` or
+  query cancel that fired there was lost and the query returned rows, a function
+  that raised once returned a count where heap fails, and the failed call's
+  plancache, snapshot and SPI state leaked as WARNINGs. The error now reaches the
+  client. The scan now evaluates such an operand when it first runs, not while
+  the plan is set up, as a btree index scan evaluates its runtime keys, and it
+  evaluates it once. A scan that never runs, such as an `Append` arm that
+  `LIMIT` cuts off or a branch under a false one-time filter, calls nothing. That
+  includes a PL/pgSQL variable: the scan no longer fetches it at set-up, where a
+  record field that was not assigned raised. Such a variable still drives
+  chunk-group skipping: the scan freezes it when it first runs. One
+  consequence: any scan that runs now raises the operand's error, even when no
+  row would pass the rest of the `WHERE` clause or the table is empty. Heap,
+  which calls the operand once per row it tests, returns no rows there. This
+  covers an operand made only of parameters too, such as `x > 10 / $1` with
+  `$1 = 0`. A plain `EXPLAIN` no longer calls the operand; it still reports a
+  bound parameter of a prepared statement as pushed down. Keys frozen at the
+  first run obey `pgcolumnar.enable_qual_pushdown = off`, all of them are
+  tested when there are several, and a long text key survives a rescan.
+  A bound parameter that is NULL builds no key, a varchar or domain parameter
+  is pushed down like any other bound parameter, and `EXPLAIN ANALYZE`
+  counts a key frozen at the first run as pushed down. Under a hash join,
+  the keys frozen at the first run keep the join's runtime range, also
+  when the join is rescanned. The scan evaluates only an operand whose
+  clause could become a scan key: a clause such as `x <> f($1)`,
+  `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`,
+  `date_trunc('decade', x) = f($1)`, `x LIKE f($1)` under a collation that
+  is not C, `r && f($1)` with a multirange, or a timestamp column against
+  a timestamptz `f($1)` stays in the Filter, as on heap and btree, so its
+  operand is never called when no row reaches it. A bound varchar or
+  domain parameter is frozen as the type the clause compares, so it prunes
+  under LIKE, `date_trunc` and `&&` as on main.
+  `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` no longer deadlock
+  with a concurrent `INSERT`, `UPDATE` or `DELETE` (#2074). A writer holds
+  two locks to commit: the delete-vector lock of each row group it deletes
+  from, and the storage-row lock, which every flush of new rows takes. It can
+  take them in either order. Both verbs used to take the delete-vector locks first and then wait
+  for the storage-row lock, so a single-row `UPDATE` deadlocked with them and
+  one side failed with `deadlock detected` (40P01). The maintenance daemon
+  runs both verbs, so turning it on could make application `UPDATE`s fail this
+  way. Both verbs now take the storage-row lock first and try the
+  delete-vector locks without waiting. When a writer holds one, the verb gives
+  back its locks, waits for that writer to finish, and tries again. So the
+  verb never waits while it holds a lock a writer may need. The waiting has a
+  bound: after the new setting `pgcolumnar.rewrite_lock_timeout` (default
+  10 s) the verb stops with SQLSTATE 55P03 and changes nothing, and the daemon
+  logs a skip. Writers no longer queue behind a rewrite, so under a steady
+  stream of deletes the verb can reach that limit where it used to finish
+  (#2185). Two plain writers can still deadlock with each other (#2184).
+  When both verbs are due on one table, the daemon still runs them in one
+  transaction, and a writer can deadlock with that pair (#2194). An `UPDATE` that
+  meets a rewrite of its group still gets the documented retryable `row group
+  was compacted concurrently`. A plain `INSERT` now waits for a `recluster`
+  from the start of its read, not only from the start of its write.
+  `compact_rewrite` now takes all its groups' locks before it rewrites the
+  first, so a `DELETE` on a later group waits from that point.
+  `test/native_rewrite_conc.sh` and `test_native_rewrite_conc.py` check
+  that the verb gives back its locks before and after each wait, counts a lock
+  its own transaction holds as taken, and stops within its limit under steady
+  deletes and behind a deleter or an inserter that stays open. They also check
+  that the verb gives the session's `lock_timeout` back on success and after
+  55P03, and that a shorter user `lock_timeout` still wins. A longer user
+  `lock_timeout` does not replace the limit. The rewrite keeps the
+  storage-row lock while it holds its group locks, so a writer that inserts
+  and then deletes beside it commits. A limit of `0` waits without a limit,
+  and `compact_rewrite` with `max_groups` locks only the groups it rewrites.
+  A session that does not set the limit gets the 10 s default. The tests
+  also cover a delete in `recluster`'s last group, a busy last group, which
+  the verb waits on holding no group lock, and a limit of `0` under a user
+  `lock_timeout`, which ends with PostgreSQL's own lock-timeout error. They
+  also check that the limit counts from the call, not from the statement or
+  transaction start.
+- `read_parquet`, `import_parquet` and the Parquet foreign table now read a
+  REQUIRED list, a REQUIRED struct, and a list inside a nullable struct as
+  pyarrow does (#2079, #1916). They returned wrong values with no error: an
+  empty REQUIRED list read as NULL, a REQUIRED list of REQUIRED items lost its
+  values, a REQUIRED struct with a NULL field read as NULL, a NULL list
+  inside a present struct read as `{}`, and an empty list inside a present
+  struct read as `{NULL}`. The reader assumed that definition level 0 always
+  meant a NULL list or struct and level 1 an empty list. That holds only for a
+  nullable list or struct with no nullable parent. The reader now takes both
+  levels from the file's schema. A composite is NULL only when the struct that
+  holds all its leaves is NULL, so a NULL sub-struct no longer hides a sibling
+  field. A composite over leaves that no one struct holds, such as two
+  top-level columns, is now an error: it read as NULL whenever any one field
+  was NULL. A one-field composite over one top-level column is now an error
+  too: it read as NULL when its field was NULL. `test/parquet_nested_import.sh` and
+  `test_parquet_nested_import.py`, which also read composites whose leaves sit
+  two levels below their struct. Every statement in their pyarrow arm runs
+  under a 60-second client-side bound, so a reader that loops fails the check
+  instead of hanging the suite.
+- `read_parquet` now reads a legacy two-level list, a REPEATED leaf with no
+  LIST group such as `repeated int64 l`, as its values (#1916). It read every
+  row as an empty array, `{}`, with no error. The #2079 fix above corrected
+  this, and `test/native_parquet_schema.sh` and
+  `test_native_parquet_schema.py` now read `twolevel.parquet`, with one empty
+  row, to pin it.
+- `pgcolumnar.parallel_copy` now loads the same rows as `COPY FROM` when a
+  text-format file holds a backslash before a raw newline, or a `\.`
+  end-of-data line (#2084). The splitter cut the file at any newline byte. In
+  COPY text format a backslash followed by a raw newline is data inside the
+  field, so a cut there split one value into two rows: 2000 input rows stored
+  2003 with no error. A partitioned target refused the same file with
+  `invalid input syntax for type integer`. A worker whose range started after
+  a `\.` line also loaded rows that `COPY FROM` never reads: 1921 rows instead
+  of 1000. The splitters now cut only at a newline with an even run of
+  backslashes before it. The partitioned splitter ends the load at a `\.`
+  line. A loader whose COPY stops at a `\.` line reports it, and the
+  coordinator rolls back every range after it. `file_split_offsets` uses the
+  same rule. Rows after a `\.` line that `COPY FROM` would reject no longer
+  fail the load. `test/parallel_copy.sh` and `test_parallel_copy.py`: 54
+  checks, including files whose values end in a backslash (an even run before
+  the newline) and a file whose rows after `\.` are invalid. They also cover
+  runs of 3 backslashes, a newline escaped across a 64 KiB read, records of 3
+  and 4 lines with the key after them, a file that ends inside a continued
+  record, a `\.\r\n` marker, and which failing row the error names. And they
+  cover an escape of a byte that is not a newline (`\t`), a line made only of
+  backslashes, and a `\.` line that falls exactly on a range start. And
+  they cover a `\.` file loaded twice with dedup on, which must leave no
+  prepared transaction, and a `\.` line inside a continued record, where
+  `parallel_copy` must match heap `COPY` on PG 17 (every row) and on PG 18
+  (refused with 22P04). And they cover a malformed marker in a partitioned
+  load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
+  newline), which must be refused with 22P04 as heap `COPY` refuses it, and
+  a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` now reads the file in the calling session's
+  `client_encoding`, as `COPY FROM` does, and its splitters step over whole
+  characters in the encodings where a character's second byte can be `0x5C`
+  (#2188). The loaders read the file in their own `client_encoding`, the
+  database's or the role's default, so a UTF8 session with the database
+  default set to SJIS stored `café` as `636166efbe83efbda9` where `COPY FROM`
+  stores `636166c3a9`, and a session in SJIS with a UTF8 default was refused
+  with 22021. The splitters and the first-line scan read every `0x5C` as a
+  backslash, so in SJIS `83 5c 5c 0a`, one character and an escaped newline,
+  was cut into two records: 2002 to 2004 rows with 3, 5, 6, 7 or 8 workers
+  where `COPY FROM` loads 2000. Each loader
+  now starts core `COPY` with `ENCODING` set to the caller's
+  `client_encoding`, and every scan (`file_split_offsets` too) shares one
+  reader that steps over a character's trailing bytes with
+  `pg_encoding_mblen` when the encoding is client-only (SJIS, SHIFT_JIS_2004,
+  BIG5, GBK, GB18030, UHC, JOHAB) and the database is not `SQL_ASCII`. That is
+  when core converts the file before it looks for backslashes; in a
+  `SQL_ASCII` database core reads raw bytes and so do the scans.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- `pgcolumnar.parallel_copy` now refuses a file that changes newline style,
+  as `COPY FROM` does, wherever the split falls (#2189). `COPY FROM` takes LF
+  or CRLF from the file's first line and refuses any later line ending, or a
+  `\.\r\n` end-of-data line in a file with LF line ends, whose style differs,
+  with 22P04. Each worker ran core `COPY` over its own range, so a range that
+  started where the style changed took the new style from its own first line,
+  and the load went through: 2000 to 3749 rows where `COPY FROM` loads none.
+  The calling backend now reads the first line's style the way core does (the
+  first newline or carriage return no backslash escapes), and every worker
+  whose range does not start the file starts core `COPY` with it. The refusal
+  carries core's SQLSTATE and message (`end-of-copy marker does not match
+  previous newline style`, `literal carriage return found in data`, `literal
+  newline found in data`) after `worker N failed: `, and loads nothing. A
+  partitioned load already refused the `\.\r\n` case, because its splitter
+  ends a range at the marker line. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`.
+- The Iceberg foreign data wrapper no longer drops matching rows when an
+  Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
+  a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
+  returns its unscaled integer for such a declaration. A filter such as
+  `d = 20000000` then returned no rows and no error, because the FDW read the
+  file's decimal bounds as little-endian integers and pruned the file. Iceberg
+  writes decimal bounds big-endian. Bucket pruning had the same fault: it
+  hashed the constant as a long, where Iceberg hashes the decimal's bytes. The
+  FDW now prunes on bounds only for an Iceberg `int`, `long` or `boolean` field,
+  and on a bucket only for an `int`, `long` or `string` field. A `bigint`
+  declaration over an INT32 decimal now fails with a filter too (SQLSTATE
+  42804), as the full scan always did, instead of returning no rows. The
+  same holds for a `bool` column over an Iceberg `int` or `long`, an `int`
+  or `smallint` column over an Iceberg `boolean`, a `bigint` column over a
+  decimal partitioned by bucket, and a `text` column over an Iceberg `int`
+  partitioned by bucket. The FDW matches the Iceberg field by
+  its whole name, so a field `d_x` does not stand in for `d`, nor `d` for
+  `d_x`. Bucket pruning on an Iceberg `int` source still works, for an
+  `int` or `bigint` column, and when the spec puts a decimal's bucket field
+  first. A `name` column over a bucketed Iceberg `int` is refused (42804).
+  `test/iceberg_fdw.sh` and `test_iceberg_fdw.py`.
+- A local `export_parquet` or `export_arrow` that ends with FATAL no longer
+  leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes
+  to that temp file and renames it at the end. On an error the writer removes
+  it, but a FATAL exit (`pg_terminate_backend`, or a fast shutdown) skips that
+  step, and nothing removed the file later, so each one could hold up to the
+  whole export's size. Remote exports already aborted their upload on such an
+  exit (#1722). Local exports now use the same exit callback, which removes the
+  temp file. A FATAL re-export keeps the previous file at the final name, and a
+  FATAL export after other exports in the same transaction does not crash the
+  backend. A FATAL at the final rename or at the flush before it also leaves no
+  temp file, and an export whose rename or open failed inside a rolled-back
+  savepoint does not crash a later FATAL export. Neither does one whose Abort
+  could not unlink its temp file (a read-only directory). A session can run 25
+  exports without running out of exit-callback slots. `test/export_sink.sh` and
+  `test_export_sink.py`.
 - `pgcolumnar.parallel_copy` no longer hangs or fails with a deadlock error on a
   single columnar table with a unique index or primary key (#2080). With 2 or
   more workers the load either waited until cancelled or failed with 40P01
@@ -630,6 +909,11 @@ true until the next version shipped.
   and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
   INSERT still gets 42501 first, a URL still gets the refusal for remote files
   first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data
@@ -676,6 +960,59 @@ true until the next version shipped.
   `test_runshape.py`: three on the pickers, three on how long a reservation
   holds (60 s and 121 s for a picker that has gone, any age for one that
   runs), and the three READY waits above.
+- `pgcolumnar.parallel_export_parquet` and `pgcolumnar.parallel_copy` no longer
+  wait until `statement_timeout` when the calling transaction already holds,
+  on the target or one of its partitions, a lock their workers' lock conflicts
+  with, as after `LOCK TABLE ... IN ACCESS EXCLUSIVE MODE` or `TRUNCATE` in the
+  same transaction (#2183). Export workers
+  open the table, or each leaf, with ACCESS SHARE; parallel_copy's coordinator and
+  loaders open the target, and the partitions they route to, with ROW EXCLUSIVE.
+  Each worker runs in its own transaction, outside the caller's lock group, and
+  the caller waits for them on a latch, so PostgreSQL's deadlock detector could
+  not see the wait. #2072 fixed the same wait in `parallel_flush` by not opening
+  the table in its workers; these workers read or write the table itself, so
+  both functions now refuse the call up front with 55000
+  (`object_not_in_prerequisite_state`), naming the lock and the relation. Only a
+  conflicting lock is refused: an export still runs under SHARE, and
+  parallel_copy still runs under ROW EXCLUSIVE or SHARE UPDATE EXCLUSIVE, or with
+  any lock on another table. `parallel_copy` checks INSERT (42501) first, then
+  this lock, then its unique-index refusal (#2080), so a caller holding SHARE on
+  a table with a primary key gets 55000. An export in a savepoint still gets
+  25001, as before. A lock on a table the loaders reach only through a foreign
+  key, a trigger or a sequence still makes `parallel_copy` wait; see
+  docs/limitations.md. `parallel_export_parquet.sh`, `parallel_copy.sh`,
+  `test_parallel_export_parquet.py` and `test_parallel_copy.py`.
+- `test_harness_isolation.py::test_control_a_plain_child_under_flock_holds_the_lock`
+  no longer fails with `got '0 held, lock free=1'` (#2193; once in CI).
+  The descriptor count read every link in `/proc/<pid>/fd` and gave up with 0
+  when one readlink failed. The control reads a `sleep` that has just started,
+  and its dynamic loader opens and closes each shared library as fd 4, so that
+  descriptor can vanish between the listing and its readlink. The count now
+  skips a descriptor that vanished, as the shell twin's `find -lname` does. The
+  lock's descriptor is inherited at fork and is never skipped, so a child that
+  does not hold the lock (`flock -o`) still fails the control. Measured on an
+  8-CPU shared dev machine at load 4.8: 88 of 2000 runs of the control's
+  command read 0 before, none of 2000 after. Two new tests pin the count with
+  no cluster and no race: a descriptor listed but gone by its readlink no
+  longer hides the lock, and a pid that does not exist reads 0 of 0. The
+  `flock -F` check's own descriptor count skips a vanished descriptor too.
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when the
+  calling transaction has already written to the target, or to one of its
+  partitions, for example with an `INSERT` earlier in the same transaction
+  (#2211). The write holds the storage-row lock that serializes a storage's first
+  writers until the transaction ends, whether or not the storage row was
+  committed already. The coordinator takes that lock to pre-create a single
+  table's storage row, and a loader takes it on its first flush into a
+  partition, each in its own transaction, while the caller waits for them on a
+  latch, so the deadlock detector could not see the wait. It hung with 1 worker
+  as with 2. Such a call is now refused up front with 55000
+  (`object_not_in_prerequisite_state`), naming the written relation, after
+  #2183's lock refusal and before #2080's unique-index refusal. Every columnar
+  partition is checked, at any depth of the partition tree. A write to
+  another table, or none, still loads. The refused, rolled-back call no longer
+  leaves a committed, empty `pgcolumnar.storage` row behind, which the
+  coordinator created once the caller's rollback released the lock.
+  `parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.iceberg_scan` now applies an equality delete to a data file that
   carries no Parquet field ids (#2088). Such a file comes from Iceberg
   `add_files` or a Hive or Spark migration, and is read through the table's

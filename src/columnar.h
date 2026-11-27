@@ -309,6 +309,7 @@ extern double pgcolumnar_autovacuum_recluster_threshold;
 extern bool pgcolumnar_autovacuum_expire;
 extern void PgColumnarAutovacuumRegister(void);
 extern int	pgcolumnar_maintenance_hold_ms;	/* dev/test: hold SUEL this long in a maintenance verb */
+extern int	pgcolumnar_rewrite_lock_timeout;	/* ms a rewrite may spend taking its locks (#2074) */
 extern int	pgcolumnar_vm_set_hold_ms;	/* dev/test: pause lazy VACUUM between VM compute and set */
 
 /* Phase 6 GUCs (spec 8.3) */
@@ -320,6 +321,7 @@ extern int pgcolumnar_groupagg_max_groups;	/* execution-time group-count cap; ov
 extern bool pgcolumnar_enable_read_stream;	/* stream/prefetch block reads (PG17+) */
 extern bool pgcolumnar_enable_index_only_scan;	/* allow index-only scans (gap 28) */
 extern bool pgcolumnar_bulk_parallel_writer;	/* internal: parallel_copy loader skips the storage-row creation lock (#300) */
+extern int pgcolumnar_parallel_copy_open_hold_ms;	/* dev/test: parallel_copy loaders after the first wait before opening the target (#2187) */
 extern bool pgcolumnar_parallel_flush;	/* dispatch the per-column stripe flush across bgworkers (#445 slice 3) */
 extern bool pgcolumnar_enable_projection_scan;	/* scan a covering projection (gap 26) */
 extern bool pgcolumnar_enable_sorted_pathkeys;	/* advertise a sorted run's order (#751) */
@@ -590,6 +592,11 @@ extern bool pgcolumnar_enable_end_truncation;
 extern void PgColumnarRequireTableOwner(Relation rel);
 extern void PgColumnarRequireTableOwnerByOid(Oid relid);
 extern void PgColumnarRequireNoRowSecurity(Oid relid);
+/* refuse when this transaction holds a lock its workers would wait on (#2183) */
+extern void PgColumnarRefuseOwnLockConflict(const char *funcname, Oid relid,
+											LOCKMODE workerlock);
+/* does this transaction hold the storage-row lock of storageId? (#2211) */
+extern bool PgColumnarStorageRowLockHeldByMe(uint64 storageId);
 
 /*
  * Assert-only invariant: a storage's live row-group footprints and its
@@ -860,6 +867,8 @@ extern bool PgColumnarReadSetRuntimeRange(PgColumnarReadState *readState,
 										AttrNumber attno, Oid subtype,
 										Datum minimum, Datum maximum);
 extern void PgColumnarReadClearRuntimeRange(PgColumnarReadState *readState);
+extern void PgColumnarReadSetScanKeys(PgColumnarReadState *readState,
+									  int nkeys, ScanKey keys);
 extern uint64 PgColumnarRuntimeGroupsRemoved(PgColumnarReadState *readState);
 extern void PgColumnarReadStats(PgColumnarReadState *readState,
 							  uint64 *groupsRead, uint64 *groupsSkipped,
@@ -1098,6 +1107,12 @@ extern char *PgColumnarDecompressValueStream(const char *comp, uint32 compLen,
 #define PGCOLUMNAR_LOCKCLASS_UNIQUE_KEY		103
 #define PGCOLUMNAR_LOCKCLASS_ROW_IDENTITY	104
 #define PGCOLUMNAR_LOCKCLASS_EXTENT			105
+/*
+ * parallel_copy loader i holds this from just before it requests its lock on
+ * the target until it has that lock, so a sibling that waits for it does so in
+ * the lock manager, where the deadlock detector can see the wait (#2187).
+ */
+#define PGCOLUMNAR_LOCKCLASS_PCOPY_OPEN		106
 
 /* -------------------------------------------------------------------------
  * concurrent unique-key insert serialization (pgcolumnar_unique.c, issue #5)

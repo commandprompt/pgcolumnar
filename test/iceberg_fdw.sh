@@ -409,6 +409,50 @@ if ftmpx yd byyear_d "dt date" && ftmpx mo bymonth_d "dt date" \
 		"$(oraclex hz "tt >= TIMESTAMPTZ '2021-03-01 01:00:00+00'")"
 fi
 
+# ---- day() and hour() pruning near the largest timestamp (#2230) -------------
+# day() and hour() move the constant from the PostgreSQL epoch (2000) to the
+# Iceberg one (1970) by adding 30 years of microseconds. Past
+# 294247-01-10 04:00:54.775807 that sum overflows int64. Before #2230 it wrapped
+# to a large negative bucket, so "ts < constant" pruned every file and returned
+# no rows. Each table holds three rows in 2021, so every "<" below must return
+# all three. The last safe microsecond must still prune: the guard is exactly
+# the overflow, not a margin below it.
+if [ -n "${MD_td:-}" ] && [ -n "${MD_th:-}" ] && [ -n "${MD_dz:-}" ] && [ -n "${MD_hz:-}" ]; then
+	check_text "day()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM td WHERE ts < TIMESTAMP '294276-12-31 23:59:59.999999'")" \
+		"$(oracle td "ts < TIMESTAMP '294276-12-31 23:59:59.999999'")"
+	check "day()-on-timestamp: the largest timestamp > ts, constant on the left, returns ids 1,2,3 (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM td WHERE TIMESTAMP '294276-12-31 23:59:59.999999' > ts")" "1,2,3"
+	check "day()-on-timestamp: ts <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM td WHERE ts <= TIMESTAMP '294247-01-10 04:00:54.775808'")" "0"
+	check "day()-on-timestamp: ts > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM td WHERE ts > TIMESTAMP '294247-01-10 04:00:54.775807'")" "3"
+
+	check_text "hour()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM th WHERE ts < TIMESTAMP '294276-12-31 23:59:59.999999'")" \
+		"$(oracle th "ts < TIMESTAMP '294276-12-31 23:59:59.999999'")"
+	check "hour()-on-timestamp: ts <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM th WHERE ts <= TIMESTAMP '294247-01-10 04:00:54.775808'")" "0"
+	check "hour()-on-timestamp: ts > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM th WHERE ts > TIMESTAMP '294247-01-10 04:00:54.775807'")" "3"
+
+	check_text "day()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM dz WHERE tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")" \
+		"$(oraclex dz "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")"
+	check "day()-on-timestamptz: tt <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM dz WHERE tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'")" "0"
+	check "day()-on-timestamptz: tt > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM dz WHERE tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'")" "3"
+
+	check_text "hour()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM hz WHERE tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")" \
+		"$(oraclex hz "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")"
+	check "hour()-on-timestamptz: tt <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM hz WHERE tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'")" "0"
+	check "hour()-on-timestamptz: tt > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM hz WHERE tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'")" "3"
+fi
+
 # ---- a temporal transform read into the OTHER timestamp type (#1706) ---------
 # The reader converts a naive (timestamp) source read into timestamptz, and a
 # timestamptz source read into timestamp, as PostgreSQL's casts do in the session
@@ -488,6 +532,179 @@ q "CREATE FOREIGN TABLE th6 (id bigint, ts timestamp(6))
    SERVER ice OPTIONS (metadata_path '${MD_th:-}')" >/dev/null
 check "typmod: ts >= 01:00 on timestamp(6) still hour-prunes the 00h file (Files Pruned: 1)" \
 	"$(fp "SELECT * FROM th6 WHERE ts >= TIMESTAMP '2021-03-01 01:00:00'")" "1"
+
+# ---- a decimal declared int or bigint is not pruned on its bounds (#2086) -----
+# Spark stores a decimal of precision 18 or less as a Parquet INT32 or INT64
+# holding the unscaled value, and the reader lets the foreign table declare it
+# int or bigint. Iceberg writes a decimal's bounds big-endian, not as an
+# integer's little-endian bytes, and hashes a decimal's bytes for bucket[N], not
+# a long. warehouse_decimal (fixtures/iceberg/gen_iceberg_decimal.py) holds the
+# unscaled values 10000000 and 20000000 in dec9 (decimal(9,2), INT32), dec18
+# (decimal(18,2), INT64) and dec9_bucket (bucket[8](d), one file per row).
+DCWH="$PGC_WORKDIR/dcwh"
+rm -rf "$DCWH"; mkdir -p "$DCWH"
+cp -r "$FX/warehouse_decimal/db" "$DCWH/db"
+chmod -R u+rwX "$DCWH"
+MD_D9="$(ls "$DCWH"/db/dec9/metadata/*.metadata.json | sort | tail -1)"
+MD_D18="$(ls "$DCWH"/db/dec18/metadata/*.metadata.json | sort | tail -1)"
+MD_DB="$(ls "$DCWH"/db/dec9_bucket/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dec9i (id bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_D9')" >/dev/null
+q "CREATE FOREIGN TABLE dec9b (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_D9')" >/dev/null
+q "CREATE FOREIGN TABLE dec18b (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_D18')" >/dev/null
+q "CREATE FOREIGN TABLE dec9k (id bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_DB')" >/dev/null
+check "decimal: dec9 read as int returns both unscaled values (premise)" \
+	"$(q "SELECT coalesce(string_agg(id||'|'||d, ',' ORDER BY id), 'none') FROM dec9i")" \
+	"1|10000000,2|20000000"
+check "decimal: d = 20000000 on decimal(9,2) read as int returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9i WHERE d = 20000000")" "2"
+check "decimal: count where d > 15000000 on decimal(9,2) read as int is 1" \
+	"$(q "SELECT count(*) FROM dec9i WHERE d > 15000000")" "1"
+check "decimal: d = 20000000 on decimal(18,2) read as bigint returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec18b WHERE d = 20000000")" "2"
+check "decimal: d >= 15000000 on decimal(18,2) read as bigint returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec18b WHERE d >= 15000000")" "2"
+check "decimal: a full scan of decimal(9,2) read as bigint is refused (42804)" \
+	"$(tm_state "SELECT * FROM dec9b")" "42804"
+check "decimal: a filtered scan of decimal(9,2) read as bigint is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM dec9b WHERE d = 20000000")" "42804"
+check "decimal: d = 10000000 on bucket[8](decimal) read as int returns id 1" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 10000000")" "1"
+check "decimal: d = 20000000 on bucket[8](decimal) read as int returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dec9k WHERE d = 20000000")" "2"
+# dec9kb reads the bucket source as bigint, which the reader refuses. The bucket
+# map must not hash 20000000 as a long and prune both files, which returned 0
+# rows and no error.
+q "CREATE FOREIGN TABLE dec9kb (id bigint, d bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_DB')" >/dev/null
+check "decimal: d = 20000000 on bucket[8](decimal) read as bigint is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM dec9kb WHERE d = 20000000")" "42804"
+# The long column beside it still prunes on its own bounds, so the fix did not
+# switch min/max pruning off.
+check "decimal: id = 5 on the long column of dec9 still prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM dec9i WHERE id = 5")" "1"
+
+# The gate matches the Iceberg field by its whole name. In pfx the long field
+# d_x comes before the decimal d. A lookup that matched names by prefix would
+# take d for a long, read its big-endian bounds as an integer's, and prune the
+# file that holds d = 20000000.
+MD_PFX="$(ls "$DCWH"/db/pfx/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dpfx (id bigint, d_x bigint, d int)
+   SERVER ice OPTIONS (metadata_path '$MD_PFX')" >/dev/null
+check "decimal: d = 20000000 on a decimal after a long field whose name it prefixes returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dpfx WHERE d = 20000000")" "2"
+# pfx2 tests the other direction: the long d comes before the decimal d_x, and
+# its name is a prefix of d_x. A lookup that compared only the field name's
+# length would take d_x for a long.
+MD_PFX2="$(ls "$DCWH"/db/pfx2/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE dpfx2 (id bigint, d bigint, d_x int)
+   SERVER ice OPTIONS (metadata_path '$MD_PFX2')" >/dev/null
+check "decimal: d_x = 20000000 on a decimal after a long field whose name prefixes it returns id 2" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM dpfx2 WHERE d_x = 20000000")" "2"
+
+# ---- a bool column prunes on bounds only over an Iceberg boolean (#2086) -----
+# boolt: an Iceberg boolean, one file with b false (ids 1, 2) and one with b
+# true (ids 3, 4). booli: an Iceberg int (values 5 to 8) declared bool, which
+# the reader refuses. b > false is used, not b = true, because the planner folds
+# b = true to a bare "Filter: b" that never reaches the bounds check.
+MD_BT="$(ls "$DCWH"/db/boolt/metadata/*.metadata.json | sort | tail -1)"
+MD_BI="$(ls "$DCWH"/db/booli/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE boolt (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+q "CREATE FOREIGN TABLE booli (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+check "bool: b > false on an Iceberg boolean prunes the all-false file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM boolt WHERE b > false")" "1"
+check "bool: b > false on an Iceberg boolean returns ids 3 and 4" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM boolt WHERE b > false")" "3,4"
+check "bool: a full scan of an Iceberg int declared bool is refused (42804)" \
+	"$(tm_state "SELECT * FROM booli")" "42804"
+check "bool: b < true on an Iceberg int declared bool is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM booli WHERE b < true")" "42804"
+# booll: an Iceberg long (values 5 to 8) declared bool, refused the same way.
+MD_BL="$(ls "$DCWH"/db/booll/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE booll (id bigint, b bool)
+   SERVER ice OPTIONS (metadata_path '$MD_BL')" >/dev/null
+check "bool: b < true on an Iceberg long declared bool is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM booll WHERE b < true")" "42804"
+
+# ---- an integer column prunes on bounds only over an Iceberg int or long -----
+# booli read as smallint: the int2 arm prunes on the Iceberg int's bounds. boolt
+# read as int: the reader refuses an int over an Iceberg boolean, and a filter
+# must not turn that into an empty answer.
+q "CREATE FOREIGN TABLE booli2 (id bigint, b smallint)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+q "CREATE FOREIGN TABLE boolti (id bigint, b int)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+check "int: b > 8 on a smallint over an Iceberg int prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM booli2 WHERE b > 8")" "1"
+check "int: b = 8 on a smallint over an Iceberg int returns id 8" \
+	"$(q "SELECT coalesce(string_agg(id::text, ',' ORDER BY id), 'none') FROM booli2 WHERE b = 8")" "8"
+check "int: a full scan of an Iceberg boolean declared int is refused (42804)" \
+	"$(tm_state "SELECT * FROM boolti")" "42804"
+check "int: b = 5 on an Iceberg boolean declared int is refused the same way, not empty" \
+	"$(tm_state "SELECT * FROM boolti WHERE b = 5")" "42804"
+# boolts reads the same Iceberg boolean as smallint. The int2 arm must check
+# the Iceberg type too, or b = 5 prunes both files on the boolean's bounds and
+# returns 0 rows.
+q "CREATE FOREIGN TABLE boolts (id bigint, b smallint)
+   SERVER ice OPTIONS (metadata_path '$MD_BT')" >/dev/null
+check "int: b = 5 on a smallint over an Iceberg boolean is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM boolts WHERE b = 5")" "42804"
+# bib reads booli's Iceberg int as bigint. The int8 arm must accept an Iceberg
+# int, not only a long, or b > 8 loses the bounds pruning main has.
+q "CREATE FOREIGN TABLE bib (id bigint, b bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_BI')" >/dev/null
+check "int: b > 8 on a bigint over an Iceberg int prunes its file (Files Pruned: 1)" \
+	"$(fp "SELECT * FROM bib WHERE b > 8")" "1"
+
+# ---- bucket pruning on an Iceberg int source (#2086) -------------------------
+# byint: k int, bucket[8](k), k = 1 to 8, written by pyiceberg into five files.
+# Iceberg hashes an int as an 8-byte long. k = 5 is in bucket 7 with k = 8.
+# Bounds alone prune only 3 files: the bucket 3 file holds k = 3 and 7, so its
+# bounds contain 5.
+MD_BY="$(ls "$DCWH"/db/byint/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE byint (k int)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 5 on bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)" \
+	"$(fp "SELECT * FROM byint WHERE k = 5")" "4"
+check "bucket: k = 5 on bucket[8] of an Iceberg int returns 5" \
+	"$(q "SELECT coalesce(string_agg(k::text, ',' ORDER BY k), 'none') FROM byint WHERE k = 5")" "5"
+# byb reads the same Iceberg int as bigint. The bucket gate must accept a bigint
+# over an Iceberg int, or k = 5 loses the bucket pruning main has.
+q "CREATE FOREIGN TABLE byb (k bigint)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 5 on a bigint over bucket[8] of an Iceberg int prunes 4 of 5 files (Files Pruned: 4)" \
+	"$(fp "SELECT * FROM byb WHERE k = 5")" "4"
+# byintt reads the same Iceberg int as text. The reader refuses a full scan
+# (42804). The bucket map must not hash 'a' as an int's bucket and prune every
+# file, which returned 0 rows and no error.
+q "CREATE FOREIGN TABLE byintt (k text)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 'a' on a text column over an Iceberg int is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM byintt WHERE k = 'a'")" "42804"
+# byn reads the same Iceberg int as name, which the reader refuses. k = 'a'::text
+# uses the name = text operator, so the bucket map sees a text constant. The gate
+# must refuse a name column, or every file is pruned and the query returns 0
+# rows and no error.
+q "CREATE FOREIGN TABLE byn (k name)
+   SERVER ice OPTIONS (metadata_path '$MD_BY')" >/dev/null
+check "bucket: k = 'a' on a name column over an Iceberg int is refused (42804), not empty" \
+	"$(tm_state "SELECT * FROM byn WHERE k = 'a'::text")" "42804"
+# two: k int, d decimal(9,2), partitioned by bucket[2](d) then bucket[4](k),
+# k = 1 to 16 with d = 1.00, written by pyiceberg into four files. The gate
+# skips the decimal's bucket field. The bucket map must still keep k's field:
+# k = 5 prunes 3 files by bucket, but only 1 by bounds.
+MD_TWO="$(ls "$DCWH"/db/two/metadata/*.metadata.json | sort | tail -1)"
+q "CREATE FOREIGN TABLE two (k int, d numeric)
+   SERVER ice OPTIONS (metadata_path '$MD_TWO')" >/dev/null
+check "bucket: k = 5 after a gated bucket[2](decimal) field prunes 3 of 4 files (Files Pruned: 3)" \
+	"$(fp "SELECT * FROM two WHERE k = 5")" "3"
+check "bucket: k = 5 after a gated bucket[2](decimal) field returns 5 with d 1.00" \
+	"$(q "SELECT coalesce(string_agg(k::text || ':' || d::text, ',' ORDER BY k), 'none') FROM two WHERE k = 5")" "5:1.00"
 
 # ---- an invalid option is rejected by the validator -------------------------
 check "an unknown table option is refused (FDW_INVALID_OPTION_NAME)" \

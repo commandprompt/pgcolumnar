@@ -311,6 +311,22 @@ these constraints.
   `42501` first, and a URL gets the refusal for remote files first. A
   partitioned target with such an index is not limited: each worker loads its
   own partitions.
+- A single columnar table with a trigger on INSERT loads with one worker only.
+  The function refuses more workers with `0A000`. This covers BEFORE and AFTER
+  triggers, and row and statement triggers. Each worker runs the trigger in its
+  own prepared transaction. When the trigger writes to another table, the
+  workers can wait on each other until the load is cancelled, or fail with a
+  deadlock error. A disabled trigger does not count, and neither do the internal
+  triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
+  either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
+  default `session_replication_role`. One worker still runs the trigger for every
+  row.
+- The function does not look inside CHECK constraints or column defaults. Some
+  of them call a VOLATILE function that writes to another table. Then the workers
+  can wait on each other the same way, until `statement_timeout` or a deadlock
+  error. Load such a table with `workers => 1`.
+- A `CREATE INDEX` that starts while the workers open the table waits until the
+  load ends. It used to be able to hang the load.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
@@ -328,6 +344,28 @@ these constraints.
   final commit step can leave some ranges committed and some prepared. This is
   the ordinary two-phase-commit in-doubt case. A DBA resolves it from
   `pg_prepared_xacts`.
+- The calling transaction must not hold SHARE, SHARE ROW EXCLUSIVE, EXCLUSIVE
+  or ACCESS EXCLUSIVE on the target or on one of its partitions. The function
+  refuses such a call with `55000` (#2183). `LOCK TABLE` and `TRUNCATE` take such
+  locks. The workers take ROW EXCLUSIVE in their own transactions, so they
+  would wait for the caller until the statement timed out.
+  `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
+  or on one of its leaf partitions.
+- The check covers only the target and its partitions. The load still waits
+  until `statement_timeout` when the calling transaction locks another table
+  the loaders need. One example is a table the target references through a
+  foreign key. Others are a table a trigger on the target writes to, and a
+  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
+  `parallel_copy` before taking such locks, or after `COMMIT`.
+- The calling transaction must not have written to the target or to one of its
+  partitions, for example with an earlier `INSERT`. The function refuses such a
+  call with `55000` (#2211). The write holds a lock on the table's storage until
+  the transaction ends. The workers take that lock in their own transactions,
+  so they would wait for the caller until the statement timed out. Commit the
+  write first, or load the file with `COPY`.
+  The check does not see a write to a columnar table that a trigger on the
+  target writes. If no row was ever committed to that table, the load still waits
+  until `statement_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).
@@ -709,6 +747,29 @@ same way as a `CREATE INDEX` that is not concurrent. Turn projection scans off w
   table. One statement that inserts into many partitions, each with a unique
   index, immediate or deferrable, can fail with `out of shared memory`. Raise
   `max_locks_per_transaction` if it does.
+- Two writers can deadlock on one table with no maintenance running (#2184). A
+  writer holds two locks to commit. One is the delete lock of each row group it
+  deletes from. The other is the table's storage-row lock, which every flush of
+  new rows takes. It
+  can take them in either order. A transaction that deletes, scans and then
+  inserts takes the delete lock first; one that inserts, scans and then deletes
+  takes the storage-row lock first. When two such transactions meet, one gets
+  `deadlock_detected` (40P01). Retry it, as with any deadlock.
+- `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` wait for writers; writers
+  do not queue behind them. Before it writes, a rewrite needs the storage-row lock
+  and every row group's delete lock at once. It waits for each busy lock alone,
+  holding none, and tries again, so it never closes a deadlock with a writer. It
+  can still get 40P01 when it waits inside a deadlock between two writers. A steady
+  stream of short delete transactions can keep one lock busy at every try. After
+  `pgcolumnar.rewrite_lock_timeout` (default 10 s) the verb stops with SQLSTATE
+  `55P03` and changes nothing. The maintenance daemon logs a skip and tries at
+  its next sweep (#2185). Once the rewrite holds its locks, new rows and deletes in
+  its row groups wait for it to commit.
+- Run each of `pgcolumnar.recluster` and `pgcolumnar.compact_rewrite` in its own
+  transaction. The first verb keeps the storage-row lock until commit. A second
+  verb in the same transaction then waits for a busy row group while it holds that
+  lock, and a writer can get 40P01. The maintenance daemon runs both verbs in one
+  transaction when both are due on a table, so it can meet this case (#2194).
 
 ## Row locking
 
@@ -1139,6 +1200,13 @@ both types in each direction.
 inside an array or composite column, it names that column, not the array element
 or the field. It writes `infinity` and `-infinity` as null, as before.
 
+`export_parquet` refuses the same values, for the same reason: Parquet also
+stores a timestamp as 64-bit microseconds since 1970-01-01. The export fails
+with `out of range for a Parquet timestamp` (SQLSTATE 22008), names the table
+column, and writes no file.
+`parallel_export_parquet` and `tier_partition` write through the same code and
+fail the same way. `tier_partition` then leaves the partition as it was.
+
 ## Write size limits
 
 A row group holds at most `stripe_row_limit` rows, and at most 256 MiB of values
@@ -1297,6 +1365,32 @@ The read-in-place surface (`read_parquet`, `parquet_schema`, and the
   carries a second, wrong-typed header struct as well as its own. Then pgColumnar
   refuses a page that pyarrow might read. The footer is not checked this way: the
   reader still reads a footer field by its id alone.
+- The reader reads a data page that holds no values (#2077). It decodes the page
+  like any other, so it reads such a page where pyarrow 23 reads it and refuses
+  it where pyarrow refuses it. For example, a v1 page of a nullable column with
+  no body is refused, because it has no definition-level length. The reader also
+  refuses a data page whose DataPageHeader is missing, empty, or has no
+  `num_values`, and a data page with a negative `num_values`. For a DATA_PAGE_V2
+  with no header at all, this is stricter than pyarrow 23, which reads the page
+  as empty and drops its values. A page's count comes only from the header
+  struct of its own type. A DATA_PAGE uses its DataPageHeader, a DATA_PAGE_V2
+  its DataPageHeaderV2, and a dictionary page its DictionaryPageHeader. A struct
+  of another type in the same header is ignored. A data page that
+  carries only a struct of another type is refused, where pyarrow 23 reads it as
+  empty. A header that carries the page's own struct twice is refused. pyarrow 23
+  reads such a page when the second struct is complete. A struct that gives its
+  own `num_values` twice is refused too, whatever its last value, where pyarrow
+  23 keeps the last value. A page header with a Thrift field id outside the
+  int16 range is refused as corrupt. pyarrow 23 narrows such an id
+  to 16 bits, so 65537 reads as field 1.
+  The reader refuses more than 16 pages with no values in a row in one column
+  chunk, DATA_PAGE and DATA_PAGE_V2 alike. A dictionary page does not end a run.
+  An INDEX_PAGE, or a page type the reader
+  does not know, counts as a page with no values and is stepped over. These
+  refusals raise SQLSTATE XX001. The run limit stops a crafted file from making
+  the reader walk a large area a few bytes at a time. In the files tested,
+  pyarrow wrote at most one empty page in a row. pyarrow 23 itself stops reading
+  a chunk at a run of two or more empty data pages.
 - The reader reads a file in parts and does not load the whole file. It holds the
   footer for the length of the scan. It reads the pages one at a time. Peak memory for the
   raw file data is one page, not one file, so file size is not a limit. What does

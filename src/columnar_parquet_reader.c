@@ -157,6 +157,16 @@ typedef struct PqSchemaCol
 								 * 0 is a legal id, so absence needs its own
 								 * value. Iceberg projects by this (#388). */
 	char	   *name;
+	/*
+	 * Where this node sits in the schema tree, set by walk_schema. A composite
+	 * target finds the struct it stands for from these (#2079).
+	 */
+	int			parent;			/* index in elems of the parent, -1 for the
+								 * root */
+	int			tree_depth;		/* 0 for the root, 1 for a top-level column */
+	int			present_def;	/* def at which this node is present: a def
+								 * below it means this node, or one above it,
+								 * is NULL */
 } PqSchemaCol;
 
 /* a leaf column (primitive) with its computed Dremel level bounds */
@@ -167,6 +177,15 @@ typedef struct PqLeafInfo
 	int			max_rep;
 	int			depth;			/* tree depth: 1 for a top-level column, more
 								 * when nested under a struct/list/map */
+	/*
+	 * Where a NULL or an empty group shows in this leaf's definition levels
+	 * (#2079). They depend on the schema shape, so a reader must not assume
+	 * fixed values: a REQUIRED list or struct adds no level, and a list inside
+	 * a nullable struct adds one more.
+	 */
+	int			rep_def;		/* def of the innermost REPEATED node on the
+								 * path, 0 if none: def rep_def - 1 is a
+								 * present but empty list */
 } PqLeafInfo;
 
 typedef struct PqChunk
@@ -638,11 +657,12 @@ parse_schema_element(TCReader *r, PqSchemaCol *sc)
  * +1 def, REPEATED +1 def and +1 rep (Dremel).
  */
 static bool
-walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
-			PqLeafInfo *leaves, int *nleaf)
+walk_schema(PqFile *pf, int *cursor, int parent, int def, int rep, int repdef,
+			int depth, PqLeafInfo *leaves, int *nleaf)
 {
 	PqSchemaCol *e;
-	int			d,
+	int			self,
+				d,
 				rp;
 
 	/*
@@ -656,9 +676,15 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 
 	if (*cursor >= pf->nelems)
 		return false;
-	e = &pf->elems[(*cursor)++];
+	self = (*cursor)++;
+	e = &pf->elems[self];
 	d = def + (e->repetition == 1 ? 1 : 0) + (e->repetition == 2 ? 1 : 0);
 	rp = rep + (e->repetition == 2 ? 1 : 0);
+	if (e->repetition == 2)
+		repdef = d;
+	e->parent = parent;
+	e->tree_depth = depth;
+	e->present_def = d;
 
 	if (e->num_children == 0)
 	{
@@ -666,6 +692,7 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 		leaves[*nleaf].max_def = d;
 		leaves[*nleaf].max_rep = rp;
 		leaves[*nleaf].depth = depth;
+		leaves[*nleaf].rep_def = repdef;
 		(*nleaf)++;
 	}
 	else
@@ -673,7 +700,8 @@ walk_schema(PqFile *pf, int *cursor, int def, int rep, int depth,
 		int			c;
 
 		for (c = 0; c < e->num_children; c++)
-			if (!walk_schema(pf, cursor, d, rp, depth + 1, leaves, nleaf))
+			if (!walk_schema(pf, cursor, self, d, rp, repdef, depth + 1,
+							 leaves, nleaf))
 				return false;
 	}
 	return true;
@@ -809,9 +837,12 @@ parse_file_metadata(const uint8 *buf, size_t len, PqFile *pf)
 		int			c;
 		PqLeafInfo *leaves = palloc0(sizeof(PqLeafInfo) * Max(pf->nelems, 1));
 
+		pf->elems[0].parent = -1;
+		pf->elems[0].tree_depth = 0;
+		pf->elems[0].present_def = 0;
 		pf->ntop = pf->elems[0].num_children;
 		for (c = 0; c < pf->ntop; c++)
-			if (!walk_schema(pf, &cursor, 0, 0, 1, leaves, &nleaf))
+			if (!walk_schema(pf, &cursor, 0, 0, 0, 0, 1, leaves, &nleaf))
 				return false;
 		pf->ncols = nleaf;
 		pf->leaves = leaves;
@@ -1754,7 +1785,28 @@ typedef struct PqPageHeader
 	bool		is_compressed;	/* v2; default true */
 	bool		is_v2;
 	bool		bad_type;		/* a field had the wrong Thrift type (#1935) */
+	bool		has_data_hdr;	/* a data page's own header struct (field 5 for
+								 * DATA_PAGE, 8 for DATA_PAGE_V2) carried its
+								 * required num_values (#2077) */
 } PqPageHeader;
+
+/*
+ * One DataPageHeader (field 5) or DataPageHeaderV2 (field 8) as parsed. A page
+ * header may carry several header structs. Each is parsed into its own PqDataHdr,
+ * and parse_page_header copies only the one that matches the page's type into
+ * the PqPageHeader, so a struct of another type cannot set the page's count.
+ */
+typedef struct PqDataHdr
+{
+	bool		has_num_values; /* its required num_values (field 1) was parsed */
+	int			num_values;
+	int			encoding;
+	int			def_levels_len; /* v2 only */
+	int			rep_levels_len; /* v2 only */
+	bool		is_compressed;	/* v2 only; default true */
+	int			nseen;			/* how many times the header carried this struct */
+	bool		nv_repeated;	/* one occurrence gave num_values twice */
+} PqDataHdr;
 
 /*
  * Read a required i32 page header field of compact type ft, whether or not the
@@ -1799,12 +1851,11 @@ pq_page_struct(TCReader *r, PqPageHeader *h, int ft)
 }
 
 static void
-parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
+parse_data_page_header(TCReader *r, PqPageHeader *h, PqDataHdr *d, bool v2)
 {
 	int			lastId = 0;
+	bool		nv_seen = false;	/* in this occurrence of the struct */
 
-	h->is_v2 = v2;
-	h->is_compressed = true;
 	for (;;)
 	{
 		int			ft,
@@ -1818,10 +1869,14 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = pq_page_i32(r, h, ft);
+					if (nv_seen)
+						d->nv_repeated = true;
+					nv_seen = true;
+					d->num_values = pq_page_i32(r, h, ft);
+					d->has_num_values = true;
 					break;
 				case 2:
-					h->encoding = pq_page_i32(r, h, ft);
+					d->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 3:			/* definition_level_encoding: not stored */
 				case 4:			/* repetition_level_encoding: not stored */
@@ -1837,20 +1892,24 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 			switch (fid)
 			{
 				case 1:
-					h->num_values = pq_page_i32(r, h, ft);
+					if (nv_seen)
+						d->nv_repeated = true;
+					nv_seen = true;
+					d->num_values = pq_page_i32(r, h, ft);
+					d->has_num_values = true;
 					break;
 				case 2:			/* num_nulls: not stored */
 				case 3:			/* num_rows: not stored */
 					(void) pq_page_i32(r, h, ft);
 					break;
 				case 4:
-					h->encoding = pq_page_i32(r, h, ft);
+					d->encoding = pq_page_i32(r, h, ft);
 					break;
 				case 5:
-					h->def_levels_len = pq_page_i32(r, h, ft);
+					d->def_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 6:
-					h->rep_levels_len = pq_page_i32(r, h, ft);
+					d->rep_levels_len = pq_page_i32(r, h, ft);
 					break;
 				case 7:
 
@@ -1859,7 +1918,7 @@ parse_data_page_header(TCReader *r, PqPageHeader *h, bool v2)
 					 * field of another type and keeps the default, true.
 					 */
 					if (ft == TC_BOOL_TRUE || ft == TC_BOOL_FALSE)
-						h->is_compressed = (ft == TC_BOOL_TRUE);
+						d->is_compressed = (ft == TC_BOOL_TRUE);
 					else
 						PgColumnarThriftSkip(r, ft);
 					break;
@@ -1876,9 +1935,15 @@ static void
 parse_page_header(TCReader *r, PqPageHeader *h)
 {
 	int			lastId = 0;
+	PqDataHdr	v1 = {0},
+				v2 = {0};
+	PqDataHdr  *d = NULL;
+	int			dict_num_values = 0;
 
 	memset(h, 0, sizeof(*h));
 	h->is_compressed = true;
+	v1.is_compressed = true;
+	v2.is_compressed = true;
 	for (;;)
 	{
 		int			ft,
@@ -1899,8 +1964,9 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 				h->compressed_size = pq_page_i32(r, h, ft);
 				break;
 			case 5:				/* DataPageHeader (v1) */
+				v1.nseen++;
 				if (pq_page_struct(r, h, ft))
-					parse_data_page_header(r, h, false);
+					parse_data_page_header(r, h, &v1, false);
 				break;
 			case 7:				/* DictionaryPageHeader */
 				{
@@ -1917,7 +1983,7 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 						if (dft == TC_STOP || r->error)
 							break;
 						if (dfid == 1)
-							h->num_values = pq_page_i32(r, h, dft);
+							dict_num_values = pq_page_i32(r, h, dft);
 						else if (dfid == 2)	/* encoding: not stored */
 							(void) pq_page_i32(r, h, dft);
 						else
@@ -1926,13 +1992,53 @@ parse_page_header(TCReader *r, PqPageHeader *h)
 					break;
 				}
 			case 8:				/* DataPageHeaderV2 */
+				v2.nseen++;
 				if (pq_page_struct(r, h, ft))
-					parse_data_page_header(r, h, true);
+					parse_data_page_header(r, h, &v2, true);
 				break;
 			default:
 				PgColumnarThriftSkip(r, ft);
 				break;
 		}
+	}
+
+	/*
+	 * Take the page's count from the header struct of its own type only (#2077):
+	 * field 5 for a DATA_PAGE, field 8 for a DATA_PAGE_V2, field 7 for a
+	 * DICTIONARY_PAGE, as pyarrow does. Another struct in the same header is
+	 * ignored. Otherwise a second struct with num_values 0 after a valid
+	 * DataPageHeader made the page read as empty and dropped its values.
+	 *
+	 * A header that carries the page's own struct twice is refused. Each
+	 * occurrence writes into the same PqDataHdr, so a second one with only
+	 * num_values 0 would turn a page of 50 values into an empty page, and its
+	 * values would be dropped. pyarrow refuses that file. It reads a header
+	 * whose second struct is complete; this reader refuses it, which is
+	 * stricter.
+	 *
+	 * For the same reason a page is refused when its own struct gives
+	 * num_values (field 1) twice. The last value is kept, so a second
+	 * num_values 0 would drop the page's values with no error. pyarrow reads
+	 * such a file that way; this reader refuses it, which is stricter. A
+	 * struct of another type is still ignored, whatever it holds.
+	 */
+	if (h->type == PQ_PAGE_DATA)
+		d = &v1;
+	else if (h->type == PQ_PAGE_DATA_V2)
+	{
+		d = &v2;
+		h->is_v2 = true;
+	}
+	else if (h->type == PQ_PAGE_DICTIONARY)
+		h->num_values = dict_num_values;
+	if (d != NULL)
+	{
+		h->has_data_hdr = d->has_num_values && d->nseen == 1 && !d->nv_repeated;
+		h->num_values = d->num_values;
+		h->encoding = d->encoding;
+		h->def_levels_len = d->def_levels_len;
+		h->rep_levels_len = d->rep_levels_len;
+		h->is_compressed = d->is_compressed;
 	}
 }
 
@@ -2313,6 +2419,13 @@ pq_source_open(const char *path, PqSource *src, PqFile *pf)
 #define PQ_PAGE_HDR_WIN_MAX (16 * 1024 * 1024)
 
 /*
+ * The most pages with no values that may follow one another in a column chunk
+ * (#2077). In the files tested, pyarrow wrote at most one between pages with
+ * values. pyarrow 23 itself stops reading a chunk at a run of two or more.
+ */
+#define PQ_MAX_EMPTY_DATA_PAGE_RUN 16
+
+/*
  * Parse the page header at `off`, returning its parsed form and encoded length.
  *
  * The thrift reader sets `error` both when the input is structurally wrong and
@@ -2384,6 +2497,7 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 	Datum	   *dict = NULL;
 	int			dictCount = 0;
 	int			nDictPages = 0;
+	int			nEmptyRun = 0;
 
 	/*
 	 * One underlying read for the whole chunk (#393 M1): the page walk below is
@@ -2424,13 +2538,50 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		 * is preserved instead by the format's own rule that a column chunk has
 		 * at most one dictionary page, so a crafted run of them cannot walk the
 		 * file either.
+		 *
+		 * A data page with no values is valid too (#2077): pyarrow writes one
+		 * for a dictionary-encoded list column when it flushes pages often. It
+		 * is decoded like any other data page and adds no entries, so the reader
+		 * reads it where pyarrow does and refuses it where pyarrow does (a v1
+		 * page of a nullable column with no body has no level length to read).
+		 * A run of more than PQ_MAX_EMPTY_DATA_PAGE_RUN pages with no values is
+		 * refused, so a crafted file cannot walk a large region a few bytes at a
+		 * time. A page with values resets the run, and those pages are bounded
+		 * by ch->num_values.
+		 *
+		 * A data page must carry its DataPageHeader with num_values (field 1,
+		 * required), the only source of the page's value count. has_data_hdr
+		 * is set where num_values is parsed, not where the struct starts, and
+		 * only from the struct of the page's own type (parse_page_header): a
+		 * page with no header, an empty header struct, a header without
+		 * num_values, or only a struct of another type would otherwise parse
+		 * as an empty page, and decoding it as one would drop its values
+		 * silently. pyarrow refuses each of these
+		 * on a DATA_PAGE. On a DATA_PAGE_V2 with no header at all, pyarrow
+		 * 23.0.1 reads the page as empty and drops its values; this reader
+		 * refuses it, which is stricter. A run of zero bytes, each a header
+		 * with no fields, is refused at its first byte. A negative num_values
+		 * is refused too, as pyarrow refuses it.
+		 *
+		 * Any other page type (INDEX_PAGE, or one this reader does not know)
+		 * holds no values for the chunk. It counts toward the run and is
+		 * stepped over below, as pyarrow steps over it.
 		 */
 		if (h.type == PQ_PAGE_DICTIONARY)
 		{
 			if (++nDictPages > 1)
 				return false;
 		}
-		else if (h.num_values <= 0)
+		else if (h.type == PQ_PAGE_DATA || h.type == PQ_PAGE_DATA_V2)
+		{
+			if (!h.has_data_hdr || h.num_values < 0)
+				return false;
+			if (h.num_values > 0)
+				nEmptyRun = 0;
+			else if (++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
+				return false;
+		}
+		else if (++nEmptyRun > PQ_MAX_EMPTY_DATA_PAGE_RUN)
 			return false;
 
 		/*
@@ -2457,6 +2608,15 @@ decode_leaf_entries(PqSource *src, PqChunk *ch,
 		if (h.compressed_size < 0 ||
 			(int64) h.compressed_size > src->len - pos - (int64) hdrlen)
 			return false;
+
+		/* a page that is neither a dictionary nor a data page: step over it */
+		if (h.type != PQ_PAGE_DICTIONARY && h.type != PQ_PAGE_DATA &&
+			h.type != PQ_PAGE_DATA_V2)
+		{
+			pos += hdrlen + h.compressed_size;
+			continue;
+		}
+
 		pagebuf = (uint8 *) palloc(Max(h.compressed_size, 1));
 		pq_source_read(src, pos + (int64) hdrlen, pagebuf,
 					   (size_t) h.compressed_size);
@@ -3097,6 +3257,7 @@ typedef struct ImpLeaf
 	PqColPlan	plan;
 	int			max_def;
 	int			max_rep;
+	int			rep_def;		/* PqLeafInfo.rep_def */
 	/* decoded per row group */
 	uint32	   *defs;
 	uint32	   *reps;
@@ -3121,7 +3282,41 @@ typedef struct ImpTop
 	/* IMP_STRUCT */
 	TupleDesc	structDesc;
 	int		   *fieldLeaf;		/* [structDesc->natts] leaf index or -1 */
+	int			nullDef;		/* present_def of the struct the composite
+								 * stands for: a field def below it means
+								 * that struct, or a parent, is NULL */
 }			ImpTop;
+
+/*
+ * The struct a composite target stands for: the deepest group that holds every
+ * leaf it binds (#2079). The bound leaves are consecutive in schema order, so
+ * the group that holds the first and the last holds all of them. Returns the
+ * group's index in elems; 0, the root, means no struct holds them all.
+ *
+ * Every walk stops at the root (#2218). The root's parent is -1, so a walk that
+ * went one step past it would read elems[-1] and loop or crash, and a looping
+ * backend ignores statement_timeout and cancel. walk_schema and
+ * parse_file_metadata set parent and tree_depth so that no file can send a walk
+ * past the root; the stop makes a later mistake in either field give a wrong
+ * answer or a refusal instead.
+ */
+static int
+pq_struct_of_leaves(PqFile *pf, int first, int last)
+{
+	int			x = pf->elems[(int) (pf->leaves[first].sc - pf->elems)].parent;
+	int			y = pf->elems[(int) (pf->leaves[last].sc - pf->elems)].parent;
+
+	while (x > 0 && y > 0 && pf->elems[x].tree_depth > pf->elems[y].tree_depth)
+		x = pf->elems[x].parent;
+	while (x > 0 && y > 0 && pf->elems[y].tree_depth > pf->elems[x].tree_depth)
+		y = pf->elems[y].parent;
+	while (x > 0 && y > 0 && x != y)
+	{
+		x = pf->elems[x].parent;
+		y = pf->elems[y].parent;
+	}
+	return (x > 0 && y > 0) ? x : 0;
+}
 
 /*
  * Take a leaf's next present value, applying the declared typmod when the row will
@@ -3237,6 +3432,7 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 			pq_plan_set_typmod(&l->plan, att->atttypmod, pf->leaves[lf].sc);
 			l->max_def = pf->leaves[lf].max_def;
 			l->max_rep = pf->leaves[lf].max_rep;
+			l->rep_def = pf->leaves[lf].rep_def;
 			lf++;
 		}
 		else if (get_typtype(typid) == TYPTYPE_COMPOSITE)
@@ -3296,6 +3492,27 @@ build_imp_targets(TupleDesc tupdesc, PqFile *pf, const char *path,
 				lf++;
 			}
 			t->nleaves = lf - t->firstLeaf;
+
+			/*
+			 * The composite is NULL when the struct it stands for is NULL. That
+			 * struct is the group holding all its leaves, not each leaf's own
+			 * parent: in s struct<a, inner struct<b>>, a NULL inner is a NULL
+			 * field b, not a NULL s. Leaves from more than one top-level column
+			 * sit under no struct, so nothing says when the composite is NULL,
+			 * and the reader refuses rather than guess.
+			 */
+			if (t->nleaves > 0)
+			{
+				int			g = pq_struct_of_leaves(pf, t->firstLeaf, lf - 1);
+
+				if (g == 0)
+				{
+					ReleaseTupleDesc(td);
+					IMP_FAIL("composite column \"%s\" binds Parquet columns that are not inside one struct",
+							 NameStr(att->attname));
+				}
+				t->nullDef = pf->elems[g].present_def;
+			}
 			ReleaseTupleDesc(td);
 		}
 		else
@@ -5420,13 +5637,19 @@ pq_read_rows(PqFile *pf, PqSource *src,
 					pq_require_entry(l);
 					def0 = l->defs[l->ei];
 
-					if (def0 == 0)
+					/*
+					 * The levels come from the schema, not fixed values (#2079).
+					 * Below rep_def - 1 the list or a parent is NULL; at
+					 * rep_def - 1 the list is present and empty. bind refuses
+					 * max_rep != 1, so rep_def is at least 1.
+					 */
+					if (def0 + 1 < (uint32) l->rep_def)
 					{
 						/* NULL array */
 						slot->tts_isnull[tp->attno] = true;
 						l->ei++;
 					}
-					else if (def0 == 1)
+					else if (def0 + 1 == (uint32) l->rep_def)
 					{
 						/* empty array */
 						ArrayType  *arr = construct_empty_array(tp->elemtype);
@@ -5498,8 +5721,15 @@ pq_read_rows(PqFile *pf, PqSource *src,
 						l = &leaves[li];
 						pq_require_entry(l);
 						d = l->defs[l->ei];
-						if (d == 0)
-							structNull = true;	/* every field agrees */
+
+						/*
+						 * Below the struct's own def, the struct or a parent of
+						 * it is NULL, and every field agrees. A REQUIRED struct
+						 * with no nullable parent has nullDef 0 and is never
+						 * NULL: there a def of 0 is a NULL field (#2079).
+						 */
+						if (d < (uint32) tp->nullDef)
+							structNull = true;
 						if (d == (uint32) l->max_def)
 						{
 							/*
