@@ -36,6 +36,7 @@ ON A PRIVATE DATABASE, built in the shell's order by a module fixture. Prepared
 transactions are counted in that database only, so another file's leftover cannot
 redden this one.
 """
+import datetime
 import os
 import random
 import re
@@ -1129,6 +1130,45 @@ def pcopy(pgc_cluster, server_dir):
              ("crtk", "bseof", "hex3", "hexspc", "hexupper", "barecr", "toofew", "oct400")]
             + [str(more_files["crtk"][1].count(b"\n")), more_files["bseof"][1][-2:].hex()])
 
+        # Two more, from jdatcmd's re-review at 960286e1 (M15 and M16 there): a \N key in
+        # the last column, a lowercase hex digit, and a date key whose row 1200 writes its
+        # dashes as \055 and \x2d, partitioned at 500, 1000 and 1500 days after 2020-01-01.
+        day0 = datetime.date(2020, 1, 1)
+
+        def date_key(i):
+            k = (day0 + datetime.timedelta(days=i)).isoformat().encode()
+            return k[:4] + b"\\055" + k[5:7] + b"\\x2d" + k[8:] if i == 1200 else k
+
+        last_files = {
+            "nullkeylast": ("t text, id int", tk_row1200(b"a\t\\N\n")),
+            "hexlower": ("id int, t text", row1200(b"\\x2b1200")),
+            "dateesc": ("id date, t text", b"".join(date_key(i) + b"\tx%d\n" % i for i in range(1, 2001))),
+        }
+        for key, (cols, body) in last_files.items():
+            esc_paths[key] = d / f"{key}.txt"
+            esc_paths[key].write_bytes(body)
+            os.chmod(esc_paths[key], 0o644)
+            b = ("'2021-05-15'", "'2022-09-27'", "'2024-02-09'") if key == "dateesc" else ("500", "1000", "1500")
+            for tbl, am in ((f"h_{key}", "heap"), (f"t_{key}", "pgcolumnar")):
+                db.run(f"DROP TABLE IF EXISTS {tbl} CASCADE; CREATE TABLE {tbl} ({cols}) PARTITION BY RANGE (id); "
+                       f"CREATE TABLE {tbl}_a PARTITION OF {tbl} FOR VALUES FROM (MINVALUE) TO ({b[0]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_b PARTITION OF {tbl} FOR VALUES FROM ({b[0]}) TO ({b[1]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_c PARTITION OF {tbl} FOR VALUES FROM ({b[1]}) TO ({b[2]}) USING {am}; "
+                       f"CREATE TABLE {tbl}_d PARTITION OF {tbl} FOR VALUES FROM ({b[2]}) TO (MAXVALUE) USING {am}")
+        for key in last_files:
+            r[f"2202 {key} heap"] = _esc_reading(db, f"COPY h_{key} FROM '{esc_paths[key]}'", f"h_{key}")
+        for key in last_files:
+            for w in (2, 4):
+                db.run(f"TRUNCATE t_{key}")
+                r[f"2202 {key} {w}"] = _esc_reading(
+                    db, f"SELECT pgcolumnar.parallel_copy('t_{key}'::regclass, '{esc_paths[key]}', {w})", f"t_{key}")
+        r["2202 premise 4"] = " ".join(
+            [str(r[f"2202 {k} heap"]).split(" | ")[0] for k in ("hexlower", "dateesc", "nullkeylast")]
+            + [last_files["dateesc"][1].split(b"\n")[1199].split(b"\t")[0].hex(),
+               str(db.value("SELECT count(*) FROM h_dateesc WHERE id = date '2023-04-15'")),
+               " ".join(str((datetime.date.fromisoformat(x) - day0).days)
+                        for x in ("2021-05-15", "2022-09-27", "2024-02-09"))])
+
         # ---- #2080: a single table with a unique index needs one worker ---------
         # statement_timeout turns the old hang into 57014, a red the test can read.
         # t_uk's second, non-unique index comes after its primary key, so the
@@ -2015,6 +2055,18 @@ KEY_ESCAPES = (
      " / partitioned, 2 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
     ("toofew 4", "#2202 a row with too few fields for the key"
      " / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 2", "#2202 a NULL marker key in the last column"
+     " / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("nullkeylast 4", "#2202 a NULL marker key in the last column"
+     " / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's"),
+    ("hexlower 2", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("hexlower 4", "#2202 a key with a lowercase hex escape"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 2", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's"),
+    ("dateesc 4", "#2202 a date key written with octal and lowercase hex escapes"
+     " / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's"),
 )
 
 
@@ -2033,6 +2085,13 @@ def test_parallel_copy_review_escape_files_load_with_heap_copy(pcopy, expect):
                 "premise: heap COPY loads crtk, bseof, hex3, hexspc and hexupper 2000 rows each and refuses barecr"
                 " and toofew with 22P04 and oct400 with 22021; crtk.txt holds no LF byte and bseof.txt ends in"
                 " 30 5c (#2202)")
+
+
+def test_parallel_copy_rereview_escape_files_load_with_heap_copy(pcopy, expect):
+    expect.text(pcopy["2202 premise 4"], "2000 rows 2000 rows 23514 323032335c30353530345c7832643135 1 500 1000 1500",
+                "premise: heap COPY loads hexlower and dateesc 2000 rows each and refuses nullkeylast with 23514;"
+                " dateesc.txt's line 1200 is 2023, 5c 30 35 35, 04, 5c 78 32 64, 15, and heap COPY reads it as"
+                " 2023-04-15; the date bounds are 500, 1000 and 1500 days after 2020-01-01 (#2202)")
 
 
 @pytest.mark.parametrize("key,name", KEY_ESCAPES, ids=[k for k, _ in KEY_ESCAPES])

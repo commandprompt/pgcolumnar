@@ -1346,6 +1346,57 @@ check "#2202 a row with too few fields for the key / partitioned, 2 workers: out
 check "#2202 a row with too few fields for the key / partitioned, 4 workers: outcome (22P04), rows per partition and rows == heap COPY's" \
 	"$(esc_pcopy toofew "$F_TOOFEW" 4)" "$ESC_HEAP_toofew"
 
+# Two more, from jdatcmd's re-review at 960286e1 (M15 and M16 there).
+#   nullkeylast (t, id)  row 1200 is a, TAB, \N: the NULL marker in the last
+#                        column, ended by the LF, so 23514 as for nullkey
+#   hexlower    (id, t)  row 1200's key is \x2b1200, +1200: a lowercase hex digit
+#   dateesc     (id date, t)  keys are 2020-01-01 plus 1..2000 days; row 1200's
+#                        key has its dashes written \055 and \x2d. Partitioned on
+#                        the date at plus 500, 1000 and 1500 days. The server
+#                        writes it as tab-delimited CSV, which leaves backslashes
+#                        alone.
+F_NULLKEYLAST="$DATADIR/nullkeylast.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "a\t\\N\n"; else printf "a%d\t%d\n", i, i }' >"$F_NULLKEYLAST"
+F_HEXLOWER="$DATADIR/hexlower.txt"
+awk 'BEGIN { for (i = 1; i <= 2000; i++) if (i == 1200) printf "\\x2b1200\tx%d\n", i; else printf "%d\tx%d\n", i, i }' >"$F_HEXLOWER"
+F_DATEESC="$DATADIR/dateesc.txt"
+psql_run "COPY (SELECT CASE WHEN g = 1200 THEN to_char(d, 'YYYY') || '\\055' || to_char(d, 'MM') || '\\x2d' || to_char(d, 'DD')
+                            ELSE to_char(d, 'YYYY-MM-DD') END, 'x' || g
+                FROM (SELECT g, date '2020-01-01' + g AS d FROM generate_series(1, 2000) g) s ORDER BY g)
+          TO '$F_DATEESC' WITH (FORMAT csv, DELIMITER E'\\t')" >/dev/null
+chmod 644 "$F_NULLKEYLAST" "$F_HEXLOWER"
+mkesc h_nullkeylast "t text, id int" heap
+mkesc t_nullkeylast "t text, id int" pgcolumnar
+mkesc h_hexlower "id int, t text" heap
+mkesc t_hexlower "id int, t text" pgcolumnar
+for _am in h:heap t:pgcolumnar; do
+	_t="${_am%%:*}_dateesc"; _u="${_am#*:}"
+	psql_run "DROP TABLE IF EXISTS $_t CASCADE;
+	          CREATE TABLE $_t (id date, t text) PARTITION BY RANGE (id);
+	          CREATE TABLE ${_t}_a PARTITION OF $_t FOR VALUES FROM (MINVALUE) TO ('2021-05-15') USING $_u;
+	          CREATE TABLE ${_t}_b PARTITION OF $_t FOR VALUES FROM ('2021-05-15') TO ('2022-09-27') USING $_u;
+	          CREATE TABLE ${_t}_c PARTITION OF $_t FOR VALUES FROM ('2022-09-27') TO ('2024-02-09') USING $_u;
+	          CREATE TABLE ${_t}_d PARTITION OF $_t FOR VALUES FROM ('2024-02-09') TO (MAXVALUE) USING $_u;" >/dev/null
+done
+for _e in nullkeylast hexlower dateesc; do
+	printf -v "ESC_HEAP_$_e" '%s' "$(esc_reading "COPY h_$_e FROM '$DATADIR/$_e.txt'" "h_$_e")"
+done
+check "premise: heap COPY loads hexlower and dateesc 2000 rows each and refuses nullkeylast with 23514; dateesc.txt's line 1200 is 2023, 5c 30 35 35, 04, 5c 78 32 64, 15, and heap COPY reads it as 2023-04-15; the date bounds are 500, 1000 and 1500 days after 2020-01-01 (#2202)" \
+	"$(for _e in hexlower dateesc nullkeylast; do _v="ESC_HEAP_$_e"; printf '%s ' "${!_v%% |*}"; done)$(sed -n '1200p' "$F_DATEESC" | cut -f1 | tr -d '\n' | od -An -tx1 | tr -d ' \n') $(q "SELECT count(*) FROM h_dateesc WHERE id = date '2023-04-15'") $(q "SELECT (date '2021-05-15' - date '2020-01-01') || ' ' || (date '2022-09-27' - date '2020-01-01') || ' ' || (date '2024-02-09' - date '2020-01-01')")" \
+	"2000 rows 2000 rows 23514 323032335c30353530345c7832643135 1 500 1000 1500"
+check "#2202 a NULL marker key in the last column / partitioned, 2 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkeylast "$F_NULLKEYLAST" 2)" "$ESC_HEAP_nullkeylast"
+check "#2202 a NULL marker key in the last column / partitioned, 4 workers: outcome (23514), rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy nullkeylast "$F_NULLKEYLAST" 4)" "$ESC_HEAP_nullkeylast"
+check "#2202 a key with a lowercase hex escape / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlower "$F_HEXLOWER" 2)" "$ESC_HEAP_hexlower"
+check "#2202 a key with a lowercase hex escape / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy hexlower "$F_HEXLOWER" 4)" "$ESC_HEAP_hexlower"
+check "#2202 a date key written with octal and lowercase hex escapes / partitioned, 2 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy dateesc "$F_DATEESC" 2)" "$ESC_HEAP_dateesc"
+check "#2202 a date key written with octal and lowercase hex escapes / partitioned, 4 workers: outcome, rows per partition and rows == heap COPY's" \
+	"$(esc_pcopy dateesc "$F_DATEESC" 4)" "$ESC_HEAP_dateesc"
+
 # ---- #2080: a single table with a unique index needs one worker ------------
 # Each loader keeps its unique-key locks in a prepared transaction until every
 # loader has finished, so two loaders of one table with a unique index waited on

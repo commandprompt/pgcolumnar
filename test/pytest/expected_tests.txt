@@ -2494,4 +2494,8 @@ guard_tests 897
 # in the key and before it, an escaped backslash before the delimiter, a \N key, two controls), seven that
 # catch a rule applied too widely (the coordinator's review of e3fa6a95), and eight from jdatcmd's review of
 # #2220 at 19bb9309, by collection of the files NO_CLUSTER does not name, as ci.yml selects them.
-cluster_tests 6078
+# cluster_tests 6078 -> 6085, still #2202, for jdatcmd's re-review of #2220 at 960286e1: a fourth premise and 6
+# more cases in test_parallel_copy.py, three files by 2 and 4 workers (a \N key in the last column, a lowercase
+# hex digit in the key, and a date key written with escapes), by collection of the files NO_CLUSTER does not
+# name, as ci.yml selects them.
+cluster_tests 6085

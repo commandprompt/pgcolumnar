@@ -772,7 +772,7 @@ true until the next version shipped.
   backslashes as one, any other escaped byte as itself, and a field that is
   exactly `\N` as NULL. No RANGE partition takes a NULL key, so that load is now
   refused with 23514, as `COPY FROM` refuses it. `test/parallel_copy.sh` and
-  `test_parallel_copy.py`: 51 checks. Each of 24 files is loaded by heap
+  `test_parallel_copy.py`: 58 checks. Each of 27 files is loaded by heap
   `COPY` into a heap table partitioned the same way and by `parallel_copy` with
   2 and 4 workers, and the outcome, the rows per partition and the rows must be
   heap `COPY`'s: the issue's two cases, keys in octal, in hex, and with named
@@ -785,7 +785,9 @@ true until the next version shipped.
   byte that is not UTF-8, which COPY refuses with 22021. Eight more cover a
   CR as the end of the key field, a lone backslash at the end of the file, `\x`
   reading at most two hex digits, an uppercase hex digit, an octal escape that
-  decodes to NUL, and a row with too few fields for the key.
+  decodes to NUL, and a row with too few fields for the key. Three more cover
+  a `\N` key in the last column, a lowercase hex digit, and a date key written
+  with escapes.
 - The Iceberg foreign data wrapper no longer drops matching rows when an
   Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
   a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader
