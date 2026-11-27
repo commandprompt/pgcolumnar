@@ -634,8 +634,11 @@ true until the next version shipped.
   clause could become a scan key: a clause such as `x <> f($1)`,
   `x + 0 > f($1)`, `date_trunc('day', x) <> f($1)`,
   `date_trunc('decade', x) = f($1)`, `x LIKE f($1)` under a collation that
-  is not C, or `r && f($1)` with a multirange stays in the Filter, as on
-  heap and btree, so its operand is never called when no row reaches it.
+  is not C, `r && f($1)` with a multirange, or a timestamp column against
+  a timestamptz `f($1)` stays in the Filter, as on heap and btree, so its
+  operand is never called when no row reaches it. A bound varchar or
+  domain parameter is frozen as the type the clause compares, so it prunes
+  under LIKE, `date_trunc` and `&&` as on main.
   `test/native_param_pushdown.sh` and `test_native_param_pushdown.py`.
 - A local `export_parquet` or `export_arrow` that ends with FATAL no longer
   leaves its partial `<path>.tmp.<pid>` file on disk (#2075). The export writes

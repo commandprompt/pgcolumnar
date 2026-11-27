@@ -1326,7 +1326,14 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
 	prm = &params->params[param->paramid - 1];
 	if (prm->ptype != param->paramtype)
 		return NULL;
-	return pgcolumnar_make_frozen_const(bare, prm->value, prm->isnull);
+
+	/*
+	 * The Const takes the type of `expr`, the RelabelType if there is one: a
+	 * varchar or domain parameter is frozen as the type the clause compares
+	 * (text, timestamp, tsrange), as the first-run path freezes it. The LIKE,
+	 * date_trunc and range key builders accept only that exact type (#2065).
+	 */
+	return pgcolumnar_make_frozen_const(expr, prm->value, prm->isnull);
 }
 
 /*
@@ -1338,7 +1345,9 @@ pgcolumnar_bound_param_const(Node *expr, PlanState *ps)
  * a column of this scan (or date_trunc of one with a constant unit, #403),
  * compared under the column's collation, by an operator that has a btree
  * strategy in the column type's family, by LIKE under the C collation, by a
- * range operator (#1144), or by `= ANY` (#704). pgcolumnar_clause_to_scankey makes the final decision once
+ * range operator (#1144), or by `= ANY` (#704); and it is not a timestamp
+ * column against a timestamptz value, which the reader drops (#1738).
+ * pgcolumnar_clause_to_scankey makes the final decision once
  * the operand is a Const; this only rules out a clause that can never be a key.
  *
  * Such a clause is not frozen at all (#2065). Evaluating its operand could
@@ -1419,6 +1428,22 @@ pgcolumnar_operand_keyable(Node *clause, int argno, Index scanrelid,
 		return false;
 	if (inputcollid != TupleDescAttr(tupdesc, var->varattno - 1)->attcollation)
 		return false;
+
+	/*
+	 * The reader drops a key that compares a timestamp column with a
+	 * timestamptz value (#1738), whatever the value, so such a key never prunes.
+	 * For `= ANY` the value's type is the array's element type. A domain column
+	 * over timestamp reaches here as a Var of the domain type.
+	 */
+	{
+		Oid			argType = exprType(operand);
+
+		if (IsA(clause, ScalarArrayOpExpr))
+			argType = get_element_type(argType);
+		if (argType == TIMESTAMPTZOID &&
+			getBaseType(var->vartype) == TIMESTAMPOID)
+			return false;
+	}
 
 	tce = lookup_type_cache(var->vartype, TYPECACHE_BTREE_OPFAMILY);
 	if (IsA(clause, ScalarArrayOpExpr))
