@@ -2540,11 +2540,26 @@ guard_tests 897
 # (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
 # collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-# cluster_tests 6128 -> 6145 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# cluster_tests 6128 -> 6151 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
+# test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
+# with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
+# test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
+# test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6151 -> 6156, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
+# GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6156 -> 6169 for #2230's thirteen tests in test_iceberg_fdw.py: four oracle reads of `< the largest
+# timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
+# limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6169 -> 6186 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
 # target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
 # lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
 # the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
 # before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
 # CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
 # lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
-cluster_tests 6145
+cluster_tests 6186

@@ -26,7 +26,10 @@
  *   - a standalone byte splitter (pgcolumnar_file_split_offsets) exposed to SQL: N+1
  *     line-aligned offsets, a diagnostic the parallel load itself no longer calls.
  * Text format only for now, numeric/date-time partition keys only (their text form
- * is escape-free); CSV and other key types are later phases (see the plan).
+ * is escape-free); CSV and other key types are later phases (see the plan). The
+ * file is read in the caller's client_encoding, as COPY FROM reads it, and the byte
+ * scans step over whole characters where that encoding lets a character's second
+ * byte be a backslash (#2188, PcopyScan).
  *
  * Independent MIT implementation. References only the public PostgreSQL API
  * (server-file access, the COPY BeginCopyFrom interface, the background-worker and
@@ -69,6 +72,7 @@
 #include "fmgr.h"
 #include "funcapi.h"
 #include "libpq/pqsignal.h"
+#include "mb/pg_wchar.h"
 #include "access/sysattr.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -181,6 +185,109 @@ pcopy_open_regular_file(const char *path, off_t *size_out)
 }
 
 /*
+ * PcopyScan
+ *		Where a forward byte scan of a COPY text file stands: the state that every
+ *		scan here shares (pcopy_line_offsets, pcopy_file_eol_type, and the
+ *		partition splitter's record reader), so they all read backslashes and
+ *		line ends alike (#2188).
+ *
+ *		A backslash escapes the character after it, whatever it is, so a newline
+ *		after an odd run of backslashes is data (#2084). Which bytes are characters
+ *		depends on the file's encoding, the caller's client_encoding, which the
+ *		loaders read the file in too. COPY FROM converts the file to the database
+ *		encoding before it looks for a backslash or a line end, unless the file is
+ *		already in that encoding or one of the two is SQL_ASCII (BeginCopyFrom's
+ *		need_transcoding, the same on PG15 to 19). Every database encoding is
+ *		ASCII-safe: a byte below 0x80 is always a whole character. The client-only
+ *		encodings (SJIS, SHIFT_JIS_2004, BIG5, GBK, GB18030, UHC, JOHAB) are not:
+ *		the second byte of a character can be below 0x80, so in SJIS 83 5c is one
+ *		character (U+30BD) and not a byte and a backslash. For those, when the
+ *		database is not SQL_ASCII, the scan steps over each character's trailing
+ *		bytes with pg_encoding_mblen, as core's COPY TO does (encoding_embeds_ascii,
+ *		PG_ENCODING_IS_CLIENT_ONLY). A client-only encoding is never the database
+ *		encoding, so the file is always converted then. In a SQL_ASCII database
+ *		core reads the bytes unconverted, every 0x5c a backslash, and so does this.
+ *
+ *		The length comes from the lead byte alone. GB18030's four-byte characters
+ *		are the one case where pg_encoding_mblen looks at the second byte (0x30 to
+ *		0x39 there), and a four-byte character read as two two-byte ones covers the
+ *		same bytes, with both its ASCII-range bytes inside a character, so no byte
+ *		below 0x80 is classed differently. Invalid input (a lead byte with no valid
+ *		trailing byte) is refused by core COPY in the loader whose range holds it;
+ *		the scan only has to keep every cut on a byte that ends a record.
+ */
+typedef struct PcopyScan
+{
+	int			encoding;		/* the file's encoding: the caller's client_encoding */
+	bool		embeds_ascii;	/* a trailing byte can be below 0x80, and core converts */
+	int			mb_left;		/* trailing bytes of the current character still to pass */
+	bool		escaped;		/* the previous character is a backslash that no
+								 * backslash escapes */
+} PcopyScan;
+
+static void
+pcopy_scan_init(PcopyScan *scan, int encoding)
+{
+	scan->encoding = encoding;
+	scan->embeds_ascii = PG_ENCODING_IS_CLIENT_ONLY(encoding) &&
+		GetDatabaseEncoding() != PG_SQL_ASCII;
+	scan->mb_left = 0;
+	scan->escaped = false;
+}
+
+/*
+ * pcopy_char_trail
+ *		How many bytes follow c in its character: 0 for a byte below 0x80, and for
+ *		every byte when the scan need not step over characters.
+ */
+static int
+pcopy_char_trail(const PcopyScan *scan, char c)
+{
+	char		lead[2];
+
+	if (!scan->embeds_ascii || !IS_HIGHBIT_SET(c))
+		return 0;
+	lead[0] = c;
+	lead[1] = '\0';
+	return pg_encoding_mblen(scan->encoding, lead) - 1;
+}
+
+/*
+ * pcopy_scan_byte
+ *		Feed the next byte of the file to the scan. Returns the byte when it is a
+ *		whole character that no backslash escapes and is not itself a backslash,
+ *		and '\0' otherwise: a trailing byte of a character, an escaped character
+ *		(a multibyte one escaped as a whole), or a backslash that escapes the next.
+ */
+static char
+pcopy_scan_byte(PcopyScan *scan, char c)
+{
+	if (scan->mb_left > 0)
+	{
+		scan->mb_left--;
+		return '\0';
+	}
+	if (scan->embeds_ascii && IS_HIGHBIT_SET(c))
+	{
+		/* the lead byte of a character: data, escaped or not */
+		scan->mb_left = pcopy_char_trail(scan, c);
+		scan->escaped = false;
+		return '\0';
+	}
+	if (scan->escaped)
+	{
+		scan->escaped = false;
+		return '\0';
+	}
+	if (c == '\\')
+	{
+		scan->escaped = true;
+		return '\0';
+	}
+	return c;
+}
+
+/*
  * pcopy_line_offsets
  *		Compute nranges+1 record-aligned byte offsets partitioning an open file of
  *		`size` bytes into that many ranges, in ONE forward pass (O(filesize),
@@ -193,17 +300,19 @@ pcopy_open_regular_file(const char *path, off_t *size_out)
  *		right before it. In COPY text format a backslash followed by a raw newline
  *		is data inside the field (#2084), so a cut there would split one record in
  *		two. The scan starts at byte 0, so the backslash-run parity is exact, and
- *		it carries across chunk reads.
+ *		it carries across chunk reads, as does a character that a chunk read ends
+ *		inside. `encoding` is the file's (PcopyScan, #2188).
  */
 static int64 *
-pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
+pcopy_line_offsets(int fd, off_t size, int nranges, const char *path, int encoding)
 {
 	int64	   *offs = (int64 *) palloc(sizeof(int64) * (nranges + 1));
 	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
 	int64		bufbase = 0;		/* absolute file offset of buf[0] */
 	int			next = 1;
-	bool		escaped = false;	/* the previous byte ends an odd backslash run */
+	PcopyScan	scan;
 
+	pcopy_scan_init(&scan, encoding);
 	offs[0] = 0;
 	offs[nranges] = (int64) size;
 
@@ -225,18 +334,8 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
 			break;
 		for (j = 0; j < got && next < nranges; j++)
 		{
-			if (buf[j] == '\\')
-			{
-				escaped = !escaped;
-				continue;
-			}
-			if (escaped)
-			{
-				/* this byte is escaped: data, even when it is a newline */
-				escaped = false;
-				continue;
-			}
-			if (buf[j] == '\n')
+			/* an escaped newline, or a byte inside a character, is data */
+			if (pcopy_scan_byte(&scan, buf[j]) == '\n')
 			{
 				int64		boundary = bufbase + j + 1;
 
@@ -275,17 +374,20 @@ pcopy_line_offsets(int fd, off_t size, int nranges, const char *path)
  *		does not start the file took the style from its own first line, and a
  *		change of style at its range start loaded. The loaders now start core
  *		COPY with this style instead, and core refuses such a file with its own
- *		SQLSTATE and message. A backslash escapes the byte after it whatever it
- *		is, as in core's CopyReadLineText and in pcopy_line_offsets.
+ *		SQLSTATE and message. A backslash escapes the character after it whatever
+ *		it is, as in core's CopyReadLineText and in pcopy_line_offsets, and the
+ *		file is read as characters of `encoding` (PcopyScan, #2188).
  */
 static int
-pcopy_file_eol_type(const char *path)
+pcopy_file_eol_type(const char *path, int encoding)
 {
 	char	   *buf = (char *) palloc(COLUMNAR_SPLIT_SCAN_CHUNK);
 	int			fd = pcopy_open_regular_file(path, NULL);
 	int			eol = EOL_UNKNOWN;
-	bool		escaped = false;
+	PcopyScan	scan;
 	bool		after_cr = false;	/* the previous byte was an unescaped \r */
+
+	pcopy_scan_init(&scan, encoding);
 
 	while (eol == EOL_UNKNOWN)
 	{
@@ -307,14 +409,15 @@ pcopy_file_eol_type(const char *path)
 		{
 			if (after_cr)
 				eol = (buf[j] == '\n') ? EOL_CRNL : EOL_CR;
-			else if (buf[j] == '\\')
-				escaped = !escaped;
-			else if (escaped)
-				escaped = false;	/* this byte is escaped: data */
-			else if (buf[j] == '\n')
-				eol = EOL_NL;
-			else if (buf[j] == '\r')
-				after_cr = true;
+			else
+			{
+				char		c = pcopy_scan_byte(&scan, buf[j]);
+
+				if (c == '\n')
+					eol = EOL_NL;
+				else if (c == '\r')
+					after_cr = true;
+			}
 		}
 		CHECK_FOR_INTERRUPTS();
 	}
@@ -461,17 +564,18 @@ pcopy_refuse_more_workers(Relation rel, LOCKMODE close_lockmode)
  *		Line-aligned byte offsets partitioning `path` into `workers` even ranges,
  *		for the single-table load where every worker writes the one storage and any
  *		record-aligned split is correct (no partition key, so no ordering
- *		requirement). Returns a palloc'd int64[workers+1].
+ *		requirement). `encoding` is the file's (#2188). Returns a palloc'd
+ *		int64[workers+1].
  */
 static int64 *
-pcopy_naive_offsets(const char *path, int workers)
+pcopy_naive_offsets(const char *path, int workers, int encoding)
 {
 	int			fd;
 	off_t		size;
 	int64	   *offs;
 
 	fd = pcopy_open_regular_file(path, &size);
-	offs = pcopy_line_offsets(fd, size, workers, path);
+	offs = pcopy_line_offsets(fd, size, workers, path, encoding);
 	CloseTransientFile(fd);
 	return offs;
 }
@@ -490,7 +594,8 @@ PG_FUNCTION_INFO_V1(pgcolumnar_file_split_offsets);
  * before it: a backslash followed by a raw newline is data (#2084). It is NOT
  * safe for CSV, whose quoted fields may contain literal newlines -- quote-aware
  * splitting is a later phase; callers holding a CSV must not use these
- * offsets. Ranges may be empty (equal consecutive offsets) when the file has
+ * offsets. The file is read in the session's client_encoding, as COPY FROM
+ * reads it (#2188). Ranges may be empty (equal consecutive offsets) when the file has
  * fewer records than workers -- that worker then loads nothing, which is
  * harmless. `workers` is capped at PCOPY_MAX_WORKERS.
  */
@@ -537,8 +642,9 @@ pgcolumnar_file_split_offsets(PG_FUNCTION_ARGS)
 	/* a local file only (#1886): refuse a URL rather than fail it as ENOENT */
 	PgColumnarRefuseRemotePath("file_split_offsets", path);
 
+	/* read the file as COPY FROM in this session would: in its client_encoding */
 	fd = pcopy_open_regular_file(path, &size);
-	offs = pcopy_line_offsets(fd, size, workers, path);
+	offs = pcopy_line_offsets(fd, size, workers, path, pg_get_client_encoding());
 	CloseTransientFile(fd);
 
 	elems = (Datum *) palloc(sizeof(Datum) * (workers + 1));
@@ -632,6 +738,8 @@ typedef struct PcopyHeader
 								 * set pgcolumnar_bulk_parallel_writer */
 	char		filename[MAXPGPATH];
 	int			eol_type;		/* EolType of the file's first line (#2189) */
+	int			file_encoding;	/* the caller's client_encoding, which the loaders
+								 * read the file in, as COPY FROM does (#2188) */
 	/* coordinator -> function result channel */
 	pg_atomic_uint32 coord_state;	/* PcopyCoordState */
 	int64		total_rows;		/* valid when coord_state == PCOPY_COORD_DONE */
@@ -771,13 +879,17 @@ pcopy_partition_bucket(Datum kd, PartitionBoundInfo bi, FmgrInfo *cmpfn, Oid col
  *		(verified as we scan). Returns a palloc'd int64[*workers_io + 1]; may lower
  *		*workers_io to the number of partition segments.
  *
+ * The file is read as characters of `encoding`, the caller's client_encoding
+ * (PcopyScan, #2188).
+ *
  * v1 restrictions (all checked): single-column RANGE partitioning, no DEFAULT
  * partition, non-expression key, COPY text format with default (whole-table,
  * table-order) column list, and a key field free of COPY escapes (true for the
  * numeric/temporal keys people range-partition on).
  */
 static int64 *
-pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_io)
+pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_io,
+								int encoding)
 {
 	PartitionKey pkey = RelationGetPartitionKey(parent);
 	PartitionDesc pdesc = RelationGetPartitionDesc(parent, false);
@@ -803,6 +915,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	ssize_t		len;
 	int64		off = 0;
 	StringInfoData rec;			/* a record that spans physical lines (#2084) */
+	PcopyScan	scan;			/* where the record reader stands (#2188) */
 	int64		rec_start = 0;
 	int			cur = 0;
 	int			prev_bucket = 0;
@@ -944,6 +1057,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 	 * reclaimed by memory-context reset) and the AllocateFile handle.
 	 */
 	initStringInfo(&rec);
+	pcopy_scan_init(&scan, encoding);
 	PG_TRY();
 	{
 		for (;;)
@@ -967,7 +1081,7 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 			}
 			else
 			{
-				int			nbs = 0;
+				char		last = '\0';
 				ssize_t		e;
 
 				off += len;
@@ -975,11 +1089,13 @@ pcopy_partition_aligned_offsets(Relation parent, const char *path, int *workers_
 				/*
 				 * COPY text syntax (#2084): a newline after an odd run of
 				 * backslashes is data, so the record goes on in the next line.
+				 * Read forward with the shared scan, which carries from line to
+				 * line, so a backslash that is the second byte of a character
+				 * escapes nothing (#2188).
 				 */
-				if (len > 0 && line[len - 1] == '\n')
-					for (e = len - 2; e >= 0 && line[e] == '\\'; e--)
-						nbs++;
-				if (nbs % 2 == 1)
+				for (e = 0; e < len; e++)
+					last = pcopy_scan_byte(&scan, line[e]);
+				if (len > 0 && line[len - 1] == '\n' && last != '\n')
 				{
 					if (rec.len == 0)
 						rec_start = line_start;
@@ -1495,8 +1611,17 @@ pgcolumnar_parallel_copy_worker(Datum main_arg)
 #endif
 		}
 
-		options = list_make1(makeDefElem("format",
-										 (Node *) makeString("text"), -1));
+		/*
+		 * Read the file in the caller's client_encoding, as the caller's COPY
+		 * FROM would (#2188). A loader's own client_encoding is the database's
+		 * or the role's default, which is not the caller's, so the loaders
+		 * converted the same bytes to other text, or refused them.
+		 */
+		options = list_make2(makeDefElem("format",
+										 (Node *) makeString("text"), -1),
+							 makeDefElem("encoding",
+										 (Node *) makeString(pstrdup(pg_encoding_to_char(hdr->file_encoding))),
+										 -1));
 		/*
 		 * Core runs COPY FROM inside a portal that pushes an active snapshot
 		 * (PortalRunUtility) before CopyFrom. We call CopyFrom directly, so we
@@ -2171,6 +2296,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	List	   *lockrels = NIL;	/* the target and its partitions (#2229) */
 	int64	   *offs;
 	int			eol_type;
+	int			file_encoding = pg_get_client_encoding();
 	shm_toc_estimator est;
 	Size		segsize;
 	dsm_segment *seg;
@@ -2315,7 +2441,8 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		if (target->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
 		{
 			/* each worker loads a DISTINCT partition (distinct storage) */
-			offs = pcopy_partition_aligned_offsets(target, path, &workers);
+			offs = pcopy_partition_aligned_offsets(target, path, &workers,
+													   file_encoding);
 			single_table = false;
 		}
 		else if (PgColumnarIsColumnarRelation(relid))
@@ -2336,7 +2463,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 			 */
 			if (workers > 1)
 				pcopy_refuse_more_workers(target, AccessShareLock);
-			offs = pcopy_naive_offsets(path, workers);
+			offs = pcopy_naive_offsets(path, workers, file_encoding);
 			single_table = true;
 		}
 		else
@@ -2373,7 +2500,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 				 errhint("Atomic parallel_copy prepares one transaction per worker; raise max_prepared_transactions (requires a restart) or reduce workers.")));
 
 	/* the newline style every range is held to, read before any worker starts */
-	eol_type = pcopy_file_eol_type(path);
+	eol_type = pcopy_file_eol_type(path, file_encoding);
 
 	/*
 	 * Take the workers' lock first (#2229): ROW EXCLUSIVE on the target and on
@@ -2418,6 +2545,7 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 	hdr->single_table = single_table;
 	strlcpy(hdr->filename, path, sizeof(hdr->filename));
 	hdr->eol_type = eol_type;
+	hdr->file_encoding = file_encoding;
 	hdr->total_rows = 0;
 	hdr->failed_worker = -1;
 	hdr->coord_sqlerrcode = 0;

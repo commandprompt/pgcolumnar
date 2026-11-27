@@ -409,6 +409,50 @@ if ftmpx yd byyear_d "dt date" && ftmpx mo bymonth_d "dt date" \
 		"$(oraclex hz "tt >= TIMESTAMPTZ '2021-03-01 01:00:00+00'")"
 fi
 
+# ---- day() and hour() pruning near the largest timestamp (#2230) -------------
+# day() and hour() move the constant from the PostgreSQL epoch (2000) to the
+# Iceberg one (1970) by adding 30 years of microseconds. Past
+# 294247-01-10 04:00:54.775807 that sum overflows int64. Before #2230 it wrapped
+# to a large negative bucket, so "ts < constant" pruned every file and returned
+# no rows. Each table holds three rows in 2021, so every "<" below must return
+# all three. The last safe microsecond must still prune: the guard is exactly
+# the overflow, not a margin below it.
+if [ -n "${MD_td:-}" ] && [ -n "${MD_th:-}" ] && [ -n "${MD_dz:-}" ] && [ -n "${MD_hz:-}" ]; then
+	check_text "day()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM td WHERE ts < TIMESTAMP '294276-12-31 23:59:59.999999'")" \
+		"$(oracle td "ts < TIMESTAMP '294276-12-31 23:59:59.999999'")"
+	check "day()-on-timestamp: the largest timestamp > ts, constant on the left, returns ids 1,2,3 (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM td WHERE TIMESTAMP '294276-12-31 23:59:59.999999' > ts")" "1,2,3"
+	check "day()-on-timestamp: ts <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM td WHERE ts <= TIMESTAMP '294247-01-10 04:00:54.775808'")" "0"
+	check "day()-on-timestamp: ts > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM td WHERE ts > TIMESTAMP '294247-01-10 04:00:54.775807'")" "3"
+
+	check_text "hour()-on-timestamp: ts < the largest timestamp matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM th WHERE ts < TIMESTAMP '294276-12-31 23:59:59.999999'")" \
+		"$(oracle th "ts < TIMESTAMP '294276-12-31 23:59:59.999999'")"
+	check "hour()-on-timestamp: ts <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM th WHERE ts <= TIMESTAMP '294247-01-10 04:00:54.775808'")" "0"
+	check "hour()-on-timestamp: ts > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM th WHERE ts > TIMESTAMP '294247-01-10 04:00:54.775807'")" "3"
+
+	check_text "day()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM dz WHERE tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")" \
+		"$(oraclex dz "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")"
+	check "day()-on-timestamptz: tt <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM dz WHERE tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'")" "0"
+	check "day()-on-timestamptz: tt > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM dz WHERE tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'")" "3"
+
+	check_text "hour()-on-timestamptz: tt < the largest timestamptz matches iceberg_scan (#2230)" \
+		"$(q "SELECT string_agg(id::text, ',' ORDER BY id) FROM hz WHERE tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")" \
+		"$(oraclex hz "tt < TIMESTAMPTZ '294276-12-31 23:59:59.999999+00'")"
+	check "hour()-on-timestamptz: tt <= the first overflowing microsecond prunes no file (Files Pruned: 0) (#2230)" \
+		"$(fp "SELECT * FROM hz WHERE tt <= TIMESTAMPTZ '294247-01-10 04:00:54.775808+00'")" "0"
+	check "hour()-on-timestamptz: tt > the last safe microsecond still prunes every file (Files Pruned: 3) (#2230)" \
+		"$(fp "SELECT * FROM hz WHERE tt > TIMESTAMPTZ '294247-01-10 04:00:54.775807+00'")" "3"
+fi
+
 # ---- a temporal transform read into the OTHER timestamp type (#1706) ---------
 # The reader converts a naive (timestamp) source read into timestamptz, and a
 # timestamptz source read into timestamp, as PostgreSQL's casts do in the session
