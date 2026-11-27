@@ -2551,9 +2551,13 @@ guard_tests 897
 # and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
 # GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it).
-# cluster_tests 6156 -> 6214 for #2202's tests in test_parallel_copy.py, restated on #2228's head 5057ee96
-# (6027 -> 6085 on the branch before this merge): parallel_copy into a partitioned target reads the fields up
-# to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers, each against
-# heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does not name, as
-# ci.yml selects them.
-cluster_tests 6214
+# cluster_tests 6156 -> 6169 for #2230's thirteen tests in test_iceberg_fdw.py: four oracle reads of `< the largest
+# timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
+# limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
+# the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6169 -> 6227 for #2202's tests in test_parallel_copy.py, restated on main bd082bdc (6027 ->
+# 6085 on the branch before its merges with #2228 and main): parallel_copy into a partitioned target reads
+# the fields up to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers,
+# each against heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does
+# not name, as ci.yml selects them.
+cluster_tests 6227
