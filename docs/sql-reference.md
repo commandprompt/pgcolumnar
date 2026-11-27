@@ -1038,6 +1038,13 @@ Every worker holds its range to the newline style (LF, CRLF or CR) of the file's
 first line, as `COPY FROM` does. A file that changes style is refused with
 `22P04` wherever the split falls. So is a `\.\r\n` end-of-data line in a file
 with LF line ends (#2189).
+The workers read the file in the calling session's `client_encoding`, as that
+session's `COPY FROM` would, not in their own (the database's or the role's
+default). In SJIS, BIG5, GBK, GB18030, UHC, JOHAB and SHIFT_JIS_2004, the second
+byte of a character can be `0x5C`. There the split steps over whole characters,
+so such a byte is not read as a backslash. In a `SQL_ASCII` database, which
+`COPY FROM` does not convert to, every `0x5C` is a backslash, as in `COPY FROM`
+(#2188).
 `filename` is a local file. An object-storage URL is refused with `0A000`; see
 [Object storage](#object-storage). The function checks INSERT on `target` first,
 so a caller without INSERT gets `42501` for a URL too.
