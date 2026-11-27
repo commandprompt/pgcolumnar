@@ -56,6 +56,17 @@ check "the sanitizer subset runs every suite that drives the encoding selftest" 
 	"$(printf '%s' "$_san_missing" | sed 's/^ //')" ""
 
 
+# export_sink, BY NAME (#2201). Its check "fatal: no backend died by a signal
+# during the FATAL arms" is the only detector of mutant m3 from the #2142
+# reviews: a local sink listed before AllocateFile, so a failed open rolled back
+# to a savepoint leaves a freed sink listed for the next FATAL to walk. A PG 18
+# release build stays green under m3 (5 of 5 runs); an ASan build reports it.
+# So the suite is worth running only on an instrumented build, and this subset
+# is where that happens. Named rather than derived: no property of the suite's
+# text says "only a sanitizer sees this".
+check "the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees" \
+	"$(grep -qx export_sink <<<"$_san_suites" && echo yes || echo no)" "yes"
+
 # ---- NOT a check: FSST slack coverage, and why there is no arm for it --------
 #
 # decode_fsst_shared stores each symbol as one fixed 8-byte write and allocates

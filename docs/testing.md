@@ -691,7 +691,7 @@ at most 120 MB of memory and its data directory 301 MB of disk.
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an
 instrumented PostgreSQL, and the coverage report. The sanitizer gate,
-`test/pytest/run_san.py`, runs the pytest twins of 24 suites with every
+`test/pytest/run_san.py`, runs the pytest twins of 25 suites with every
 violation fatal. Each instrumented process writes its report to a file
 (`log_path`), and a report fails its suite even when every test passed (#2038). It also runs the
 extension-upgrade guard. That guard builds the previous release on PostgreSQL

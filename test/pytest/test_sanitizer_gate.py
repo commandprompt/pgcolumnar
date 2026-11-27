@@ -56,6 +56,13 @@ def test_the_subset_is_the_shell_gates_subset(expect):
                 "run_san.py sanitizes the suites run_san.sh does")
 
 
+def test_the_subset_runs_export_sink(expect):
+    """export_sink, by name (#2201): its signal check is the only detector of mutant
+    m3 from the #2142 reviews (a local sink listed before AllocateFile), and a PG 18
+    release build stays green under m3. Only an instrumented build sees it."""
+    expect.text("yes" if "export_sink" in run_san.SUITES else "no", "yes",
+                "the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees")
+
 def test_every_sanitized_suite_has_a_complete_twin(expect):
     files, refused = run_san.twin_files(run_san.SUITES)
     expect.text(" ".join(refused) or "none", "none",
