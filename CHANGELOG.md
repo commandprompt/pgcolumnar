@@ -698,6 +698,22 @@ true until the next version shipped.
   load (`\.\r\n` in a file with LF line ends, and `\.` at the end with no
   newline), which must be refused with 22P04 as heap `COPY` refuses it, and
   a `\.` line in the first range, which must end the load there.
+- `pgcolumnar.parallel_copy` now refuses a file that changes newline style,
+  as `COPY FROM` does, wherever the split falls (#2189). `COPY FROM` takes LF
+  or CRLF from the file's first line and refuses any later line ending, or a
+  `\.\r\n` end-of-data line in a file with LF line ends, whose style differs,
+  with 22P04. Each worker ran core `COPY` over its own range, so a range that
+  started where the style changed took the new style from its own first line,
+  and the load went through: 2000 to 3749 rows where `COPY FROM` loads none.
+  The calling backend now reads the first line's style the way core does (the
+  first newline or carriage return no backslash escapes), and every worker
+  whose range does not start the file starts core `COPY` with it. The refusal
+  carries core's SQLSTATE and message (`end-of-copy marker does not match
+  previous newline style`, `literal carriage return found in data`, `literal
+  newline found in data`) after `worker N failed: `, and loads nothing. A
+  partitioned load already refused the `\.\r\n` case, because its splitter
+  ends a range at the marker line. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`.
 - The Iceberg foreign data wrapper no longer drops matching rows when an
   Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
   a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader

@@ -2380,4 +2380,11 @@ guard_tests 897
 # holds no group lock, and with a 1 s limit each verb finishes after a 1.5 s sleep earlier in its own statement
 # and in its transaction, by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
 # derives it): 5672 tests collected.
-cluster_tests 5872
+# cluster_tests 5872 -> 5904 for #2189's thirty-two tests in test_parallel_copy.py: five premises
+# (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files, _crlf_to_lf_files, _control_markers and
+# _control_rows), test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it
+# (18 parametrized: a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a
+# single table and a partitioned one, refused with heap COPY's SQLSTATE and message) and
+# test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 5904

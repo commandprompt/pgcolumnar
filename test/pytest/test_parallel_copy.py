@@ -26,6 +26,11 @@ with "failed" in it. And a backend that died does not pass as one that survived:
 fresh connection answers after crash recovery, so survival also reads the server log's
 count of killed backends.
 
+EVERY RANGE KEEPS THE FILE'S NEWLINE STYLE (#2189). COPY FROM takes LF or CRLF from
+the file's first line and refuses a later line ending, or a \\.\\r\\n marker in an LF
+file, whose style differs (22P04). A load whose range starts where the style changes
+is refused with heap COPY's SQLSTATE and message too, and loads nothing.
+
 A LOADER THAT FAILS CLOSES ITS FILE ONCE (#2083). The server log must carry no
 "CloseTransientFile was not obtained" WARNING from the failed loads.
 
@@ -255,6 +260,19 @@ class _Db:
         n = self.value(f"SELECT count(*) FROM {table}")
         return f"{n} rows" if isinstance(n, int) else n
 
+    def nl_outcome(self, sql, table):
+        """-> "SQLSTATE|message|N rows|P prepared" when `sql` failed under a 60 s
+        statement_timeout, else "loaded|N rows|P prepared" (N = `table`'s count)."""
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, options="-c statement_timeout=60s") as conn:
+                conn.execute(sql)
+            head = "loaded"
+        except psycopg.Error as exc:
+            if not exc.sqlstate:
+                return query_error(_message(exc))
+            head = f"{exc.sqlstate}|{exc.diag.message_primary}"
+        return f"{head}|{self.value(f'SELECT count(*) FROM {table}')} rows|{self.value(LEAK)} prepared"
+
     def offsets(self, path, workers):
         return self.value(f"SELECT pgcolumnar.file_split_offsets('{path}', {workers})")
 
@@ -471,6 +489,76 @@ def _own_write_copy(dsn, setup, table, path):
             return query_error(_message(exc))
         return f"{exc.sqlstate}|{exc.diag.message_primary or ''}|{exc.diag.message_detail or ''}"
     return f"none|{row[0] if row else None}"
+
+
+def _nl_bytes(kind, n, s):
+    """Rows 1..n of "%04d\\tx" with `kind`'s event at row s (#2189): mark and crmark put
+    \\.\\r\\n before row s and midmark \\.\\n; lfcr ends rows from s on in CRLF, crlf the
+    rows before s; crmark, crall and esc end every row in CRLF, and esc's first record
+    holds an escaped LF and ends in an escaped backslash."""
+    out = bytearray()
+    for k in range(1, n + 1):
+        if k == s and kind in ("mark", "crmark"):
+            out += b"\\.\r\n"
+        if k == s and kind == "midmark":
+            out += b"\\.\n"
+        crlf = (kind == "lfcr" and k >= s) or (kind == "crlf" and k < s) or kind in ("crmark", "crall", "esc")
+        if kind == "esc" and k == 1:
+            out += b"0001\ta\\\nb\\\\\r\n"
+        else:
+            out += b"%04d\tx" % k + (b"\r\n" if crlf else b"\n")
+    return bytes(out)
+
+
+def _nl_target(db, kind):
+    """(Re)creates t_nl, empty, as a single columnar table or 8 range partitions of 500 ids."""
+    if kind == "single":
+        db.run("DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl (id int, txt text) USING pgcolumnar")
+        return
+    ddl = "DROP TABLE IF EXISTS t_nl CASCADE; CREATE TABLE t_nl (id int, txt text) PARTITION BY RANGE (id);"
+    for i in range(8):
+        lo = "MINVALUE" if i == 0 else i * 500 + 1
+        hi = "MAXVALUE" if i == 7 else (i + 1) * 500 + 1
+        ddl += f" CREATE TABLE t_nl_p{i} PARTITION OF t_nl FOR VALUES FROM ({lo}) TO ({hi}) USING pgcolumnar;"
+    db.run(ddl)
+
+
+def _nl_heap(db, path):
+    """-> nl_outcome() of heap COPY of `path` into a fresh h_nl."""
+    db.run("DROP TABLE IF EXISTS h_nl; CREATE TABLE h_nl (id int, txt text)")
+    return db.nl_outcome(f"COPY h_nl FROM '{path}'", "h_nl")
+
+
+def _nl_at(db, path, workers, byte):
+    """-> the index of `byte` among the file's interior split offsets, or "none (...)"."""
+    offs = db.offsets(path, workers)
+    if not isinstance(offs, list):
+        return str(offs)
+    return str(offs.index(byte)) if byte in offs[1:workers] else f"none ({offs})"
+
+
+def _nl_refused(db, path, target, workers, rng):
+    """-> "ok" when the load is refused as heap COPY refuses `path`, after "worker RNG
+    failed: ", with 0 rows and no prepared transaction; else what it gave."""
+    heap = _nl_heap(db, path)
+    _nl_target(db, target)
+    got = db.nl_outcome(f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {workers})", "t_nl")
+    state, _, rest = str(heap).partition("|")
+    want = f"{state}|pgcolumnar.parallel_copy worker {rng} failed: {rest}"
+    return "ok" if got == want else f"got [{got}] want [{want}]"
+
+
+def _nl_loads(db, path, target, workers=(2, 3, 4)):
+    """-> "W:ok" per worker count when the load returns heap COPY's outcome and rows."""
+    heap = _nl_heap(db, path)
+    hh = db.set_hash("SELECT * FROM h_nl")
+    res = []
+    for w in workers:
+        _nl_target(db, target)
+        got = db.nl_outcome(f"SELECT pgcolumnar.parallel_copy('t_nl'::regclass, '{path}', {w})", "t_nl")
+        gh = db.set_hash("SELECT * FROM t_nl")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
 
 
 @pytest.fixture(scope="module")
@@ -1180,6 +1268,46 @@ def pcopy(pgc_cluster, server_dir):
                 ("ownw order lock",
                  "LOCK TABLE t_ownw IN ACCESS EXCLUSIVE MODE; INSERT INTO t_ownw VALUES (0, 'pre')", "t_ownw")):
             r[key] = _self_lock_copy(db.dsn, setup, table, f)
+
+        # ---- #2189: every range keeps the file's newline style ---------------------
+        # The shell gives the layout: each file puts its event on a range start of the
+        # single-table split and of the partitioned one, at the range the check names.
+        nl = {}
+        for name, kind, n, s_ in (("mark2", "mark", 3998, 2001), ("mark3", "mark", 3748, 2501),
+                                  ("mark4", "mark", 3332, 2501), ("lfcr2", "lfcr", 3749, 2001),
+                                  ("lfcr3", "lfcr", 3593, 2501), ("lfcr4", "lfcr", 3228, 2501),
+                                  ("crlf2", "crlf", 3212, 1501), ("crlf3", "crlf", 3142, 2001),
+                                  ("crlf4", "crlf", 3451, 2501), ("crmark2", "crmark", 3998, 2001),
+                                  ("crmark3", "crmark", 3748, 2501), ("crmark4", "crmark", 3332, 2501),
+                                  ("lf", "lf", 4000, 0), ("crall", "crall", 4000, 0),
+                                  ("midmark", "midmark", 4000, 1234), ("esc", "esc", 4000, 0)):
+            nl[name] = d / f"nl_{name}.txt"
+            nl[name].write_bytes(_nl_bytes(kind, n, s_))
+            os.chmod(nl[name], 0o644)
+        for case, byte in (("mark", (14000, 17500, 17500)), ("lfcr", (14000, 17500, 17500)),
+                           ("crlf", (12000, 16000, 20000))):
+            r[f"2189 premise {case}"] = " ; ".join(
+                f"{_nl_heap(db, nl[f'{case}{w}'])} @{_nl_at(db, nl[f'{case}{w}'], w, b)}"
+                for w, b in zip((2, 3, 4), byte))
+        r["2189 premise crmark midmark"] = " ".join(
+            [_nl_at(db, nl[f"crmark{w}"], w, b) for w, b in ((2, 16000), (3, 20000), (4, 20000))]
+            + [_nl_at(db, nl["midmark"], w, 8631)[:4] for w in (2, 3, 4)])
+        for name, target, w, rng in (
+                ("mark2", "single", 2, 1), ("mark3", "single", 3, 2), ("mark4", "single", 4, 3),
+                ("mark2", "part", 2, 1), ("mark3", "part", 3, 2), ("mark4", "part", 4, 3),
+                ("lfcr2", "single", 2, 1), ("lfcr3", "single", 3, 2), ("lfcr4", "single", 4, 3),
+                ("lfcr2", "part", 2, 1), ("lfcr3", "part", 3, 2), ("lfcr4", "part", 4, 3),
+                ("crlf2", "single", 2, 1), ("crlf3", "single", 3, 2), ("crlf4", "single", 4, 3),
+                ("crlf2", "part", 2, 1), ("crlf3", "part", 3, 2), ("crlf4", "part", 4, 3)):
+            r[f"2189 {name} {target}"] = _nl_refused(db, nl[name], target, w, rng)
+        for name in ("lf", "crall", "midmark", "esc"):
+            for target in ("single", "part"):
+                r[f"2189 control {name} {target}"] = _nl_loads(db, nl[name], target)
+        r["2189 control crmark single"] = " ".join(
+            _nl_loads(db, nl[f"crmark{w}"], "single", (w,)) for w in (2, 3, 4))
+        r["2189 premise heap rows"] = " ".join(
+            str(_nl_heap(db, nl[name])).split("|")[1] for name in
+            ("lf", "crall", "esc", "midmark", "crmark2", "crmark3", "crmark4"))
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -2042,3 +2170,124 @@ def test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order(pco
     second-level leaf are refused naming that relation. The #2211 refusal comes after
     #2183's lock refusal and before #2080's unique-index refusal."""
     expect.text(pcopy[key], want, name)
+
+
+# ---- #2189: every range keeps the file's newline style -----------------------------
+
+def test_parallel_copy_newline_premise_marker_files(pcopy, expect):
+    """Heap COPY refuses each mark file, and its \\.\\r\\n line is the split offset the
+    single-table refusal checks name."""
+    m = "22P04|end-of-copy marker does not match previous newline style|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise mark"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses mark2, mark3 and mark4 with 22P04 'end-of-copy marker does not"
+                " match previous newline style', and the marker line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_lf_to_crlf_files(pcopy, expect):
+    m = "22P04|literal carriage return found in data|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise lfcr"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses lfcr2, lfcr3 and lfcr4 with 22P04 'literal carriage return found"
+                " in data', and the first CRLF line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_crlf_to_lf_files(pcopy, expect):
+    m = "22P04|literal newline found in data|0 rows|0 prepared"
+    expect.text(pcopy["2189 premise crlf"], f"{m} @1 ; {m} @2 ; {m} @3",
+                "#2189 premise: heap COPY refuses crlf2, crlf3 and crlf4 with 22P04 'literal newline found in data',"
+                " and the first LF line is split offset 1 of 2, 2 of 3 and 3 of 4")
+
+
+def test_parallel_copy_newline_premise_control_markers(pcopy, expect):
+    expect.text(pcopy["2189 premise crmark midmark"], "1 2 3 none none none",
+                "#2189 premise: the \\.\\r\\n line of crmark2, crmark3 and crmark4 is split offset 1 of 2, 2 of 3"
+                " and 3 of 4, and midmark's \\.\\n line is no split offset for 2, 3 or 4 workers")
+
+
+def test_parallel_copy_newline_premise_control_rows(pcopy, expect):
+    expect.text(pcopy["2189 premise heap rows"],
+                "4000 rows 4000 rows 4000 rows 1233 rows 2000 rows 2500 rows 2500 rows",
+                "#2189 premise: heap COPY loads 4000 rows from lf, crall, esc, 1233 from midmark, and 2000, 2500 and"
+                " 2500 from crmark2, crmark3 and crmark4")
+
+
+NL_REFUSED = (
+    ("2189 mark2 single", "#2189 \\.\\r\\n at the start of range 1 of 2 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark3 single", "#2189 \\.\\r\\n at the start of range 2 of 3 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark4 single", "#2189 \\.\\r\\n at the start of range 3 of 4 in an LF file / single table: refused with"
+     " heap COPY's SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 mark2 part", "#2189 \\.\\r\\n in an LF file, 2 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 mark3 part", "#2189 \\.\\r\\n in an LF file, 3 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 mark4 part", "#2189 \\.\\r\\n in an LF file, 4 workers / partitioned: refused with heap COPY's SQLSTATE"
+     " and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr2 single", "#2189 LF to CRLF at the start of range 1 of 2 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr3 single", "#2189 LF to CRLF at the start of range 2 of 3 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr4 single", "#2189 LF to CRLF at the start of range 3 of 4 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr2 part", "#2189 LF to CRLF at the start of range 1 of 2 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr3 part", "#2189 LF to CRLF at the start of range 2 of 3 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 lfcr4 part", "#2189 LF to CRLF at the start of range 3 of 4 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf2 single", "#2189 CRLF to LF at the start of range 1 of 2 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf3 single", "#2189 CRLF to LF at the start of range 2 of 3 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf4 single", "#2189 CRLF to LF at the start of range 3 of 4 / single table: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf2 part", "#2189 CRLF to LF at the start of range 1 of 2 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf3 part", "#2189 CRLF to LF at the start of range 2 of 3 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+    ("2189 crlf4 part", "#2189 CRLF to LF at the start of range 3 of 4 / partitioned: refused with heap COPY's"
+     " SQLSTATE and message, 0 rows, no prepared transaction"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_REFUSED, ids=[k[5:].replace(" ", "-") for k, _ in NL_REFUSED])
+def test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it(
+        pcopy, expect, key, name):
+    """#2189: a range that starts where the file's newline style changes, or with a
+    \\.\\r\\n line in an LF file, is refused with heap COPY's SQLSTATE and message after
+    "worker N failed: ", N being that range, and loads nothing. Before the fix each
+    single-table and LF/CRLF load went through. The partitioned \\.\\r\\n loads were
+    refused already: that splitter keeps the marker line at the end of a range."""
+    expect.text(pcopy[key], "ok", name)
+
+
+NL_CONTROLS = (
+    ("2189 control lf single", "#2189 control: a consistent LF file / single table, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control lf part", "#2189 control: a consistent LF file / partitioned, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control crall single", "#2189 control: a consistent CRLF file / single table, 2, 3 and 4 workers: loads"
+     " heap COPY's rows"),
+    ("2189 control crall part", "#2189 control: a consistent CRLF file / partitioned, 2, 3 and 4 workers: loads heap"
+     " COPY's rows"),
+    ("2189 control crmark single", "#2189 control: \\.\\r\\n at a range start in a CRLF file / single table, 2, 3"
+     " and 4 workers: loads heap COPY's rows"),
+    ("2189 control midmark single", "#2189 control: \\.\\n in the middle of a range in an LF file / single table,"
+     " 2, 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control midmark part", "#2189 control: \\.\\n in the middle of a range in an LF file / partitioned, 2,"
+     " 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control esc single", "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / single table, 2,"
+     " 3 and 4 workers: loads heap COPY's rows"),
+    ("2189 control esc part", "#2189 control: a CRLF file whose first record holds an escaped LF and ends in an escaped backslash / partitioned, 2, 3"
+     " and 4 workers: loads heap COPY's rows"),
+)
+
+
+@pytest.mark.parametrize("key,name", NL_CONTROLS, ids=[k[13:].replace(" ", "-") for k, _ in NL_CONTROLS])
+def test_parallel_copy_a_consistent_newline_style_still_loads(pcopy, expect, key, name):
+    """#2189 controls: a file that keeps one style loads with 2, 3 and 4 workers as heap
+    COPY loads it, rows and values. That includes a CRLF file with \\.\\r\\n at a range
+    start, \\.\\n in the middle of a range, and a CRLF file whose first record holds an
+    escaped LF, which does not end the first line, and ends in an escaped backslash, an
+    even run, so the CR after it does."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
