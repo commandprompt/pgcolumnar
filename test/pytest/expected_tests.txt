@@ -2540,4 +2540,10 @@ guard_tests 897
 # (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
 # collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-cluster_tests 6128
+# cluster_tests 6128 -> 6140, #2231: five tests in test_objstore_http_read.py (the refusal after a reset on the
+# retry names the errno; a hang-up and a reset followed by a clean close name none) and seven in
+# test_objstore_error_advice.py (the reset fixtures are up; a read over http and over https, a LIST, a mid-size
+# export over http and over https, and a REST catalog request reset before any answer each name the errno), by
+# collection of those two files (107 and 30 on main 99c46e24, 112 and 37 here) and over the cluster files (the
+# complement of NO_CLUSTER, as ci.yml derives it): 6140 tests collected.
+cluster_tests 6140
