@@ -93,6 +93,7 @@ void
 PgColumnarThriftField(TCReader *r, int *ftype, int *fid, int *lastId)
 {
 	uint8		b;
+	int64		id;
 
 	if (r->pos >= r->len)
 	{
@@ -123,9 +124,24 @@ PgColumnarThriftField(TCReader *r, int *ftype, int *fid, int *lastId)
 		return;
 	}
 	if ((b >> 4) != 0)
-		*fid = *lastId + (b >> 4);	/* short-form delta */
+		id = (int64) *lastId + (b >> 4);	/* short-form delta */
 	else
-		*fid = (int) PgColumnarThriftZigzag(r);	/* long form */
+		id = PgColumnarThriftZigzag(r);	/* long form */
+
+	/*
+	 * Thrift field ids are i16. Thrift C++, and so pyarrow, narrows a wider id:
+	 * it reads 65537 or -65535 as field 1. Kept whole, such an id was skipped as
+	 * an unknown field, so a crafted header could hide a second num_values from
+	 * this reader and not from pyarrow, and a page's values were dropped with no
+	 * error. A header with an id outside int16 is corrupt, and it is refused.
+	 */
+	if (id < PG_INT16_MIN || id > PG_INT16_MAX)
+	{
+		r->error = true;
+		*ftype = TC_STOP;
+		return;
+	}
+	*fid = (int) id;
 	*lastId = *fid;
 }
 

@@ -74,6 +74,18 @@ errtext() {
 	echo "$out"
 }
 
+# errcode QUERY -> the raised ERROR line with its SQLSTATE ("ERROR:  XX001: ..."), or
+# "NO ERROR". The page loop's refusals are documented as XX001, so a check on one
+# asserts the code as well as the text.
+errcode() {
+	local out
+	wait_up
+	out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" \
+		-U postgres -d "$PGC_DB" -X -At -v VERBOSITY=verbose -c "$1" 2>&1 | grep -m1 '^ERROR:')"
+	[ -z "$out" ] && out="NO ERROR"
+	echo "$out"
+}
+
 # decodes QUERY -> "OK" when QUERY raised the page loop's refusal ("could not decode
 # Parquet column"), else the ERROR line it did raise, or "NO ERROR". Any ERROR used to
 # count: a refusal from some other layer passed as the page loop's.
@@ -160,6 +172,107 @@ check "v2 level lengths past the page are rejected" \
 check "all-null column (empty dictionary page) still reads" \
 	"$(qw "SELECT count(*), count(c) FROM pgcolumnar.read_parquet('$W/allnull.parquet') AS t(c int);" | tr '|' ' ')" \
 	"100 0"
+
+# #2077: a data page with no values is valid, and pyarrow writes one for a
+# dictionary-encoded list column when it flushes pages often. The progress guard
+# refused every such page, so the whole file failed to read. The page loop now
+# decodes an empty data page like any other, so it reads what pyarrow reads and
+# refuses what pyarrow refuses. More than 16 in a row are refused, so a crafted file
+# cannot make the loop walk a large area a few bytes at a time. The files are
+# described in test/craft_parquet_streaming.py.
+REFUSED="ERROR:  XX001: could not decode Parquet column 0 in row group 0"
+cs() { qw "SELECT count(*), sum(id) FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id int);" | tr '|' ' '; }
+ce() { errcode "SELECT * FROM pgcolumnar.read_parquet('$W/$1.parquet') AS t(id int)"; }
+check "a data page with no values (pyarrow list column) reads" \
+	"$(qw "SELECT string_agg(coalesce(ls::text, 'NULL'), ' ') FROM pgcolumnar.read_parquet('$W/empty_data_page.parquet') AS t(ls text[]);")" \
+	"{yy} NULL"
+check "a data page with no values (snappy list<int64> column) reads" \
+	"$(qw "SELECT string_agg(coalesce(li::text, 'NULL'), ' ') FROM pgcolumnar.read_parquet('$W/empty_page_snappy.parquet') AS t(li bigint[]);")" \
+	"{1,2} NULL {3} {}"
+check "one empty data page between two data pages reads" "$(cs one_empty_page)" "200 19900"
+check "a run of 1000 empty data pages is rejected" "$(ce empty_page_run)" "$REFUSED"
+check "a run of 16 empty data pages reads" "$(cs empty_run16)" "200 19900"
+check "a run of 17 empty data pages is rejected" "$(ce empty_run17)" "$REFUSED"
+check "two runs of 10 empty data pages read (the limit is per run)" "$(cs empty_runs_10_10)" "200 19900"
+check "an empty v1 page with no body reads on a REQUIRED column" "$(cs nobody_v1_req)" "200 19900"
+check "an empty v2 page with no body reads" "$(cs nobody_v2)" "200 19900"
+check "an empty v1 page with no body is rejected on a nullable column" "$(ce nobody_v1_opt)" "$REFUSED"
+check "an empty data page with a garbage body is rejected" "$(ce garbage_body)" "$REFUSED"
+check "an INDEX_PAGE between data pages is stepped over" "$(cs index_page)" "200 19900"
+check "a run of 16 INDEX_PAGEs reads" "$(cs index_run16)" "200 19900"
+check "a run of 17 INDEX_PAGEs is rejected" "$(ce index_run17)" "$REFUSED"
+check "a DATA_PAGE with no DataPageHeader is rejected, not skipped" "$(ce nohdr_loss)" "$REFUSED"
+check "a DataPageHeader without num_values is rejected" "$(ce nv_missing)" "$REFUSED"
+check "an empty DataPageHeader struct is rejected" "$(ce hdr5empty_loss)" "$REFUSED"
+check "an empty DataPageHeaderV2 struct is rejected" "$(ce hdr8empty_loss)" "$REFUSED"
+check "a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected" "$(ce nohdr_v2_loss_req)" "$REFUSED"
+check "a data page with a negative num_values is rejected" "$(ce negnv)" "$REFUSED"
+check "a page of an unknown type is stepped over" "$(cs unknown_type_page)" "200 19900"
+# a data page's count comes only from its own page type's header struct
+check "a DictionaryPageHeader after a DataPageHeader does not overwrite its count" "$(cs mix_dictnv0)" "150 11175"
+check "a DataPageHeaderV2 after a DataPageHeader does not overwrite its count" "$(cs mix_v2zero)" "150 11175"
+check "a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader" "$(cs mix_dict0_200)" "200 19900"
+check "a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2" "$(cs mix_v2full_200)" "200 19900"
+check "a DATA_PAGE_V2 with values reads" "$(cs v2_ok_req)" "200 19900"
+check "a DataPageHeaderV2 without num_values is rejected" "$(ce nv2_missing_req)" "$REFUSED"
+check "a DATA_PAGE with only a DictionaryPageHeader is rejected" "$(ce dicthdr_only)" "$REFUSED"
+check "a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected" "$(ce dicthdr_zero_loss)" "$REFUSED"
+check "an INDEX_PAGE with a negative compressed_size is rejected" "$(ce idx_negcsz)" "$REFUSED"
+check "a run of one-value pages reads (pyarrow list column, 41 pages)" \
+	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)) FROM pgcolumnar.read_parquet('$W/alt20.parquet') AS t(ls text[]);" | tr '|' ' ')" \
+	"40 20 20"
+# a page header that repeats its own struct, a data page with only the other
+# version's struct, the encoding and the dictionary count taken by page type, the
+# run that empty data pages and other page types share, and a v2 page of a list
+check "a repeated DataPageHeader with num_values 0 is rejected" "$(ce p_dup5_nv0)" "$REFUSED"
+check "a repeated DataPageHeaderV2 with num_values 0 is rejected" "$(ce p_dup8_nv0)" "$REFUSED"
+check "a DATA_PAGE with only a DataPageHeaderV2 is rejected" "$(ce p_only8_type0)" "$REFUSED"
+check "a DATA_PAGE_V2 with only a DataPageHeader is rejected" "$(ce p_only5_type3)" "$REFUSED"
+check "a DATA_PAGE with an empty DataPageHeader and a full DataPageHeaderV2 is rejected" "$(ce p_empty5_full8)" "$REFUSED"
+check "a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHeaderV2" "$(cs p_enc_v2dict_200)" "200 19900"
+check "a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader" "$(cs dict_v1nv0)" "200 900"
+check "9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run)" "$(ce p_mixrun_9e_8i)" "$REFUSED"
+check "8 empty data pages and 8 INDEX_PAGEs in a row read" "$(cs p_mixrun_8e_8i)" "200 19900"
+# a struct that repeats its own num_values, a repeated complete struct, a run of
+# empty v2 pages, a struct of the other version given twice, and a negative v2 count
+check "a DataPageHeader that repeats num_values is rejected" "$(ce f_rep1_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 that repeats num_values is rejected" "$(ce f_rep1_v2_150)" "$REFUSED"
+check "a repeated complete DataPageHeader is rejected" "$(ce a_dup5_nv10_110)" "$REFUSED"
+check "a repeated complete DataPageHeaderV2 is rejected" "$(ce a_dup8_nv10_110)" "$REFUSED"
+check "a run of 16 empty DATA_PAGE_V2 pages reads" "$(cs a_v2run16)" "200 19900"
+check "a run of 17 empty DATA_PAGE_V2 pages is rejected" "$(ce a_v2run17)" "$REFUSED"
+check "a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads" "$(cs a_other8x2_200)" "200 19900"
+check "a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads" "$(cs a_other5x2_v2_200)" "200 19900"
+check "a DATA_PAGE_V2 with a negative num_values is rejected" "$(ce a_v2neg_opt_200)" "$REFUSED"
+# a repeated num_values whose last value is not 0, a field id outside int16, and a
+# struct of the other version that repeats its own num_values
+check "a DataPageHeader that repeats num_values with a nonzero last value is rejected" "$(ce e_r1v1_50_10_110)" "$REFUSED"
+check "a DataPageHeaderV2 that repeats num_values with a nonzero last value is rejected" "$(ce e_r1v2_50_10_110)" "$REFUSED"
+check "a DataPageHeader with field id 65537 is rejected" "$(ce x_fid65537_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 with field id 65537 is rejected" "$(ce x_fid65537_v2_req150)" "$REFUSED"
+check "a DataPageHeader with field id -65535 is rejected" "$(ce x_fidm65535_v1_150)" "$REFUSED"
+check "a DataPageHeaderV2 with field id -65535 is rejected" "$(ce x_fidm65535_v2_req150)" "$REFUSED"
+check "a DataPageHeader with field id 32769 from a short-form delta is rejected" "$(ce x_fid32769_short_v1_200)" "$REFUSED"
+check "a DataPageHeader with an unknown field id 32767 reads" "$(cs x_fid32767_v1_200)" "200 19900"
+check "a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads" "$(cs e_oth8_r1_200)" "200 19900"
+check "a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads" "$(cs e_oth5_r1_v2_200)" "200 19900"
+check "16 empty data pages, a dictionary page and 16 more are rejected (one run)" "$(ce x_run16_dict_16)" "$REFUSED"
+# a wide long-form id is refused, not narrowed, and the edges of the int16 range
+check "a PageHeader with long-form field id 65537 is rejected" "$(ce y_ph65537_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -65535 is rejected" "$(ce y_phm65535_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 32768 is rejected" "$(ce y_ph32768_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -32769 is rejected" "$(ce y_phm32769_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 2147483648 is rejected" "$(ce y_ph2147483648_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 4294967297 is rejected" "$(ce y_ph4294967297_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -4294967295 is rejected" "$(ce y_phm4294967295_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id -4294967297 is rejected" "$(ce y_phm4294967297_type_150)" "$REFUSED"
+check "a PageHeader with long-form field id 1099511627777 is rejected" "$(ce y_ph1099511627777_type_150)" "$REFUSED"
+check "a DataPageHeader with an unknown field id 32768 is rejected" "$(ce b_unk32768_v1_200)" "$REFUSED"
+check "a DataPageHeader with an unknown field id -32768 reads" "$(cs b_unkm32768_v1_200)" "200 19900"
+check "a DataPageHeader with an unknown field id -32769 is rejected" "$(ce b_unkm32769_v1_200)" "$REFUSED"
+check "a DATA_PAGE_V2 on a list column reads" \
+	"$(qw "SELECT count(*), count(ls), sum(cardinality(ls)), sum(ls[1]) FROM pgcolumnar.read_parquet('$W/v2_list.parquet') AS t(ls int[]);" | tr '|' ' ')" \
+	"300 200 400 30000"
 check "backend survived the crafted page areas" "$(survived "$CRASHES_MID")" "1"
 
 # the legitimate file the crafted ones were built from must still read
@@ -201,7 +314,5 @@ check "streaming: rescan under a nested loop is correct" \
 	"$(q "SET enable_hashjoin=off; SET enable_mergejoin=off;
 	      SELECT count(*) FROM outer2 o JOIN fts ON fts.id = o.k;" | tail -1)" "2"
 
-rm -f "$W/huge_sparse.parquet" "$W/zero_pages.parquet" "$W/bad_size.parquet" \
-	"$W/noise_pages.parquet" "$W/bad_offset.parquet" "$W/two_dicts.parquet" \
-	"$W/v2_levels.parquet" "$W/allnull.parquet" "$W/stream_groups.parquet"
+rm -f "$W"/*.parquet
 pgc_summary

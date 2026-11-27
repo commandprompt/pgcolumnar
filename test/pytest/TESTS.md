@@ -13253,7 +13253,7 @@ Every test makes one check under the shell's name. Each parquet_schema or read_p
 
 ## 320. test_native_parquet_streaming.py: external Parquet reads stream: an oversized file describes itself, crafted pages are refused, the FDW decodes one row group at a time
 
-The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
+The twin of `test/native_parquet_streaming.sh`. `test/craft_parquet_streaming.py`, now shared by both harnesses, writes a 1600MB sparse file carrying a small file's footer (over the old 1GB palloc ceiling), six crafted files that each break one thing the page loop must not trust, an all-null column, files with pages that hold no values (#2077), and a four-row-group file for the FDW's Row Groups Decoded counter. The footer path reads the oversized file; each crafted page area is refused by the page loop's own decode refusal; the backend survives; and a LIMIT decodes only the row groups it needs.
 
 ### Every test
 
@@ -13275,6 +13275,79 @@ Every test makes one check under the shell's name, on a private database. The cr
 | `test_parquet_streaming_second_dictionary_page_is_rejected` | a second dictionary page in a chunk is rejected |
 | `test_parquet_streaming_v2_level_lengths_past_the_page_are_rejected` | v2 level lengths past the page are rejected |
 | `test_parquet_streaming_all_null_column_still_reads` | all-null column (empty dictionary page) still reads |
+| `test_parquet_streaming_data_page_with_no_values_reads` | a data page with no values (pyarrow list column) reads |
+| `test_parquet_streaming_data_page_with_no_values_snappy_reads` | a data page with no values (snappy list<int64> column) reads |
+| `test_parquet_streaming_one_empty_data_page_between_data_pages_reads` | one empty data page between two data pages reads |
+| `test_parquet_streaming_run_of_empty_data_pages_is_rejected` | a run of 1000 empty data pages is rejected |
+| `test_parquet_streaming_run_of_16_empty_data_pages_reads` | a run of 16 empty data pages reads |
+| `test_parquet_streaming_run_of_17_empty_data_pages_is_rejected` | a run of 17 empty data pages is rejected |
+| `test_parquet_streaming_two_runs_of_10_empty_data_pages_read` | two runs of 10 empty data pages read (the limit is per run) |
+| `test_parquet_streaming_empty_v1_page_without_body_reads_when_required` | an empty v1 page with no body reads on a REQUIRED column |
+| `test_parquet_streaming_empty_v2_page_without_body_reads` | an empty v2 page with no body reads |
+| `test_parquet_streaming_empty_v1_page_without_body_is_rejected_when_nullable` | an empty v1 page with no body is rejected on a nullable column |
+| `test_parquet_streaming_empty_data_page_with_garbage_body_is_rejected` | an empty data page with a garbage body is rejected |
+| `test_parquet_streaming_index_page_is_stepped_over` | an INDEX_PAGE between data pages is stepped over |
+| `test_parquet_streaming_run_of_16_index_pages_reads` | a run of 16 INDEX_PAGEs reads |
+| `test_parquet_streaming_run_of_17_index_pages_is_rejected` | a run of 17 INDEX_PAGEs is rejected |
+| `test_parquet_streaming_data_page_without_header_is_rejected` | a DATA_PAGE with no DataPageHeader is rejected, not skipped |
+| `test_parquet_streaming_data_page_header_without_num_values_is_rejected` | a DataPageHeader without num_values is rejected |
+| `test_parquet_streaming_empty_data_page_header_struct_is_rejected` | an empty DataPageHeader struct is rejected |
+| `test_parquet_streaming_empty_data_page_header_v2_struct_is_rejected` | an empty DataPageHeaderV2 struct is rejected |
+| `test_parquet_streaming_data_page_v2_without_header_is_rejected` | a DATA_PAGE_V2 with no DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_negative_num_values_is_rejected` | a data page with a negative num_values is rejected |
+| `test_parquet_streaming_unknown_page_type_is_stepped_over` | a page of an unknown type is stepped over |
+| `test_parquet_streaming_dictionary_header_does_not_overwrite_data_page_count` | a DictionaryPageHeader after a DataPageHeader does not overwrite its count |
+| `test_parquet_streaming_data_page_v2_header_does_not_overwrite_data_page_count` | a DataPageHeaderV2 after a DataPageHeader does not overwrite its count |
+| `test_parquet_streaming_data_page_count_ignores_a_dictionary_header` | a DATA_PAGE takes its count from its DataPageHeader, not a DictionaryPageHeader |
+| `test_parquet_streaming_data_page_count_ignores_a_data_page_v2_header` | a DATA_PAGE takes its count from its DataPageHeader, not a DataPageHeaderV2 |
+| `test_parquet_streaming_data_page_v2_with_values_reads` | a DATA_PAGE_V2 with values reads |
+| `test_parquet_streaming_data_page_v2_header_without_num_values_is_rejected` | a DataPageHeaderV2 without num_values is rejected |
+| `test_parquet_streaming_data_page_with_only_a_dictionary_header_is_rejected` | a DATA_PAGE with only a DictionaryPageHeader is rejected |
+| `test_parquet_streaming_data_page_with_only_an_empty_dictionary_header_is_rejected` | a DATA_PAGE with only an empty-count DictionaryPageHeader is rejected |
+| `test_parquet_streaming_index_page_with_negative_compressed_size_is_rejected` | an INDEX_PAGE with a negative compressed_size is rejected |
+| `test_parquet_streaming_run_of_one_value_pages_reads` | a run of one-value pages reads (pyarrow list column, 41 pages) |
+| `test_parquet_streaming_repeated_data_page_header_is_rejected` | a repeated DataPageHeader with num_values 0 is rejected |
+| `test_parquet_streaming_repeated_data_page_v2_header_is_rejected` | a repeated DataPageHeaderV2 with num_values 0 is rejected |
+| `test_parquet_streaming_data_page_with_only_a_v2_header_is_rejected` | a DATA_PAGE with only a DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_data_page_v2_with_only_a_v1_header_is_rejected` | a DATA_PAGE_V2 with only a DataPageHeader is rejected |
+| `test_parquet_streaming_v2_count_does_not_stand_in_for_an_empty_v1_header` | a DATA_PAGE with an empty DataPageHeader and a full DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_data_page_encoding_ignores_a_data_page_v2_header` | a DATA_PAGE takes its encoding from its DataPageHeader, not a DataPageHeaderV2 |
+| `test_parquet_streaming_dictionary_count_ignores_a_data_page_header` | a dictionary page takes its count from its DictionaryPageHeader, not a DataPageHeader |
+| `test_parquet_streaming_empty_and_index_pages_share_one_run` | 9 empty data pages and 8 INDEX_PAGEs in a row are rejected (one shared run) |
+| `test_parquet_streaming_8_empty_and_8_index_pages_read` | 8 empty data pages and 8 INDEX_PAGEs in a row read |
+| `test_parquet_streaming_data_page_header_that_repeats_num_values_is_rejected` | a DataPageHeader that repeats num_values is rejected |
+| `test_parquet_streaming_data_page_v2_header_that_repeats_num_values_is_rejected` | a DataPageHeaderV2 that repeats num_values is rejected |
+| `test_parquet_streaming_repeated_complete_data_page_header_is_rejected` | a repeated complete DataPageHeader is rejected |
+| `test_parquet_streaming_repeated_complete_data_page_v2_header_is_rejected` | a repeated complete DataPageHeaderV2 is rejected |
+| `test_parquet_streaming_run_of_16_empty_v2_pages_reads` | a run of 16 empty DATA_PAGE_V2 pages reads |
+| `test_parquet_streaming_run_of_17_empty_v2_pages_is_rejected` | a run of 17 empty DATA_PAGE_V2 pages is rejected |
+| `test_parquet_streaming_data_page_with_two_v2_headers_besides_its_own_reads` | a DATA_PAGE with two DataPageHeaderV2 structs besides its own reads |
+| `test_parquet_streaming_data_page_v2_with_two_v1_headers_besides_its_own_reads` | a DATA_PAGE_V2 with two DataPageHeader structs besides its own reads |
+| `test_parquet_streaming_data_page_v2_with_a_negative_num_values_is_rejected` | a DATA_PAGE_V2 with a negative num_values is rejected |
+| `test_parquet_streaming_data_page_header_that_repeats_num_values_ending_nonzero_is_rejected` | a DataPageHeader that repeats num_values with a nonzero last value is rejected |
+| `test_parquet_streaming_data_page_v2_header_that_repeats_num_values_ending_nonzero_is_rejected` | a DataPageHeaderV2 that repeats num_values with a nonzero last value is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_65537_is_rejected` | a DataPageHeader with field id 65537 is rejected |
+| `test_parquet_streaming_data_page_v2_header_with_field_id_65537_is_rejected` | a DataPageHeaderV2 with field id 65537 is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_minus_65535_is_rejected` | a DataPageHeader with field id -65535 is rejected |
+| `test_parquet_streaming_data_page_v2_header_with_field_id_minus_65535_is_rejected` | a DataPageHeaderV2 with field id -65535 is rejected |
+| `test_parquet_streaming_data_page_header_with_field_id_32769_from_a_delta_is_rejected` | a DataPageHeader with field id 32769 from a short-form delta is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_32767_reads` | a DataPageHeader with an unknown field id 32767 reads |
+| `test_parquet_streaming_data_page_whose_v2_header_repeats_num_values_reads` | a DATA_PAGE whose DataPageHeaderV2 repeats num_values reads |
+| `test_parquet_streaming_data_page_v2_whose_v1_header_repeats_num_values_reads` | a DATA_PAGE_V2 whose DataPageHeader repeats num_values reads |
+| `test_parquet_streaming_dictionary_page_does_not_reset_the_empty_run` | 16 empty data pages, a dictionary page and 16 more are rejected (one run) |
+| `test_parquet_streaming_page_header_with_long_form_field_id_65537_is_rejected` | a PageHeader with long-form field id 65537 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_65535_is_rejected` | a PageHeader with long-form field id -65535 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_32768_is_rejected` | a PageHeader with long-form field id 32768 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_32769_is_rejected` | a PageHeader with long-form field id -32769 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_2147483648_is_rejected` | a PageHeader with long-form field id 2147483648 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_4294967297_is_rejected` | a PageHeader with long-form field id 4294967297 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967295_is_rejected` | a PageHeader with long-form field id -4294967295 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_minus_4294967297_is_rejected` | a PageHeader with long-form field id -4294967297 is rejected |
+| `test_parquet_streaming_page_header_with_long_form_field_id_1099511627777_is_rejected` | a PageHeader with long-form field id 1099511627777 is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_32768_is_rejected` | a DataPageHeader with an unknown field id 32768 is rejected |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32768_reads` | a DataPageHeader with an unknown field id -32768 reads |
+| `test_parquet_streaming_data_page_header_with_unknown_field_id_minus_32769_is_rejected` | a DataPageHeader with an unknown field id -32769 is rejected |
+| `test_parquet_streaming_data_page_v2_on_a_list_column_reads` | a DATA_PAGE_V2 on a list column reads |
 | `test_parquet_streaming_backend_survived_the_crafted_page_areas` | backend survived the crafted page areas |
 | `test_parquet_streaming_uncompressed_source_file_still_reads` | the uncompressed source file still reads |
 | `test_parquet_streaming_full_scan_content_is_correct` | streaming: full scan content is correct |
