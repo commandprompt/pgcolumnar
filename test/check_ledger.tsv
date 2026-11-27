@@ -1881,6 +1881,7 @@ harness_selftest	120-a-failing-suite-must-surface-the	premise: the sub-suite fai
 harness_selftest	130-the-sanitizer-subset-must-cover-the	premise: at least one suite drives the C-level encoding selftest	15;16;17;18;19	never	-
 harness_selftest	130-the-sanitizer-subset-must-cover-the	premise: run_san.sh's default subset was found and is non-empty	15;16;17;18;19	never	-
 harness_selftest	130-the-sanitizer-subset-must-cover-the	the sanitizer subset runs every suite that drives the encoding selftest	15;16;17;18;19	never	-
+harness_selftest	130-the-sanitizer-subset-must-cover-the	the sanitizer subset runs export_sink, whose freed-sink mutant only an instrumented build sees	15;16;17;18;19	2026-11-27	test/run_san.sh: export_sink absent from the default SUITES, as on main 99c46e24 (#2201)
 harness_selftest	140-a-cluster-that-will-not-start	and still matches a PANIC	15;16;17;18;19	never	-
 harness_selftest	140-a-cluster-that-will-not-start	and still matches a signal death	15;16;17;18;19	never	-
 harness_selftest	140-a-cluster-that-will-not-start	and still matches an AddressSanitizer report	15;16;17;18;19	never	-
