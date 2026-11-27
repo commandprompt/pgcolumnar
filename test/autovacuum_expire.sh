@@ -115,6 +115,12 @@ psql_run "SELECT pgcolumnar.set_options('ex_bad', chunk_group_row_limit => $CG, 
 psql_run "INSERT INTO ex_bad SELECT g, now(), g FROM generate_series(1, 20000) g;"
 psql_run "DELETE FROM ex_bad WHERE (id * 2654435761)::bigint % 100 < 40;"
 psql_run "ALTER TABLE ex_bad DROP COLUMN ts;"
+# Since #2070 the drop clears the declaration, and the daemon then never runs
+# expire on ex_bad at all. A table whose retention column was dropped on an
+# older build still names it, so that declaration is written back by hand, as
+# ttl_expire's ttl_gone does: expire must fail (42703) for this arm to test that
+# a failing expire leaves the compaction alone.
+psql_run "UPDATE pgcolumnar.options SET ttl_column = 'ts', ttl_interval = '1 day' WHERE regclass = 'ex_bad'::regclass;"
 # q() discards stderr, so the error is read as its SQLSTATE from psql directly.
 sqlstate_of() {
 	env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \

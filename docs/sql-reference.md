@@ -28,7 +28,8 @@ compression codec and level, encode effort, and the declared `sort_by` key). See
 with no explicit columns. It is not auto-maintained; rows inserted after a sort
 append in insertion order, so re-run `vacuum_sorted` to re-establish it, like
 PostgreSQL `CLUSTER`. Column names must exist and cannot be virtual generated
-columns. The declared key follows `RENAME COLUMN`, but `DROP COLUMN` leaves it
+columns. The declared key follows `RENAME COLUMN`, and on a typed table
+`ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE`, but `DROP COLUMN` leaves it
 as it is. If you then rename another column to the dropped name, a bare
 `vacuum_sorted` sorts on that column, with no warning. After such a drop, check
 the declared key in `pgcolumnar.options`.
@@ -38,7 +39,13 @@ only by [`pgcolumnar.expire`](#pgcolumnarexpiretablename-regclass-returns-bigint
 Declaring a retention does not delete anything on its own. `expire` runs when
 you call it, or when the maintenance daemon calls it with
 `pgcolumnar.autovacuum_expire` on. Both are needed: either one alone means no
-retention.
+retention. `ttl_column` follows `RENAME COLUMN`, and on a typed table
+`ALTER TYPE ... RENAME ATTRIBUTE ... CASCADE`. `DROP COLUMN` of the retention
+column clears both `ttl_column` and `ttl_interval`, so `expire` then refuses the
+table (55000) until you declare a new retention. A table whose retention column
+was dropped on an older build still names the dropped column; `expire` refuses
+it with 42703. Declare a new retention on such a table before you give the
+dropped name to another column, or `expire` cuts on that column.
 
 `ttl_interval` must be a positive interval. Zero and negative intervals raise
 `22023`. A negative interval would put the cutoff in the future, so `expire`
