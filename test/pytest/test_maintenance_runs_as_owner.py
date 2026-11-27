@@ -12,9 +12,10 @@ to the owner with SECURITY_RESTRICTED_OPERATION, on every supported major.
 
 The property is measured, not inferred. `mallory` owns the table and is nothing
 else. Her function is the expression of one index and the predicate of another,
-and it raises a NOTICE naming `current_user` and whether the operation is
-security-restricted. A superuser runs each verb, and every notice the verb raises
-must name mallory, restricted. A premise per verb: her function ran at least once,
+and it raises a NOTICE naming `current_user`, whether the operation is
+security-restricted, and its `search_path`. A superuser runs each verb, and every
+notice the verb raises must name mallory, restricted, under `pg_catalog, pg_temp`
+from PostgreSQL 17 (RestrictSearchPath) and the caller's path on 15 and 16. A premise per verb: her function ran at least once,
 so an empty set of users cannot pass.
 
 The verbs that rebuild through core (vacuum, vacuum_sorted, cluster) already
@@ -65,8 +66,9 @@ def _fixture(cur):
         "  BEGIN PERFORM pg_catalog.set_config('role', current_user, true);"
         "   RAISE EXCEPTION 'unrestricted';"
         "  EXCEPTION WHEN OTHERS THEN why := SQLERRM; END;"
-        f" RAISE NOTICE '{TAG} user=% restricted=%', current_user,"
-        "   CASE WHEN why LIKE '%security-restricted%' THEN 'yes' ELSE 'no' END;"
+        f" RAISE NOTICE '{TAG} user=% restricted=% path=%', current_user,"
+        "   CASE WHEN why LIKE '%security-restricted%' THEN 'yes' ELSE 'no' END,"
+        "   current_setting('search_path');"
         " RETURN x; END $$")
     cur.execute(f"ALTER FUNCTION seen(int) OWNER TO {ROLE}")
     cur.execute("CREATE TABLE m (id int, v int) USING pgcolumnar")
@@ -88,6 +90,8 @@ def _run_as_superuser(conn, call):
     # One transaction, so the identity read after the verb is the one the verb
     # left behind: a commit does not reset it, only an abort does.
     with conn.transaction(), conn.cursor() as cur:
+        cur.execute("SELECT current_setting('server_version_num')::int / 10000")
+        major = cur.fetchone()[0]
         cur.execute("SELECT current_user, rolsuper FROM pg_roles WHERE rolname = current_user")
         caller, caller_is_super = cur.fetchone()
         cur.execute("SELECT current_setting('search_path')")
@@ -95,8 +99,20 @@ def _run_as_superuser(conn, call):
         cur.execute(f"SELECT pgcolumnar.{call}")
         cur.execute("SELECT current_user, current_setting('search_path')")
         after, path_after = cur.fetchone()
-    seen = [n.split(" ", 1)[1] for n in notices if n.startswith(TAG + " ")]
-    return caller, caller_is_super, (after, path_after), seen, path
+    # "user=... restricted=... path=<search_path>": the path may hold spaces and
+    # commas, so it is split off at its tag, not on whitespace.
+    seen = [n.split(" ", 1)[1].split(" path=", 1) for n in notices if n.startswith(TAG + " ")]
+    return caller, caller_is_super, (after, path_after), seen, path, major
+
+
+def _expected_index_path(major, caller_path):
+    """The search_path the owner's index code runs under.
+
+    From PostgreSQL 17 the switch calls RestrictSearchPath(), as core's index_build
+    and cluster_rel do (src/columnar_vacuum.c, `#if PG_VERSION_NUM >= 170000`);
+    15 and 16 have no such call, so the code sees the caller's path.
+    """
+    return "pg_catalog, pg_temp" if major >= 17 else caller_path
 
 
 @pytest.mark.parametrize("call", VERBS, ids=lambda c: c.split("(")[0])
@@ -104,10 +120,12 @@ def test_a_superuser_runs_the_owners_index_code_as_the_owner(pgc_conn, expect, c
     fn = call.split("(")[0]
     with pgc_conn.cursor() as cur:
         _fixture(cur)
-    caller, caller_is_super, (after, path_after), seen, path = _run_as_superuser(pgc_conn, call)
+    caller, caller_is_super, (after, path_after), seen, path, major = _run_as_superuser(pgc_conn, call)
     expect.text(repr(caller_is_super), "True", f"premise: the caller of {fn} is a superuser")
     expect.text(after, caller, f"{fn}: the caller is the current user again once it returns")
     expect.text(path_after, path, f"{fn}: the caller's search_path is back once it returns")
     expect.at_least(len(seen), 1, f"premise: {fn} evaluated mallory's index code")
-    expect.text(" ".join(sorted(set(seen))), f"user={ROLE} restricted=yes",
+    expect.text(" ".join(sorted({who for who, _ in seen})), f"user={ROLE} restricted=yes",
                 f"{fn}: every evaluation ran as the owner, security-restricted")
+    expect.text(" | ".join(sorted({p for _, p in seen})), _expected_index_path(major, path),
+                f"{fn}: every evaluation ran under the restricted search_path from 17 (the caller's before)")

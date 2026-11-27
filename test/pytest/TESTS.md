@@ -14861,7 +14861,7 @@ Each refusal reads `<what import_arrow returned, or SQLSTATE message>|<rows stor
 
 A privilege fix, test-first (#2053). An online rewrite puts each moved row back into every index itself (`PgColumnarIndexInsertRow`), so it evaluates the owner's index expressions and partial-index predicates. They ran as the caller. The maintenance daemon calls `compact_rewrite` and `recluster` as the bootstrap superuser, so an unprivileged owner's function ran as a superuser. Core's `cluster_rel` and `index_build` switch to the owner with `SECURITY_RESTRICTED_OPERATION` on every supported major (CVE-2022-1552), and the verbs now do the same.
 
-`pgc_mallory` owns the table and is nothing else. Her function `seen()` is one index's expression and another's predicate. It raises a NOTICE naming `current_user` and whether setting `role` is refused, which is how a security-restricted operation shows from SQL. The setting is always rolled back. A superuser runs each verb in one transaction. Every notice must read `user=pgc_mallory restricted=yes`, and afterwards `current_user` and `search_path` must be the caller's again. A premise per verb: the function ran at least once.
+`pgc_mallory` owns the table and is nothing else. Her function `seen()` is one index's expression and another's predicate. It raises a NOTICE naming `current_user`, whether setting `role` is refused (which is how a security-restricted operation shows from SQL), and the `search_path` it runs under. The setting is always rolled back. A superuser runs each verb in one transaction. Every notice must read `user=pgc_mallory restricted=yes`. Its `search_path` must be `pg_catalog, pg_temp` from PostgreSQL 17, where the switch calls `RestrictSearchPath()` as core's `index_build` does, and the caller's own path on 15 and 16, which have no such call. Afterwards `current_user` and `search_path` must be the caller's again. A premise per verb: the function ran at least once.
 
 On main, `compact_rewrite`, `recluster` and `recluster_hilbert` failed with `user=postgres restricted=no`. `vacuum`, `vacuum_sorted`, `cluster` and `cluster_hilbert` passed, because they rebuild through `index_build`; they stay as controls. `compact` and `expire` evaluate no index code (zero notices), so they are not arms.
 
@@ -14875,9 +14875,10 @@ Removal proof on PG 18: each mutant fails at least one test.
 | switch to the caller instead of the owner | the three rewrite verbs |
 | caller's user id not restored | the three rewrite verbs |
 | GUC nest level not restored (`search_path` stays restricted) | the three rewrite verbs |
+| no `RestrictSearchPath()` (PG 17 and 18) | the three rewrite verbs |
 
 ### Every test
 
 | test | what it holds |
 | --- | --- |
-| `test_a_superuser_runs_the_owners_index_code_as_the_owner` | one arm per row-rewriting verb, run by a superuser on mallory's table: the caller is a superuser and mallory's code ran (premises); every evaluation reported `user=pgc_mallory restricted=yes`; `current_user` and `search_path` are the caller's once the verb returns |
+| `test_a_superuser_runs_the_owners_index_code_as_the_owner` | one arm per row-rewriting verb, run by a superuser on mallory's table: the caller is a superuser and mallory's code ran (premises); every evaluation reported `user=pgc_mallory restricted=yes`, under `search_path` `pg_catalog, pg_temp` from 17 and the caller's path on 15/16; `current_user` and `search_path` are the caller's once the verb returns |
