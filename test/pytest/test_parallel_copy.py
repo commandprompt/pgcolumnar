@@ -597,6 +597,132 @@ def _nl_same(db, path, target, cols):
     return " ".join(res)
 
 
+# ---- #2188: the caller's client_encoding, and characters that hold 0x5C ----------
+ENC_DB = "pgc_pcopy_enc"
+ENC_ASCII = "pgc_pcopy_ascii"
+
+
+def _enc_rows(kind, n):
+    """-> the records of the #2188 file `kind`, rows k = 1..n, id k, as bytes. The
+    shell gives the layout: sjis's odd rows put 83 5c (one SJIS character) before an
+    escaped newline and its even rows a backslash before 83 5c, big5 the same with
+    a5 5c, sjisbs a backslash before 83 5c right before every newline, sjiseol a
+    first line 83 5c 5c CR LF, chunknl and chunkcr the 83 at byte 65535 with 5c 5c LF
+    and 5c 5c CR LF after it, sjistk 83 5c right before the TAB that ends the field
+    before the key (a (txt text, id int) table), utf8txt UTF-8 text, and the controls latin1, utf8 and
+    ascii a high-bit byte, a two-byte character and 83 before a backslash and LF."""
+    pad = b"y" * 65530
+    rows = []
+    for k in range(1, n + 1):
+        if kind in ("sjis", "big5"):
+            c = b"\x83\x5c" if kind == "sjis" else b"\xa5\x5c"
+            r = b"%d\ta%d" % (k, k) + (c + b"\\\nb\n" if k % 2 else b"\\" + c + b"\n")
+        elif kind == "sjisbs":
+            r = b"%d\ta%d\\\x83\x5c\n" % (k, k)
+        elif kind == "sjiseol":
+            r = b"1\ta\x83\x5c\x5c\r\n" if k == 1 else b"%d\tx\n" % k
+        elif kind == "chunknl":
+            r = b"0001\t" + pad + b"\x83\x5c\x5c\nb\n" if k == 1 else b"%04d\tx\n" % k
+        elif kind == "chunkcr":
+            r = b"0001\t" + pad + b"\x83\x5c\x5c\r\n" if k == 1 else b"%04d\tx\n" % k
+        elif kind == "sjistk":
+            r = b"a%d\x83\x5c\t%d\n" % (k, k)
+        elif kind == "utf8txt":
+            r = b"%d\tcaf\xc3\xa9%d\n" % (k, k)
+        elif kind == "latin1":
+            r = b"%d\ta\xe9\\\nb\n" % k
+        elif kind == "utf8":
+            r = b"%d\ta\xc3\xa9\\\nb\n" % k
+        else:
+            r = b"%d\ta\x83\\\nb\n" % k
+        rows.append(r)
+    return rows
+
+
+def _enc_outcome(db, ce, sql, table):
+    """-> "SQLSTATE|message|N rows|P prepared" when `sql`, run under client_encoding
+    `ce` and a 60 s statement_timeout, failed, without parallel_copy's "worker N
+    failed: "; else "loaded|N rows|P prepared"."""
+    try:
+        with psycopg.connect(db.dsn, autocommit=True, client_encoding=ce,
+                             options="-c statement_timeout=60s") as conn:
+            conn.execute(sql)
+        head = "loaded"
+    except psycopg.Error as exc:
+        if not exc.sqlstate:
+            return query_error(_message(exc))
+        msg = re.sub(r"^pgcolumnar\.parallel_copy worker \d+ failed: ", "", exc.diag.message_primary or "")
+        head = f"{exc.sqlstate}|{msg}"
+    return f"{head}|{db.value(f'SELECT count(*) FROM {table}')} rows|{db.value(LEAK)} prepared"
+
+
+def _enc_target(db, kind, cols="id int, txt text"):
+    """(Re)creates t_enc (`cols`), empty, as a single columnar table or 8 range
+    partitions of 500 ids."""
+    if kind == "single":
+        db.run(f"DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ({cols}) USING pgcolumnar")
+        return
+    ddl = f"DROP TABLE IF EXISTS t_enc CASCADE; CREATE TABLE t_enc ({cols}) PARTITION BY RANGE (id);"
+    for i in range(8):
+        lo = "MINVALUE" if i == 0 else i * 500 + 1
+        hi = "MAXVALUE" if i == 7 else (i + 1) * 500 + 1
+        ddl += f" CREATE TABLE t_enc_p{i} PARTITION OF t_enc FOR VALUES FROM ({lo}) TO ({hi}) USING pgcolumnar;"
+    db.run(ddl)
+
+
+def _enc_heap(db, ce, path, cols="id int, txt text"):
+    """-> _enc_outcome() of heap COPY of `path` into a fresh h_enc (`cols`) under `ce`."""
+    db.run(f"DROP TABLE IF EXISTS h_enc; CREATE TABLE h_enc ({cols})")
+    return _enc_outcome(db, ce, f"COPY h_enc FROM '{path}'", "h_enc")
+
+
+def _enc_str(v):
+    """A SQL_ASCII database returns text as bytes: -> v as str."""
+    return v.decode("ascii", "replace") if isinstance(v, bytes) else str(v)
+
+
+def _enc_rowhex(db, row_id):
+    """-> h_enc's txt for `row_id`, as the hex of its bytes in the database encoding."""
+    return _enc_str(db.value("SELECT encode(convert_to(txt, pg_encoding_to_char(encoding)), 'hex') "
+                        f"FROM h_enc, pg_database WHERE datname = current_database() AND id = {row_id}"))
+
+
+def _enc_same(db, ce, path, target, workers=(2, 3, 4), cols="id int, txt text"):
+    """-> "W:ok" per worker count when the load under `ce` gives heap COPY's outcome,
+    rows and row hash; else what it gave against heap COPY."""
+    heap = _enc_heap(db, ce, path, cols)
+    hh = db.set_hash("SELECT * FROM h_enc")
+    res = []
+    for w in workers:
+        _enc_target(db, target, cols)
+        got = _enc_outcome(db, ce, f"SELECT pgcolumnar.parallel_copy('t_enc'::regclass, '{path}', {w})", "t_enc")
+        gh = db.set_hash("SELECT * FROM t_enc")
+        res.append(f"{w}:ok" if (got, gh) == (heap, hh) else f"{w}:[{got} {gh}] want [{heap} {hh}]")
+    return " ".join(res)
+
+
+def _enc_cuts(db, ce, path, rows):
+    """-> "W:ok" per worker count 2, 3, 4 when file_split_offsets under `ce` cuts
+    `path` only at record starts (computed from `rows`, the records it was written
+    from) and leaves no range empty; else the offsets."""
+    starts, off = set(), 0
+    for r in rows[:-1]:
+        off += len(r)
+        starts.add(off)
+    res = []
+    for w in (2, 3, 4):
+        try:
+            with psycopg.connect(db.dsn, autocommit=True, client_encoding=ce) as conn:
+                offs = conn.execute(f"SELECT pgcolumnar.file_split_offsets('{path}', {w})").fetchone()[0]
+        except psycopg.Error as exc:
+            res.append(f"{w}:[{_message(exc)}]")
+            continue
+        ok = (len(offs) == w + 1 and all(o in starts for o in offs[1:w])
+              and all(offs[i] < offs[i + 1] for i in range(w)))
+        res.append(f"{w}:ok" if ok else f"{w}:{offs}")
+    return " ".join(res)
+
+
 @pytest.fixture(scope="module")
 def pcopy(pgc_cluster, server_dir):
     with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -1371,10 +1497,73 @@ def pcopy(pgc_cluster, server_dir):
                                    ("p5", "single", "t text"),
                                    ("p5b", "single", "txt text, id int"), ("p5b", "part", "txt text, id int")):
             r[f"2189 probe {kind} {target}"] = _nl_same(db, pr[kind], target, cols)
+
+        # ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            for name, enc in ((ENC_DB, "UTF8"), (ENC_ASCII, "SQL_ASCII")):
+                a.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+                a.execute(f"CREATE DATABASE {name} ENCODING '{enc}' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0")
+        edb = _Db(pgc_cluster.dsn(dbname=ENC_DB))
+        adb = _Db(pgc_cluster.dsn(dbname=ENC_ASCII))
+        edb.run("CREATE EXTENSION pgcolumnar")
+        adb.run("CREATE EXTENSION pgcolumnar")
+        ef, erows = {}, {}
+        for kind, n in (("sjis", 2000), ("big5", 2000), ("sjisbs", 2000), ("sjiseol", 2000), ("chunknl", 9363),
+                        ("chunkcr", 4000), ("sjistk", 2000), ("utf8txt", 2000), ("latin1", 2000), ("utf8", 2000), ("ascii", 2000)):
+            erows[kind] = _enc_rows(kind, n)
+            ef[kind] = d / f"enc_{kind}.txt"
+            ef[kind].write_bytes(b"".join(erows[kind]))
+            os.chmod(ef[kind], 0o644)
+
+        def rows_of(dbx, ce, kind):
+            return str(_enc_heap(dbx, ce, ef[kind])).split("|")[1]
+
+        def dbenc(dbx):
+            return _enc_str(dbx.value("SELECT pg_encoding_to_char(encoding) FROM pg_database "
+                                     "WHERE datname = current_database()"))
+        r["2188 premise sjis big5"] = " ".join([
+            dbenc(edb), dbenc(adb), rows_of(edb, "SJIS", "sjisbs"), rows_of(edb, "SJIS", "sjis"),
+            _enc_rowhex(edb, 1), _enc_rowhex(edb, 2), rows_of(edb, "BIG5", "big5"), _enc_rowhex(edb, 1),
+            str(_enc_heap(edb, "SJIS", ef["sjistk"], "txt text, id int")).split("|")[1], _enc_rowhex(edb, 1)])
+        raw = {k: _read(ef[k]) for k in ("chunknl", "chunkcr")}
+        r["2188 premise eol chunk"] = " ".join([
+            rows_of(edb, "SJIS", "sjiseol"), _enc_rowhex(edb, 1),
+            rows_of(edb, "SJIS", "chunknl"),
+            raw["chunknl"][65535:65539].hex() if isinstance(raw["chunknl"], bytes) else str(raw["chunknl"]),
+            rows_of(edb, "SJIS", "chunkcr"),
+            raw["chunkcr"][65535:65540].hex() if isinstance(raw["chunkcr"], bytes) else str(raw["chunkcr"])])
+        for key, ce, kind, target, workers in (
+                ("sjis single", "SJIS", "sjis", "single", (2, 3, 4)), ("sjis part", "SJIS", "sjis", "part", (2, 3, 4)),
+                ("big5 single", "BIG5", "big5", "single", (2, 3, 4)), ("big5 part", "BIG5", "big5", "part", (2, 3, 4)),
+                ("sjisbs single", "SJIS", "sjisbs", "single", (2, 3, 4)),
+                ("sjiseol single", "SJIS", "sjiseol", "single", (2, 3, 4)),
+                ("sjiseol part", "SJIS", "sjiseol", "part", (2, 3, 4)),
+                ("chunknl single", "SJIS", "chunknl", "single", (2,)),
+                ("chunkcr single", "SJIS", "chunkcr", "single", (2, 3, 4))):
+            r[f"2188 {key}"] = _enc_same(edb, ce, ef[kind], target, workers)
+        r["2188 sjistk part"] = _enc_same(edb, "SJIS", ef["sjistk"], "part", cols="txt text, id int")
+        r["2188 cuts"] = " ; ".join([_enc_cuts(edb, "SJIS", ef["sjis"], erows["sjis"]),
+                                     _enc_cuts(edb, "SJIS", ef["sjisbs"], erows["sjisbs"]),
+                                     _enc_cuts(edb, "BIG5", ef["big5"], erows["big5"])])
+        edb.run(f"ALTER DATABASE {ENC_DB} SET client_encoding = 'SJIS'")
+        r["2188 premise default sjis"] = " ".join([
+            str(edb.value("SHOW client_encoding")), rows_of(edb, "UTF8", "utf8txt"), _enc_rowhex(edb, 1)])
+        for target in ("single", "part"):
+            r[f"2188 default sjis {target}"] = _enc_same(edb, "UTF8", ef["utf8txt"], target)
+        edb.run(f"ALTER DATABASE {ENC_DB} RESET client_encoding")
+        r["2188 premise controls"] = " ".join([
+            rows_of(edb, "LATIN1", "latin1"), _enc_rowhex(edb, 1), rows_of(edb, "UTF8", "utf8"), _enc_rowhex(edb, 1),
+            rows_of(adb, "SJIS", "ascii"), _enc_rowhex(adb, 1)])
+        for target in ("single", "part"):
+            r[f"2188 control latin1 {target}"] = _enc_same(edb, "LATIN1", ef["latin1"], target)
+            r[f"2188 control utf8 {target}"] = _enc_same(edb, "UTF8", ef["utf8"], target)
+            r[f"2188 control ascii {target}"] = _enc_same(adb, "SJIS", ef["ascii"], target)
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
             a.execute(f"DROP DATABASE IF EXISTS {DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {ENC_DB} WITH (FORCE)")
+            a.execute(f"DROP DATABASE IF EXISTS {ENC_ASCII} WITH (FORCE)")
 
 
 # ---- the splitter ---------------------------------------------------------------
@@ -2403,4 +2592,134 @@ def test_parallel_copy_newline_probe_matches_heap_copy(pcopy, expect, key, name)
     backslash that does not escape a CR, a scan that starts at byte 1). Each probe
     file tells one apart: the load must give heap COPY's outcome, its message after
     "worker N failed: ", and its rows, with 2, 3 and 4 workers."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+# ---- #2188: the caller's client_encoding, and characters that hold 0x5C ------------
+
+def test_parallel_copy_encoding_premise_sjis_and_big5(pcopy, expect):
+    """#2188 premise: the scratch databases have the encodings the checks need, and heap
+    COPY under SJIS and BIG5 reads 83 5c and a5 5c as one character each, so the
+    newline after the next backslash is data."""
+    expect.text(pcopy["2188 premise sjis big5"],
+                "UTF8 SQL_ASCII 2000 rows 2000 rows 6131e382bd0a62 6132e382bd 2000 rows 6131e58a9f0a62"
+                " 2000 rows 6131e382bd",
+                "#2188 premise: the scratch databases are UTF8 and SQL_ASCII; under client_encoding SJIS heap COPY"
+                " loads 2000 rows from sjis and from sjisbs and stores sjis row 1 as 61 31 e3 82 bd 0a 62 and row 2"
+                " as 61 32 e3 82 bd; under BIG5 2000 rows from big5, row 1 61 31 e5 8a 9f 0a 62; under SJIS 2000"
+                " rows from sjistk, row 1 61 31 e3 82 bd")
+
+
+def test_parallel_copy_encoding_premise_first_line_and_chunk_files(pcopy, expect):
+    expect.text(pcopy["2188 premise eol chunk"], "2000 rows 61e382bd0d 9363 rows 835c5c0a 4000 rows 835c5c0d0a",
+                "#2188 premise: under client_encoding SJIS heap COPY loads 2000 rows from sjiseol and stores row 1"
+                " as 61 e3 82 bd 0d; 9363 rows from chunknl, whose bytes 65535-65538 are 83 5c 5c 0a, and 4000 from"
+                " chunkcr, whose bytes 65535-65539 are 83 5c 5c 0d 0a")
+
+
+ENC_LOADS = (
+    ("2188 sjis single", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 sjis part", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 big5 single", "2:ok 3:ok 4:ok", "#2188 BIG5, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 big5 part", "2:ok 3:ok 4:ok", "#2188 BIG5, a two-byte character whose second byte is 0x5C before an"
+     " escaped newline, and a backslash before such a character / partitioned, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+    ("2188 sjistk part", "2:ok 3:ok 4:ok", "#2188 SJIS, a two-byte character whose second byte is 0x5C right"
+     " before the TAB that ends the field before the key / partitioned, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+    ("2188 sjisbs single", "2:ok 3:ok 4:ok", "#2188 SJIS, a backslash before a two-byte character whose second"
+     " byte is 0x5C, right before every newline / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and"
+     " content"),
+    ("2188 sjiseol single", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character whose second byte"
+     " is 0x5C before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's outcome, rows"
+     " and content"),
+    ("2188 sjiseol part", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character whose second byte"
+     " is 0x5C before an escaped CR, in an LF file / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows"
+     " and content"),
+    ("2188 chunknl single", "2:ok", "#2188 SJIS, a two-byte character split across two 64 KiB scan reads, before"
+     " an escaped newline / single table, 2 workers: heap COPY's outcome, rows and content"),
+    ("2188 chunkcr single", "2:ok 3:ok 4:ok", "#2188 SJIS, the first line's two-byte character split across two"
+     " 64 KiB scan reads, before an escaped CR, in an LF file / single table, 2, 3 and 4 workers: heap COPY's"
+     " outcome, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,want,name", ENC_LOADS, ids=[k[5:].replace(" ", "-") for k, _, _ in ENC_LOADS])
+def test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash(pcopy, expect, key, want, name):
+    """#2188: under SJIS and BIG5 the second byte of a character can be 0x5c. The
+    splitters, the first-line scan and the loaders must read it as COPY FROM does,
+    part of a character and not a backslash, so the load gives heap COPY's outcome,
+    rows and row hash. chunknl and chunkcr put the character across the edge of the
+    first 64 KiB scan read."""
+    expect.text(pcopy[key], want, name)
+
+
+def test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c(pcopy, expect):
+    """#2188: file_split_offsets reads the file in the session's client_encoding, so it
+    cuts only where a record starts, and a backslash before a character that ends in
+    0x5c does not hide every newline (no empty range)."""
+    expect.text(pcopy["2188 cuts"], "2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok ; 2:ok 3:ok 4:ok",
+                "#2188 SJIS and BIG5: file_split_offsets cuts sjis, sjisbs and big5 only at record starts, with no"
+                " range empty, for 2, 3 and 4 workers")
+
+
+def test_parallel_copy_encoding_premise_database_default(pcopy, expect):
+    expect.text(pcopy["2188 premise default sjis"], "SJIS 2000 rows 636166c3a931",
+                "#2188 premise: with the database's default client_encoding set to SJIS a new session's is SJIS,"
+                " and heap COPY under the caller's UTF8 loads 2000 rows from utf8txt and stores row 1 as 63 61 66"
+                " c3 a9 31")
+
+
+ENC_DEFAULT = (
+    ("2188 default sjis single", "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8"
+     " text / single table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 default sjis part", "#2188 the database's default client_encoding SJIS and the caller's UTF8, UTF8"
+     " text / partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", ENC_DEFAULT, ids=[k[18:] for k, _ in ENC_DEFAULT])
+def test_parallel_copy_loaders_read_the_callers_client_encoding(pcopy, expect, key, name):
+    """#2188: the loaders read the file in the caller's client_encoding, not in their
+    own, which is the database's default (SJIS here), so they store the text the
+    caller's COPY FROM stores."""
+    expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
+
+
+def test_parallel_copy_encoding_premise_controls(pcopy, expect):
+    expect.text(pcopy["2188 premise controls"], "2000 rows 61c3a90a62 2000 rows 61c3a90a62 2000 rows 61830a62",
+                "#2188 premise: heap COPY loads 2000 rows each from latin1 under LATIN1, utf8 under UTF8 and, in the"
+                " SQL_ASCII database, ascii under SJIS, storing row 1 as 61 c3 a9 0a 62, 61 c3 a9 0a 62 and 61 83"
+                " 0a 62")
+
+
+ENC_CONTROLS = (
+    ("2188 control latin1 single", "#2188 control: LATIN1, a high-bit byte before an escaped newline / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control latin1 part", "#2188 control: LATIN1, a high-bit byte before an escaped newline / partitioned,"
+     " 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control utf8 single", "#2188 control: UTF8, a two-byte character before an escaped newline / single"
+     " table, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control utf8 part", "#2188 control: UTF8, a two-byte character before an escaped newline /"
+     " partitioned, 2, 3 and 4 workers: heap COPY's outcome, rows and content"),
+    ("2188 control ascii single", "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a"
+     " newline, which COPY reads as an escaped newline / single table, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+    ("2188 control ascii part", "#2188 control: a SQL_ASCII database under client_encoding SJIS, 83 5c before a"
+     " newline, which COPY reads as an escaped newline / partitioned, 2, 3 and 4 workers: heap COPY's outcome,"
+     " rows and content"),
+)
+
+
+@pytest.mark.parametrize("key,name", ENC_CONTROLS, ids=[k[13:].replace(" ", "-") for k, _ in ENC_CONTROLS])
+def test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so(pcopy, expect, key, name):
+    """#2188 controls: where 0x5c after a high-bit byte IS a backslash -- LATIN1, UTF8,
+    and SJIS in a SQL_ASCII database, which core does not convert -- the load still
+    gives heap COPY's outcome, rows and row hash."""
     expect.text(pcopy[key], "2:ok 3:ok 4:ok", name)
