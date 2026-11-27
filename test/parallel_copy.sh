@@ -2375,17 +2375,27 @@ dk_early() {	# TARGET LOCKED -> "what the caller waited on || load | rows | prep
 		case "$seen" in "caller Lock:relation, workers 0") break ;; esac
 		sleep 0.05
 	done
+	# and it stays so for a second: no worker starts while the caller waits (a
+	# caller that locked after starting the coordinator could read the first
+	# sample before the coordinator had started)
+	if [ "$seen" = "caller Lock:relation, workers 0" ]; then
+		for _ in $(seq 20); do
+			sleep 0.05
+			local now="caller $(q "SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'"), workers $(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")"
+			[ "$now" = "$seen" ] || { seen="then $now"; break; }
+		done
+	fi
 	wait "$lp"; wait
 	printf '%s || %s | %s rows | %s prepared\n' "$seen" "$(cat "$DATADIR/dk_e.out")" \
 		"$(q "SELECT count(*) FROM $1")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
 }
 de_got="$(dk_early t_dl t_dl)"
-check "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager before any worker starts (#2229)" \
+check "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager, with no worker started, for a second (#2229)" \
 	"${de_got%% || *}" "caller Lock:relation, workers 0"
 check "control: a parallel_copy that only waits for another session's SHARE on the target, with no cycle, loads once the lock is released (#2229)" \
 	"${de_got#* || }" "no error (5000) | 5000 rows | 0 prepared"
 de_got="$(dk_early t_dlp t_dlp_2)"
-check "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager before any worker starts (#2229)" \
+check "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager, with no worker started, for a second (#2229)" \
 	"${de_got%% || *}" "caller Lock:relation, workers 0"
 check "control: a parallel_copy that only waits for another session's SHARE on a partition, with no cycle, loads once the lock is released (#2229)" \
 	"${de_got#* || }" "no error (5000) | 5000 rows | 0 prepared"
@@ -2523,11 +2533,11 @@ check "parallel_copy whose caller holds FOR UPDATE a referenced row only the sec
 # exited without reporting a result" in 4 of 6 runs. A inserts into t_df3 (no
 # storage row yet), waits until a storage-row lock request queues (class 102),
 # then asks for SHARE on t_df4, which B wrote before its load into t_df3.
-dk_fresh() {	# CALLER-DEADLOCK-TIMEOUT -> "B's error | A's error | time | consistency | prepared"
+dk_fresh() {	# SESSIONS-DEADLOCK-TIMEOUT (A's and B's) -> "B's error | A's error | time | consistency | prepared"
 	local t0 ms ea eb rows rows4
 	psql_run "DROP TABLE IF EXISTS t_df3, t_df4; CREATE TABLE t_df3 (id int, txt text) USING pgcolumnar;
 	          CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a');" >/dev/null
-	dk_sess pcopy_dk_f -c "SET statement_timeout = '20s'" -c "BEGIN" -c "INSERT INTO t_df3 VALUES (0, 'a')" \
+	dk_sess pcopy_dk_f -c "SET statement_timeout = '20s'" -c "SET deadlock_timeout = '$1'" -c "BEGIN" -c "INSERT INTO t_df3 VALUES (0, 'a')" \
 		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
 		-c "LOCK TABLE t_df4 IN SHARE MODE" -c "COMMIT" >"$DATADIR/dk_fa.out" &
 	local ap=$!
@@ -2562,9 +2572,9 @@ dk_fresh_runs() {	# -> one word per run: ok, or what the run read
 }
 check "a cycle through the coordinator's storage-row step on a fresh target gives 40P01 on one side in each of 3 runs, never XX000, and both tables stay consistent (#2229)" \
 	"$(dk_fresh_runs)" "ok ok ok"
-# With the caller's deadlock_timeout at 5 s the coordinator's 1 s check runs
+# With deadlock_timeout at 5 s in both sessions the coordinator's 1 s check runs
 # first, so the coordinator is the victim every time.
-check "when the coordinator is the victim of that cycle (the caller's deadlock_timeout 5 s), the caller reports its 40P01, not XX000 (#2229)" \
+check "when the coordinator is the victim of that cycle (deadlock_timeout 5 s in both sessions), the caller reports its 40P01, not XX000 (#2229)" \
 	"$(dk_fresh 5s)" "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent | 0 prepared"
 psql_run "DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar;" >/dev/null
 check "parallel_copy into a fresh target whose caller holds ACCESS EXCLUSIVE on pgcolumnar.storage gets 40P01 within 5 s, not XX000 (#2229)" \

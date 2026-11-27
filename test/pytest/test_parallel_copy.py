@@ -719,6 +719,18 @@ class _Db:
             if seen == "caller Lock:relation, workers 0":
                 break
             time.sleep(0.05)
+        if seen == "caller Lock:relation, workers 0":
+            # and it stays so for a second: no worker starts while the caller waits
+            for _ in range(20):
+                time.sleep(0.05)
+                wait = self.value("SELECT coalesce(wait_event_type, '') || ':' || coalesce(wait_event, '') "
+                                  "FROM pg_stat_activity WHERE application_name = 'pcopy_dk_e'")
+                workers = self.value("SELECT count(*) FROM pg_stat_activity "
+                                     "WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")
+                now = f"caller {wait if isinstance(wait, str) else ''}, workers {workers}"
+                if now != seen:
+                    seen = f"then {now}"
+                    break
         t.join()
         holder.join()
         return seen, (f"{out.get('load', 'no result')} | {self.value(f'SELECT count(*) FROM {target}')} rows | "
@@ -799,7 +811,8 @@ class _Db:
                  "CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a')")
         out = {}
         a = threading.Thread(target=lambda: out.setdefault("a", self._session("pcopy_dk_f", [
-            "SET statement_timeout = '20s'", "BEGIN", "INSERT INTO t_df3 VALUES (0, 'a')",
+            "SET statement_timeout = '20s'", f"SET deadlock_timeout = '{caller_deadlock_timeout}'", "BEGIN",
+            "INSERT INTO t_df3 VALUES (0, 'a')",
             "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
             "AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END $$",
             "LOCK TABLE t_df4 IN SHARE MODE", "COMMIT"])))
@@ -3814,11 +3827,11 @@ def test_parallel_copy_lock_timeout_bounds_the_wait(pcopy, expect, key, name):
 
 @pytest.mark.parametrize("key,name", [
     ("2229 early",
-     "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager before any"
-     " worker starts (#2229)"),
+     "a parallel_copy waiting for another session's SHARE on the target waits in the lock manager, with no worker"
+     " started, for a second (#2229)"),
     ("2229 early partition",
-     "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager before any"
-     " worker starts (#2229)"),
+     "a parallel_copy waiting for another session's SHARE on a partition waits in the lock manager, with no"
+     " worker started, for a second (#2229)"),
 ], ids=["target", "partition"])
 def test_parallel_copy_waits_in_the_lock_manager_before_any_worker(pcopy, expect, key, name):
     expect.text(pcopy[key][0], "caller Lock:relation, workers 0", name)
@@ -3908,7 +3921,7 @@ def test_parallel_copy_a_coordinator_victim_reports_40p01(pcopy, expect):
     expect.text(pcopy["2229 fresh coordinator"],
                 "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent"
                 " | 0 prepared",
-                "when the coordinator is the victim of that cycle (the caller's deadlock_timeout 5 s), the caller"
+                "when the coordinator is the victim of that cycle (deadlock_timeout 5 s in both sessions), the caller"
                 " reports its 40P01, not XX000 (#2229)")
 
 
