@@ -722,6 +722,11 @@ true until the next version shipped.
   and a NULLS NOT DISTINCT unique index with an INCLUDE column. A caller without
   INSERT still gets 42501 first, a URL still gets the refusal for remote files
   first, and `dedup => true` still gets the refusal and its hint.
+  On PostgreSQL 18 and later a check also covers a temporal primary key,
+  `PRIMARY KEY (id, during WITHOUT OVERLAPS)`, whose one index is both unique
+  and exclusion (#2200); it needs btree_gist and is a skip before 18. With the
+  refusal testing `indisunique != indisexclusion`, every other check passed and
+  that load ran into a 10 s statement_timeout (57014).
 - `iceberg_scan`, `iceberg_rest_scan` and the `pgcolumnar_iceberg` foreign
   table now refuse an Iceberg field that has an `initial-default` (#2087).
   Format-version 3 lets a column added to a table name the value that older data

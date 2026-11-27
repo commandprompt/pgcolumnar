@@ -2310,46 +2310,50 @@ guard_tests 897
 # test_parallel_copy_own_write_refusal_covers_the_tree_and_keeps_its_order (4 parametrized: a later partition and a
 # second-level leaf are refused naming it, 55000 before #2080's 0A000, #2183's refusal before this one), by
 # collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 5755 -> 5758 for #2077 in test_native_parquet_streaming.py: a data page with no values
+# cluster_tests 5755 -> 5756 for #2200's test in test_parallel_copy.py (parallel_copy refuses a single
+# table with a temporal primary key, whose index is both unique and exclusion, on PostgreSQL 18 and later),
+# by collection of the files NO_CLUSTER does not name, as ci.yml selects them: 5721 tests collected (5720 on
+# main 91637726).
+# cluster_tests 5756 -> 5759 for #2077 in test_native_parquet_streaming.py: a data page with no values
 # reads (test_parquet_streaming_data_page_with_no_values_reads,
 # test_parquet_streaming_one_empty_data_page_between_data_pages_reads) and a run of 1000 is refused
 # (test_parquet_streaming_run_of_empty_data_pages_is_rejected), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5401 tests collected.
-# cluster_tests 5758 -> 5769 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
+# cluster_tests 5759 -> 5770 for #2077's review fixes in test_native_parquet_streaming.py: 11 tests pin
 # the run limit at 16/17, the reset after a page with values, empty pages with no body (read on a
 # REQUIRED v1 column and as v2, refused on a nullable v1 column), a garbage body, an INDEX_PAGE stepped
 # over and a run of 17 refused, a DATA_PAGE with no DataPageHeader, and the snappy list<int64> file,
 # by collection: every file not in NO_CLUSTER, `--collect-only -q`: 5412 tests collected.
-# cluster_tests 5769 -> 5776 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
+# cluster_tests 5770 -> 5777 for #2077's second review round in test_native_parquet_streaming.py: 7 tests
 # pin a run of 16 INDEX_PAGEs read, a page of an unknown type stepped over, and the refusal of a
 # DataPageHeader without num_values, an empty DataPageHeader struct and an empty DataPageHeaderV2
 # struct, a DATA_PAGE_V2 with no header, and a negative num_values, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5419 tests collected.
-# cluster_tests 5776 -> 5786 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5777 -> 5787 for #2077's third review round in test_native_parquet_streaming.py: 10 tests
 # pin that a page's count comes only from the header struct of its own type (four files), a DATA_PAGE_V2
 # with values read, the refusal of a DataPageHeaderV2 without num_values, of a DATA_PAGE with only a
 # DictionaryPageHeader (two files) and of an INDEX_PAGE with a negative compressed_size, and a pyarrow
 # run of one-value pages read, by collection: every file not in NO_CLUSTER, `--collect-only -q`:
 # 5509 tests collected.
-# cluster_tests 5786 -> 5796 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
+# cluster_tests 5787 -> 5797 for #2077's fourth review round in test_native_parquet_streaming.py: 10 tests
 # pin the refusal of a header that repeats its own struct (v1 and v2), of a data page with only the other
 # version's struct (both ways, and an empty own struct beside a full v2 struct), the encoding and the
 # dictionary count taken by page type, the run that empty data pages and INDEX_PAGEs share (17 refused,
 # 16 read), and a DATA_PAGE_V2 on a list column read, by collection: every file not in NO_CLUSTER,
 # `--collect-only -q`: 5536 tests collected.
-# cluster_tests 5796 -> 5805 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
+# cluster_tests 5797 -> 5806 for #2077's fifth review round in test_native_parquet_streaming.py: 9 tests
 # pin the refusal of a struct that repeats its own num_values (v1 and v2), of a repeated complete struct
 # (v1 and v2), a run of 16 empty DATA_PAGE_V2 pages read and 17 refused, a struct of the other version
 # given twice ignored (both ways), and the refusal of a DATA_PAGE_V2 with a negative num_values, by
 # collection: every file not in NO_CLUSTER, `--collect-only -q`: 5647 tests collected.
-# cluster_tests 5805 -> 5816 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
+# cluster_tests 5806 -> 5817 for #2077's sixth review round in test_native_parquet_streaming.py: 11 tests
 # pin the refusal of a repeated num_values whose last value is not 0 (v1 and v2), of a Thrift field id
 # outside int16 (65537 and -65535, v1 and v2, and 32769 from a short-form delta), the read of an unknown
 # field id 32767, the read of a page whose other-version struct repeats num_values (both ways), and a
 # dictionary page that does not reset the run of empty pages, by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5725 tests collected.
-# cluster_tests 5816 -> 5821 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
+# cluster_tests 5817 -> 5822 for #2077's seventh review round in test_native_parquet_streaming.py: 5 tests
 # pin that a wide long-form field id is refused, not narrowed (65537 and -65535 in a PageHeader, which
 # narrow to the page type), and the edges of the int16 range (32768 and -32769 refused, -32768 read), by
-# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5821 tests collected.
-cluster_tests 5821
+# collection: every file not in NO_CLUSTER, `--collect-only -q`: 5822 tests collected.
+cluster_tests 5822
