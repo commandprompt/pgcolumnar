@@ -1516,6 +1516,8 @@ write('st_mval', pa.array([[('k', 1.5)]], pa.map_(pa.string(), pa.float64())), (
 write('st_ncol', pa.array([5, 6], pa.int64()), (1,))
 write('st_nokids', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (5,))
 write('st_nokids_nt', pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (3, 5))
+write('st_snokids', pa.array([{'a': 1.5}, {'a': -2.25}], pa.struct([('a', pa.float64())])), (0,), (5,))
+write('st_mnokids', pa.array([[('k', 1.5)], [('j', 2.5)]], pa.map_(pa.string(), pa.float64())), (0,), (5,))
 PY
 	chmod 644 "$PGC_WORKDIR"/st_*.arrows
 	psql_run "CREATE TYPE st_kv AS (k text, v bigint); CREATE TYPE st_s AS (a bigint);"
@@ -1574,6 +1576,12 @@ PY
 	check "import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)" \
 		"$(st_import st_nokids 'bigint[]') / $(st_import st_nokids_nt 'bigint[]')" \
 		'tag=12 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0 / tag=12 type=absent children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a list with no child fields|0'
+	# The review of #2224 at b9747c41: the refusal above held for lists only in
+	# the checks, so a rewrite that returned for a struct or a map passed them
+	# all, and struct<a float64> imported into (a bigint) as bit patterns again.
+	check "import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)" \
+		"$(st_import st_snokids st_s) / $(st_import st_mnokids 'st_kv[]')" \
+		'tag=13 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a struct with no child fields|0 / tag=17 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a map with no child fields|0'
 else
 	for _ai_st in \
 			"import_arrow refuses a float64 field with no type table for a bigint column with 42804, not stored as bit patterns (#2186)" \
@@ -1588,7 +1596,8 @@ else
 			"import_arrow refuses a float64 field with neither a type tag nor a type table for a bigint column with 42804 (#2186)" \
 			"import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)" \
 			"import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)" \
-			"import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)"; do
+			"import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)" \
+			"import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)"; do
 		check_skip "$_ai_st" \
 			"SKIP  $_ai_st (pyarrow not available)" \
 			"pyarrow not available"

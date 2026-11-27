@@ -2518,4 +2518,7 @@ guard_tests 897
 # cluster_tests 6097 -> 6101 for the review of #2224 (#2186): four tests in test_arrow_import.py, a field with
 # neither tag nor type table, a struct child and a map value, a second column, and a list with no children vector,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): 6101 collected.
-cluster_tests 6101
+# cluster_tests 6101 -> 6102 for the review of #2224 at b9747c41 (#2186): one test in test_arrow_import.py, a
+# struct or map field with no children vector, by collection over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it): 6102 collected.
+cluster_tests 6102

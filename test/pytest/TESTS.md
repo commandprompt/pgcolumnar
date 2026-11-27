@@ -7502,6 +7502,7 @@ The pytest twin of `test/arrow_import.sh` (ported for #1341), every check by the
 | `test_a_struct_child_or_map_value_with_no_type_table_is_refused` | (#2186, review of #2224) `import_arrow refuses a struct child and a map value with no type table with 42804, not stored as bit patterns (#2186)`, both in one check; unpatched, both imported |
 | `test_a_second_column_with_no_type_table_is_malformed` | (#2186, review of #2224) `import_arrow refuses a second column with no type table as malformed with XX001, naming that column (#2186)`; unpatched, 2 rows imported |
 | `test_a_list_field_with_no_children_vector_is_malformed` | (#2186, review of #2224) `import_arrow refuses a list field with no children vector as malformed with XX001, with or without a type table (#2186)`; unpatched, both imported 2 rows |
+| `test_a_struct_or_map_field_with_no_children_vector_is_malformed` | (#2186, review of #2224 at b9747c41) `import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored as bit patterns (#2186)`, both in one check; red under a rewrite that refuses a list only, by node (`listkids`) or by tag (`listtag`) |
 
 ## 109. test_entry_point_privilege.py: every relation-taking entry point has a decided privilege bar
 

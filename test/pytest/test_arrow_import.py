@@ -1235,6 +1235,8 @@ def _strip_fixtures(pa, out):
     write("st_ncol", pa.array([5, 6], pa.int64()), (1,))
     write("st_nokids", pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (5,))
     write("st_nokids_nt", pa.array([[1.5], [2.5]], pa.list_(pa.float64())), (0,), (3, 5))
+    write("st_snokids", pa.array([{"a": 1.5}, {"a": -2.25}], pa.struct([("a", pa.float64())])), (0,), (5,))
+    write("st_mnokids", pa.array([[("k", 1.5)], [("j", 2.5)]], pa.map_(pa.string(), pa.float64())), (0,), (5,))
     return report
 
 
@@ -1442,3 +1444,24 @@ def test_a_list_field_with_no_children_vector_is_malformed(pgc_conn, server_dir,
                 f"tag=12 type=present children=absent|{nokids} / tag=12 type=absent children=absent|{nokids}",
                 "import_arrow refuses a list field with no children vector as malformed with XX001, with or without a"
                 " type table (#2186)")
+
+
+def test_a_struct_or_map_field_with_no_children_vector_is_malformed(pgc_conn, server_dir, expect):
+    """The review of #2224 at b9747c41: the children-vector refusal was checked for
+    lists only, so a rewrite that returned for a struct or a map passed every check,
+    and struct<a float64> imported into (a bigint) as bit patterns again."""
+    name = ("import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored"
+            " as bit patterns (#2186)")
+    rep = _strip_pa(expect, name, server_dir)
+    if rep is None:
+        return
+    conn = pgc_conn
+    _run(conn, "DROP TYPE IF EXISTS st_s CASCADE", "CREATE TYPE st_s AS (a bigint)",
+         "DROP TYPE IF EXISTS st_kv CASCADE", "CREATE TYPE st_kv AS (k text, v bigint)")
+    expect.text(_st_import(conn, server_dir, rep, "st_snokids", "st_s") + " / "
+                + _st_import(conn, server_dir, rep, "st_mnokids", "st_kv[]"),
+                'tag=13 type=present children=absent|XX001 columnar: malformed Arrow IPC file: Arrow column "v" holds a'
+                ' struct with no child fields|0 / tag=17 type=present children=absent|XX001 columnar: malformed Arrow'
+                ' IPC file: Arrow column "v" holds a map with no child fields|0',
+                "import_arrow refuses a struct or map field with no children vector as malformed with XX001, not stored"
+                " as bit patterns (#2186)")

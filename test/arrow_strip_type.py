@@ -11,17 +11,17 @@
 # with this helper.
 #
 # How it works: the first message of a stream is the Schema, framed as a
-# 0xFFFFFFFF continuation, a 4-byte metadata length and a FlatBuffer. The helper
-# walks Message -> Schema -> fields -> Field (and Field.children for a path
-# longer than one) to the chosen Field table. A FlatBuffers table finds its
-# fields through a vtable, and a slot whose vtable entry is 0 is absent. The
-# helper copies that Field's vtable to the end of the Schema metadata, zeroes
-# slot 3 (`type`) in the copy, and points the Field at the copy. Asked to, it
-# zeroes slot 2 (`type_type`) or slot 5 (`children`) in the copy as well. It never edits
-# a vtable in place, because pyarrow shares one vtable between identical
-# tables, and an edit there would strip the type of other fields too. The
-# metadata length grows by the padded copy. The Schema message has no body, so
-# nothing else moves.
+# 0xFFFFFFFF continuation, a 4-byte metadata length and a FlatBuffer. The
+# helper walks Message -> Schema -> fields -> Field (and Field.children for a
+# path longer than one) to the chosen Field table. A FlatBuffers table finds
+# its fields through a vtable, and a slot whose vtable entry is 0 is absent.
+# The helper copies that Field's vtable to the end of the Schema metadata,
+# zeroes slot 3 (`type`) in the copy, and points the Field at the copy. Asked
+# to, it zeroes slot 2 (`type_type`) or slot 5 (`children`) in the copy as
+# well. It never edits a vtable in place, because pyarrow shares one vtable
+# between identical tables, and an edit there would strip the type of other
+# fields too. The metadata length grows by the padded copy. The Schema message
+# has no body, so nothing else moves.
 #
 # The helper then reads the result back and reports, for the chosen field, its
 # tag and whether a type table is still present. A caller compares that report
@@ -88,23 +88,28 @@ def _field(meta, path):
 
 
 def _schema_frame(data):
-    """-> (start of the metadata, its length) for the stream's first message."""
+    """-> (start of the metadata, its length) for the stream's first
+    message."""
     if data[:4] != CONT:
         raise SystemExit("arrow_strip_type: not an Arrow IPC stream")
     return 8, _i32(data, 4)
 
 
 def describe(data, path, children=False):
-    """-> 'tag=<type_type> type=<present|absent>' for the field `path` names, and
-    ' children=<present|absent>' after it when `children` is true."""
+    """-> 'tag=<type_type> type=<present|absent>' for the field `path`
+    names, and ' children=<present|absent>' after it when `children` is
+    true."""
     start, mlen = _schema_frame(data)
     meta = data[start:start + mlen]
     tab = _field(meta, path)
     tp = _slot(meta, tab, FIELD_TYPE_TYPE)
     tag = meta[tp] if tp else 0
-    out = "tag=%d type=%s" % (tag, "present" if _slot(meta, tab, FIELD_TYPE) else "absent")
+    def has(slot):
+        return "present" if _slot(meta, tab, slot) else "absent"
+
+    out = "tag=%d type=%s" % (tag, has(FIELD_TYPE))
     if children:
-        out += " children=%s" % ("present" if _slot(meta, tab, FIELD_CHILDREN) else "absent")
+        out += " children=%s" % has(FIELD_CHILDREN)
     return out
 
 
@@ -134,7 +139,9 @@ def main():
     if len(sys.argv) not in (4, 5):
         raise SystemExit("usage: arrow_strip_type.py IN OUT PATH [SLOTS]")
     path = [int(x) for x in sys.argv[3].split(".")]
-    slots = [int(x) for x in sys.argv[4].split(",")] if len(sys.argv) == 5 else [FIELD_TYPE]
+    slots = [FIELD_TYPE]
+    if len(sys.argv) == 5:
+        slots = [int(x) for x in sys.argv[4].split(",")]
     with open(sys.argv[1], "rb") as f:
         data = strip(f.read(), path, slots)
     with open(sys.argv[2], "wb") as f:
