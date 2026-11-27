@@ -676,7 +676,7 @@ mirror at 500000 rows, and nothing ran it. It is in the list now, and its pytest
 twin runs in the pytest-cluster job. The nightly runs the suite on 15 to 18 on
 x86_64 and on 18 on aarch64. The twin runs at 200000 rows in CI
 (`SCALE_N=200000` in the pytest-cluster jobs), because those jobs run close to
-their 40-minute limit. The suite checks that every `recluster` and
+their time limit. The suite checks that every `recluster` and
 `compact_rewrite` call returned a group count. A failed call rolls back, so
 parity still holds and the file stops growing, and only that check sees it.
 Each of the four reclaim rounds also has two checks. The delete must remove its
@@ -691,7 +691,7 @@ at most 120 MB of memory and its data directory 301 MB of disk.
 suite matrix across 15 to 18 on x86_64, and the current major on aarch64. The
 nightly run also includes the ASAN and UBSAN sanitizer gate, against an
 instrumented PostgreSQL, and the coverage report. The sanitizer gate,
-`test/pytest/run_san.py`, runs the pytest twins of 24 suites with every
+`test/pytest/run_san.py`, runs the pytest twins of 25 suites with every
 violation fatal. Each instrumented process writes its report to a file
 (`log_path`), and a report fails its suite even when every test passed (#2038). It also runs the
 extension-upgrade guard. That guard builds the previous release on PostgreSQL
