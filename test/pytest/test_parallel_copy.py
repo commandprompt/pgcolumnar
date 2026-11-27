@@ -479,6 +479,43 @@ class _Db:
         return (f"{got} | {out.get('ddl', 'no result')} | {self.value(f'SELECT count(*) FROM {table}')} | "
                 f"leak {self.value(LEAK)}")
 
+    def dedup_retry_probe(self, path, table):
+        """-> "first error | retry | rows | prepared": another session holds EXCLUSIVE on
+        pgcolumnar.load_fingerprint for 8 s while a dedup load runs under a 3 s
+        statement_timeout; then the same file is loaded again with dedup (#2219)."""
+        held = threading.Event()
+
+        def hold():
+            try:
+                with psycopg.connect(self.dsn, autocommit=True) as lk:
+                    lk.execute("BEGIN")
+                    lk.execute("LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE")
+                    held.set()
+                    lk.execute("SELECT pg_sleep(8)")
+                    lk.execute("COMMIT")
+            except psycopg.Error:
+                held.set()
+
+        holder = threading.Thread(target=hold)
+        holder.start()
+        held.wait(10)
+        first = self.remote_refusal(
+            f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)", timeout="3s")
+        holder.join()
+        self._no_coordinator()
+        notices = []
+        try:
+            with psycopg.connect(self.dsn, autocommit=True, **_timeout("30s")) as conn:
+                conn.add_notice_handler(lambda d: notices.append(d.message_primary or ""))
+                retry = conn.execute(
+                    f"SELECT pgcolumnar.parallel_copy('{table}'::regclass, '{path}', 2, dedup => true)").fetchone()[0]
+        except psycopg.Error as exc:
+            retry = query_error(_message(exc))
+        skip = any(f'skipped a load already applied to "{table}"' in n for n in notices)
+        return (f"first {str(first).split(' ')[0]} | retry {retry} "
+                f"{'with' if skip else 'without'} the skip NOTICE | "
+                f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
+
     def copy_in(self, table, data):
         try:
             with psycopg.connect(self.dsn, autocommit=True) as conn:
@@ -1540,6 +1577,8 @@ def pcopy(pgc_cluster, server_dir):
         r["hold guc"] = db.ddl_outcome("SET pgcolumnar.parallel_copy_open_hold_ms = 1",
                                        options="-c role=pcopy_noins")
         r["lost one of three"] = db.lost_one_of_three(f, "t_lost3")
+        db.run("CREATE TABLE t_rec (id int, txt text) USING pgcolumnar")
+        r["dedup retry"] = db.dedup_retry_probe(f, "t_rec")
         yield r
     finally:
         with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
@@ -2580,3 +2619,11 @@ def test_parallel_copy_one_lost_loader_keeps_the_wait_for_the_others(pcopy, expe
                 " | no error (CREATE INDEX) | 0 | leak 0",
                 "with 3 workers, one loader lost before it opens the table and a CREATE INDEX queued after the first,"
                 " the load fails promptly instead of hanging (#2187)")
+
+
+def test_parallel_copy_dedup_record_survives_a_cancel_after_commit(pcopy, expect):
+    """The second review of #2219: a cancel that arrives after the rows commit must not
+    stop the fingerprint record, or a dedup retry loads the file twice."""
+    expect.text(pcopy["dedup retry"], "first 57014 | retry 0 with the skip NOTICE | 5000 rows | 0 prepared",
+                "a dedup load cancelled after its rows commit still records the fingerprint: a retry of the same file"
+                " returns 0 with the skip NOTICE and the table holds the file once (#2187)")

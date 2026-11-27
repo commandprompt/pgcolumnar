@@ -1826,4 +1826,34 @@ lost_one_of_three() {	# -> "load | ddl | rows | leak"
 check "with 3 workers, one loader lost before it opens the table and a CREATE INDEX queued after the first, the load fails promptly instead of hanging (#2187)" \
 	"$(lost_one_of_three)" \
 	"XX000 pgcolumnar.parallel_copy worker N failed: loader exited without reporting a result | no hint | no error (CREATE INDEX) | 0 | leak 0"
+
+# 4. A cancel after the rows commit must not stop the fingerprint record (the
+#    second review of #2219). Another session holds EXCLUSIVE on
+#    pgcolumnar.load_fingerprint for 8 s: the check's ACCESS SHARE passes, the
+#    rows commit, and the record waits. The caller's 3 s statement_timeout then
+#    cancels the call. The record must still happen, so a dedup retry of the
+#    same file is refused with the skip NOTICE and the table holds the file once.
+psql_run "DROP TABLE IF EXISTS t_rec; CREATE TABLE t_rec (id int, txt text) USING pgcolumnar;" >/dev/null
+dedup_retry_probe() {	# -> "first error | retry | rows | prepared"
+	local hp first retry
+	pcopy_psql -c "BEGIN" -c "LOCK pgcolumnar.load_fingerprint IN EXCLUSIVE MODE" -c "SELECT pg_sleep(8)" -c "COMMIT" >/dev/null 2>&1 &
+	hp=$!
+	for _ in $(seq 100); do
+		[ "$(q "SELECT count(*) FROM pg_locks WHERE relation = 'pgcolumnar.load_fingerprint'::regclass AND mode = 'ExclusiveLock' AND granted")" = 1 ] && break
+		sleep 0.05
+	done
+	first="$(PGOPTIONS='-c statement_timeout=3s' remote_refusal "SELECT pgcolumnar.parallel_copy('t_rec'::regclass, '$F', 2, dedup => true)")"
+	wait "$hp"
+	for _ in $(seq 300); do
+		[ "$(q "SELECT count(*) FROM pg_stat_activity WHERE backend_type LIKE 'pgcolumnar parallel_copy%'")" = 0 ] && break
+		sleep 0.1
+	done
+	retry="$(env PATH="$PGC_BINDIR:$PATH" PGOPTIONS='-c statement_timeout=30s' psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -X -At -c "SELECT pgcolumnar.parallel_copy('t_rec'::regclass, '$F', 2, dedup => true)" 2>&1)"
+	printf 'first %s | retry %s %s | %s rows | %s prepared\n' "${first%% *}" "$(grep -v '^NOTICE\|^DETAIL\|^HINT' <<<"$retry" | tail -1)" \
+		"$(grep -q 'skipped a load already applied to "t_rec"' <<<"$retry" && echo 'with the skip NOTICE' || echo 'without the skip NOTICE')" \
+		"$(q "SELECT count(*) FROM t_rec")" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+check "a dedup load cancelled after its rows commit still records the fingerprint: a retry of the same file returns 0 with the skip NOTICE and the table holds the file once (#2187)" \
+	"$(dedup_retry_probe)" "first 57014 | retry 0 with the skip NOTICE | 5000 rows | 0 prepared"
 pgc_summary

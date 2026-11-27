@@ -624,7 +624,9 @@ true until the next version shipped.
   the function now waits for the coordinator first. The coordinator's SIGTERM
   now also cancels its lock waits, so that wait ends even when the coordinator
   waits on a lock the caller holds, such as on `pgcolumnar.load_fingerprint`
-  with `dedup => true`; the load then rolls back. A trigger that does not fire
+  with `dedup => true`; the load then rolls back. A cancel that arrives after
+  the rows commit no longer stops the fingerprint record, so a dedup retry is
+  still refused. A trigger that does not fire
   in the workers' session, such as `ENABLE REPLICA`, is not refused. New internal setting
   `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
   docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
