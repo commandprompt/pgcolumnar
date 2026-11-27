@@ -786,6 +786,44 @@ class _Db:
         return (f"{str(err).split(' ')[0]} | {self._under(took, 5)} | "
                 f"{self.value(f'SELECT count(*) FROM {table}')} rows | {self.value(LEAK)} prepared")
 
+    def dk_fresh(self, path, caller_deadlock_timeout):
+        """-> "B's error | A's error | time | consistency | prepared": A inserts into the
+        fresh t_df3, waits until a storage-row lock request (class 102) queues, then
+        asks for SHARE on t_df4, which B wrote before its 2-worker load into t_df3."""
+        self.run("DROP TABLE IF EXISTS t_df3, t_df4; CREATE TABLE t_df3 (id int, txt text) USING pgcolumnar; "
+                 "CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a')")
+        out = {}
+        a = threading.Thread(target=lambda: out.setdefault("a", self._session("pcopy_dk_f", [
+            "SET statement_timeout = '20s'", "BEGIN", "INSERT INTO t_df3 VALUES (0, 'a')",
+            "DO $$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+            "AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END $$",
+            "LOCK TABLE t_df4 IN SHARE MODE", "COMMIT"])))
+        a.start()
+        self._poll("SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid) "
+                   "WHERE a.application_name = 'pcopy_dk_f' AND l.locktype = 'advisory' AND l.objsubid = 102 "
+                   "AND l.granted", lambda g: isinstance(g, int) and g >= 1)
+        t0 = time.monotonic()
+        out["b"] = self._session("pcopy_dk_g", [
+            "BEGIN", "INSERT INTO t_df4 VALUES (2, 'b')", f"SET deadlock_timeout = '{caller_deadlock_timeout}'",
+            "SET statement_timeout = '10s'", f"SELECT pgcolumnar.parallel_copy('t_df3'::regclass, '{path}', 2)",
+            "COMMIT"])
+        a.join()
+        took = time.monotonic() - t0
+        ea, eb = str(out["a"][0]), str(out["b"][0])
+        got = (self.value("SELECT count(*) FROM t_df3"), self.value("SELECT count(*) FROM t_df4"))
+        same = "consistent" if got == ((5000, 2) if not eb else (1, 1)) else f"t_df3 {got[0]}, t_df4 {got[1]}"
+        return f"B {eb or 'committed'} | A {ea or 'committed'} | {self._under(took, 5)} | {same} | {self.value(LEAK)} prepared"
+
+    def dk_fresh_runs(self, path):
+        """-> one word per run of dk_fresh at the default deadlock_timeout: ok, or what it read."""
+        res = []
+        for _ in range(3):
+            got = self.dk_fresh(path, "1s")
+            ok = (got == "B committed | A 40P01 deadlock detected | under 5 s | consistent | 0 prepared"
+                  or (got.startswith("B 40P01 ") and got.endswith(" | A committed | under 5 s | consistent | 0 prepared")))
+            res.append("ok" if ok else f"[{got}]")
+        return " ".join(res)
+
     def copy_in(self, table, data):
         try:
             with psycopg.connect(self.dsn, autocommit=True) as conn:
@@ -2160,6 +2198,11 @@ def pcopy(pgc_cluster, server_dir):
         r["2216 trigger"] = db.dk_own(f, "LOCK TABLE t_dtg_log IN ACCESS EXCLUSIVE MODE", "t_dtg", 1)
         r["2216 sequence"] = db.dk_own(f, "ALTER SEQUENCE t_dsq_seq RESTART", "t_dsq", 1)
         r["2216 fresh columnar"] = db.dk_own(f, "INSERT INTO t_dcw_log VALUES (0)", "t_dcw", 1)
+        r["2216 loader 1 row"] = db.dk_own(f, "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE", "t_dfk", 2)
+        r["2229 fresh runs"] = db.dk_fresh_runs(f)
+        r["2229 fresh coordinator"] = db.dk_fresh(f, "5s")
+        db.run("DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar")
+        r["2229 storage lock"] = db.dk_own(f, "LOCK pgcolumnar.storage IN ACCESS EXCLUSIVE MODE", "t_dsto", 2)
 
         # ---- #2189: every range keeps the file's newline style ---------------------
         # The shell gives the layout: each file puts its event on a range start of the
@@ -3466,11 +3509,37 @@ def test_parallel_copy_run_lock_waits_are_not_lock_contention(pcopy, expect):
     ("2216 fresh columnar",
      "parallel_copy whose caller wrote a fresh columnar table its INSERT trigger writes gets 40P01 within 5 s,"
      " not a wait until statement_timeout (#2216, #2229)"),
-], ids=["foreign-key", "trigger", "sequence", "fresh-columnar"])
+    ("2216 loader 1 row",
+     "parallel_copy whose caller holds FOR UPDATE a referenced row only the second loader's rows reach gets 40P01"
+     " within 5 s, not a wait until statement_timeout (#2216, #2229)"),
+], ids=["foreign-key", "trigger", "sequence", "fresh-columnar", "second-loader-row"])
 def test_parallel_copy_own_lock_on_a_reached_table_gets_40p01(pcopy, expect, key, name):
     """#2216: the loader waits for the caller in the lock manager, the caller for the
     loader's run lock: a cycle of lock waits, so one side gets 40P01."""
     expect.text(pcopy[key], "40P01 | under 5 s | 0 rows | 0 prepared", name)
+
+
+def test_parallel_copy_fresh_target_cycle_never_gives_xx000(pcopy, expect):
+    """The review of #2244: a cycle through the coordinator's storage-row step picks
+    the caller or the coordinator; the coordinator's error used to reach the caller as
+    XX000 "coordinator exited without reporting a result"."""
+    expect.text(pcopy["2229 fresh runs"], "ok ok ok",
+                "a cycle through the coordinator's storage-row step on a fresh target gives 40P01 on one side in each"
+                " of 3 runs, never XX000, and both tables stay consistent (#2229)")
+
+
+def test_parallel_copy_a_coordinator_victim_reports_40p01(pcopy, expect):
+    expect.text(pcopy["2229 fresh coordinator"],
+                "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent"
+                " | 0 prepared",
+                "when the coordinator is the victim of that cycle (the caller's deadlock_timeout 5 s), the caller"
+                " reports its 40P01, not XX000 (#2229)")
+
+
+def test_parallel_copy_callers_storage_lock_gives_40p01(pcopy, expect):
+    expect.text(pcopy["2229 storage lock"], "40P01 | under 5 s | 0 rows | 0 prepared",
+                "parallel_copy into a fresh target whose caller holds ACCESS EXCLUSIVE on pgcolumnar.storage gets"
+                " 40P01 within 5 s, not XX000 (#2229)")
 
 
 # ---- #2189: every range keeps the file's newline style -----------------------------

@@ -2160,6 +2160,67 @@ check "parallel_copy whose caller restarted the sequence its INSERT trigger call
 # insert in the loader then waits for.
 check "parallel_copy whose caller wrote a fresh columnar table its INSERT trigger writes gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
 	"$(dk_own "INSERT INTO t_dcw_log VALUES (0)" t_dcw 1)" "40P01 | under 5 s | 0 rows | 0 prepared"
+# Only the second loader's rows reach row 4000 of the referenced table, which the
+# caller holds FOR UPDATE: the caller must wait on every loader's run lock, not
+# only the first one's (the review of #2244: a mutant that waited for loader 0
+# only hung here until statement_timeout).
+check "parallel_copy whose caller holds FOR UPDATE a referenced row only the second loader's rows reach gets 40P01 within 5 s, not a wait until statement_timeout (#2216, #2229)" \
+	"$(dk_own "SELECT 1 FROM t_dfk_ref WHERE id = 4000 FOR UPDATE" t_dfk 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
+
+# The coordinator can be the victim too (the review of #2244). On a fresh
+# target its storage-row step waits for another writer's storage-row lock;
+# that writer then waits for a lock the caller holds. Whichever of the caller
+# and the coordinator checks first is chosen. The coordinator's error used to
+# end it before anything was recorded, and the caller reported XX000 "coordinator
+# exited without reporting a result" in 4 of 6 runs. A inserts into t_df3 (no
+# storage row yet), waits until a storage-row lock request queues (class 102),
+# then asks for SHARE on t_df4, which B wrote before its load into t_df3.
+dk_fresh() {	# CALLER-DEADLOCK-TIMEOUT -> "B's error | A's error | time | consistency | prepared"
+	local t0 ms ea eb rows rows4
+	psql_run "DROP TABLE IF EXISTS t_df3, t_df4; CREATE TABLE t_df3 (id int, txt text) USING pgcolumnar;
+	          CREATE TABLE t_df4 (id int, txt text) USING pgcolumnar; INSERT INTO t_df4 VALUES (1, 'a');" >/dev/null
+	dk_sess pcopy_dk_f -c "SET statement_timeout = '20s'" -c "BEGIN" -c "INSERT INTO t_df3 VALUES (0, 'a')" \
+		-c "DO \$\$ BEGIN FOR i IN 1..400 LOOP EXIT WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 102 AND NOT granted); PERFORM pg_sleep(0.02); END LOOP; END \$\$" \
+		-c "LOCK TABLE t_df4 IN SHARE MODE" -c "COMMIT" >"$DATADIR/dk_fa.out" &
+	local ap=$!
+	for _ in $(seq 100); do	# A holds t_df3's storage-row lock (class 102)
+		[ "$(q "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+		        WHERE a.application_name = 'pcopy_dk_f' AND l.locktype = 'advisory' AND l.objsubid = 102 AND l.granted")" -ge 1 ] && break
+		sleep 0.05
+	done
+	t0=$(date +%s%N)
+	dk_sess pcopy_dk_g -c "BEGIN" -c "INSERT INTO t_df4 VALUES (2, 'b')" -c "SET deadlock_timeout = '$1'" \
+		-c "SET statement_timeout = '10s'" -c "SELECT pgcolumnar.parallel_copy('t_df3'::regclass, '$F', 2)" -c "COMMIT" >"$DATADIR/dk_fb.out"
+	wait "$ap"
+	ms=$(dk_ms "$t0")
+	ea="$(dk_err "$DATADIR/dk_fa.out")"; eb="$(dk_err "$DATADIR/dk_fb.out")"
+	rows="$(q "SELECT count(*) FROM t_df3")"; rows4="$(q "SELECT count(*) FROM t_df4")"
+	printf 'B %s | A %s | %s | %s | %s prepared\n' "${eb:-committed}" "${ea:-committed}" "$(dk_under "$ms" 5)" \
+		"$(if [ -z "$eb" ] && [ "$rows $rows4" = "5000 2" ]; then echo consistent
+		   elif [ -n "$eb" ] && [ "$rows $rows4" = "1 1" ]; then echo consistent
+		   else echo "t_df3 $rows, t_df4 $rows4"; fi)" "$(q "SELECT count(*) FROM pg_prepared_xacts")"
+}
+dk_fresh_runs() {	# -> one word per run: ok, or what the run read
+	local r got res=""
+	for r in 1 2 3; do
+		got="$(dk_fresh 1s)"
+		case "$got" in
+			"B committed | A 40P01 deadlock detected | under 5 s | consistent | 0 prepared"|\
+			"B 40P01 "*" | A committed | under 5 s | consistent | 0 prepared") res="$res ok" ;;
+			*) res="$res [$got]" ;;
+		esac
+	done
+	echo "${res# }"
+}
+check "a cycle through the coordinator's storage-row step on a fresh target gives 40P01 on one side in each of 3 runs, never XX000, and both tables stay consistent (#2229)" \
+	"$(dk_fresh_runs)" "ok ok ok"
+# With the caller's deadlock_timeout at 5 s the coordinator's 1 s check runs
+# first, so the coordinator is the victim every time.
+check "when the coordinator is the victim of that cycle (the caller's deadlock_timeout 5 s), the caller reports its 40P01, not XX000 (#2229)" \
+	"$(dk_fresh 5s)" "B 40P01 pgcolumnar.parallel_copy failed: deadlock detected | A committed | under 5 s | consistent | 0 prepared"
+psql_run "DROP TABLE IF EXISTS t_dsto; CREATE TABLE t_dsto (id int, txt text) USING pgcolumnar;" >/dev/null
+check "parallel_copy into a fresh target whose caller holds ACCESS EXCLUSIVE on pgcolumnar.storage gets 40P01 within 5 s, not XX000 (#2229)" \
+	"$(dk_own "LOCK pgcolumnar.storage IN ACCESS EXCLUSIVE MODE" t_dsto 2)" "40P01 | under 5 s | 0 rows | 0 prepared"
 
 # ---- #2189: every range keeps the file's newline style -----------------------
 # COPY FROM takes the newline style (LF or CRLF) from the file's first line and

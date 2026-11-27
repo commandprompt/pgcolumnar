@@ -623,6 +623,9 @@ true until the next version shipped.
   trigger or a sequence now ends with 40P01 within `deadlock_timeout` instead
   of a wait until `statement_timeout` (#2216). These waits on the workers do
   not count against `lock_timeout` and are not reported by `log_lock_waits`.
+  When the deadlock detector picks the coordinator, while it creates a fresh
+  table's storage row, the caller now gets the coordinator's 40P01 with its
+  DETAIL. It used to get XX000 `coordinator exited without reporting a result`.
   docs/limitations.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single

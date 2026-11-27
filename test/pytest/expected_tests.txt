@@ -2562,4 +2562,8 @@ guard_tests 897
 # before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
 # CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
 # lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
-cluster_tests 6186
+# cluster_tests 6186 -> 6190 for the review of #2244 in test_parallel_copy.py: the second-loader row lock (a
+# fifth parametrized #2216 case), three runs of the fresh-target cycle through the coordinator's storage-row
+# step, the coordinator as its victim, and the caller's lock on pgcolumnar.storage, by collection over the
+# cluster files.
+cluster_tests 6190

@@ -1927,39 +1927,6 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 	/* held while it locks the target, below (#2229) */
 	pcopy_take_run_lock(hdr, PCOPY_RUN_COORDINATOR, &hdr->coord_running);
 
-	/*
-	 * Single-table load: pre-create and COMMIT the storage catalog row before any
-	 * loader starts, in the coordinator's own top-level session (the SQL function
-	 * cannot commit). With the row committed, each loader -- which sets
-	 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
-	 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
-	 * coordinator itself leaves the flag off, so this uses the normal create path.
-	 */
-	if (hdr->single_table)
-	{
-		Relation	rel;
-
-		StartTransactionCommand();
-		/*
-		 * StartTransactionCommand does not push an active snapshot, but
-		 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
-		 * systable scans, and those visibility checks require a registered or
-		 * active snapshot. A normal backend has one from the executor; this
-		 * bgworker does not, so push one explicitly. Without it the scan runs
-		 * on an unregistered GetTransactionSnapshot() and aborts an assert
-		 * build the moment the options relation has a matching row (i.e. when
-		 * the target has custom options set).
-		 */
-		PushActiveSnapshot(GetTransactionSnapshot());
-		rel = table_open(hdr->relid, RowExclusiveLock);
-		PgColumnarEnsureStorageRow(rel);
-		table_close(rel, NoLock);
-		PopActiveSnapshot();
-		CommitTransactionCommand();
-	}
-	/* the caller waits for the loaders' run locks from here (#2229) */
-	pcopy_release_run_lock(hdr, PCOPY_RUN_COORDINATOR);
-
 	handles = (BackgroundWorkerHandle **)
 		palloc0(sizeof(BackgroundWorkerHandle *) * nworkers);
 
@@ -1981,6 +1948,46 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		int			failed = -1;
 		int64		total = 0;
 		int			ncommit = nworkers;	/* ranges that hold data */
+
+		/*
+		 * Inside the PG_TRY (#2229, review of #2244): this step waits for a
+		 * lock on the target's storage, and the deadlock detector can pick the
+		 * coordinator as the victim of a cycle through it. Before, its error
+		 * ended the process before anything was recorded, and the caller
+		 * reported XX000 "coordinator exited without reporting a result"
+		 * instead of the 40P01. The PG_CATCH below records it for the caller.
+		 *
+		 * Single-table load: pre-create and COMMIT the storage catalog row before any
+		 * loader starts, in the coordinator's own top-level session (the SQL function
+		 * cannot commit). With the row committed, each loader -- which sets
+		 * pgcolumnar_bulk_parallel_writer -- sees it and skips the storage-row creation
+		 * lock, so N loaders write the one storage concurrently and 2PC-safely. The
+		 * coordinator itself leaves the flag off, so this uses the normal create path.
+		 */
+		if (hdr->single_table)
+		{
+			Relation	rel;
+
+			StartTransactionCommand();
+			/*
+			 * StartTransactionCommand does not push an active snapshot, but
+			 * PgColumnarEnsureStorageRow reads pgcolumnar.options/storage via
+			 * systable scans, and those visibility checks require a registered or
+			 * active snapshot. A normal backend has one from the executor; this
+			 * bgworker does not, so push one explicitly. Without it the scan runs
+			 * on an unregistered GetTransactionSnapshot() and aborts an assert
+			 * build the moment the options relation has a matching row (i.e. when
+			 * the target has custom options set).
+			 */
+			PushActiveSnapshot(GetTransactionSnapshot());
+			rel = table_open(hdr->relid, RowExclusiveLock);
+			PgColumnarEnsureStorageRow(rel);
+			table_close(rel, NoLock);
+			PopActiveSnapshot();
+			CommitTransactionCommand();
+		}
+		/* the caller waits for the loaders' run locks from here (#2229) */
+		pcopy_release_run_lock(hdr, PCOPY_RUN_COORDINATOR);
 
 		for (i = 0; i < nworkers && !pcopy_coord_got_sigterm; i++)
 		{
@@ -2241,6 +2248,10 @@ pgcolumnar_parallel_copy_coordinator(Datum main_arg)
 		strlcpy(hdr->coord_errmsg,
 				edata->message ? edata->message : "coordinator error",
 				sizeof(hdr->coord_errmsg));
+		strlcpy(hdr->coord_errdetail, edata->detail ? edata->detail : "",
+				sizeof(hdr->coord_errdetail));
+		strlcpy(hdr->coord_errhint, edata->hint ? edata->hint : "",
+				sizeof(hdr->coord_errhint));
 		MemoryContextSwitchTo(ecxt);
 		FlushErrorState();
 		AbortOutOfAnyTransaction();
@@ -2689,7 +2700,9 @@ pgcolumnar_parallel_copy(PG_FUNCTION_ARGS)
 		else
 			ereport(ERROR,
 					(errcode(code ? code : ERRCODE_INTERNAL_ERROR),
-					 errmsg("pgcolumnar.parallel_copy failed: %s", msg)));
+					 errmsg("pgcolumnar.parallel_copy failed: %s", msg),
+					 detail[0] ? errdetail_internal("%s", detail) : 0,
+					 hint[0] ? errhint("%s", hint) : 0));
 	}
 
 	PG_RETURN_INT64(0);			/* unreachable */

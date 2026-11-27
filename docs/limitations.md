@@ -367,6 +367,14 @@ these constraints.
   waits for its workers in the lock manager too, on advisory locks of class 107
   that show in `pg_locks`. Those waits are not limited by `lock_timeout` and
   `log_lock_waits` does not report them.
+- The caller keeps one lock per partition until its transaction ends. A target
+  with very many partitions can need a higher `max_locks_per_transaction`
+  (#2229).
+- One wait is still outside the lock manager. After the last loader exits, the
+  caller waits for the coordinator's commit step on a latch. A lock the caller
+  holds that the commit step needs is not reported as a deadlock. One example
+  is a lock on `pgcolumnar.load_fingerprint` with `dedup => true`. The call then
+  ends at `statement_timeout`.
 - The calling transaction must not have written to the target or to one of its
   partitions, for example with an earlier `INSERT`. The function refuses such a
   call with `55000` (#2211). The write holds a lock on the table's storage until
