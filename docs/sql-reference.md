@@ -82,6 +82,17 @@ instead.
 
 ## Maintenance
 
+`vacuum`, `vacuum_sorted`, `cluster`, `cluster_hilbert`, `recluster`,
+`recluster_hilbert` and `compact_rewrite` rewrite row groups. Each reads the
+newest committed rows, and the calling transaction then sees the copies as its
+own. At `REPEATABLE READ` and `SERIALIZABLE`, each one checks first that the
+groups it rewrites are as the transaction's snapshot sees them. Another session
+may have inserted, deleted or rewritten rows in them since. Then the call fails
+with SQLSTATE `40001`, `serialization_failure`, and the message
+`could not rewrite table "t": rows changed after this transaction's snapshot`.
+Retry the transaction, or run the verb at `READ COMMITTED` (#2167). See
+[limitations](limitations.md).
+
 ### pgcolumnar.vacuum(tablename regclass, stripe_count int DEFAULT 0)
 
 Compacts a columnar table by combining small row groups and reclaiming space held

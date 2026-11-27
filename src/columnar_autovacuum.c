@@ -448,6 +448,16 @@ pgcolumnar_av_worker_main(Datum arg)
 	av_mark_as_autovacuum();
 
 	/*
+	 * READ COMMITTED whatever default_transaction_isolation says, as core's
+	 * autovacuum worker forces it. At REPEATABLE READ or SERIALIZABLE the
+	 * transaction's snapshot predates the verb's locks, so compact_rewrite and
+	 * recluster refuse when a writer changed their groups in between (#2167),
+	 * and a busy table would be skipped pass after pass.
+	 */
+	SetConfigOption("default_transaction_isolation", "read committed",
+					PGC_SUSET, PGC_S_OVERRIDE);
+
+	/*
 	 * Snapshot the columnar-table list once, in its own transaction, with
 	 * whether each declares a retention. Both halves must be set, as
 	 * PgColumnarReadTtl reads it: a half declaration is no retention, and
