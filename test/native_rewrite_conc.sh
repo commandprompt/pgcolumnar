@@ -844,7 +844,7 @@ done
 # Issue #2185. The rewrite never waits in the lock manager while it holds a lock, so
 # writers never queued behind it, and under steady deletes it stopped with 55P03 (the
 # "finished, with no 55P03" arm above). Now it holds its storage's turnstile (advisory
-# class 107) while it takes its locks, and a transaction that holds no row-group or
+# class 109) while it takes its locks, and a transaction that holds no row-group or
 # storage-row lock yet polls the turnstile, for at most its deadlock_timeout, before it
 # takes its first one. Each arm reddens one way of getting that wrong:
 #

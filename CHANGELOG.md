@@ -618,7 +618,7 @@ true until the next version shipped.
   steady stream of short deletes (#2185). Since #2139 they take their locks
   without waiting while they hold one, so writers never queued behind them, and
   they stopped with 55P03 at `pgcolumnar.rewrite_lock_timeout`. A rewrite now
-  holds the table's rewrite turnstile (advisory lock class 107) while it takes
+  holds the table's rewrite turnstile (advisory lock class 109) while it takes
   its locks. A transaction that has not yet written to a columnar table polls
   the turnstile before its first row-group lock, for at most `deadlock_timeout`.
   The poll is not a lock wait, so it adds no deadlock and does not cancel the

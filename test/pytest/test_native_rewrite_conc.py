@@ -1352,7 +1352,7 @@ def test_the_rewrite_after_a_sleep_in_its_transaction_finishes(dl, name, expect)
 
 # ---- the rewrite turnstile: forward progress under steady writers ----
 #
-# Issue #2185. The rewrite holds its storage's turnstile (advisory class 107) while it takes
+# Issue #2185. The rewrite holds its storage's turnstile (advisory class 109) while it takes
 # its locks, and a transaction that holds no row-group or storage-row lock yet polls it, for
 # at most its deadlock_timeout, before it takes its first one. Waits: a new transaction, in a
 # session that wrote and committed before, waits while the rewrite waits on a busy group.
