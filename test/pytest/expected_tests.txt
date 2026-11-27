@@ -2232,7 +2232,31 @@ guard_tests 897
 # exports in one session each return their row count and leave no temp file; a FATAL export after a failed
 # unlink rolled back to a savepoint ends with FATAL and leaves no temp file), by collection over the cluster
 # files (the complement of NO_CLUSTER, as ci.yml derives it): 5604 tests collected.
-# cluster_tests 5644 -> 5658 for #2183's fourteen tests: test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on
+# cluster_tests 5644 -> 5649 for #2086's first five gate tests in test_iceberg_fdw.py (#2152). Main holds
+# 5597 at 2e3fea7a; #2152 adds 20 tests in all, listed here and below.
+# cluster_tests 5649 -> 5652 for #2086's three gate tests in test_iceberg_fdw.py, from the #2152 review
+# (test_the_field_type_lookup_matches_the_whole_field_name,
+# test_a_bool_column_over_an_iceberg_boolean_prunes_on_its_bounds,
+# test_a_bool_column_over_an_iceberg_int_is_refused_with_a_filter_too).
+# cluster_tests 5652 -> 5657 for #2086's five gate tests in test_iceberg_fdw.py, from the second #2152
+# review (test_the_field_type_lookup_does_not_match_a_field_that_prefixes_the_column,
+# test_a_bool_column_over_an_iceberg_long_is_refused_with_a_filter_too,
+# test_a_smallint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_an_int_column_over_an_iceberg_boolean_is_refused_with_a_filter_too,
+# test_bucket_pruning_works_on_an_iceberg_int_source).
+# cluster_tests 5657 -> 5658 for #2086's test_a_text_column_over_an_iceberg_int_is_refused_with_a_filter_too
+# in test_iceberg_fdw.py, from the third #2152 review, counted by collection of the cluster files (all
+# test_*.py not in NO_CLUSTER).
+# cluster_tests 5658 -> 5660 for #2086's
+# test_a_smallint_column_over_an_iceberg_boolean_is_refused_with_a_filter_too and
+# test_a_bigint_column_over_a_decimal_bucket_is_refused_with_a_filter_too in test_iceberg_fdw.py, from the
+# fourth #2152 review.
+# cluster_tests 5660 -> 5664 for #2086's test_a_bigint_column_over_an_iceberg_int_prunes_on_its_bounds,
+# test_bucket_pruning_works_for_a_bigint_column_over_an_iceberg_int,
+# test_a_name_column_over_an_iceberg_int_bucket_is_refused_with_a_filter_too and
+# test_bucket_pruning_keeps_a_field_after_a_gated_decimal_bucket_field in test_iceberg_fdw.py, from the
+# fifth #2152 review. By collection of the cluster files after the merge of main at 2e3fea7a: 5617 tests collected.
+# cluster_tests 5664 -> 5678 for #2183's fourteen tests: test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on
 # in test_parallel_export_parquet.py (5 parametrized: an export after LOCK TABLE ... ACCESS EXCLUSIVE, after
 # TRUNCATE and after ACCESS EXCLUSIVE on one leaf is refused with 55000; under SHARE, and with ACCESS EXCLUSIVE
 # on another table, it still exports), and in test_parallel_copy.py
@@ -2241,9 +2265,9 @@ guard_tests 897
 # ACCESS EXCLUSIVE on another table), test_parallel_copy_refusal_order_with_a_lock_the_caller_holds (2
 # parametrized: 55000 before #2080's 0A000, 42501 before 55000) and test_parallel_copy_a_refused_load_loads_nothing,
 # by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-# cluster_tests 5658 -> 5665 for the #2212 review of #2183: in test_parallel_export_parquet.py one more case of
+# cluster_tests 5678 -> 5685 for the #2212 review of #2183: in test_parallel_export_parquet.py one more case of
 # test_pexport_a_lock_the_caller_holds_is_refused_not_waited_on (an export in a savepoint keeps 25001), and in
 # test_parallel_copy.py test_parallel_copy_lock_modes_and_partition_depth (6 parametrized: SHARE UPDATE EXCLUSIVE
 # still loads; EXCLUSIVE and SHARE ROW EXCLUSIVE are refused naming the mode; ONLY the parent, ONLY a partitioned
 # mid level and a second-level leaf are refused naming the relation), by collection over the cluster files.
-cluster_tests 5665
+cluster_tests 5685
