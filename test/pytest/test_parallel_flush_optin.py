@@ -514,3 +514,157 @@ def test_lock_the_queued_alter_completes(lk, expect):
     # A liveness premise: main's code passes it too.
     expect.text(lk["queued alter"], "ALTER TABLE",
                 "premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)")
+
+
+# ---- 8. a column type a worker cannot resolve keeps the flush serial (#2182) -----
+#
+# The shell's arm 8. A flush worker reads the type cache for each column it encodes.
+# For a composite, the type cache opens the composite's table with ACCESS SHARE, and
+# so do record_cmp and hash_record for a composite field. The worker is not in the
+# inserting backend's lock group, so after TRUNCATE or LOCK TABLE on the composite's
+# table in the inserting transaction the INSERT waited until statement_timeout:
+# #2072's wait on another table. A worker also runs on its own snapshot, so a type
+# created in the inserting transaction was invisible to it: it failed with a WARNING
+# and its columns were redone serially. The backend now keeps such a flush serial.
+# Every way a worker reaches a composite is tried: directly, as an array element,
+# under a domain, as a composite's field, as a range's subtype and in a multirange.
+# tyc and ty_n each carry a dropped column, which the walk must step over.
+TY_DB = "pgc_parallel_flush_types"
+TY_G = "FROM generate_series(1,20000) g"
+TY_SERIAL = "serial, no split line, 20000 rows, sum 200010000"
+TY_WORKERS = "parallel, every column in workers, 20000 rows, sum 200010000"
+TY_LOCK = "LOCK TABLE ty_c IN ACCESS EXCLUSIVE MODE"
+
+
+def _type_flush(db, setup, insert, table, sum_expr):
+    """BEGIN; setup; insert; COMMIT in one session at DEBUG1, parallel_flush on, 10s
+    statement_timeout -> the error, or the distinct dispatch decisions, _all_split()'s
+    reading and the rows read back."""
+    notes = []
+    try:
+        with psycopg.connect(db.dsn, autocommit=True) as conn:
+            conn.add_notice_handler(lambda d: notes.append(d.message_primary or ""))
+            conn.execute("SET client_min_messages = debug1")
+            conn.execute("SET pgcolumnar.parallel_flush = on")
+            conn.execute("SET statement_timeout = '10s'")
+            with conn.transaction():
+                for stmt in setup:
+                    conn.execute(stmt)
+                conn.execute(insert)
+    except psycopg.Error as exc:
+        return f"{exc.sqlstate}: {exc.diag.message_primary}"
+    decisions = sorted({m.group(1) for m in (re.search(r"parallel_flush dispatch: .*-> (parallel|serial)", n)
+                                             for n in notes) if m})
+    dec = "/".join(decisions) if decisions else "no dispatch line"
+    rows = db.q(f"SELECT count(*) || ' rows, sum ' || sum({sum_expr}) FROM {table}")
+    return f"{dec}, {_all_split(notes)}, {rows}"
+
+
+@pytest.fixture(scope="module")
+def ty(pgc_cluster):
+    with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+        a.execute(f"DROP DATABASE IF EXISTS {TY_DB} WITH (FORCE)")
+        a.execute(f"CREATE DATABASE {TY_DB}")
+    try:
+        d = _Db(pgc_cluster.dsn(dbname=TY_DB))
+        d.run("CREATE EXTENSION IF NOT EXISTS pgcolumnar")
+        for ddl in ("CREATE TABLE ty_c (x int, y int)",
+                    "CREATE TABLE ty_n (x int, gone int, z ty_c)",
+                    "ALTER TABLE ty_n DROP COLUMN gone",
+                    "CREATE DOMAIN ty_d AS ty_c",
+                    "CREATE TYPE ty_r AS RANGE (subtype = ty_c)",
+                    "CREATE TABLE tyc (a int, b int, gone int, r ty_c) USING pgcolumnar",
+                    "ALTER TABLE tyc DROP COLUMN gone",
+                    "CREATE TABLE tya (a int, b int, r ty_c[]) USING pgcolumnar",
+                    "CREATE TABLE tyd (a int, b int, r ty_d) USING pgcolumnar",
+                    "CREATE TABLE tyn (a int, b int, r ty_n) USING pgcolumnar",
+                    "CREATE TABLE tyr (a int, b int, r ty_r) USING pgcolumnar",
+                    "CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar",
+                    "CREATE TABLE tye (a int, b int) USING pgcolumnar"):
+            d.run(ddl)
+        rng = "ty_r(row(g, g)::ty_c, row(g + 1, g)::ty_c)"
+        r = {
+            "truncate": _type_flush(d, ["TRUNCATE ty_c, tyc"],
+                                    f"INSERT INTO tyc SELECT g, g, row(g, g)::ty_c {TY_G}", "tyc", "(r).x"),
+            "array": _type_flush(d, [TY_LOCK], f"INSERT INTO tya SELECT g, g, array[row(g, g)::ty_c] {TY_G}",
+                                 "tya", "(r[1]).x"),
+            "domain": _type_flush(d, [TY_LOCK], f"INSERT INTO tyd SELECT g, g, row(g, g)::ty_c {TY_G}",
+                                  "tyd", "(r).x"),
+            "field": _type_flush(d, [TY_LOCK],
+                                 f"INSERT INTO tyn SELECT g, g, row(g, row(g, g)::ty_c)::ty_n {TY_G}",
+                                 "tyn", "((r).z).x"),
+            "range": _type_flush(d, [TY_LOCK], f"INSERT INTO tyr SELECT g, g, {rng} {TY_G}", "tyr",
+                                 "(lower(r)).x"),
+            "multirange": _type_flush(d, [TY_LOCK],
+                                      f"INSERT INTO tym SELECT g, g, ty_r_multirange({rng}) {TY_G}",
+                                      "tym", "(lower(r)).x"),
+            "new type": _type_flush(d, ["CREATE TYPE ty_e AS ENUM ('x', 'y')", "ALTER TABLE tye ADD COLUMN e ty_e"],
+                                    f"INSERT INTO tye SELECT g, g, 'x' {TY_G}", "tye", "a"),
+            "unlocked": _type_flush(d, ["TRUNCATE tyc"],
+                                    f"INSERT INTO tyc SELECT g, g, row(g, g)::ty_c {TY_G}", "tyc", "(r).x"),
+            "share": _type_flush(d, ["TRUNCATE tyc", "LOCK TABLE ty_c IN SHARE MODE"],
+                                 f"INSERT INTO tyc SELECT g, g, row(g, g)::ty_c {TY_G}", "tyc", "(r).x"),
+        }
+        yield r
+    finally:
+        with psycopg.connect(pgc_cluster.dsn(), autocommit=True) as a:
+            a.execute(f"DROP DATABASE IF EXISTS {TY_DB} WITH (FORCE)")
+
+
+def test_type_a_flush_after_truncating_the_composites_table_is_serial(ty, expect):
+    expect.text(ty["truncate"], TY_SERIAL,
+                "a parallel flush after TRUNCATE of a composite column's table in the same transaction "
+                "finishes, serially (#2182)")
+
+
+def test_type_an_array_of_a_locked_composite_is_serial(ty, expect):
+    expect.text(ty["array"], TY_SERIAL,
+                "a parallel flush of an array-of-composite column whose table the transaction locked "
+                "finishes, serially (#2182)")
+
+
+def test_type_a_domain_over_a_locked_composite_is_serial(ty, expect):
+    expect.text(ty["domain"], TY_SERIAL,
+                "a parallel flush of a domain-over-composite column whose table the transaction locked "
+                "finishes, serially (#2182)")
+
+
+def test_type_a_composite_with_a_locked_field_is_serial(ty, expect):
+    expect.text(ty["field"], TY_SERIAL,
+                "a parallel flush of a composite whose field's table the transaction locked finishes, "
+                "serially (#2182)")
+
+
+def test_type_a_range_over_a_locked_composite_is_serial(ty, expect):
+    expect.text(ty["range"], TY_SERIAL,
+                "a parallel flush of a range-over-composite column whose table the transaction locked "
+                "finishes, serially (#2182)")
+
+
+def test_type_a_multirange_over_a_locked_composite_is_serial(ty, expect):
+    expect.text(ty["multirange"], TY_SERIAL,
+                "a parallel flush of a multirange-over-composite column whose table the transaction locked "
+                "finishes, serially (#2182)")
+
+
+def test_type_a_type_created_in_the_transaction_is_serial(ty, expect):
+    # The reading names a worker that failed on it, so a flush that hands its columns
+    # back still reads red.
+    expect.text(ty["new type"], TY_SERIAL,
+                "a parallel flush of a column whose type the same transaction created runs serially, with "
+                "no worker failure (#2182)")
+
+
+def test_type_an_unlocked_composite_flushes_in_workers(ty, expect):
+    # A control. The TRUNCATE of the columnar table holds ACCESS EXCLUSIVE on it, which
+    # #2072 already handles, so a fix that checked that table instead reads red here.
+    expect.text(ty["unlocked"], TY_WORKERS,
+                "a parallel flush of a composite column whose table the transaction does not lock flushes "
+                "every column in workers (#2182)")
+
+
+def test_type_a_composite_held_in_share_mode_flushes_in_workers(ty, expect):
+    # A control: ACCESS SHARE does not conflict with SHARE.
+    expect.text(ty["share"], TY_WORKERS,
+                "a parallel flush of a composite column whose table the transaction holds in SHARE mode "
+                "flushes every column in workers (#2182)")

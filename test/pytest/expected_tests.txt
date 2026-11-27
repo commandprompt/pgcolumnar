@@ -2555,4 +2555,9 @@ guard_tests 897
 # timestamp` on day() and hour() over timestamp and timestamptz, eight pruning counts either side of the epoch-shift
 # limit, and one with the constant on the left, by collection of that file (87 on main 99c46e24, 100 here) and over
 # the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
-cluster_tests 6169
+# cluster_tests 6169 -> 6178 for #2182's arm 8 in test_parallel_flush_optin.py: nine tests (a parallel flush of
+# a composite column, an array, domain, range or multirange over one, or a composite with one as a field, stays
+# serial and finishes when the transaction holds ACCESS EXCLUSIVE on the composite's table; a type created in the
+# same transaction stays serial with no worker failure; an unlocked composite and one held in SHARE mode flush in
+# workers), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+cluster_tests 6178

@@ -367,4 +367,80 @@ check_text "a parallel INSERT that another session's ALTER TABLE waits behind fl
 check_text "premise: the waiting ALTER TABLE completes once the parallel INSERT commits (#2072)" \
 	"$(grep -m1 -oE '^ALTER TABLE|ERROR: .*' "$LAOUT")" "ALTER TABLE"
 
+
+# ---- 8. a column type a worker cannot resolve keeps the flush serial (#2182) -----
+#
+# A flush worker reads the type cache for each column it encodes. For a composite,
+# the type cache opens the composite's table with ACCESS SHARE, and so do record_cmp
+# and hash_record for a composite field. The worker is not in the inserting
+# backend's lock group, so after TRUNCATE or LOCK TABLE on the composite's table in
+# the inserting transaction the INSERT waited until statement_timeout: #2072's wait
+# on another table. A worker also runs on its own snapshot, so a type created in
+# the inserting transaction was invisible to it: it failed with a WARNING and its
+# columns were redone serially. The backend now keeps such a flush serial. Every
+# way a worker reaches a composite is tried: directly, as an array element, under a
+# domain, as a composite's field, as a range's subtype and inside a multirange.
+# tyc and ty_n each carry a dropped column, which the walk must step over.
+#
+# typeflush <table> <setupSql> <insertSql> <sumExpr>: in one session at DEBUG1, with
+# parallel_flush on and a 10s statement_timeout, run BEGIN; <setupSql>; <insertSql>;
+# COMMIT. -> the first ERROR line, or the distinct dispatch decisions, allsplit()'s
+# reading, and the rows read back.
+typeflush() {
+	env PATH="$PGC_BINDIR:$PATH" psql -X -h 127.0.0.1 -p "$PGC_PORT" -U postgres -d "$PGC_DB" \
+		-c "SET client_min_messages = debug1;" -c "SET pgcolumnar.parallel_flush = on;" \
+		-c "SET statement_timeout = '10s';" \
+		-c "BEGIN; $2; $3; COMMIT;" >"$FLUSHLOG" 2>&1
+	local err dec
+	err="$(grep -m1 -oE 'ERROR: .*' "$FLUSHLOG")"
+	if [ -n "$err" ]; then
+		echo "$err"
+		return
+	fi
+	dec="$(grep -oE 'parallel_flush dispatch: .*-> (parallel|serial)' "$FLUSHLOG" |
+		sed 's/^.*-> //' | LC_ALL=C sort -u | tr '\n' '/' | sed 's#/$##')"
+	echo "${dec:-no dispatch line}, $(allsplit "$FLUSHLOG"), $(q "SELECT count(*) || ' rows, sum ' || sum($4) FROM $1")"
+}
+q "CREATE TABLE ty_c (x int, y int);
+   CREATE TABLE ty_n (x int, gone int, z ty_c);
+   ALTER TABLE ty_n DROP COLUMN gone;
+   CREATE DOMAIN ty_d AS ty_c;
+   CREATE TYPE ty_r AS RANGE (subtype = ty_c);
+   CREATE TABLE tyc (a int, b int, gone int, r ty_c) USING pgcolumnar;
+   ALTER TABLE tyc DROP COLUMN gone;
+   CREATE TABLE tya (a int, b int, r ty_c[]) USING pgcolumnar;
+   CREATE TABLE tyd (a int, b int, r ty_d) USING pgcolumnar;
+   CREATE TABLE tyn (a int, b int, r ty_n) USING pgcolumnar;
+   CREATE TABLE tyr (a int, b int, r ty_r) USING pgcolumnar;
+   CREATE TABLE tym (a int, b int, r ty_r_multirange) USING pgcolumnar;
+   CREATE TABLE tye (a int, b int) USING pgcolumnar;" >/dev/null
+TYG="FROM generate_series(1,20000) g"
+TYSERIAL="serial, no split line, 20000 rows, sum 200010000"
+TYWORKERS="parallel, every column in workers, 20000 rows, sum 200010000"
+TYLOCK="LOCK TABLE ty_c IN ACCESS EXCLUSIVE MODE"
+check_text "a parallel flush after TRUNCATE of a composite column's table in the same transaction finishes, serially (#2182)" \
+	"$(typeflush tyc "TRUNCATE ty_c, tyc" "INSERT INTO tyc SELECT g, g, row(g, g)::ty_c $TYG" "(r).x")" "$TYSERIAL"
+check_text "a parallel flush of an array-of-composite column whose table the transaction locked finishes, serially (#2182)" \
+	"$(typeflush tya "$TYLOCK" "INSERT INTO tya SELECT g, g, array[row(g, g)::ty_c] $TYG" "(r[1]).x")" "$TYSERIAL"
+check_text "a parallel flush of a domain-over-composite column whose table the transaction locked finishes, serially (#2182)" \
+	"$(typeflush tyd "$TYLOCK" "INSERT INTO tyd SELECT g, g, row(g, g)::ty_c $TYG" "(r).x")" "$TYSERIAL"
+check_text "a parallel flush of a composite whose field's table the transaction locked finishes, serially (#2182)" \
+	"$(typeflush tyn "$TYLOCK" "INSERT INTO tyn SELECT g, g, row(g, row(g, g)::ty_c)::ty_n $TYG" "((r).z).x")" "$TYSERIAL"
+check_text "a parallel flush of a range-over-composite column whose table the transaction locked finishes, serially (#2182)" \
+	"$(typeflush tyr "$TYLOCK" "INSERT INTO tyr SELECT g, g, ty_r(row(g, g)::ty_c, row(g + 1, g)::ty_c) $TYG" "(lower(r)).x")" "$TYSERIAL"
+check_text "a parallel flush of a multirange-over-composite column whose table the transaction locked finishes, serially (#2182)" \
+	"$(typeflush tym "$TYLOCK" "INSERT INTO tym SELECT g, g, ty_r_multirange(ty_r(row(g, g)::ty_c, row(g + 1, g)::ty_c)) $TYG" "(lower(r)).x")" "$TYSERIAL"
+# The type created in the inserting transaction. The reading names a worker that
+# failed on it, so a flush that hands its columns back still reads red.
+check_text "a parallel flush of a column whose type the same transaction created runs serially, with no worker failure (#2182)" \
+	"$(typeflush tye "CREATE TYPE ty_e AS ENUM ('x', 'y'); ALTER TABLE tye ADD COLUMN e ty_e" "INSERT INTO tye SELECT g, g, 'x' $TYG" "a")" "$TYSERIAL"
+# The controls: a composite whose table this transaction does not lock, or holds
+# only in a mode ACCESS SHARE does not conflict with, still flushes in workers. The
+# TRUNCATE of the columnar table itself holds ACCESS EXCLUSIVE on it, which #2072
+# already handles, so a fix that checked that table instead also reads red here.
+check_text "a parallel flush of a composite column whose table the transaction does not lock flushes every column in workers (#2182)" \
+	"$(typeflush tyc "TRUNCATE tyc" "INSERT INTO tyc SELECT g, g, row(g, g)::ty_c $TYG" "(r).x")" "$TYWORKERS"
+check_text "a parallel flush of a composite column whose table the transaction holds in SHARE mode flushes every column in workers (#2182)" \
+	"$(typeflush tyc "TRUNCATE tyc; LOCK TABLE ty_c IN SHARE MODE" "INSERT INTO tyc SELECT g, g, row(g, g)::ty_c $TYG" "(r).x")" "$TYWORKERS"
+
 pgc_summary
