@@ -830,6 +830,9 @@ true until the next version shipped.
   decodes to NUL, and a row with too few fields for the key. Three more cover
   a `\N` key in the last column, a lowercase hex digit, and a date key written
   with escapes.
+  The key parser reads the file as characters of the caller's client_encoding,
+  as #2188's scans do, so in SJIS, BIG5, GBK or GB18030 a character whose
+  second byte is 0x5C is never read as a backslash in front of the key.
 - `pgcolumnar.parallel_copy` now reads the file in the calling session's
   `client_encoding`, as `COPY FROM` does, and its splitters step over whole
   characters in the encodings where a character's second byte can be `0x5C`
