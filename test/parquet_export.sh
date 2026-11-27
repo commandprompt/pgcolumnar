@@ -527,6 +527,147 @@ psql_run "CREATE TABLE pq_bdrop (id int, junk int, s text) USING pgcolumnar;
 check "a row group is cut at the byte cap on a table with a dropped column before its text column: 40 rows of 10000 bytes make groups of 6,6,6,6,6,6,4" \
 	"$(pq_cut pq_bdrop "$PGC_WORKDIR/bdrop.parquet" 65536)" "40|40|6,6,6,6,6,6,4"
 
+# ---- a timestamp past Parquet's int64 range is refused, not wrapped (#2160) ----------
+# Parquet stores a timestamp as int64 microseconds since 1970-01-01, so its last value
+# is 294247-01-10 04:00:54.775807. PostgreSQL timestamps reach 294276-12-31. The writer
+# added the epoch shift without an overflow check, so a later value wrapped to a large
+# negative number, and the export reported success. Now the export fails with SQLSTATE
+# 22008, names the table column, and leaves no file. This is the Parquet twin of #2085.
+TS_RANGE_MSG='is out of range for a Parquet timestamp'
+# refusal_code NAME SQL MESSAGE SQLSTATE -- SQL must fail with MESSAGE and SQLSTATE.
+# psql prints the code before the message with VERBOSITY verbose.
+refusal_code() {
+	local name="$1" sql="$2" msg="$3" code="$4" out got
+	if out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+		-d "$PGC_DB" -v ON_ERROR_STOP=1 -v VERBOSITY=verbose -q -c "$sql" 2>&1)"; then
+		got="succeeded"
+	elif grep -qF -- "ERROR:  $code: " <<<"$out" && grep -qF -- "$msg" <<<"$out"; then
+		got="refused: $code: $msg"
+	else
+		got="other error: $(grep -m1 '^ERROR' <<<"$out" || head -n1 <<<"$out")"
+	fi
+	check "$name" "$got" "refused: $code: $msg"
+}
+TSOVER="$PGC_WORKDIR/tsover.parquet"
+TSEDGE="$PGC_WORKDIR/tsedge.parquet"
+psql_run "CREATE TABLE pq_tsover (ts timestamp) USING pgcolumnar;
+          INSERT INTO pq_tsover VALUES ('294247-01-10 04:00:54.775808');
+          CREATE TABLE pq_tzover (tz timestamptz) USING pgcolumnar;
+          INSERT INTO pq_tzover VALUES ('294276-12-31 23:59:59.999999+00');
+          CREATE TABLE pq_tsedge (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO pq_tsedge VALUES ('294247-01-10 04:00:54.775807', '294247-01-10 04:00:54.775807+00');" >/dev/null
+refusal_code "a timestamp one microsecond past 294247-01-10 04:00:54.775807 is refused as out of range for Parquet, not written as a wrapped negative value (#2160)" \
+	"SELECT pgcolumnar.export_parquet('pq_tsover', '$TSOVER')" "columnar: a value in column \"ts\" $TS_RANGE_MSG" 22008
+check "and the refused Parquet timestamp export leaves no file at the target path (#2160)" \
+	"$([ -e "$TSOVER" ] && echo present || echo absent)" "absent"
+refusal_code "a timestamptz of 294276-12-31 23:59:59.999999+00 is refused as out of range for Parquet, not written as a wrapped negative value (#2160)" \
+	"SELECT pgcolumnar.export_parquet('pq_tzover', '$PGC_WORKDIR/tzover.parquet')" "columnar: a value in column \"tz\" $TS_RANGE_MSG" 22008
+edge_rows="$(qerr "SELECT pgcolumnar.export_parquet('pq_tsedge', '$TSEDGE')")"
+edge_read="$(python3 - "$TSEDGE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    print(",".join(str(t.column(n).cast(pa.int64())[0].as_py()) for n in ("ts", "tz")))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "the last timestamp Parquet can hold, 294247-01-10 04:00:54.775807, still exports as int64 9223372036854775807 in timestamp and timestamptz (#2160)" \
+	"$edge_rows|$edge_read" "1|9223372036854775807,9223372036854775807"
+check "and read_parquet reads that last timestamp back unchanged, in timestamp and timestamptz (#2160)" \
+	"$(qerr "SELECT ts::text || ',' || (tz AT TIME ZONE 'UTC')::text FROM pgcolumnar.read_parquet('$TSEDGE') AS t(ts timestamp, tz timestamptz)")" \
+	"294247-01-10 04:00:54.775807,294247-01-10 04:00:54.775807"
+# The range check must not refuse a value before 1970-01-01, which Parquet stores as a
+# negative number. The last microsecond of 1969 is -1; PostgreSQL's first timestamp,
+# 4714-11-24 00:00:00 BC, is -210866803200000000, well inside int64.
+TSPRE="$PGC_WORKDIR/tspre.parquet"
+psql_run "CREATE TABLE pq_tspre (ts timestamp, tz timestamptz) USING pgcolumnar;
+          INSERT INTO pq_tspre VALUES ('1969-12-31 23:59:59.999999', '1969-12-31 23:59:59.999999+00'),
+                                      ('4714-11-24 00:00:00 BC', '4714-11-24 00:00:00+00 BC');" >/dev/null
+pre_rows="$(qerr "SELECT pgcolumnar.export_parquet('pq_tspre', '$TSPRE')")"
+pre_read="$(python3 - "$TSPRE" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    ts, tz = (t.column(n).cast(pa.int64()).to_pylist() for n in ("ts", "tz"))
+    print(" ".join("%s,%s" % p for p in zip(ts, tz)))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "a timestamp before 1970 still exports to Parquet: 1969-12-31 23:59:59.999999 and 4714-11-24 00:00:00 BC read back as int64 -1 and -210866803200000000, in timestamp and timestamptz (#2160)" \
+	"$pre_rows|$pre_read" "2|-1,-1 -210866803200000000,-210866803200000000"
+# The check runs on every timestamp the writer encodes, including an array element and a
+# composite field. Parquet calls those "element" and the field name; the error must name
+# the table column the reader can find, not them.
+psql_run "CREATE TABLE pq_tsarr (tsarr timestamp[]) USING pgcolumnar;
+          INSERT INTO pq_tsarr VALUES (ARRAY['2000-01-01', '294247-01-10 04:00:54.775808']::timestamp[]);
+          CREATE TYPE pq_tsfield AS (t timestamp);
+          CREATE TABLE pq_tscomp (tscomp pq_tsfield) USING pgcolumnar;
+          INSERT INTO pq_tscomp VALUES (ROW('294247-01-10 04:00:54.775808'));" >/dev/null
+refusal_code "a timestamp[] element past Parquet's range is refused, and the error names the table column, not the Parquet element (#2160)" \
+	"SELECT pgcolumnar.export_parquet('pq_tsarr', '$PGC_WORKDIR/tsarr.parquet')" \
+	"columnar: a value in column \"tsarr\" $TS_RANGE_MSG" 22008
+refusal_code "a timestamp field of a composite column past Parquet's range is refused, and the error names the table column, not the field (#2160)" \
+	"SELECT pgcolumnar.export_parquet('pq_tscomp', '$PGC_WORKDIR/tscomp.parquet')" \
+	"columnar: a value in column \"tscomp\" $TS_RANGE_MSG" 22008
+# The range check must not refuse an in-range timestamp inside an array or a composite.
+# The values sit next to the two ends of the check: -1 and the largest int64.
+TSNEST="$PGC_WORKDIR/tsnest.parquet"
+psql_run "CREATE TYPE pq_tspair AS (lo timestamp, hi timestamptz);
+          CREATE TABLE pq_tsnest (tsa timestamp[], tza timestamptz[], tsc pq_tspair) USING pgcolumnar;
+          INSERT INTO pq_tsnest VALUES (
+            ARRAY['1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807']::timestamp[],
+            ARRAY['1969-12-31 23:59:59.999999+00', '294247-01-10 04:00:54.775807+00']::timestamptz[],
+            ROW('1969-12-31 23:59:59.999999', '294247-01-10 04:00:54.775807+00')::pq_tspair);" >/dev/null
+nest_rows="$(qerr "SELECT pgcolumnar.export_parquet('pq_tsnest', '$TSNEST')")"
+nest_read="$(python3 - "$TSNEST" <<'PY'
+import sys
+try:
+    import pyarrow as pa, pyarrow.parquet as pq
+    t = pq.read_table(sys.argv[1])
+    lists = [t.column(n).combine_chunks().flatten().cast(pa.int64()).to_pylist() for n in ("tsa", "tza")]
+    tsc = t.column("tsc").combine_chunks()
+    pair = [tsc.field(n).cast(pa.int64())[0].as_py() for n in ("lo", "hi")]
+    print(" ".join(",".join(str(v) for v in vals) for vals in lists + [pair]))
+except Exception as e:
+    print("unreadable: %s" % e)
+PY
+)"
+check "an in-range timestamp inside an array or a composite still exports to Parquet: 1969-12-31 23:59:59.999999 and 294247-01-10 04:00:54.775807 read back as int64 -1 and 9223372036854775807 from timestamp[], timestamptz[] and composite fields (#2160)" \
+	"$nest_rows|$nest_read" "1|-1,9223372036854775807 -1,9223372036854775807 -1,9223372036854775807"
+# The refusal's DETAIL tells the reader where Parquet's range ends.
+detail_out="$(env PATH="$PGC_BINDIR:$PATH" psql -h 127.0.0.1 -p "$PGC_PORT" -U postgres \
+	-d "$PGC_DB" -v ON_ERROR_STOP=1 -q -c "SELECT pgcolumnar.export_parquet('pq_tsover', '$TSOVER')" 2>&1)"
+case "$detail_out" in
+*"DETAIL:  Parquet stores a timestamp as 64-bit microseconds since 1970-01-01, so its last value is 294247-01-10 04:00:54.775807."*) detail_got="present" ;;
+*) detail_got="missing: $(printf '%s' "$detail_out" | tr '\n' ' ')" ;;
+esac
+check "and the out-of-range Parquet timestamp error's DETAIL gives Parquet's last timestamp, 294247-01-10 04:00:54.775807 (#2160)" \
+	"$detail_got" "present"
+# parallel_export_parquet's workers and tier_partition write through the same encoder.
+# Each must fail the same way. A failed parallel export removes its part files; a failed
+# tier_partition leaves the partition as it was, readable through the parent.
+TSPAR="$PGC_WORKDIR/tsover_par"
+refusal_code "parallel_export_parquet refuses a timestamp past Parquet's range, and the error names the table column (#2160)" \
+	"SELECT pgcolumnar.parallel_export_parquet('pq_tsover'::regclass, '$TSPAR', 2)" \
+	"columnar: a value in column \"ts\" $TS_RANGE_MSG" 22008
+check "and the refused parallel export leaves no Parquet part file in its directory (#2160)" \
+	"$(find "$TSPAR" -name '*.parquet*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+psql_run "CREATE SERVER pq_ts_srv FOREIGN DATA WRAPPER pgcolumnar_parquet;
+          CREATE TABLE pq_tspar (id int, ts timestamp) PARTITION BY RANGE (id);
+          CREATE TABLE pq_tspar1 PARTITION OF pq_tspar FOR VALUES FROM (0) TO (100) USING pgcolumnar;
+          INSERT INTO pq_tspar VALUES (1, '294247-01-10 04:00:54.775808');" >/dev/null
+TSTIER="$PGC_WORKDIR/tstier.parquet"
+refusal_code "tier_partition refuses a partition holding a timestamp past Parquet's range, and the error names the table column (#2160)" \
+	"SELECT pgcolumnar.tier_partition('pq_tspar1', 'pq_ts_srv', '$TSTIER')" \
+	"columnar: a value in column \"ts\" $TS_RANGE_MSG" 22008
+check "and the refused tier_partition leaves the partition in place: it is still a pgcolumnar table, the parent reads its timestamp back unchanged, and no file is left (#2160)" \
+	"$(qerr "SELECT c.relkind::text || ',' || a.amname FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE c.oid = 'pq_tspar1'::regclass")|$(qerr "SELECT ts::text FROM pq_tspar")|$([ -e "$TSTIER" ] && echo present || echo absent)" \
+	"r,pgcolumnar|294247-01-10 04:00:54.775808|absent"
+
 # Over 1 GiB of one column at the default cap (#1811's repro). Opt-in, as
 # large_values.sh's arm is: the table and its file are each about 1.1 GB. 2200 rows of
 # 500000 bytes; each row buffers 500010 bytes, so a 256 MiB group holds 536 rows and

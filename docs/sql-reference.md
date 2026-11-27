@@ -1034,6 +1034,17 @@ as one atomic operation. Returns the number of rows loaded. The caller needs
 membership in the `pg_read_server_files` role, which superusers hold, and INSERT
 on the target. The file uses COPY text format. Each worker runs core `COPY` over
 a byte range of the file, so parse and write behavior match `COPY FROM` exactly.
+Every worker holds its range to the newline style (LF, CRLF or CR) of the file's
+first line, as `COPY FROM` does. A file that changes style is refused with
+`22P04` wherever the split falls. So is a `\.\r\n` end-of-data line in a file
+with LF line ends (#2189).
+The workers read the file in the calling session's `client_encoding`, as that
+session's `COPY FROM` would, not in their own (the database's or the role's
+default). In SJIS, BIG5, GBK, GB18030, UHC, JOHAB and SHIFT_JIS_2004, the second
+byte of a character can be `0x5C`. There the split steps over whole characters,
+so such a byte is not read as a backslash. In a `SQL_ASCII` database, which
+`COPY FROM` does not convert to, every `0x5C` is a backslash, as in `COPY FROM`
+(#2188).
 `filename` is a local file. An object-storage URL is refused with `0A000`; see
 [Object storage](#object-storage). The function checks INSERT on `target` first,
 so a caller without INSERT gets `42501` for a URL too.
@@ -1047,6 +1058,10 @@ The target may be one of two kinds:
   `workers => 1` or with `COPY`. Each worker keeps its key locks in its prepared
   transaction until every worker has finished. So two workers would wait on each
   other, and the load would hang or fail with a deadlock error.
+  The function also refuses more than one worker when the table has an enabled
+  trigger on INSERT, of any timing or level. Each worker runs the trigger in its
+  own prepared transaction, so writes the trigger makes could wait on another
+  worker in the same way. A foreign key's internal triggers do not count.
 - A RANGE-partitioned table whose partitions are columnar. Each worker loads a
   distinct set of partitions. The file must be sorted ascending by the partition
   key. The key column may sit anywhere in the row, and its type must be numeric

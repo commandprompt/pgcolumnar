@@ -311,6 +311,22 @@ these constraints.
   `42501` first, and a URL gets the refusal for remote files first. A
   partitioned target with such an index is not limited: each worker loads its
   own partitions.
+- A single columnar table with a trigger on INSERT loads with one worker only.
+  The function refuses more workers with `0A000`. This covers BEFORE and AFTER
+  triggers, and row and statement triggers. Each worker runs the trigger in its
+  own prepared transaction. When the trigger writes to another table, the
+  workers can wait on each other until the load is cancelled, or fail with a
+  deadlock error. A disabled trigger does not count, and neither do the internal
+  triggers of a foreign key. A trigger on UPDATE or DELETE only does not count
+  either, nor does an `ENABLE REPLICA` trigger, which does not fire under the
+  default `session_replication_role`. One worker still runs the trigger for every
+  row.
+- The function does not look inside CHECK constraints or column defaults. Some
+  of them call a VOLATILE function that writes to another table. Then the workers
+  can wait on each other the same way, until `statement_timeout` or a deadlock
+  error. Load such a table with `workers => 1`.
+- A `CREATE INDEX` that starts while the workers open the table waits until the
+  load ends. It used to be able to hang the load.
 - For a partitioned target the file must be sorted ascending by the partition
   key. The key type must be numeric or a date/time type. The function reports an
   error for a text key and for an unsorted file.
@@ -1183,6 +1199,13 @@ both types in each direction.
 (SQLSTATE 22008), names the table column, and writes no file. For a value
 inside an array or composite column, it names that column, not the array element
 or the field. It writes `infinity` and `-infinity` as null, as before.
+
+`export_parquet` refuses the same values, for the same reason: Parquet also
+stores a timestamp as 64-bit microseconds since 1970-01-01. The export fails
+with `out of range for a Parquet timestamp` (SQLSTATE 22008), names the table
+column, and writes no file.
+`parallel_export_parquet` and `tier_partition` write through the same code and
+fail the same way. `tier_partition` then leaves the partition as it was.
 
 ## Write size limits
 

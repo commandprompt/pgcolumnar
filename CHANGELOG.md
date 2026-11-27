@@ -605,6 +605,48 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
+  `CREATE INDEX` queues while its workers open the table, refuses a single
+  table with a trigger on INSERT, and no longer returns a cancelled load's error
+  before its prepared transactions are gone (#2187). A `CREATE INDEX` that
+  queued after one worker had its lock made the other workers queue behind it,
+  while it waited on the first worker's prepared transaction, so the load hung
+  until cancelled. Each worker now waits, in the lock manager, until every other
+  worker has the table open, and the deadlock detector lets the queued workers
+  go ahead of `CREATE INDEX`, which runs after the load. A trigger on INSERT
+  runs in each worker's prepared transaction, and when it wrote to a table with
+  a primary key the load failed with 40P01 or hung. The function now refuses
+  more than one worker for such a table with 0A000 and the hint
+  `Load it with workers => 1, or with COPY.`, before it starts any worker and
+  again in each worker. A worker's refusal now carries its HINT and DETAIL to
+  the caller. A cancelled load returned while the coordinator was still rolling
+  back, so the caller's next statement could see the prepared transactions;
+  the function now waits for the coordinator first. The coordinator's SIGTERM
+  now also cancels its lock waits, so that wait ends even when the coordinator
+  waits on a lock the caller holds, such as on `pgcolumnar.load_fingerprint`
+  with `dedup => true`; the load then rolls back. A cancel that arrives after
+  the rows commit no longer stops the fingerprint record, so a dedup retry is
+  still refused; a cancelled caller stops waiting once the rows commit, and the
+  record then waits for its lock with no deadline, as before. A trigger that does not fire
+  in the workers' session, such as `ENABLE REPLICA`, is not refused. New internal setting
+  `pgcolumnar.parallel_copy_open_hold_ms`, for tests. docs/limitations.md,
+  docs/sql-reference.md and docs/configuration.md. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`. `nologin_workers` now loads its trigger tables with
+  one worker.
+- `pgcolumnar.export_parquet` now refuses a `timestamp` or `timestamptz` after
+  294247-01-10 04:00:54.775807 (#2160). Parquet stores a timestamp as 64-bit
+  microseconds since 1970-01-01, and that is the last value it holds. The
+  writer shifted the value to that epoch without an overflow check, so a later
+  value wrapped to a large negative number. The export reported success, and
+  readers saw a date before year 0. `tier_partition` writes through the same
+  code, so it moved such a partition and left a parent that could no longer be
+  read. Such a value now fails the export with SQLSTATE 22008, naming the table
+  column, also for an element of an array column or a field of a composite
+  column, and no file is written. `parallel_export_parquet` and
+  `tier_partition` fail the same way; a refused `tier_partition` leaves the
+  partition as it was. A timestamp before 1970 still exports, and so does the
+  last value that fits. This is the Parquet twin of #2085.
+  docs/limitations.md. `test/parquet_export.sh` and `test_parquet_export.py`.
 - `read_parquet` and the Parquet foreign table now read a file that holds a data
   page with no values (#2077). Such a page is valid, and pyarrow writes one for a
   dictionary-encoded list column when it flushes pages often. The reader refused
@@ -788,6 +830,41 @@ true until the next version shipped.
   decodes to NUL, and a row with too few fields for the key. Three more cover
   a `\N` key in the last column, a lowercase hex digit, and a date key written
   with escapes.
+- `pgcolumnar.parallel_copy` now reads the file in the calling session's
+  `client_encoding`, as `COPY FROM` does, and its splitters step over whole
+  characters in the encodings where a character's second byte can be `0x5C`
+  (#2188). The loaders read the file in their own `client_encoding`, the
+  database's or the role's default, so a UTF8 session with the database
+  default set to SJIS stored `café` as `636166efbe83efbda9` where `COPY FROM`
+  stores `636166c3a9`, and a session in SJIS with a UTF8 default was refused
+  with 22021. The splitters and the first-line scan read every `0x5C` as a
+  backslash, so in SJIS `83 5c 5c 0a`, one character and an escaped newline,
+  was cut into two records: 2002 to 2004 rows with 3, 5, 6, 7 or 8 workers
+  where `COPY FROM` loads 2000. Each loader
+  now starts core `COPY` with `ENCODING` set to the caller's
+  `client_encoding`, and every scan (`file_split_offsets` too) shares one
+  reader that steps over a character's trailing bytes with
+  `pg_encoding_mblen` when the encoding is client-only (SJIS, SHIFT_JIS_2004,
+  BIG5, GBK, GB18030, UHC, JOHAB) and the database is not `SQL_ASCII`. That is
+  when core converts the file before it looks for backslashes; in a
+  `SQL_ASCII` database core reads raw bytes and so do the scans.
+  `test/parallel_copy.sh` and `test_parallel_copy.py`.
+- `pgcolumnar.parallel_copy` now refuses a file that changes newline style,
+  as `COPY FROM` does, wherever the split falls (#2189). `COPY FROM` takes LF
+  or CRLF from the file's first line and refuses any later line ending, or a
+  `\.\r\n` end-of-data line in a file with LF line ends, whose style differs,
+  with 22P04. Each worker ran core `COPY` over its own range, so a range that
+  started where the style changed took the new style from its own first line,
+  and the load went through: 2000 to 3749 rows where `COPY FROM` loads none.
+  The calling backend now reads the first line's style the way core does (the
+  first newline or carriage return no backslash escapes), and every worker
+  whose range does not start the file starts core `COPY` with it. The refusal
+  carries core's SQLSTATE and message (`end-of-copy marker does not match
+  previous newline style`, `literal carriage return found in data`, `literal
+  newline found in data`) after `worker N failed: `, and loads nothing. A
+  partitioned load already refused the `\.\r\n` case, because its splitter
+  ends a range at the marker line. `test/parallel_copy.sh` and
+  `test_parallel_copy.py`.
 - The Iceberg foreign data wrapper no longer drops matching rows when an
   Iceberg `decimal` column is declared `int` or `bigint` (#2086). Spark stores
   a decimal of precision 18 or less as a Parquet INT32 or INT64, and the reader

@@ -2487,15 +2487,73 @@ guard_tests 897
 # pin that a wide long-form field id in a PageHeader is refused whatever width a narrowing reader would
 # use (32768, -32769, 2^31, 2^32+1, 1-2^32, -(2^32+1) and 2^40+1), by collection: every file not in
 # NO_CLUSTER, `--collect-only -q`: 5945 tests collected.
-# cluster_tests 6027 -> 6078 for #2202's tests in test_parallel_copy.py, restated on main 5fae8e3d (5872 ->
-# 5923 on the branch before the merge): parallel_copy into a partitioned target reads the fields up to the key
-# with COPY's text escapes. Three premises and 48 cases, 24 files by 2 and 4 workers, each against heap COPY's
-# outcome, rows per partition and rows: the first nine files (the issue's two cases, octal, hex and named escapes
-# in the key and before it, an escaped backslash before the delimiter, a \N key, two controls), seven that
-# catch a rule applied too widely (the coordinator's review of e3fa6a95), and eight from jdatcmd's review of
-# #2220 at 19bb9309, by collection of the files NO_CLUSTER does not name, as ci.yml selects them.
-# cluster_tests 6078 -> 6085, still #2202, for jdatcmd's re-review of #2220 at 960286e1: a fourth premise and 6
-# more cases in test_parallel_copy.py, three files by 2 and 4 workers (a \N key in the last column, a lowercase
-# hex digit in the key, and a date key written with escapes), by collection of the files NO_CLUSTER does not
-# name, as ci.yml selects them.
-cluster_tests 6085
+# cluster_tests 6027 -> 6059 for #2189's thirty-two tests in test_parallel_copy.py (restated on main 5fae8e3d; 5872
+# -> 5904 on 6094d3a6): five premises (test_parallel_copy_newline_premise_marker_files, _lf_to_crlf_files,
+# _crlf_to_lf_files, _control_markers and _control_rows),
+# test_parallel_copy_a_newline_style_change_at_a_range_start_is_refused_as_copy_from_refuses_it (18 parametrized:
+# a \.\r\n line in an LF file, LF then CRLF, and CRLF then LF, each with 2, 3 and 4 workers into a single table and
+# a partitioned one, refused with heap COPY's SQLSTATE and message) and
+# test_parallel_copy_a_consistent_newline_style_still_loads (9 parametrized controls), by collection over the
+# cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6059 -> 6071, still #2189, for the review of #2221 at 7aa8f21a: test_parallel_copy_newline_probe_premise
+# and test_parallel_copy_newline_probe_matches_heap_copy (11 parametrized probe files of the first-line scan,
+# compared with heap COPY), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it).
+# cluster_tests 6071 -> 6085 for #2160 in test_parquet_export.py: 14 tests on a third module fixture. A
+# timestamp, a timestamptz, a timestamp[] element and a composite field past Parquet's int64 range are refused
+# with SQLSTATE 22008 and the table column named; the refused export leaves no file; the last value that fits
+# still exports and read_parquet reads it back; a timestamp before 1970 and in-range nested timestamps still
+# export; the refusal carries its DETAIL; and parallel_export_parquet and tier_partition refuse the same way and
+# leave nothing behind. By collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives
+# it): 6085 tests collected, against 6071 on main at 75f3b9d6.
+# cluster_tests 6085 -> 6088 for #2218 and #2197 in test_parquet_nested_import.py:
+# test_a_composite_over_a_top_level_column_and_then_a_struct_is_refused,
+# test_a_composite_whose_first_attribute_was_dropped_is_null_when_its_struct_is and
+# test_a_composite_whose_last_attribute_was_dropped_is_null_when_its_struct_is, by collection
+# over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it): `6088 tests collected`, after merging main at 6d40a3d4.
+# cluster_tests 6088 -> 6108 for the 20 tests of the #2187 fix in test_parallel_copy.py: a CREATE INDEX
+# queued between the loaders' locks (2 and 4 workers, each with its premise), a loader terminated before it
+# opens the table, a cancelled load and what it left (2), 5 trigger refusals (AFTER row, BEFORE row,
+# statement, a trigger writing a fresh columnar table, a trigger created late), the refused tables stay empty,
+# 4 controls (1 worker, disabled, foreign key, UPDATE only), and the order of the trigger refusal after #2183's
+# lock refusal, after #2080's unique-index refusal and after #2211's own-write refusal (3), by collection
+# over the cluster files.
+# cluster_tests 6108 -> 6115 for the 7 tests of the #2219 review in test_parallel_copy.py: dedup under the
+# caller's lock on pgcolumnar.load_fingerprint and a coordinator behind another session's SHARE lock each return
+# their statement_timeout promptly, a late trigger's DETAIL, an ENABLE ALWAYS trigger refused, an ENABLE REPLICA
+# trigger loaded, the hold setting refused to a non-superuser, and one lost loader of 3 failing the load
+# promptly, by collection over the cluster files.
+# cluster_tests 6115 -> 6116 for the second #2219 review's test in test_parallel_copy.py: a dedup load cancelled
+# after its rows commit still records the fingerprint, so a retry of the same file is skipped, by collection
+# over the cluster files.
+# cluster_tests 6116 -> 6118 for the third #2219 review's two tests in test_parallel_copy.py: a dedup load
+# whose caller holds SHARE on pgcolumnar.load_fingerprint returns promptly and records the fingerprint after the
+# caller's ROLLBACK, and one behind another session's 16 s lock records it when the lock frees, by collection
+# over the cluster files.
+# cluster_tests 6118 -> 6126 for #2198's eight tests: six in test_objstore_http_read.py (30 reads from a server that
+# resets each kept-alive connection, 30 from one that closes at once after each answer, a reset after part of a
+# status line and after part of a body refused, a server that resets every GET refused after one retry, and that GET
+# sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
+# collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
+# NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
+# cluster_tests 6126 -> 6128, still #2198, for the review of #2225 at 532b11f9: two tests in test_objstore_listing.py
+# (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
+# collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+# cluster_tests 6128 -> 6151 for #2188's twenty-three tests in test_parallel_copy.py: four premises
+# (test_parallel_copy_encoding_premise_sjis_and_big5, _first_line_and_chunk_files, _database_default and _controls),
+# test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (10 parametrized SJIS and BIG5 loads compared
+# with heap COPY), test_parallel_copy_split_offsets_step_over_characters_that_hold_0x5c,
+# test_parallel_copy_loaders_read_the_callers_client_encoding (2 parametrized) and
+# test_parallel_copy_a_backslash_after_a_high_bit_byte_still_escapes_where_copy_says_so (6 parametrized controls),
+# by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml derives it).
+# cluster_tests 6151 -> 6156, still #2188, for jdatcmd's review of #2228: test_parallel_copy_encoding_premise_gb18030_and_gbk
+# and four more parametrized loads in test_parallel_copy_a_character_that_holds_0x5c_is_not_a_backslash (GB18030 and
+# GBK, single table and partitioned), by collection over the cluster files (the complement of NO_CLUSTER, as ci.yml
+# derives it).
+# cluster_tests 6156 -> 6214 for #2202's tests in test_parallel_copy.py, restated on #2228's head 5057ee96
+# (6027 -> 6085 on the branch before this merge): parallel_copy into a partitioned target reads the fields up
+# to the key with COPY's text escapes. Four premises and 54 cases, 27 files by 2 and 4 workers, each against
+# heap COPY's outcome, rows per partition and rows, by collection of the files NO_CLUSTER does not name, as
+# ci.yml selects them.
+cluster_tests 6214
