@@ -351,12 +351,22 @@ these constraints.
   would wait for the caller until the statement timed out.
   `parallel_export_parquet` has the same rule for ACCESS EXCLUSIVE on the table
   or on one of its leaf partitions.
-- The check covers only the target and its partitions. The load still waits
-  until `statement_timeout` when the calling transaction locks another table
-  the loaders need. One example is a table the target references through a
-  foreign key. Others are a table a trigger on the target writes to, and a
-  sequence a trigger calls `nextval` on after `ALTER SEQUENCE ... RESTART`. Run
-  `parallel_copy` before taking such locks, or after `COMMIT`.
+- The check covers only the target and its partitions. When the calling
+  transaction locks another table the loaders need, the load fails with
+  `deadlock_detected` (40P01) after `deadlock_timeout` (#2216). One example is a
+  table the target references through a foreign key. Others are a table a
+  trigger on the target writes to, and a sequence a trigger calls `nextval` on
+  after `ALTER SEQUENCE ... RESTART`. A retry in the same transaction fails the
+  same way. Run `parallel_copy` before taking such locks, or after `COMMIT`.
+- The caller takes ROW EXCLUSIVE on the target and on each of its partitions
+  before any worker starts (#2229). It holds that lock to the end of its
+  transaction, as an `INSERT` would. It waits there for another session's conflicting
+  lock, such as one `CREATE INDEX` or `LOCK TABLE ... IN SHARE MODE` holds, and
+  `lock_timeout` applies to that wait. If that session then waits for a lock the
+  caller holds, one of the two gets `deadlock_detected` (40P01). The caller
+  waits for its workers in the lock manager too, on advisory locks of class 107
+  that show in `pg_locks`. Those waits are not limited by `lock_timeout` and
+  `log_lock_waits` does not report them.
 - The calling transaction must not have written to the target or to one of its
   partitions, for example with an earlier `INSERT`. The function refuses such a
   call with `55000` (#2211). The write holds a lock on the table's storage until
@@ -364,8 +374,8 @@ these constraints.
   so they would wait for the caller until the statement timed out. Commit the
   write first, or load the file with `COPY`.
   The check does not see a write to a columnar table that a trigger on the
-  target writes. If no row was ever committed to that table, the load still waits
-  until `statement_timeout` (#2216).
+  target writes. If no row was ever committed to that table, the load fails with
+  40P01 after `deadlock_timeout` (#2216).
 
 See the [SQL reference](sql-reference.md#pgcolumnarparallel_copytarget-regclass-filename-text-workers-int-default-null-dedup-boolean-default-false-returns-bigint)
 and [Benchmarks](benchmarks.md#parallel-bulk-ingest).

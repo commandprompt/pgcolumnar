@@ -605,6 +605,25 @@ true until the next version shipped.
 
 ### Fixed
 
+- `pgcolumnar.parallel_copy` no longer waits until `statement_timeout` when
+  another session holds SHARE on the target and then waits for a lock the
+  caller holds (#2229). `LOCK TABLE ... IN SHARE MODE` and `CREATE INDEX` take
+  such a lock. The coordinator waited for that session in the lock manager, and
+  the caller waited for the coordinator on a latch, which the deadlock detector
+  does not see. The caller now takes the workers' ROW EXCLUSIVE on the target
+  and on each partition before it starts the coordinator, after every refusal,
+  and holds it to the end of its transaction. One side of such a cycle now gets
+  40P01 within `deadlock_timeout`, and the caller's `lock_timeout` now bounds
+  its wait for another session's lock on the target (55P03). The caller also
+  waits for its workers in the lock manager now, on a new advisory lock class
+  (107) each worker holds while it runs. So a `CREATE INDEX` that queues behind
+  the caller's lock does not hang the load: it runs after it. That also fixes a
+  hang on main when the caller already held ROW EXCLUSIVE on the target. A lock
+  of the caller's own on a table the loaders reach through a foreign key, a
+  trigger or a sequence now ends with 40P01 within `deadlock_timeout` instead
+  of a wait until `statement_timeout` (#2216). These waits on the workers do
+  not count against `lock_timeout` and are not reported by `log_lock_waits`.
+  docs/limitations.md. `test/parallel_copy.sh` and `test_parallel_copy.py`.
 - `pgcolumnar.parallel_copy` with 2 or more workers no longer hangs when a
   `CREATE INDEX` queues while its workers open the table, refuses a single
   table with a trigger on INSERT, and no longer returns a cancelled load's error

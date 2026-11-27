@@ -2540,4 +2540,11 @@ guard_tests 897
 # (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
 # collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
 # as ci.yml derives it).
-cluster_tests 6128
+# cluster_tests 6128 -> 6145 for #2229's 17 tests in test_parallel_copy.py: a session holding SHARE on the
+# target (LOCK TABLE, CREATE INDEX) and waiting for the caller's lock gets 40P01 on one side (2), the caller's
+# lock_timeout ends a wait for another session's SHARE on the target and on a partition (2), the caller waits in
+# the lock manager before any worker starts (2) and then loads (2 controls), #2183's and #2211's refusals come
+# before the wait (2 controls), CREATE INDEX queued behind the caller's ROW EXCLUSIVE does not hang the load, nor
+# CREATE INDEX on a partition the loaders have not reached (control), the run-lock waits are neither limited by
+# lock_timeout nor logged, and #2216's four own-lock cases get 40P01 (4), by collection over the cluster files.
+cluster_tests 6145
