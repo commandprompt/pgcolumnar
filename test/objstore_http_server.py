@@ -108,6 +108,11 @@
 #   __part_delay__        a number of seconds: every part PUT is stored at once
 #                         and answered only after that long, so a suite can end
 #                         the client while its uploads are in progress.
+#   __listing_close__     when it exists, every ListObjectsV2 answer is
+#                         close-delimited: Connection: close, no Content-Length,
+#                         no chunking (#2198 review).
+#   __listing_reset__     with __listing_close__, that answer is cut after its
+#                         first </Contents> and the connection reset.
 #   __list_uploads_delay__ a number of seconds: ListMultipartUploads (GET
 #                         ?uploads) is answered only after that long, a silent
 #                         store for the client's bounded wait.
@@ -599,6 +604,14 @@ class Handler(BaseHTTPRequestHandler):
         # Status hook: if <rootdir>/__listing_status__ exists, its content is an
         # HTTP status every listing is answered with, an empty body, so a harness
         # can prove a failed LIST is refused rather than read as an empty prefix.
+        #
+        # Close-delimited hooks (#2198 review): with <rootdir>/__listing_close__,
+        # every listing is answered with Connection: close and neither a
+        # Content-Length nor chunking, so its body ends at connection close (RFC
+        # 9112 section 6.3, rule 8). With <rootdir>/__listing_reset__ as well,
+        # the body is sent only up to the end of its first </Contents>, and the
+        # connection is then reset: a listing cut short must be refused, not
+        # read as a complete one with the later keys missing.
         status = os.path.join(self.server.rootdir, "__listing_status__")
         if os.path.exists(status):
             with open(status) as f:
@@ -655,6 +668,20 @@ class Handler(BaseHTTPRequestHandler):
                          % esc(k))
         parts.append("</ListBucketResult>")
         body = "".join(parts).encode()
+        if os.path.exists(os.path.join(self.server.rootdir, "__listing_close__")):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if os.path.exists(os.path.join(self.server.rootdir, "__listing_reset__")):
+                cut = body.find(b"</Contents>")
+                self.wfile.write(body[:cut + len(b"</Contents>")] if cut >= 0 else body[:len(body) // 2])
+                self.wfile.flush()
+                time.sleep(0.2)                  # margin; the bytes go out before the RST
+                self._after = "rst"
+                return
+            self.wfile.write(body)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.send_header("Content-Length", str(len(body)))

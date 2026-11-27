@@ -240,14 +240,17 @@ wait_up
 # /rstka/ resets the second request on every connection after the client has
 # sent it, so SSL_read fails with ECONNRESET before any byte of an answer: the
 # keep-alive race, retried once on a new connection. pgc_reads reads the object
-# n times, each in its own subtransaction, and counts the reads with every row.
+# n times, each in its own subtransaction, and counts the reads with every row
+# and the right column sums.
+# count(*), sum(c3) and sum(c7) of the fixture: c3 = 4v and c7 = 8v for row v.
+READS_WANT="$((G * ROWS_PER_GROUP)) $(( 4 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 )) $(( 8 * (G * ROWS_PER_GROUP) * (G * ROWS_PER_GROUP - 1) / 2 ))"
 psql_run "CREATE FUNCTION pgc_reads(url text, n int) RETURNS text LANGUAGE plpgsql AS \$f\$
-DECLARE ok int := 0; bad int := 0; c int8; last text := '';
+DECLARE ok int := 0; bad int := 0; c text; last text := '';
 BEGIN
   FOR i IN 1..n LOOP
     BEGIN
-      EXECUTE format('SELECT count(*) FROM pgcolumnar.read_parquet(%L) AS t($COLDEFS)', url) INTO c;
-      IF c = $((G * ROWS_PER_GROUP)) THEN ok := ok + 1; ELSE bad := bad + 1; last := 'rows=' || c; END IF;
+      EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) AS t($COLDEFS)', url) INTO c;
+      IF c = '$READS_WANT' THEN ok := ok + 1; ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF;
     EXCEPTION WHEN others THEN bad := bad + 1; last := SQLSTATE || ': ' || SQLERRM;
     END;
   END LOOP;

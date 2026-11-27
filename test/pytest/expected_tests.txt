@@ -2512,4 +2512,8 @@ guard_tests 897
 # sent twice) and two in test_objstore_tls_read.py (the 30 reads and the part-status-line reset over TLS), by
 # collection of those two files (130 on main 75f3b9d6, 138 here) and over the cluster files (the complement of
 # NO_CLUSTER, as ci.yml derives it): 6079 tests collected.
-cluster_tests 6093
+# cluster_tests 6093 -> 6095, still #2198, for the review of #2225 at 532b11f9: two tests in test_objstore_listing.py
+# (a close-delimited ListObjectsV2 answer reads every object, and the same answer cut by a reset is refused), by
+# collection of that file (71 on main 75f3b9d6, 73 here) and over the cluster files (the complement of NO_CLUSTER,
+# as ci.yml derives it).
+cluster_tests 6095

@@ -61,6 +61,9 @@ from pgc_vacuity import query_error
 TEST = pathlib.Path(__file__).resolve().parents[1]
 G, NCOLS, ROWS_PER_GROUP = 3, 8, 8000
 COLDEFS = ", ".join(f"c{i} int8" for i in range(NCOLS))
+# pgc_reads (#2198): count(*), sum(c3) and sum(c7) of the fixture, c3 = 4v and c7 = 8v for row v
+_N = G * ROWS_PER_GROUP
+READS_WANT = f"{_N} {4 * _N * (_N - 1) // 2} {8 * _N * (_N - 1) // 2}"
 SUM_ALL = " + ".join(f"sum(c{i})" for i in range(NCOLS))
 K_FULL, K_PROJ = 4 + G * NCOLS, 4 + G * 2
 ALLOW = "SET pgcolumnar.objstore_allowed_endpoints = '127.0.0.1'"
@@ -500,15 +503,15 @@ def ohr(pgc_cluster):
                       "LOOP FETCH c INTO x; EXIT WHEN NOT FOUND; s := s + x; END LOOP; "
                       "CLOSE c; RETURN s; END $f$")
             # pgc_reads(url, n), as the shell's (#2198): read url n times, each
-            # in its own EXCEPTION block, and count the reads with every row
+            # in its own EXCEPTION block, and count the reads with every row and the right column sums
             c.execute(f"CREATE FUNCTION {SCHEMA}.pgc_reads(url text, n int) RETURNS text "
                       "LANGUAGE plpgsql AS $f$ "
-                      "DECLARE ok int := 0; bad int := 0; c int8; last text := ''; BEGIN "
+                      "DECLARE ok int := 0; bad int := 0; c text; last text := ''; BEGIN "
                       "FOR i IN 1..n LOOP BEGIN "
-                      "EXECUTE format('SELECT count(*) FROM pgcolumnar.read_parquet(%L) "
+                      "EXECUTE format('SELECT count(*) || '' '' || sum(c3) || '' '' || sum(c7) FROM pgcolumnar.read_parquet(%L) "
                       f"AS t({COLDEFS})', url) INTO c; "
-                      f"IF c = {G * ROWS_PER_GROUP} THEN ok := ok + 1; "
-                      "ELSE bad := bad + 1; last := 'rows=' || c; END IF; "
+                      f"IF c = '{READS_WANT}' THEN ok := ok + 1; "
+                      "ELSE bad := bad + 1; last := 'rows sum(c3) sum(c7)=' || c; END IF; "
                       "EXCEPTION WHEN others THEN bad := bad + 1; "
                       "last := SQLSTATE || ': ' || SQLERRM; END; END LOOP; "
                       "RETURN 'ok=' || ok || ' failed=' || bad || "
